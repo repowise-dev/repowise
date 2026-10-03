@@ -20,7 +20,8 @@ best-effort step that already degrades gracefully.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -590,7 +591,6 @@ async def load_stored_coverage_map(repo_path: Any, *, log: LogFn | None = None) 
     established safe default.
     """
     log = log or _noop_log
-    import json
 
     if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
         return {}
@@ -602,7 +602,7 @@ async def load_stored_coverage_map(repo_path: Any, *, log: LogFn | None = None) 
         )
         from repowise.core.persistence.crud import (
             get_repository_by_path,
-            load_coverage_for_repo,
+            load_coverage_map,
         )
         from repowise.core.persistence.database import resolve_db_url
 
@@ -612,21 +612,9 @@ async def load_stored_coverage_map(repo_path: Any, *, log: LogFn | None = None) 
                 repo = await get_repository_by_path(session, str(repo_path))
                 if repo is None:
                     return {}
-                rows = await load_coverage_for_repo(session, repo.id)
+                coverage_map = await load_coverage_map(session, repo.id)
         finally:
             await engine.dispose()
-        coverage_map: dict[str, dict] = {}
-        for row in rows:
-            try:
-                covered = json.loads(row.covered_lines_json) if row.covered_lines_json else []
-            except (ValueError, TypeError):
-                covered = []
-            coverage_map[row.file_path] = {
-                "line_coverage_pct": row.line_coverage_pct,
-                "branch_coverage_pct": row.branch_coverage_pct,
-                "covered_lines": covered,
-                "total_coverable_lines": row.total_coverable_lines or 0,
-            }
         return coverage_map
     except Exception as exc:
         log(f"[yellow]Stored coverage unavailable: {exc}[/yellow]")
@@ -723,6 +711,7 @@ def run_partial_analysis(
         # execution closure so a changed caller can still see an unchanged sink
         # and an unchanged caller can react to a changed sink. The index is
         # built once; this is a multi-source walk, not one walk per finding.
+        from repowise.core.analysis.communities import file_community_labels
         from repowise.core.analysis.execution_graph import ExecutionGraphIndex
         from repowise.core.analysis.health import HealthAnalyzer
         from repowise.core.analysis.health.config import HealthConfig
@@ -743,6 +732,7 @@ def run_partial_analysis(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
+            community_label_map=file_community_labels(graph_builder),
             duplication_cache_dir=Path(repo_path) / ".repowise",
             repo_root=repo_path,
             coverage_map=coverage_map,
@@ -837,6 +827,7 @@ def run_partial_analysis(
                     *getattr(_traversal_stats, "unknown_language_files", []),
                 )
             ],
+            dotnet_index=getattr(graph_builder, "dotnet_index", None),
         )
         # Repo-wide, and persisted repo-wide. The detectors were always
         # repo-wide — the update path just discarded everything outside the
@@ -885,12 +876,31 @@ def run_partial_analysis(
     return partial_health_report, dead_code_report
 
 
+@dataclass(frozen=True)
+class DocDriftUpdate:
+    """What an update tells the drift pass about the change it is applying."""
+
+    base_ref: str | None = None
+    """The commit the update diffs from, to the working tree."""
+    changed_paths: tuple[str, ...] = ()
+    """Every path the update adds, edits, deletes or renames (both sides)."""
+    symbol_names: frozenset[str] | None = None
+    """The index's symbol names; ``None`` reads them from the graph."""
+
+    @classmethod
+    def from_file_diffs(cls, base_ref: str | None, file_diffs: Iterable[Any]) -> DocDriftUpdate:
+        paths = tuple(p for fd in file_diffs for p in (fd.path, fd.old_path) if p)
+        return cls(base_ref=base_ref, changed_paths=paths)
+
+
 def run_doc_drift_partial(
     graph_builder: Any,
     source_map: dict[str, bytes] | None,
     *,
+    repo_path: Any | None = None,
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
+    update: DocDriftUpdate | None = None,
 ) -> Any | None:
     """Re-check the repository's own markdown on the incremental path.
 
@@ -898,6 +908,11 @@ def run_doc_drift_partial(
     :func:`run_partial_analysis`'s tuple, mirroring the full path where drift is
     its own phase. Returns ``None`` when the pass could not run, which the
     caller must treat as "write nothing".
+
+    The cheap kinds are re-derived for every document. Symbol references are
+    re-resolved only where *update* could have changed them (see
+    :class:`~repowise.core.analysis.doc_drift.symbols.SymbolRecheck`); the rest
+    carry forward in the store.
     """
     log = log or _noop_log
     if not source_map:
@@ -914,9 +929,12 @@ def run_doc_drift_partial(
             if not tracked_paths:
                 return None
 
+            root = Path(repo_path) if repo_path else None
             report = DocDriftAnalyzer(
                 source_map=source_map,
                 tracked_paths=tracked_paths,
+                repo_root=root,
+                symbols=_drift_symbol_options(graph_builder, root, update or DocDriftUpdate()),
             ).analyze()
             report.authoritative_paths = report.documents
             if report.total_findings:
@@ -925,6 +943,22 @@ def run_doc_drift_partial(
         except Exception as exc:
             log(f"[yellow]Doc drift analysis skipped: {exc}[/yellow]")
             return None
+
+
+def _drift_symbol_options(graph_builder: Any, root: Path | None, update: DocDriftUpdate) -> Any:
+    """The drift pass's symbol options for *update*; ``None`` without a working tree."""
+    from repowise.core.analysis.doc_drift.symbols import (
+        SymbolOptions,
+        graph_symbol_names,
+        symbol_recheck,
+    )
+
+    if root is None:
+        return None
+    names = update.symbol_names
+    if names is None:
+        names = graph_symbol_names(graph_builder.graph())
+    return SymbolOptions(names, symbol_recheck(root, update.base_ref, update.changed_paths))
 
 
 async def refresh_knowledge_graph(
@@ -1102,7 +1136,7 @@ async def refresh_unchanged_history(
         return 0
 
     findings_by_path: dict[str, list[Any]] = {}
-    for finding in await get_health_findings(session, repo_id):
+    for finding in await get_health_findings(session, repo_id, include_withheld=True):
         findings_by_path.setdefault(finding.file_path, []).append(finding)
 
     cfg = HealthConfig.load(repo_path)
@@ -1163,12 +1197,17 @@ def _numbers_moved(refreshed: Any, stored: Any) -> bool:
     the split ships backfills it without touching any finding.
     """
     return (
-        round(refreshed.score, 2) != round(float(stored.score), 2)
-        or stored.structure_deduction is None
-        or stored.history_deduction is None
-        or round(refreshed.structure_deduction, 3) != round(float(stored.structure_deduction), 3)
-        or round(refreshed.history_deduction, 3) != round(float(stored.history_deduction), 3)
+        _differs(refreshed.score, stored.score, 2)
+        or _differs(refreshed.structure_deduction, stored.structure_deduction, 3)
+        or _differs(refreshed.history_deduction, stored.history_deduction, 3)
     )
+
+
+def _differs(new: float | None, old: float | None, places: int) -> bool:
+    """``None`` is a value here: a file that is no longer scored has moved."""
+    if new is None or old is None:
+        return (new is None) != (old is None)
+    return round(new, places) != round(float(old), places)
 
 
 def _history_findings_moved(refreshed: Any, stored_findings: list[Any]) -> bool:
@@ -1200,11 +1239,14 @@ def _refreshed_metric(refreshed: Any, stored: Any) -> dict:
     complexity and coverage columns, which need a parse — keep their stored
     values instead of being reset to a default.
     """
+    # A file health never walked carries no complexity figures either, which
+    # also clears the ones a store written before that rule kept.
+    walked = refreshed.score is not None
     return {
         "file_path": refreshed.file_path,
         "score": refreshed.score,
-        "max_ccn": stored.max_ccn,
-        "max_nesting": stored.max_nesting,
+        "max_ccn": stored.max_ccn if walked else None,
+        "max_nesting": stored.max_nesting if walked else None,
         "nloc": stored.nloc,
         "duplication_pct": stored.duplication_pct,
         "has_test_file": stored.has_test_file,
@@ -1217,6 +1259,7 @@ def _refreshed_metric(refreshed: Any, stored: Any) -> dict:
         "structure_deduction": refreshed.structure_deduction,
         "history_deduction": refreshed.history_deduction,
         "is_test": stored.is_test,
+        "code_origin": getattr(stored, "code_origin", None),
     }
 
 
@@ -1315,9 +1358,14 @@ async def persist_partial_health(
     # average, and rows written before ``is_test`` existed get it from their
     # path. Both before the refresh, which should not re-score a row that is
     # about to be deleted.
-    from repowise.core.persistence.crud import backfill_is_test, prune_unscored_health_rows
+    from repowise.core.persistence.crud import (
+        backfill_is_test,
+        clear_unanalysed_scores,
+        prune_unscored_health_rows,
+    )
 
     await prune_unscored_health_rows(session, repo_id)
+    await clear_unanalysed_scores(session, repo_id)
     await backfill_is_test(session, repo_id)
     # Then the files this run did not walk, whose git-derived markers the fresh
     # metadata may have moved. Before the snapshot, or the trend would describe
@@ -1423,6 +1471,7 @@ async def persist_incremental_commits(
         session,
         repo_id,
         total_commit_count=totals.total_commit_count,
+        total_merge_commit_count=totals.total_merge_commit_count,
         first_commit_at=totals.first_commit_at,
         total_contributor_count=totals.total_contributor_count,
         first_commit_author=totals.first_commit_author,

@@ -43,7 +43,9 @@ class OwnerListEntry(BaseModel):
     silo_modules: int  # modules where this owner is >80%
     dead_code_files_owned: int
     dead_code_lines_owned: int
-    commit_count_90d: int  # sum of per-file 90d commits attributed to this person
+    # Distinct commits by this person in the 90 days before HEAD; None when the
+    # indexed commits do not cover the window.
+    commit_count_90d: int | None
     last_commit_at: UTCDateTime | None
     bus_factor_risk_files: int  # files they own where bus_factor <= 1
 
@@ -99,7 +101,7 @@ class OwnerProfileResponse(BaseModel):
     silo_modules: int
     dead_code_files_owned: int
     dead_code_lines_owned: int
-    commit_count_90d: int
+    commit_count_90d: int | None
     last_commit_at: UTCDateTime | None
     first_commit_at: UTCDateTime | None
     bus_factor_risk_files: int

@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import asyncio
 import os
-import time
 from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import structlog
 
+from ...code_origin import CodeOrigin, code_origin
+from ...git_refs import remote_name
 from ...ingestion.git_indexer.enrich import count_active_contributors
 from ...ingestion.git_indexer.function_blame import (
     BlameIndex,
@@ -36,17 +38,24 @@ from ...ingestion.git_indexer.function_blame import (
 from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
+from ...installed_components import is_installed_component
 from ...test_paths import paired_test_names
+from ..dead_code.file_reachability import file_dependency_neighbors
 from ..graph_view import HasEdge, ImportEdgeView
-from ..test_reachability import files_reached_by_tests
+from ..test_reachability import files_reached_by_tests, files_with_paired_tests
 from .asserts.lexicon import AssertVocabulary
 from .asserts.oracle_reach import collect_cross_file_oracles
 from .biomarkers import FileContext, detect_all
 from .complexity import FileComplexity, FunctionComplexity, walk_file
+from .complexity.languages import has_health_dialect
 from .coverage import is_test_file as _coverage_is_test_file
 from .dataflow import FileDataflowCache
-from .duplication import DuplicationReport
+from .duplication import ClonePair, DuplicationReport
+from .duplication.detector import clone_ranges, union_line_count
 from .duplication.isolation import detect_clones_with_isolation as detect_clones
+from .finding_identity import SYMBOL_INDEX_KEY, SYMBOL_KEY, SYMBOL_LINE_KEY
+from .function_blame_rollup import blame_commit_entries, commit_spans
+from .history_refresh import BLAME_MARKERS, as_biomarker_result
 from .models import HealthFileMetricData, HealthFindingData, HealthReport, Severity
 from .perf import (
     CallGraphIndex,
@@ -73,7 +82,7 @@ from .scope import scores_language
 from .scoring import (
     attach_impacts,
     compute_kpis,
-    deduction_split,
+    file_score_fields,
     remap_severities,
     score_file,
 )
@@ -103,7 +112,55 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: a multi-item ``with`` header is classified on its oracle rather
+# Current stamp (v38): Split File's co-change edge reads per-function commit
+# sets (the 50 newest distinct commits of each function, stored on
+# ``git_function_blame``), and a class takes the union of its methods' sets
+# instead of blame over its whole span. Group membership is a kernel input to
+# the ``split_file`` id, so ``REFACTORING_MODEL_VERSION`` moved 3 -> 4 with it:
+# every refactoring id now carries the ``refac4_`` prefix, and a held ``refac3_``
+# id reports ``stale_model``.
+#
+# v37: schema migrations are ``tooling`` in the performance
+# ``execution_context`` (any ``migrations/`` directory, Rails ``db/migrate``,
+# Alembic ``alembic/versions``). The context is stored on every performance
+# opportunity and is a kernel input to its id, so ``PERFORMANCE_MODEL_VERSION``
+# moved 2 -> 3 with it: every performance id now carries the ``perf3_`` prefix,
+# and a held ``perf2_`` id reports ``stale_model`` instead of a silent miss.
+#
+# v37 (also): refactoring plans credit what they remove. Extract Method, Extract
+# Class (``god_class``) and Extract Helper claim the share of the finding that
+# moves, a span must clear a minimum-worth floor, ``slice_nloc`` counts code
+# lines only, and JSX prop plumbing earns no Extract Method. Stored plans and
+# opportunities change, and ``REFACTORING_MODEL_VERSION`` moved with this.
+# v37 (also): the walker records ``dispatch_share`` and ``deprecated`` per
+# function, which a cached v36 walk does not carry, and each file metric gains
+# ``code_origin``. Complexity findings copy ``dispatch_share`` into their
+# details and findings on a deprecated function gain ``deprecated: true``. No
+# CCN, threshold, weight or score moves.
+# v37 (also): a finding inside a function or class records that symbol's first
+# line (``details["symbol_line"]``) and its public id is anchored on the symbol
+# plus the offset into it, hashing no metric values, so every stored finding id
+# moves once.
+# v37 (also): the walker records each function's deepest nested block and each
+# performance hit's loop header line; size findings carry ``deepest_block`` and
+# performance findings ``loop_line`` in their details, both outside the id
+# kernel. A cached v37 walk without them reads the defaults (absent).
+# v37 (also): a perf hit inside a lambda with no named function around it is
+# named for that lambda (``build``, ``it callback``), so its stored
+# ``function_name`` and public id change; top-level script code still carries
+# none. The v3 performance model also keys one opportunity per intervention, so
+# every stored opportunity id and the id stamped on every perf finding change.
+# ``lazy_load_in_loop`` findings carry ``details["orm"]``, which moves their
+# public ids and, for Django, their performance weight (0.4 -> 0.7).
+#
+# v36 (also): which files are tests changed (``repowise.core.test_paths``).
+# Compound directories headed by a test word (``e2e-tests/``, ``pkg_tests/``,
+# ``integration_test/``) became test trees, and ``test``/``.test.`` filenames
+# stopped counting on configuration (``tsconfig.test.json``, a workflow's
+# ``*.test.yml``) and on a bare non-Python ``test.ts``. Every biomarker that
+# exempts or targets tests reads that flag, so stored findings move.
+#
+# v35 (also): a multi-item ``with`` header is classified on its oracle rather
 # than on whichever context manager the author happened to type first.
 # ``assert_call_kinds`` is the language's plain call node, not an assertion
 # shape, so the header scan returned the first call it met and classified only
@@ -111,6 +168,28 @@ log = structlog.get_logger(__name__)
 # ``with atomic(), pytest.raises(E):`` counted one. Each item is classified now,
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
+#
+# v36: files a package manifest declares (package.json ``bin``, a built
+# ``main`` mapped to its source, a distribution's package ``__init__``) are
+# entry points, so perf findings reachable from them are marked so.
+#
+# v35: the update's full re-score reads every stored git column, so the
+# percentile gates of ``prior_defect`` and ``co_change_scatter`` see their
+# inputs, and it keeps the stored blame-marker findings it cannot recompute.
+# A store an older re-score wrote is missing those findings.
+#
+# v34: ``hidden_coupling`` is advisory: still detected and stored, it no longer
+# deducts from the defect score, so every stored score that carried one moves.
+#
+# v33: git history windows are measured from the indexed commit's committer
+# date instead of wall-clock time, by default. ``code_age_volatility`` and the
+# per-function blame rollup read line ages from the same anchor, so a store
+# scored against wall-clock time holds different windowed findings for any repo
+# whose last commit is not today.
+#
+# v32: the history (organizational) cap follows the file's structure half,
+# ``history_cap(structure)`` in scoring.py, so every stored score that carries
+# a history deduction, and the refactoring impact figures, move.
 #
 # v31: Pascal opts into assertion detection (``assert_call_kinds``): DUnit's
 # ``Check``/``CheckEquals``/``Fail`` family (a new ``asserts/lexicon.py`` row,
@@ -303,7 +382,55 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 31
+HEALTH_ANALYZER_VERSION = 38
+
+
+def _mark_deprecated(
+    findings: list[HealthFindingData], functions: list[FunctionComplexity]
+) -> None:
+    """Stamp ``deprecated: true`` on each function-level finding inside a
+    deprecated function. Absent, not false, everywhere else, so the details of
+    every other finding are byte-for-byte what they were."""
+    spans = [(fc.name, fc.start_line, fc.end_line) for fc in functions if fc.deprecated]
+    if not spans:
+        return
+    for finding in findings:
+        if finding.function_name is None:
+            continue
+        line = finding.line_start
+        if any(
+            name == finding.function_name and (line is None or start <= line <= end)
+            for name, start, end in spans
+        ):
+            finding.details["deprecated"] = True
+
+
+#: Function-size findings whose fix starts at the deepest nested block.
+_DEEPEST_BLOCK_MARKERS = frozenset(
+    {"complex_method", "nested_complexity", "brain_method", "large_method", "bumpy_road"}
+)
+
+
+def _mark_deepest_block(
+    findings: list[HealthFindingData], functions: list[FunctionComplexity]
+) -> None:
+    """Copy the function's deepest nested block onto its size findings as
+    ``deepest_block: {start, end}``, so a fix list can name where to start
+    without re-walking the file. Absent when the function does not nest."""
+    blocks = {
+        (fc.name, fc.start_line): fc.deepest_block
+        for fc in functions
+        if fc.deepest_block
+    }
+    if not blocks:
+        return
+    for finding in findings:
+        if finding.biomarker_type not in _DEEPEST_BLOCK_MARKERS:
+            continue
+        block = blocks.get((finding.function_name, finding.line_start))
+        if block:
+            # A mapping, not a pair: surfaces count every nested list as a collection.
+            finding.details["deepest_block"] = {"start": block[0], "end": block[1]}
 
 
 def walked_functions(
@@ -324,6 +451,43 @@ def walked_functions(
     if language == "sql":
         return ()
     return tuple(sorted(fc_list, key=lambda fc: (fc.start_line, fc.end_line)))
+
+
+
+def _stamp_symbol_lines(findings: list[HealthFindingData], fcx: FileComplexity) -> None:
+    """Record the symbol each finding sits in, so its id can be anchored there.
+
+    The finding id is the symbol plus the offset into it, so an edit above the
+    symbol leaves the id alone. The anchor is the innermost function or class
+    holding the finding's line and sharing its name; a finding the detector
+    left unnamed takes the innermost one of any name, recorded under
+    ``symbol``. ``symbol_index`` tells same-named symbols in one file apart (two
+    ``run`` methods, sibling ``it`` callbacks). A finding outside every symbol
+    keeps absolute lines, and a replayed stored finding keeps its anchor.
+    """
+    spans = sorted(
+        [(fc.start_line, fc.end_line, fc.name) for fc in fcx.functions]
+        + [(c.start_line, c.end_line, c.name) for c in fcx.classes]
+    )
+    for f in findings:
+        if f.line_start is None or SYMBOL_LINE_KEY in f.details:
+            continue
+        holding = [
+            span
+            for span in spans
+            if span[0] <= f.line_start <= span[1]
+            and (not f.function_name or span[2] == f.function_name)
+        ]
+        if not holding:
+            continue
+        start, _, name = max(holding, key=lambda span: (span[0], -span[1]))
+        stamp: dict = {SYMBOL_LINE_KEY: start}
+        if not f.function_name:
+            stamp[SYMBOL_KEY] = name
+        index = sum(1 for span in spans if span[2] == name and span[0] < start)
+        if index:
+            stamp[SYMBOL_INDEX_KEY] = index
+        f.details = {**f.details, **stamp}
 
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
@@ -354,6 +518,31 @@ def _log_duplication_diagnostics(report: DuplicationReport) -> None:
         log.debug("health_duplication_limits", **diag)
 
 
+def _commit_entries(fcx: FileComplexity, git_meta: dict) -> list:
+    """Split File's per-function commit sets: from the blame index, the stored
+    rows, or the blame a re-score took for a file stored without them."""
+    idx = git_meta.get("blame_index") or git_meta.get("commit_set_blame")
+    if isinstance(idx, BlameIndex):
+        return blame_commit_entries(fcx.functions, idx)
+    return list(git_meta.get("function_commit_shas") or ())
+
+
+def _partner(file_path: str, pair: ClonePair) -> str:
+    """The other file of *pair*: *file_path* itself for a clone inside it."""
+    return pair.file_b if pair.file_a == file_path else pair.file_a
+
+
+def _pct_of_kept(
+    file_path: str, clones: list[ClonePair], kept: list[ClonePair], dup_pct: float | None
+) -> float | None:
+    """*dup_pct* scaled to the lines the *kept* clones still cover."""
+    if len(kept) == len(clones) or not dup_pct:
+        return dup_pct
+    covered = union_line_count(clone_ranges(file_path, clones))
+    share = union_line_count(clone_ranges(file_path, kept)) / covered if covered else 0.0
+    return round(dup_pct * share, 2)
+
+
 def _read_source_lines(abs_path: str, read_source: SourceReader) -> list[str] | None:
     """Read a file's source as 1-indexed lines for the Extract Helper snippet.
 
@@ -370,6 +559,25 @@ def _read_source_lines(abs_path: str, read_source: SourceReader) -> list[str] | 
     except (UnicodeError, AttributeError):
         return None
     return text.splitlines()
+
+
+def _clone_sources(
+    file_path: str,
+    own_lines: list[str],
+    clones: list[ClonePair],
+    abs_paths: dict[str, str],
+    read_source: SourceReader,
+) -> dict[str, list[str]]:
+    """This file's lines plus each clone partner's, for text-level checks."""
+    out = {file_path: own_lines}
+    for clone in clones:
+        for path in (clone.file_a, clone.file_b):
+            if path in out or path not in abs_paths:
+                continue
+            lines = _read_source_lines(abs_paths[path], read_source)
+            if lines is not None:
+                out[path] = lines
+    return out
 
 
 def _percentile_p80(counts: list[int]) -> int | None:
@@ -422,6 +630,11 @@ def _compute_repo_function_mod_p80(
     return _percentile_p80(counts)
 
 
+def _dependents_count(graph: Any, path: str) -> int:
+    """Distinct files that depend on *path* in code; co-change is history, not a dependent."""
+    return len(set(file_dependency_neighbors(graph, path, incoming=True)))
+
+
 def _compute_repo_dependents_p80(parsed_files: list[Any], graph: Any) -> int | None:
     """Repo-wide 80th percentile of file-level in-degree (dependents).
 
@@ -441,10 +654,7 @@ def _compute_repo_dependents_p80(parsed_files: list[Any], graph: Any) -> int | N
         path = pf.file_info.path
         if path not in graph:
             continue
-        try:
-            deg = int(graph.in_degree(path))
-        except Exception:
-            continue
+        deg = _dependents_count(graph, path)
         if deg > 0:
             counts.append(deg)
     return _percentile_p80(counts)
@@ -498,10 +708,12 @@ class HealthAnalyzer:
         duplication_cache_dir: Any | None = None,
         repo_root: Any | None = None,
         source_reader: SourceReader | None = None,
+        stored_blame_findings: dict[str, list[Any]] | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
         self.parsed_files = list(parsed_files or [])
+        self._abs_paths = {pf.file_info.path: pf.file_info.abs_path for pf in self.parsed_files}
         # Per-file coverage keyed by repo-relative POSIX path. Each value
         # is ``{line_coverage_pct, branch_coverage_pct, covered_lines,
         # total_coverable_lines}``. ``None``-equivalent files are simply
@@ -528,9 +740,19 @@ class HealthAnalyzer:
         # falls back to inferring them from the analyzed file list, which sees
         # only the manifests the traverser emitted.
         self.repo_root = repo_root
+        # Origins are decided in ``_walk``, which holds the bytes, and kept by
+        # path: the walk cache keys on content alone, so a path-dependent
+        # answer cannot live on the cached walk.
+        self._project_name: str | None = None
+        self._origins: dict[str, CodeOrigin] = {}
+        self._installed_ui_dirs: dict[str, tuple[PurePosixPath, ...]] = {}
         # Every source read in the pass. Defaults to the working tree; a
         # revision comparison supplies bytes instead.
         self.read_source: SourceReader = source_reader or disk_source_reader
+        # Stored ``BLAME_MARKERS`` findings by path, replayed for a file scored
+        # without a blame index (a re-score from stored git metadata) so the
+        # pass does not delete what it cannot recompute.
+        self.stored_blame_findings = stored_blame_findings or {}
         self._package_roots_cache: set[str] | None = None
         self._tests_reach_cache: set[str] | None = None
         self._execution_graph_cache: CallGraphIndex | None = None
@@ -559,6 +781,21 @@ class HealthAnalyzer:
             index = self._execution_graph()
             self._tests_reach_cache = files_reached_by_tests(index or CallGraphIndex(), test_files)
         return self._tests_reach_cache
+
+    def _paired_tests(self, analyzed_paths: set[str]) -> set[str]:
+        """Analyzed files a test is paired with; see ``files_with_paired_tests``.
+
+        Test files come from the graph as well as this pass, so an incremental
+        run that re-parses only the changed files still sees every test.
+        """
+        test_files = {pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test}
+        if self.graph is not None:
+            test_files.update(
+                node
+                for node, data in self.graph.nodes(data=True)
+                if data.get("is_test") and data.get("node_type") != "symbol"
+            )
+        return files_with_paired_tests(self.graph, analyzed_paths, test_files)
 
     def _package_boundaries(self, analyzed_paths: set[str]) -> set[str]:
         """Package roots for this repo, decided once per analyzer.
@@ -641,7 +878,7 @@ class HealthAnalyzer:
         # is symbol-level; we use file-level in-degree as the dependents
         # signal (cheap, deterministic, conservative).
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
-        path_basenames = _path_basenames(analyzed_paths)
+        paired_tests = self._paired_tests(analyzed_paths)
         package_roots = self._package_boundaries(analyzed_paths)
         graph_view: HasEdge | None = ImportEdgeView(self.graph) if self.graph is not None else None
 
@@ -749,7 +986,7 @@ class HealthAnalyzer:
             file_metric, file_findings, file_suggestions = self._evaluate_file(
                 pf,
                 fcx,
-                path_basenames,
+                paired_tests,
                 package_roots,
                 disabled=file_disabled,
                 dup_report=dup_report,
@@ -765,6 +1002,8 @@ class HealthAnalyzer:
                 methods_by_file=methods_by_file,
                 dataflow_cache=dataflow_cache,
             )
+            # Every dataflow consumer has read this file by now.
+            dataflow_cache.release(pf.file_info.abs_path)
             metrics.append(file_metric)
             findings.extend(file_findings)
             suggestions.extend(file_suggestions)
@@ -850,7 +1089,7 @@ class HealthAnalyzer:
         changed_set: set[str] | None = set(changed_files) if changed_files is not None else None
 
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
-        path_basenames = _path_basenames(analyzed_paths)
+        paired_tests = self._paired_tests(analyzed_paths)
         package_roots = self._package_boundaries(analyzed_paths)
         graph_view: HasEdge | None = ImportEdgeView(self.graph) if self.graph is not None else None
 
@@ -959,7 +1198,7 @@ class HealthAnalyzer:
             file_metric, file_findings, file_suggestions = self._evaluate_file(
                 pf,
                 fcx,
-                path_basenames,
+                paired_tests,
                 package_roots,
                 disabled=file_disabled,
                 dup_report=dup_report,
@@ -975,6 +1214,8 @@ class HealthAnalyzer:
                 methods_by_file=methods_by_file,
                 dataflow_cache=dataflow_cache,
             )
+            # Every dataflow consumer has read this file by now.
+            dataflow_cache.release(pf.file_info.abs_path)
             metrics.append(file_metric)
             findings.extend(file_findings)
             suggestions.extend(file_suggestions)
@@ -1031,10 +1272,7 @@ class HealthAnalyzer:
             path = s.file_path
             if path in out or path not in self.graph:
                 continue
-            try:
-                out[path] = float(self.graph.in_degree(path))
-            except Exception:
-                out[path] = 0.0
+            out[path] = float(_dependents_count(self.graph, path))
         return out
 
     def _apply_cross_file_oracles(self, walked: list[tuple[Any, FileComplexity]]) -> None:
@@ -1110,7 +1348,7 @@ class HealthAnalyzer:
                     for path, hits in src.items():
                         by_file.setdefault(path, []).extend(hits)
             ranker = PerfRanker(index)
-            for path, hits in collect_centrality_gated(walked, ranker).items():
+            for path, hits in collect_centrality_gated(walked, ranker, self._origins).items():
                 by_file.setdefault(path, []).extend(hits)
             for _pf, fcx in walked:
                 extra = by_file.get(_pf.file_info.path)
@@ -1154,9 +1392,7 @@ class HealthAnalyzer:
         try:
             from .function_blame_rollup import build_function_blame_rows
 
-            return build_function_blame_rows(
-                list(walked), self.git_meta_map, now_ts=int(time.time())
-            )
+            return build_function_blame_rows(list(walked), self.git_meta_map)
         except Exception as exc:
             log.debug("function_blame_rollup_failed", error=str(exc))
             return []
@@ -1167,6 +1403,7 @@ class HealthAnalyzer:
         source = self.read_source(path)
         if source is None:
             return FileComplexity(functions=[], classes=[])
+        self._origins[pf.file_info.path] = self._origin(pf, source)
         key = None
         if self._walk_cache is not None:
             from repowise.core.ingestion import compute_content_hash
@@ -1191,6 +1428,49 @@ class HealthAnalyzer:
         if key is not None and self._walk_cache is not None:
             self._walk_cache.put(key, fcx)
         return fcx
+
+    def _project(self) -> str | None:
+        """The repository's name, so its own release banner is never read as a
+        vendored library's. The ``origin`` remote names it even in a worktree;
+        the checkout folder is the fallback. One git call per pass, on first use.
+        """
+        if self._project_name is None and self.repo_root is not None:
+            root = str(self.repo_root)
+            self._project_name = remote_name(root) or Path(root).name
+        return self._project_name
+
+    def _origin(self, pf: Any, source: bytes | None = None) -> CodeOrigin:
+        return code_origin(
+            pf.file_info.path,
+            source,
+            is_test=bool(pf.file_info.is_test),
+            project=self._project(),
+            repo_root=self.repo_root,
+        )
+
+    def _installed(self, path: str) -> bool:
+        return self.repo_root is not None and is_installed_component(
+            self.repo_root, path, self._installed_ui_dirs
+        )
+
+    def _without_kit_clones(
+        self, file_path: str, clones: list[ClonePair], dup_pct: float | None
+    ) -> tuple[list[ClonePair], float | None]:
+        """*clones* less those both of whose sides are components a component
+        CLI installed.
+
+        Copies of one upstream kit (shadcn/ui's ``dialog.tsx`` and
+        ``alert-dialog.tsx``, or the repeated item wrappers inside one of them)
+        are similar by design, so such a clone is not duplication anyone here
+        wrote. Every other finding on those files stands, and a clone with a
+        file outside the kit still counts.
+        The file's duplication share shrinks with the lines the dropped clones
+        alone covered.
+        """
+        if not clones or not self._installed(file_path):
+            return clones, dup_pct
+        kept = [p for p in clones if not self._installed(_partner(file_path, p))]
+        return kept, _pct_of_kept(file_path, clones, kept, dup_pct)
 
     def _save_walk_cache(self) -> None:
         """Persist the walk entries this pass used or produced, if any."""
@@ -1241,7 +1521,7 @@ class HealthAnalyzer:
         self,
         pf: Any,
         fcx: FileComplexity,
-        path_basenames: set[str],
+        paired_tests: set[str],
         package_roots: set[str],
         *,
         disabled: list[str],
@@ -1267,11 +1547,8 @@ class HealthAnalyzer:
         nloc = fcx.file_nloc
 
         dependents_count = 0
-        if self.graph is not None and file_path in self.graph:
-            try:
-                dependents_count = int(self.graph.in_degree(file_path))
-            except Exception:
-                dependents_count = 0
+        if self.graph is not None:
+            dependents_count = _dependents_count(self.graph, file_path)
 
         cov = self.coverage_map.get(file_path)
         if cov is None:
@@ -1281,8 +1558,20 @@ class HealthAnalyzer:
         covered_lines: set[int] = set(cov.get("covered_lines") or ()) if cov else set()
         total_coverable_lines = int(cov.get("total_coverable_lines", 0)) if cov else 0
 
-        clones = dup_report.pairs_by_file.get(file_path, [])
-        dup_pct = dup_report.duplication_pct.get(file_path)
+        clones, dup_pct = self._without_kit_clones(
+            file_path,
+            dup_report.pairs_by_file.get(file_path, []),
+            dup_report.duplication_pct.get(file_path),
+        )
+        # Read only for clone-bearing files, keeping the read proportional.
+        source_lines = (
+            _read_source_lines(pf.file_info.abs_path, self.read_source) if clones else None
+        )
+        clone_sources = (
+            _clone_sources(file_path, source_lines, clones, self._abs_paths, self.read_source)
+            if source_lines is not None and _coverage_is_test_file(file_path)
+            else {}
+        )
 
         # The enclosing package root, falling back to the top-level directory
         # when the repo has no nested packages.
@@ -1301,12 +1590,12 @@ class HealthAnalyzer:
             # re-derive from the path string (#1103). The coverage check stays
             # because it also sniffs framework imports out of the source, which
             # a path cannot tell you.
-            has_test_file=_has_paired_test_file(file_path, path_basenames)
+            has_test_file=file_path in paired_tests
             or pf.file_info.is_test
             or _coverage_is_test_file(file_path)
             or fcx.has_inline_tests,
             # Kept separate from ``has_test_file`` on purpose. That flag means
-            # "a file named like this one's test exists"; this one means "the
+            # "a test imports this file, or is named for it"; this one means "the
             # call graph records a test reaching this file". They disagree
             # often, and collapsing them would leave no way to say which signal
             # answered, or that one of them over-claims.
@@ -1324,6 +1613,7 @@ class HealthAnalyzer:
             total_coverable_lines=total_coverable_lines,
             clones=list(clones),
             duplication_pct=dup_pct,
+            clone_sources=clone_sources,
             graph_view=graph_view,
             blame_index=blame_index,
             repo_function_mod_p80=repo_function_mod_p80,
@@ -1335,23 +1625,29 @@ class HealthAnalyzer:
         )
 
         biomarker_results = detect_all(ctx, disabled=disabled)
+        if blame_index is None:
+            for stored in self.stored_blame_findings.get(file_path, ()):
+                replayed = as_biomarker_result(stored)
+                if replayed.biomarker_type in BLAME_MARKERS and replayed.biomarker_type not in disabled:
+                    biomarker_results.append(replayed)
         biomarker_results = remap_severities(biomarker_results, severity_overrides)
         scores, deductions = score_file(biomarker_results)
         findings = attach_impacts(biomarker_results, deductions)
         for f in findings:
             f.file_path = file_path
+        _mark_deprecated(findings, fc_list)
+        _stamp_symbol_lines(findings, fcx)
+        _mark_deepest_block(findings, fc_list)
 
         # The overall surfaced score stays == the defect dimension (no blend
-        # yet); the per-dimension scores ride alongside it, additively.
-        defect_score = scores["defect"]
-        maint_score = scores["maintainability"]
-        perf_score = scores["performance"]
-        structure_deduction, history_deduction = deduction_split(findings)
+        # yet); the per-dimension scores ride alongside it, additively. A
+        # language with no dialect stores none of them, and no complexity
+        # figures either: nothing walked the file.
+        analysed = has_health_dialect(pf.file_info.language)
         metric = HealthFileMetricData(
             file_path=file_path,
-            score=round(defect_score, 2),
-            max_ccn=max_ccn,
-            max_nesting=max_nesting,
+            max_ccn=max_ccn if analysed else None,
+            max_nesting=max_nesting if analysed else None,
             nloc=nloc,
             # The stored field answers "does something test this file" - that is
             # how the MCP payload documents it and how every UI renders it
@@ -1366,12 +1662,9 @@ class HealthAnalyzer:
             line_coverage_pct=line_cov,
             branch_coverage_pct=branch_cov,
             duplication_pct=dup_pct,
-            defect_score=round(defect_score, 2),
-            maintainability_score=(round(maint_score, 2) if maint_score is not None else None),
-            performance_score=(round(perf_score, 2) if perf_score is not None else None),
-            structure_deduction=structure_deduction,
-            history_deduction=history_deduction,
+            **file_score_fields(analysed, scores, findings),
             is_test=bool(pf.file_info.is_test),
+            code_origin=self._origins.get(file_path) or self._origin(pf),
         )
 
         # Refactoring layer: reuse the data just computed (class cohesion
@@ -1396,14 +1689,10 @@ class HealthAnalyzer:
                 methods_by_file.get(file_path, ()) if methods_by_file is not None else None
             ),
             function_analyses=self._extract_method_analyses(pf, findings, dataflow_cache),
-            blame_index=blame_index,
-            # Source is threaded only for clone-bearing files (the Extract Helper
-            # detector's snippet). Reading it unconditionally would put a
-            # repo-sized read back into the per-file path; gating on clones keeps
-            # it proportional to the small set of files that actually carry one.
-            source_lines=(
-                _read_source_lines(pf.file_info.abs_path, self.read_source) if clones else None
-            ),
+            # Stored sets when no blame index, so a re-score matches the index.
+            commit_spans=commit_spans(fcx.functions, _commit_entries(fcx, file_git_meta)),
+            # The Extract Helper snippet; ``None`` unless the file carries clones.
+            source_lines=source_lines,
         )
         suggestions = detect_refactorings(
             rctx,

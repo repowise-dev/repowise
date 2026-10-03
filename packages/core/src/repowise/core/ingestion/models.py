@@ -157,6 +157,13 @@ class FileInfo:
     is_config: bool
     is_api_contract: bool
     is_entry_point: bool
+    # Named by a package manifest (package.json bin/main/exports["."],
+    # pyproject scripts, a distribution's package ``__init__``): the strongest
+    # entry evidence, ranked above every filename guess.
+    is_manifest_entry: bool = False
+    # Reached from outside the import graph (a runner or loader starts it), so
+    # dead-code analysis never flags it. Read through ``is_reachability_root``.
+    is_reachability_root: bool = False
 
 
 @dataclass
@@ -168,6 +175,8 @@ class PackageInfo:
     language: LanguageTag
     entry_points: list[str]
     manifest_file: str  # pyproject.toml | package.json | Cargo.toml | go.mod
+    # A member of a root workspace declaration (pnpm/npm/yarn, Cargo, uv, go.work).
+    declared: bool = False
 
 
 @dataclass
@@ -186,7 +195,9 @@ class RepoStructure:
 class Symbol:
     """A code symbol (function, class, method, …) extracted from a file."""
 
-    id: str  # "<rel_path>::<name>" or "<rel_path>::<class>::<method>"
+    # "<rel_path>::<name>" or "<rel_path>::<class>::<method>", plus a
+    # discriminator when a scope declares the name twice (see symbol_identity).
+    id: str
     name: str
     qualified_name: str  # dotted full name, e.g. "myapp.calc.Calculator.add"
     kind: SymbolKind
@@ -208,8 +219,18 @@ class Symbol:
     # declaration in a header. The definition carrying the same name lives in
     # a .cpp and is the symbol a call should attach to; the call resolver
     # redirects onto it, and the dead-code pass never reports a declaration,
-    # since a declaration is not independently deletable.
+    # since a declaration is not independently deletable. Python ``@overload``
+    # stubs and TypeScript overload signatures are declarations too: they share
+    # the implementation's id, and the implementation is the symbol to serve.
     is_declaration: bool = False
+    # C# type declarations only: how many type parameters it declares, which is
+    # what tells ``IFoo<T>`` from a same-named ``IFoo``. None elsewhere.
+    type_parameter_count: int | None = None
+    # Keyword modifiers the declaration writes, lowercased (``override``,
+    # ``static``, ``abstract``...), for languages whose ``LanguageConfig``
+    # names its modifier nodes. Access keywords land here too; ``visibility``
+    # stays the field to read for those.
+    modifiers: tuple[str, ...] = ()
 
 
 @dataclass
@@ -239,6 +260,8 @@ class Import:
     resolved_file: str | None  # absolute path if successfully resolved
     bindings: list[NamedBinding] = field(default_factory=list)
     is_reexport: bool = False  # True for `pub use` (Rust) or re-export patterns
+    # Rust ``mod child;``: declares the child module, uses nothing from it.
+    is_module_declaration: bool = False
 
     @property
     def local_names(self) -> list[str]:
@@ -299,6 +322,10 @@ class CallSite:
     scope_name: str | None = None
     edge_type: CallSiteEdgeType = "calls"  # see ``CallSiteEdgeType``
     supplied_props: set[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
+    # The grammar's bare-call pattern also matched this member call (Java
+    # ``obj.m()``, Ruby ``obj.m(x)``). Its bare-name reading is asked only
+    # when no receiver strategy answers, never beside one.
+    bare_name_fallback: bool = False
 
 
 # Raw extractor kinds, not the TS ``HeritageKind`` (a different payload);
@@ -464,6 +491,12 @@ ResolutionOrigin = Literal[
     "receiver_extension_same_file",  # 0.93
     "receiver_extension_import",  # 0.88 — the holder class's file is imported
     "receiver_extension_global",  # 0.75 — declared somewhere; a name match
+    # A dotted receiver (`this.a.b.m()`) typed hop by hop through each class's
+    # declared fields. No global tier: every hop's type must be bound by an
+    # import or declared in the file that wrote it, and the tier is the
+    # weakest hop's.
+    "receiver_chain_same_file",  # 0.93
+    "receiver_chain_import",  # 0.88
     # Chained receiver typed from the inner callee's declared return type.
     "return_type_same_file",  # 0.93
     "return_type_same_package",  # 0.90 (JVM)
@@ -473,7 +506,7 @@ ResolutionOrigin = Literal[
     # of its ancestors does. Below the two same-class origins because the walk
     # compares no signature and reads no visibility, so it can reach a method
     # the language would not actually dispatch to.
-    "self_inherited",  # 0.90 — explicit self/this receiver
+    "self_inherited",  # 0.90 — explicit self/this receiver, or Python super()
     "enclosing_inherited",  # 0.90 — implicit receiver, bare call
 ]
 

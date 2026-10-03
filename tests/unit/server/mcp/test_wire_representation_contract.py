@@ -39,6 +39,9 @@ signature hygiene, in modules none of these tools mention.
 The seam under test is ``FuncMetadata.convert_result``, which is what
 ``FastMCP.call_tool`` uses to build the ``CallToolResult``. It reads only the
 callable's signature, so these tests need no index, no fixture and no I/O.
+The registered callable hands it a ``CallToolResult`` already built by
+``wire_result`` (compact text, the same structured copy), which it validates
+against the output schema and passes through.
 """
 
 from __future__ import annotations
@@ -46,7 +49,9 @@ from __future__ import annotations
 import inspect
 import json
 
+import pytest
 from mcp.server.fastmcp.utilities.func_metadata import func_metadata
+from mcp.types import CallToolResult
 
 from repowise.core.registry import mcp_tool_registry
 
@@ -83,14 +88,18 @@ def _registered_callables():
     `mcp_tool_registry.apply` registers `middleware(entry.fn)`, so building a
     schema from the bare function measures something the client never sees.
     """
-    from repowise.server.mcp_server import tool_middleware
+    from repowise.server.mcp_server import registered_tool
 
-    return [tool_middleware(fn) for fn in _registry_entries()]
+    return [registered_tool(fn) for fn in _registry_entries()]
 
 
 def _convert(fn):
     """Return ``(text_blocks, structured_or_None)`` exactly as the server would."""
-    result = func_metadata(fn).convert_result(dict(SAMPLE_PAYLOAD))
+    from repowise.server.mcp_server import wire_result
+
+    result = func_metadata(fn).convert_result(wire_result(dict(SAMPLE_PAYLOAD)))
+    if isinstance(result, CallToolResult):
+        return list(result.content), result.structuredContent
     if isinstance(result, tuple):
         blocks, structured = result
         return list(blocks), structured
@@ -192,3 +201,41 @@ def test_declared_structured_annotations_do_not_reach_the_wire():
         "tool declaring a bare `dict` has stopped serving structuredContent "
         "entirely. That is a wire change for every client."
     )
+
+
+def test_every_tool_serves_compact_text():
+    """The text block is what a text-forwarding client hands its model."""
+    expected = json.dumps(SAMPLE_PAYLOAD, separators=(",", ":"))
+    loose = {}
+    for fn in _registered_callables():
+        blocks, _structured = _convert(fn)
+        if blocks[0].text != expected or "\n" in blocks[0].text:
+            loose[fn.__name__] = blocks[0].text[:80]
+    assert not loose, f"text blocks carry indentation or spacing: {loose}"
+
+
+def test_pretty_json_env_restores_the_indented_text(monkeypatch):
+    from repowise.server.mcp_server import PRETTY_JSON_ENV
+
+    monkeypatch.setenv(PRETTY_JSON_ENV, "1")
+    blocks, structured = _convert(_registered_callables()[0])
+
+    assert blocks[0].text.startswith('{\n  "answer"')
+    assert structured == {"result": SAMPLE_PAYLOAD}
+
+
+@pytest.mark.asyncio
+async def test_only_the_registered_callable_changes_shape():
+    """Tests and the CLI await the middleware-wrapped tool and need the dict."""
+    from repowise.server.mcp_server import registered_tool, tool_middleware
+
+    async def get_risk(targets: list[str]) -> dict:
+        return {"targets": {}, "_meta": {}}
+
+    bare = await tool_middleware(get_risk)(["a.py"])
+    served = await registered_tool(get_risk)(["a.py"])
+
+    assert isinstance(bare, dict)
+    assert isinstance(served, CallToolResult)
+    assert json.loads(served.content[0].text) == bare
+    assert served.structuredContent == {"result": bare}

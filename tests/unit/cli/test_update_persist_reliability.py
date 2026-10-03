@@ -166,7 +166,7 @@ def test_failed_fts_cleanup_debt_retries_on_next_persist(tmp_path: Path, monkeyp
         async def ensure_index(self):
             return None
 
-        async def index(self, *args, **kwargs):
+        async def index_pages(self, pages):
             return None
 
         async def delete_many(self, page_ids):
@@ -247,18 +247,66 @@ def test_missing_reingested_coverage_is_authoritative_empty(tmp_path: Path, monk
         lambda _path: {"coverage": {"reingest_on_update": True}},
     )
     monkeypatch.setattr(
-        "repowise.core.analysis.health.coverage.discover_artifacts",
+        "repowise.core.analysis.health.coverage.discovery.discover_artifacts",
         lambda *_args, **_kwargs: [],
     )
 
-    coverage_map, files, source_format, authoritative = asyncio.run(
-        _coverage_for_rescore(object(), "repo", tmp_path, [])
+    coverage = asyncio.run(_coverage_for_rescore(object(), "repo", tmp_path, []))
+
+    assert coverage.coverage_map == {}
+    assert coverage.files == []
+    assert coverage.source_format is None
+    assert coverage.authoritative is True
+
+
+def test_reingest_with_nothing_to_read_keeps_stored_coverage(tmp_path: Path, monkeypatch) -> None:
+    # No paths and discovery off: coverage added by hand must survive an update.
+    from repowise.cli.commands.update_cmd import persistence
+
+    monkeypatch.setattr(
+        "repowise.core.repo_config.load_repo_config",
+        lambda _path: {"coverage": {"reingest_on_update": True, "auto_discover": False}},
     )
 
-    assert coverage_map == {}
-    assert files == []
-    assert source_format is None
-    assert authoritative is True
+    async def _stored(_session, _repo_id):
+        return {"a.py": {"source_format": "lcov"}}
+
+    monkeypatch.setattr("repowise.core.persistence.crud.load_coverage_map", _stored)
+
+    coverage = asyncio.run(persistence._coverage_for_rescore(object(), "repo", tmp_path, []))
+    assert coverage.authoritative is False
+    assert coverage.source_format == "lcov"
+
+
+def test_reingest_carries_the_ingest_provenance(tmp_path: Path, monkeypatch) -> None:
+    # A fragment re-ingested on update must be stored as a fragment, with its counts.
+    from repowise.cli.commands.update_cmd import persistence
+    from repowise.core.analysis.health.coverage import FileCoverage, ResolvedCoverage
+
+    monkeypatch.setattr(
+        "repowise.core.repo_config.load_repo_config",
+        lambda _path: {"coverage": {"reingest_on_update": True, "paths": ["c.lcov"]}},
+    )
+    (tmp_path / "c.lcov").write_text("SF:a.py\nDA:1,1\nend_of_record\n", encoding="utf-8")
+    resolved = ResolvedCoverage(
+        coverage_map={"a.py": {}},
+        files=[FileCoverage("a.py", 100.0, None, [1], 1, [1])],
+        source_format="lcov",
+        source_formats=["lcov"],
+        matched_exact=1,
+        unmatched=["x/b.py", "x/c.py"],
+        mapping_partial=True,
+    )
+    monkeypatch.setattr(
+        "repowise.core.analysis.health.coverage.build_coverage_map",
+        lambda *_a, **_k: (resolved, []),
+    )
+
+    coverage = asyncio.run(persistence._coverage_for_rescore(object(), "repo", tmp_path, []))
+    assert coverage.authoritative is True
+    assert coverage.provenance.mapping_partial is True
+    assert coverage.provenance.report_path_count == 3
+    assert coverage.provenance.unmatched_sample == ("x/b.py", "x/c.py")
 
 
 # ---------------------------------------------------------------------------

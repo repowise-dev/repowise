@@ -249,5 +249,13 @@ describe("system map AI prompts", () => {
     expect(text).toContain("## Will break (structural)");
     expect(text).toContain("## May drift (co-change only)");
     expect(text).toContain("**ui** (`ui`, repo repowise): 2 hops, impact 0.10");
+    expect(text).toContain("## Verify\n\nNo test data came with this prompt. Find the tests that exercise `backend`");
+  });
+
+  it("opens on the shared lead sentence and keeps a blank line between sections", () => {
+    const text = buildCycleAiPrompt({ names: ["a", "b"], ids: ["a", "b"], edges: [] });
+    expect(text).toContain("Treat each item as a lead, not ground truth.");
+    expect(text).toContain("\n\n## Dependency cycle: a -> b -> a\n\n- Services:");
+    expect(text).toContain("\n\n## Verify\n\n");
   });
 });

@@ -12,10 +12,14 @@ the narrower question, and the two are kept distinct on purpose:
 The algorithm:
 
 1. Diff a base parse against a head parse per changed file, classifying every
-   symbol as added / removed / signature-changed / body-changed.
+   symbol as added / removed / signature-changed / body-changed. A signature
+   change also carries what it does to a caller
+   (:mod:`repowise.core.analysis.signature_effect`).
 2. Walk the graph's ``calls`` edges to collect each changed symbol's callers,
-   partitioned into inside-change (already under review) and outside-change.
-3. Outside callers of a *removed* or *signature-changed* symbol are the finding.
+   partitioned into inside-change (already under review) and outside-change,
+   and the outside ones again into tests and production code.
+3. Production callers outside the change of a *removed* symbol, or of a
+   signature change that is not known to be safe, are the finding.
 
 Everything here is deterministic set/graph work over data the caller already
 holds. No SQL, no network, no LLM.
@@ -38,7 +42,17 @@ explicitly rather than reimplementing the walk.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Any
+
+from ..ingestion.models import EXTENSION_TO_LANGUAGE
+from ..test_paths import is_unambiguous_test_path
+from .signature_effect import (
+    EFFECT_COMPATIBLE,
+    EFFECT_NONE,
+    SignatureEffect,
+    classify_signature_change,
+)
 
 # Symbol kinds worth reporting on. Constants and variables produce enormous,
 # low-signal churn (every literal edit reads as a "signature change"), and the
@@ -71,7 +85,11 @@ class SymbolContractChange:
     """One symbol the change altered, with its resolved callers.
 
     ``outside_callers`` holds symbol ids (``path::Name``) of callers whose file
-    is not part of this change -- the ones nobody is currently reviewing.
+    is not part of this change -- the ones nobody is currently reviewing --
+    production callers first. ``outside_test_callers`` and
+    ``outside_production_callers`` split the same population, under the same cap.
+    A caller counts as a test only when its path leaves no doubt; an ambiguous
+    one counts as production, so the doubt surfaces the finding.
     """
 
     file: str
@@ -85,16 +103,32 @@ class SymbolContractChange:
     inside_caller_count: int = 0
     callers_total: int = 0
     outside_callers_total: int = 0
+    outside_test_callers: list[str] = field(default_factory=list)
+    outside_production_callers: list[str] = field(default_factory=list)
+    outside_production_callers_total: int = 0
+    #: What the change does to a caller: ``compatible`` | ``breaking`` |
+    #: ``unknown``. ``None`` unless ``change`` is a signature change. A change
+    #: that reads ``none`` (same contract, different text) is not reported as a
+    #: signature change at all.
+    signature_effect: str | None = None
+    #: The specific difference, naming the parameter.
+    signature_reason: str | None = None
 
     @property
     def is_breaking(self) -> bool:
-        """A contract change with callers nobody in this change is looking at.
+        """A contract change reaching production code nobody in this change is looking at.
 
         Body-only changes are excluded on purpose: the caller's contract still
         holds, so listing its callers is noise. Added symbols have no prior
-        callers by construction.
+        callers by construction. A signature change known to be safe is not a
+        break, while ``unknown`` still is. Test callers alone are not enough: a
+        break they witness is reported by those tests failing.
         """
-        return self.change in (CHANGE_REMOVED, CHANGE_SIGNATURE) and bool(self.outside_callers)
+        if self.change not in (CHANGE_REMOVED, CHANGE_SIGNATURE):
+            return False
+        if self.signature_effect in (EFFECT_NONE, EFFECT_COMPATIBLE):
+            return False
+        return bool(self.outside_production_callers)
 
 
 @dataclass
@@ -251,6 +285,15 @@ def analyze_contract_impact(
 
         for name, facts in sorted(head_syms.items()):
             prior = base_syms.get(name)
+            effect = None
+            if prior is not None and prior.signature != facts.signature:
+                effect = classify_signature_change(
+                    prior.signature, facts.signature, _language(path), facts.kind
+                )
+                # The text moved but the contract did not: fall through to the
+                # body check, so only a real edit inside the symbol is reported.
+                if effect.effect == EFFECT_NONE:
+                    effect = None
             if prior is None:
                 # A file with no base side at all (added by this change, or
                 # missing from the snapshot) would otherwise report every symbol
@@ -259,14 +302,14 @@ def analyze_contract_impact(
                 if not base_syms:
                     continue
                 change = CHANGE_ADDED
-            elif prior.signature != facts.signature:
+            elif effect is not None:
                 change = CHANGE_SIGNATURE
             elif _overlaps(facts.start_line, facts.end_line, ranges):
                 change = CHANGE_BODY
             else:
                 continue
             changes.append(
-                _with_callers(path, facts, change, callers, changed_set, callers_per_symbol)
+                _with_callers(path, facts, change, callers, changed_set, callers_per_symbol, effect)
             )
 
         for name, facts in sorted(base_syms.items()):
@@ -290,10 +333,11 @@ _CHANGE_ORDER = {CHANGE_REMOVED: 0, CHANGE_SIGNATURE: 1, CHANGE_ADDED: 2, CHANGE
 
 
 def _rank(c: SymbolContractChange) -> tuple:
-    """Breaking changes first, then by how many outside callers they reach."""
+    """Breaking changes first, then by how much production code they reach."""
     return (
         not c.is_breaking,
         _CHANGE_ORDER.get(c.change, 9),
+        -c.outside_production_callers_total,
         -c.outside_callers_total,
         c.file,
         c.name,
@@ -307,15 +351,23 @@ def _with_callers(
     callers: dict[str, list[str]],
     changed_set: set[str],
     cap: int | None,
+    effect: SignatureEffect | None = None,
 ) -> SymbolContractChange:
     inside = 0
-    outside: list[str] = []
+    tests: list[str] = []
+    production: list[str] = []
     for caller in callers.get(facts.symbol_id, ()):
-        if _containing_file(caller) in changed_set:
+        caller_file = _containing_file(caller)
+        if caller_file in changed_set:
             inside += 1
+        elif is_unambiguous_test_path(caller_file):
+            tests.append(caller)
         else:
-            outside.append(caller)
-    outside.sort()
+            production.append(caller)
+    tests.sort()
+    production.sort()
+    # Production first, so a surface cap can never keep only tests.
+    outside = production + tests
     return SymbolContractChange(
         file=path,
         name=facts.name,
@@ -324,11 +376,20 @@ def _with_callers(
         change=change,
         start_line=facts.start_line,
         end_line=facts.end_line,
-        outside_callers=outside if cap is None else outside[:cap],
+        outside_callers=outside[:cap],
         inside_caller_count=inside,
         callers_total=inside + len(outside),
         outside_callers_total=len(outside),
+        outside_test_callers=tests[:cap],
+        outside_production_callers=production[:cap],
+        outside_production_callers_total=len(production),
+        signature_effect=effect.effect if effect else None,
+        signature_reason=effect.reason if effect else None,
     )
+
+
+def _language(path: str) -> str | None:
+    return EXTENSION_TO_LANGUAGE.get(PurePosixPath(path).suffix.lower())
 
 
 def unavailable_contract_impact(reason: str) -> ContractImpact:

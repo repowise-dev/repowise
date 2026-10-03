@@ -25,11 +25,13 @@ export {
 export { Toaster, toast, type ToasterProps } from "./toast";
 export * from "./breadcrumb";
 export * from "./empty-state";
+export * from "./ci-hint";
 export {
   DismissibleNotice,
   type DismissibleNoticeProps,
   type NoticeTone,
 } from "./dismissible-notice";
+export { HostedNudge, type HostedNudgeProps } from "./hosted-nudge";
 export { InfoTip, type InfoTipProps } from "./info-tip";
 export { OwlLoader, type OwlLoaderProps } from "./owl-loader";
 export {

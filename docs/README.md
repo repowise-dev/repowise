@@ -1,78 +1,118 @@
 # repowise documentation
 
-Index your codebase once. Your agent stops greping, your team stops guessing
-which PR is dangerous, and both get their answers from the same place.
+Index your codebase once. Your agent stops grepping, your team stops guessing
+which change is dangerous, and both get their answers from the same place.
+
+To set up with an agent, paste this into it:
+
+```text
+Read https://docs.repowise.dev/setup.md and set up Repowise in this repository.
+```
+
+By hand: the [Quickstart](start/QUICKSTART.md) gets you indexed and connected to
+your agent in under five minutes, with no API key.
 
 <div align="center">
   <img src="../.github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and ten MCP tools" width="100%" />
 </div>
 
-New here? **[Quickstart](start/QUICKSTART.md)** gets you indexed and connected to
-your agent in under five minutes, with no API key.
+For a map of every layer and how they feed each other, read
+[layers/INTELLIGENCE_LAYERS.md](layers/INTELLIGENCE_LAYERS.md).
 
 ---
 
-## Pick your path
+## I want to...
 
-| You are | Start here | Then |
-|---|---|---|
-| **A developer wiring up an AI agent** | [Quickstart](start/QUICKSTART.md) | [Supported agents](agent/INTEGRATIONS.md) · [MCP tools](agent/MCP_TOOLS.md) · [Hooks](agent/HOOKS.md) · [Distill](agent/DISTILL.md) |
-| **Living in an editor** | [VS Code extension](agent/VSCODE.md) | [Codex](agent/CODEX.md) · [opencode](agent/OPENCODE.md) |
-| **A team lead watching what ships** | [Change risk](layers/CHANGE_RISK.md) | [Code health](layers/CODE_HEALTH.md) · [Bug history](layers/BUG_HISTORY.md) |
-| **Running many repos** | [Workspaces](scale/WORKSPACES.md) | [Worktrees](scale/WORKTREES.md) · [Auto-sync](scale/AUTO_SYNC.md) |
-| **Evaluating repowise to buy it** | [Commercial](business/COMMERCIAL.md) | [Security & compliance](business/SECURITY_COMPLIANCE.md) · [Benchmarks](BENCHMARKS.md) · [Roadmap](../ROADMAP.md) |
-| **Contributing** | [Architecture](architecture/README.md) | [CONTRIBUTING](../.github/CONTRIBUTING.md) |
-
----
-
-## Get started
+### Give my agent context
 
 | Doc | What it covers |
 |-----|----------------|
-| [start/QUICKSTART.md](start/QUICKSTART.md) | Install, index your repo, and connect your agent in under 5 minutes |
-| [start/USER_GUIDE.md](start/USER_GUIDE.md) | The everyday guide: how the pieces fit and the workflows they support |
-| [start/DASHBOARD.md](start/DASHBOARD.md) | Every view in the local web dashboard, and what each one answers |
+| [start/QUICKSTART.md](start/QUICKSTART.md) | Install, index, and connect your agent |
+| [agent/INTEGRATIONS.md](agent/INTEGRATIONS.md) | Which agents are supported at what depth, and how to add one |
+| [agent/MCP_TOOLS.md](agent/MCP_TOOLS.md) | The ten task-shaped tools, what each answers, and the opt-in extras |
+| [agent/HOOKS.md](agent/HOOKS.md) | Context and warnings that reach the agent without it asking |
+| [agent/DISTILL.md](agent/DISTILL.md) | Compress noisy command output before your agent reads it |
+| [agent/LENS.md](agent/LENS.md) | Lens in the Claude Code plugin: the spinner, change review, Flow and the `/lens` map shown while Claude works |
+| [layers/GRAPH.md](layers/GRAPH.md) | The dependency graph, and how much to trust each edge |
+| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 26 parsed to a full AST, 40 on the support ladder |
 
-## Connect your AI agent
-
-| Doc | What it covers |
-|-----|----------------|
-| [agent/INTEGRATIONS.md](agent/INTEGRATIONS.md) | Which agents are supported at what depth, generated from the code, plus the recipe for adding one |
-| [agent/MCP_TOOLS.md](agent/MCP_TOOLS.md) | The ten task-shaped tools, what each answers, and worked multi-tool examples |
-| [agent/HOOKS.md](agent/HOOKS.md) | Proactive delivery: context and warnings that arrive without the agent asking |
-| [agent/DISTILL.md](agent/DISTILL.md) | `repowise distill`: compress noisy command output before your agent reads it |
-| [agent/CHANGE_REVIEW.md](agent/CHANGE_REVIEW.md) | Reviewing a change from Python, with or without a checkout, and what each evidence state means |
-| [agent/VSCODE.md](agent/VSCODE.md) | The VS Code extension: health in the gutter, risk before you push, dashboards in the editor |
-| [agent/CODEX.md](agent/CODEX.md) | Wiring repowise into the Codex CLI |
-| [agent/OPENCODE.md](agent/OPENCODE.md) | Wiring repowise into opencode |
-
-## The intelligence layers
+### Find what to fix first
 
 | Doc | What it covers |
 |-----|----------------|
-| [layers/INTELLIGENCE_LAYERS.md](layers/INTELLIGENCE_LAYERS.md) | Overview of the five layers: graph, git, docs, decisions, code health |
-| [layers/CODE_HEALTH.md](layers/CODE_HEALTH.md) | Defect risk, maintainability, and performance from 51 deterministic detectors |
-| [layers/REFACTORING.md](layers/REFACTORING.md) | Concrete, graph-aware refactoring plans (Extract Class, Move Method, Break Cycle) |
-| [layers/CHANGE_RISK.md](layers/CHANGE_RISK.md) | Score any commit or `base..HEAD` range 0-10 for defect risk |
-| [layers/BUG_HISTORY.md](layers/BUG_HISTORY.md) | Which files and symbols actually get bug-fixed, and how recently |
-| [layers/TEST_INTELLIGENCE.md](layers/TEST_INTELLIGENCE.md) | Coverage ingestion, untested hotspots, and running only the tests a diff touches |
-| [layers/GRAPH.md](layers/GRAPH.md) | The dependency graph: what is in it, how every edge is resolved, and how much to trust each one |
-| [layers/DECISIONS.md](layers/DECISIONS.md) | Architectural decisions mined from your repo and from your own agent sessions |
-| [layers/DEAD_CODE.md](layers/DEAD_CODE.md) | Unreachable files, unused exports, and zombie packages by confidence tier |
-| [layers/DOC_DRIFT.md](layers/DOC_DRIFT.md) | Documentation claims checked against the tree: what is checked, what is not, and how to read a finding |
-| [layers/SECURITY.md](layers/SECURITY.md) | The local pattern scan: what the sixteen patterns catch, what they do not, and how far to trust the result |
-| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 26 parsed to a full AST, 40 on the five-rung ladder |
-| [layers/WIKI.md](layers/WIKI.md) | The generated wiki: page types, what `update` re-renders, styles, output language |
+| [layers/CODE_HEALTH.md](layers/CODE_HEALTH.md) | Defect risk, maintainability and performance risk per file, and the Fix first queue |
+| [layers/REFACTORING.md](layers/REFACTORING.md) | Graph-aware refactoring plans, from Extract Method to Performance Fix |
+| [layers/OWNERSHIP.md](layers/OWNERSHIP.md) | Owners, bus factor, and where knowledge is at risk |
+| [start/DASHBOARD.md](start/DASHBOARD.md) | Every view in the local dashboard |
 
-## Scale it
+### Delete dead code safely
 
 | Doc | What it covers |
 |-----|----------------|
-| [scale/WORKSPACES.md](scale/WORKSPACES.md) | Multi-repo intelligence: cross-repo contracts, co-changes, and federated MCP |
-| [scale/WORKTREES.md](scale/WORKTREES.md) | Linked git worktrees seed their index from the base checkout, with no flags |
-| [scale/AUTO_SYNC.md](scale/AUTO_SYNC.md) | Keep the index fresh automatically on every commit |
+| [layers/DEAD_CODE.md](layers/DEAD_CODE.md) | Unreachable files, unused exports and zombie packages, with confidence tiers and deletion readiness |
+
+### Know if a change is risky
+
+| Doc | What it covers |
+|-----|----------------|
+| [layers/CHANGE_RISK.md](layers/CHANGE_RISK.md) | Score a commit, a `base..head` range or uncommitted work against your repo's own history |
+| [layers/BUG_HISTORY.md](layers/BUG_HISTORY.md) | Which files and functions keep getting fixed, and how recently |
+| [layers/SECURITY.md](layers/SECURITY.md) | The local scan: 22 pattern kinds plus a symbol-name scan, history scanning for secrets, and its limits |
+| [start/CI.md](start/CI.md) | Gate pull requests with the GitHub Action or the GitLab template |
+
+### Know which tests matter
+
+| Doc | What it covers |
+|-----|----------------|
+| [layers/TEST_INTELLIGENCE.md](layers/TEST_INTELLIGENCE.md) | Coverage ingestion, untested hotspots, and the tests a diff touches, with or without a report |
+
+### Generate and keep docs current
+
+| Doc | What it covers |
+|-----|----------------|
+| [layers/WIKI.md](layers/WIKI.md) | The generated wiki: page types, styles, and what `update` re-renders |
+| [layers/DOC_DRIFT.md](layers/DOC_DRIFT.md) | Claims in your markdown checked against the tree |
+| [scale/AUTO_SYNC.md](scale/AUTO_SYNC.md) | Keep the index fresh on every commit |
+
+### Understand why code is this way
+
+| Doc | What it covers |
+|-----|----------------|
+| [layers/DECISIONS.md](layers/DECISIONS.md) | Architectural decisions mined from your repo and your agent sessions |
+
+### Run across many repos
+
+| Doc | What it covers |
+|-----|----------------|
+| [scale/WORKSPACES.md](scale/WORKSPACES.md) | Multi-repo intelligence: cross-repo contracts, co-changes, one MCP server |
+| [scale/WORKTREES.md](scale/WORKTREES.md) | Linked git worktrees seed their index from the base checkout |
 | [../docker/README.md](../docker/README.md) | Running repowise in Docker |
-| [../examples/](../examples/) | Copy-paste walkthroughs (Codex setup and more) |
+
+### Evaluate repowise for my company
+
+| Doc | What it covers |
+|-----|----------------|
+| [business/SECURITY_COMPLIANCE.md](business/SECURITY_COMPLIANCE.md) | What leaves your machine, what is stored, and the answers your security team wants |
+| [business/COMMERCIAL.md](business/COMMERCIAL.md) | Hosted tier, enterprise options and commercial licensing |
+| [BENCHMARKS.md](BENCHMARKS.md) | Every published number with its sample size and method, including the rows we lose |
+| [LINEAGE.md](LINEAGE.md) | The published research each layer is built on, where it lives in the code, and how we checked it |
+| [../ROADMAP.md](../ROADMAP.md) | What we are building next, and what we are not |
+
+### Fix a problem
+
+| Doc | What it covers |
+|-----|----------------|
+| [start/TROUBLESHOOTING.md](start/TROUBLESHOOTING.md) | `repowise doctor`, then install, indexing and answer problems |
+| [reference/UPGRADING.md](reference/UPGRADING.md) | Notes for upgrading between versions |
+
+### Contribute
+
+| Doc | What it covers |
+|-----|----------------|
+| [../.github/CONTRIBUTING.md](../.github/CONTRIBUTING.md) | How to set up, test and submit a change |
+| [architecture/README.md](architecture/README.md) | How repowise is built: pipelines, graph algorithms, health internals |
+
+---
 
 ## Reference
 
@@ -80,39 +120,18 @@ your agent in under five minutes, with no API key.
 |-----|----------------|
 | [reference/CLI_REFERENCE.md](reference/CLI_REFERENCE.md) | Every command and flag |
 | [reference/CONFIG.md](reference/CONFIG.md) | `.repowise/config.yaml`, `health-rules.json`, and environment variables |
-| [reference/COMPUTED_GLOSSARY.md](reference/COMPUTED_GLOSSARY.md) | Definitions for every computed metric and term repowise reports |
+| [reference/MCP_RESPONSE_FIELDS.md](reference/MCP_RESPONSE_FIELDS.md) | The field dictionary for every MCP response, including the `_meta` envelope |
+| [reference/HOOKS_REFERENCE.md](reference/HOOKS_REFERENCE.md) | The exact settings entries each hook install writes |
+| [reference/CHANGE_REVIEW_API.md](reference/CHANGE_REVIEW_API.md) | Reviewing a change from Python, with or without a checkout |
+| [reference/WORKSPACE_CONTRACTS.md](reference/WORKSPACE_CONTRACTS.md) | How a workspace names, reads and matches cross-repo contracts |
+| [reference/COMPUTED_GLOSSARY.md](reference/COMPUTED_GLOSSARY.md) | Definitions for every computed metric |
 | [reference/TELEMETRY.md](reference/TELEMETRY.md) | What anonymous telemetry collects, and how to turn it off |
-| [reference/UPGRADING.md](reference/UPGRADING.md) | Notes for upgrading between versions |
+| [start/USER_GUIDE.md](start/USER_GUIDE.md) | The everyday guide to how the pieces fit |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 
-## Evidence
-
-| Doc | What it covers |
-|-----|----------------|
-| [BENCHMARKS.md](BENCHMARKS.md) | Every published number with its sample size and its test: call-graph precision judged by a compiler we do not control, retrieval against the agent-context field, defect prediction against CodeScene, distillation, and the rows we lose |
-
-## Teams & business
-
-| Doc | What it covers |
-|-----|----------------|
-| [business/COMMERCIAL.md](business/COMMERCIAL.md) | Hosted tier, enterprise (on-prem, SSO/SCIM), and commercial licensing |
-| [business/SECURITY_COMPLIANCE.md](business/SECURITY_COMPLIANCE.md) | What leaves your machine, what gets stored, and the answers your security team wants |
-| [ROADMAP.md](../ROADMAP.md) | What we are building next, what we are not building, and why there are no dates on it |
-
-## Architecture & internals
-
-How repowise is built, for contributors and the curious.
-
-| Doc | What it covers |
-|-----|----------------|
-| [architecture/ARCHITECTURE.md](architecture/ARCHITECTURE.md) | The system: package layout, pipelines, MCP server |
-| [architecture/code-health.md](architecture/code-health.md) | Health internals: marker computation and calibrated weights |
-| [architecture/graph-algorithms.md](architecture/graph-algorithms.md) | Every graph algorithm, the intuition plus the math |
-| [architecture/language-support.md](architecture/language-support.md) | The language pipeline and how the tiers work |
-| [architecture/chat.md](architecture/chat.md) | Codebase chat: agent loop, streaming, artifact panel |
-| [architecture/structurizr-export.md](architecture/structurizr-export.md) | Export the architecture as Structurizr DSL and render it anywhere |
-| [architecture/editor-files.md](architecture/editor-files.md) | How `CLAUDE.md` and `AGENTS.md` get generated |
-| [architecture/savings-accounting.md](architecture/savings-accounting.md) | The agent savings ledger: one canonical event per interaction, priced from its own evidence |
-| [architecture/deep-dives.md](architecture/deep-dives.md) | Systems not covered elsewhere |
-| [architecture/pluggable-storage.md](architecture/pluggable-storage.md) | The capability seams: storage, graph, vector, CLI, MCP |
-| [design/theme-tokens.md](design/theme-tokens.md) | Resolved design tokens and the WCAG contrast matrix |
+Agent and editor pages: [Codex](agent/CODEX.md) ·
+[opencode](agent/OPENCODE.md) · [Hermes](agent/HERMES.md) ·
+[VS Code](agent/VSCODE.md) ·
+[Lens for Claude Code](agent/LENS.md) ·
+[Claude Code as a provider](agent/CLAUDE_CODE_PROVIDER.md) ·
+[all integrations](agent/INTEGRATIONS.md).

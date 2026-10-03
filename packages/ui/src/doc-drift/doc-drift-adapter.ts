@@ -34,6 +34,8 @@ export interface DocDriftAdapter {
   listFindings(opts?: {
     min_confidence?: number;
     kind?: string;
+    /** One document's findings. Optional: a host may ignore it. */
+    document?: string;
     limit?: number;
   }): Promise<DocDriftResponse>;
 

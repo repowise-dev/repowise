@@ -28,8 +28,12 @@ Precision-first, the gate demands a block genuinely worth a helper:
   vendored bundles) the block still duplicates across ``>= 2`` sites — test
   fixtures and migration boilerplate duplicate constantly but a shared
   helper is the wrong fix for them;
-- the recovered impact is read off the file's ``dry_violation`` finding
-  when it overlaps the block, else ``0`` (same posture as Extract Class).
+- the recovered impact is the block's share of the file's ``dry_violation``
+  finding when it overlaps the block, else ``0``: the finding grades the
+  file's cross-file duplication, so one block is credited the lines of it it
+  removes here, not the whole finding (:func:`clone_share`). A block inside
+  one file recovers ``0``: that finding does not grade it, so it stays
+  evidence of the duplication rather than a step that claims a score.
 
 Confidence rides the co-change signal: a clone whose sites are actively
 co-modified is real, maintained duplication (``high``); a dormant clone is
@@ -41,7 +45,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ....code_origin import is_migration_path, is_vendored_or_generated_path
 from ....test_paths import is_test_related_path
+from ..duplication.detector import clone_ranges, union_line_count
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, effort_bucket, register
 
@@ -257,16 +263,7 @@ def _is_generated_path(path: str) -> bool:
     helper is the wrong advice — a migration must stay self-contained — so
     these occurrences are dropped like test ones (plan's "no generated-file
     noise" gate)."""
-    p = path.lower().replace("\\", "/")
-    return (
-        "/migrations/versions/" in p
-        or "/alembic/versions/" in p
-        or "/migrations/" in p
-        or "/node_modules/" in p
-        or "/vendor/" in p
-        or "/__generated__/" in p
-        or p.endswith(".min.js")
-    )
+    return is_vendored_or_generated_path(path) or is_migration_path(path)
 
 
 def _is_skippable_occurrence(path: str, language: str | None = None) -> bool:
@@ -474,8 +471,13 @@ class ExtractHelperDetector(RefactoringDetector):
         if region_lines and _is_declaration_only(region_lines):
             return None
 
-        impact = self._impact_for_block(anchor_region, impact_lookup)
         is_intra = len(occ_files) == 1
+        impact = (
+            0.0
+            if is_intra
+            else self._impact_for_block(anchor_region, impact_lookup)
+            * clone_share(occurrences, ctx.file_path, _cross_file_lines(ctx))
+        )
 
         suggested_site = self._suggested_site(occ_files)
         snippet, snippet_start, snippet_truncated = self._snippet_for(ctx, anchor_region)
@@ -533,9 +535,9 @@ class ExtractHelperDetector(RefactoringDetector):
           in** — ``module: "ui"`` for a block shared by ``packages/api-client``,
           ``packages/types`` and ``packages/ui``. Acting on it files shared code
           into a package two thirds of its callers are not in.
-        - **The namespace depended on the writer.** ``community_label_map`` is populated
+        - **The namespace depended on the writer.** ``community_label_map`` was populated
           only by the full-index path; the incremental, re-score and
-          ``repowise health`` paths leave it empty, so the same clone got
+          ``repowise health`` paths left it empty, so the same clone got
           ``"ui"`` or ``None`` depending on which pass last wrote the row. That
           is exactly the defect the ``module`` column was fixed for; the
           refactoring payload had kept it.
@@ -620,6 +622,25 @@ class ExtractHelperDetector(RefactoringDetector):
             if start <= f_end and end >= f_start and impact > best:
                 best = impact
         return best
+
+
+def _cross_file_lines(ctx: RefactoringContext) -> int:
+    """Lines of the file covered by clones shared with other files."""
+    return union_line_count(clone_ranges(ctx.file_path, ctx.clones, cross_file_only=True))
+
+
+def clone_share(
+    occurrences: list[tuple[str, int, int]], file_path: str, duplicated_lines: int
+) -> float:
+    """Share of *file_path*'s cross-file duplicated lines this block removes.
+
+    1.0 when the file's duplication is unknown, keeping the finding's own
+    impact as the other detectors do when they cannot re-measure it.
+    """
+    if duplicated_lines <= 0:
+        return 1.0
+    here = sum(end - start + 1 for path, start, end in occurrences if path == file_path)
+    return min(1.0, here / duplicated_lines)
 
 
 def _merge_ranges_per_file(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,12 +18,15 @@ __all__ = [
     "_RECORD_SEP",
     "GitHistoryCoverage",
     "GitIndexSummary",
+    "RenameTrail",
     "RepoTotals",
     "_CommitRec",
     "_extract_rename_paths",
+    "_history_tier_files",
     "_parse_commit_record",
     "_should_skip_index",
     "capture_repo_totals",
+    "name_status_path",
 ]
 
 # Git log record/field separators (NUL byte + US 0x1f) — chosen so they can't
@@ -80,6 +84,9 @@ class _CommitRec:
     # the record so per-file rollups don't re-run the regex per touched file).
     agent: str | None = None
     agent_tier: int | None = None
+    # The commit only moved this file (a rename row with 0/0 lines). It counts
+    # as one of the file's commits but credits nobody with ownership.
+    pure_move: bool = False
 
 
 def _tz_offset_minutes(iso: str) -> int | None:
@@ -246,6 +253,7 @@ def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | 
         10\t5\t{old => new}/shared_suffix
         10\t5\told_dir/{old_name => new_name}.py
         10\t5\tsrc/{ => newdir}/shared_suffix
+        10\t5\told.py => pkg/new.py
 
     The third form has an EMPTY side: a directory inserted into (or removed
     from) the middle of a path. Expanding the empty side leaves a doubled
@@ -264,7 +272,51 @@ def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | 
         known_paths.add(old_path)
         known_paths.add(new_path)
         return old_path, new_path
+    # Paths sharing no leading or trailing component get no braces: ``a.py => src/b.py``.
+    old_path, sep, new_path = stat_path.partition(" => ")
+    if sep and old_path and new_path:
+        known_paths.add(old_path)
+        known_paths.add(new_path)
+        return old_path, new_path
     return None, None
+
+
+class RenameTrail:
+    """Maps a path as it was at some commit to the path that file has at HEAD.
+
+    Every history walk runs newest first, so a rename is seen before any commit
+    older than it. Resolving each path through the renames seen so far carries
+    a file's pre-rename commits over to its current name, and a path reused by
+    a different file after the rename keeps its own history, because commits
+    to the reused path are all newer than the rename.
+
+    Record a commit's renames only after resolving that commit's own paths: a
+    commit that moves ``a`` to ``b`` and creates a new ``a`` must not hand the
+    new ``a`` to ``b``.
+    """
+
+    __slots__ = ("_current",)
+
+    def __init__(self) -> None:
+        self._current: dict[str, str] = {}
+
+    def resolve(self, path: str) -> str:
+        return self._current.get(path, path)
+
+    def record(self, old_path: str, new_path: str) -> None:
+        current = self.resolve(new_path)
+        if old_path == current:
+            self._current.pop(old_path, None)
+        else:
+            self._current[old_path] = current
+
+
+def name_status_path(line: str) -> tuple[str, str | None]:
+    """``(path, renamed_from)`` for one ``--name-status`` (or ``--name-only``) line."""
+    parts = line.strip().split("\t")
+    if len(parts) >= 3 and parts[0].startswith("R"):
+        return parts[2], parts[1]
+    return parts[-1], None
 
 
 @dataclass
@@ -275,7 +327,12 @@ class RepoTotals:
     persists what succeeded. See :func:`capture_repo_totals`.
     """
 
+    # Non-merge commits reachable from HEAD: the one definition of "commits"
+    # every surface uses, matching the ``--no-merges`` walks that fill the
+    # per-commit table. Merges are counted apart so nothing reads a larger
+    # merge-inclusive total against a non-merge sample and calls it truncated.
     total_commit_count: int | None = None
+    total_merge_commit_count: int | None = None
     first_commit_at: datetime | None = None
     total_contributor_count: int | None = None
     first_commit_author: str | None = None
@@ -360,6 +417,9 @@ def _folded_churn(
     therefore holds only when nothing was dropped and nothing appeared
     underneath: a rebase, a force-push, a branch swap and an ``--unshallow``
     all break it. That is why the check is on counts and not just on ancestry.
+    Every count here is non-merge, like the stored total; the argument holds
+    for that subset unchanged, and a total stored before merges were excluded
+    simply fails the equality once and forces a full walk.
 
     *The anchor is still an ancestor.* ``merge-base --is-ancestor`` runs first
     because it is cheaper than the count, it rejects an anchor whose object git
@@ -395,7 +455,9 @@ def _folded_churn(
         # Raises (non-zero exit) when the anchor is not an ancestor, which is
         # the answer we want rather than an error.
         repo.git.merge_base("--is-ancestor", anchor, head_sha)
-        since_count = int(repo.git.rev_list("--count", f"{anchor}..{head_sha}").strip())
+        since_count = int(
+            repo.git.rev_list("--count", "--no-merges", f"{anchor}..{head_sha}").strip()
+        )
     except Exception:
         return None
 
@@ -447,6 +509,38 @@ def _lifetime_churn(
     return _walk_churn(repo, rev)
 
 
+# ``Name <email>`` inside a ``Co-authored-by`` trailer value.
+_TRAILER_PERSON_RE = re.compile(r"^\s*(?P<name>[^<]*?)\s*<(?P<email>[^>]*)>\s*$")
+
+
+def count_people(repo: Any, rev: str) -> int:
+    """Humans who authored a non-merge commit reachable from *rev*.
+
+    One ``git log --no-merges`` pass reads each commit's mailmap-applied author
+    and its ``Co-authored-by`` trailers, and the shared people resolver folds
+    one person's several names and emails into one (trailers are evidence
+    only). Automation is not counted.
+    """
+    from repowise.core.analysis.owners import people_resolver
+
+    out = repo.git.log(
+        "--no-merges",
+        "--format=%aN%x00%aE%x00%(trailers:key=Co-authored-by,valueonly,separator=%x1f)",
+        rev,
+    )
+    rows = []
+    for line in out.splitlines():
+        name, _, rest = line.partition("\0")
+        email, _, trailers = rest.partition("\0")
+        co_authors = [
+            (m["name"], m["email"])
+            for value in trailers.split("\x1f")
+            if (m := _TRAILER_PERSON_RE.match(value))
+        ]
+        rows.append({"author_name": name, "author_email": email, "co_authors": co_authors})
+    return len(people_resolver(commit_rows=rows).people())
+
+
 def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotals:
     """Whole-history stats for *repo* via a handful of cheap git calls.
 
@@ -465,13 +559,13 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
     the indexer's ``commit_limit``, so they stay cheap no matter how deep the
     history is:
 
-    - ``git rev-list --count`` — the true total commit count.
+    - ``git rev-list --count --no-merges`` — the true total commit count, and
+      ``--merges`` for the merge count kept beside it.
     - the root commit(s) — earliest committed date (project age), the founding
       author's name, and that commit's subject. Multiple roots (merged
       histories) use the earliest root.
-    - ``git shortlog -sn`` — one line per mailmap-folded author, so its line
-      count is the true all-time contributor count. It is passed a revision
-      (rather than left to read stdin, which would block).
+    - one ``git log --no-merges`` over author names and emails — the
+      all-time count of people (see :func:`count_people`).
 
     Lifetime churn is the one exception: it walks the history, so it is capped
     (see :func:`_lifetime_churn`).
@@ -489,7 +583,9 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
     rev = head_sha or "HEAD"
 
     with contextlib.suppress(Exception):
-        totals.total_commit_count = int(repo.git.rev_list("--count", rev).strip())
+        totals.total_commit_count = int(repo.git.rev_list("--count", "--no-merges", rev).strip())
+    with contextlib.suppress(Exception):
+        totals.total_merge_commit_count = int(repo.git.rev_list("--count", "--merges", rev).strip())
 
     try:
         roots = repo.git.rev_list("--max-parents=0", rev).split()
@@ -510,11 +606,8 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
     except Exception:
         pass
 
-    try:
-        out = repo.git.shortlog("-sn", rev)
-        totals.total_contributor_count = sum(1 for line in out.splitlines() if line.strip())
-    except Exception:
-        pass
+    with contextlib.suppress(Exception):
+        totals.total_contributor_count = count_people(repo, rev)
 
     totals.total_lines_added, totals.total_lines_deleted = _lifetime_churn(
         repo, totals.total_commit_count, rev, head_sha, prior
@@ -535,3 +628,30 @@ def _should_skip_index(file_path: str) -> bool:
     Everything else (data, config, markup, dotfiles, binaries) is skipped.
     """
     return Path(file_path).suffix.lower() not in _CODE_EXTENSIONS
+
+
+def _history_tier_files(repo_path: Path, paths: Iterable[str]) -> set[str]:
+    """The non-code files among *paths* that still get their commit history recorded.
+
+    The history tier (counts, first and last commit, authors) covers every
+    tracked file except vendored and generated directories, lockfiles and
+    binaries: the traverser's own blocklists, plus a sniff for NUL bytes.
+    """
+    from ..traverser import (
+        _BLOCKED_DIRS,
+        _BLOCKED_EXTENSIONS,
+        _BLOCKED_FILENAME_SPEC,
+        _is_binary,
+    )
+
+    def _keep(file_path: str) -> bool:
+        parts = file_path.split("/")
+        if any(part in _BLOCKED_DIRS for part in parts[:-1]):
+            return False
+        if Path(file_path).suffix.lower() in _BLOCKED_EXTENSIONS:
+            return False
+        if _BLOCKED_FILENAME_SPEC.match_file(parts[-1]):
+            return False
+        return not _is_binary(repo_path / file_path)
+
+    return {fp for fp in paths if _should_skip_index(fp) and _keep(fp)}

@@ -1,0 +1,140 @@
+{
+  "_comment": "Representative Fix-first items in their wire shape (FixItem.as_dict()). repowise.core.agent_prompts renders golden.json from them; see tests/unit/agent_prompts/test_golden.py.",
+  "cases": [
+    {
+      "name": "no_tests_mixed_args",
+      "repo_name": "acme/api",
+      "item": {
+        "id": "fix1_00000000000000000001",
+        "rank": 0,
+        "tier": "now",
+        "kind": "perf_fix",
+        "improves": "performance",
+        "title": "Batch the queries in load_rows",
+        "target": {"file_path": "src/rows.py", "symbol": null, "line_start": null, "line_end": null},
+        "why": "load_rows runs one query per row — 3 call sites reach it.",
+        "facts": [],
+        "action": {"summary": "Batch it.", "steps": [], "steps_total": 0, "mechanical": false},
+        "gain": {"kind": "performance", "value": null, "text": "fewer round trips"},
+        "effort": {"bucket": "M", "basis": "one function"},
+        "risk": {"level": "medium", "dependents": null, "files_touched": 1, "text": "Touches 1 file."},
+        "confidence": {"level": "medium", "reason": "the loop is static"},
+        "verify": {"tests": [], "tests_total": 0, "command": null, "basis": "unknown"},
+        "context": [],
+        "source": {"opportunity_id": "perfop_1", "plan_ids": [], "finding_ids": []},
+        "next_call": {
+          "purpose": "Every argument shape a call can carry",
+          "mcp": "get_health(query=\"say \\\"hi\\\" \\\\path\\nnext\\ttab … ünï \\u0001\", limit=5, ratio=2.5, whole=3.0, flag=True, off=False, none=None, targets=[\"a.py\", \"b \\\"c\\\".py\"], nested={\"k\": [1, 2.0, \"x\"]})",
+          "cli": null,
+          "tool": "get_health",
+          "arguments": {
+            "query": "say \"hi\" \\path\nnext\ttab … ünï \u0001",
+            "limit": 5,
+            "ratio": 2.5,
+            "whole": 3.0,
+            "flag": true,
+            "off": false,
+            "none": null,
+            "targets": ["a.py", "b \"c\".py"],
+            "nested": {"k": [1, 2.0, "x"]}
+          }
+        },
+        "why_ranked": []
+      }
+    },
+    {
+      "name": "tests_and_steps_over_cap",
+      "item": {
+        "id": "fix1_00000000000000000002",
+        "rank": 1,
+        "tier": "next",
+        "kind": "refactor",
+        "improves": "defect",
+        "title": "Extract lines 60-122 of Klass.method into compute_info",
+        "target": {"file_path": "src/a.py", "symbol": "src/a.py::Klass.method", "line_start": 12, "line_end": 90},
+        "why": "Klass.method: CCN 15, 44 lines, nests 3 deep; 4 files import it.",
+        "facts": [
+          {"label": "health recoverable", "value": "+1.7", "basis": "inferred"},
+          {"label": "steps", "value": "5 (2 mechanical)", "basis": "measured"},
+          {"label": "coverage", "value": "unknown", "basis": "unknown"}
+        ],
+        "action": {
+          "summary": "5 steps, 2 mechanical",
+          "steps": [
+            {"order": 1, "text": "Extract lines 60-122 into compute_info(repo_path) -> info", "file_path": "src/a.py", "line": 60, "mechanical": true},
+            {"order": 2, "text": "Move the helper", "file_path": "src/b.py", "line": null, "mechanical": false},
+            {"order": 3, "text": "Rename `x` to `count`", "file_path": "src/a.py", "line": 0, "mechanical": true}
+          ],
+          "steps_total": 5,
+          "mechanical": false
+        },
+        "gain": {"kind": "health_points", "value": 1.671, "text": "+1.7 health on this file"},
+        "effort": {"bucket": "S", "basis": "sized by the stored plan"},
+        "risk": {"level": "low", "dependents": 4, "files_touched": 2, "text": "Touches 2 files; 4 files import it."},
+        "confidence": {"level": "high", "reason": "2 of 5 steps proven mechanical by the plan"},
+        "verify": {
+          "tests": [
+            {"path": "tests/unit/test_a.py", "reason": "reaches the changed code through the call-graph"},
+            {"path": "tests/unit/test_b.py", "reason": ""}
+          ],
+          "tests_total": 1207,
+          "command": "pytest tests/unit/test_a.py tests/unit/test_b.py",
+          "basis": "inferred"
+        },
+        "context": [{"label": "changes in 90 days", "value": "5"}],
+        "source": {"opportunity_id": "refop3_1", "plan_ids": ["refac3_1"], "finding_ids": []},
+        "next_call": {
+          "purpose": "The full plan: ordered steps, validation and evidence",
+          "mcp": "get_health(opportunity_id=\"refop3_1\")",
+          "cli": null,
+          "tool": "get_health",
+          "arguments": {"opportunity_id": "refop3_1"}
+        },
+        "why_ranked": [{"factor": "value", "value": "3"}]
+      }
+    },
+    {
+      "name": "exact_no_command_empty_args",
+      "repo_name": "r",
+      "item": {
+        "id": "fix1_00000000000000000003",
+        "rank": 2,
+        "tier": "later",
+        "kind": "finding",
+        "improves": "maintainability",
+        "title": "Break up GraphFlow (CCN 260, 1,094 lines)",
+        "target": {"file_path": "packages/ui/src/graph/graph-flow.tsx", "symbol": "GraphFlow", "line_start": 198, "line_end": 1654},
+        "why": "GraphFlow: CCN 260, 1,094 lines, nests 7 deep.",
+        "facts": [{"label": "finding", "value": "nested_complexity", "basis": "measured"}],
+        "action": {
+          "summary": "Flatten the control flow.",
+          "steps": [
+            {"order": 1, "text": "Flatten the control flow.", "file_path": "packages/ui/src/graph/graph-flow.tsx", "line": 198, "mechanical": false}
+          ],
+          "steps_total": 1,
+          "mechanical": false
+        },
+        "gain": {"kind": "health_points", "value": 0.4, "text": "+0.4 health on this file"},
+        "effort": {"bucket": "XL", "basis": "1,094 lines"},
+        "risk": {"level": "high", "dependents": 4, "files_touched": 1, "text": "Touches 1 file; 4 files import it."},
+        "confidence": {"level": "low", "reason": "no plan proves the steps"},
+        "verify": {
+          "tests": [{"path": "packages/ui/__tests__/graph-flow.test.tsx", "reason": "imports the file"}],
+          "tests_total": 1,
+          "command": null,
+          "basis": "inferred"
+        },
+        "context": [],
+        "source": {"opportunity_id": null, "plan_ids": [], "finding_ids": ["finding_1"]},
+        "next_call": {
+          "purpose": "The full item",
+          "mcp": "get_health()",
+          "cli": "repowise health",
+          "tool": "get_health",
+          "arguments": {}
+        },
+        "why_ranked": []
+      }
+    }
+  ]
+}

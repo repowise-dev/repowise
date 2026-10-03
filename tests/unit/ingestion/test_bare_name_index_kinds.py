@@ -229,9 +229,14 @@ class TestTheImportMergedTierRefusesTheSame:
             {
                 "util.rs": ("rust", "pub fn render() -> u8 {\n    1\n}\n"),
                 "other.rs": ("rust", "pub fn render() -> u8 {\n    2\n}\n"),
-                "caller.rs": ("rust", "pub fn run() -> u8 {\n    render()\n}\n"),
+                "caller.rs": (
+                    "rust",
+                    "use crate::util::*;\npub fn run() -> u8 {\n    render()\n}\n",
+                ),
             },
         )
+        # A Rust bare name reaches an imported file through a glob import only.
+        parsed["caller.rs"].imports[0].resolved_file = "util.rs"
         edges = _edges_with_imports(
             parsed, tmp_path, {"caller.rs": {"util.rs"}, "util.rs": set(), "other.rs": set()}
         )
@@ -284,9 +289,13 @@ class TestTheImportMergedTierRefusesAStdName:
             {
                 "cursor.rs": ("rust", "pub fn next() -> u8 {\n    1\n}\n"),
                 "other.rs": ("rust", "pub fn next() -> u8 {\n    2\n}\n"),
-                "caller.rs": ("rust", "pub fn run() -> u8 {\n    next()\n}\n"),
+                "caller.rs": (
+                    "rust",
+                    "use crate::cursor::*;\npub fn run() -> u8 {\n    next()\n}\n",
+                ),
             },
         )
+        parsed["caller.rs"].imports[0].resolved_file = "cursor.rs"
         assert "next" not in get_builtin_methods("rust")
         edges = _edges_with_imports(
             parsed,

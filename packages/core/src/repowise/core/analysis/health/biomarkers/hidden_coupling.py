@@ -64,6 +64,23 @@ def _severity_for(correlation: float, co_count: int) -> Severity:
     return Severity.MEDIUM
 
 
+def _reason(partner_path: str, support: int, self_commits: int, partner_commits: int) -> str:
+    """The sentence a finding prints, over the denominator the ratio used.
+
+    The ratio divides by the smaller commit count, so the sentence names that
+    count and whose it is; quoting the other file's total beside the ratio
+    printed impossible pairs like "6 of its 54 commits (50%)".
+    """
+    if self_commits <= partner_commits:
+        denom, whose = self_commits, "this file's"
+    else:
+        denom, whose = partner_commits, "its"
+    return (
+        f"{partner_path} changed with this file in {support} of {whose} "
+        f"{denom} commits ({support / denom:.0%}) but no static dependency exists"
+    )
+
+
 class HiddenCouplingDetector:
     name = "hidden_coupling"
     category = "organizational"
@@ -93,7 +110,9 @@ class HiddenCouplingDetector:
             if total_self < _MIN_COMMITS or partner_total < _MIN_COMMITS:
                 continue
             denom = min(total_self, partner_total)
-            if denom <= 0:
+            # More shared commits than the smaller file has commits is a
+            # record the walk could not have written; there is no ratio to show.
+            if denom <= 0 or partner.support > denom:
                 continue
             correlation = partner.support / denom
             if correlation < _MIN_CORRELATION:
@@ -130,11 +149,7 @@ class HiddenCouplingDetector:
                         "self_commits": total_self,
                         "partner_commits": partner_total,
                     },
-                    reason=(
-                        f"{partner_path} changed with this file in {support} of its "
-                        f"{total_self} commits ({correlation:.0%}) but no static "
-                        "dependency exists"
-                    ),
+                    reason=_reason(partner_path, support, total_self, partner_total),
                 )
             )
         return findings

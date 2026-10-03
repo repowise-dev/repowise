@@ -9,11 +9,10 @@ history. A model adds nothing to that and introduces staleness, so these have
 one renderer and no model path at all. Their templates sit at
 ``templates/<name>.j2``.
 
-**Keyless stubs.** ``module_page``, ``repo_overview``, ``architecture_diagram``
-and ``onboarding`` exist to synthesise, which is exactly what a template
-cannot do. They keep a model path; what lives here is the honest thin version
-a user without an API key gets, which the same page upgrades away from once a
-key is present. Their templates sit at ``templates/stub/<name>.j2``.
+**Keyless stubs.** ``module_page``, ``repo_overview`` and ``onboarding``
+exist to synthesise, which is exactly what a template cannot do. They keep a
+model path; what lives here is the honest thin version a user without an API
+key gets, which the same page upgrades away from once a key is present. Their templates sit at ``templates/stub/<name>.j2``.
 
 Everything either renderer emits is derived from the parsed AST, the import
 graph, git history or the knowledge graph, so it is factual by construction
@@ -45,7 +44,7 @@ log = structlog.get_logger(__name__)
 # output without changing any template's bytes: new context fields, a changed
 # helper, a reordered section. Template edits are picked up automatically
 # (their source is hashed), so this is only for the cases hashing cannot see.
-STRUCTURAL_GENERATION_VERSION = "2"
+STRUCTURAL_GENERATION_VERSION = "4"
 
 # Keyless stub templates live one directory down so their filenames can match
 # the prompt templates they stand in for.
@@ -88,6 +87,13 @@ _REST_ROLE_RE = re.compile(
 _REST_DIRECTIVE_RE = re.compile(
     r"^([ \t]*)\.\.[ \t]+[a-z-]+::.*(?:\n(?:\1[ \t]+.*|[ \t]*(?=\n|$)))*", re.MULTILINE
 )
+# A reStructuredText section title: a line underlined by at least as many
+# punctuation characters. Left alone, markdown shows the underline as text and
+# the title becomes the page summary.
+_REST_TITLE_RE = re.compile(
+    r"^(?:([=\-~^\"'*+#])\1{2,}[ \t]*\n)?([^\n]*\S)[ \t]*\n([=\-~^\"'*+#])\3{2,}[ \t]*$",
+    re.MULTILINE,
+)
 # Not preceded or followed by a third backtick, so a ``` fence is left intact.
 _DOUBLE_TICK_RE = re.compile(r"(?<!`)``([^`\n]+)``(?!`)")
 _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
@@ -120,9 +126,22 @@ def as_markdown(value: object) -> str:
     text = _REST_ROLE_RE.sub(r"`\1`", text)
     text = _DOUBLE_TICK_RE.sub(r"`\1`", text)
     text = dedent_body(text).strip()
+    text = _REST_TITLE_RE.sub(_rest_title, text)
     for i, fence in enumerate(fences):
         text = text.replace(f"\x00FENCE{i}\x00", fence)
     return text
+
+
+def _rest_title(match: re.Match[str]) -> str:
+    """A reST title as a level-3 heading, when the underline is long enough.
+
+    An overline, when present, has to use the underline's character.
+    """
+    overline, title, mark = match.group(1), match.group(2).strip(), match.group(3)
+    underline = match.group(0).splitlines()[-1].strip()
+    if len(underline) < len(title) or (overline and overline != mark):
+        return match.group(0)
+    return f"### {title}"
 
 
 def dedent_body(text: str) -> str:
@@ -502,6 +521,9 @@ def register_filters(env: Any) -> None:
     that reaches for a filter the caller forgot raises at render time, and the
     callers are the generator and four test fixtures.
     """
+    # Local: file_facts builds on the filters defined in this module.
+    from .file_facts import file_facts, symbol_entries, with_subject
+
     for name, fn in (
         ("oneline", oneline),
         ("as_markdown", as_markdown),
@@ -515,6 +537,10 @@ def register_filters(env: Any) -> None:
         ("code_span", code_span),
         ("group_paths", group_paths),
         ("datestamp", datestamp),
+        # The file page's opening sentences and its API list.
+        ("file_facts", file_facts),
+        ("symbol_entries", symbol_entries),
+        ("with_subject", with_subject),
     ):
         env.filters.setdefault(name, fn)
 
@@ -692,7 +718,7 @@ def stale_spotlight_paths(
 class StructuralRenderMixin:
     """Template-only renderers, mixed into PageGenerator.
 
-    Requires the host to provide ``_render``, ``_provider`` and ``_config``.
+    Requires the host to provide ``_render`` and ``_config``.
     """
 
     def _render_page(
@@ -707,7 +733,8 @@ class StructuralRenderMixin:
         """Render one template page and wrap it as a GeneratedPage.
 
         The mirror of ``_build_generated_page`` for the no-model path: same
-        fields, zero tokens, ``provider_name="template"``.
+        fields, zero tokens, ``provider_name="template"``, and no model name:
+        no model wrote this page, so it must not be credited to one.
 
         Confidence is a constant here, not a parameter. It used to be
         overridable so a stub could claim less than a sole renderer's page,
@@ -727,7 +754,7 @@ class StructuralRenderMixin:
             content=content,
             summary=_extract_summary(content, skip_metadata=True),
             source_hash=compute_source_hash(content),
-            model_name=self._provider.model_name,
+            model_name="",
             provider_name="template",
             input_tokens=0,
             output_tokens=0,
@@ -902,7 +929,6 @@ class StructuralRenderMixin:
         ctx: Any,
         target_path: str,
         title: str,
-        module_git_summary: dict | None,
     ) -> GeneratedPage:
         return self._stub_page(
             page_type="module_page",
@@ -910,7 +936,6 @@ class StructuralRenderMixin:
             title=title,
             template="module_page.j2",
             ctx=ctx,
-            module_git_summary=module_git_summary,
         )
 
     def _stub_repo_overview(
@@ -923,20 +948,6 @@ class StructuralRenderMixin:
             template="repo_overview.j2",
             ctx=ctx,
             repo_git_summary=repo_git_summary,
-        )
-
-    def _stub_architecture_diagram(
-        self, ctx: Any, repo_name: str, title: str, overview_mermaid: str | None
-    ) -> GeneratedPage:
-        return self._stub_page(
-            page_type="architecture_diagram",
-            target_path=repo_name,
-            title=title,
-            template="architecture_diagram.j2",
-            ctx=ctx,
-            # Structural on the model path too, where it overwrites whatever
-            # diagram the model drew. Here it is simply the diagram.
-            overview_mermaid=overview_mermaid or "",
         )
 
     def _stub_onboarding_page(self, spec: Any, ctx: Any, target_path: str) -> GeneratedPage:

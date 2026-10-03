@@ -49,3 +49,30 @@ def test_scope_surfaces_degraded_features_as_unavailable() -> None:
         "Execution flow: parser failed",
         "health",
     ]
+
+
+def test_mixed_provenance_survives_resolution() -> None:
+    # A wiki where only some pages carry model prose is "mixed", not "model".
+    state = {"run_mode": "standard", "docs_mode": "llm"}
+    stamp_index_scope(state, {}, content_provenance="mixed")
+    assert resolve_index_scope(state, {})["content_provenance"] == "mixed"
+
+
+def test_dropped_generated_files_are_named_in_the_scope() -> None:
+    from repowise.core.index_scope import dropped_files_scope
+
+    stats = SimpleNamespace(generated_files=[f"gen/f{i:02}.go" for i in range(25, -1, -1)])
+    state: dict = {}
+    stamp_index_scope(state, dropped_files=dropped_files_scope(stats))
+    dropped = resolve_index_scope(state)["dropped_files"]["generated"]
+    assert dropped["count"] == 26
+    assert dropped["paths"][:2] == ["gen/f00.go", "gen/f01.go"]
+    assert len(dropped["paths"]) == 20
+    assert dropped["truncated"] is True
+
+
+def test_scope_without_traversal_does_not_claim_nothing_dropped() -> None:
+    from repowise.core.index_scope import dropped_files_scope
+
+    assert dropped_files_scope(None) is None
+    assert resolve_index_scope({})["dropped_files"] is None

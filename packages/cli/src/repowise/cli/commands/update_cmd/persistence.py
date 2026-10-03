@@ -12,12 +12,20 @@ import contextlib
 import os
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import structlog
 
-from repowise.cli.helpers import console, head_commit_ts, load_config, run_async, save_state
+from repowise.cli.helpers import (
+    console,
+    head_commit_ts,
+    load_config,
+    load_state,
+    run_async,
+    save_state,
+)
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.pipeline import PhaseTimings, timed
 
@@ -100,68 +108,73 @@ def _repair_module_attribution(repo_path: Path) -> int:
     return changed
 
 
+@dataclass(frozen=True)
+class RescoreCoverage:
+    """Coverage for a health re-score, and whether it replaces what is stored."""
+
+    coverage_map: dict[str, dict] = field(default_factory=dict)
+    files: list[Any] = field(default_factory=list)
+    source_format: str | None = None
+    # True for a reingestion, including an empty one that must clear stored rows.
+    authoritative: bool = False
+    # How the reingested report mapped (``CoverageProvenance``); None when reused.
+    provenance: Any = None
+
+
 async def _coverage_for_rescore(
     session: Any,
     repo_id: str,
     repo_path: Path,
     parsed_files: list[Any],
-) -> tuple[dict[str, dict], list[Any], str | None, bool]:
+) -> RescoreCoverage:
     """Coverage to feed a health re-score, preserved across updates.
 
     Default: reload the rows already persisted (no re-parse). When
     ``coverage.reingest_on_update`` is set, re-discover and re-resolve a
-    fresh report instead. The final return value marks an authoritative
-    reingestion, including an empty result that must clear stored rows.
+    fresh report instead.
     """
-    import json
-
     from repowise.core.analysis.health.coverage import (
         CoverageConfig,
         build_coverage_map,
-        discover_artifacts,
     )
-    from repowise.core.persistence.crud import load_coverage_for_repo
+    from repowise.core.persistence.crud import load_coverage_map
     from repowise.core.repo_config import load_repo_config
 
     cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
 
-    if cfg.reingest_on_update and cfg.auto_discover:
-        report_paths = discover_artifacts(repo_path, globs=cfg.artifacts or None)
-        if report_paths:
+    # Without paths or discovery there is nothing to re-read, so the stored
+    # rows (e.g. from `coverage add`) stay authoritative.
+    if cfg.reingest_on_update and (cfg.paths or cfg.auto_discover):
+        reports = cfg.reports(repo_path)
+        if reports:
             repo_keys = {pf.file_info.path for pf in parsed_files}
             resolved, _errors = build_coverage_map(
                 repo_path,
-                report_paths,
+                list(reports),
                 repo_keys,
                 coverage_format=cfg.format,
                 strip_prefix=cfg.strip_prefix,
                 path_prefix=cfg.path_prefix,
+                report_prefixes=reports,
+                ignore=cfg.ignore,
             )
             if resolved.coverage_map:
-                return resolved.coverage_map, resolved.files, resolved.source_format, True
+                return RescoreCoverage(
+                    resolved.coverage_map,
+                    resolved.files,
+                    resolved.source_format,
+                    authoritative=True,
+                    provenance=resolved.provenance,
+                )
 
         # Reingestion is authoritative. Falling back to old rows when a report
         # disappeared (or now maps to nothing) makes this config refresh differ
         # from a clean index and then incorrectly stamps stale data current.
-        return {}, [], None, True
+        return RescoreCoverage(authoritative=True)
 
-    rows = await load_coverage_for_repo(session, repo_id)
-    coverage_map: dict[str, dict] = {}
-    source_format: str | None = None
-    for row in rows:
-        source_format = source_format or getattr(row, "source_format", None)
-        try:
-            covered = json.loads(row.covered_lines_json) if row.covered_lines_json else []
-        except (ValueError, TypeError):
-            covered = []
-        coverage_map[row.file_path] = {
-            "line_coverage_pct": row.line_coverage_pct,
-            "branch_coverage_pct": row.branch_coverage_pct,
-            "covered_lines": covered,
-            "total_coverable_lines": row.total_coverable_lines or 0,
-            "source_format": source_format,
-        }
-    return coverage_map, [], source_format, False
+    coverage_map = await load_coverage_map(session, repo_id)
+    source_format = next((e["source_format"] for e in coverage_map.values()), None)
+    return RescoreCoverage(coverage_map, source_format=source_format)
 
 
 async def _persist_partial_health(
@@ -1105,36 +1118,54 @@ async def _persist_full_update_async(
                 if timings is not None:
                     timings.stop("persist.decisions")
 
+            # Every run, not only when this one added records: the revert
+            # usually lands after the decision it retires was stored.
+            try:
+                from repowise.core.analysis.decisions.reverts import (
+                    apply_revert_supersession,
+                )
+
+                await apply_revert_supersession(session, repo_id, repo_path)
+            except Exception as exc:
+                _skip("Revert supersession", exc)
+            try:
+                from repowise.core.analysis.decisions.head_artifacts import (
+                    apply_head_artifact_check,
+                )
+
+                await apply_head_artifact_check(session, repo_id, repo_path)
+            except Exception as exc:
+                _skip("Decision HEAD artifact check", exc)
+
             # Governance findings pass: runs after decisions + staleness.
             if timings is not None:
                 timings.start("persist.governance")
             try:
-                from sqlalchemy import select as _sel_dec
+                from repowise.core.pipeline.persist import refresh_governance_findings
 
-                from repowise.core.analysis.health.governance import build_governance_findings
-                from repowise.core.persistence.crud import (
-                    get_decision_health_summary,
-                    get_scored_file_paths,
-                    replace_governance_findings,
-                )
-                from repowise.core.persistence.models import DecisionRecord
-
-                _dr = await session.execute(
-                    _sel_dec(DecisionRecord).where(DecisionRecord.repository_id == repo_id)
-                )
-                _decisions = list(_dr.scalars().all())
-                _summary = await get_decision_health_summary(session, repo_id)
-                _gov = build_governance_findings(
-                    health_summary=_summary,
-                    decisions=_decisions,
-                    scored_paths=await get_scored_file_paths(session, repo_id),
-                )
-                await replace_governance_findings(session, repo_id, _gov)
+                # The health step below finalizes the refactoring queue.
+                await refresh_governance_findings(session, repo_id, recompose_queue=False)
             except Exception as exc:
                 _skip("Governance findings", exc)
             finally:
                 if timings is not None:
                     timings.stop("persist.governance")
+
+            # Scoped to the documents the pass actually read, so one this run
+            # could not open keeps its rows in both drift tables. Before health:
+            # the snapshot it takes records the stored drift count.
+            if doc_drift_report is not None:
+                try:
+                    from repowise.core.persistence.crud import (
+                        replace_doc_drift_guarded,
+                    )
+
+                    with timed(timings, "persist.doc_drift"):
+                        await replace_doc_drift_guarded(
+                            session, repo_id, doc_drift_report
+                        )
+                except Exception as exc:
+                    _skip("Doc-drift persist", exc)
 
             # Code-health findings + metrics (partial — upsert only).
             if partial_health_report is not None:
@@ -1166,21 +1197,6 @@ async def _persist_full_update_async(
                         )
                 except Exception as exc:
                     _skip("Dead-code persist", exc)
-
-            # Scoped to the documents the pass actually read, so one this run
-            # could not open keeps its rows in both drift tables.
-            if doc_drift_report is not None:
-                try:
-                    from repowise.core.persistence.crud import (
-                        replace_doc_drift_guarded,
-                    )
-
-                    with timed(timings, "persist.doc_drift"):
-                        await replace_doc_drift_guarded(
-                            session, repo_id, doc_drift_report
-                        )
-                except Exception as exc:
-                    _skip("Doc-drift persist", exc)
 
             # Re-persist graph_nodes so symbol-level PageRank / betweenness /
             # community ids reflect the current build.
@@ -1312,14 +1328,7 @@ async def _persist_full_update_async(
         try:
             fts = FullTextSearch(engine)
             await fts.ensure_index()
-            for page in generated_pages:
-                await fts.index(
-                    page.page_id,
-                    page.title,
-                    page.content,
-                    summary=page.summary,
-                    target_path=page.target_path,
-                )
+            await fts.index_pages(generated_pages)
             # A tombstone can never be an answer — hydration drops it — but
             # retrieval fetches a fixed number of rows before that check runs,
             # so every tombstone left in the index costs a real candidate its
@@ -1355,44 +1364,6 @@ async def _persist_full_update_async(
         await engine.dispose()
 
 
-def _git_metadata_to_dict(gm: Any) -> dict[str, Any]:
-    """Convert a GitMetadata ORM row to the dict format HealthAnalyzer expects."""
-    return {
-        "file_path": gm.file_path,
-        "commit_count_total": gm.commit_count_total,
-        "commit_count_90d": gm.commit_count_90d,
-        "commit_count_30d": gm.commit_count_30d,
-        "first_commit_at": gm.first_commit_at,
-        "last_commit_at": gm.last_commit_at,
-        "primary_owner_name": gm.primary_owner_name,
-        "primary_owner_email": gm.primary_owner_email,
-        "primary_owner_commit_pct": gm.primary_owner_commit_pct,
-        "top_authors_json": gm.top_authors_json,
-        "significant_commits_json": gm.significant_commits_json,
-        "co_change_partners_json": gm.co_change_partners_json,
-        "commit_categories_json": gm.commit_categories_json,
-        "is_hotspot": gm.is_hotspot,
-        "is_stable": gm.is_stable,
-        "churn_percentile": gm.churn_percentile,
-        "age_days": gm.age_days,
-        "commit_count_capped": gm.commit_count_capped,
-        "lines_added_90d": gm.lines_added_90d,
-        "lines_deleted_90d": gm.lines_deleted_90d,
-        "avg_commit_size": gm.avg_commit_size,
-        "recent_owner_name": gm.recent_owner_name,
-        "recent_owner_commit_pct": gm.recent_owner_commit_pct,
-        "bus_factor": gm.bus_factor,
-        "contributor_count": gm.contributor_count,
-        "original_path": gm.original_path,
-        "merge_commit_count_90d": gm.merge_commit_count_90d,
-        "temporal_hotspot_score": gm.temporal_hotspot_score,
-        "prior_defect_count": gm.prior_defect_count,
-        "prior_defect_raw_count": gm.prior_defect_raw_count,
-        "change_entropy": gm.change_entropy,
-        "change_entropy_pct": gm.change_entropy_pct,
-    }
-
-
 async def _rescore_health_from_db(
     repo_path: Any,
     graph_builder: Any,
@@ -1422,8 +1393,13 @@ async def _rescore_health_from_db(
         from sqlalchemy import delete, select
 
         from repowise.cli.helpers import get_db_url_for_repo
+        from repowise.core.analysis.communities import file_community_labels
         from repowise.core.analysis.health import HealthAnalyzer
         from repowise.core.analysis.health.config import HealthConfig
+        from repowise.core.analysis.health.history_refresh import (
+            BLAME_MARKERS,
+            git_meta_rows_to_map,
+        )
         from repowise.core.persistence import (
             create_engine,
             create_session_factory,
@@ -1431,11 +1407,19 @@ async def _rescore_health_from_db(
             init_db,
             upsert_repository,
         )
-        from repowise.core.persistence.crud import save_coverage_files
-        from repowise.core.persistence.models import GitMetadata
+        from repowise.core.persistence.crud import (
+            save_coverage_files,
+            upsert_git_function_blame_bulk,
+        )
+        from repowise.core.persistence.models import GitMetadata, HealthFinding
         from repowise.core.pipeline.persist import (
             persist_graph_nodes,
+            refresh_governance_findings,
             save_full_health_report,
+        )
+        from repowise.core.pipeline.resume.rehydrate import (
+            attach_commit_set_blame,
+            attach_stored_commit_shas,
         )
         from repowise.core.workspace.update import get_head_commit
 
@@ -1466,31 +1450,49 @@ async def _rescore_health_from_db(
                 )
                 await session.flush()
 
-            git_meta_map = {
-                gm.file_path: _git_metadata_to_dict(gm)
+            # Every stored column, so a gate added with a new column reaches the
+            # detectors here as it does on a full index.
+            git_meta_map = git_meta_rows_to_map(
+                gm
                 for gm in git_rows
                 if exclude_spec is None or not exclude_spec.match_file(gm.file_path)
-            }
+            )
+            # No blame index here, so Split File reads the stored commit sets,
+            # and blames once the candidates stored before the sets existed.
+            await attach_stored_commit_shas(session, repo_id, git_meta_map)
+            attach_commit_set_blame(
+                repo_path,
+                git_meta_map,
+                parsed_files,
+                git_tier=load_state(Path(repo_path)).get("git_tier"),
+            )
+            stored_blame_findings: dict[str, list[HealthFinding]] = {}
+            for finding in (
+                await session.execute(
+                    select(HealthFinding).where(
+                        HealthFinding.repository_id == repo_id,
+                        HealthFinding.biomarker_type.in_(BLAME_MARKERS),
+                    )
+                )
+            ).scalars():
+                stored_blame_findings.setdefault(finding.file_path, []).append(finding)
 
             # Preserve coverage across a re-score. The previous behaviour
             # rebuilt the analyzer with no coverage_map, nulling every file's
             # line/branch coverage even though the coverage_files rows still
             # existed. Reload them (and optionally re-discover a fresh report)
             # so coverage survives `repowise update`.
-            (
-                coverage_map,
-                coverage_files,
-                coverage_format,
-                coverage_authoritative,
-            ) = await _coverage_for_rescore(session, repo_id, repo_path, parsed_files)
+            coverage = await _coverage_for_rescore(session, repo_id, repo_path, parsed_files)
 
             analyzer = HealthAnalyzer(
                 graph_builder.graph(),
                 git_meta_map=git_meta_map,
                 parsed_files=parsed_files,
-                coverage_map=coverage_map,
+                community_label_map=file_community_labels(graph_builder),
+                coverage_map=coverage.coverage_map,
                 duplication_cache_dir=Path(repo_path) / ".repowise",
                 repo_root=repo_path,
+                stored_blame_findings=stored_blame_findings,
             )
             hcfg = HealthConfig.load(repo_path)
             analyzer_config = (
@@ -1513,7 +1515,16 @@ async def _rescore_health_from_db(
             await save_full_health_report(
                 session, repo_id, report, analyzed_commit=get_head_commit(Path(repo_path))
             )
-            if coverage_authoritative:
+            # That writer replaced every open finding, the governance ones too,
+            # and only the governance pass produces those.
+            try:
+                await refresh_governance_findings(session, repo_id)
+            except Exception as exc:
+                console.print(f"[yellow]Governance findings skipped: {exc}[/yellow]")
+            # Rows for the files blamed above, so the next re-score reads them.
+            if report.function_blame_rows:
+                await upsert_git_function_blame_bulk(session, repo_id, report.function_blame_rows)
+            if coverage.authoritative:
                 # Stamp the live HEAD from disk, not the stored
                 # ``repo.head_commit`` column. The column names the last
                 # *indexed* commit; the coverage just scored describes the
@@ -1524,9 +1535,10 @@ async def _rescore_health_from_db(
                 await save_coverage_files(
                     session,
                     repo_id,
-                    coverage_files,
-                    source_format=coverage_format or "lcov",
+                    coverage.files,
+                    source_format=coverage.source_format or "lcov",
                     ingested_commit_sha=live_head,
+                    provenance=coverage.provenance,
                 )
             await persist_graph_nodes(session, repo_id, graph_builder)
 
@@ -1613,8 +1625,8 @@ def _run_full_health_rescore(
 # decay refresh runs every update, but the health *findings* for idle files only
 # recover when the analyzer re-scores them. Those biomarkers have a ~125-180d
 # half-life, so weekly is ample. The interval is anchored to the repo's
-# newest-commit timestamp (not wall clock) so it stays deterministic under
-# REPOWISE_GIT_WINDOW_ANCHOR / historical checkouts; override for tests.
+# HEAD commit timestamp (not wall clock), like the git history windows, so it
+# stays deterministic on historical checkouts; override for tests.
 _FULL_RESCORE_INTERVAL_DAYS = 7.0
 
 

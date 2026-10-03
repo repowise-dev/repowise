@@ -88,6 +88,24 @@ const GROUPS: Group[] = [
         ],
       },
       {
+        key: "docDrift.diagnostics.enabled",
+        label: "Documentation drift",
+        description:
+          "Flag paths, links, anchors, commands, and code symbols in visible markdown files that the tree no longer has.",
+        kind: "toggle",
+      },
+      {
+        key: "docDrift.diagnostics.minConfidence",
+        label: "Drift confidence floor",
+        description:
+          "Lowest confidence a drift finding needs to appear (0 to 1). At 0.7 or above it shows as a warning.",
+        kind: "number",
+        needs: "docDrift.diagnostics.enabled",
+        min: 0,
+        max: 1,
+        step: 0.05,
+      },
+      {
         key: "gutterHeat.enabled",
         label: "Gutter heat",
         description: "Shade the gutter next to lines with health findings in visible editors.",

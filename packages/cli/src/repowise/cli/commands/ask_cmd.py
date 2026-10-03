@@ -32,7 +32,8 @@ def project(payload: dict, question: str) -> dict:
     ==================  ===========================================
     kept                answer, confidence, grounding,
                         retrieval_quality, citations, quotes,
-                        fallback_targets, best_guesses (without their
+                        fallback_targets, candidate_files,
+                        best_guesses (without their
                         excerpts), next_action_hint, note,
                         omission_marker, episodes (subject / recorded
                         / still_true), error, index (from ``_meta``)
@@ -95,6 +96,8 @@ def project(payload: dict, question: str) -> dict:
         out["dropped_blocks"] = dropped
     if payload.get("fallback_targets"):
         out["fallback_targets"] = list(payload["fallback_targets"])
+    if payload.get("candidate_files"):
+        out["candidate_files"] = list(payload["candidate_files"])
     episodes = payload.get("episodes") or []
     if episodes:
         out["episodes"] = [
@@ -217,7 +220,11 @@ def _render(projected: dict) -> None:
         # names like get_context land in front of someone who cannot run one.
         console.print(f"\n[bold]Next[/bold] {_ta.as_cli_prose(projected['next_action_hint'])}")
 
-    for label, key in (("Citations", "citations"), ("Read next", "fallback_targets")):
+    for label, key in (
+        ("Citations", "citations"),
+        ("Read next", "fallback_targets"),
+        ("Candidate files", "candidate_files"),
+    ):
         values = projected.get(key) or []
         if values:
             console.print(f"\n[bold]{label}[/bold]")

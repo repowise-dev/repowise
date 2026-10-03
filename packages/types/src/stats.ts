@@ -34,6 +34,8 @@ export interface StatsScale {
   /** Code languages only: data and markup formats are not counted. */
   language_count: number;
   languages: StatsLanguage[];
+  /** Config, markup and data formats, kept apart from `languages`. */
+  docs_config_languages?: StatsLanguage[];
   size_class: StatsSizeClass;
 }
 
@@ -46,7 +48,10 @@ export interface StatsOrigin {
   first_commit_subject: string | null;
   last_commit_at: string | null;
   age_days: number | null;
+  /** Non-merge commits reachable from HEAD, the meaning "commits" has everywhere. */
   total_commits: number;
+  /** Merge commits, counted apart. Null until an index captures it. */
+  total_merge_commits?: number | null;
   contributor_count: number;
 }
 

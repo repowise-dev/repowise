@@ -10,14 +10,16 @@ they fit together. Read this before contributing.
 
 ### Package READMEs
 
-For per-package detail (installation, full API reference, all CLI flags, file maps):
+Each Python and web package has a short contributor README that says what the
+package is and where its code lives. The detail is in this document and in
+[`CLI_REFERENCE.md`](../reference/CLI_REFERENCE.md).
 
 | Package | README | What it covers |
 |---------|--------|----------------|
-| `packages/core` | [`packages/core/README.md`](../../packages/core/README.md) | Ingestion, generation, persistence, providers; all key classes with code examples |
-| `packages/cli` | [`packages/cli/README.md`](../../packages/cli/README.md) | CLI entrypoints and flags; full surface in [`CLI_REFERENCE.md`](../reference/CLI_REFERENCE.md) |
-| `packages/server` | [`packages/server/README.md`](../../packages/server/README.md) | All REST API endpoints, 11 MCP tools, webhook setup, scheduler jobs |
-| `packages/web` | [`packages/web/README.md`](../../packages/web/README.md) | Every frontend file with purpose, API client, hooks, components, pages |
+| `packages/core` | [`packages/core/README.md`](../../packages/core/README.md) | Ingestion, analysis, generation, persistence and providers |
+| `packages/cli` | [`packages/cli/README.md`](../../packages/cli/README.md) | The `repowise` command; full surface in [`CLI_REFERENCE.md`](../reference/CLI_REFERENCE.md) |
+| `packages/server` | [`packages/server/README.md`](../../packages/server/README.md) | REST API, the MCP server (18 registered tools, 10 on by default), webhooks, scheduler |
+| `packages/web` | [`packages/web/README.md`](../../packages/web/README.md) | The local dashboard and how to run it in development |
 
 ---
 
@@ -78,7 +80,7 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 │      Three Stores     │   │              Consumers                  │
 │                      │   │                                         │
 │  SQL (wiki pages,    │   │  Web UI     MCP Server   GitHub Action  │
-│  jobs, symbols,      │   │  (Next.js)  (11 tools)   (CI/CD)        │
+│  jobs, symbols,      │   │  (Next.js)  (18 tools)   (CI/CD)        │
 │  versions)           │   │                                         │
 │                      │   │  repowise CLI                           │
 │  Vector (LanceDB /   │   │  (init, update, watch,                  │
@@ -510,14 +512,14 @@ meaning is easy to get wrong:
 
 **Call resolution** is handled by the `CallResolver` module (`ingestion/call_resolver.py`),
 which runs after the static import graph is built. Every edge it emits is stamped
-with a `ResolutionOrigin`, a closed vocabulary of 29 values in
+with a `ResolutionOrigin`, a closed vocabulary of 39 values in
 `ingestion/models.py`, each carrying exactly one confidence, so the origin
 distribution and the confidence histogram are two views of the same data. The
 span runs from `same_file` and `self_scope` at 0.95, through import- and
 package-scoped origins at 0.88–0.90, down to `global_unique` at 0.50, a
 repo-wide name match, which the source comments label as a guess.
 
-Twelve of the 29 are **receiver-typing** origins: they resolve a call on a
+Twelve of the 39 are **receiver-typing** origins: they resolve a call on a
 variable by reading the variable's declaration (a local, a parameter, an
 enclosing class's field, or a type a framework decorator imposed), then resolving
 the method on that type. Registered for Java, C#, Python, Go, Kotlin and Swift.
@@ -532,15 +534,15 @@ architecture.
 
 **Named binding resolution** (`NamedBinding` dataclass in `ingestion/models.py`) ensures
 that aliased imports, barrel re-exports, and namespace imports resolve to the correct
-definition site. The parser's `_extract_import_bindings()` produces bindings for each
-import statement, and `GraphBuilder.build()` populates `Import.resolved_file` from them.
+definition site. `extract_import_bindings()` in `ingestion/extractors/bindings/` (one extractor
+per language) produces bindings for each import statement, and `GraphBuilder.build()` populates `Import.resolved_file` from them.
 Barrel files (`__init__.py`, `index.ts`) are followed one hop to resolve re-exports.
 
 **Two-tier graph isolation:**
 
 Symbol nodes and their `DEFINES`/`HAS_METHOD`/`CALLS` edges are stored in the same
 `DiGraph` as file nodes, but `file_subgraph()` returns a view containing only `file`
-and `package` nodes. All file-level metrics (PageRank, betweenness, SCCs, Louvain)
+and `package` nodes. All file-level metrics (PageRank, betweenness, SCCs, community detection)
 run on this subgraph so that the large number of symbol nodes does not distort centrality
 scores.
 
@@ -552,7 +554,7 @@ After graph construction, the builder computes:
   Logged as warnings. Require special generation handling (see below).
 - **Betweenness centrality**: identifies "bridge" symbols whose removal would
   disconnect the graph. These are the most critical to document well.
-- **Community detection (Louvain)**: discovers logical modules even when the
+- **Community detection (Leiden when the `graph-extra` extra is installed, Louvain otherwise)**: discovers logical modules even when the
   directory structure doesn't reflect them. These communities become module pages.
 
 **Circular dependency handling:**
@@ -865,7 +867,7 @@ The `GitIndexer` runs once during `repowise init` (after graph construction, bef
 generation) and incrementally during `repowise update`. All git features degrade
 gracefully when git metadata is unavailable; they simply skip git-enriched context.
 
-### 7.1 GitIndexer (`packages/core/ingestion/git_indexer.py`)
+### 7.1 GitIndexer (`packages/core/src/repowise/core/ingestion/git_indexer/`)
 
 The `GitIndexer` class mines git history into the `git_metadata` SQL table. For each
 tracked file, it computes:
@@ -996,6 +998,10 @@ repowise dead-code resolve [FINDING_ID]
   --note "reason"
 ```
 
+With an index at HEAD, the command reads the findings `init`/`update` stored,
+the same rows `get_dead_code` serves. A floor below the stored one (0.4), an
+index behind HEAD, or no index at all runs the analyzer over the working tree.
+
 ### 8.4 Integration with Other Components
 
 Dead code findings are stored in the `dead_code_findings` SQL table with a status
@@ -1060,7 +1066,7 @@ repowise decision health     # health summary
 | `core/analysis/decision_extractor.py` | All 4 capture sources + staleness computation |
 | `core/persistence/models.py` | `DecisionRecord` ORM model |
 | `core/persistence/crud.py` | 8 decision CRUD functions |
-| `server/mcp_server/tool_why.py` | MCP tool `get_why` (3-mode: search, path, health dashboard) |
+| `server/mcp_server/tool_why/` | MCP tool `get_why` (package: one module per mode, plus shared loading, ranking, projection and caps) |
 | `server/routers/decisions.py` | REST API endpoints |
 | `cli/commands/decision_cmd.py` | CLI command group (7 subcommands) |
 
@@ -1085,9 +1091,10 @@ and supports two transports:
 
 Canonical reference: [`docs/agent/MCP_TOOLS.md`](../agent/MCP_TOOLS.md).
 A single-repo server advertises **10** tools by default (the canonical set).
-Workspace mode adds `list_repos`. Six specialists are registered but opt-in:
+Workspace mode adds `list_repos`. Seven specialists are registered but opt-in:
 `get_architecture`, `get_blast_radius`, `get_dependency_path`,
-`get_execution_flows`, `generate_refactoring_code`, and `get_conformance`.
+`get_execution_flows`, `generate_refactoring_code`, `get_conformance`, and
+`set_finding_status`.
 
 | Tool | What it answers | When to call |
 |------|----------------|-------------|
@@ -1462,7 +1469,7 @@ in the existing `wiki_pages` table, queries are plain SQL with `<=>` cosine dist
 and backup/restore is a single `pg_dump`. The HNSW index (`CREATE INDEX ... USING hnsw`)
 gives query latency on par with LanceDB at typical repowise dataset sizes.
 
-The `VectorStore` abstraction in `packages/core/src/repowise/core/persistence/vector.py`
+The `VectorStore` abstraction in `packages/core/src/repowise/core/persistence/vector_store/`
 selects the backend at startup based on `DATABASE_URL`: SQLite → LanceDB, PostgreSQL → pgvector.
 
 ### NetworkX + SQLite fallback, not Neo4j

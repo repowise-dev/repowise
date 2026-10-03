@@ -24,7 +24,11 @@ from tests.unit.persistence.helpers import insert_repo
 
 
 def _perf_finding(
-    line: int, *, path: str = "src/app.py", sink: str = "src/db.py::fetch"
+    line: int,
+    *,
+    path: str = "src/app.py",
+    helper: str = "src/shared.py::load",
+    sink: str = "src/db.py::fetch",
 ) -> HealthFindingData:
     return HealthFindingData(
         biomarker_type="serial_await_in_loop",
@@ -36,7 +40,7 @@ def _perf_finding(
         details={
             "boundary_kind": "db",
             "cross_function": True,
-            "path": [f"{path}::run", "src/shared.py::load", sink],
+            "path": [f"{path}::run", helper, sink],
             "resolution_basis": "call-site",
             "dataflow_verified": True,
         },
@@ -108,14 +112,21 @@ class TestSaveFullHealthReport:
         before = await _open_perf_ids(async_session, repo_id)
         assert len(before) == 1
 
-        # The repeated work now lands on a different sink, which is a
-        # different cause. The re-score deleted the finding the first one was
-        # built from, so the queue must stop serving it.
+        # The repeated work now goes through a different helper to a different
+        # sink, which is a different cause. The re-score deleted the finding the
+        # first one was built from, so the queue must stop serving it.
         await save_full_health_report(
             async_session,
             repo_id,
             _report(
-                [_perf_finding(10, path="src/other.py", sink="src/cache.py::lookup")],
+                [
+                    _perf_finding(
+                        10,
+                        path="src/other.py",
+                        helper="src/cache.py::cached",
+                        sink="src/cache.py::lookup",
+                    )
+                ],
                 metrics=[_metric("src/other.py")],
             ),
             analyzed_commit="b" * 40,

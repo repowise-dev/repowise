@@ -42,6 +42,16 @@ registers it any more — see :mod:`.codex`.)
       the wiki HEAD has drifted from .repowise/state.json's last sync
       commit AND no `repowise update` is in flight AND we haven't
       already warned for this HEAD, emit a one-line stale-wiki notice.
+    * After a full test run (pytest, go test, npm test, cargo test, ...),
+      when aggregate coverage reports are newer than the index's last
+      coverage ingest, start ``repowise coverage add`` on them in the
+      background and say so in one line (opt-in: ``hooks.coverage_reingest: true``).
+      Codex only here; Claude Code runs it from ``--coverage-only`` below.
+
+  PostToolUse / PostToolUseFailure → Bash / PowerShell (``--coverage-only``)
+    * The coverage re-ingest alone, from the repo-local Claude Code entries
+      ``coverage_reingest.sync_repo_hook`` writes. A failing test run, which
+      still writes its report, arrives as PostToolUseFailure.
 
   PostToolUse → Read
     * Skeleton replacement: an unbounded Read of a large indexed file is
@@ -99,6 +109,7 @@ from repowise.cli.agent_adapters import adapter_for
 from ._shared import HookResult, as_result, join_notices
 from .bash_staleness import _handle_bash_post
 from .codex import _handle_codex_context_event, _handle_post_edit_use
+from .coverage_reingest import coverage_reingest_notice
 from .decision_capture import commit_capture_notice
 from .read_state import _handle_edit_post, _handle_read_post, _record_edit
 from .search import _handle_search_post
@@ -138,17 +149,25 @@ def _adapter(client: str | None):
     help="Hook client marker. Codex lifecycle hooks pass this explicitly.",
 )
 @click.option(
+    "--coverage-only",
+    is_flag=True,
+    default=False,
+    help="Run only the coverage re-ingest for shell tools (the repo-local hook entry).",
+)
+@click.option(
     "--verbose",
     "-v",
     is_flag=True,
     default=False,
     help="Show debug logs from the hook pipeline.",
 )
-def augment_command(client: str | None = None, verbose: bool = False) -> None:
+def augment_command(
+    client: str | None = None, coverage_only: bool = False, verbose: bool = False
+) -> None:
     """Enrich AI agent tool calls with codebase graph context (hook mode)."""
     configure_cli_logging(verbose=verbose)
     try:
-        _run_augment(client=client)
+        _run_augment(client=client, coverage_only=coverage_only)
     except (SystemExit, KeyboardInterrupt):
         raise
     except Exception:
@@ -156,7 +175,7 @@ def augment_command(client: str | None = None, verbose: bool = False) -> None:
         sys.exit(0)
 
 
-def _run_augment(*, client: str | None = None) -> None:
+def _run_augment(*, client: str | None = None, coverage_only: bool = False) -> None:
     """Main entry point — reads stdin, dispatches to hook handlers."""
     raw = sys.stdin.read()
     if not raw.strip():
@@ -171,6 +190,10 @@ def _run_augment(*, client: str | None = None) -> None:
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {})
     cwd = payload.get("cwd", "")
+
+    if coverage_only:
+        _run_coverage_only(payload, client)
+        return
 
     if client == "codex" and event in ("SessionStart", "UserPromptSubmit"):
         session_id = payload.get("session_id", "")
@@ -234,6 +257,23 @@ def _run_augment(*, client: str | None = None) -> None:
         # the agent must not wait on accounting.
         with contextlib.suppress(Exception):
             result.on_emitted()
+    _count_run(cwd, session_id, event, tool_name, emitted=bool(result))
+
+
+def _run_coverage_only(payload: dict, client: str | None) -> None:
+    """The coverage re-ingest for a shell call, success or failure, and nothing else."""
+    event = payload.get("hook_event_name", "")
+    tool_name = payload.get("tool_name", "")
+    if event not in ("PostToolUse", "PostToolUseFailure") or payload.get("is_interrupt"):
+        return
+    if tool_name not in _adapter(client).shell_tool_names:
+        return
+    cwd = payload.get("cwd", "")
+    session_id = payload.get("session_id", "")
+    session_id = session_id if isinstance(session_id, str) else ""
+    result = as_result(coverage_reingest_notice(payload.get("tool_input", {}), cwd))
+    if result:
+        _emit_response(event, result, session_id)
     _count_run(cwd, session_id, event, tool_name, emitted=bool(result))
 
 
@@ -370,32 +410,14 @@ def _handle_post_tool_use(
     Every tool-name test below is the adapter's answer for *this* harness.
     """
     adapter = _adapter(client)
-    # The edit-tool freshness notice is a Codex-only lifecycle hook, gated on
-    # the Codex client so the widened Claude matcher (Read|Edit|Write) can't
-    # emit Codex-flavored banners to Claude Code users. Both clients record
-    # the edit for the per-session stale-read state machine; Claude clients
-    # additionally get the once-per-decision governing-decision notice.
     if tool_name in adapter.edit_tool_names:
-        if client == "codex":
-            _record_edit(tool_input, cwd, session_id)
-            return as_result(
-                _handle_post_edit_use(cwd, session_id=session_id, tool_input=tool_input)
-            )
-        return as_result(_handle_edit_post(tool_input, cwd, session_id))
+        return _edit_post(tool_input, cwd, client, session_id)
     if tool_name in adapter.read_tool_names:
         # Read-after-served KPI: logged to the ledger, never spoken about.
         _log_read_after_served(tool_input, tool_output, cwd, session_id)
         return _handle_read_post(tool_input, tool_output, cwd, session_id, adapter=adapter)
     if tool_name in adapter.shell_tool_names:
-        # The PowerShell tool (Windows Claude Code) and Codex's several names
-        # for its shell all surface the same stdout/stderr response shape as
-        # Bash — one handler covers them.
-        return as_result(
-            join_notices(
-                _handle_bash_post(tool_input, tool_output, cwd),
-                commit_capture_notice(tool_input, tool_output, cwd, session_id),
-            )
-        )
+        return _shell_post(tool_input, tool_output, cwd, client, session_id)
     if tool_name in adapter.search_tool_names:
         # The adapter reaches this one because the flood digest can *replace*
         # the tool output, and not every harness's protocol can honour that.
@@ -408,3 +430,37 @@ def _handle_post_tool_use(
         _handle_mcp_read_post(tool_output, cwd, session_id)
         return HookResult()
     return HookResult()
+
+
+def _edit_post(tool_input: dict, cwd: str, client: str | None, session_id: str) -> HookResult:
+    """The edit-tool surfaces.
+
+    The edit-tool freshness notice is a Codex-only lifecycle hook, gated on
+    the Codex client so the widened Claude matcher (Read|Edit|Write) can't
+    emit Codex-flavored banners to Claude Code users. Both clients record
+    the edit for the per-session stale-read state machine; Claude clients
+    additionally get the once-per-decision governing-decision notice.
+    """
+    if client == "codex":
+        _record_edit(tool_input, cwd, session_id)
+        return as_result(_handle_post_edit_use(cwd, session_id=session_id, tool_input=tool_input))
+    return as_result(_handle_edit_post(tool_input, cwd, session_id))
+
+
+def _shell_post(
+    tool_input: dict, tool_output: dict | str, cwd: str, client: str | None, session_id: str
+) -> HookResult:
+    """The shell surfaces.
+
+    The PowerShell tool (Windows Claude Code) and Codex's several names for its
+    shell all surface the same stdout/stderr response shape as Bash, so one
+    handler covers them.
+    """
+    return as_result(
+        join_notices(
+            _handle_bash_post(tool_input, tool_output, cwd),
+            commit_capture_notice(tool_input, tool_output, cwd, session_id),
+            # Claude Code gets this from its own ``--coverage-only`` entry.
+            coverage_reingest_notice(tool_input, cwd) if client == "codex" else None,
+        )
+    )

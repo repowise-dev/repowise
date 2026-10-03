@@ -1,0 +1,72 @@
+{
+ "available": true,
+ "window_days": null,
+ "as_of": "2026-10-03T06:47:56.472074+00:00",
+ "first_event_at": "2026-10-03T06:47:56.352609Z",
+ "last_event_at": "2026-10-03T06:47:56.352609Z",
+ "unique_events": 1,
+ "successful_or_usable_partial_events": 1,
+ "saving_interactions": 1,
+ "mcp_queries_answered": 0,
+ "dead_ends": 0,
+ "saved_input_tokens": 7099,
+ "measured_saved_input_tokens": 7099,
+ "inferred_saved_input_tokens": 0,
+ "priced_saved_input_tokens": 7099,
+ "unpriced_saved_input_tokens": 0,
+ "priced_input_savings_usd": 0.035495,
+ "saved_output_tokens": null,
+ "priced_saved_output_tokens": 0,
+ "unpriced_saved_output_tokens": 0,
+ "priced_output_savings_usd": 0.0,
+ "baseline_events": 1,
+ "reducing_events": 1,
+ "baseline_input_tokens": 7500,
+ "baseline_saved_input_tokens": 7099,
+ "input_reduction_ratio": 0.9465333333333333,
+ "input_reduction_ratio_p90": 0.9465333333333333,
+ "per_operation": [
+  {
+   "group": "git_log",
+   "events": 1,
+   "saved_input_tokens": 7099
+  }
+ ],
+ "per_surface": [
+  {
+   "group": "distill",
+   "events": 1,
+   "saved_input_tokens": 7099
+  }
+ ],
+ "per_agent": [
+  {
+   "agent": "unknown",
+   "agent_display_name": "Unknown",
+   "events": 1,
+   "saved_input_tokens": 7099
+  }
+ ],
+ "per_model": [
+  {
+   "group": "claude-opus-5-5",
+   "events": 1,
+   "saved_input_tokens": 7099
+  }
+ ],
+ "per_day": [
+  {
+   "group": "2026-10-03",
+   "events": 1,
+   "saved_input_tokens": 7099
+  }
+ ],
+ "opportunity_count": 0,
+ "opportunity_tokens_excluded": 0,
+ "per_opportunity_kind": [],
+ "missed_events": 0,
+ "missed_tokens_est": 0,
+ "missed_window_days": 7.0,
+ "reread_events": 0,
+ "reread_tokens_est": 0
+}

@@ -254,3 +254,49 @@ def test_cache_construction_does_not_touch_the_file(tmp_path: Path):
     # Nothing read or parsed yet; a consumer call on a missing file is silent.
     assert fd.flagged_analyses() == []
     assert fd.analyses_covering({1}) == []
+
+
+def test_release_drops_the_entry_and_get_rebuilds_it(tmp_path: Path):
+    cache = FileDataflowCache()
+    path = str(tmp_path / "a.py")
+    first = cache.get(path, "python")
+    assert cache.get(path, "python") is first
+    cache.release(path)
+    cache.release(path)  # releasing an absent entry is a no-op
+    assert cache.get(path, "python") is not first
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+def test_health_pass_releases_each_file_after_evaluating_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, use_async: bool
+):
+    """A repository-wide pass must not hold every file's parse until it ends."""
+    import asyncio
+
+    from repowise.core.analysis.health import HealthAnalyzer
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+    _require_python()
+    for i in range(3):
+        (tmp_path / f"m{i}.py").write_text(f"def f{i}(x):\n    return x\n", encoding="utf-8")
+    parser, gb, parsed = ASTParser(), GraphBuilder(), []
+    for fi in FileTraverser(tmp_path).traverse():
+        pf = parser.parse_file(fi, Path(fi.abs_path).read_bytes())
+        gb.add_file(pf)
+        parsed.append(pf)
+    gb.build()
+
+    released: list[str] = []
+    real = FileDataflowCache.release
+
+    def _spy(self, abs_path):
+        released.append(abs_path)
+        real(self, abs_path)
+
+    monkeypatch.setattr(FileDataflowCache, "release", _spy)
+    analyzer = HealthAnalyzer(gb.graph(), parsed_files=parsed)
+    if use_async:
+        asyncio.run(analyzer.analyze_async())
+    else:
+        analyzer.analyze()
+    assert sorted(released) == sorted(str(pf.file_info.abs_path) for pf in parsed)

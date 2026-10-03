@@ -71,6 +71,11 @@ const ORIGINS = {
     because: "an extension method in this file extends the receiver's type",
     tier: "direct",
   },
+  receiver_chain_same_file: {
+    label: "Field chain, same file",
+    because: "each field on the receiver's path has a declared type, all in this file",
+    tier: "direct",
+  },
   return_type_same_file: {
     label: "Return type, same file",
     because: "the inner call's declared return type is a class in this file",
@@ -161,6 +166,11 @@ const ORIGINS = {
   receiver_framework_import: {
     label: "Framework type, imported",
     because: "a framework decorator retyped the receiver, and that class was found in an imported file",
+    tier: "scoped",
+  },
+  receiver_chain_import: {
+    label: "Field chain, imported",
+    because: "each field on the receiver's path has a declared type, bound by an import",
     tier: "scoped",
   },
   return_type_same_package: {

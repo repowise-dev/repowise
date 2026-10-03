@@ -84,10 +84,52 @@
     declarator: (identifier) @symbol.name
     parameters: (parameter_list) @symbol.params)) @symbol.def
 
+; A function returning a pointer wraps the function_declarator, as c.scm
+; explains: ``NSString *MakeName(void)``, ``char **argv(void)``, and a function
+; returning a function pointer. Queries cannot recurse, so each depth is listed.
+(function_definition
+  declarator: [
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @symbol.name
+        parameters: (parameter_list) @symbol.params))
+    (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @symbol.name
+          parameters: (parameter_list) @symbol.params)))
+    (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (function_declarator
+            declarator: (identifier) @symbol.name
+            parameters: (parameter_list) @symbol.params))))
+  ]) @symbol.def
+
 (declaration
   declarator: (function_declarator
     declarator: (identifier) @symbol.name
     parameters: (parameter_list) @symbol.params)) @symbol.def
+
+; ... returning a pointer, the same shapes as the definitions above
+(declaration
+  declarator: [
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @symbol.name
+        parameters: (parameter_list) @symbol.params))
+    (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @symbol.name
+          parameters: (parameter_list) @symbol.params)))
+    (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (function_declarator
+            declarator: (identifier) @symbol.name
+            parameters: (parameter_list) @symbol.params))))
+  ]) @symbol.def
 
 (preproc_def
   name: (identifier) @symbol.name) @symbol.def

@@ -92,6 +92,7 @@ def regenerate_deterministic_pages(
     dead_code_report: Any = None,
     prior_page_ids: dict | None = None,
     full_scope: bool = False,
+    stats_out: dict[str, int] | None = None,
 ) -> list:
     """Re-render the template pages for *regenerate_paths*. Never raises.
 
@@ -119,6 +120,7 @@ def regenerate_deterministic_pages(
         prior_page_ids=prior_page_ids,
         degrade_label="Template page refresh",
         full_scope=full_scope,
+        stats_out=stats_out,
     )
 
 
@@ -137,6 +139,7 @@ def regenerate_deterministic_page_ids(
     dead_code_report: Any = None,
     prior_page_ids: dict | None = None,
     vector_store: Any = None,
+    stats_out: dict[str, int] | None = None,
 ) -> list:
     """Render exact deterministic page ids from the complete repository view.
 
@@ -164,6 +167,7 @@ def regenerate_deterministic_page_ids(
         degrade_label="Structural page refresh",
         only_page_ids=page_ids,
         vector_store=vector_store,
+        stats_out=stats_out,
     )
 
 
@@ -185,11 +189,16 @@ def _render_pages(
     full_scope: bool = False,
     only_page_ids: set[str] | None = None,
     vector_store: Any = None,
+    stats_out: dict[str, int] | None = None,
 ) -> list:
     """Render the changed files' pages from structure (free, no LLM).
 
     Every file page is structural now, so there is one render mode: the template
     renderer, driven by ``deterministic=True``. There is no model path to choose.
+
+    ``stats_out["embed_failed_pages"]`` accumulates the pages whose vectors
+    failed to land, so the caller can fail the run instead of reporting a
+    healthy semantic index.
     """
     from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
     from repowise.core.providers.llm.template import TemplateProvider
@@ -255,7 +264,7 @@ def _render_pages(
         # A template render takes every page it is fed; deterministic mode
         # bypasses the budget already, so no page-id scoping is needed.
         with console.status("  Re-rendering wiki pages from structure…"):
-            return run_async(
+            pages = run_async(
                 generator.generate_all(
                     affected_parsed,
                     affected_source,
@@ -266,8 +275,15 @@ def _render_pages(
                     repo_path=repo_path,
                     dead_code_report=dead_code_report,
                     only_page_ids=only_page_ids,
+                    # Without it a failed embed was logged and nothing else.
+                    on_warning=degraded.append,
                 )
             )
+        if stats_out is not None:
+            stats_out["embed_failed_pages"] = (
+                stats_out.get("embed_failed_pages", 0) + generator.embed_failed_pages
+            )
+        return pages
     except Exception as exc:
         degraded.append(f"{degrade_label}: {exc}")
         return []
@@ -376,14 +392,7 @@ async def _persist_async(
         try:
             fts = FullTextSearch(engine)
             await fts.ensure_index()
-            for page in generated_pages:
-                await fts.index(
-                    page.page_id,
-                    page.title,
-                    page.content,
-                    summary=page.summary,
-                    target_path=page.target_path,
-                )
+            await fts.index_pages(generated_pages)
         except Exception as exc:
             degraded.append(f"Full-text index: {exc}")
     finally:
@@ -525,5 +534,75 @@ async def _load_spotlight_render_keys(repo_path: Path) -> dict[str, list[str]]:
         # logger to ERROR, so a warning there would not survive.
         console.print(f"[yellow]Could not read spotlight render keys: {exc}[/yellow]")
         return {}
+    finally:
+        await engine.dispose()
+
+
+# Repo-wide pages the cascade marks stale on any decay. Both are model-written.
+_REPO_WIDE_MODEL_TYPES = ("repo_overview", "onboarding")
+
+
+def split_cascade_overflow(rows: list[Any], skipped_paths: list[str]) -> tuple[int, int]:
+    """``(model_pages, structural_pages)`` that budget-skipped files decay.
+
+    ``rows`` are ``(page_type, target_path, metadata_json)``. Mirrors the
+    ``none`` cascade the persist step applies: each file's page, the module and
+    SCC pages that cover it, and the repo-wide pages.
+    """
+    import json
+
+    skipped = set(skipped_paths)
+    model = structural = 0
+    for page_type, target_path, meta_json in rows:
+        if page_type in _REPO_WIDE_MODEL_TYPES:
+            model += 1
+        elif page_type == "file_page":
+            structural += target_path in skipped
+        else:
+            try:
+                meta = json.loads(meta_json or "{}")
+            except (TypeError, ValueError):
+                continue
+            members = meta.get("file_paths") or meta.get("files") or []
+            if skipped.intersection(members):
+                if page_type == "module_page":
+                    model += 1
+                else:
+                    structural += 1
+    return model, structural
+
+
+def load_cascade_overflow_split(
+    repo_path: Path, skipped_paths: list[str]
+) -> tuple[int, int] | None:
+    """:func:`split_cascade_overflow` over the store; ``None`` when unreadable."""
+    return run_async(_load_cascade_overflow_split(repo_path, skipped_paths))
+
+
+async def _load_cascade_overflow_split(
+    repo_path: Path, skipped_paths: list[str]
+) -> tuple[int, int] | None:
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        from sqlalchemy import select as sa_select
+
+        from repowise.core.persistence.models import Page
+
+        async with get_session(create_session_factory(engine)) as session:
+            rows = await session.execute(
+                sa_select(Page.page_type, Page.target_path, Page.metadata_json).where(
+                    Page.page_type.in_(
+                        ["file_page", "module_page", "scc_page", *_REPO_WIDE_MODEL_TYPES]
+                    ),
+                    Page.freshness_status != "tombstone",
+                )
+            )
+            return split_cascade_overflow(list(rows), skipped_paths)
+    except Exception:
+        # The caller falls back to the unsplit warning.
+        return None
     finally:
         await engine.dispose()

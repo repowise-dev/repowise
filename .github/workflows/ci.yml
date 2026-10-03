@@ -7,8 +7,10 @@ on:
     branches: [main]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A new push to a pull request replaces its run. Pushes get one group per
+  # commit, so every merge finishes and uploads its coverage.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -17,6 +19,9 @@ jobs:
   test-python:
     name: Python ${{ matrix.python-version }} tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # proves the coverage upload comes from this repository
     strategy:
       fail-fast: false
       matrix:
@@ -41,7 +46,37 @@ jobs:
         run: uv run pytest tests/providers/ -v --tb=short
 
       - name: Run unit tests
+        if: matrix.python-version != '3.12'
         run: uv run pytest tests/unit/ -v --tb=short
+
+      # One leg measures coverage for the pull request bot's checks comment.
+      - name: Run unit tests with coverage
+        if: matrix.python-version == '3.12'
+        run: uv run --with pytest-cov pytest tests/unit/ -v --tb=short --cov=packages --cov-report=xml
+
+      - name: Upload coverage to Repowise
+        if: always() && matrix.python-version == '3.12'
+        continue-on-error: true
+        env:
+          REPORTS: "coverage.xml"
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          shopt -s globstar nullglob
+          files=()
+          for pattern in $REPORTS; do for f in $pattern; do [ -f "$f" ] && files+=(-F "report=@$f"); done; done
+          if [ ${#files[@]} -eq 0 ]; then echo "::warning::Repowise: no coverage report found at: $REPORTS"; exit 0; fi
+          auth=()
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=repowise" | jq -r '.value // empty' || true)
+            [ -n "$token" ] && auth=(-H "Authorization: Bearer $token")
+          fi
+          curl -sS --fail-with-body --max-time 60 "${auth[@]}" "${files[@]}" \
+            -F "repository=$GITHUB_REPOSITORY" -F "head_sha=$HEAD_SHA" -F "pr_number=$PR_NUMBER" \
+            -F "event=$GITHUB_EVENT_NAME" -F "run_url=$RUN_URL" -F "workspace=$GITHUB_WORKSPACE" \
+            https://api.repowise.dev/ci/coverage \
+            || echo "::warning::Repowise: coverage upload failed; see the message above."
 
   # ---------------------------------------------------------------------------
   # tree-sitter floor — installs the declared minimum tree-sitter version and
@@ -102,6 +137,28 @@ jobs:
 
       - name: Run ruff
         run: uv run ruff check .
+
+  # ---------------------------------------------------------------------------
+  # Documentation drift over the checkout, no index; the baseline says what it holds.
+  # ---------------------------------------------------------------------------
+  doc-drift:
+    name: Documentation drift
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-packages
+
+      - name: Check documentation drift
+        run: uv run repowise doc-drift --check --baseline .github/doc-drift-baseline.json --format github
 
   # ---------------------------------------------------------------------------
   # Integration tests (run on push to main only, slower)
@@ -170,6 +227,15 @@ jobs:
 
       - name: Test ui
         run: npm run test --workspace @repowise-dev/ui
+
+      - name: Type check claude-mod
+        run: npm run type-check --workspace @repowise-dev/claude-mod
+
+      - name: Test claude-mod
+        run: npm run test --workspace @repowise-dev/claude-mod
+
+      - name: Check the committed Lens bundle is current
+        run: npm run build:mod --workspace @repowise-dev/claude-mod -- --check
 
   # ---------------------------------------------------------------------------
   # VS Code extension — type check, bundle-size gate, and Electron smoke test

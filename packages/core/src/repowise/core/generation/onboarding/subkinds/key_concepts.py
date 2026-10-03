@@ -93,9 +93,8 @@ class ConceptSymbol:
 # harmless only while `imports` was in the set and would have mislabelled a Go
 # `method_implements` edge the moment it was not.
 #
-# Ceiling: c4_builder/labels.py `_EDGE_VERB` answers a similar question over
-# all 14 types, but it lives in packages/server and core cannot import it, and
-# it disagrees here on `extends` ("inherits from"), tuned for a C4 arrow
+# Ceiling: analysis/c4/labels.py `_EDGE_VERB` answers a similar question over
+# all 14 types, but it disagrees here on `extends` ("inherits from"), tuned for a C4 arrow
 # rather than for prose. If a third copy appears, reconcile the wording first,
 # then lift one map into core; a straight merge would silently reword these
 # prompts.

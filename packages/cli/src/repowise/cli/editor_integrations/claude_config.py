@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -399,6 +400,120 @@ def _failure_entry() -> dict:
             }
         ],
     }
+
+
+#: The repo-local coverage re-ingest entry (shell tools). ``--coverage-only``
+#: runs that one surface, so it never revives the shell notices the narrowed
+#: :data:`_AUGMENT_MATCHER` dropped.
+_COVERAGE_HOOK_COMMAND = (
+    "if command -v repowise-augment >/dev/null 2>&1; "
+    "then exec repowise-augment --coverage-only; fi"
+)
+_COVERAGE_HOOK_EVENTS = ("PostToolUse", "PostToolUseFailure")
+
+
+def claude_code_local_settings_path(repo_path: Path) -> Path:
+    """The repo's own, uncommitted Claude Code settings file."""
+    return Path(repo_path) / ".claude" / "settings.local.json"
+
+
+def _coverage_entry() -> dict:
+    return {
+        "matcher": SHELL_TOOL_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": _COVERAGE_HOOK_COMMAND,
+                "timeout": 10,
+            }
+        ],
+    }
+
+
+def _is_coverage_hook(hook: object) -> bool:
+    return "--coverage-only" in _hook_command(hook) and _is_repowise_hook(hook)
+
+
+def claude_code_augment_installed() -> bool:
+    """Whether ``~/.claude/settings.json`` carries the repowise augment hooks."""
+    path = _claude_code_settings_path()
+    try:
+        hooks = load_existing_config(path).get("hooks") if path.exists() else None
+    except Exception:
+        return False
+    post = hooks.get("PostToolUse") if isinstance(hooks, dict) else None
+    return isinstance(post, list) and _has_repowise_hook(post)
+
+
+def set_repo_coverage_hook(repo_path: Path, enabled: bool) -> Path | None:
+    """Add or remove the coverage re-ingest entries in the repo's ``settings.local.json``.
+
+    Claude Code delivers a shell command that exits non-zero, as a failing
+    test run does, as ``PostToolUseFailure``, so the entry sits under both
+    events. Repo-local because the per-shell-call process start is then paid
+    only in a repository that ingests coverage; Claude Code merges hooks across
+    settings files. Returns the file when it changed, else ``None``. A file
+    this leaves empty is removed.
+    """
+    path = claude_code_local_settings_path(repo_path)
+    settings = _read_local_settings(path, enabled)
+    if settings is None or not _apply_coverage_entries(settings, enabled):
+        return None
+    return _write_or_remove(path, settings)
+
+
+def _read_local_settings(path: Path, enabled: bool) -> dict | None:
+    """The file's object, ``{}`` when absent and adding, ``None`` when there is nothing to read."""
+    if not path.exists():
+        return {} if enabled else None
+    try:
+        return load_existing_config(path)
+    except Exception:
+        return None
+
+
+def _apply_coverage_entries(settings: dict, enabled: bool) -> bool:
+    """Add or remove our entry under each event of *settings*, in place; whether it changed."""
+    hooks = settings.setdefault("hooks", {}) if enabled else settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    changed = False
+    for event in _COVERAGE_HOOK_EVENTS:
+        changed = _apply_coverage_entry(hooks, event, enabled) or changed
+    if not hooks:
+        settings.pop("hooks", None)
+    return changed
+
+
+def _apply_coverage_entry(hooks: dict, event: str, enabled: bool) -> bool:
+    entries = hooks.setdefault(event, []) if enabled else hooks.get(event)
+    if not isinstance(entries, list):
+        return False
+    # Ours only inside a shell-matcher entry: the same command under any other
+    # matcher was written by someone else and is left alone.
+    own = [e for e in entries if isinstance(e, dict) and e.get("matcher") == SHELL_TOOL_MATCHER]
+    present = any(_is_coverage_hook(h) for e in own for h in _hooks_of(e))
+    changed = enabled != present
+    if changed and enabled:
+        entries.append(_coverage_entry())
+    elif changed:
+        kept = list(own)
+        _strip_hooks(kept, _is_coverage_hook)
+        dropped = [e for e in own if not any(e is k for k in kept)]
+        entries[:] = [e for e in entries if not any(e is d for d in dropped)]
+    if not entries:
+        hooks.pop(event, None)
+    return changed
+
+
+def _write_or_remove(path: Path, settings: dict) -> Path | None:
+    """Write *settings*, or remove the file when nothing is left in it."""
+    if not settings:
+        with contextlib.suppress(OSError):
+            path.unlink()
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path if _write_settings(path, settings) else None
 
 
 def install_claude_code_hooks() -> Path | None:

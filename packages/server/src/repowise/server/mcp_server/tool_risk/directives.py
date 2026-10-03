@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.next_call import ActionCommand
 from repowise.core.analysis.risk_semantics import structural_impact_contract
 from repowise.core.persistence.crud.authority import decision_currencies
 from repowise.core.persistence.database import get_session
@@ -57,6 +58,7 @@ _MAY_BREAK_TESTS_LIMIT = 3
 #: than the may-break lists (it is what you actually run), but stays glanceable;
 #: the overflow and full typed rows live in pr_blast_radius.test_impact.
 _TESTS_TO_RUN_LIMIT = 10
+_TESTS_TO_RUN_KIND = {"measured": "test_id", "inferred": "test_file"}
 
 
 def _breaking_change_directive(
@@ -657,6 +659,25 @@ def _build_pr_directive(
             f"this repo."
         )
 
+    # What to call next, from this response alone. ``tests_to_run`` is already
+    # the answer to "which tests", so it gets no call of its own.
+    next_calls = [
+        ActionCommand.call(
+            "The diff itself: review priority, health delta and impacted tests",
+            "get_change_risk",
+            cli="repowise risk",
+        )
+    ]
+    if may_break:
+        next_calls.append(
+            ActionCommand.call(
+                "How the files that may break use the changed code",
+                "get_context",
+                {"targets": may_break[:5], "include": ["callers"]},
+                cli=f"repowise context {' '.join(may_break[:5])} --include callers",
+            )
+        )
+
     directive = {
         "may_break": may_break,
         "may_break_tests": may_break_tests,
@@ -670,6 +691,8 @@ def _build_pr_directive(
         "files_without_measured_tests": [],
         "tests_to_run": tests_to_run,
         "tests_to_run_basis": tests_to_run_basis,
+        # A measured row names a coverage-map test id; an inferred one a test file.
+        "tests_to_run_kind": _TESTS_TO_RUN_KIND.get(tests_to_run_basis),
         "tests_to_run_total": tests_to_run_total,
         "tests_to_run_emitted": len(tests_to_run),
         "tests_to_run_truncated": tests_capped,
@@ -703,6 +726,7 @@ def _build_pr_directive(
         "conformance_violations": conformance_violations,
         "dependency_cycles": dependency_cycles,
         "governance_risk": governance_risk,
+        "next_calls": [c.as_dict() for c in next_calls],
         "summary": (
             f"PR touches {len(changed_files)} file(s). "
             f"~{len(may_break)} downstream file(s) may be affected, "

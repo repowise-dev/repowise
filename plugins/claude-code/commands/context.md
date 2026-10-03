@@ -36,7 +36,8 @@ repowise context src/api/routes.py --include skeleton
 
 `--include skeleton` adds the body-elided, line-verified file shape. For the
 exact function body, prefer `/repowise:symbol` (or `get_symbol`) with a
-`symbol_id` from the card.
+`symbol_id` from the card; a symbol row without one is addressed as
+`path::name`.
 
 Shared targeting flags (`--path`, `--repo`, `--no-workspace`) work the same as
 the other tool-adapter commands.

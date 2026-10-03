@@ -1,494 +1,339 @@
 # Change risk (`repowise risk`)
 
-`repowise risk` reports on a **change** (a commit or a `base..head` range): the
-bug-fix history of the files it touches, and the shape of its diff. It is a
-just-in-time / pre-merge signal, complementary to `repowise health`, which
-scores files rather than changes.
+`repowise risk` reports on a **change**: a commit, a `base..head` range, or
+your uncommitted work. It tells you two things. Where the change sits in the
+repository's own distribution of recent commits, by size and spread. And
+whether the files it touches have broken before. It scores changes; for scores
+on files, use `repowise health`.
 
-**Lead with `risk_percentile` and `classification`.** They are the benchmarked,
-population-relative authority for live change review. `fix_history` is
-complementary evidence about where the change lands. The supporting 0–10 score
-measures how big and spread out a change is; it is not a probability. See
-[What the score does and does not buy](#what-the-score-does-and-does-not-buy).
+It needs no LLM key, no network and no index: it runs on `git` plus constants
+learned offline. A typical run is one `git log` walk and a sample of recent
+commits. Branch overlap and the independent-changes report use the index when
+there is one.
 
-Everything below describes diff shape, which is what `repowise risk` reports.
-The `get_change_risk` MCP tool leads instead with what the change newly made
-worse — it compares the health of both revisions and keeps diff shape as
-supporting context. See [MCP tools](../agent/MCP_TOOLS.md#get_change_risk).
+Lead with `risk_percentile` and `classification`. They are the
+population-relative signal for review. `fix_history` is separate evidence about
+where the change lands. The 0-10 score is a supporting measure of diff size and
+spread, not a probability (see [Accuracy and limits](#accuracy-and-limits)).
+
+## Quick start
 
 ```bash
-repowise risk                 # score uncommitted work, else HEAD
-repowise risk HEAD            # score the last commit
-repowise risk abc123          # score a single commit
-repowise risk main..HEAD      # score a branch / PR range as one change
-repowise risk main..HEAD --ext .py        # count only .py files
-repowise risk main..HEAD -x 'tests/' -x '*.spec.ts'  # omit matching paths
-repowise risk --format json               # machine-readable
+repowise risk                    # uncommitted work, else HEAD
+repowise risk HEAD               # the last commit
+repowise risk main..HEAD         # a branch or PR range, as one change
+repowise risk main..HEAD --ext .py              # count only .py files
+repowise risk main..HEAD -x 'tests/' -x '*.spec.ts'
+repowise risk --format json
+repowise overlap                 # other branches editing the same files
 ```
 
-It runs in-process: pure `git` + learned constants. **No LLM, no network, and no
-blame at runtime**: SZZ labelling lives entirely in the offline calibration.
+From an agent:
 
-## What gets scored
+```python
+get_change_risk()                          # the working tree or HEAD
+get_change_risk(revspec="main..HEAD")
+get_risk(changed_files=["src/api/routes.ts", "src/middleware/cors.ts"])  # PR mode
+```
 
-With **no revspec** the subject is the change in front of you: your uncommitted
-work (staged, unstaged and untracked) if the tree is dirty, otherwise `HEAD`.
-The payload sets `working_tree: true` when it took that path, and the CLI says
-so. Naming a revspec — `HEAD` included — always means committed refs.
+`get_change_risk` leads with what the change newly made worse: it compares the
+health of both revisions and keeps diff shape as supporting context. In the
+dashboard, the Commits page leads its table with review priority.
 
-A **merge commit** is scored for the diff it brought onto its first parent, so a
-merged PR reads as its own content rather than as an empty change.
+### What gets scored
 
-## Excluding paths
+With no revspec the subject is your uncommitted work (staged, unstaged and
+untracked) when the tree is dirty, otherwise `HEAD`. The payload sets
+`working_tree: true` when it took that path. Naming a revspec, `HEAD`
+included, always means committed refs. A merge commit is scored for the diff it
+brought onto its first parent, so a merged PR reads as its own content.
 
-Use repeatable `--exclude` / `-x` flags with gitignore-style patterns to omit
-files from a score. The same filters apply to the requested change and the
-recent commits sampled for its percentile, so the comparison remains like for
-like. Put project-wide, risk-only rules in a repository-root `.riskignore`;
-those patterns apply automatically and are combined with any command-line
-flags. For example, `tests/` excludes that directory recursively, while
-`test_*.py` excludes matching test filenames anywhere in the repository.
+## Reading the results
 
-## Fix history: where the change lands
+Read the result in this order:
 
-The first block in the result is `fix_history`, and it is the one to act on. It
-answers a question the diff shape cannot: **have these files broken before?**
+| Field | What it is | Act on it |
+|---|---|---|
+| `review_priority` / `classification` | Tercile of the percentile: `low` / `moderate` / `high`, labelled Below typical / Typical / Elevated | Yes: the review signal |
+| `risk_percentile` | Where this change's diff shape ranks among the repo's recent commits (0-100) | Yes |
+| `fix_history` | Prior bug fixes on the touched files, ranked against recent commits | Yes: where to look |
+| `score` | 0-10 diff size and spread, on a single-commit scale | Supporting only |
+| `fallback_band` | `low` / `moderate` / `high` from the score | Only present when there was nothing to rank against |
+| `independent_changes` | Groups of changed files that nothing links | Consider splitting |
+
+### Fix history: where the change lands
+
+`fix_history` answers a question diff shape cannot: have these files broken
+before?
 
 ```
 These files have broken before · 82nd percentile of this repo's recent commits
-┌──────────────────────────────────────────┬───────┬─────────────┐
-│ File                                     │ Lines │ Prior fixes │
-├──────────────────────────────────────────┼───────┼─────────────┤
-│ core/pipeline/persist.py                 │    40 │        21.6 │
-│ cli/commands/update_cmd/command.py       │     6 │        19.3 │
-└──────────────────────────────────────────┴───────┴─────────────┘
+File                                 Lines   Prior fixes
+core/pipeline/persist.py                40          21.6
+cli/commands/update_cmd/command.py       6          19.3
 ```
 
-- **Prior fixes** is a count of bug-fix commits that previously touched that
-  file, **recency-weighted against the change's own date**: a fix from a year
-  earlier counts a half, from two years a quarter. So the number is
-  "recent-equivalent fixes", not a raw tally, and a file that broke constantly
-  and then settled decays away. Anchoring to the change rather than to today
-  means the same commit scores the same on every re-run.
-- **`density`** is the churn-weighted mean of those per-file numbers. Weighting
-  by churn means the file a change mostly edits dominates the answer rather than
-  a one-line drive-by next door. It is a *ratio*, so unlike the score it does
-  not grow with the size of the diff: one line in a file fixed twenty times
-  outranks a thousand lines in files never fixed at all.
-- **`percentile`** ranks that density against the same measure over the
-  repository's own recent commits, since a bare "3.4 decayed fixes" means
-  nothing on its own. Ranking against whole commits rather than against
-  individual per-file numbers is what keeps it readable: a change spread over
-  several files averages below any single hot file, so a per-file population
-  pinned every multi-file change to the bottom. Commits that touch no
-  fix-bearing file stay in the population; they are a legitimate answer to how
-  much fix pressure a change here usually stands on. It is `null` when the
-  change touches no fix history, or when fewer than eight sampled commits are
-  available to rank against.
+- **Prior fixes** counts bug-fix commits that touched the file before the
+  change, weighted by age against the change's own date: a fix one year earlier
+  counts a half, two years a quarter. The same commit scores the same on every
+  re-run.
+- **`density`** is the churn-weighted mean of those per-file numbers. It is a
+  ratio, so it does not grow with diff size: one line in a file fixed twenty
+  times outranks a thousand lines in files never fixed.
+- **`percentile`** ranks that density against the same measure over the repo's
+  recent commits. It is `null` when the change touches no fix history, or when
+  fewer than eight sampled commits are available.
 
-This comes from one `git log` walk (up to 20 000 commits, memoized per
-repository state) using the same bug-fix classifier the indexer uses. It needs
-no index, no database and no coverage data, so it is available on a repository
-`repowise` has never indexed.
+History is read from before the change: a commit is never ranked against fixes
+it caused. For a range, the record is read at the fork point. Up to 20,000
+commits are walked, once per repository state.
 
-Fix history is read from **before** the change being scored: a commit is ranked
-against the fixes that had already landed when it was written, never against
-fixes it caused. For a range, the record is read at the fork point the diff
-starts from, not at the base branch's current tip.
+A bug fix is a commit whose subject matches `fix`, `bug`, `patch`, `resolves`,
+`closes #N` or `fixes #N`, and does not contain `docs`, `typo`, `bump`, `deps`,
+`chore`, `lint`, `format` or `style`. The same rule feeds the health layer and
+[bug-fix history](BUG_HISTORY.md).
 
-> **Caveat, stated rather than buried.** The bug-fix classifier is keyword-based
-> and shared with the indexer, so `fix_history` under-reports in two ways.
->
-> It matches `fix`, `bug`, `patch`, `resolves`, `closes #N`, `fixes #N` — and
-> misses conventions outside that set. Django's `Fixed #12345` is the notable
-> one: on a 4 000-commit sample it classifies 5 commits as fixes where roughly
-> 1 800 use that prefix. (Django also uses `Fixed #N` for features, so the
-> subject line alone cannot separate the two — which is why the classifier has
-> not simply been widened.)
->
-> It also **excludes** any subject containing `docs`, `typo`, `bump`, `deps`,
-> `chore`, `lint`, `format` or `style`. That keeps cosmetic commits out, but
-> drops genuine fixes like "fix: docs build crash" with them.
->
-> Where the classifier fires the ranking is good; where a project's convention
-> falls outside it, `fix_history` reads lower than the truth.
+### The diff-shape score
 
-## What the diff-shape score measures
+The score uses Kamei-style change metrics: lines added and deleted (`la`,
+`ld`), files touched (`nf`), directories and top-level subsystems touched
+(`nd`, `ns`), the entropy of churn across files, and the author's prior commit
+count (`exp`). `exp` is `null` when the author cannot be resolved and then
+contributes nothing. The model is a plain logistic over standardized features,
+so each driver's push is exact.
 
-The model uses Kamei-style *change* metrics (Kamei et al., "A large-scale
-empirical study of just-in-time quality assurance"):
+Drivers are stated relative to the model's baseline commit (10.5 lines added,
+1.7 files), not to this repo. A small change can read "more lines added than
+baseline" and still rank below typical in a repo of large commits. `nf`, `nd`
+and `ns` enter the model but are not reported as drivers: their small negative
+weights are collinearity with size, not evidence that touching more files is
+safer.
 
-| Feature | Meaning |
-|---------|---------|
-| `la`, `ld` | lines added / deleted |
-| `nf` | files touched |
-| `nd`, `ns` | distinct directories / top-level subsystems touched |
-| `entropy` | Shannon entropy of the per-file churn distribution (diffusion) |
-| `exp` | author's prior commit count (experience) |
-
-`exp` is genuinely optional: when the author cannot be resolved — a diff-only
-caller with no local history, or a name whose regex breaks the `git rev-list`
-lookup — it is reported as `null` and contributes exactly zero to the logit.
-Nothing is imputed, because `0` is a real value meaning "first ever commit" and
-the model reads it as a risk-raising signal.
-
-These are properties of the *diff*, so the score is a change-level signal rather
-than a file-size proxy. The risk is a plain L2-logistic over standardized,
-log-compressed features (`logit = intercept + Σ coefᵢ·zᵢ`), so every feature's
-push on the risk is exact and reported as an attributable driver (the same
-linear / per-finding-attributable contract the file health score holds).
-
-## What the score does and does not buy
-
-The score is a **diff-size statistic**. That is a measured claim, not a hedge:
-
-- `la` (lines added) carries a coefficient 7.6× the next largest, and scoring by
-  `la` alone reproduces the full seven-feature score to within 0.12–0.16 points
-  on every repository tried.
-- On a hand-picked set of small-but-dangerous changes versus large-but-boring
-  ones (47 within-repo pairs across repowise, flask, django and zod), the score
-  ranks the dangerous change above the boring one in **0 of 47** pairs. Ranking
-  by fix density alone gets **46 of 47**.
-
-  That set is constructed, not held out: the pairs were chosen so that the
-  dangerous change is always the smaller one, which means ranking by lines added
-  scores 0 by construction and any signal genuinely independent of size scores
-  near-perfectly. It is a falsification test — "can the score ever do this?" —
-  and not an accuracy estimate. Its value is that the score failed it
-  completely, on cases a reviewer would call obvious.
-
-A refit was measured and rejected rather than shipped. Regrouping the corpus to
-PR granularity (`--first-parent` merge spans) and adding two size-orthogonal
-features made accuracy *worse*: pooled leave-one-repo-out AUC 0.769 for the
-refit against 0.776 for the current feature set and 0.780 for a churn-only
-baseline. Per repository, **lines added alone matches or beats the fitted model
-in five of six repos**. The reason is the labels: a commit is marked
-defect-inducing when a later bug-fix's blame points back at a line it wrote, and
-a larger commit writes more lines, so the label is itself size-biased. Any
-deliberately size-orthogonal feature scores near chance against it — fix density
-lands at 0.46–0.57 AUC — which is a fact about the labels, not about the
-feature. So the model constants are unchanged and the score is reported as what
-it demonstrably is.
-
-`risk_authority` and `score_measures` state this in every payload;
-`include=["scales"]` adds the per-field dictionary.
-Read the result in this order:
-
-- **Review priority** / **classification** / **percentile**: where this change's
-  *diff shape* sits in the repo's own distribution. This is the authoritative
-  population-relative review signal.
-- **`fix_history`**: uncalibrated historical evidence about where the change
-  lands, reported separately rather than folded into a probability.
-- **`score`** (0–10 normalized points): supporting diff size and spread,
-  offline-calibrated and corpus-anchored to a single commit. It ranks 0.99
-  against lines added on every repository measured, so `get_change_risk` keeps
-  it behind `include=["diagnostics"]` rather than on the wire; the CLI and the
-  REST range endpoint still report it.
-- **`fallback_band`**: the heuristic-thresholded absolute `low` / `moderate` /
-  `high` model-score band. Present
-  *only* when there was no baseline to rank against (a shallow repo, or
-  `--baseline 0`), which is why it is not a peer of the review priority.
-
-The score's absolute band is also **unit-blind**. Its corpus is individual
-commits (baseline: 10.5 lines added, 1.7 files), so a squash-merged PR or a
-`base..head` range is several commits' worth of diff read against a one-commit
-scale and skews high: two-thirds of commits can read "high" while ranking
-normally for *that* repo. The payload states the assumption in `score_unit`.
-
-Each **driver** is reported relative to *the model's baseline commit* (the
-calibration-corpus mean), not this repo, so a `+19 / −1` change can legitimately
-read "more lines added than baseline" while still ranking `Below typical` for a
-repo of large commits. The signed contribution and colour (red raised the raw
-score, green lowered it) carry the direction; the label only states the
-feature's standing, never an absolute verdict.
-
-`nf`, `nd` and `ns` enter the logit exactly as fit but are **not reported as
-drivers**. Their coefficients are small and negative — collinearity with `la`
-(size), not a finding that touching more files is safer — so as an explanation
-they contradict themselves: the label reads "more directories than baseline"
-while the contribution is protective. Hiding an explanation we cannot stand
-behind is the honest interim; a refit is the real fix.
-
-The `repowise risk` CLI samples the repo's recent commits live (`--baseline`,
-default 200) to compute this percentile; in the web UI it is precomputed from the
-indexed commit history.
+The absolute score is calibrated on single commits. A squash-merged PR or a
+`base..head` range is several commits' worth of diff and skews high on it; the
+percentile does not have that problem. `score_unit` states this in every
+payload.
 
 ### What the sample is anchored to
 
-The sample is the recent history the change is measured against, and where it
-starts depends on what is being scored:
+`repowise risk` samples recent commits live (`--baseline`, default 200). The
+web UI uses the indexed commit history.
 
-| Subject | Sample runs back from | Why |
-|---|---|---|
-| A commit already in `HEAD`'s history | `HEAD` | Ranked against how the repo commits *now*. |
-| A commit that is not (another branch) | that commit | `HEAD`'s history is not its cohort. |
-| A `base..head` range | the merge-base of the two sides | The range's own commits stay out of the distribution it is measured against. |
-| Uncommitted work | `HEAD` | Same subject, same cohort as scoring `HEAD`. |
+| Subject | Sample runs back from |
+|---|---|
+| A commit in `HEAD`'s history | `HEAD` |
+| A commit on another branch | that commit |
+| A `base..head` range | the merge-base of the two sides |
+| Uncommitted work | `HEAD` |
 
-A change never ranks against itself: the target's own score is removed from the
-sample before the percentile is taken.
+A change never ranks against itself. One walk is reused for every change scored
+against the same anchor and filters in a process, so a long-running MCP server
+pays for it once.
 
-Because the sample depends only on that anchor and the active filters, and not
-on the individual change, one walk is reused for every change scored against the
-same history in the same process. A long-running MCP server pays for the walk
-once and answers subsequent `get_change_risk` calls without repeating it. A new
-commit, a moved branch, or a different set of filters produces a different
-anchor or a different filter set, and so a fresh walk.
+### PR mode (`get_risk` with `changed_files`)
+
+`get_risk(changed_files=[...])`, or `repowise risk --target FILE
+--changed-file FILE`, answers a different question: what does this set of
+files reach, and what is missing from it. The response opens with a
+`directive` block:
+
+| Field | Meaning |
+|---|---|
+| `may_break` | Production files in structural reverse-import reach of the diff. Candidates for review, not proven breakage |
+| `may_break_tests` | Test files reached the same way, listed separately |
+| `missing_cochanges` | Files that historically change with these but are not in the diff |
+| `missing_tests`, `test_recommendations`, `tests_to_run` | Test gaps and which tests to run; each recommendation says whether it is `measured` (coverage) or `inferred` (graph reach) |
+| `next_calls` | What to call next |
+| `summary` | One sentence over all of the above |
+
+In a workspace the directive also carries cross-repo fields:
+`will_break_consumers` (repos that structurally depend on this one; structural
+reach, not a runtime claim), `missing_cross_repo_cochanges`,
+`breaking_changes` (incompatible provider contract changes since the last
+index), `conformance_violations` and `dependency_cycles`. See
+[Cross-Repo Blast Radius](../scale/WORKSPACES.md#cross-repo-blast-radius) and
+[Breaking-Change Guard](../scale/WORKSPACES.md#breaking-change-guard).
+
+PR mode also reports `structural_impact_score`: a deterministic, uncalibrated
+0-10 heuristic over PageRank, churn and transitive dependents, banded
+`localized` (below 4), `moderate` (4 to below 7) and `broad` (7 and up). It is
+not a probability and does not decide review. `overall_risk_score` is an exact
+deprecated alias.
 
 ## Independent changes
 
-This is a structural property of the diff, not a score: it answers whether the
-files in front of you are one change or several. The changed files are grouped by
-connectivity, and one group is separate from another only because nothing
-connected them.
+This answers whether the files in front of you are one change or several. It
+is a structural property of the diff, with no score.
 
-Not every changed file is eligible to be grouped. A file is grouped only when it
-has a file node in the index, is not a test file, and is written in a language
-whose resolver can emit an import edge at all. That rules out documentation,
-configuration and data files: a lockfile or a markdown page is a node with no
-edges, so "nothing links it" is a fact about the language rather than about this
-change. It rules out test files too, because no index records the tie from a test
-to the code it exercises, and an integration test otherwise attaches to whichever
-shared harness the diff happens to contain. Files that fail either test are never
-placed in a group, not even through a co-change pair, and they never bridge two
-groups: only eligible files are in the graph at all, and any link with one end
-outside that set is dropped before grouping.
+A changed file is grouped only when it has a file node in the index, is not a
+test file, and is in a language whose resolver can emit an import edge. Docs,
+config, data and test files are never grouped and never bridge two groups.
+Three kinds of link join eligible files:
 
-Three kinds of link connect two eligible files:
+- **Index edges** between two different changed files: imports, calls, type
+  references, framework and dynamic edges, reads.
+- **Stored co-change pairs**: files history moves together.
+- **Shared commits**, for a `base..head` range only: files one commit touched
+  belong together.
 
-- **Index edges.** Every non-containment edge whose two ends belong to two
-  different changed files: imports, calls projected to the files that own them,
-  type references, framework and dynamic edges, and reads. Edges whose ends belong
-  to the same file are dropped, which is how the containment types (`defines`,
-  `has_method`) stay out without being enumerated, and an edge to a dependency
-  outside the repository links nothing.
-- **Stored co-change pairs.** Two files history moves together are one change even
-  when nothing imports anything.
-- **Commit co-membership, for a `base..head` range only.** The files one commit
-  touched are linked to each other, so a file two commits share joins them. That
-  is the author's own statement that the files belong together, which is stronger
-  evidence than any edge, and it is what `bridging_files` most often names. A
-  single commit and the working tree carry no such evidence: one commit says
-  nothing about what moves with what, so the range's commit list is read only when
-  the subject is a range.
+Files left out are listed as `ungrouped_files` and never counted as an
+independent change. `bridging_files` names the files that alone hold a group of
+three or more together. The `basis` field states in words exactly what was
+checked; a missing edge is a claim about this index, not about the code.
 
-A group also has to carry at least one file the index has in fact linked to
-something, whether through an edge, a stored co-change partner, or a shared
-commit. Elsewhere, an absent edge is not evidence, so the files fall out of the
-grouping instead.
-
-Everything not grouped is reported as `ungrouped_files` and never counted as an
-independent change, and the summary says so in those terms: *N changed file(s)
-is/are left out of the grouping: docs, config, tests, files not in the index, or files it has never
-linked.* `bridging_files` names the articulation points of a group's own subgraph,
-the files that alone hold the group together: move one out and the group splits.
-It is computed only for groups of three or more files, since removing either end
-of a pair leaves one file, which is not a split.
-
-There is no score, no percentage, and no adjective on the result. The `basis`
-field states in words what was actually checked, and it is not the same sentence
-in both cases. When the commits of a range were read, it is *no import, call, type
-reference, co-change pair or shared commit in the index and this range links one
-group to another*; when there were no commits to read, the shared commit drops out
-of the sentence and it is *no import, call, type reference or co-change pair in
-the index links one group to another*. That wording is deliberate in either form:
-a missing edge is a claim about this index, not about the code, and the sentence
-never claims a check that did not happen.
-
-The report is silent unless it has something to say. Nothing is produced when
-fewer than two changed files exist, when fewer than two of them are eligible to be
-grouped, or when fewer than two groups survive. A change that is one change gets
-no report.
-
-It surfaces in two places. `repowise risk` prints the groups under the driver
-table, naming each group's files, its bridging files, and the first ten ungrouped
-paths; `--format json` carries the same object under `independent_changes`. In
-`get_change_risk` it is `independent_changes`, which needs an index
-and is absent without one.
-
-## Calibration & accuracy
-
-Constants are learned offline against the defect corpus (AG-SZZ bug-inducing
-commits as labels, time-ordered evaluation with a right-censoring gap, and a
-leave-one-repo-out comparison to the churn-only baseline). On a 7-repo,
-5-language slice the pooled leave-one-repo-out AUC is **0.772 vs 0.766 for
-churn-only** (Δ +0.0068, 95% CI [-0.0003, +0.0131]).
-
-Read that number for what it is. A churn-only baseline scores 0.766 on the same
-labels, and lines-added alone scores higher still, so the margin measures very
-little. It is reported because it is the number the constants were selected on,
-not as evidence the score ranks danger — for that claim, see
-[What the score does and does not buy](#what-the-score-does-and-does-not-buy),
-where it fails.
-
-**`fix_history` carries no AUC of its own, deliberately.** Its evidence is the
-47-pair ranking gate (46/47) and the fact that the files it ranks highest in
-this repository are the ones with the longest bug-fix records. It scores near
-chance against the SZZ labels, which — as above — is a property of those labels.
-Quoting a number from a benchmark that structurally cannot see the signal would
-be worse than quoting none.
-
-Only learned constants ship; the runtime stays deterministic, zero-LLM, and
-free of new dependencies. Recalibrate via
-`repowise-bench/health-defect/jit_calibration.py`; the constants live in
-`packages/core/src/repowise/core/analysis/change_risk/model.py`.
-
-## PR structural-impact scale (`get_risk`)
-
-PR-mode `get_risk` answers a different question. Its
-`structural_impact_score` is a deterministic, uncalibrated structural-exposure
-heuristic in normalized points from 0 to 10. It combines the mean and maximum
-of `pagerank * (1 + temporal_hotspot)` across changed files, maps that component
-to at most 8 points with `8 * (1 - exp(-10 * combined))`, then adds at most 2
-points for `min(transitive_dependents / 20, 1)`. Bands are `localized` below 4,
-`moderate` from 4 to below 7, and `broad` from 7. It is not a probability and is
-not authoritative for live change review. Historical co-change evidence is
-reported separately and never enters this structural score.
-
-`overall_risk_score` remains an exact deprecated alias so older clients keep
-the same value and unit. `overall_risk_score_compatibility` names the migration
-to `structural_impact_score`; the two fields cannot contradict.
-
-The deterministic fixture corpus records the retained scale's distribution:
-
-| Control | Score | Band |
-| --- | ---: | --- |
-| documentation / low signal | 0.01 | localized |
-| small ordinary source | 0.34 | localized |
-| historical fixes, limited reach | 0.34 | localized |
-| co-change only | 0.08 | localized |
-| moderate multi-file | 4.27 | moderate |
-| structurally broad, little history | 7.34 | broad |
-| genuinely broad high control | 9.91 | broad |
-
-The numeric formula was retained, so the before-and-after numeric distributions
-are identical; the correction changes names, units, authority, and labels. No
-fixture saturates at 10, ordinary controls remain below the moderate threshold,
-and all three bands are occupied. The corpus lives in
-`tests/fixtures/risk_scale_corpus.json`.
-
-## Public scale inventory
-
-| Public value | Producer and evidence | Unit / range | Calibration and authority |
-| --- | --- | --- | --- |
-| `get_change_risk.score` / REST `score` / stored `change_risk_score` | Offline-fitted logistic model over live diff size, spread, entropy, and author experience; deterministic at runtime | normalized points, 0-10; calibrated at single-commit granularity | Benchmarked on 4,102 commits across 7 repositories; supporting signal, not a probability or review authority |
-| `risk_percentile` | Mid-rank of the same score among filtered recent commits | percentile rank, 0-100 | Population-relative benchmark; authoritative with `classification` for live change review |
-| `review_priority` / `classification` | Shared percentile terciles at 33.33 and 66.67 | category | Authoritative population-relative label |
-| `fallback_band` | Shared score thresholds at 4 and 7, emitted only without a usable baseline | category | Heuristic thresholds on the benchmarked model score; absolute fallback, not population-relative |
-| `fix_history.density` | Churn-weighted, recency-decayed prior bug fixes on touched files | recency-weighted prior fixes, unbounded | Uncalibrated historical heuristic; separate evidence, never folded into a probability |
-| `get_risk` `hotspot_score` | Repository-relative churn percentile from the index | ratio, 0-1 | Uncalibrated normalized component |
-| `get_risk` `health_score` | Indexed code-health model | health points, 0-10; higher is healthier | Benchmarked file-health signal, not interchangeable with change-risk points |
-| `structural_impact_score` | PR structural formula above | normalized points, 0-10 | Deterministic and uncalibrated; not authoritative. `overall_risk_score` is an exact deprecated alias |
-| `direct_risks[].structural_score` | `pagerank * (1 + temporal_hotspot)` | raw pagerank-weighted-hotspot value, unbounded | Uncalibrated within-change structural weight. `risk_score` is an exact deprecated alias |
-| `direct_risks[].temporal_hotspot` | Exponentially-decayed sum of per-commit churn (halflife 180 d); each commit contributes up to 3.0 | raw decayed churn, unbounded (observed max 42.6 on this repository); use `churn_percentile` for a normalised 0–1 rank | Intermediate input to `structural_score`; not a ratio|
-| `direct_risks[].churn_percentile` | Rank of `temporal_hotspot` among the repository's files | percentile rank, 0–1 | Comparable across repositories as a rank, not as activity; reported beside `structural_score`, never folded into it |
-| `direct_risks[].is_hotspot` | The index's hotspot verdict: top-quartile churn AND its absolute activity floors | boolean | Read this rather than re-deriving a hotspot from `churn_percentile`, which omits the floors |
-| `cochange_warnings[].score` | Number of historical commits in which the pair co-changed | raw commit count, 0+ | Historical evidence only; cannot become structural or runtime-breakage evidence |
-| workspace `impacted[].score` | Strongest path product of edge confidence, edge-kind weight, and `0.6` per hop | relative path weight, 0-1 | Deterministic, uncalibrated ranking heuristic; not a probability or change-review authority |
-| dashboard hotspot triage index | `40% * churn percentile + 35% * bus-factor tier + 25% * bounded temporal activity` | heuristic points, 0-100 | Client-side, uncalibrated orientation only; labelled adjacent to the chart |
-
-Machine-readable `risk_authority`, `structural_impact_scale`,
-`overall_risk_score_compatibility`, and `impact_score_semantics` carry these
-definitions on every payload. They ship the guard tier - unit, range,
-calibration status, authority - by default. The reference tier (fitting corpus,
-formula, component breakdown, and the full `risk_scales` dictionary) is
-identical on every call, so MCP returns it only for `include=["scales"]`; the
-CLI `--json` output and this table carry it unconditionally.
-
-## Cross-repo change risk (workspace mode)
-
-> **Note:** This section describes `get_risk` in PR mode (`changed_files`).
-> `get_change_risk` carries its own `cross_repo` block, built from workspace
-> contracts rather than from the graph traversal described here.
-
-In a workspace, a change rarely stops at the repo boundary. When `get_risk` is
-called in PR mode (`changed_files`), its `directive` block gains two cross-repo
-fields derived from the [system graph](../scale/WORKSPACES.md#system-graph):
-
-- `will_break_consumers`: deprecated compatibility name for services in *other*
-  repos that structurally depend on the changed repo (a contract or package
-  import). This is structural reach for review, not a runtime-breakage claim.
-- `missing_cross_repo_cochanges`: services in other repos that historically
-  co-change with the changed repo but aren't in the diff. Correlation, not a
-  call, so they read as "may drift," not "will break."
-
-The same reachability powers the `get_blast_radius` MCP tool, the
-`GET /api/workspace/blast-radius` endpoint, and the Live System Map's
-blast-radius ripple. Structural edges outweigh behavioral co-change in the
-ranking (one named constant, `BEHAVIORAL_EDGE_WEIGHT`, in
-`packages/core/src/repowise/core/workspace/blast_radius.py`). See
-[Cross-Repo Blast Radius](../scale/WORKSPACES.md#cross-repo-blast-radius) for the full
-model.
-
-The directive carries a third cross-repo field, `breaking_changes`, when a
-provider contract in the changed repo has an incompatibility or an explicit
-comparison warning. The compatibility-named key includes removed operations,
-legacy proto/signature rules, and direction-aware OpenAPI request/response rules
-for complete sides with matching fidelity. Where
-`will_break_consumers` is topology ("who depends on this repo"),
-`breaking_changes` is schema-level truth ("this specific contract changed in a
-way that is incompatible"), each entry listing its side, schema source/fidelity,
-and endpoint-exposed consumer files across repos. Those links do not prove exact
-field use, runtime failure, or deployment safety. It is computed by diffing the
-current contracts against the previously-indexed set during
-`repowise update --workspace`; unsupported/unresolved sides and source, fidelity,
-or selected-response transitions surface as uncertainty rather than field
-removals. Compatible directional changes and new endpoints do not appear. See
-[Breaking-Change Guard](../scale/WORKSPACES.md#breaking-change-guard) for the full model.
+The report is silent unless there are at least two groups. `repowise risk`
+prints the groups under the driver table; `--format json` and
+`get_change_risk` carry them as `independent_changes` (absent without an
+index).
 
 ## Branch overlap
 
 Branch overlap answers one question: which other open branches edit the files
 this change edits. It is git first, so it works in a fresh clone with no index.
 
-The scan starts from one `git for-each-ref` over `refs/heads` and
-`refs/remotes`, sorted by committer date, newest first. Symbolic remote heads
-are skipped, refs sharing a tip commit collapse to one entry (the local name
-where there is one, otherwise the shortest remote name), and the base ref, the
-change's own ref, and any ref whose tip is the base's or the change's commit are
-dropped. Branches stacked on the current one, and the ones it is stacked on, are
-dropped too: either shares every file by construction, which is one change split
-over two refs rather than two changes racing. The scan is bounded to the newest
-50 branches by committer date, raised or lowered with `--limit`, and what was
-left out is reported through `scanned` and `total` rather than dropped silently.
+```bash
+repowise overlap                          # HEAD against the trunk
+repowise overlap --base main --branch feature/x --limit 100
+```
 
-For each scanned branch the file list is `git diff --name-only base...branch`,
-which is what that branch did since it forked, not what the base did in the
-meantime. That list is intersected with the change's own changed files. Noise
-paths (workflows, lockfiles, generated and vendored files, localization blobs)
-are removed from both sides by the shared noise filter, and dependency manifests
-(`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `Gemfile`,
-`composer.json`, `requirements.txt`, `setup.py`, `pom.xml`, `build.gradle`,
-`build.gradle.kts`) are removed with them, because every dependency bump edits
-the manifest and sharing one says nothing about the work. A branch with no shared
-file after that filtering produces no entry, ever.
+It scans local and remote branches, newest committer date first, up to
+`--limit` (default 50). It drops the base, the change's own ref, refs pointing
+at either tip, and branches stacked on or under this one. For each branch it
+takes `git diff --name-only base...branch` (what that branch did since it
+forked) and intersects it with this change's files. Noise paths (workflows,
+lockfiles, generated, vendored and localization files) and dependency
+manifests (`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml` and
+similar) are removed from both sides first. A branch with no shared file after
+filtering produces no entry.
 
-Every row states its basis in words, and there are exactly two:
+Every row states its basis, one of two:
 
-- **`same file`.** A direct hit: both branches change that path.
-- **`co-change pair, N of M commits`.** A secondary row, shown only beneath a
-  branch that already has a direct hit. It names a file the other branch edits
-  that is not itself a direct hit and that the index's stored co-change record
-  pairs with one of this change's files, with that file carried as `partner`. It
-  is made only when both counts are recorded and the pair moved together at least
-  half the time (`N * 2 >= M`), and at most three appear per branch, so one file
-  that pairs with everything cannot drown out the files truly shared.
+- **`same file`**: both branches change that path.
+- **`co-change pair, N of M commits`**: shown only under a branch that already
+  has a direct hit. A file the other branch edits that history pairs with one
+  of yours at least half the time. At most three per branch. Needs an index.
 
-An entry also carries `ahead` and `behind` (commits only on the branch, then only
-on the base, from one `git rev-list --left-right --count`) and the date of its
-last commit. Branches are ordered by how many files they share directly, then by
-most recent commit, then by name; the co-change rows are appended afterwards and
-never reorder the list. There is no score and no percentage anywhere in the
-output. With an index, the shared files inside an entry are ordered by the same
-hub metric the PR blast radius uses (temporal hotspot and pagerank of the file);
-that metric orders rows and is never rendered. Without an index the git answer
-stands and the shared files are alphabetical, with no co-change rows.
+Each entry carries `ahead`, `behind` and the date of its last commit. Branches
+sort by shared files, then recency, then name. There is no score.
 
-What it does not claim: it compares paths, not hunks, so a shared file is a
-reason to talk to the other branch's author and not a predicted merge conflict.
-The co-change rows are historical correlation, never a structural link.
+It compares paths, not hunks: a shared file is a reason to talk to the other
+author, not a predicted merge conflict. `repowise overlap` prints one line when
+nothing overlaps, naming how many branches were scanned of how many exist.
+`get_change_risk` omits the `branch_overlap` block when nothing overlaps or the
+branch scan times out.
 
-Silence is the default. `repowise overlap` prints one line when no other branch
-edits a shared file, naming how many branches were scanned of how many exist, and
-`get_change_risk` omits the `branch_overlap` block entirely in that case. The
-block is also omitted when the branch scan times out.
+## Tuning and suppressing
+
+- **`--exclude` / `-x PATTERN`** (repeatable, gitignore-style) omits files. The
+  same filter applies to the sampled commits, so the comparison stays like for
+  like.
+- **`.riskignore`** at the repository root holds project-wide, risk-only
+  patterns. They apply automatically and combine with `-x`.
+- **`--ext`** counts only the listed suffixes.
+- **`--baseline N`** sets the sample size; `0` turns ranking off and leaves only
+  `fallback_band`.
+
+## In CI
+
+`--fail-above-percentile P` turns the command into a gate on `risk_percentile`.
+The absolute 0-10 value never decides.
+
+```bash
+repowise risk --fail-above-percentile 95 --format github
+repowise risk origin/main...HEAD --fail-above-percentile 95 --format markdown
+```
+
+With the flag, or with `--format markdown` or `github`, and no revspec, the
+subject is the CI change: the pull request's target branch (from CI variables,
+else the remote's default branch) `...HEAD`. A CI checkout of a PR is a merge
+commit, so `HEAD` alone would be the wrong change.
+
+Exit codes are the shared CI ones: `0` at or below the percentile, `1` above,
+`2` when the gate cannot evaluate. A change with no percentile cannot be gated:
+`--baseline 0` turns ranking off, and a shallow clone with fewer than 8 recent
+commits has nothing to rank against, so fetch full history. A revspec git
+cannot read also exits `2`. At percentile P roughly (100 - P)% of changes fail
+by construction; a failure asks for a split or a second reviewer, not a code
+fix.
+
+`json` adds a `gate` object with the unrounded percentile it compared.
+`markdown` leads with the verdict, then the range, sample, size and fix-history
+rank. `github` writes an `::error::` (or `::notice::`) and puts the markdown in
+the job summary.
+
+The GitHub Action runs it as the `risk` gate (input
+`risk-fail-above-percentile`; empty reports the rank without gating), and the
+GitLab template as the `repowise-risk` job when
+`REPOWISE_RISK_FAIL_ABOVE_PERCENTILE` is set. See [CI](../start/CI.md).
+
+## Accuracy and limits
+
+- **The score is a diff-size statistic.** Lines added carries a weight 7.6x the
+  next feature, and `la` alone reproduces the full score within 0.12-0.16
+  points on every repo tried.
+- **Against churn-only it barely moves.** Leave-one-repo-out AUC on 4,102
+  commits across 7 repositories (AG-SZZ labels): 0.772 for the model, 0.766 for
+  churn alone (95% CI of the gap includes zero).
+- **The score cannot rank danger.** On 47 hand-picked within-repo pairs of a
+  small dangerous change and a large boring one, the score picks the dangerous
+  one in 0 of 47. Fix density picks it in 46 of 47. The set is a falsification
+  test, built so size alone scores 0; it is not an accuracy estimate.
+- **`fix_history` has no AUC of its own.** It scores near chance against SZZ
+  labels, which are size-biased; quoting that number would mislead.
+- **The fix classifier is keyword based.** It misses conventions outside its
+  list (Django's `Fixed #N` is the notable one) and drops genuine fixes whose
+  subject says `docs` or `style`. Where a project's convention falls outside
+  it, `fix_history` reads low.
+- **Absolute scores skew high on ranges and squash merges**: the scale is one
+  commit. Use the percentile.
+- **Overlap compares paths, not hunks.**
+
+Method, the refit that was measured and rejected, and every public scale are in
+[architecture/change-risk.md](../architecture/change-risk.md).
+
+## Where it shows up
+
+- **CLI**: `repowise risk`, `repowise overlap`.
+- **MCP**: `get_change_risk` for a diff, `get_risk` for files and PR mode.
+- **Dashboard**: the Commits page, led by review priority.
+- **REST**: `GET /api/repos/{repo_id}/risk/range`.
+- **CI**: the GitHub Action `risk` gate and the GitLab `repowise-risk` job.
+
+## Reference
+
+### `repowise risk [REVSPEC]`
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--path DIR` | `.` | Repository path |
+| `--ext SUFFIXES` | all | Comma-separated suffixes to count (`.py` or `.ts,.tsx`) |
+| `--baseline N` | 200 | Recent commits to rank against; `0` disables ranking |
+| `--exclude`, `-x PATTERN` | none | Gitignore-style exclusion, repeatable |
+| `--target`, `-t PATH` | none | Report history for these files instead of a change (needs an index) |
+| `--changed-file PATH` | none | With `--target`: PR mode, leads with the directive |
+| `--fail-above-percentile P` | none | CI gate on `risk_percentile` |
+| `--format` | `table` | `table`, `json`, `markdown`, `github` |
+| `--full` | off | Emit the complete payload as JSON |
+
+### `repowise overlap`
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--base REF` | trunk | Base ref |
+| `--branch REF` | `HEAD` | The change to compare |
+| `--path DIR` | cwd | Repository path |
+| `--limit N` | 50 | Branches to diff, newest first |
+| `--format` | `table` | `table` or `json` |
+
+Full CLI entries: [`repowise risk`](../reference/CLI_REFERENCE.md#repowise-risk-revspec),
+[`repowise overlap`](../reference/CLI_REFERENCE.md#repowise-overlap). MCP
+schemas: [`get_change_risk`](../agent/MCP_TOOLS.md#get_change_risk),
+[`get_risk`](../agent/MCP_TOOLS.md#get_risk).
+
+## See also
+
+- [architecture/change-risk.md](../architecture/change-risk.md): calibration,
+  the scale inventory, and PR structural-impact internals.
+- [BUG_HISTORY.md](BUG_HISTORY.md): per-file and per-symbol fix counts.
+- [CODE_HEALTH.md](CODE_HEALTH.md): file-level scores.
+- [Workspaces](../scale/WORKSPACES.md): cross-repo blast radius and contracts.

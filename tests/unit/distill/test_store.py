@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 
+import pytest
+
+from repowise.core.distill import store as store_module
 from repowise.core.distill.store import OmissionStore, content_ref, default_store_path
 
 
@@ -212,3 +216,24 @@ def test_default_store_path_falls_back_to_home(tmp_path: Path) -> None:
     path = default_store_path(tmp_path)
     assert path.name == "omissions.db"
     assert ".repowise" in str(path)
+
+
+def test_a_store_that_fails_to_open_closes_its_connection(tmp_path: Path, monkeypatch) -> None:
+    """A corrupt database file must not leak the connection opened for it."""
+    opened: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def _connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(store_module.sqlite3, "connect", _connect)
+    db = tmp_path / "omissions.db"
+    db.write_bytes(b"not a sqlite database" * 100)
+
+    with pytest.raises(sqlite3.DatabaseError):
+        OmissionStore(db)
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("SELECT 1")

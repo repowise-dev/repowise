@@ -40,6 +40,9 @@ export { AttentionSources } from "./attention-sources";
 export type { AttentionRowItem } from "./attention-rows";
 
 export { HotspotTable } from "./hotspot-table";
+export { actionHref } from "./action-href";
+export { NextActions, actionsStatus, renderActionTitle } from "./next-actions";
+export type { NextActionsProps } from "./next-actions";
 export { ExploreList } from "./explore-list";
 export type { ExploreEntry } from "./explore-list";
 export { LanguageBar } from "./language-bar";

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from .rows import field
+from .rows import field, scored_rows
 
 HealthBand = Literal["excellent", "good", "fair", "needs_work", "at_risk"]
 
@@ -98,6 +98,17 @@ def band_for(score: float) -> HealthBand:
     return "at_risk"
 
 
+def format_score(score: float) -> str:
+    """A 1-10 score at one decimal, rounded down, for display beside its band.
+
+    Rounding to nearest would print 6.98 as "7.0" beside "Fair"; flooring can
+    never cross a band edge, and :func:`band_for` stays on the unrounded value.
+    Mirror of ``formatScore`` in ``packages/types``.
+    """
+    nearest = float(f"{score:.1f}")
+    return f"{nearest - 0.1 if nearest > score else nearest:.1f}"
+
+
 def distribution(metrics: list[Any]) -> dict[str, Any]:
     """NLOC-weighted file distribution across the bands.
 
@@ -110,10 +121,11 @@ def distribution(metrics: list[Any]) -> dict[str, Any]:
     bands: dict[str, dict[str, float]] = {b: {"files": 0, "nloc": 0} for b in BAND_ORDER}
     total_files = 0
     total_weight = 0
-    for m in metrics:
+    # A file with no score (no health dialect for its language) has no band.
+    for m in scored_rows(metrics):
         if field(m, "file_path") is None:
             continue
-        score = float(field(m, "score", 10.0))
+        score = float(field(m, "score"))
         weight = max(int(field(m, "nloc", 0) or 0), 1)
         band = band_for(score)
         bands[band]["files"] += 1

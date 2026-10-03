@@ -89,6 +89,20 @@ describe("buildContractAiPrompt", () => {
     expect(prompt).toContain("get_blast_radius");
     expect(prompt).toContain("search_codebase");
   });
+
+  it("ends the MCP flavor on a closer, like its sibling prompts", () => {
+    const closer = "Start with `search_codebase` for `http::GET::/users/{param}`";
+    const mcp = buildContractAiPrompt({ contract: contract(), links: [LINK], flavor: "claude-code-mcp" });
+    expect(mcp.trimEnd().split("\n").pop()).toContain(closer);
+    expect(mcp).toContain("`get_context(['src/routes/users.py'])` in `users-api`");
+    expect(buildContractAiPrompt({ contract: contract(), links: [LINK] })).not.toContain(closer);
+  });
+
+  it("names the contract file and its counterparts in Verify", () => {
+    const prompt = buildContractAiPrompt({ contract: contract(), links: [LINK] });
+    expect(prompt).toContain("Find the tests that exercise `src/routes/users.py`, `src/api/users.ts`");
+    expect(prompt.indexOf("## Verify")).toBeLessThan(prompt.indexOf("## Hard constraints"));
+  });
 });
 
 describe("buildUnmatchedConsumersAiPrompt", () => {

@@ -14,8 +14,11 @@ from repowise.core.analysis.health.coverage import (
     parse,
     parse_clover,
     parse_cobertura,
+    parse_go_coverprofile,
+    parse_jacoco,
     parse_lcov,
     parse_repowise_json,
+    resolve_reports,
 )
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "coverage"
@@ -146,16 +149,103 @@ def test_repowise_json_bad_input_is_empty() -> None:
     assert parse_repowise_json("[1,2,3]").files == []
 
 
+def test_go_coverprofile_expands_blocks_to_lines() -> None:
+    report = parse_go_coverprofile(_read("sample.coverprofile"))
+    assert report.source_format == "go-coverprofile"
+    paths = {f.file_path: f for f in report.files}
+    assert set(paths) == {"example.com/mod/pkg/calc.go", "example.com/mod/util/str.go"}
+
+    calc = paths["example.com/mod/pkg/calc.go"]
+    # The zero-statement block adds no line 11; the ``14.1`` end adds no line 14.
+    assert calc.coverable_lines == [3, 4, 5, 7, 8, 9, 10, 12, 13]
+    # 7-8 is hit in the second profile section; line 8 is hit-wins over 8-10.
+    assert calc.covered_lines == [3, 4, 5, 7, 8]
+    assert calc.total_coverable_lines == 9
+    assert calc.line_coverage_pct == 55.56
+    assert calc.branch_coverage_pct is None
+
+    # A later zero count never un-covers a block.
+    assert paths["example.com/mod/util/str.go"].line_coverage_pct == 100.0
+
+
+def test_go_coverprofile_skips_malformed_lines() -> None:
+    text = (
+        "mode: count\n"
+        "garbage\n"
+        "a.go:1.1,2.2 x 1\n"
+        "a.go:nope 1 1\n"
+        "a.go:3.1,2.1 1 1\n"
+        ":1.1,1.9 1 1\n"
+        "dir with space/b:c.go:4.2,4.9 1 3\n"
+    )
+    report = parse_go_coverprofile(text)
+    assert [(f.file_path, f.covered_lines) for f in report.files] == [
+        ("dir with space/b:c.go", [4])
+    ]
+    assert parse_go_coverprofile("").files == []
+    assert parse_go_coverprofile("mode: set\n").files == []
+
+
+def test_jacoco_parses_lines_branches_and_merges_groups() -> None:
+    report = parse_jacoco(_read("sample.jacoco.xml"))
+    assert report.source_format == "jacoco"
+    paths = {f.file_path: f for f in report.files}
+    # Api.java has no line data, so it is unmeasured rather than 0%.
+    assert set(paths) == {"com/foo/Bar.java", "Main.java"}
+
+    bar = paths["com/foo/Bar.java"]
+    assert bar.coverable_lines == [3, 5, 7, 9]
+    # Line 7 is missed in one group and covered in the other: hit wins.
+    assert bar.covered_lines == [3, 5, 7]
+    assert bar.line_coverage_pct == 75.0
+    # Line 5: 1/2, line 7: max over both groups 1/2.
+    assert bar.branch_coverage_pct == 50.0
+
+    main = paths["Main.java"]
+    assert main.coverable_lines == [1, 2]
+    assert main.covered_lines == [2]
+    assert main.branch_coverage_pct is None
+
+
+def test_jacoco_returns_empty_on_bad_xml() -> None:
+    assert parse_jacoco("<report><package").files == []
+
+
 @pytest.mark.parametrize(
     "name, expected",
     [
         ("sample.lcov", "lcov"),
         ("sample.cobertura.xml", "cobertura"),
         ("sample.clover.xml", "clover"),
+        ("sample.coverprofile", "go-coverprofile"),
+        ("sample.jacoco.xml", "jacoco"),
     ],
 )
 def test_detect_format(name: str, expected: str) -> None:
     assert detect_format(_read(name)) == expected
+    # Some Windows tools prepend a UTF-8 BOM.
+    assert detect_format("﻿" + _read(name)) == expected
+
+
+def test_detect_jacoco_without_doctype() -> None:
+    assert detect_format('<?xml version="1.0"?>\n<report name="x"><group/></report>') == "jacoco"
+
+
+def test_bom_prefixed_reports_parse() -> None:
+    assert parse("﻿" + _read("sample.coverprofile")).source_format == "go-coverprofile"
+    assert len(parse("﻿" + _read("sample.jacoco.xml")).files) == 2
+
+
+def test_go_and_jacoco_paths_resolve_to_repo_keys() -> None:
+    keys = {"pkg/f.go", "src/main/java/com/foo/Bar.java", "src/main/java/com/other/Bar.java"}
+    go = parse_go_coverprofile("mode: set\nexample.com/mod/pkg/f.go:1.1,2.9 1 1\n")
+    jacoco = parse_jacoco(
+        '<report name="r"><package name="com/foo"><sourcefile name="Bar.java">'
+        '<line nr="1" mi="0" ci="1"/></sourcefile></package></report>'
+    )
+    res = resolve_reports([go, jacoco], keys)
+    assert set(res.coverage_map) == {"pkg/f.go", "src/main/java/com/foo/Bar.java"}
+    assert res.unmatched == [] and res.ambiguous == []
 
 
 def test_detect_and_dispatch_repowise_json() -> None:
@@ -180,6 +270,8 @@ def test_parse_dispatches_via_detect() -> None:
     assert parse(_read("sample.lcov")).source_format == "lcov"
     assert parse(_read("sample.cobertura.xml")).source_format == "cobertura"
     assert parse(_read("sample.clover.xml")).source_format == "clover"
+    assert parse(_read("sample.coverprofile")).source_format == "go-coverprofile"
+    assert parse(_read("sample.jacoco.xml")).source_format == "jacoco"
 
 
 def test_parse_with_explicit_format_override() -> None:

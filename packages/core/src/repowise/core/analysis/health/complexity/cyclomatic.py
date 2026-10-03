@@ -247,6 +247,7 @@ def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> 
 def _walk_function_body(
     body_node: Node,
     lmap: LanguageNodeMap,
+    deepest: list[int] | None = None,
 ) -> tuple[int, int, int, int, list[ConditionComplexity]]:
     """Recursive AST walk. Returns (ccn, max_nesting, cognitive, bumps,
     complex_conditions).
@@ -262,6 +263,13 @@ def _walk_function_body(
     ``complex_conditions`` is an additive side-channel — collected for
     every branch/loop/case construct encountered. The CCN / cognitive
     accumulation logic is unchanged.
+
+    ``deepest``, when given, is filled with the 1-indexed ``[start, end]``
+    lines of the first block that reaches the function's deepest nesting,
+    widened to the nearest enclosing control-flow block of at least
+    :data:`MIN_BLOCK_LINES` lines: where a reader starts flattening it. A
+    one-line branch is too small to name as the place to start. Also a
+    side-channel only.
     """
 
     ccn = 1
@@ -273,9 +281,11 @@ def _walk_function_body(
     # Track match_expression nodes identified as "flat" so their arms
     # are not individually counted as branch points.
     flat_match_ids: set[int] = set()
+    deepest_depth = 0
+    deepest_node: list[Node] = []
 
     def _recurse(node: Node, depth: int) -> None:
-        nonlocal ccn, max_nesting, cognitive
+        nonlocal ccn, max_nesting, cognitive, deepest_depth
 
         # Don't descend into nested function bodies — they're walked
         # separately at the top level. Lambdas / arrow functions DO
@@ -288,12 +298,14 @@ def _walk_function_body(
 
         # Check if this is a case/arm inside a flat match — skip it.
         # In Rust the parent chain is match_arm → match_block → match_expression,
-        # so we check both parent and grandparent.
-        _parent = node.parent
+        # so we check both parent and grandparent. ``node.parent`` costs far
+        # more than the rest of this visit, so it is read only for a case node
+        # once a flat match exists for it to belong to.
         is_flat_match_arm = False
         if (
-            node.type in lmap.case_kinds
-            and _parent is not None
+            flat_match_ids
+            and node.type in lmap.case_kinds
+            and (_parent := node.parent) is not None
             and (
                 _parent.id in flat_match_ids
                 or (_parent.parent is not None and _parent.parent.id in flat_match_ids)
@@ -363,6 +375,9 @@ def _walk_function_body(
 
         if new_depth > max_nesting:
             max_nesting = new_depth
+        if deepest is not None and nesting_increment and new_depth > deepest_depth:
+            deepest_depth = new_depth
+            deepest_node[:] = [node]
 
         for child in node.children:
             _recurse(child, new_depth)
@@ -378,4 +393,30 @@ def _walk_function_body(
         if child_peak >= 2:
             bumps += 1
 
+    if deepest is not None and deepest_node:
+        block = _widened_block(deepest_node[0], body_node, lmap)
+        deepest[:] = [block.start_point[0] + 1, block.end_point[0] + 1]
     return ccn, max_nesting, cognitive, bumps, conditions
+
+
+#: The smallest block named as the place to start flattening a function.
+MIN_BLOCK_LINES = 4
+
+
+def _widened_block(node: Node, body_node: Node, lmap: LanguageNodeMap) -> Node:
+    """*node*, or its nearest enclosing control-flow block spanning at least
+    :data:`MIN_BLOCK_LINES` lines, never past the function body."""
+    kinds = (
+        lmap.branch_kinds
+        | lmap.loop_kinds
+        | lmap.case_kinds
+        | lmap.catch_kinds
+        | lmap.try_kinds
+        | lmap.switch_kinds
+    )
+    cur: Node | None = node
+    while cur is not None and cur != body_node:
+        if cur.type in kinds and cur.end_point[0] - cur.start_point[0] + 1 >= MIN_BLOCK_LINES:
+            return cur
+        cur = cur.parent
+    return node

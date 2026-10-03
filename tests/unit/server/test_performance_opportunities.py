@@ -52,6 +52,11 @@ def _findings() -> list:
     ]
 
 
+def _two_production_causes() -> list:
+    """The shared-helper cause above plus a one-site production loop, both queued."""
+    return [*_findings(), _finding("src/c.py", 40, ["src/c.py::run", "src/db.py::fetch"])]
+
+
 async def _materialize(app, repo_id: str, findings: list) -> None:
     link_performance_findings(findings)
     async with app.state.session_factory() as session:
@@ -133,7 +138,9 @@ async def test_opportunities_are_grouped_bounded_and_split_by_context(
     assert every["summary"]["repository_total"] == 2
     assert every["summary"]["context"] == {"production": 1, "test": 1}
 
-    test_page = await _page(client, repo_id, context="test")
+    # The test-suite cause has no strategy, so it is asked for, not queued.
+    assert (await _page(client, repo_id, context="test"))["total"] == 0
+    test_page = await _page(client, repo_id, context="test", actionability="investigate")
     assert test_page["total"] == 1
     assert test_page["items"][0]["plan_id"] is None
     assert test_page["items"][0]["plan_status"] == "no_safe_plan"
@@ -290,15 +297,48 @@ async def test_expected_sits_out_of_the_default_queue_but_not_the_facet(
     assert only_expected["items"][0]["actionability_reason"] == "inherent_to_boundary"
 
 
-async def test_an_expected_row_never_leads_the_directive(app, client: AsyncClient) -> None:
-    from repowise.server.services.performance_health import PerformanceHealthService
+async def test_the_default_queue_reports_what_it_leaves_out(app, client: AsyncClient) -> None:
+    """No strategy, expected, and non-production causes are counted, never dropped."""
+    no_strategy = HealthFindingData(
+        biomarker_type="resource_construction_in_loop",
+        severity=Severity.MEDIUM,
+        file_path="src/clients.py",
+        function_name="each",
+        line_start=5,
+        line_end=5,
+        details={"boundary_kind": "network"},
+        health_impact=0.0,
+        reason="A client is built for every loop iteration.",
+        dimension="performance",
+    )
+    findings = [
+        *_findings(),
+        no_strategy,
+        _filesystem_finding("src/fs.py", 1, ["src/fs.py::run", "src/fs.py::read"]),
+    ]
+    repo_id, _ = await _seed(app, client, findings)
+
+    default = await _page(client, repo_id)
+    assert [item["intervention_symbol"] for item in default["items"]] == ["src/shared.py::load"]
+    assert default["summary"]["default_queue"] == {
+        "total": 1,
+        "excluded": {"test": 1, "tooling": 0, "unknown": 0, "expected": 1, "no_strategy": 1},
+    }
+    asked = await _page(client, repo_id, actionability="investigate")
+    assert [item["intervention_symbol"] for item in asked["items"]] == ["src/clients.py::each"]
+
+
+async def test_an_expected_row_never_leads(app, client: AsyncClient) -> None:
+    import json
 
     finding = _filesystem_finding("src/fs.py", 1, ["src/fs.py::run", "src/fs.py::read"])
     repo_id, _ = await _seed(app, client, [finding])
     async with app.state.session_factory() as session:
-        directive = await PerformanceHealthService(session, repo_id, "repo").directive()
-    assert directive["status"] == "clear"
-    assert directive["expected_total"] == 1
+        row = await crud.get_performance_summary(session, repo_id)
+    summary = json.loads(row.summary_json)
+    assert summary["lead"] is None
+    assert summary["actionability"] == {"expected": 1}
+    assert summary["default_queue"]["excluded"]["expected"] == 1
 
 
 async def test_an_id_from_an_older_model_reports_stale_rather_than_no_plan(
@@ -311,7 +351,7 @@ async def test_an_id_from_an_older_model_reports_stale_rather_than_no_plan(
             f"/api/repos/{repo_id}/health/performance-opportunities/perf_0123456789abcdef0123"
         )
     ).json()
-    assert body["resolved"] is False
+    assert body["found"] is False
     assert body["model_state"]["state"] == "stale_model"
     assert body["model_state"]["refresh_required"] is True
     assert "repowise update" in body["detail"]
@@ -327,7 +367,7 @@ async def test_detail_carries_the_facets_and_evidence_for_one_cause(
             params={"evidence_limit": 1},
         )
     ).json()
-    assert body["resolved"] is True
+    assert body["found"] is True
     assert body["lifecycle_status"] == "open"
     assert body["analyzed_commit"] == "a" * 40
     assert body["model_state"]["state"] == "current"
@@ -343,6 +383,8 @@ async def test_detail_carries_the_facets_and_evidence_for_one_cause(
     assert body["evidence_emitted"] == 1
     assert body["evidence_next_cursor"] == 1
     assert body["plan_status"] == "available"
+    # The same words the Fix-first item uses for this cause, from one core function.
+    assert body["gain_text"].startswith("one database call per loop iteration")
 
 
 async def test_a_cause_that_stops_being_observed_is_resolved_not_deleted(
@@ -359,7 +401,7 @@ async def test_a_cause_that_stops_being_observed_is_resolved_not_deleted(
             f"/api/repos/{repo_id}/health/performance-opportunities/{opportunity_id}"
         )
     ).json()
-    assert detail["resolved"] is True
+    assert detail["found"] is True
     assert detail["lifecycle_status"] == "resolved"
 
 
@@ -367,11 +409,16 @@ async def test_an_alternative_order_is_applied_before_the_page_not_after(
     app, client: AsyncClient
 ) -> None:
     """Sorting the fetched page would order twenty rows right and the repo wrong."""
-    repo_id, opportunity_id = await _seed(app, client)
+    repo_id, _ = await _seed(app, client, _two_production_causes())
+    opportunity_id = next(
+        item["opportunity_id"]
+        for item in (await _page(client, repo_id))["items"]
+        if item["intervention_symbol"] == "src/shared.py::load"
+    )
     by_leverage = await _page(client, repo_id, context="all", sort="leverage", limit=1)
     assert by_leverage["total"] == 2
-    # The production cause carries two call sites; the test one carries a
-    # single site, so leverage puts production first whatever its rank is.
+    # The shared-helper cause carries two call sites and the other one, so
+    # leverage puts it first whatever its rank is.
     assert by_leverage["items"][0]["opportunity_id"] == opportunity_id
     assert by_leverage["items"][0]["affected_call_sites_total"] == 2
 
@@ -404,7 +451,8 @@ async def test_a_page_costs_the_page_not_the_repository(app, client: AsyncClient
         await session.commit()
 
     page = await _page(client, repo_id, context="all", limit=1)
-    assert page["total"] == 2
+    # The test-suite cause has no strategy: counted, not queued.
+    assert page["total"] == 1
     assert len(page["items"]) == 1
     assert page["summary"]["total"] == 2
 
@@ -416,7 +464,7 @@ async def test_the_queue_scopes_to_one_file_on_the_server(app, client):
     causes and no others. Narrowing a page it already received would show
     whatever survived the cap, which is not the same question.
     """
-    repo_id, _ = await _seed(app, client)
+    repo_id, _ = await _seed(app, client, _two_production_causes())
     whole = await _page(client, repo_id, context="all")
     # Scope to whichever file the grouping named as the place to intervene: the
     # column is the intervention site, not every file the evidence touches.

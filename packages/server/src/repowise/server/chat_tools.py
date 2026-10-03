@@ -121,52 +121,40 @@ async def execute_tool(
     confirmed: bool = False,
 ) -> dict[str, Any]:
     """Execute a tool only when it belongs to the configured MCP surface."""
-    tool = next(
-        (candidate for candidate in get_tool_catalog(repo_path) if candidate.entry.name == name),
-        None,
-    )
-    if tool is None:
+    entry = _catalog_entry(name, repo_path)
+    if entry is None:
         return {
             "error": f"Tool is not enabled for this repository: {name}",
             "error_code": "tool_not_enabled",
         }
-    return await execute_entry(tool.entry, arguments, repo=repo, confirmed=confirmed)
+    return await execute_entry(entry, arguments, repo=repo, confirmed=confirmed)
+
+
+def _catalog_entry(tool_name: str, repo_path: str | None) -> ToolEntry | None:
+    """The named entry when it belongs to the repository's configured surface."""
+    return next(
+        (
+            candidate.entry
+            for candidate in get_tool_catalog(repo_path)
+            if candidate.entry.name == tool_name
+        ),
+        None,
+    )
 
 
 def get_artifact_type(tool_name: str, repo_path: str | None) -> str:
-    tool = next(
-        (
-            candidate
-            for candidate in get_tool_catalog(repo_path)
-            if candidate.entry.name == tool_name
-        ),
-        None,
-    )
-    return tool.entry.artifact_type if tool is not None else "generic"
+    entry = _catalog_entry(tool_name, repo_path)
+    return entry.artifact_type if entry is not None else "generic"
 
 
 def get_artifact_presentation(tool_name: str, repo_path: str | None) -> str:
-    tool = next(
-        (
-            candidate
-            for candidate in get_tool_catalog(repo_path)
-            if candidate.entry.name == tool_name
-        ),
-        None,
-    )
-    return tool.entry.presentation if tool is not None else "generic"
+    entry = _catalog_entry(tool_name, repo_path)
+    return entry.presentation if entry is not None else "generic"
 
 
 def get_artifact_evidence_basis(tool_name: str, repo_path: str | None) -> str:
-    tool = next(
-        (
-            candidate
-            for candidate in get_tool_catalog(repo_path)
-            if candidate.entry.name == tool_name
-        ),
-        None,
-    )
-    return tool.entry.evidence_basis if tool is not None else "unknown"
+    entry = _catalog_entry(tool_name, repo_path)
+    return entry.evidence_basis if entry is not None else "unknown"
 
 
 def init_tool_state(

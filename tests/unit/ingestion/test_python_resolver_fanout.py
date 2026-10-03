@@ -54,6 +54,15 @@ def test_package_import_fans_out_to_submodules() -> None:
     )
 
 
+def test_all_submodule_names_skip_the_package_init() -> None:
+    # ``from routers import workspace, git`` reads nothing from
+    # ``routers/__init__.py``, just as ``from routers.workspace import x``
+    # draws no edge to it.
+    imp = _imp("routers", ["workspace", "git"])
+    targets = resolve_python_import_all(imp, "app.py", _ctx(PATHS))
+    assert targets == ("routers/workspace.py", "routers/git/__init__.py")
+
+
 def test_non_submodule_names_resolve_to_package_only() -> None:
     imp = _imp("routers", ["some_function"])
     targets = resolve_python_import_all(imp, "app.py", _ctx(PATHS))
@@ -84,7 +93,8 @@ def test_relative_package_import_fans_out() -> None:
     # ``from .sub import handlers`` inside pkg/api.py
     imp = _imp(".sub", ["handlers"], relative=True)
     targets = resolve_python_import_all(imp, "pkg/api.py", _ctx(paths))
-    assert targets == ("pkg/sub/__init__.py", "pkg/sub/handlers.py")
+    # Every name is a submodule, so nothing is read from the package init.
+    assert targets == ("pkg/sub/handlers.py",)
 
 
 def test_unresolvable_relative_import_returns_empty() -> None:
@@ -106,7 +116,7 @@ def test_source_root_nested_package_fans_out() -> None:
     }
     imp = _imp("myapp.routers", ["users"])
     targets = resolve_python_import_all(imp, "src/myapp/server.py", _ctx(paths))
-    assert targets == ("src/myapp/routers/__init__.py", "src/myapp/routers/users.py")
+    assert targets == ("src/myapp/routers/users.py",)
 
 
 def test_submodule_binding_points_at_submodule_file() -> None:
@@ -127,7 +137,7 @@ def test_submodule_binding_points_at_submodule_file() -> None:
         bindings=[NamedBinding(local_name="foo", exported_name=None, source_file=None)],
     )
     targets = resolve_python_import_all(imp, "caller.py", _ctx(paths))
-    assert targets == ("sensors/__init__.py", "sensors/foo.py")
+    assert targets == ("sensors/foo.py",)
     # The binding for ``foo`` must point at the submodule file.
     assert len(imp.bindings) == 1
     assert imp.bindings[0].local_name == "foo"
@@ -174,7 +184,7 @@ def test_submodule_aliased_binding_points_at_submodule_file() -> None:
         bindings=[NamedBinding(local_name="f", exported_name="foo", source_file=None)],
     )
     targets = resolve_python_import_all(imp, "caller.py", _ctx(paths))
-    assert targets == ("sensors/__init__.py", "sensors/foo.py")
+    assert targets == ("sensors/foo.py",)
     assert len(imp.bindings) == 1
     assert imp.bindings[0].local_name == "f"
     assert imp.bindings[0].source_file == "sensors/foo.py"
@@ -201,3 +211,14 @@ def test_non_submodule_aliased_binding_keeps_package_init() -> None:
     assert len(imp.bindings) == 1
     assert imp.bindings[0].local_name == "sf"
     assert imp.bindings[0].source_file is None
+
+
+def test_package_init_importing_its_own_submodule_fans_out() -> None:
+    """``from pkg import views`` inside ``pkg/__init__.py`` names the package
+    itself: no self edge, but the submodule edge stays."""
+    paths = {"app/pkg/__init__.py", "app/pkg/views.py"}
+    imp = _imp("pkg", ["views"])
+    targets = resolve_python_import_all(imp, "app/pkg/__init__.py", _ctx(paths))
+    assert targets == ("app/pkg/views.py",)
+    imp = _imp("pkg", ["some_function"])
+    assert resolve_python_import_all(imp, "app/pkg/__init__.py", _ctx(paths)) == ()

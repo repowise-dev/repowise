@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from repowise.server.services.c4_builder.labels import coupling_strength, relation_label
+from repowise.core.analysis.c4.labels import coupling_strength, relation_label
 
 from .models import ZoomNode, ZoomRelation
 from .tree import file_id

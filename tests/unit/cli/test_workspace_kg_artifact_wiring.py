@@ -48,7 +48,7 @@ def test_generate_docs_for_added_repo_passes_repo_path(tmp_path):
 
     fts = MagicMock()
     fts.ensure_index = AsyncMock()
-    fts.index = AsyncMock()
+    fts.index_pages = AsyncMock()
 
     engine = MagicMock()
     engine.dispose = AsyncMock()

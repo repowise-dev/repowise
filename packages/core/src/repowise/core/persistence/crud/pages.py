@@ -62,6 +62,7 @@ def _apply_page_upsert(
     title: str,
     content: str,
     summary: str,
+    digest: str,
     target_path: str,
     source_hash: str,
     model_name: str,
@@ -140,6 +141,8 @@ def _apply_page_upsert(
         ):
             existing.title = title
             existing.summary = summary
+            # Git signals and identifiers in the digest move without the prose.
+            existing.digest = digest
             existing.target_path = target_path
             existing.freshness_status = freshness_status
             existing.confidence = confidence
@@ -174,6 +177,7 @@ def _apply_page_upsert(
         existing.title = title
         existing.content = content
         existing.summary = summary
+        existing.digest = digest
         existing.target_path = target_path
         existing.source_hash = source_hash
         existing.model_name = model_name
@@ -200,6 +204,7 @@ def _apply_page_upsert(
         title=title,
         content=content,
         summary=summary,
+        digest=digest,
         target_path=target_path,
         source_hash=source_hash,
         model_name=model_name,
@@ -232,6 +237,7 @@ async def upsert_page(
     title: str,
     content: str,
     summary: str = "",
+    digest: str = "",
     target_path: str,
     source_hash: str,
     model_name: str,
@@ -272,6 +278,7 @@ async def upsert_page(
         title=title,
         content=content,
         summary=summary,
+        digest=digest,
         target_path=target_path,
         source_hash=source_hash,
         model_name=model_name,
@@ -327,9 +334,11 @@ async def load_prior_pages(
             source_hash=row.source_hash,
             model_name=row.model_name,
             content=row.content,
+            digest=row.digest or "",
             input_tokens=row.input_tokens,
             output_tokens=row.output_tokens,
             cached_tokens=row.cached_tokens,
+            metadata=metadata,
         )
     return prior
 
@@ -354,6 +363,7 @@ async def upsert_page_from_generated(
         title=gp.title,  # type: ignore[attr-defined]
         content=gp.content,  # type: ignore[attr-defined]
         summary=getattr(gp, "summary", "") or "",
+        digest=getattr(gp, "digest", "") or "",
         target_path=gp.target_path,  # type: ignore[attr-defined]
         source_hash=gp.source_hash,  # type: ignore[attr-defined]
         model_name=gp.model_name,  # type: ignore[attr-defined]
@@ -436,6 +446,7 @@ async def upsert_pages_from_generated(
                 title=gp.title,
                 content=gp.content,
                 summary=getattr(gp, "summary", "") or "",
+                digest=getattr(gp, "digest", "") or "",
                 target_path=gp.target_path,
                 source_hash=gp.source_hash,
                 model_name=gp.model_name,

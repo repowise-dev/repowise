@@ -42,9 +42,10 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
+from repowise.core.entry_candidacy import is_reachability_root
 from repowise.core.ids import SYMBOL_SEP, file_path_of, is_external
 
-from .constants import never_flag_match
+from .constants import never_flag_path
 from .cpp_reachability import build_cpp_package_files, is_cpp_file_reachable, is_cpp_path
 from .go_reachability import build_go_package_files, is_go_file_reachable
 from .jvm_reachability import build_jvm_package_files, is_jvm_file_reachable
@@ -78,6 +79,8 @@ BARREL_FILENAMES: frozenset[str] = frozenset(
 _NON_DEPENDENCY_EDGES: frozenset[str] = frozenset({"co_changes"})
 
 _JVM_SUFFIXES: tuple[str, ...] = (".java", ".kt")
+
+CSHARP_SUFFIX = ".cs"
 
 #: Objective-C implementation files, which no source ever imports.
 _OBJC_SOURCE_SUFFIXES: tuple[str, ...] = (".m", ".mm")
@@ -150,6 +153,11 @@ class ReachabilityRescues:
     bundler_alias_targets: AbstractSet[str] = frozenset()
     whitelist: AbstractSet[str] = frozenset()
     package_files: PackageFileMap | None = None
+    #: C# files with no importer that another file of a project able to see
+    #: them names by type (see :mod:`csharp_reachability`). Needs source text,
+    #: so ``None`` is "not checked" and, like ``package_files``, resolves a
+    #: ``.cs`` file to reachable.
+    csharp_named_files: AbstractSet[str] | None = None
 
 
 #: Prefix of an :class:`repowise.core.ids.ExternalId`, matched textually rather
@@ -276,7 +284,7 @@ def is_file_reachable(
     # Conventional entry points, framework-instantiated files and published
     # API contracts are reached from outside the graph. Nothing imports
     # ``main.py`` either.
-    if node_data.get("is_entry_point", False):
+    if is_reachability_root(node_data):
         return True
     if node_data.get("is_api_contract", False):
         return True
@@ -288,7 +296,7 @@ def is_file_reachable(
     # routes, migration scripts. Reached from outside the import graph the same
     # way an entry point is, so this belongs to the question, not to the
     # analyzer that used to own the matcher.
-    if never_flag_match(path):
+    if never_flag_path(path):
         return True
     if path in rescues.whitelist:
         return True
@@ -320,5 +328,9 @@ def is_file_reachable(
         return True if packages is None else is_jvm_file_reachable(path, graph, packages.jvm)
     if is_cpp_path(path):
         return True if packages is None else is_cpp_file_reachable(path, graph, packages.cpp)
+    if path.endswith(CSHARP_SUFFIX) and (
+        rescues.csharp_named_files is None or path in rescues.csharp_named_files
+    ):
+        return True
 
     return has_dependency_importer(graph, path)

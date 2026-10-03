@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis import module_health as _fold
+from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.aggregation import module_label
 from repowise.core.analysis.module_health import (
     ModuleAccumulator,
@@ -24,6 +25,7 @@ from repowise.core.analysis.module_health import (
     module_health_score,
     summarize,
 )
+from repowise.core.persistence.crud import code_file_rows
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
@@ -47,7 +49,7 @@ async def aggregate_modules(session: AsyncSession, repo_id: str) -> dict[str, Mo
     """Fetch the four inputs for *repo_id* and fold them by top-level module."""
 
     files = (
-        (await session.execute(select(GitMetadata).where(GitMetadata.repository_id == repo_id)))
+        (await session.execute(select(GitMetadata).where(code_file_rows(repo_id))))
         .scalars()
         .all()
     )
@@ -61,7 +63,8 @@ async def aggregate_modules(session: AsyncSession, repo_id: str) -> dict[str, Mo
     dead_rows = (
         await session.execute(
             select(DeadCodeFinding.file_path, DeadCodeFinding.lines).where(
-                DeadCodeFinding.repository_id == repo_id
+                DeadCodeFinding.repository_id == repo_id,
+                DeadCodeFinding.kind.not_in(excluded_types()),
             )
         )
     ).all()
@@ -146,6 +149,7 @@ async def build_single_file_health(
             ).where(
                 DeadCodeFinding.repository_id == repo_id,
                 DeadCodeFinding.file_path == file_path,
+                DeadCodeFinding.kind.not_in(excluded_types()),
             )
         )
     ).one()

@@ -136,8 +136,8 @@ def tool_counts() -> dict[str, int]:
     be imported already.
     """
     from repowise.core.registry import mcp_tool_registry
+    from repowise.core.registry.tool_selection import LEAN, resolve_enabled_tools
     from repowise.server.mcp_server import ensure_full_surface
-    from repowise.server.mcp_server._tool_selection import LEAN, resolve_enabled_tools
 
     ensure_full_surface()
     entries = mcp_tool_registry.entries()

@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.persistence.database import get_session
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
@@ -323,8 +324,12 @@ async def _enrich_cross_repo(
 async def _enrich_health(results: list[dict], ctx: Any, repo_id: str) -> None:
     """Attach per-file health_score, coverage, and top_biomarkers from the health
     tables. Conservative: missing data → no field, never invented. Never raises.
+
+    Coverage comes from the stored coverage rows, the source every other surface
+    reads, not the copy the health pass took of them.
     """
     try:
+        from repowise.core.persistence.crud import load_coverage_for_repo
         from repowise.core.persistence.models import HealthFileMetric, HealthFinding
 
         target_paths = [r["target"] for r in results if r.get("target")]
@@ -338,6 +343,12 @@ async def _enrich_health(results: list[dict], ctx: Any, repo_id: str) -> None:
                 )
             )
             metric_map = {m.file_path: m for m in m_res.scalars().all()}
+            coverage_map = {
+                c.file_path: c
+                for c in await load_coverage_for_repo(
+                    _h_session, repo_id, file_paths=target_paths, include_covered_lines=False
+                )
+            }
 
             f_res = await _h_session.execute(
                 select(HealthFinding)
@@ -345,6 +356,7 @@ async def _enrich_health(results: list[dict], ctx: Any, repo_id: str) -> None:
                     HealthFinding.repository_id == repo_id,
                     HealthFinding.file_path.in_(target_paths),
                     HealthFinding.status == "open",
+                    HealthFinding.biomarker_type.not_in(excluded_types()),
                 )
                 .order_by(HealthFinding.health_impact.desc())
             )
@@ -368,12 +380,13 @@ async def _enrich_health(results: list[dict], ctx: Any, repo_id: str) -> None:
         for r in results:
             path = r.get("target")
             m = metric_map.get(path)
-            if m is not None:
+            if m is not None and m.score is not None:
                 r["health_score"] = round(m.score, 2)
-                if m.line_coverage_pct is not None:
-                    r["coverage_pct"] = round(m.line_coverage_pct, 2)
-                if m.branch_coverage_pct is not None:
-                    r["branch_coverage_pct"] = round(m.branch_coverage_pct, 2)
+            c = coverage_map.get(path)
+            if c is not None:
+                r["line_coverage_pct"] = round(c.line_coverage_pct, 2)
+                if c.branch_coverage_pct is not None:
+                    r["branch_coverage_pct"] = round(c.branch_coverage_pct, 2)
             if path in top_by_file:
                 r["top_biomarkers"] = top_by_file[path]
     except Exception:

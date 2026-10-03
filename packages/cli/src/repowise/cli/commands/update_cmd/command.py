@@ -36,7 +36,7 @@ from repowise.cli.helpers import (
     rotate_update_log_if_needed,
     run_async,
     save_state,
-    silence_logs_for_machine_output,
+    silence_logs_for_machine_output_until_close,
     try_acquire_update_lock,
     write_update_pending,
 )
@@ -96,6 +96,34 @@ def _generation_warning_handler(
             )
 
     return _handle
+
+
+def _fail_on_embed_failure(
+    repo_path: Path, embedder: str | None, embed_failed_pages: int, emitter: Any
+) -> None:
+    """Exit non-zero, and say semantic search is unavailable, after a failed embed.
+
+    Called once the run's pages and state are saved: full-text search is
+    fine, so only the search leg and the exit status change. A zero exit here
+    let a scripted run, or the post-commit log, read a failed write as a
+    healthy index.
+    """
+    from repowise.cli.providers import embed_failure_message
+    from repowise.core.index_scope import stamp_index_scope
+
+    message = embed_failure_message(embedder, embed_failed_pages)
+    if message is None:
+        return
+    state = load_state(repo_path)
+    stamp_index_scope(
+        state,
+        load_config(repo_path),
+        search={"semantic": "unavailable", "next_command": "repowise reindex"},
+    )
+    save_state(repo_path, state)
+    if emitter is not None:
+        emitter.error(message)
+    raise click.ClickException(message)
 
 
 def _docs_provider_prompt_allowed(emitter: Any) -> bool:
@@ -176,6 +204,10 @@ def _refresh_editor_stamp(
         # but a stale CLAUDE.md stamp is worth an honest mention.
         if degraded is not None:
             degraded.append(f"Editor file refresh: {exc}")
+    # This run may have stored coverage (or the flag changed): keep the hook in step.
+    from repowise.cli.commands.augment_cmd.coverage_reingest import sync_repo_hook
+
+    sync_repo_hook(repo_path, console)
 
 
 def _surface_release_news(*, written_by: str | None) -> None:
@@ -628,7 +660,7 @@ def run_update(
     # into whatever runs next in the same process.
     emitter: JsonProgressEmitter | None = None
     if progress == "json":
-        silence_logs_for_machine_output()
+        silence_logs_for_machine_output_until_close()
         console.file = sys.stderr
         # Restore to None (rather than a captured file object) so `console`
         # goes back to resolving sys.stdout dynamically on each print, its
@@ -1445,13 +1477,15 @@ def run_update(
         affected.regenerate = [pf.file_info.path for pf in parsed_files]
 
     if affected.stale_due_to_budget > 0:
-        console.print(
-            f"\n[yellow]⚠ Cascade budget of {cascade_budget} pages was reached. "
-            f"{affected.stale_due_to_budget} dependent pages were skipped and marked stale.[/yellow]"
-        )
-        console.print(
-            f"[yellow]  Pass `--cascade-budget {cascade_budget + affected.stale_due_to_budget}` "
-            f"to regenerate them all.[/yellow]\n"
+        from .deterministic import load_cascade_overflow_split
+        from .reporting import render_cascade_budget_warning
+
+        # The detector puts the budget overflow first in decay_only.
+        skipped = affected.decay_only[: affected.stale_due_to_budget]
+        render_cascade_budget_warning(
+            cascade_budget,
+            affected.stale_due_to_budget,
+            load_cascade_overflow_split(repo_path, skipped),
         )
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
@@ -1491,7 +1525,14 @@ def run_update(
         repo_function_mod_p80=repo_function_mod_p80,
         timings=timings,
     )
-    doc_drift_report = _run_doc_drift_partial(graph_builder, source_map, timings=timings)
+    doc_drift_report = _run_doc_drift_partial(
+        graph_builder,
+        source_map,
+        repo_path=repo_path,
+        timings=timings,
+        base_ref=base_ref,
+        file_diffs=file_diffs,
+    )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before
     # the metadata reaches persistence / regeneration so the transient,
@@ -1536,6 +1577,7 @@ def run_update(
         # with no pages (fast mode, or an index from before templates existed)
         # skip this and stay a pure index.
         det_pages: list = []
+        render_stats: dict[str, int] = {}
         index_only_cost = 0.0
         docs_mode = resolve_docs_mode(state)
         if docs_mode == "deterministic":
@@ -1571,6 +1613,7 @@ def run_update(
                     dead_code_report=dead_code_report,
                     prior_page_ids=prior_ids,
                     full_scope=generation_config_changed,
+                    stats_out=render_stats,
                 )
                 if stale_deterministic_ids and not generation_config_changed:
                     det_pages.extend(
@@ -1587,6 +1630,7 @@ def run_update(
                             degraded=degraded,
                             dead_code_report=dead_code_report,
                             prior_page_ids=prior_ids,
+                            stats_out=render_stats,
                         )
                     )
             if generation_config_changed and len(degraded) > degraded_before_render:
@@ -1646,6 +1690,8 @@ def run_update(
                             target_path=page.target_path,
                             summary=page.summary,
                             content=page.content,
+                            page_metadata=page.metadata,
+                            digest=page.digest,
                         )
                     )
                     is not None
@@ -1707,6 +1753,15 @@ def run_update(
             generated_pages=det_pages,
             docs_mode=docs_mode,
         )
+        if render_stats.get("embed_failed_pages"):
+            from .deterministic import deterministic_embedder_name
+
+            _fail_on_embed_failure(
+                repo_path,
+                deterministic_embedder_name(cfg),
+                render_stats["embed_failed_pages"],
+                emitter,
+            )
         if emitter is not None:
             emitter.done(
                 ok=True,
@@ -2230,6 +2285,7 @@ def run_update(
     # Surface the FAQ-weighted budget tilt when session demand shaped this run
     # (silent when there is no history to weight; human console mode only).
 
+    full_stats = {"embed_failed_pages": generator.embed_failed_pages}
     if checkpointer.failure:
         degraded.append(f"Per-page crash checkpointing: {checkpointer.failure}")
 
@@ -2257,6 +2313,7 @@ def run_update(
                     dead_code_report=dead_code_report,
                     prior_page_ids=prior_pages,
                     vector_store=decision_vector_store,
+                    stats_out=full_stats,
                 )
             )
 
@@ -2449,7 +2506,20 @@ def run_update(
         provider=provider,
         generated_pages=generated_pages,
     )
+
+    def _fail_if_embed_failed() -> None:
+        if full_stats["embed_failed_pages"]:
+            from repowise.cli.providers import resolve_embedder
+
+            _fail_on_embed_failure(
+                repo_path,
+                resolve_embedder(cfg.get("embedder")),
+                full_stats["embed_failed_pages"],
+                emitter,
+            )
+
     if emitter is not None:
+        _fail_if_embed_failed()
         emitter.done(
             ok=True,
             pages_generated=len(generated_pages),
@@ -2470,4 +2540,5 @@ def run_update(
         degraded=degraded,
     )
     _render_update_report(generated_pages, affected, new_decision_markers, elapsed, detail=verbose)
+    _fail_if_embed_failed()
     return UpdateOutcome.REGENERATED

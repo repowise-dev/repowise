@@ -176,6 +176,14 @@
   !body
 ) @import.statement
 
+;; A macro call at the top of a file (`cfg_if! { if #[cfg(unix)] { mod unix; } }`)
+;; can declare child modules in its tokens; the parser reads them out.
+(source_file
+  (macro_invocation (token_tree) @import.module) @import.statement)
+(source_file
+  (expression_statement
+    (macro_invocation (token_tree) @import.module) @import.statement))
+
 ;; extern crate foo; / extern crate foo as bar;
 (extern_crate_declaration
   name: (identifier) @import.module
@@ -338,7 +346,7 @@
 ;
 ; Each pattern captures the parameter/return type node itself (whatever shape
 ; it is), not just a bare ``type_identifier``; the Rust head extractor in
-; parser_helpers.py unwraps ``&T`` / ``Box<T>`` / ``dyn T`` / ``impl T`` /
+; lang_helpers/type_heads.py unwraps ``&T`` / ``Box<T>`` / ``dyn T`` / ``impl T`` /
 ; ``std::io::Error`` down to the head identifier, and filters the 55 rust
 ; builtins, so a wrapper capture cannot mint a wrong edge -- it resolves to
 ; the same head name a bare capture would, or to nothing.

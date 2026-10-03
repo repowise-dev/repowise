@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -29,7 +30,6 @@ from ..entry_points import orientation_entry_points, rank_entry_point_paths
 from ..models import GenerationConfig
 from .contexts import (
     ApiContractContext,
-    ArchitectureDiagramContext,
     FilePageContext,
     InfraPageContext,
     ModulePageContext,
@@ -44,6 +44,8 @@ from .graph_intelligence import (
     extract_community_meta,
     extract_heritage,
 )
+from .module_excerpts import module_excerpts
+from .module_facts import build_module_facts
 from .token_budget import (
     estimate_kg_tokens,
     estimate_tokens,
@@ -56,6 +58,10 @@ log = structlog.get_logger(__name__)
 
 # Maximum imports to include before truncating
 _MAX_IMPORTS = 30
+# Tokens of code excerpts a module page prompt carries; the Public API claims them first.
+_MODULE_EXCERPT_BUDGET = 10_000
+# Public API names are always listed, even past the budget, up to this cap; the rest are counted.
+_MODULE_EXCERPT_HARD_CAP = 15_000
 # Maximum top-files to include in repo overview
 _MAX_TOP_FILES = 20
 
@@ -452,11 +458,8 @@ class ContextAssembler:
     ) -> SymbolSpotlightContext:
         """Assemble context for the symbol_spotlight template."""
         path = parsed.file_info.path
-        # Callers = files that import the containing file (in-edges)
-        if path in graph:
-            callers = [e for e in graph.predecessors(path) if not is_external(e)]
-        else:
-            callers = []
+        # The file page's own importer list, so the two pages report one count.
+        callers = file_dependency_neighbors(graph, path, incoming=True)
 
         call_sites = _resolved_call_sites(symbol, graph)
 
@@ -505,8 +508,18 @@ class ContextAssembler:
         scope: str = "",
         is_rollup: bool = False,
         child_pages: list[dict] | None = None,
+        packages: list[dict] | None = None,
+        public_api: list[dict] | None = None,
+        parsed_files: dict[str, ParsedFile] | None = None,
+        source_map: dict[str, bytes] | None = None,
+        execution_flows: Sequence[Any] = (),
     ) -> ModulePageContext:
-        """Assemble context for the module_page template."""
+        """Assemble context for the module_page template.
+
+        *public_api* (see :func:`~.public_api.compute_public_api`) has first
+        claim on the excerpt budget; entries past it keep only their name.
+        With *parsed_files* and *source_map*, code excerpts take what it leaves.
+        """
         total_symbols = sum(len(fc.symbols) for fc in file_contexts)
         public_symbols = sum(
             sum(1 for s in fc.symbols if s.get("visibility") == "public") for fc in file_contexts
@@ -596,7 +609,8 @@ class ContextAssembler:
         # ``extract_heritage``; the per-file cap stays so one dense file cannot
         # take every slot.
         key_classes: list[dict] = []
-        for fc in sorted(file_contexts, key=lambda fc: (-fc.pagerank_score, fc.file_path)):
+        by_rank = sorted(file_contexts, key=lambda fc: (-fc.pagerank_score, fc.file_path))
+        for fc in by_rank:
             for h in fc.heritage[:_MAX_CLASSES_PER_FILE]:
                 key_classes.append(h)
         key_classes = key_classes[:_MAX_KEY_CLASSES]
@@ -624,7 +638,16 @@ class ContextAssembler:
             most_fixed_file,
         ) = self._module_git_enrichment(files, set(files), git_meta_map)
 
-        return ModulePageContext(
+        api_rows, api_cost = self._excerpt_public_api(public_api or [])
+        excerpts, declared_files = module_excerpts(
+            public_api or [],
+            parsed_files or {},
+            [fc.file_path for fc in by_rank],
+            source_map or {},
+            max(0, _MODULE_EXCERPT_BUDGET - api_cost),
+        )
+
+        ctx = ModulePageContext(
             title=title,
             directories=directories,
             language=language,
@@ -647,6 +670,20 @@ class ContextAssembler:
             scope=scope,
             is_rollup=is_rollup,
             child_pages=child_pages or [],
+            packages=packages or [],
+            public_api=api_rows,
+            public_api_omitted=len(public_api or ()) - len(api_rows),
+            code_excerpts=[
+                {
+                    "file": item.path,
+                    "symbol": item.symbol,
+                    "lines": f"{item.start_line}-{item.end_line}",
+                    "truncated": item.truncated,
+                    "code": item.text,
+                }
+                for item in excerpts.included
+            ],
+            declared_files=declared_files,
             hotspot_count=hotspot_count,
             stable_count=stable_count,
             single_owner_files=single_owner_files,
@@ -654,6 +691,30 @@ class ContextAssembler:
             bugfix_total=bugfix_total,
             most_fixed_file=most_fixed_file,
         )
+        ctx.facts = build_module_facts(ctx, file_contexts, graph, execution_flows)
+        return ctx
+
+    def _excerpt_public_api(self, api: list[dict]) -> tuple[list[dict], int]:
+        """Every name (to the hard cap), then signature + doc line while half the rest lasts.
+
+        Costs follow the rendered shape (bare names grouped under their file);
+        +1 per row so rounding cannot add up past a limit.
+        """
+        files: set[str] = set()
+
+        def name_cost(e: dict) -> int:
+            head = 0 if e["file"] in files else self._estimate_tokens(f"- `{e['file']}`: ")
+            files.add(e["file"])
+            return 1 + head + self._estimate_tokens(f"`{e['name']}`, ")
+
+        def row_cost(e: dict) -> int:
+            row = f"- `{e['name']}` ({e['kind']}, `{e['file']}`): `` {e['signature']} `` {e['doc']}"
+            return 1 + self._estimate_tokens(row)
+
+        named, used = items_within_budget(api, 0, _MODULE_EXCERPT_HARD_CAP, name_cost)
+        half = used + max(0, _MODULE_EXCERPT_BUDGET - used) // 2
+        kept, used = items_within_budget(named, used, half, row_cost)
+        return kept + [{**e, "signature": "", "doc": ""} for e in named[len(kept) :]], used
 
     def _package_boundaries(self, known_paths: set[str]) -> set[str]:
         """Package roots for this repo, resolved once.
@@ -926,70 +987,6 @@ class ContextAssembler:
             decision_records=decision_records or [],
             package_stats=package_stats,
             prose_digest=prose_digest,
-        )
-
-    # ------------------------------------------------------------------
-    # Architecture diagram
-    # ------------------------------------------------------------------
-
-    def assemble_architecture_diagram(
-        self,
-        graph: Any,  # nx.DiGraph
-        pagerank: dict[str, float],
-        community: dict[str, int],
-        sccs: list[Any],  # list[frozenset[str]]
-        repo_name: str,
-    ) -> ArchitectureDiagramContext:
-        """Assemble context for the architecture_diagram template."""
-        max_diagram_nodes = 50
-        max_diagram_edges = 200
-
-        # Top-N nodes by PageRank (exclude external nodes). Path breaks the
-        # tie, otherwise which 50 nodes make the cut changes between runs and
-        # the diagram is not comparable to the one it replaces.
-        top_nodes = set(
-            p
-            for p, _ in sorted(pagerank.items(), key=lambda x: (-x[1], str(x[0])))[
-                :max_diagram_nodes
-            ]
-            if not is_external(str(p))
-        )
-        nodes = sorted(top_nodes)
-
-        # Only edges between selected nodes. Ranked by the endpoints' PageRank
-        # rather than alphabetically: the cap bites on dense repos, and a plain
-        # sort would fill all 200 slots from whichever package sorts first and
-        # draw nothing from the rest of the graph. Path breaks the tie.
-        edges = sorted(
-            ((src, dst) for src, dst in graph.edges() if src in top_nodes and dst in top_nodes),
-            key=lambda e: (
-                -pagerank.get(e[0], 0.0),
-                -pagerank.get(e[1], 0.0),
-                str(e[0]),
-                str(e[1]),
-            ),
-        )[:max_diagram_edges]
-
-        # Community → members mapping (top-10 communities, cap members to 5)
-        raw_communities: dict[int, list[str]] = {}
-        for path, cid in community.items():
-            if not is_external(path):
-                raw_communities.setdefault(cid, []).append(path)
-        comm_sorted = sorted(
-            ((cid, sorted(members)) for cid, members in raw_communities.items()),
-            key=lambda x: (-len(x[1]), x[0]),
-        )[:10]
-        communities: dict[int, list[str]] = {cid: members[:5] for cid, members in comm_sorted}
-
-        # SCC groups (only non-singleton)
-        scc_groups = [sorted(scc) for scc in sccs if len(scc) > 1]
-
-        return ArchitectureDiagramContext(
-            repo_name=repo_name,
-            nodes=nodes,
-            edges=edges,
-            communities=communities,
-            scc_groups=scc_groups,
         )
 
     # ------------------------------------------------------------------

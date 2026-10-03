@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from repowise.server.mcp_server._budget.budgeter import (
+    FIT_HEADROOM_CHARS,
     effective_char_budget,
     fit_to_budget,
     response_chars,
@@ -23,6 +24,7 @@ from repowise.server.mcp_server._budget.budgeter import (
 )
 from repowise.server.mcp_server._budget.collector import OmissionCollector
 from repowise.server.mcp_server._budget.hooks import run_post_enforce, run_post_shed
+from repowise.server.mcp_server._meta import full_meta
 
 DEFAULT_RESPONSE_CHARS = 24_000
 EXPANDED_RESPONSE_CHARS = 32_000
@@ -99,6 +101,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "directive.test_recommendations[]",
             "directive.tests_to_run[]",
             "directive.may_break[]",
+            "directive.next_calls[]",
             "targets[]",
         ),
         protected=("directive", "targets"),
@@ -115,6 +118,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
                     "directive.test_recommendations[]",
                     "directive.tests_to_run[]",
                     "directive.may_break[]",
+                    "directive.next_calls[]",
                     "pr_blast_radius",
                     "pr_blast_radius.guarding_tests",
                 ),
@@ -140,6 +144,8 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "fix_history",
             "branch_overlap",
             "cross_repo",
+            "patch_coverage.files[]",
+            "patch_coverage",
             "impacted_tests",
             "health_delta.limits",
             "health_delta.skipped",
@@ -170,6 +176,9 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "candidates",
             "fallback_targets[]",
             "fallback_targets",
+            # Last: a bare path is the fewest bytes per file worth opening.
+            "candidate_files[]",
+            "candidate_files",
         ),
         expansion_argument="include",
         protected=("answer", "confidence", "citations", "next_action_hint", "degraded"),
@@ -266,6 +275,13 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             # served 0 of 40 while 73% of the budget went unspent.
             "outline.sections[]",
             "outline",
+            # Built at three rows a horizon. The quarter trims first, since the
+            # week is the nearer ask, and the totals stay until the whole block
+            # goes.
+            "next_actions.quarter.actions[]",
+            "next_actions.week.actions[]",
+            "next_actions_reason",
+            "next_actions",
             "tool_surface",
             "repos[]",
             "key_modules[]",
@@ -308,12 +324,10 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         ),
         protected=(
             "mode",
-            "directive",
-            # Both pillar leads are bounded by construction and are the only
-            # actionable content a bare dashboard carries for them, so shedding
-            # one would leave that pillar with counts and nothing to do.
-            "performance_directive",
-            "refactoring_directive",
+            # The one lead, bounded by construction (at most five compact
+            # items): shedding it would leave the dashboard with nothing to do.
+            "fix_first",
+            "fix_id",
             "opportunity_id",
             "model_state",
             "targets",
@@ -615,6 +629,24 @@ def _stamp_completeness(
         meta["floor"] = sorted(floors)
 
 
+def _slim_accounting(
+    result: dict[str, Any], *, limit: int, tier: str, trimmed: bool
+) -> None:
+    """Keep the accounting blocks only where they carry news.
+
+    ``completeness`` stays when something was capped and ``response_budget``
+    when enforcement shed something or failed; otherwise both restate that the
+    whole answer arrived, on every call.
+    """
+    meta = result["_meta"]
+    if not meta.get("completeness", {}).get("capped"):
+        meta.pop("completeness", None)
+    if trimmed or "enforcement_error" in meta.get("response_budget", {}):
+        _stamp_accounting(result, limit=limit, tier=tier)
+    else:
+        meta.pop("response_budget", None)
+
+
 async def resolve_response_budget_repo_root(
     signature: inspect.Signature,
     args: tuple[Any, ...],
@@ -745,6 +777,43 @@ def _emergency_fit(
             return
 
 
+def _lead_with_dropped_targets(
+    tool: str,
+    result: dict[str, Any],
+    signature: inspect.Signature,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    limit: int,
+) -> None:
+    """Put any target the budget dropped first, with the call that fetches it.
+
+    The recovery is the same call narrowed to the dropped targets. It repeats
+    their names, so it rides along only while the response stays under *limit*.
+    """
+    dropped = result.get("dropped_targets")
+    if not dropped:
+        return
+    try:
+        bound = dict(signature.bind_partial(*args, **kwargs).arguments)
+    except TypeError:
+        bound = dict(kwargs)
+    params = signature.parameters
+    arguments = {
+        name: value
+        for name, value in bound.items()
+        if value is not None and (name not in params or value != params[name].default)
+    }
+    arguments["targets"] = list(dropped)
+    lead: dict[str, Any] = {"dropped_targets": dropped}
+    recovery = {"tool": tool, "arguments": arguments}
+    if response_chars(result) + response_chars({"recovery": recovery}) <= limit:
+        lead["recovery"] = recovery
+    rest = {key: value for key, value in result.items() if key not in lead}
+    result.clear()
+    result.update(lead)
+    result.update(rest)
+
+
 def enforce_response_budget(
     tool: str,
     result: Any,
@@ -775,7 +844,11 @@ def enforce_response_budget(
     tier = "expanded" if expanded else "default"
     if result.get("truncated"):
         result.setdefault("_meta", {}).setdefault("state", {})["truncated"] = True
+    # A block an earlier pass kept means that pass trimmed; the lean envelope
+    # keeps it so the outer pass does not hide the inner one's shedding.
+    trimmed = "response_budget" in (result.get("_meta") or {})
     _stamp_accounting(result, limit=limit, tier=tier)
+    entry_chars = result["_meta"]["response_budget"]["serialized_chars"]
 
     collector = OmissionCollector(tool, repo_root=repo_root)
     headroom = min(_FINAL_HEADROOM_CHARS, max(100, limit // 4))
@@ -787,6 +860,9 @@ def enforce_response_budget(
             char_budget=working_limit,
             collector=collector,
             record_counts=True,
+        )
+        _lead_with_dropped_targets(
+            tool, result, signature, args, kwargs, limit - FIT_HEADROOM_CHARS
         )
     else:
         fit_to_budget(
@@ -805,6 +881,7 @@ def enforce_response_budget(
         emergency = OmissionCollector(tool, repo_root=repo_root)
         _emergency_fit(result, contract, emergency, working_limit, requested)
         emergency.attach(result)
+        trimmed = True
 
     run_post_enforce(tool, result)
 
@@ -817,6 +894,13 @@ def enforce_response_budget(
             "enforcement_error"
         ] = "protected response fields exceed the declared budget"
         _stamp_accounting(result, limit=limit, tier=tier)
+    if not full_meta(tool):
+        trimmed = (
+            trimmed
+            or not collector.empty
+            or result["_meta"]["response_budget"]["serialized_chars"] < entry_chars
+        )
+        _slim_accounting(result, limit=limit, tier=tier, trimmed=trimmed)
     return result
 
 

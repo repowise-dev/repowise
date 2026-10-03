@@ -56,7 +56,9 @@ SPEC = LanguageSpec(
     tag="typescript",
     display_name="TypeScript",
     import_support="full",
-    test_infixes=(".test.", ".spec."),
+    # ``.test-d.`` is the type-test convention tsd and vitest's typecheck mode
+    # collect (``index.test-d.ts``): assertions on types, run by the test runner.
+    test_infixes=(".test.", ".spec.", ".test-d."),
     extensions=frozenset({".ts", ".tsx", ".mts", ".cts"}),
     grammar_package="tree_sitter_typescript",
     grammar_loader="language_typescript",

@@ -35,7 +35,7 @@ Honesty rules:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from ...co_change import canonical_pair, confidence_ratio, parse_partners
 
@@ -146,6 +146,12 @@ class CouplingGraph:
     total_files: int = 0
 
 
+def _node_score(metric: Any) -> float | None:
+    """A node's health score; ``None`` without a row or without a score."""
+    score = getattr(metric, "score", None)
+    return round(score, 2) if score is not None else None
+
+
 def coupling_graph(
     metrics: list[MetricLike],
     git_meta_by_path: dict[str, GitMetaLike],
@@ -224,7 +230,7 @@ def coupling_graph(
         CouplingNode(
             file_path=path,
             module=(metric_by_path[path].module if path in metric_by_path else None),
-            score=(round(metric_by_path[path].score, 2) if path in metric_by_path else None),
+            score=_node_score(metric_by_path.get(path)),
             nloc=(metric_by_path[path].nloc or 0 if path in metric_by_path else 0),
         )
         for path in sorted(referenced)

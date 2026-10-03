@@ -45,7 +45,7 @@ from repowise.cli.helpers import (
     save_config_partial,
     save_state,
 )
-from repowise.cli.providers import resolve_embedder
+from repowise.cli.providers import resolve_embedder, semantic_search_status
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import (
     BRAND,
@@ -296,6 +296,8 @@ class _RepoOutcome:
     symbol_count: int = 0
     pages_generated: int = 0
     docs_outcome: tuple[int, str | None] = (0, None)
+    #: Pages a real embedder failed to write; the repo is still persisted.
+    embed_failed_pages: int = 0
 
 
 def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCtx) -> _RepoOutcome:
@@ -504,7 +506,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         state["phase_timings"] = repo_phase_timings
     apply_git_history_coverage_state(state, result)
     from repowise.core.generation.selection import count_documentable_files
-    from repowise.core.index_scope import file_page_scope, stamp_index_scope
+    from repowise.core.index_scope import dropped_files_scope, file_page_scope, stamp_index_scope
 
     scope_config = load_config(repo.path)
     configured_cap = resolve_max_file_pages(config=scope_config)
@@ -525,6 +527,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         content_provenance={"none": "none", "deterministic": "template", "llm": "model"}[docs_mode],
         git_tier=state["git_tier"],
         git_commit_cap=ctx.resolved_commit_limit,
+        dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
         file_pages={
             "configured_cap": configured_cap,
             **(
@@ -560,8 +563,8 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         search={
             "full_text": "available" if result.generated_pages else "unavailable",
             "semantic": (
-                "available"
-                if result.generated_pages and scope_embedder not in {None, "mock"}
+                semantic_search_status(scope_embedder, getattr(result, "embed_failed_pages", 0))
+                if result.generated_pages
                 else "unavailable"
             ),
             "next_command": "repowise reindex" if result.generated_pages else None,
@@ -635,11 +638,15 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             embedding_model=(resolve_embedding_model(det_embedder) if det_embedder else None),
         )
 
+    from repowise.cli.providers import embed_failure_message
+
+    failed = getattr(result, "embed_failed_pages", 0)
     return _RepoOutcome(
         file_count=result.file_count,
         symbol_count=result.symbol_count,
         pages_generated=pages_generated,
         docs_outcome=docs_outcome,
+        embed_failed_pages=failed if embed_failure_message(scope_embedder, failed) else 0,
     )
 
 
@@ -916,6 +923,7 @@ def _workspace_init(
         run_mode=run_mode,
     )
 
+    embed_failures: dict[str, int] = {}
     for i, repo in enumerate(selected, 1):
         outcome = _ingest_and_generate_repo(repo, i, len(selected), ctx)
         if outcome.error:
@@ -925,6 +933,8 @@ def _workspace_init(
         total_symbols += outcome.symbol_count
         total_pages += outcome.pages_generated
         docs_outcomes[repo.alias] = outcome.docs_outcome
+        if outcome.embed_failed_pages:
+            embed_failures[repo.alias] = outcome.embed_failed_pages
 
     # Save workspace config with updated timestamps. On a dry run nothing is
     # written for any repo (see _ingest_and_generate_repo), so nothing is
@@ -983,3 +993,15 @@ def _workspace_init(
             no_editor_setup=not editor_setup,
         )
     console.print()
+    # Raised after every repo is persisted, as single-repo init does: the
+    # other repos and full-text search are fine, but a scripted run must see
+    # that these semantic indexes were not built.
+    if embed_failures:
+        import click
+
+        listed = ", ".join(f"{alias} ({n} page(s))" for alias, n in embed_failures.items())
+        raise click.ClickException(
+            f"Embedding failed for {listed}, so semantic search is unavailable there "
+            "(full-text search still works). Fix the cause in the warnings above, "
+            "then run: repowise reindex in each."
+        )

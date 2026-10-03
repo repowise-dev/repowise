@@ -1,0 +1,24 @@
+300 commits (showing 20 most recent; subjects only)
+3bb56ba5  Oct 3 2026   scratch: two files
+4ed3d1b3  Jun 24 2026  Bump actions/checkout from 6.0.2 to 7.0.0 in the actions group (#7540)
+d44b67eb  Jun 24 2026  Bump https://github.com/astral-sh/ruff-pre-commit (#7536)
+74c56d5f  Jun 24 2026  Inline pre-commit linting (#7539)
+d64b9ad4  Jun 15 2026  Bump https://github.com/astral-sh/ruff-pre-commit (#7515)
+6f66281a  Jun 9 2026   Add hasattr checks for remaining protocol isinstance checks (#7505)
+6f205ff4  Jun 8 2026   Fix `_encode_files` detection for `__getattr__`-based file wrappers (#7502)
+661970d1  Jun 8 2026   Disable commonly ignored Pyright linting rules (#7497)
+fbd0eb37  Jun 8 2026   Bump https://github.com/astral-sh/ruff-pre-commit (#7503)
+1190afd1  Jun 4 2026   Add type annotation for `Request.hooks` (#7498)
+e50e5945  Jun 4 2026   Improve static typing of 3rd party imports  (#7496)
+3be097d4  Jun 2 2026   Bump https://github.com/astral-sh/ruff-pre-commit (#7493)
+a634611d  Jun 2 2026   Bump github/codeql-action from 4.35.1 to 4.36.0 in the actions group (#7492)
+c4367f23  May 31 2026  Add AI Policy
+cd90742e  May 18 2026  docs: indent continuation line in Session.get :param params: (#7460)
+6e83187b  May 14 2026  v2.34.2
+84d10f0b  May 14 2026  Move Request.headers back to Mapping (#7441)
+b7b549b5  May 13 2026  v2.34.1
+e511bc72  May 13 2026  Fix mutability issues with headers input types (#7431)
+5691f596  May 13 2026  Update JsonType containers to read-based collections (#7436)
+
+[repowise#eed993b23bc3: 2928 lines omitted (~25947 tokens); restore: repowise expand eed993b23bc3]
+

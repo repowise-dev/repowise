@@ -15,6 +15,7 @@ from repowise.core.git_refs import (
     current_branch,
     default_base,
     list_branches,
+    remote_name,
     resolve,
 )
 
@@ -193,3 +194,24 @@ class TestCommitFileSets:
 
     def test_a_non_repository_yields_nothing(self, tmp_path: Path) -> None:
         assert commit_file_sets(str(tmp_path / "nowhere_at_all"), "main..feat") == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/pallets/flask.git",
+        "git@github.com:pallets/flask.git",
+        "https://gitlab.example.com/group/sub/flask/",
+    ],
+)
+def test_remote_name_is_the_last_url_segment(tmp_path: Path, url: str) -> None:
+    root = tmp_path / "checkout-folder"
+    root.mkdir()
+    _run(root, "init", "-b", "main")
+    _run(root, "remote", "add", "origin", url)
+    assert remote_name(str(root)) == "flask"
+
+
+def test_remote_name_is_empty_without_a_remote(tmp_path: Path) -> None:
+    _run(tmp_path, "init", "-b", "main")
+    assert remote_name(str(tmp_path)) == ""

@@ -51,6 +51,17 @@ async def test_file_sqlite_engine_sets_busy_timeout(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_file_sqlite_engine_sets_page_cache(tmp_path: Path) -> None:
+    """Large index writes need more than SQLite's 2 MiB default page cache."""
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'wiki.db'}")
+    try:
+        await init_db(engine)
+        assert int(await _read_pragma(engine, "cache_size")) == -65536
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_busy_timeout_override_is_applied(tmp_path: Path) -> None:
     """A custom ``busy_timeout_ms`` must reach the connection pragma so the
     cost tracker's best-effort engine fails fast under contention instead of

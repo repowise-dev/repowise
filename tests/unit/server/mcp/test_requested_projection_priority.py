@@ -16,6 +16,9 @@ from repowise.server.mcp_server._budget.contracts import (
     _requested_shed_keys,
 )
 
+# These tests read the accounting the lean envelope leaves out by default.
+pytestmark = pytest.mark.usefixtures("debug_meta")
+
 
 def _overview_signature() -> inspect.Signature:
     def get_overview(repo: str | None = None, include: list[str] | None = None): ...

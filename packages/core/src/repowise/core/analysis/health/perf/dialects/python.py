@@ -28,20 +28,21 @@ HTTP_VERBS: frozenset[str] = frozenset(
 # Python DBAPI / SQLAlchemy execution sinks, split into three strata so the
 # ambiguous accessors can be gated harder than the unambiguous ones (see
 # ``sink_kind``).
-PY_DB_UNAMBIGUOUS: frozenset[str] = frozenset(
-    {
-        "execute",
-        "executemany",
-        "scalars",
-        "scalar",
-        "scalar_one",
-        "scalar_one_or_none",
-        "fetchone",
-        "fetchall",
-        "fetchmany",
-    }
+PY_DB_UNAMBIGUOUS: frozenset[str] = frozenset({"fetchone", "fetchall", "fetchmany"})
+# DB verbs other clients spell too: GitPython's ``repo.commit()``, an HTTP or
+# GraphQL SDK's ``request.execute()``, a builder's ``.scalar()``.
+PY_DB_NEEDS_EVIDENCE: frozenset[str] = frozenset(
+    {"commit", "execute", "executemany", "scalars", "scalar", "scalar_one", "scalar_one_or_none"}
 )
-PY_DB_COMMIT: frozenset[str] = frozenset({"commit"})
+# Without a db import, the call itself can still show it runs a query: a
+# PostgREST chain (``client.table("t")...execute()``) or a statement argument
+# (``session.execute(select(...))``, ``cur.execute("SELECT ...")``).
+_PY_QUERY_CHAIN_METHODS: frozenset[str] = frozenset({"table", "from_"})
+_PY_STATEMENT_BUILDERS: frozenset[str] = frozenset({"select", "insert", "update", "delete", "text"})
+_PY_SQL_LITERAL_RE = re.compile(
+    r"^[rRuUbBfF]*[\"']+\s*(?:SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|DROP|ALTER|PRAGMA)\b",
+    re.IGNORECASE,
+)
 PY_DB_AMBIGUOUS: frozenset[str] = frozenset({"all", "first", "one", "one_or_none"})
 PY_SUBPROC_METHODS: frozenset[str] = frozenset(
     {"run", "call", "check_call", "check_output", "Popen"}
@@ -194,6 +195,8 @@ _PY_MODEL_NAME_RE = re.compile(r"^[A-Z]\w*[a-z]\w*$")
 
 class PythonPerfDialect(BasePerfDialect):
     language = "python"
+    lock_acquire_functions = frozenset({"acquire", "__enter__"})
+    spin_loop_header = re.compile(r"while\s+True\s*:")
     markers = frozenset(
         {
             "io_in_loop",
@@ -257,9 +260,8 @@ class PythonPerfDialect(BasePerfDialect):
             # A real DB sink is always a method on a session/cursor/result
             # object; a bare identifier call (the builtin ``all(...)``) is not.
             return "db" if is_attribute else None
-        if method in PY_DB_COMMIT:
-            # ``.commit`` is a DB verb but GitPython exposes ``repo.commit()``.
-            # Require db evidence in the file / on the receiver.
+        if method in PY_DB_NEEDS_EVIDENCE:
+            # A DB verb only with db evidence in the file / on the receiver.
             return "db" if (is_attribute and db_evidence) else None
         if method in PY_DB_AMBIGUOUS:
             # ``.all`` / ``.first`` / ``.one`` collide with ordinary collection
@@ -296,7 +298,10 @@ class PythonPerfDialect(BasePerfDialect):
         self, call: Node, *, awaited: bool, io_names: dict[str, str], has_db_import: bool
     ) -> str | None:
         kind = super().call_sink_kind(
-            call, awaited=awaited, io_names=io_names, has_db_import=has_db_import
+            call,
+            awaited=awaited,
+            io_names=io_names,
+            has_db_import=has_db_import or self.shows_a_query(call),
         )
         if kind == "db" and self._reads_a_registry(call, io_names):
             return None
@@ -307,6 +312,40 @@ class PythonPerfDialect(BasePerfDialect):
             db = has_db_import or io_names.get(self.callee_root_name(call) or "") == "db"
             return "db" if db and not self._key_used_earlier(call, orm_get[1]) else None
         return kind
+
+    def shows_a_query(self, call: Node) -> bool:
+        """An evidence-gated DB verb whose call runs a query by its own shape,
+        whatever the file imports."""
+        if self.callee_method_name(call) not in PY_DB_NEEDS_EVIDENCE:
+            return False
+        fn = call.child_by_field_name("function")
+        if fn is None or fn.type != "attribute":
+            return False
+        receiver = fn.child_by_field_name("object")
+        return self._chains_a_query(receiver) or self._passes_a_statement(call)
+
+    def _chains_a_query(self, receiver: Node | None) -> bool:
+        """A PostgREST-style ``table(...)`` / ``from_(...)`` call on the receiver chain."""
+        while receiver is not None and receiver.type in ("call", "attribute"):
+            if receiver.type == "call":
+                if self.callee_method_name(receiver) in _PY_QUERY_CHAIN_METHODS:
+                    return True
+                receiver = receiver.child_by_field_name("function")
+            else:
+                receiver = receiver.child_by_field_name("object")
+        return False
+
+    def _passes_a_statement(self, call: Node) -> bool:
+        """The first argument is a statement builder call or a SQL string literal."""
+        args = call.child_by_field_name("arguments")
+        first = next((c for c in args.children if c.is_named), None) if args is not None else None
+        if first is None:
+            return False
+        if first.type == "call":
+            return self.callee_method_name(first) in _PY_STATEMENT_BUILDERS
+        if first.type in ("string", "concatenated_string"):
+            return bool(_PY_SQL_LITERAL_RE.match((first.text or b"").decode("utf-8", "replace")))
+        return False
 
     def _reads_a_registry(self, call: Node, io_names: dict[str, str]) -> bool:
         """``plugins.all()`` on an imported or module-global name reads a registry, not a

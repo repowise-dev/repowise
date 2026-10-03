@@ -78,7 +78,7 @@ const LANE_DESCRIPTION: Record<DecisionLane, string> = {
   uncheckable:
     "Accepted decisions that name no file or module. Nothing can check them against the code and no agent editing a file will be given one. Add the paths they govern and they move to Active.",
   history:
-    "Decisions that were accepted and then withdrawn, superseded or dismissed. Kept so the record of what changed survives.",
+    "Decisions that were accepted and then withdrawn, superseded or dismissed, or whose files no longer exist. Kept so the record of what changed survives.",
 };
 
 /** An empty lane says what will fill it and what the reader can do next. */

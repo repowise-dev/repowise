@@ -104,7 +104,7 @@ function OpportunityDetailView({
     return <ErrorNote title="Could not load the opportunity.">{state.message}</ErrorNote>;
   }
   const detail = state.data;
-  if (!detail.resolved) {
+  if (!detail.found) {
     return (
       <ErrorNote title="Opportunity unavailable.">
         {detail.model_state?.state === "stale_model"

@@ -68,9 +68,9 @@ describe("canonical performance wire contract", () => {
     for (const field of contract.detail_extra) expect(detail[field]).toBeDefined();
     expect(contract.unresolved_detail).toEqual([
       "detail",
+      "found",
       "model_state",
       "opportunity_id",
-      "resolved",
     ]);
     expect(contract.model_state).toContain("refresh_required");
   });

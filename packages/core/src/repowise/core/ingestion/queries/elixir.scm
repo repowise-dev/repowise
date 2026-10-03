@@ -34,7 +34,7 @@
 ; module attribute (`@doc "…"`, `@spec f(t) :: t`) is a `call` under a `@`
 ; unary_operator, the call patterns below would mint an edge for each one.
 ; Those two shapes are dropped by `_elixir_call_is_definitional` in
-; parser_helpers.py, which is structural, a predicate cannot see a parent.
+; lang_helpers/elixir.py, which is structural, a predicate cannot see a parent.
 ; Reserved keyword targets (`def`, `if`, `case`, …) are Kernel macros and are
 ; dropped by name through the spec's `builtin_calls`.
 

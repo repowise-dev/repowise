@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from repowise.core.analysis.finding_registry import verification_label
 from repowise.core.analysis.health.aggregation import (
     primary_and_magnitude,
     primary_and_magnitude_by_file,
@@ -12,9 +13,10 @@ from repowise.core.analysis.health.aggregation import (
 from repowise.core.analysis.health.scoring import unclamped_score
 from repowise.core.analysis.health.signals import FileSignals
 from repowise.core.analysis.health.trends import FileTrend
+from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL
 
 
-def _finding_to_dict(f: Any) -> dict:
+def _finding_to_dict(f: Any, lower_priority: str | None = None) -> dict:
     try:
         details = json.loads(f.details_json) if f.details_json else {}
     except Exception:
@@ -35,6 +37,9 @@ def _finding_to_dict(f: Any) -> dict:
         # so the UI can filter findings per dimension. Defaults to defect for
         # rows that predate the split.
         "dimension": getattr(f, "dimension", None) or "defect",
+        # "unverified" for a provisional type a caller asked for by name.
+        "verification": verification_label(f.biomarker_type),
+        "lower_priority": LOW_PRIORITY_LABEL.get(lower_priority or ""),
     }
 
 
@@ -75,7 +80,8 @@ def _metric_to_dict(
     # Built in the historical key order so the full row stays byte-identical.
     out: dict = {
         "file_path": m.file_path,
-        "score": round(m.score, 2),
+        # ``None`` for a language health has no dialect for: nothing measured it.
+        "score": _round_opt(m.score),
         "max_ccn": m.max_ccn,
         "max_nesting": m.max_nesting,
     }

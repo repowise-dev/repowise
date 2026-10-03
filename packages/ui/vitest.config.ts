@@ -39,6 +39,12 @@ export default defineConfig({
       "@repowise-dev/types/owners": path.resolve(__dirname, "../types/src/owners.ts"),
       "@repowise-dev/types/modules": path.resolve(__dirname, "../types/src/modules.ts"),
       "@repowise-dev/types/overview": path.resolve(__dirname, "../types/src/overview.ts"),
+      "@repowise-dev/types/actions": path.resolve(__dirname, "../types/src/actions.ts"),
+      "@repowise-dev/types/fix-first": path.resolve(__dirname, "../types/src/fix-first.ts"),
+      "@repowise-dev/types/agent-prompts": path.resolve(
+        __dirname,
+        "../types/src/agent-prompts.ts",
+      ),
       "@repowise-dev/types/files": path.resolve(__dirname, "../types/src/files.ts"),
       "@repowise-dev/types/external-systems": path.resolve(
         __dirname,
@@ -57,6 +63,7 @@ export default defineConfig({
         "../types/src/risk-semantics.ts",
       ),
       "@repowise-dev/types/repos": path.resolve(__dirname, "../types/src/repos.ts"),
+      "@repowise-dev/types/serve-lock": path.resolve(__dirname, "../types/src/serve-lock.ts"),
       "@repowise-dev/types/generated/http": path.resolve(
         __dirname,
         "../types/src/generated/http.ts",

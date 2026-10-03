@@ -27,6 +27,7 @@ to avoid one embedding round-trip per page; the single-item
 from __future__ import annotations
 
 from ._base import (
+    FILE_VOCABULARY_KEY,
     BatchChunkFailure,
     BatchEmbeddingError,
     VectorStore,
@@ -39,6 +40,7 @@ from .lancedb_store import LanceDBVectorStore
 from .pgvector_store import PgVectorStore
 
 __all__ = [
+    "FILE_VOCABULARY_KEY",
     "BatchChunkFailure",
     "BatchEmbeddingError",
     "InMemoryVectorStore",

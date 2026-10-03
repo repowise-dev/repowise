@@ -46,6 +46,7 @@ async def _insert_git_metadata(session_factory, repo_id: str) -> None:
             commit_count_capped=True,
             original_path="src/old_main.py",
             fix_symbol_counts_json=json.dumps({"src/main.py::run": 3}),
+            primary_owner_line_pct=0.45,
         )
         await crud.upsert_git_metadata(
             session,
@@ -103,12 +104,16 @@ async def test_file_detail_carries_symbol_fix_counts(client: AsyncClient, app) -
     assert resp.status_code == 200, resp.text
     git = resp.json()["git"]
     assert git["fix_symbol_counts"] == {"src/main.py::run": 3}
+    # The blame line share rides beside the commit share, never in its place.
+    assert git["primary_owner_line_pct"] == 0.45
+    assert git["primary_owner_commit_pct"] == 0.6
 
     # A file the rollup never touched reports an empty map, not a missing key,
     # so a consumer can index into it unconditionally.
     resp = await client.get(f"/api/repos/{repo['id']}/files/src/utils.py")
     assert resp.status_code == 200
     assert resp.json()["git"]["fix_symbol_counts"] == {}
+    assert resp.json()["git"]["primary_owner_line_pct"] is None
 
 
 @pytest.mark.asyncio

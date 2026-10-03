@@ -13,6 +13,7 @@ import type {
   RefactoringPlanPage,
   RefactoringPlan,
   RefactoringPlanStatusUpdate,
+  RefactoringScope,
   RefactoringSummaryResponse,
   RefactoringTargets,
   RefactoringTriageStatus,
@@ -135,6 +136,8 @@ export interface RefactoringOpportunityParams {
   search?: string;
   /** Only opportunities carrying at least one mechanical step. */
   mechanical?: boolean;
+  /** `fix_first` (server default for the open queue) or `all`, the full inventory. */
+  scope?: RefactoringScope;
   view?: RefactoringView;
   order?: RefactoringOrder;
   /** Steps inlined per row. 0 for a list that renders counts and opens a drawer. */
@@ -159,6 +162,7 @@ export async function getRefactoringOpportunities(
       // Only sent when true: the server defaults it to false, and sending
       // `false` would turn a shared default into a caller's assertion.
       mechanical: params.mechanical ? true : undefined,
+      scope: params.scope,
       view: params.view,
       order: params.order,
       step_preview: params.stepPreview,

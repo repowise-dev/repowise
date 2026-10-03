@@ -31,7 +31,7 @@ predicate; it is deliberately not folded into ``assertion_count``, which is
 calibrated.
 
 **This marker is advisory and never deducts.** See ``ADVISORY_DIMENSION`` in
-``scoring.py``, and LANGUAGE_SUPPORT.md#code-health-coverage for the measured
+``scoring.py``, and docs/architecture/language-support.md#test-quality-markers-per-language for the measured
 per-language precision and the false positives it does not separate.
 """
 
@@ -51,7 +51,7 @@ from .base import BiomarkerResult, FileContext
 #: sitting outside that pass's admitted set. Re-admitting either language is a
 #: measurement of its own, on its own hand-labelled sample, not a consequence of
 #: this one.
-#: Figures and the reasoning: LANGUAGE_SUPPORT.md#code-health-coverage.
+#: Figures and the reasoning: docs/architecture/language-support.md#test-quality-markers-per-language.
 SHIPPING_LANGUAGES = frozenset({"javascript", "python", "tsx", "typescript"})
 
 

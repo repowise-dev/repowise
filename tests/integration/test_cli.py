@@ -1042,6 +1042,62 @@ class TestUpdateConfigChangeDetection:
         assert "Config files changed" in r2.output
         assert "health re-score complete" in r2.output.lower()
 
+    _HEADLESS_INIT = (
+        "--no-prose",
+        "--embedder",
+        "mock",
+        "--no-editor-setup",
+        "--no-hook",
+        "--no-agents",
+        "--no-codex",
+        "--no-claude-md",
+        "--no-workspace",
+        "--no-distill-hook",
+        "-y",
+    )
+
+    def test_first_update_after_headless_init_rebuilds_nothing(self, runner, git_work_repo):
+        """The opt-outs init records after fingerprinting are not index inputs.
+
+        ``--no-distill-hook`` and the editor-file opt-outs land in config.yaml
+        after init stamps the fingerprint. Their ``hooks`` / ``editor_files``
+        keys used to fall in the unknown-key bucket, so the first update read
+        them as a traversal change and re-rendered and re-embedded every page.
+        """
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), *self._HEADLESS_INIT], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+        import yaml
+
+        cfg = yaml.safe_load((git_work_repo / ".repowise" / "config.yaml").read_text("utf-8"))
+        assert "hooks" in cfg and "editor_files" in cfg
+
+        from repowise.cli.helpers import release_update_lock
+
+        args = ["update", str(git_work_repo), "--index-only", "--no-workspace", "--no-agents"]
+        r1 = runner.invoke(cli, args, catch_exceptions=False)
+        # A real run drops its lock at exit; these share one process.
+        release_update_lock(git_work_repo)
+        assert r1.exit_code == 0, r1.output
+        assert "Config files changed" not in r1.output
+        assert "Pages to regenerate" not in r1.output
+        assert "Re-rendered" not in r1.output
+        assert not (git_work_repo / ".vscode").exists()
+
+        r2 = runner.invoke(cli, args, catch_exceptions=False)
+        release_update_lock(git_work_repo)
+        assert "Already up to date" in r2.output
+
+        # A setting the index does depend on still triggers the rebuild.
+        cfg["exclude_patterns"] = ["tests/**"]
+        (git_work_repo / ".repowise" / "config.yaml").write_text(
+            yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8"
+        )
+        r3 = runner.invoke(cli, args, catch_exceptions=False)
+        assert r3.exit_code == 0, r3.output
+        assert "Config files changed" in r3.output
+
     def test_init_stamps_the_rescore_cadence_so_the_next_update_skips_it(
         self, runner, git_work_repo
     ):

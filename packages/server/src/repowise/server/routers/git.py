@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 from collections import Counter
 from datetime import datetime, timedelta
 
@@ -29,6 +27,7 @@ from repowise.core.analysis.change_risk import (
     score_change,
     scores_excluding,
 )
+from repowise.core.analysis.owners import people_resolver
 from repowise.core.analysis.risk_semantics import change_risk_authority
 from repowise.core.co_change import MIN_CO_CHANGE_SUPPORT, parse_partners
 from repowise.core.ingestion.git_indexer._constants import (
@@ -41,6 +40,7 @@ from repowise.core.persistence.models import GitCommit, GitMetadata, Repository
 from repowise.core.persistence.sql import is_missing_table
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.mcp_server.tool_risk import _check_test_gap
+from repowise.server.routers._local_git import resolve_local_repo, revision_exists
 from repowise.server.schemas import (
     AgentTrendBucket,
     AgentTrendResponse,
@@ -160,7 +160,7 @@ def _commit_fields(
 ) -> dict:
     """Shared CommitResponse field map (raw row + repo-relative normalization)."""
     risk = _commit_risk(r)
-    top_driver = risk.top_drivers[0].label if risk and risk.top_drivers else None
+    top_driver = risk.top_driver.label if risk and risk.top_driver else None
     return {
         "sha": r.sha,
         "short_sha": r.sha[:8],
@@ -629,7 +629,7 @@ async def get_ownership(
     one entry per tracked file.
     """
 
-    result = await session.execute(select(GitMetadata).where(GitMetadata.repository_id == repo_id))
+    result = await session.execute(select(GitMetadata).where(crud.code_file_rows(repo_id)))
     all_meta = result.scalars().all()
 
     if granularity == "file":
@@ -648,15 +648,18 @@ async def get_ownership(
         for m in all_meta:
             modules.setdefault(top_level_module(m.file_path), []).append(m)
 
+        resolve = people_resolver(all_meta)
         entries = []
         for module_path, files in sorted(modules.items()):
-            owners: dict[str, int] = {}
-            for f in files:
-                if f.primary_owner_name:
-                    owners[f.primary_owner_name] = owners.get(f.primary_owner_name, 0) + 1
+            owners: Counter[str] = Counter(
+                resolve(f.primary_owner_name, f.primary_owner_email)
+                for f in files
+                if f.primary_owner_name
+            )
             if owners:
-                top_owner = max(owners, key=owners.get)  # type: ignore[arg-type]
-                owner_pct = owners[top_owner] / len(files)
+                top_key = max(owners, key=owners.__getitem__)
+                top_owner = resolve.display_name(top_key)
+                owner_pct = owners[top_key] / len(files)
             else:
                 top_owner = None
                 owner_pct = 0.0
@@ -728,32 +731,6 @@ async def get_reviewer_suggestions(
     return ReviewerSuggestionsResponse(paths=paths, suggestions=suggestions)
 
 
-async def _resolve_local_repo(
-    repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
-) -> Repository:
-    """Resolve a repository with a usable local checkout, or raise 404."""
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None or not repo.local_path or not os.path.isdir(repo.local_path):
-        raise HTTPException(status_code=404, detail="Repository not found")
-    return repo
-
-
-def _revision_exists(repo_path: str, rev: str) -> bool:
-    # Reject option-shaped input outright; git refuses ref names starting
-    # with "-", so this loses no legitimate revision and keeps user input
-    # from ever being parsed as a git flag here or downstream.
-    if not rev or rev.startswith("-"):
-        return False
-    result = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode == 0
-
-
 @router.get("/{repo_id}/risk/range", response_model=RiskRangeResponse)
 def get_risk_range(
     repo_id: str,
@@ -764,7 +741,7 @@ def get_risk_range(
         ge=0,
         description="Recent commits to sample for the repo-relative percentile (0 skips it)",
     ),
-    repo: Repository = Depends(_resolve_local_repo),
+    repo: Repository = Depends(resolve_local_repo),
 ) -> RiskRangeResponse:
     """Assess a ``base..head`` range from its live diff shape and history.
 
@@ -775,7 +752,7 @@ def get_risk_range(
     the threadpool, since it shells out to git.
     """
     local_path = repo.local_path
-    if not _revision_exists(local_path, base) or not _revision_exists(local_path, head):
+    if not revision_exists(local_path, base) or not revision_exists(local_path, head):
         raise HTTPException(status_code=400, detail=f"Unknown revision in range {base!r}..{head!r}")
 
     try:
@@ -858,7 +835,7 @@ async def get_git_summary(
     10) so an engineering leader can see the broader contributor surface.
     """
 
-    result = await session.execute(select(GitMetadata).where(GitMetadata.repository_id == repo_id))
+    result = await session.execute(select(GitMetadata).where(crud.code_file_rows(repo_id)))
     all_meta = list(result.scalars().all())
 
     hotspot_count = sum(1 for m in all_meta if m.is_hotspot)
@@ -868,13 +845,19 @@ async def get_git_summary(
         sum(m.churn_percentile for m in all_meta) / len(all_meta) * 100.0 if all_meta else 0.0
     )
 
-    owners: dict[str, int] = {}
-    for m in all_meta:
-        if m.primary_owner_name:
-            owners[m.primary_owner_name] = owners.get(m.primary_owner_name, 0) + 1
+    # One person is one owner, however many names and emails they commit under.
+    resolve = people_resolver(all_meta)
+    owners = Counter(
+        resolve(m.primary_owner_name, m.primary_owner_email)
+        for m in all_meta
+        if m.primary_owner_name
+    )
     total = len(all_meta) or 1
     top_owners = sorted(
-        [{"name": k, "file_count": v, "pct": v / total} for k, v in owners.items()],
+        [
+            {"name": resolve.display_name(k), "file_count": v, "pct": v / total}
+            for k, v in owners.items()
+        ],
         key=lambda x: x["file_count"],
         reverse=True,
     )[:top_owners_limit]

@@ -1,10 +1,10 @@
-// Present mode — on-the-fly slide deck + guided walkthrough over already-loaded
-// wiki pages. Framework-light and self-contained so the OSS dashboard and a
-// future hosted app share one implementation: the host supplies DocPage[] and
-// renders <PresentOverlay>.
+// Present mode: a short narrated deck over already-generated wiki pages.
+// Framework-light and self-contained so every host shares one implementation:
+// the host gathers pages with `loadPresentSource`, builds the model and renders
+// <PresentOverlay>.
 
 export { buildPresentModel, canPresent } from "./build-present-model";
-export { loadPresentPages } from "./load-present-pages";
-export { PresentOverlay, type PresentMode } from "./present-overlay";
+export { loadPresentSource } from "./load-present-source";
+export { PresentOverlay } from "./present-overlay";
 export { PresentButton } from "./present-button";
-export type { PresentModel, PresentSlide, PresentStep, PresentSlideKind } from "./types";
+export type { PresentModel, PresentSource } from "./types";

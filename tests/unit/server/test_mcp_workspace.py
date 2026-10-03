@@ -596,6 +596,17 @@ async def test_get_dead_code_repo_all(workspace_mcp):
 
 
 @pytest.mark.asyncio
+async def test_get_dead_code_repo_all_summary_says_what_it_counts(workspace_mcp):
+    from repowise.server.mcp_server import get_dead_code
+
+    summary = (await get_dead_code(repo="all", directory="nowhere"))["summary"]
+    assert summary["total_findings"] >= 2
+    assert summary["filtered_findings"] == 0
+    assert "filtered_findings" in summary["scope"]
+    assert summary["filters"] == {"directory": "nowhere"}
+
+
+@pytest.mark.asyncio
 async def test_get_dead_code_specific_repo(workspace_mcp):
     from repowise.server.mcp_server import get_dead_code
 
@@ -637,6 +648,24 @@ async def test_unsupported_repo_all_get_context(workspace_mcp):
     result = await get_context(targets=["src/api/server.py"], repo="all")
     assert "error" in result
     assert "not supported" in result["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "kwargs"),
+    [
+        ("get_health", {}),
+        ("generate_refactoring_code", {"suggestion_id": "any"}),
+        ("set_finding_status", {"suggestion_id": "any", "status": "acknowledged"}),
+    ],
+)
+async def test_unsupported_repo_all_returns_error_dict(workspace_mcp, tool_name, kwargs):
+    import repowise.server.mcp_server as mcp_server
+
+    tool = getattr(mcp_server, tool_name)
+    result = await tool(repo="all", **kwargs)
+
+    assert result["error"].startswith(f"repo='all' is not supported for {tool_name}.")
 
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -110,6 +111,20 @@ def _isolate_db_url_env():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_per_index_caches():
+    """Drop the MCP server's per-index caches before every test.
+
+    Test repositories share one id and one ``updated_at`` and have no state file,
+    so every test's index looks the same to the cache key. Looked up in
+    ``sys.modules`` so a test that never loads the server pays nothing.
+    """
+    for name in ("_basis", "_scope", "_graph_files", "tool_overview.graph"):
+        module = sys.modules.get(f"repowise.server.mcp_server.{name}")
+        if module is not None:
+            module.reset_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_structlog_config():
     """Restore structlog's global configuration after every test.
 
@@ -135,6 +150,40 @@ def _isolate_structlog_config():
     finally:
         structlog.configure(**saved)
 
+@pytest.fixture(autouse=True)
+def _isolate_silenced_logger_levels():
+    """Restore stdlib logger levels mutated by silence_logs_for_machine_output.
+
+    That helper also calls ``logging.getLogger(name).setLevel(logging.ERROR)``
+    on ``httpx``, ``httpcore``, ``repowise.core``, and ``repowise.server`` —
+    process-global state that ``_isolate_structlog_config`` (above) does not
+    touch, since it only snapshots structlog's own configuration.
+
+    Without this, a test that exercises any ``--format json``/``--format md``
+    command leaves those loggers raised to ERROR for the rest of the session.
+    A later test asserting a ``caplog`` record from a module under
+    ``repowise.core`` or ``repowise.server`` then reads an empty list: the
+    module's own logger has no level set, so its *effective* level is
+    inherited from the ancestor now pinned at ERROR, and
+    ``logger.warning(...)`` is dropped before any handler — including
+    ``caplog``'s — ever runs. Same failure shape as the structlog case
+    above: passes when the file is run alone, fails only in a full run,
+    depending on whether a machine-output command executed first (#1976).
+
+    Snapshot and restore rather than reset to ``NOTSET``: a test that sets a
+    level on purpose keeps working, and the next test still starts clean.
+    """
+    import logging
+
+    from repowise.cli.helpers import MACHINE_OUTPUT_LOGGER_NAMES
+
+    loggers = [logging.getLogger(name) for name in MACHINE_OUTPUT_LOGGER_NAMES]
+    previous_levels = [logger.level for logger in loggers]
+    try:
+        yield
+    finally:
+        for logger, level in zip(loggers, previous_levels, strict=True):
+            logger.setLevel(level)
 
 @pytest.fixture(scope="session")
 def repo_root() -> Path:
@@ -156,3 +205,11 @@ def sample_repo_path(repo_root: Path) -> Path:
 def fixtures_dir(repo_root: Path) -> Path:
     """Path to the tests/fixtures/ directory."""
     return repo_root / "tests" / "fixtures"
+
+
+@pytest.fixture
+def dry_violation_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Show ``dry_violation`` for tests of the clone mechanics the registry hides."""
+    from repowise.core.analysis import finding_registry
+
+    monkeypatch.delitem(finding_registry.REGISTRY, "dry_violation")

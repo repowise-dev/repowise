@@ -138,6 +138,12 @@ def _score(
     return score
 
 
+def _covers(term: str, symbol_tokens: set[str]) -> bool:
+    """Whether every word of *term* is a token of the symbol (one word for a plain term)."""
+    words = _tokens(term)
+    return bool(words) and words <= symbol_tokens
+
+
 def _corroborated(row: WikiSymbol, covered: dict[str, float], saturated: set[str]) -> bool:
     """Whether *row* has enough independent evidence to enter the pool.
 
@@ -156,7 +162,9 @@ def _corroborated(row: WikiSymbol, covered: dict[str, float], saturated: set[str
         return any(term != name for term in informative)
     if name in informative:
         return True
-    return len(informative) >= 2
+    # A compound the caller typed (``module_page``) is its words already agreeing
+    # in order, so it counts once per word.
+    return sum(len(_tokens(term)) for term in informative) >= 2
 
 
 async def search_symbols_by_terms(
@@ -216,12 +224,13 @@ async def search_symbols_by_terms(
             continue
         # A term counts as covered when it survives tokenisation of the symbol
         # name, not merely as a substring: ``update`` should match
-        # ``update_index``, not ``groupdater``.
+        # ``update_index``, not ``groupdater``. A compound term is covered when
+        # every word of it is, since the window already matched it contiguously.
         stoks = _tokens(row.name) | _tokens(row.qualified_name) | _tokens(row.file_path)
         covered = {
             t: (_SATURATED_TERM_WEIGHT if t in saturated else 1.0)
             for t in matched.get(symbol_id, ())
-            if t in stoks
+            if _covers(t, stoks)
         }
         if not _corroborated(row, covered, saturated):
             continue
@@ -265,12 +274,14 @@ async def symbol_backed_pages(
         return []
 
     paths: list[str] = []
-    seen: set[str] = set()
+    names: dict[str, list[str]] = {}
     for hit in symbols:
         path = hit.get("file")
-        if path and path not in seen:
-            seen.add(path)
+        if not path:
+            continue
+        if path not in names:
             paths.append(path)
+        names.setdefault(path, []).append(hit.get("name") or "")
     paths = paths[:max_files]
     if not paths:
         return []
@@ -290,6 +301,9 @@ async def symbol_backed_pages(
                 "title": row[2] or f"File: {row[1]}",
                 "summary": row[3] or "",
                 "page_type": row[4] or "file_page",
+                # The names that earned the page its place, for a ranker that
+                # would otherwise judge it on prose that never mentions them.
+                "symbol_names": names[row[1]],
             }
             for row in res.all()
         }

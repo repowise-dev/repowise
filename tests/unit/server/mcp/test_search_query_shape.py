@@ -15,6 +15,9 @@ from repowise.server.mcp_server.tool_search import (
     _fetch_limit_for,
     _has_exact_symbol,
     _is_why_shaped,
+    _looks_like_code_name,
+    _mark_not_the_named_symbol,
+    _names_a_path,
     _resolve_mode,
 )
 
@@ -76,3 +79,174 @@ def test_the_shape_module_loads_no_registry_or_database() -> None:
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "[]"
+
+
+# A made-up repo's symbol table: what `_embedded_identifiers(query, names)`
+# validates tokens against. The name set also answers for each lowered name,
+# which is how a caller turns on the case-insensitive leg.
+_INDEXED = ["executeWithTool", "proxyExecute", "OpenAIProvider", "Session", "refresh", "load_spec"]
+_NAMES = {*_INDEXED, *(n.lower() for n in _INDEXED)}
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        # lowerCamel: the shape regex alone misses both.
+        ("how does executeWithTool call proxyExecute", ["executeWithTool", "proxyExecute"]),
+        # Acronym inside a CamelCase name.
+        ("where is OpenAIProvider defined", ["OpenAIProvider"]),
+        # Dotted: the chain counts when its last part names a symbol.
+        ("what does client.proxyExecute return", ["client.proxyExecute"]),
+        ("when is Session.refresh called", ["Session.refresh"]),
+        ("how does load_spec work", ["load_spec"]),
+        # Case-insensitive after case-sensitive, for mixed-case tokens.
+        ("where is openAIProvider", ["openAIProvider"]),
+        # Language and product words name no symbol, so they are not identifiers.
+        ("how does the TypeScript SDK differ from the Python one", []),
+        ("does JavaScript support this", []),
+        # A capitalised sentence word never folds onto a lowercase symbol.
+        ("Refresh the token", []),
+    ],
+)
+def test_embedded_identifiers_validated_against_the_symbol_table(query, expected) -> None:
+    assert _embedded_identifiers(query, _NAMES) == expected
+
+
+def test_a_language_word_is_an_identifier_only_when_a_symbol_carries_it() -> None:
+    assert _embedded_identifiers("how does TypeScript work", {"TypeScript"}) == ["TypeScript"]
+    # Unvalidated, the shape regex keeps its old reading.
+    assert _embedded_identifiers("how does TypeScript work") == ["TypeScript"]
+
+
+def test_resolve_mode_routes_on_validated_identifiers() -> None:
+    assert _resolve_mode("how does executeWithTool work", None, _NAMES) == "hybrid"
+    assert _resolve_mode("how does the TypeScript client work", None, _NAMES) == "concept"
+
+
+# Go exports plain English words as methods and types.
+_ONE_HUMP = {"Add", "Fixes", "Client", "Do", "API", "HTTPClient", "TypeScript"}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Add support for retries in the transport",
+        "Fixes a panic when the pool is closed twice",
+        "Client should retry when the API returns 503",
+    ],
+)
+def test_a_one_hump_word_in_prose_is_not_an_identifier(query) -> None:
+    assert _embedded_identifiers(query, _ONE_HUMP) == []
+    assert _resolve_mode(query, None, _ONE_HUMP) == "concept"
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("support for `Add` in the transport", ["Add"]),
+        ("why does `the API` reject retries", ["API"]),
+        ("calling Add() twice panics", ["Add"]),
+        ("retries in Client.Do are lost", ["Client.Do"]),
+        ("the transport calls x.Add on close", ["x.Add"]),
+        # Multi-hump names are validated as before, in prose too.
+        ("HTTPClient should retry on TypeScript errors", ["HTTPClient", "TypeScript"]),
+    ],
+)
+def test_a_one_hump_word_in_code_context_is_an_identifier(query, expected) -> None:
+    assert _embedded_identifiers(query, _ONE_HUMP) == expected
+    assert _resolve_mode(query, None, _ONE_HUMP) == "hybrid"
+
+
+_FRAMED = {"Add", "Fixes", "Client", "Session", "Router", "Handler", "Config", "Base64"}
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("where is Session defined", ["Session"]),
+        ("what does Client do", ["Client"]),
+        ("Session class", ["Session"]),
+        ("the Router struct", ["Router"]),
+        ("how is Handler implemented", ["Handler"]),
+        ("find Config", ["Config"]),
+        ("Client::new", ["Client"]),
+        ("Add::new()", ["Add"]),
+        # A digit makes it more than a word, so it is validated as before.
+        ("decode with Base64 fails", ["Base64"]),
+    ],
+)
+def test_a_one_hump_word_in_a_lookup_frame_is_an_identifier(query, expected) -> None:
+    assert _embedded_identifiers(query, _FRAMED) == expected
+    assert _resolve_mode(query, None, _FRAMED) == "hybrid"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Add support for custom headers",
+        "Fixes a panic when the pool is closed",
+        "Client should retry on 503",
+        "Add function to retry",
+        "Add type annotations",
+        "Add class for Config",
+        "Find Client retry bug",
+        "Show Client errors in the UI",
+        "Open Config file fails",
+        "The Client type is wrong",
+        "Fix the Client type error",
+        "Add the Client class",
+        "Show Session timeout in the dashboard",
+        "Add (optional) support for retries",
+    ],
+)
+def test_issue_text_with_one_hump_names_stays_concept(query) -> None:
+    assert _embedded_identifiers(query, _FRAMED) == []
+    assert _resolve_mode(query, None, _FRAMED) == "concept"
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "executeToolWithRetryBackoff",
+        "getToolkitMigrationPlan",
+        "AnthropicStreamingAdapter",
+        "validate_trigger_nonce",
+        "OpenAIProvider",
+        "MAX_RETRIES",
+        "client.proxyExecute",
+    ],
+)
+def test_code_shaped_names(token) -> None:
+    assert _looks_like_code_name(token)
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "TypeScript",
+        "JavaScript",
+        "GitHub",
+        "PostgreSQL",
+        "iPhone",
+        "macOS",
+        "Python",
+        "API",
+        "AuthService login",
+    ],
+)
+def test_product_and_language_words_are_not_code_shaped(token) -> None:
+    assert not _looks_like_code_name(token)
+
+
+def test_a_module_path_is_not_a_missing_symbol() -> None:
+    paths = ["app/services/mcp_tools/_tools_search.py", "src/client.ts"]
+    assert _names_a_path("app.services.mcp_tools", paths)
+    assert _names_a_path("_tools_search", paths)
+    assert not _names_a_path("validate_trigger_nonce", paths)
+
+
+def test_pages_for_a_missing_symbol_are_labelled_and_capped() -> None:
+    items = [{"confidence_score": 0.9}, {"confidence_score": 0.2}, {}]
+    _mark_not_the_named_symbol(items)
+    assert {item["relation"] for item in items} == {"related, not the named symbol"}
+    assert [item.get("confidence_score") for item in items] == [0.45, 0.2, None]

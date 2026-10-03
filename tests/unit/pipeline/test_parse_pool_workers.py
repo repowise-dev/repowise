@@ -5,6 +5,9 @@ so sizing the pool from the host's core count made peak memory a function of
 the machine rather than the repo.
 """
 
+import subprocess
+import sys
+
 import pytest
 
 from repowise.core.pipeline.phases import ingestion as ing
@@ -170,3 +173,23 @@ class TestBothCallSitesAreBounded:
         assert parsed, "ingestion parsed nothing, so the run proves nothing"
         assert seen, "no process pool was constructed, so the bound was never exercised"
         assert seen == [8], f"expected the capped count to reach the executor, got {seen}"
+
+
+class TestWorkerImportWeight:
+    """A spawned worker re-imports this module, so its imports are per-worker cost.
+
+    A string constant imported from the persistence package once pulled
+    SQLAlchemy into every worker: +31 MB and +209 modules each.
+    """
+
+    def test_worker_module_does_not_load_persistence(self):
+        script = (
+            "import sys, repowise.core.pipeline.phases.ingestion; "
+            "print('\\n'.join(sorted(m for m in sys.modules if m == 'sqlalchemy' "
+            "or m.startswith(('sqlalchemy.', 'repowise.core.persistence')))))"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, check=False
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.split() == [], f"parse worker imports: {done.stdout.split()[:10]}"

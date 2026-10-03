@@ -8,6 +8,11 @@ Identity: owners are keyed by email when known (stabler than a display name
 across renames and encodings), else ``name:<name>``. ``top_authors_json`` is
 the authoritative attribution: every (name, email, commit_count) per file,
 capped at 50 by the indexer, so one walk is linear in repo size.
+
+Activity is not read from those per-file counts: a commit touching ten files
+appears in ten rows, and ``commit_count`` there is all-time. ``commit_count_90d``
+and ``last_commit_at`` come from the per-commit rows instead, counting distinct
+SHAs in the 90 days before the newest commit (HEAD time, not the wall clock).
 """
 
 from __future__ import annotations
@@ -15,13 +20,14 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from repowise.core.analysis.health.aggregation import module_label
 from repowise.core.analysis.health.rows import field as row_field
 from repowise.core.analysis.health.rows import json_field
 from repowise.core.author_identity import (
+    IdentityResolver,
     build_identity_resolver,
     canonicalize_author_email,
 )
@@ -68,7 +74,9 @@ class OwnerAccumulator:
     files_owned: int = 0  # files where this person is primary_owner
     hotspots_owned: int = 0
     bus_factor_risk_files: int = 0
-    commit_count_90d: int = 0
+    # Distinct commits in the 90 days before HEAD; None when the commit rows
+    # are missing or do not reach back across the whole window.
+    commit_count_90d: int | None = None
     lines_added_90d_est: float = 0.0
     lines_deleted_90d_est: float = 0.0
 
@@ -100,26 +108,54 @@ class OwnerAccumulator:
     coauthor_meta: dict[str, tuple[str, str | None]] = field(default_factory=dict)
 
 
+ACTIVITY_WINDOW_DAYS = 90
+
+
+def people_resolver(
+    git_rows: Iterable[Any] = (), commit_rows: Iterable[Any] = ()
+) -> IdentityResolver:
+    """The one identity resolver every people-shaped figure goes through.
+
+    Built from every (name, email) the rows carry: each file's primary owner
+    and ``top_authors_json`` entries, and each commit's author. A commit row's
+    optional ``co_authors`` (``Co-authored-by`` trailer pairs) is evidence only
+    and never merges anyone (see :func:`build_identity_resolver`). Owners,
+    the truck factor, ownership rollups and the whole-history contributor count
+    all key on it, so one person is one bucket everywhere.
+    """
+    pairs: list[tuple[str | None, str | None]] = []
+    evidence: list[tuple[str | None, str | None]] = []
+    for m in git_rows:
+        pairs.append((row_field(m, "primary_owner_name"), row_field(m, "primary_owner_email")))
+        for a in json_field(m, "top_authors_json", []):
+            pairs.append((a.get("name"), a.get("email")))
+    for c in commit_rows:
+        pairs.append((row_field(c, "author_name"), row_field(c, "author_email")))
+        evidence.extend(row_field(c, "co_authors") or ())
+    return build_identity_resolver(pairs, evidence)
+
+
 def aggregate_owners(
-    git_rows: Iterable[Any], dead_rows: Iterable[Any]
+    git_rows: Iterable[Any],
+    dead_rows: Iterable[Any],
+    commit_rows: Iterable[Any] | None = None,
+    total_commits: int | None = None,
 ) -> tuple[dict[str, OwnerAccumulator], dict[str, int]]:
     """Walk every git row once, returning per-owner accumulators and files per module.
 
     ``git_rows`` are one repository's full ``git_metadata`` rows; ``dead_rows``
     its dead-code findings (``file_path``, ``lines``, ``primary_owner``).
+    ``commit_rows`` are its per-commit rows (``sha``, ``author_name``,
+    ``author_email``, ``committed_at``), newest non-merge commits from HEAD;
+    ``total_commits`` the repo's non-merge total, which says whether a sample
+    that stops inside the window is nonetheless the whole history.
     """
     rows = list(git_rows)
+    commits = list(commit_rows or [])
     accs: dict[str, OwnerAccumulator] = {}
     module_totals: dict[str, int] = defaultdict(int)
 
-    # The resolver folds noreply variants and same-name real+noreply emails to
-    # one bucket, so it needs every (name, email) pair before the main walk.
-    pairs: list[tuple[str | None, str | None]] = []
-    for m in rows:
-        pairs.append((row_field(m, "primary_owner_name"), row_field(m, "primary_owner_email")))
-        for a in json_field(m, "top_authors_json", []):
-            pairs.append((a.get("name"), a.get("email")))
-    resolve = build_identity_resolver(pairs)
+    resolve = people_resolver(rows, commits)
 
     def _ensure(name: str, email: str | None) -> OwnerAccumulator:
         k = resolve(name, email)
@@ -127,11 +163,8 @@ def aggregate_owners(
             return OwnerAccumulator(key="", name=name or "(unknown)", email=email)
         acc = accs.get(k)
         if acc is None:
-            acc = OwnerAccumulator(key=k, name=name or (email or ""), email=email)
+            acc = OwnerAccumulator(key=k, name=resolve.display_name(k), email=email)
             accs[k] = acc
-        # Promote a richer display name if we learn one later.
-        if name and (not acc.name or acc.name == acc.email):
-            acc.name = name
         if email and not acc.email:
             acc.email = email
         return acc
@@ -147,7 +180,6 @@ def aggregate_owners(
         total_file_commits = sum(int(a.get("commit_count", 0)) for a in authors) or 1
         added = row_field(m, "lines_added_90d") or 0
         deleted = row_field(m, "lines_deleted_90d") or 0
-        commits_90d = row_field(m, "commit_count_90d") or 0
 
         # Everyone who touched this file, for the co-author tally below.
         touchers: list[OwnerAccumulator] = []
@@ -161,7 +193,6 @@ def aggregate_owners(
             share = cnt / total_file_commits
             acc.files_touched[file_path] = cnt
             acc.file_meta[file_path] = m
-            acc.commit_count_90d += min(cnt, commits_90d) if commits_90d else 0
             acc.lines_added_90d_est += added * share
             acc.lines_deleted_90d_est += deleted * share
             for cat, n in categories.items():
@@ -222,6 +253,8 @@ def aggregate_owners(
                 b.coauthor_shared[a.key] += 1
                 b.coauthor_meta[a.key] = (a.name, a.email)
 
+    _apply_commit_activity(accs, resolve, commits, total_commits)
+
     # Pass 2: dead-code burden by primary_owner.
     for d in dead_rows:
         dead_owner = row_field(d, "primary_owner")
@@ -241,6 +274,52 @@ def aggregate_owners(
         acc.dead_code_lines += row_field(d, "lines") or 0
 
     return accs, dict(module_totals)
+
+
+def _apply_commit_activity(
+    accs: dict[str, OwnerAccumulator],
+    resolve: IdentityResolver,
+    commits: list[Any],
+    total_commits: int | None,
+) -> None:
+    """Set each owner's 90-day commit count and last commit from the commit rows.
+
+    Counts distinct SHAs per identity with ``committed_at`` at or after HEAD
+    time minus 90 days, so a commit touching many files counts once and the
+    sum over owners never exceeds the repo's non-merge commits in the window.
+    Each owner's ``last_commit_at`` is the newest of their own commits; an
+    owner with no row keeps the per-file value. The count stays ``None`` when
+    there are no rows, or when the rows stop short of the window start and
+    are not the whole history (a capped sample would undercount).
+    """
+    stamped: list[tuple[str, str, datetime]] = []
+    for c in commits:
+        sha = row_field(c, "sha")
+        at = as_utc(row_field(c, "committed_at"))
+        key = resolve(row_field(c, "author_name") or "", row_field(c, "author_email") or None)
+        if sha and at is not None and key:
+            stamped.append((key, sha, at))
+    if not stamped:
+        return
+
+    head = max(at for _, _, at in stamped)
+    since = head - timedelta(days=ACTIVITY_WINDOW_DAYS)
+    whole_history = total_commits is not None and len({s for _, s, _ in stamped}) >= total_commits
+    covers_window = whole_history or min(at for _, _, at in stamped) <= since
+
+    recent: dict[str, set[str]] = defaultdict(set)
+    last: dict[str, datetime] = {}
+    for key, sha, at in stamped:
+        if at >= since:
+            recent[key].add(sha)
+        if key not in last or at > last[key]:
+            last[key] = at
+
+    for key, acc in accs.items():
+        if covers_window:
+            acc.commit_count_90d = len(recent.get(key, ()))
+        if key in last:
+            acc.last_commit_at = last[key]
 
 
 def silo_modules(acc: OwnerAccumulator, module_totals: dict[str, int]) -> int:
@@ -270,5 +349,6 @@ __all__ = [
     "as_utc",
     "module_share",
     "owner_key",
+    "people_resolver",
     "silo_modules",
 ]

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 from sqlalchemy import text
@@ -150,9 +151,20 @@ class TestScanFile:
                 'import { execFile } from "node:child_process";\nexecFile(bin, args);\n',
                 {"exec_call"},
             ),
-            # Regex parsing in a file that also spawns: the gate is per file, so
-            # this is the residual false positive the gate cannot remove.
-            ('require("child_process");\nconst m = /a/.exec(s);\n', {"exec_call"}),
+            ('import { exec as run } from "child_process";\nrun(cmd);\n', {"exec_call"}),
+            ('const { execSync: sh } = require("child_process");\nsh(cmd);\n', {"exec_call"}),
+            ('import * as cp from "node:child_process";\ncp.execFile(bin);\n', {"exec_call"}),
+            ('require("child_process").exec(cmd);\n', {"exec_call"}),
+            # A regex's ``.exec`` in a file that also spawns is not bound to the module.
+            ('require("child_process");\nconst m = /a/.exec(s);\n', set()),
+            # The file's own function named exec, beside an unrelated spawn import.
+            (
+                'import { spawn } from "node:child_process";\n'
+                "function exec(args) { return spawn(bin, args); }\n"
+                "exec(args);\n",
+                set(),
+            ),
+            ('import * as cp from "child_process";\n// cp.exec(cmd)\n', set()),
         ],
     )
     def test_js_exec_is_reported_only_when_child_process_is_present(
@@ -162,14 +174,40 @@ class TestScanFile:
         findings = asyncio.run(scanner.scan_file("spawn.ts", source, symbols=[]))
         assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
 
-    def test_combined_prefilter_uses_the_same_safe_call_boundaries(self) -> None:
+    def test_combined_prefilter_leaves_calls_to_the_call_scan(self) -> None:
         from repowise.core.analysis.security_scan import _ANY_PATTERN
 
-        assert _ANY_PATTERN.search("eval (")
-        assert _ANY_PATTERN.search("exec(")
-        assert _ANY_PATTERN.search("window.eval(")
-        assert not _ANY_PATTERN.search("retrieval (")
-        assert not _ANY_PATTERN.search("my_eval(")
+        assert not _ANY_PATTERN.search("eval (")
+        assert not _ANY_PATTERN.search("window.exec(")
+        assert _ANY_PATTERN.search("os.system(cmd)")
+
+    @pytest.mark.parametrize(
+        ("source", "code", "uncommented"),
+        [
+            ('x = "a\\"b"  # c\ny', "x =            \ny", 'x = "a\\"b"     \ny'),
+            ("a /* b\nc */ d", "a     \n     d", "a     \n     d"),
+            ("s = '''q\n\"\"\" ''' + k", "s =     \n        + k", "s = '''q\n\"\"\" ''' + k"),
+            ('t = `a${f({b: "c"})}d` // e', "t =     f({b:     )        ", 't = `a${f({b: "c"})}d`     '),
+            ('open "abc\\', "open      ", 'open "abc\\'),
+            ("u = '#' # z", "u =        ", "u = '#'    "),
+        ],
+    )
+    def test_masking_blanks_comments_and_strings_in_place(
+        self, source: str, code: str, uncommented: str
+    ) -> None:
+        from repowise.core.analysis.security_scan import _mask_comments_and_strings
+
+        assert _mask_comments_and_strings(source) == code
+        assert _mask_comments_and_strings(source, strings=False) == uncommented
+
+    def test_file_without_a_call_word_skips_the_call_scan(self) -> None:
+        from repowise.core.analysis.security_scan import _call_findings
+
+        def unreachable() -> str:
+            raise AssertionError("masked source built for a file with no call")
+
+        assert _call_findings("a.ts", "run(executor);\n", unreachable) == []
+        assert _call_findings("a.py", "x = 1\n", unreachable) == []
 
     @pytest.mark.parametrize(
         "source",
@@ -458,6 +496,8 @@ class TestScanFile:
             ("const f = new Function(body);\n", True),
             ("const f = someFunction(a, b);\n", False),
             ("class Function extends Base {}\n", False),
+            ("// never use new Function(body) here\n", False),
+            ('const doc = "new Function(body)";\n', False),
         ],
     )
     def test_new_function_call(self, source: str, expected: bool) -> None:
@@ -936,3 +976,118 @@ class TestVendorShapeEdges:
         for integrity in (f"sha512-{run}+Q==", f"sha512-Zm9v/{run}/b2=="):
             source = f'      "integrity": "{integrity}",\n'
             assert "google_api_key" not in self._kinds(source, "package-lock.json")
+
+
+class TestCallKindsIgnoreProseAndText:
+    """pickle.loads / os.system / shell=True only count as code, not as text."""
+
+    _KINDS: ClassVar[set[str]] = {"pickle_loads", "os_system", "subprocess_shell_true"}
+
+    def _hits(self, source: str, path: str = "a.py") -> list[dict]:
+        return [f for f in scan_source(path, source) if f["kind"] in self._KINDS]
+
+    def test_docstring_mention_does_not_fire_but_the_call_does(self) -> None:
+        source = 'def load(x):\n    """Never call pickle.loads on input."""\n    return pickle.loads(x)\n'
+        hits = self._hits(source)
+        assert [(f["kind"], f["line"]) for f in hits] == [("pickle_loads", 3)]
+
+    def test_comment_and_string_literal_mentions_do_not_fire(self) -> None:
+        source = (
+            "# avoid os.system here\n"
+            'NAME = "os.system"\n'
+            'PATTERN = r"subprocess.run(x, shell=True)"\n'
+        )
+        assert self._hits(source) == []
+
+    def test_markdown_mention_does_not_fire(self) -> None:
+        source = "Replaced `pickle.loads` and `os.system` with safer calls.\n"
+        assert self._hits(source, "docs/CHANGELOG.md") == []
+
+    def test_secret_in_markdown_is_still_flagged(self) -> None:
+        source = 'AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n'
+        kinds = [f["kind"] for f in scan_source("README.md", source)]
+        assert "aws_access_key" in kinds
+
+    def test_real_calls_under_tests_are_low(self) -> None:
+        source = "os.system(cmd)\n"
+        hits = self._hits(source, "tests/test_x.py")
+        assert [f["severity"] for f in hits] == ["low"]
+        assert [f["severity"] for f in self._hits(source, "src/x.py")] == ["high"]
+
+    def test_eval_under_tests_is_low(self) -> None:
+        findings = scan_source("tests/test_x.py", "eval(expr)\n")
+        assert [f["severity"] for f in findings if f["kind"] == "eval_call"] == ["low"]
+
+    def test_multiline_shell_true_in_a_string_does_not_fire(self) -> None:
+        source = 'TEMPLATE = """\nsubprocess.run(\n    x,\n    shell=True,\n)\n"""\n'
+        assert self._hits(source) == []
+
+
+class TestSecretPrecision:
+    """A secret kind fires on a credential, never on an example of one."""
+
+    _SECRET: ClassVar[set[str]] = {"hardcoded_secret", "hardcoded_password", "public_env_secret"}
+
+    def _kinds(self, source: str, path: str = "src/app.py") -> set[str]:
+        return {f["kind"] for f in scan_source(path, source) if f["kind"] in self._SECRET}
+
+    @pytest.mark.parametrize(
+        ("path", "source"),
+        [
+            ("src/app.py", 'emb = get_embedder("openai", api_key="sk-...")\n'),
+            ("README.md", 'export ANTHROPIC_API_KEY="sk-ant-…"\n'),
+            ("README.md", 'export OPENAI_API_KEY="your-key-here"\n'),
+            ("README.md", 'API_KEY="sk-<your key>"\n'),
+            ("README.md", 'SECRET="$(op read op://vault/app/secret)"\n'),
+            ("src/app.py", 'TOKEN = "xxxxxxxxxxxx"\n'),
+        ],
+    )
+    def test_elided_or_templated_values_are_not_secrets(self, path: str, source: str) -> None:
+        assert self._kinds(source, path) == set()
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'client = OpenAI(api_key="ollama")\n',
+            'client = OpenAI(api_key="lmstudio")\n',
+            '<Bar token="--chart-1" />\n',
+        ],
+    )
+    def test_dummy_values_are_not_secrets(self, source: str) -> None:
+        assert self._kinds(source, "src/client.tsx") == set()
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'TOKEN = "sk-live-9f8a7b6c5d4e"\n',
+            'API_KEY = "sk-a****"\n',
+            f'API_KEY = "{"q" * 40}"\n',
+        ],
+    )
+    def test_credential_shaped_values_still_fire(self, source: str) -> None:
+        assert self._kinds(source) == {"hardcoded_secret"}
+
+    def test_doctest_example_is_not_a_password(self) -> None:
+        source = (
+            "def mask(line):\n"
+            '    """\n'
+            "    >>> mask(\"password = 'supersecret99'\")\n"
+            '    """\n'
+        )
+        assert self._kinds(source) == set()
+
+    def test_comment_naming_a_public_env_variable_is_not_a_leak(self) -> None:
+        source = "/**\n * Read from NEXT_PUBLIC_REPOWISE_API_KEY on the server.\n */\n"
+        assert self._kinds(source, "web/client.ts") == set()
+
+    def test_code_reading_a_public_env_secret_still_fires(self) -> None:
+        source = 'const k = process.env.NEXT_PUBLIC_API_KEY; // "NEXT_PUBLIC" is public\n'
+        assert self._kinds(source, "web/client.ts") == {"public_env_secret"}
+
+    def test_keyword_secret_after_a_comment_on_the_same_line_is_found_in_code(self) -> None:
+        source = 'password = "Tr0ub4dor&3x"  # password = "example"\n'
+        assert self._kinds(source) == {"hardcoded_password"}
+
+    def test_vendor_key_in_a_comment_still_fires(self) -> None:
+        kinds = {f["kind"] for f in scan_source("src/app.py", "# AKIAQZXNRTVYWMPKLBHG\n")}
+        assert kinds == {"aws_access_key"}

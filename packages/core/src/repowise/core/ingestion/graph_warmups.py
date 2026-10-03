@@ -24,6 +24,8 @@ import contextlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 
 if TYPE_CHECKING:
@@ -47,6 +49,23 @@ _CPP_MACRO_SCAN_EXTS: tuple[str, ...] = (
 )
 
 
+def _stamp_entry(graph: Any, parsed_files: dict, path: str) -> None:
+    """Stamp an entry on both the graph node and ``FileInfo``.
+
+    The node flag feeds dead code, ``FileInfo`` the entry-point list and tour.
+    A test file only becomes a reachability root: a runner loads it, but no
+    reader enters the system there.
+    """
+    node = graph.nodes.get(path) if graph is not None else None
+    info = getattr(parsed_files.get(path), "file_info", None)
+    is_test = bool((node or {}).get("is_test") or getattr(info, "is_test", False))
+    flag = "is_reachability_root" if is_test else "is_entry_point"
+    if node is not None:
+        node[flag] = True
+    if info is not None:
+        setattr(info, flag, True)
+
+
 def _warmup_jvm(ctx: ResolverContext) -> None:
     from .resolvers.jvm_workspace import get_or_build_jvm_index
 
@@ -59,7 +78,7 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
     # graph cannot see: META-INF/services lines, JPMS ``provides ... with``
     # directives (both merged into ``index.services``), and Spring Boot
     # autoconfig imports (Boot-2 ``spring.factories``, Boot-3 ``.imports``).
-    # Stamp the defining file node as ``is_entry_point`` so the
+    # Stamp the defining file node a reachability root so the
     # unreachable-file pass treats it as live without a per-language
     # check on every node.
     entry_fqns: set[str] = set()
@@ -67,12 +86,17 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
         entry_fqns.update(impls)
     for fqns in index.autoconfig_imports.values():
         entry_fqns.update(fqns)
+    # Classes a Gradle build script names (plugin ``classname``,
+    # ``implementationClass``, ``mainClass``) and loads by reflection.
+    from .resolvers.jvm_gradle import build_script_class_names
+
+    entry_fqns.update(build_script_class_names(ctx))
 
     for fqn in entry_fqns:
         for path in index.files_for_fqn(fqn):
             node = graph.nodes.get(path)
             if node is not None:
-                node["is_entry_point"] = True
+                node["is_reachability_root"] = True
 
     # Stamp every JVM source file under a non-``main`` Gradle source-set
     # (``testFixtures``, ``integrationTest``, ``javaPoet``, ``jcstress``,
@@ -129,7 +153,7 @@ def _warmup_cpp(ctx: ResolverContext) -> None:
     ``RCLCPP_COMPONENTS_REGISTER_NODE``, ``BOOST_CLASS_EXPORT``,
     ``LLVMFuzzerTestOneInput``, ``Q_OBJECT``, ``__attribute__((constructor))``,
     ``[[gnu::retain]]`` / ``[[gnu::used]]`` and the like — and stamps
-    ``is_entry_point=True`` on the file node. These macros wire the file
+    ``is_reachability_root=True`` on the file node. These macros wire the file
     into a runtime registry at static-init time, so a static call edge
     will never exist; without this rescue, every such TU reads as
     ``unreachable_file``.
@@ -232,7 +256,7 @@ def _mark_cpp_entry_point_files(
     graph: Any,
     source_map: dict[str, bytes] | None = None,
 ) -> None:
-    """Stamp ``is_entry_point=True`` on TU file nodes matching an entry marker."""
+    """Stamp TU file nodes carrying a registration marker as reachability roots."""
     for path, parsed in parsed_files.items():
         lang = parsed.file_info.language
         if lang not in ("cpp", "c"):
@@ -244,7 +268,7 @@ def _mark_cpp_entry_point_files(
             continue
         node = graph.nodes.get(path)
         if node is not None:
-            node["is_entry_point"] = True
+            node["is_reachability_root"] = True
 
 
 _SWIFT_ENTRY_RE = None  # compiled lazily inside _warmup_swift
@@ -289,6 +313,73 @@ def _warmup_dotnet(ctx: ResolverContext) -> None:
     get_or_build_index(ctx)
 
 
+def _warmup_rust(ctx: ResolverContext) -> None:
+    """Stamp Cargo ``[[bin]]``/``[[test]]``/``[[bench]]``/``[[example]]``
+    targets that name an explicit ``path`` as live, so a file Cargo discovers
+    only through the manifest (not convention) is not reported as dead (#2936).
+
+    ``[[bin]]`` targets are entry points: cargo runs them directly. The other
+    three are runner-loaded the same way a test file is, so they become
+    reachability roots instead — the same "roots, not entry points" split the
+    TypeScript warmup above makes for its own non-manifest entry paths.
+
+    First, ``mod`` items a ``macro_rules!`` body declares join the imports of
+    the files that call the macro, before any import is resolved.
+    """
+    from .resolvers.rust import add_macro_rules_mod_imports
+    from .resolvers.rust_workspace import get_or_build_cargo_workspace_index
+
+    try:
+        add_macro_rules_mod_imports(ctx)
+    except Exception as exc:  # the pass must not abort the build
+        structlog.get_logger(__name__).debug("rust_macro_mods_failed", error=str(exc))
+    index = get_or_build_cargo_workspace_index(ctx)
+    if index is None:
+        return
+    graph = getattr(ctx, "graph", None)
+    if graph is None:
+        return
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    for crate in index.crates:
+        for path in crate.bin_paths:
+            _stamp_entry(graph, parsed, path)
+        for path in crate.reachability_root_paths:
+            node = graph.nodes.get(path)
+            if node is not None:
+                node["is_reachability_root"] = True
+
+
+def _warmup_php(ctx: ResolverContext) -> None:
+    """Stamp the PHP files a tool loads with no importer as reachability roots.
+
+    Composer's autoloader loads every file a ``composer.json`` lists in
+    ``autoload.files`` on every run (a ``helpers.php`` of global functions),
+    and PHPStan alone runs a type-test corpus (:mod:`.phpstan`).
+    """
+    from .composer import repo_composer_manifests
+    from .phpstan import type_test_files
+
+    graph = getattr(ctx, "graph", None)
+    repo_path = getattr(ctx, "repo_path", None)
+    if graph is None:
+        return
+    manifests = repo_composer_manifests(ctx)
+    roots = {path for manifest in manifests for path in manifest.files}
+    if repo_path is not None:
+        parsed = getattr(ctx, "parsed_files", None) or {}
+        source_map = getattr(ctx, "source_map", None)
+        roots |= type_test_files(
+            repo_path,
+            manifests,
+            (path for path, pf in parsed.items() if pf.file_info.language == "php"),
+            lambda path: _read_warmup_source(path, parsed[path], source_map),
+        )
+    for path in roots:
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["is_reachability_root"] = True
+
+
 def _warmup_go(ctx: ResolverContext) -> None:
     """Build the Go package index and stamp ``is_entry_point`` on every
     ``package main`` file declaring ``func main()``. Go's entry convention
@@ -303,24 +394,21 @@ def _warmup_go(ctx: ResolverContext) -> None:
     parsed = getattr(ctx, "parsed_files", None) or {}
     for pkg in index.packages.values():
         for path in pkg.main_files:
-            # The graph attribute feeds dead-code reachability; the parsed
-            # FileInfo flag feeds the exported KG's entry tags and the tour
-            # seeds — both surfaces must agree.
-            if graph is not None:
-                node = graph.nodes.get(path)
-                if node is not None:
-                    node["is_entry_point"] = True
-            pf = parsed.get(path)
-            if pf is not None and getattr(pf, "file_info", None) is not None:
-                pf.file_info.is_entry_point = True
+            _stamp_entry(graph, parsed, path)
 
 
 def _warmup_typescript(ctx: ResolverContext) -> None:
-    """Build the TS workspace index and stamp ``is_entry_point`` on every
-    source file the workspace's ``package.json`` ``exports`` map resolves
-    to. Without this, files reachable only through the package boundary
+    """Build the TS workspace index and stamp every source file the
+    workspace's ``package.json`` ``exports`` map resolves to as a
+    reachability root. Without this, files reachable only through the package boundary
     (downstream npm consumers) read as ``in_degree==0`` and ship as
     unreachable findings.
+
+    Files a ``package.json`` declares as where it starts (``bin``, ``main``,
+    ``exports["."]``) are stamped on the parsed ``FileInfo`` too, as
+    manifest entries: they are what the entry-point list ranks first. The
+    other sources here stay graph-only, since they keep code alive without
+    being anywhere a reader enters.
     """
     from .resolvers.ts_workspace import (
         find_mdx_import_targets,
@@ -333,7 +421,13 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
     graph = getattr(ctx, "graph", None)
     if graph is None:
         return
-    entry_paths: set[str] = set(index.exports_entry_paths)
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    for path in index.manifest_entry_paths:
+        _stamp_entry(graph, parsed, path)
+        pf = parsed.get(path)
+        if pf is not None and getattr(pf, "file_info", None) is not None:
+            pf.file_info.is_manifest_entry = True
+    entry_paths: set[str] = set(index.exports_entry_paths) | index.manifest_entry_paths
     # MDX-only consumers (docs sites that import TSX components into
     # ``.mdx``) and custom vitest layouts (``runtime-tests/**``) — both
     # invisible to the TS parser, both real entry points.
@@ -346,11 +440,11 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
     # by the main entry graph.
     with contextlib.suppress(Exception):
         entry_paths |= find_npm_script_entry_targets(ctx)
-    for path in entry_paths:
+    # Roots, not entry points: these keep code alive without being a front door.
+    for path in entry_paths - index.manifest_entry_paths:
         node = graph.nodes.get(path)
-        if node is None:
-            continue
-        node["is_entry_point"] = True
+        if node is not None:
+            node["is_reachability_root"] = True
 
 
 _FLUTTER_SHELL_DIRS = ("android/", "ios/", "linux/", "macos/", "windows/", "web/")
@@ -390,12 +484,7 @@ def _warmup_dart(ctx: ResolverContext) -> None:
         # forms can't express — stamp them here instead.
         basename = s.rsplit("/", 1)[-1]
         if basename.startswith("main_") and basename.endswith(".dart"):
-            nd = graph.nodes.get(node_name)
-            if nd is not None:
-                nd["is_entry_point"] = True
-            pf = parsed.get(node_name)
-            if pf is not None and getattr(pf, "file_info", None) is not None:
-                pf.file_info.is_entry_point = True
+            _stamp_entry(graph, parsed, node_name)
 
 
 def _warmup_godot(ctx: ResolverContext) -> None:
@@ -475,17 +564,7 @@ def _warmup_godot(ctx: ResolverContext) -> None:
             # this repo, so only in-repo targets are stamped.
             if target is None or target not in ctx.path_set:
                 continue
-            node = graph.nodes.get(target)
-            if node is not None:
-                node["is_entry_point"] = True
-            # Both, as _warmup_dart and _warmup_go do: the graph attribute is
-            # what dead-code reachability reads, but the wiki's entry-point
-            # list, the tour and page selection all read FileInfo. Stamping
-            # only the first would leave an addon-publisher repo still
-            # reporting no entry point anywhere a reader looks.
-            target_parsed = parsed_files.get(target)
-            if target_parsed is not None and getattr(target_parsed, "file_info", None):
-                target_parsed.file_info.is_entry_point = True
+            _stamp_entry(graph, parsed_files, target)
 
     # A project root of "" (project.godot at the repo root) gives "addons/".
     # Keyed on project.godot only: a plugin.cfg is what marks an addon, not
@@ -512,11 +591,13 @@ _WARMUPS: dict[str, tuple[str, Warmup]] = {
     "kotlin": ("graph.jvm_index", _warmup_jvm),
     "csharp": ("graph.dotnet_index", _warmup_dotnet),
     "go": ("graph.go_index", _warmup_go),
+    "rust": ("graph.rust_targets", _warmup_rust),
     "typescript": ("graph.ts_index", _warmup_typescript),
     "javascript": ("graph.ts_index", _warmup_typescript),
     "cpp": ("graph.cpp_index", _warmup_cpp),
     "c": ("graph.cpp_index", _warmup_cpp),
     "swift": ("graph.swift_entry", _warmup_swift),
+    "php": ("graph.composer_files", _warmup_php),
     "dart": ("graph.dart_shells", _warmup_dart),
     # Registered under both tags: a repo of loose .gd scripts has no scenes,
     # and an addon distributed as scenes plus a project.godot may carry no

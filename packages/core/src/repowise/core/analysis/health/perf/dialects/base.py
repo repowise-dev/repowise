@@ -46,6 +46,10 @@ byte unchanged:
                                   ``x in big_list`` membership test).
 ``async_blocking_member(node)``   a non-call member read that blocks in async
                                   (C# ``task.Result``).
+``task_already_complete(node)``   the blocking read/call targets a task already
+                                  awaited earlier in the method (C# ``.Result``
+                                  after ``await Task.WhenAll(t)``), so it does
+                                  not block.
 ``list_bound_names(root)``        names provably bound to a list literal /
                                   comprehension in this file — the gate for the
                                   ``membership_test_against_list_in_loop`` marker.
@@ -66,6 +70,7 @@ pillar depends on.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
@@ -199,6 +204,14 @@ class BasePerfDialect:
         """Boundary kind (db / network / filesystem / subprocess) if this call
         is an *execution sink*, else ``None`` ("not an I/O round-trip")."""
         return None
+
+    def shows_a_query(self, call: Node) -> bool:
+        """The call's own shape is db evidence (a SQL argument, a query chain).
+
+        Counted alongside a db import by the dialects whose DB verbs need
+        evidence; ``False`` for a dialect that recognises no such shape.
+        """
+        return False
 
     def call_sink_kind(
         self, call: Node, *, awaited: bool, io_names: dict[str, str], has_db_import: bool
@@ -337,6 +350,8 @@ class BasePerfDialect:
     branch_kinds: frozenset[str] = frozenset()
     exit_kinds: frozenset[str] = frozenset()
     scope_kinds: frozenset[str] = frozenset()
+    # Statements a ``break`` leaves without leaving the loop around them.
+    switch_kinds: frozenset[str] = frozenset()
     # Methods that grow a sequence in call order (``append`` / ``push``).
     sequence_appends: frozenset[str] = frozenset()
 
@@ -495,6 +510,98 @@ class BasePerfDialect:
             stack.extend(n.children)
         return False
 
+    def accumulates_across_iterations(
+        self, node: Node, name: bytes, loop_kinds: frozenset[str]
+    ) -> bool:
+        """True when the ``+=`` at *node* can grow *name* across iterations of
+        an enclosing loop in its own function.
+
+        The loops are walked from the innermost out. One whose body re-binds
+        *name* (:meth:`binds_name`) bounds the growth to a single pass, so
+        neither it nor any loop outside it is accumulating. An append directly
+        followed by ``return`` / ``throw`` runs once per call, and one followed
+        by a ``break`` once per run of the innermost loop: the interrupted-message
+        and fallback shapes (``msg += "[interrupted]"; break``). With no loop
+        found inside the function the walker's own loop verdict stands.
+        """
+        exit_kind = self._exit_after(node, loop_kinds)
+        if exit_kind not in (None, "break_statement"):
+            return False
+        loops = self._enclosing_loops(node, loop_kinds)
+        if not loops:
+            return True
+        for depth, loop in enumerate(loops):
+            if self._rebinds(loop, node, name, loop_kinds):
+                return False
+            if depth or exit_kind is None:
+                return True
+        return False
+
+    def _enclosing_loops(self, node: Node, loop_kinds: frozenset[str]) -> list[Node]:
+        """The loops around *node* inside its own function, innermost first."""
+        loops: list[Node] = []
+        cur = node.parent
+        while cur is not None and cur.type not in self.scope_kinds:
+            if cur.type in loop_kinds:
+                loops.append(cur)
+            cur = cur.parent
+        return loops
+
+    def _rebinds(self, loop: Node, append: Node, name: bytes, loop_kinds: frozenset[str]) -> bool:
+        """*loop*'s body re-binds *name* whenever *append* runs.
+
+        A binding under a branch or a nested loop that does not also hold the
+        append (``if (first) s = "head"``) may not run, so it is no reset.
+        """
+        body = self.loop_body(loop) or loop
+        return any(
+            self.binds_name(n, name) and self._runs_with(n, append, body, loop_kinds)
+            for n in self._walk(body, self.scope_kinds)
+        )
+
+    def _runs_with(self, node: Node, append: Node, body: Node, loop_kinds: frozenset[str]) -> bool:
+        """*node* runs on every pass that runs *append*: climbing from *node*, a
+        block holding *append* is reached before any branch or nested loop."""
+        cur = node.parent
+        while cur is not None and cur != body:
+            if cur.type in self.branch_kinds or cur.type in loop_kinds:
+                return False
+            if self._within(cur, append):
+                return True
+            cur = cur.parent
+        return True
+
+    def _exit_after(self, node: Node, loop_kinds: frozenset[str]) -> str | None:
+        """The kind of exit statement later in the block of the statement holding
+        *node*, or ``None``; a ``break`` that only leaves a ``switch`` is none."""
+        parent = node.parent
+        stmt = parent if parent is not None and parent.type == "expression_statement" else node
+        exit_stmt = self._next_exit(stmt)
+        if exit_stmt is None or exit_stmt.type == "continue_statement":
+            return None
+        if exit_stmt.type == "break_statement" and self._in_switch(stmt, loop_kinds):
+            return None
+        return exit_stmt.type
+
+    def _next_exit(self, stmt: Node) -> Node | None:
+        """The first exit statement after *stmt* in its block, unless a statement
+        in between can ``continue`` the loop instead."""
+        sib = stmt.next_named_sibling
+        while sib is not None and sib.type not in self.exit_kinds:
+            if any(n.type == "continue_statement" for n in self._walk(sib, self.scope_kinds)):
+                return None
+            sib = sib.next_named_sibling
+        return sib
+
+    def _in_switch(self, stmt: Node, loop_kinds: frozenset[str]) -> bool:
+        """A ``switch`` sits between *stmt* and its nearest loop."""
+        cur = stmt.parent
+        while cur is not None and cur.type not in loop_kinds:
+            if cur.type in self.switch_kinds:
+                return True
+            cur = cur.parent
+        return False
+
     def _rhs_is_stringish(self, node: Node) -> bool:
         """True if an augmented-assignment's RHS is provably string-typed.
 
@@ -606,6 +713,13 @@ class BasePerfDialect:
         """
         return None
 
+    def task_already_complete(self, node: Node) -> bool:
+        """True if the blocking ``node`` (a ``blocking_sync_api`` call or an
+        ``async_blocking_member`` read) targets a task that is provably complete
+        because it was awaited earlier in the same method. Default ``False``.
+        """
+        return False
+
     def unbounded_read_bound_methods(self) -> frozenset[str]:
         """Method names anywhere in a chain that prove a DB read is bounded.
 
@@ -613,6 +727,20 @@ class BasePerfDialect:
         for ``unbounded_read_reduced_in_memory`` (v1 is Python-only).
         """
         return frozenset()
+
+    # Functions that ARE a lock acquisition, and the header of an unbounded
+    # retry loop in this language. A spin loop inside such a function is how the
+    # lock gets taken (tryLock retry, CAS spin): there is nothing to hoist. Both
+    # default empty, so a language that sets neither changes nothing.
+    lock_acquire_functions: frozenset[str] = frozenset()
+    spin_loop_header: re.Pattern[str] | None = None
+
+    def is_lock_acquire_spin(self, func: str | None, loop: Node) -> bool:
+        """True when *loop* is an unbounded spin loop inside a lock-acquiring *func*."""
+        if self.spin_loop_header is None or (func or "").lower() not in self.lock_acquire_functions:
+            return False
+        head = (loop.text or b"")[:64].decode("utf-8", "replace")
+        return bool(self.spin_loop_header.match(head))
 
     def is_lock_scope(self, node: Node) -> bool:
         """True if *node* opens a block-scoped held-lock region.

@@ -77,6 +77,7 @@ from repowise.cli.ui import (
     should_offer_fast_mode,
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles, resolve_style
@@ -251,6 +252,7 @@ def _run_deterministic_generation_phase(
     embedder_was_requested: bool,
     resume: bool,
     timings: Any | None = None,
+    warnings: list[str] | None = None,
 ) -> str:
     """Render the whole wiki from templates, for ``init --index-only``.
 
@@ -318,6 +320,7 @@ def _run_deterministic_generation_phase(
         resume=resume,
         verbose=True,
         timings=timings,
+        warnings=warnings,
     )
     return embedder
 
@@ -755,7 +758,7 @@ def _interactive_gate(
     multiple=True,
     metavar="PATH",
     help=(
-        "Test-coverage report(s) to ingest (lcov / Cobertura / Clover). "
+        f"Test-coverage report(s) to ingest ({' / '.join(COVERAGE_PARSERS)}). "
         "Repeatable. When omitted, common locations (coverage/lcov.info, "
         "**/cobertura.xml, ...) are auto-discovered. This is test coverage for "
         "code-health, not a documentation-breadth knob."
@@ -1428,6 +1431,9 @@ def init_command(
                         )
                     )
                 except ProviderError as exc:
+                    from repowise.cli.hints import maybe_hint
+
+                    maybe_hint("provider_fail")
                     raise reasoned_error(
                         f"Provider validation failed: {exc}",
                         reason="provider_validation_failed",
@@ -1559,6 +1565,9 @@ def init_command(
                 f"\n{mini(EYES_SLEEPY)} [{WARN}]Interrupted.[/] Indexed work so far has been "
                 "saved — run [bold]repowise init --resume[/] to continue where it stopped."
             )
+            from repowise.cli.hints import maybe_hint
+
+            maybe_hint("interrupt")
             return
 
     # What the run degraded on, in a place an agent can read after the
@@ -1628,6 +1637,7 @@ def init_command(
             embedder_was_requested=embedder_was_requested,
             resume=resume,
             timings=callback.table,
+            warnings=run_warnings,
         )
     else:
         gen_stop, cost_declined = _run_generation_phase(
@@ -1690,6 +1700,7 @@ def init_command(
                 embedder_name_resolved=embedder_name_resolved,
                 resume=resume,
                 timings=callback.table,
+                warnings=run_warnings,
             )
 
     # ---- Persistence ----
@@ -1818,8 +1829,9 @@ def init_command(
     base_state["run_mode"] = run_mode
     base_state["git_tier"] = git_tier_for_run_mode(run_mode)
     apply_git_history_coverage_state(base_state, result)
+    from repowise.cli.providers import semantic_search_status
     from repowise.core.generation.selection import count_documentable_files
-    from repowise.core.index_scope import file_page_scope, stamp_index_scope
+    from repowise.core.index_scope import dropped_files_scope, file_page_scope, stamp_index_scope
 
     _scope_embedder = embedder_name_resolved if not effective_index_only else _index_only_embedder
     _unavailable = []
@@ -1835,6 +1847,7 @@ def init_command(
         ],
         git_tier=git_tier_for_run_mode(run_mode),
         git_commit_cap=resolved_commit_limit,
+        dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
         file_pages={
             "configured_cap": max_file_pages,
             **(
@@ -1858,8 +1871,10 @@ def init_command(
         search={
             "full_text": "available" if result.generated_pages else "unavailable",
             "semantic": (
-                "available"
-                if result.generated_pages and _scope_embedder and _scope_embedder != "mock"
+                semantic_search_status(
+                    _scope_embedder, getattr(result, "embed_failed_pages", 0)
+                )
+                if result.generated_pages
                 else "unavailable"
             ),
             "next_command": "repowise reindex" if result.generated_pages else None,
@@ -1959,6 +1974,11 @@ def init_command(
         options=editor_options,
         no_editor_setup=not editor_setup,
     )
+    if editor_setup:
+        # The index may carry a coverage ingest now; see ``sync_repo_hook``.
+        from repowise.cli.commands.augment_cmd.coverage_reingest import sync_repo_hook
+
+        sync_repo_hook(repo_path, console)
 
     _record_init_outcome(
         result=result,
@@ -2010,3 +2030,13 @@ def init_command(
         setup=_setup_outcome,
         files_written=files_written,
     )
+    # Raised last, so everything above is kept: pages, state and full-text
+    # search are fine. Exiting 0 here is what let a scripted run record a
+    # healthy semantic index that held no vectors.
+    from repowise.cli.providers import embed_failure_message
+
+    _embed_error = embed_failure_message(
+        _scope_embedder, getattr(result, "embed_failed_pages", 0)
+    )
+    if _embed_error:
+        raise click.ClickException(_embed_error)

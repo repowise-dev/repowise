@@ -38,7 +38,10 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         # the same ``name`` / ``parameters`` / ``return_type`` fields, so it
         # takes this branch rather than the bare-name fallback at the end.
         return f"fn {name}{params_text}{_ret(('return_type',))}"
-    if node_type in ("function_declaration", "generator_function_declaration"):
+    if node_type in ("function_declaration", "generator_function_declaration") or (
+        # TS overload signature; Dart's same-named node has no ``parameters`` field.
+        node_type == "function_signature" and def_node.child_by_field_name("parameters")
+    ):
         # TS/JS use return_type; Go uses result
         return f"function {name}{params_text}{_ret(('return_type', 'result'))}"
     if node_type in ("class_definition", "class_declaration", "abstract_class_declaration"):
@@ -52,7 +55,7 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return f"type {name}"
     if node_type == "enum_declaration":
         return f"enum {name}"
-    if node_type == "method_definition":
+    if node_type in ("method_definition", "method_signature"):
         # TypeScript/JavaScript class method
         return f"{name}{params_text}{_ret(('return_type',))}"
     if node_type == "method_declaration":

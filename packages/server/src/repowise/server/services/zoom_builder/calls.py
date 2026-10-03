@@ -69,7 +69,7 @@ async def load_projected_calls(
     edge to anything else would be dropped downstream anyway.
 
     Edge type is preserved rather than collapsed, because the verb is the
-    payload: :func:`~repowise.server.services.c4_builder.labels.relation_label`
+    payload: :func:`~repowise.core.analysis.c4.labels.relation_label`
     turns the set of types on a pair into the arrow's word, and the canvas
     filters on that word.
     """

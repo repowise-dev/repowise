@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from ..changed_lines import FileDiff, parse_unified_diff
+from ..changed_lines import FileDiff, is_shallow_root, parse_unified_diff
+from ..git_cli import split_revspec
 
 GIT_TIMEOUT_SECONDS = 120
 
@@ -149,16 +150,18 @@ def _status_word(code: str) -> str:
 class GitRevisionSource:
     """Local adapter over a Git checkout."""
 
-    def __init__(self, repo_path: str) -> None:
+    def __init__(self, repo_path: str, *, hunks: bool = True) -> None:
         self.repo_path = repo_path
+        # False for callers that read only which paths changed, not the lines.
+        self.hunks = hunks
 
     # -- resolution ---------------------------------------------------------
 
     def resolve(self, revspec: str | None) -> RevisionPair:
         if not revspec:
             return self._resolve_working_tree()
-        if ".." in revspec:
-            return self._resolve_range(revspec)
+        if (parts := split_revspec(revspec)) is not None:
+            return self._resolve_range(*parts)
         return self._resolve_commit(revspec)
 
     def _sha(self, ref: str) -> str:
@@ -189,6 +192,10 @@ class GitRevisionSource:
             self.repo_path,
             check=False,
         ).strip()
+        if not parent and is_shallow_root(self.repo_path, ref):
+            # A shallow boundary's parents are cut off, not absent; the empty
+            # tree would make every line of the snapshot read as changed.
+            raise ValueError(f"{ref!r} has no parent in this shallow clone; fetch more history")
         base = parent or _EMPTY_TREE
         return RevisionPair(
             f"{ref}^" if parent else _EMPTY_TREE,
@@ -199,17 +206,15 @@ class GitRevisionSource:
             self._changes(["diff", f"-M{_RENAME_SIMILARITY}%", base, head]),
         )
 
-    def _resolve_range(self, revspec: str) -> RevisionPair:
-        base, _, head = revspec.partition("..")
-        three_dot = head.startswith(".")
-        head = head.lstrip(".") or "HEAD"
-        base = base or "HEAD"
+    def _resolve_range(self, base: str, sep: str, head: str) -> RevisionPair:
         base_sha = self._sha(base)
         head_sha = self._sha(head)
-        if three_dot:
-            base_sha = (
-                _git(["merge-base", base, head], self.repo_path, check=False).strip() or base_sha
-            )
+        if sep == "...":
+            # Same meaning as change risk and changed lines: no merge-base (a
+            # shallow clone) is an error, not a silent two-dot diff.
+            base_sha = _git(["merge-base", base, head], self.repo_path, check=False).strip()
+            if not base_sha:
+                raise ValueError(f"No merge-base between {base!r} and {head!r}.")
         return RevisionPair(
             base,
             head,
@@ -223,7 +228,11 @@ class GitRevisionSource:
 
     def _changes(self, diff_args: list[str]) -> list[FileChange]:
         name_status = _git([*diff_args, "--name-status", "-z"], self.repo_path)
-        diffs = parse_unified_diff(_git([*diff_args, "--unified=0", "--format="], self.repo_path))
+        diffs = (
+            parse_unified_diff(_git([*diff_args, "--unified=0", "--format="], self.repo_path))
+            if self.hunks
+            else {}
+        )
         changes: list[FileChange] = []
         for code, base_path, head_path in _iter_name_status(name_status):
             status = _status_word(code)
@@ -330,8 +339,9 @@ def filter_changes(
     *,
     extensions: tuple[str, ...] = (),
     exclude_patterns: tuple[str, ...] = (),
+    include_paths: tuple[str, ...] = (),
 ) -> list[FileChange]:
-    """Drop the changes a caller's extension and exclusion filters exclude.
+    """Drop the changes a caller's extension, inclusion and exclusion filters exclude.
 
     One implementation, because a change the health comparison counted and one
     the change manifest counted have to be the same change; two copies of this
@@ -344,14 +354,23 @@ def filter_changes(
         if exclude_patterns
         else None
     )
+    keep = (
+        pathspec.PathSpec.from_lines("gitwildmatch", include_paths)
+        if include_paths
+        else None
+    )
     exts = {e if e.startswith(".") else f".{e}" for e in extensions}
-    return [change for change in changes if _counts(change, spec, exts)]
+    return [change for change in changes if _counts(change, spec, exts, keep)]
 
 
-def _counts(change: FileChange, spec: object | None, exts: set[str]) -> bool:
+def _counts(
+    change: FileChange, spec: object | None, exts: set[str], keep: object | None = None
+) -> bool:
     """Whether *change* survives the caller's filters. One path, one decision."""
     path = change.head_path or change.base_path or ""
     if not path:
+        return False
+    if keep is not None and not keep.match_file(change.head_path):  # type: ignore[attr-defined]
         return False
     if spec is not None and spec.match_file(path):  # type: ignore[attr-defined]
         return False

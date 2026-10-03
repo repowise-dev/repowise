@@ -794,3 +794,106 @@ class Outer {
         symbols = parser.parse_file(fi, src).symbols
         assert [s.name for s in symbols] == ["Outer"]
         assert "inner" not in {s.name for s in symbols}
+
+
+class TestObjectLiteralMethods:
+    """An object-literal method no named function encloses is a symbol.
+
+    Its calls are keyed to it, not to whatever binding encloses the whole
+    expression, and it is qualified by that binding so same-named methods of
+    two objects in one file keep distinct ids.
+    """
+
+    MIXIN = b"""\
+import * as checks from "./checks";
+export const ZodNumber = $constructor("ZodNumber", (inst, def) => {
+  install(inst, {
+    gt(v, p) { return checks.gtCheck(v, p); },
+    positive(p) { return checks.gtCheck(0, p); },
+  });
+});
+export const ZodBigInt = $constructor("ZodBigInt", (inst, def) => {
+  install(inst, {
+    gt(v, p) { return checks.gtCheck(v, p); },
+  });
+});
+export const api = {
+  get(url) { return fetchIt(url); },
+};
+"""
+
+    def _parse(self, parser: ASTParser, src: bytes, path: str, language: str = "typescript"):
+        return parser.parse_file(_make_file_info(path, language), src)
+
+    def test_mixin_methods_are_symbols_under_their_binding(self, parser: ASTParser) -> None:
+        result = self._parse(parser, self.MIXIN, "src/schemas.ts")
+        ids = {s.id: s for s in result.symbols}
+        for sid in (
+            "src/schemas.ts::ZodNumber::gt",
+            "src/schemas.ts::ZodNumber::positive",
+            "src/schemas.ts::ZodBigInt::gt",
+            "src/schemas.ts::api::get",
+        ):
+            assert sid in ids, sid
+            assert ids[sid].kind == "method"
+
+    def test_calls_inside_are_keyed_to_the_method(self, parser: ASTParser) -> None:
+        result = self._parse(parser, self.MIXIN, "src/schemas.ts")
+        callers = {(c.line, c.target_name): c.caller_symbol_id for c in result.calls}
+        assert callers[(4, "gtCheck")] == "src/schemas.ts::ZodNumber::gt"
+        assert callers[(5, "gtCheck")] == "src/schemas.ts::ZodNumber::positive"
+        assert callers[(10, "gtCheck")] == "src/schemas.ts::ZodBigInt::gt"
+        assert callers[(3, "install")] == "src/schemas.ts::ZodNumber"
+
+    def test_javascript_shares_the_rule(self, parser: ASTParser) -> None:
+        result = self._parse(parser, self.MIXIN, "src/schemas.js", "javascript")
+        ids = {s.id for s in result.symbols}
+        assert "src/schemas.js::ZodNumber::gt" in ids
+        assert "src/schemas.js::ZodBigInt::gt" in ids
+
+    def test_methods_inside_a_named_function_stay_local(self, parser: ASTParser) -> None:
+        src = b"""\
+export function outer() {
+  const helper = () => 1;
+  return { inner() { return helper(); } };
+}
+export const arrow = () => ({ viaArrow() { return 1; } });
+export const table = { handler: () => ({ viaPair() { return 1; } }) };
+export class K {
+  m() { return { deep() { return 1; } }; }
+}
+"""
+        names = {s.name for s in self._parse(parser, src, "src/local.ts").symbols}
+        for hidden in ("helper", "inner", "viaArrow", "viaPair", "deep"):
+            assert hidden not in names, hidden
+        assert {"outer", "arrow", "K", "m"} <= names
+
+    def test_nested_object_is_owned_by_its_property_key(self, parser: ASTParser) -> None:
+        src = b"""\
+export const useStore = defineStore("s", {
+  actions: { inc() { return 1; } },
+  getters: { inc() { return 2; } },
+});
+"""
+        ids = {s.id for s in self._parse(parser, src, "src/store.ts").symbols}
+        assert "src/store.ts::actions::inc" in ids
+        assert "src/store.ts::getters::inc" in ids
+        assert "src/store.ts::inc" not in ids
+
+    def test_no_symbol_without_a_plain_owner_name(self, parser: ASTParser) -> None:
+        src = b"""\
+export const a = f({ "odd-key": { m() { return 1; } } });
+export const { b } = f({ n() { return 2; } });
+"""
+        names = {s.name for s in self._parse(parser, src, "src/owners.ts").symbols}
+        assert "m" not in names
+        assert "n" not in names
+
+    def test_methods_kept_before_keep_their_ids(self, parser: ASTParser) -> None:
+        # No callable encloses these, so they were symbols already: unchanged.
+        src = b"""\
+export default { data() { return {}; }, methods: { inc() { return 1; } } };
+var legacy = { run() { return 1; } };
+"""
+        ids = {s.id for s in self._parse(parser, src, "src/options.ts").symbols}
+        assert {"src/options.ts::data", "src/options.ts::inc", "src/options.ts::run"} <= ids

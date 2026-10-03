@@ -128,6 +128,8 @@ async def test_reindex_aborts_when_every_item_failed(
         target_path = "src/main.py"
         summary = ""
         content = "body"
+        digest = ""
+        metadata_json = "{}"
         decision = "a decision"
 
     class _FailingSession:

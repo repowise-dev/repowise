@@ -1,14 +1,20 @@
 """Refactoring-target aggregation and per-refactoring-type plan renderers.
 
-Ranks findings per file by impact/effort, then prints the concrete
-structured plans (Extract Class/Helper/Method, Move Method, Break Cycle,
-Split File) for both console and Markdown output.
+Ranks findings per file by impact/effort, then prints the composed
+opportunities with their concrete structured plans (Extract Class/Helper/
+Method, Move Method, Break Cycle, Split File) for console, Markdown and JSON.
+
+Two sources feed one set of renderers. The default reads what the index
+stored, in the queue order MCP and the web UI serve. ``--recompute`` folds a
+fresh in-process analysis instead, which is the only option outside an
+indexed repository.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, cast
 
 import click
@@ -53,12 +59,178 @@ def _render_refactoring_targets(
     (JSON/MD) and printed as a group tree below the table.
     """
     suggestions = suggestions or []
+    targets = _build_targets(metrics, findings, suggestions, limit=limit)
+
+    # Structured plans are displayed independently of the impact/effort file
+    # table (a god class worth splitting may not top that churn-weighted list).
+    # The order is the canonical recommendation rank (benefit and leverage,
+    # discounted by cost and risk), so preserve it rather than re-sorting.
+    if suggestions and not all(
+        isinstance(s, dict) and "benefit" in s and "validation" in s for s in suggestions
+    ):
+        from repowise.core.analysis.health.refactoring.recommendations import (
+            build_recommendations,
+            serialize_recommendations,
+        )
+
+        ranked_plans = serialize_recommendations(build_recommendations(suggestions))[:limit]
+    else:
+        ranked_plans = [_suggestion_to_dict(s) for s in suggestions][:limit]
+
+    # The composed unit. One opportunity per file, ranked, with its plans as
+    # ordered steps - the same vocabulary the board, the drawer and the agent
+    # contract speak. The type-grouped dump this replaced made type the
+    # organizing principle, so a file needing a split and two extractions
+    # appeared three times in three sections.
+    opportunities, _leads = _compose(findings, suggestions)
+    plan_by_id = _plans_by_public_id(suggestions, ranked_plans)
+    claimed = {s.plan_id for o in opportunities for s in o.steps} | {
+        e.plan_id for o in opportunities for e in o.evidence
+    }
+    unattached = [row for pid, row in plan_by_id.items() if pid not in claimed]
+    rows = [_opportunity_row(o) for o in opportunities]
+
+    _emit(
+        targets,
+        rows,
+        plan_by_id,
+        fmt=fmt,
+        unattached=unattached,
+        json_payload={
+            "targets": targets,
+            "refactoring_opportunities": rows,
+            "refactoring_plans": ranked_plans,
+        },
+    )
+
+
+def _render_stored_refactoring_targets(
+    repo_path: Path,
+    *,
+    fmt: str,
+    limit: int = 20,
+    file_filter: str | None = None,
+    module_filter: str | None = None,
+) -> bool:
+    """Render from what the index stored. False when nothing is stored.
+
+    Reads the same service MCP and the web UI read, in its default
+    (diversified) queue order, so the three surfaces list the same work in the
+    same order. Nothing is parsed or analyzed: the opportunities, their plans
+    and the file table all come from rows the last ``init`` or ``update``
+    wrote.
+    """
+    from repowise.cli.helpers import repo_index_session, run_async
+    from repowise.core.analysis.health.refactoring.serving import parse_query
+    from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
+    from repowise.core.persistence import crud
+    from repowise.server.services.refactoring_health import RefactoringHealthService
+
+    def keep(path: str) -> bool:
+        if file_filter and path != file_filter:
+            return False
+        return not (module_filter and not path.startswith(module_filter))
+
+    async def _read() -> dict[str, Any] | None:
+        async with repo_index_session(Path(repo_path)) as opened:
+            if opened is None:
+                return None
+            session, repo_id = opened
+            service = RefactoringHealthService(session, repo_id, Path(repo_path).name)
+            summary = await service.summary()
+            if summary.get("status") != "available":
+                return None
+            query, _ignored = parse_query(
+                file_paths=[file_filter] if file_filter else None,
+                path_prefix=module_filter,
+                limit=limit,
+            )
+            page = await service.page(query)
+            details = [
+                await service.detail(item["opportunity_id"], step_limit=200, evidence_limit=50)
+                for item in page.items
+            ]
+            metrics = [
+                m for m in await crud.get_health_metrics(session, repo_id) if keep(m.file_path)
+            ]
+            findings = [
+                f
+                for f in await crud.get_health_findings(
+                    session, repo_id, exclude_dimensions=tuple(sorted(ZERO_IMPACT_DIMENSIONS))
+                )
+                if keep(f.file_path)
+            ]
+            return {
+                "summary": summary,
+                "total": page.total,
+                "hidden": page.hidden,
+                "details": details,
+                "metrics": metrics,
+                "findings": findings,
+            }
+
+    stored = run_async(_read())
+    if stored is None:
+        return False
+
+    rows = [_stored_row(d) for d in stored["details"]]
+    plans = [plan for d in stored["details"] for plan in d.get("plans") or []]
+    plan_by_id = {plan["id"]: plan for plan in plans if plan.get("id")}
+    targets = _build_targets(stored["metrics"], stored["findings"], plans, limit=limit)
+    analyzed_commit = stored["summary"].get("analyzed_commit")
+    if fmt == "table":
+        commit = f" at {analyzed_commit[:7]}" if analyzed_commit else ""
+        hidden = (stored["hidden"] or {}).get("total") or 0
+        scope = (
+            f"{stored['total']} worth doing ({hidden} more in the full inventory)"
+            if stored["hidden"] is not None
+            else f"{stored['total']} open opportunities"
+        )
+        console.print(
+            f"[dim]Read from the index{commit}. Showing {len(rows)} of {scope}. "
+            "Pass --recompute to analyze the working tree instead.[/dim]"
+        )
+    _emit(
+        targets,
+        rows,
+        plan_by_id,
+        fmt=fmt,
+        # The queue lists what opportunities claim; unattached clones are not
+        # in it, on any surface.
+        unattached=[],
+        json_payload={
+            "source": "index",
+            "analyzed_commit": analyzed_commit,
+            "opportunities_total": stored["total"],
+            "opportunities_hidden": stored["hidden"],
+            "targets": targets,
+            "refactoring_opportunities": rows,
+            "refactoring_plans": plans,
+        },
+    )
+    return True
+
+
+def _rankable(findings: list, metrics: list) -> list:
+    """Findings on files that carry a score.
+
+    A file stored with no score (a language health has no dialect for) is not
+    ranked: a stand-in 10.0 would invent one. The API queue skips it too.
+    """
+    unscored = {m.file_path for m in metrics if m.score is None}
+    return [f for f in findings if f.file_path not in unscored]
+
+
+def _build_targets(
+    metrics: list, findings: list, suggestions: list, *, limit: int
+) -> list[dict]:
+    """Files ranked by impact over effort, each carrying its plans."""
     sugg_by_file: dict[str, list] = {}
     for s in suggestions:
         sugg_by_file.setdefault(_suggestion_path(s), []).append(s)
 
     by_file: dict[str, list] = {}
-    for f in findings:
+    for f in _rankable(findings, metrics):
         by_file.setdefault(f.file_path, []).append(f)
 
     metric_by_path = {m.file_path: m for m in metrics}
@@ -91,49 +263,21 @@ def _render_refactoring_targets(
             }
         )
     targets.sort(key=lambda t: (-t["impact_per_effort"], -t["total_impact"]))
-    targets = targets[:limit]
+    return targets[:limit]
 
-    # Structured plans are displayed independently of the impact/effort file
-    # table (a god class worth splitting may not top that churn-weighted list).
-    # The order is the canonical recommendation rank (benefit and leverage,
-    # discounted by cost and risk), so preserve it rather than re-sorting.
-    if suggestions and not all(
-        isinstance(s, dict) and "benefit" in s and "validation" in s for s in suggestions
-    ):
-        from repowise.core.analysis.health.refactoring.recommendations import (
-            build_recommendations,
-            serialize_recommendations,
-        )
 
-        ranked_plans = serialize_recommendations(build_recommendations(suggestions))[:limit]
-    else:
-        ranked_plans = [_suggestion_to_dict(s) for s in suggestions][:limit]
-
-    # The composed unit. One opportunity per file, ranked, with its plans as
-    # ordered steps - the same vocabulary the board, the drawer and the agent
-    # contract speak. The type-grouped dump this replaced made type the
-    # organizing principle, so a file needing a split and two extractions
-    # appeared three times in three sections.
-    opportunities, _leads = _compose(findings, suggestions)
-    plan_by_id = _plans_by_public_id(suggestions, ranked_plans)
-    claimed = {s.plan_id for o in opportunities for s in o.steps} | {
-        e.plan_id for o in opportunities for e in o.evidence
-    }
-    unattached = [row for pid, row in plan_by_id.items() if pid not in claimed]
-
+def _emit(
+    targets: list[dict],
+    opportunities: list[dict],
+    plan_by_id: dict[str, dict],
+    *,
+    fmt: str,
+    unattached: list[dict],
+    json_payload: dict[str, Any],
+) -> None:
+    """Print one report, whichever source built it."""
     if fmt == "json":
-        click.echo(
-            json.dumps(
-                {
-                    "targets": targets,
-                    "refactoring_opportunities": [
-                        _opportunity_row(o) for o in opportunities
-                    ],
-                    "refactoring_plans": ranked_plans,
-                },
-                indent=2,
-            )
-        )
+        click.echo(json.dumps(json_payload, indent=2))
         return
     if fmt == "md":
         click.echo("# Refactoring targets\n")
@@ -180,7 +324,9 @@ def _compose(findings: list, suggestions: list) -> tuple[list, dict]:
     from repowise.core.analysis.health.refactoring.opportunity import compose_opportunities
 
     leads = primary_biomarker_by_file(findings) if findings else {}
-    opportunities = compose_opportunities(suggestions, primary_biomarker_by_file=leads)
+    opportunities = compose_opportunities(
+        suggestions, primary_biomarker_by_file=leads, findings=findings or None
+    )
     return opportunities, leads
 
 
@@ -215,6 +361,9 @@ def _opportunity_row(o) -> dict:
     """The wire shape, matching the server's queue row field for field."""
     return {
         "opportunity_id": o.opportunity_id,
+        # Freshly composed, so no triage has touched it yet: the same state the
+        # stored queue lists by default.
+        "status": "open",
         "file_path": o.file_path,
         "lead_biomarker": o.lead_biomarker,
         "lead_refactoring_type": o.lead_refactoring_type,
@@ -262,79 +411,125 @@ def _primary_word(value) -> str:
     return "no dominant problem recorded"
 
 
-def _render_opportunities_console(opportunities: list, plan_by_id: dict) -> None:
+def _stored_row(detail: dict[str, Any]) -> dict[str, Any]:
+    """A stored opportunity detail, flattened to the wire row the renderers read."""
+    row = {key: detail.get(key) for key in _ROW_KEYS}
+    steps = []
+    for s in detail.get("steps") or []:
+        applicability = s.get("applicability") or {}
+        steps.append(
+            {
+                "plan_id": s.get("plan_id"),
+                "refactoring_type": s.get("refactoring_type"),
+                "target_symbol": s.get("target_symbol"),
+                "file_path": s.get("file_path"),
+                "line_start": s.get("line_start"),
+                "line_end": s.get("line_end"),
+                "classification": applicability.get("classification"),
+                "reasons": list(applicability.get("reasons") or []),
+                "unknowns": list(applicability.get("unknowns") or []),
+                "relocated_by": s.get("relocated_by"),
+            }
+        )
+    row["steps"] = steps
+    row["evidence"] = [
+        {
+            "plan_id": e.get("plan_id"),
+            "refactoring_type": e.get("refactoring_type"),
+            "target_symbol": e.get("target_symbol"),
+        }
+        for e in detail.get("evidence") or []
+    ]
+    return row
+
+
+_ROW_KEYS = (
+    "opportunity_id",
+    "status",
+    "file_path",
+    "lead_biomarker",
+    "lead_refactoring_type",
+    "addresses_primary_problem",
+    "effort_bucket",
+    "confidence",
+    "step_count",
+    "mechanical_steps",
+    "recoverable_health",
+    "rank_score",
+)
+
+
+def _render_opportunities_console(opportunities: list[dict], plan_by_id: dict) -> None:
     if not opportunities:
         return
     console.print(f"\n[bold]Refactoring opportunities ({len(opportunities)})[/bold]")
     console.print(
-        "[dim]One per file, in rank order. Steps are in dependency-safe order.[/dim]"
+        "[dim]One per file. Steps are in dependency-safe order.[/dim]"
     )
     for rank, o in enumerate(opportunities, 1):
-        mech = sum(1 for s in o.steps if s.applicability.classification == "mechanical")
         console.print(
-            f"\n[bold]{rank}.[/bold] [cyan]{o.file_path}[/cyan] [dim]-[/dim] "
-            f"{len(o.steps)} step(s), {mech} mechanical "
-            f"[dim](effort {o.effort_bucket}, {o.confidence} confidence, "
-            f"recover ~{o.recoverable_health:.2f}, "
-            f"{_primary_word(o.addresses_primary_problem)})[/dim]"
+            f"\n[bold]{rank}.[/bold] [cyan]{o['file_path']}[/cyan] [dim]-[/dim] "
+            f"{o['step_count']} step(s), {o['mechanical_steps']} mechanical "
+            f"[dim](effort {o['effort_bucket']}, {o['confidence']} confidence, "
+            f"recover ~{o['recoverable_health']:.2f}, "
+            f"{_primary_word(o['addresses_primary_problem'])})[/dim]"
         )
-        for i, s in enumerate(o.steps, 1):
-            mark = "mechanical" if s.applicability.classification == "mechanical" else "judgment"
-            span = f":{s.line_start}-{s.line_end}" if s.line_start else ""
+        for i, s in enumerate(o["steps"], 1):
+            mark = "mechanical" if s["classification"] == "mechanical" else "judgment"
+            span = f":{s['line_start']}-{s['line_end']}" if s["line_start"] else ""
             console.print(
-                f"  [bold]{i}.[/bold] {s.refactoring_type} [green]{s.target_symbol}[/green] "
-                f"[dim]{s.file_path}{span}[/dim] [dim]({mark})[/dim]"
+                f"  [bold]{i}.[/bold] {s['refactoring_type']} "
+                f"[green]{s['target_symbol']}[/green] "
+                f"[dim]{s['file_path']}{span}[/dim] [dim]({mark})[/dim]"
             )
-            if s.relocated_by:
+            if s["relocated_by"]:
                 # The step's own path and span describe where the symbol was.
                 console.print(
                     "    [yellow]moved by an earlier step - locate it again "
                     "before applying[/yellow]"
                 )
-            for line in _plan_detail_console(plan_by_id.get(s.plan_id, {})):
+            for line in _plan_detail_console(plan_by_id.get(s["plan_id"], {})):
                 console.print(line)
-            if s.applicability.unknowns:
-                console.print(
-                    f"    [dim]not established: {', '.join(s.applicability.unknowns)}[/dim]"
-                )
-        for e in o.evidence:
+            if s["unknowns"]:
+                console.print(f"    [dim]not established: {', '.join(s['unknowns'])}[/dim]")
+        for e in o["evidence"]:
             console.print(
-                f"  [dim]evidence:[/dim] {e.refactoring_type} {e.target_symbol} "
+                f"  [dim]evidence:[/dim] {e['refactoring_type']} {e['target_symbol']} "
                 "[dim](an observation, not a step)[/dim]"
             )
 
 
-def _render_opportunities_md(opportunities: list, plan_by_id: dict) -> None:
+def _render_opportunities_md(opportunities: list[dict], plan_by_id: dict) -> None:
     if not opportunities:
         return
     click.echo("\n## Refactoring opportunities\n")
-    click.echo("One per file, in rank order. Steps are in dependency-safe order.\n")
+    click.echo("One per file. Steps are in dependency-safe order.\n")
     for rank, o in enumerate(opportunities, 1):
-        mech = sum(1 for s in o.steps if s.applicability.classification == "mechanical")
         click.echo(
-            f"{rank}. **{o.file_path}** - {len(o.steps)} step(s), {mech} mechanical "
-            f"(effort {o.effort_bucket}, {o.confidence} confidence, "
-            f"recover ~{o.recoverable_health:.2f}, "
-            f"{_primary_word(o.addresses_primary_problem)})"
+            f"{rank}. **{o['file_path']}** - {o['step_count']} step(s), "
+            f"{o['mechanical_steps']} mechanical "
+            f"(effort {o['effort_bucket']}, {o['confidence']} confidence, "
+            f"recover ~{o['recoverable_health']:.2f}, "
+            f"{_primary_word(o['addresses_primary_problem'])})"
         )
-        for i, s in enumerate(o.steps, 1):
-            mark = "mechanical" if s.applicability.classification == "mechanical" else "judgment"
-            span = f":{s.line_start}-{s.line_end}" if s.line_start else ""
+        for i, s in enumerate(o["steps"], 1):
+            mark = "mechanical" if s["classification"] == "mechanical" else "judgment"
+            span = f":{s['line_start']}-{s['line_end']}" if s["line_start"] else ""
             click.echo(
-                f"   {i}. {s.refactoring_type} **{s.target_symbol}** "
-                f"({s.file_path}{span}) - {mark}"
+                f"   {i}. {s['refactoring_type']} **{s['target_symbol']}** "
+                f"({s['file_path']}{span}) - {mark}"
             )
-            if s.relocated_by:
+            if s["relocated_by"]:
                 click.echo(
                     "    - moved by an earlier step; locate it again before applying"
                 )
-            for line in _plan_detail_md(plan_by_id.get(s.plan_id, {})):
+            for line in _plan_detail_md(plan_by_id.get(s["plan_id"], {})):
                 click.echo(line)
-            if s.applicability.unknowns:
-                click.echo(f"    - not established: {', '.join(s.applicability.unknowns)}")
-        for e in o.evidence:
+            if s["unknowns"]:
+                click.echo(f"    - not established: {', '.join(s['unknowns'])}")
+        for e in o["evidence"]:
             click.echo(
-                f"   - evidence: {e.refactoring_type} {e.target_symbol} "
+                f"   - evidence: {e['refactoring_type']} {e['target_symbol']} "
                 "(an observation, not a step)"
             )
 
@@ -433,7 +628,8 @@ def _plan_detail_console(p: dict) -> list[str]:
         cuts = pl.get("cut_edges", [])
         out.append(
             f"    [dim]import cycle of {ev.get('cycle_size')} files "
-            f"({ev.get('edge_count')} edges), cut {len(cuts)} edge(s)[/dim]"
+            f"({ev.get('edge_count')} edges), cut {len(cuts)} edge(s)"
+            f"{_idiom_note(pl)}[/dim]"
         )
         for e in cuts:
             out.append(f"    [dim]-[/dim] invert {e['from']} -> {e['to']}")
@@ -502,7 +698,10 @@ def _plan_detail_md(p: dict) -> list[str]:
         )
     elif kind == "break_cycle":
         cuts = pl.get("cut_edges", [])
-        out.append(f"    - import cycle of {ev.get('cycle_size')} files, cut {len(cuts)} edge(s):")
+        out.append(
+            f"    - import cycle of {ev.get('cycle_size')} files, cut {len(cuts)} edge(s)"
+            f"{_idiom_note(pl)}:"
+        )
         for e in cuts:
             out.append(f"      - invert {e['from']} -> {e['to']}")
     elif kind == "split_file":
@@ -518,6 +717,11 @@ def _plan_detail_md(p: dict) -> list[str]:
         if residual and residual.get("symbols"):
             out.append(f"      - core (shared): {', '.join(residual['symbols'])}")
     return out
+
+
+def _idiom_note(pl: dict) -> str:
+    """Marks a cycle the detector judged idiomatic, so its cut reads as optional."""
+    return " (same directory, idiomatic; optional)" if pl.get("idiom") else ""
 
 
 def _helper_site(pl: dict) -> str:

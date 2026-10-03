@@ -20,6 +20,7 @@
 
 import { AlertTriangle, Info } from "lucide-react";
 import type { HealthCounts, HealthTrendResponse } from "@repowise-dev/types/health";
+import { formatScore } from "@repowise-dev/types/health";
 
 import { Skeleton } from "../ui/skeleton";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
@@ -107,7 +108,7 @@ export function TrendView({
   const stats: RibbonStat[] = [
     {
       label: "Code health",
-      value: otherReading ? "—" : summary.current_average_health.toFixed(1),
+      value: otherReading ? "—" : formatScore(summary.current_average_health),
       ...(otherReading
         ? { sub: "recorded on the full score" }
         : {
@@ -120,7 +121,7 @@ export function TrendView({
     },
     {
       label: "Hotspot health",
-      value: otherReading || hotspot == null ? "—" : hotspot.toFixed(1),
+      value: otherReading || hotspot == null ? "—" : formatScore(hotspot),
       ...(otherReading
         ? { sub: "recorded on the full score" }
         : {

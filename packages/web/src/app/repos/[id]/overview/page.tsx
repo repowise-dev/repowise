@@ -2,13 +2,17 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getOverviewSummary } from "@/lib/api/overview";
+import { getActions } from "@/lib/api/actions";
 import { getProviders } from "@/lib/api/providers";
 import { getCommitsPage } from "@/lib/api/git";
 import { FirstIndexExperience } from "@/components/repos/first-index-experience";
 import { QuickActionsWrapper } from "@/components/dashboard/quick-actions-wrapper";
 import { AskAnythingRow } from "@/components/overview/ask-anything-row";
+import { NextActionsPanel } from "@/components/overview/next-actions-panel";
+import { PublishOverviewSection } from "@/components/hosted/publish";
 import {
   OverviewBody,
+  OverviewSection,
   RepoIdentityHeader,
   type OverviewRoutes,
   type RepoIdentityMeta,
@@ -54,10 +58,11 @@ export default async function OverviewPage({ params }: Props) {
   // renders client-side: this is a static read, so a hydration boundary would
   // only buy a slower first paint and worse indexability. The commits call
   // replaces a client-side SWR fetch that used to waterfall in after paint.
-  const [summary, providers, commitsPage] = await Promise.all([
+  const [summary, providers, commitsPage, actions] = await Promise.all([
     safeFetch(() => getOverviewSummary(id)),
     safeFetch(() => getProviders()),
     safeFetch(() => getCommitsPage(id, { sort: "date", limit: COMMIT_LIMIT })),
+    safeFetch(() => getActions(id)),
   ]);
   if (!summary) notFound();
 
@@ -132,7 +137,16 @@ export default async function OverviewPage({ params }: Props) {
       commits={commitsPage?.items ?? []}
       totalNloc={totalNloc}
       LinkComponent={Link}
-      slots={{ header, ask: <AskAnythingRow repoId={id} /> }}
+      slots={{
+        header,
+        ask: <AskAnythingRow repoId={id} />,
+        beforeExplore: <PublishOverviewSection repoId={id} />,
+        // A server that predates actions returns 404; the page then keeps the
+        // attention areas in their old place rather than showing an empty list.
+        actions: actions ? (
+          <NextActionsPanel repoId={id} data={actions} />
+        ) : undefined,
+      }}
     />
   );
 }

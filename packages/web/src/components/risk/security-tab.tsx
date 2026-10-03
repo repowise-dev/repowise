@@ -6,7 +6,7 @@ import { RotateCw } from "lucide-react";
 import { toast } from "sonner";
 import { SecurityFindingsTable } from "@repowise-dev/ui/security/findings-table";
 import { SeverityDirectoryMatrix } from "@repowise-dev/ui/security/severity-directory-matrix";
-import { AiPromptModal, buildSecurityAiPrompt } from "@repowise-dev/ui/health";
+import { AiPromptModal, buildSecurityAiPrompt, fileChatContext } from "@repowise-dev/ui/health";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { CollapsibleSection } from "@repowise-dev/ui/shared/collapsible-section";
@@ -108,6 +108,7 @@ export function SecurityTab({ repoId }: { repoId: string }) {
             : null
         }
         filePath={promptFinding?.file_path}
+        chatContext={fileChatContext(promptFinding?.file_path)}
         title="AI fix prompt"
         description="A ready-to-paste prompt that walks your AI agent through confirming and remediating this security finding."
       />

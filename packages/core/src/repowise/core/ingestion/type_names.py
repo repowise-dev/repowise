@@ -94,6 +94,41 @@ def bare_type_name(raw: str) -> str:
     return text.strip()
 
 
+def type_argument_count(raw: str) -> int:
+    """How many type arguments the named type in *raw* is given.
+
+    ``Gen<A, B<C>>`` → 2; ``Gen<A>?`` → 1; ``Outer<A>.Inner`` and ``Plain`` → 0,
+    since only arguments on the last segment belong to the type named.
+    """
+    text = raw.strip().rstrip("?").rstrip()
+    while text.endswith("[]"):
+        text = text[:-2].rstrip()
+    if not text.endswith(">"):
+        return 0
+    depth = 0
+    commas = 0
+    for char in reversed(text):
+        if char == ">":
+            depth += 1
+        elif char == "<":
+            depth -= 1
+            if depth == 0:
+                return commas + 1
+        elif char == "," and depth == 1:
+            commas += 1
+    return 0
+
+
+def type_qualifier(raw: str) -> str:
+    """Return what ``bare_type_name`` drops from the front of *raw*, or ``""``.
+
+    ``os.FileInfo`` → ``os``; ``Plain`` → ``""``.
+    """
+    text = strip_type_arguments(raw.strip())
+    head = text[: len(text) - len(bare_type_name(text))]
+    return head.rstrip("".join(_QUALIFIER_SEPARATORS))
+
+
 # C++ template heads whose ``operator->`` forwards to their argument, so
 # ``shared_ptr<Foo> p`` makes ``p->m()`` a call on ``Foo``. Only these: a
 # container holds a ``T`` without being one, and unwrapping ``vector<Foo>``

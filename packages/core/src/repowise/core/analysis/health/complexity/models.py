@@ -46,6 +46,16 @@ class FunctionComplexity:
     # ``primitive_obsession``. Counted via the tree-sitter ``parameters``
     # field; 0 when the language lacks an explicit list or extraction fails.
     param_count: int = 0
+    # Of those, the ones that declare a type, and the ones among them declared
+    # as a scalar or a string; untyped parameters are in neither. With the two
+    # flags below, read only by ``primitive_obsession``. ``complexity/signature.py``.
+    typed_param_count: int = 0
+    primitive_param_count: int = 0
+    # A constructor, by node kind, conventional name, or its type's name.
+    is_constructor: bool = False
+    # The parameter list is set by another declaration (an override, an
+    # interface or trait implementation, a native binding).
+    signature_fixed: bool = False
     # Per-condition boolean-operator counts collected during the walk.
     # Empty when no branch/loop carries compound boolean expressions.
     complex_conditions: list[ConditionComplexity] = None  # type: ignore[assignment]
@@ -100,6 +110,21 @@ class FunctionComplexity:
     # a suppression path, and means a registered-but-never-invoked callback
     # contributes. In the direction that lane already errs.
     bare_called_names: frozenset[str] = frozenset()
+    # CCN points of the largest top-level ``switch`` / ``match`` / same-subject
+    # ``if`` chain, over ``ccn``, to two decimals. Near 1.0 the function is
+    # one dispatch on one value. At ``DISPATCH_SHARE`` and above the size and
+    # complexity markers judge the function outside it. ``complexity/dispatch.py``.
+    dispatch_share: float = 0.0
+    # CCN points inside that dispatch's heaviest arm, its own case point not
+    # counted: a switch of one-line cases has 0.
+    dispatch_arm: int = 0
+    # True when the declaration is marked deprecated or the body's top level
+    # issues a deprecation warning. ``complexity/deprecation.py``.
+    deprecated: bool = False
+    # 1-indexed (start, end) lines of the first block that reaches
+    # ``max_nesting``, when the function nests at all: the concrete place to
+    # start flattening it. ``cyclomatic._walk_function_body``.
+    deepest_block: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         if self.complex_conditions is None:
@@ -118,11 +143,14 @@ class CohesionGroup:
     by the Extract Class refactoring detector — when a class has
     ``lcom4 >= 2`` each group is a candidate extracted class. ``methods``
     and ``fields`` are stable-sorted (by first appearance / name) so the
-    same class yields the same split across runs.
+    same class yields the same split across runs. ``calls`` are the members
+    the cluster only calls (a base-class, abstract or trait-provided method):
+    a use of the class, not state of its own.
     """
 
     methods: list[str]
     fields: list[str]
+    calls: tuple[str, ...] = ()
 
 
 @dataclass
@@ -164,6 +192,9 @@ class ClassComplexity:
     # safety valve. A cohesive Extract Class split raises the worst split
     # class's TCC toward ``1``; the enrich self-check reads it before/after.
     tcc: float = 1.0
+    # Every method is fixed by a contract the class implements (a Rust
+    # ``impl Trait for T``): none can move out, and cohesion is not scored.
+    contract_impl: bool = False
 
 
 @dataclass(frozen=True)
@@ -171,7 +202,7 @@ class ErrorHandlingHit:
     """One error-handling anti-pattern occurrence in a file.
 
     Collected by the walker's whole-tree pass (see
-    ``_collect_error_handling``) and consumed by the ``error_handling``
+    ``complexity.error_handling._eh_visit``) and consumed by the ``error_handling``
     biomarker. ``kind`` is one of:
 
     - ``swallowed_catch`` — a catch/except whose body has no real handling
@@ -183,7 +214,8 @@ class ErrorHandlingHit:
       the BaseException-only interrupts), regardless of body.
     - ``unsafe_unwrap`` — Rust ``.unwrap()`` / ``.expect()`` /
       ``.unwrap_unchecked()`` calls (latent panic-on-error). Suppressed inside
-      ``#[test]`` / ``#[cfg(test)]`` items.
+      ``#[test]`` / ``#[cfg(test)]`` items and where the call provably cannot
+      panic (a guarded receiver, a ``write!`` into a ``String``).
     - ``panic_macro`` — Rust ``panic!`` / ``unreachable!`` / ``todo!`` /
       ``unimplemented!`` macros (unconditional abort). Suppressed inside tests.
     - ``go_swallow`` — Go empty ``if err != nil {}`` block, or a trailing
@@ -192,6 +224,10 @@ class ErrorHandlingHit:
 
     kind: str
     line: int  # 1-indexed
+    # Rust only: the idiomatic invariant assertion this hit is (``lock_poison``,
+    # ``thread_join``, ``invariant_expect``, ``unreachable``), see
+    # ``complexity.rust_unwrap``. ``None`` for a plain occurrence.
+    idiom: str | None = None
 
 
 @dataclass(frozen=True)
@@ -274,10 +310,19 @@ class PerfHit:
     promoted: bool = False
     # What the innermost enclosing loop proves (same-function hits only).
     loop: LoopFacts | None = None
+    # 1-indexed header line of the innermost data-dependent loop the hit runs
+    # in (for a cross-function hit, the loop around the call site); 0 when none.
+    loop_line: int = 0
+    # Distinct direct callers of the enclosing function, set only on the
+    # centrality-gated ``hot_path_sync_io`` hit; 0 everywhere else.
+    callers: int = 0
 
     def loop_facts(self) -> dict[str, Any]:
         """Loop facts for ``details``; absent when unset so old findings are unchanged."""
-        return self.loop.as_details() if self.loop is not None else {}
+        facts = self.loop.as_details() if self.loop is not None else {}
+        if self.loop_line:
+            facts["loop_line"] = self.loop_line
+        return facts
 
 
 @dataclass(frozen=True)
@@ -326,6 +371,8 @@ class PerfFnFacts:
     # ``(call_line, facts)`` for loop-nested calls whose loop settles a fact, so a
     # cross-function hit reports the trip count and chunking of the loop that pays it.
     loop_call_facts: tuple[tuple[int, LoopFacts], ...] = ()
+    # ``(call_line, loop header line)`` for the same loop-nested calls.
+    loop_call_lines: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass

@@ -44,7 +44,6 @@ UNMODELLED: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/api/repos/{repo_id}/files"),
         ("GET", "/api/repos/{repo_id}/files/{file_path}"),
         ("POST", "/api/repos/{repo_id}/generate/estimate"),
-        ("GET", "/api/repos/{repo_id}/health/coverage"),
         ("GET", "/api/repos/{repo_id}/health/files"),
         ("GET", "/api/repos/{repo_id}/health/files/breakdown"),
         ("GET", "/api/repos/{repo_id}/health/map"),

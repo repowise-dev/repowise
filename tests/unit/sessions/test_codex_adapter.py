@@ -11,7 +11,8 @@ from repowise.core.sessions.adapters.base import (
     INTENT_TOOL_CALLS,
     INTENT_TURNS,
 )
-from repowise.core.sessions.adapters.codex import _normalize_tool_name
+from repowise.core.sessions.adapters.codex import _bind_first_file, _normalize_tool_name
+from repowise.core.sessions.events import ToolUse
 from repowise.core.sessions.miners.decisions import mine_events
 
 FIXTURE = Path(__file__).parent / "data" / "codex_session.jsonl"
@@ -194,15 +195,88 @@ def test_normalize_handles_mcp_function_call_and_output(adapter: CodexAdapter) -
     output_event = adapter.normalize(tool_output)
 
     assert call_event is not None
+    assert call_event.kind == "assistant"
     assert call_event.tool_uses[0].id == "call_mcp_1"
     assert call_event.tool_uses[0].name == "search_codebase"
     assert call_event.tool_uses[0].input["query"] == "signup"
     assert call_event.tool_uses[0].input["path"] == "app.py"
     assert output_event is not None
+    assert output_event.kind == "assistant"
     assert output_event.tool_results[0].tool_use_id == "call_mcp_1"
 
     # The output should bind the returned file to the original tool call.
     assert call_event.tool_uses[0].input["path"] == "app.py"
+
+
+def test_a_search_binds_its_served_path_over_the_file_alias() -> None:
+    tool = ToolUse(id="c1", name="search_codebase", input={"query": "q"})
+    _bind_first_file(tool, [{"path": "new.py", "file": "old.py"}])
+    assert tool.input["path"] == "new.py"
+
+
+def test_function_call_decision_gets_file_attribution(adapter: CodexAdapter) -> None:
+    """A `function_call` tool use must reach the decision miner like `custom_tool_call` does.
+
+    Regression for #2622: the adapter used to label `function_call` /
+    `function_call_output` events with the raw payload type instead of
+    `"assistant"`, so the decision miner's `kind == "assistant"` gate skipped
+    them outright and a decision right after the call got no file context.
+    """
+    session_meta = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:00.000Z",
+            "type": "session_meta",
+            "payload": {"id": "s1", "session_id": "s1", "cwd": r"C:\work\repo"},
+        }
+    )
+    tool_call = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:01.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "get_context",
+                "call_id": "c1",
+                "arguments": json.dumps({"path": "app.py"}),
+            },
+        }
+    )
+    tool_output = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:02.000Z",
+            "type": "response_item",
+            "payload": {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+        }
+    )
+    choice = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:03.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": (
+                            "We chose Flask because it is lightweight and keeps "
+                            "SQLite integration straightforward."
+                        ),
+                    }
+                ],
+            },
+        }
+    )
+
+    events = [adapter.normalize(line) for line in (session_meta, tool_call, tool_output, choice)]
+
+    assert [e.kind for e in events] == ["session_meta", "assistant", "assistant", "assistant"]
+
+    decisions = mine_events(events, r"c:\work\repo")
+
+    assert len(decisions) == 1
+    assert decisions[0].kind == "explicit_choice"
+    assert decisions[0].files == ["app.py"]
 
 
 def _search_then_output(output: object) -> str:
@@ -243,7 +317,45 @@ def test_a_content_match_binds_the_path_not_the_matched_line(adapter: CodexAdapt
 
     assert event is not None
     results = json.loads(event.tool_results[0].content)["result"]["results"]
-    assert results == [{"file": "src/app.py"}]
+    assert results == [{"path": "src/app.py", "file": "src/app.py"}]
+
+
+def test_a_root_level_content_match_still_binds_its_path(adapter: CodexAdapter) -> None:
+    """A ``path:line:`` match with no separator in the path is still a path."""
+    call_event = adapter.normalize(RG_CALL)
+    event = adapter.normalize(
+        _search_then_output(
+            [{"type": "input_text", "text": "Exit code: 0\nOutput:\napp.py:12:    # TODO\n"}]
+        )
+    )
+
+    assert event is not None
+    results = json.loads(event.tool_results[0].content)["result"]["results"]
+    assert results == [{"path": "app.py", "file": "app.py"}]
+    assert call_event is not None
+    assert call_event.tool_uses[0].input["path"] == "app.py"
+
+
+def test_a_bare_root_level_filename_is_kept(adapter: CodexAdapter) -> None:
+    """``rg --files``/``rg -l`` output with no ``:line:`` still admits a root file."""
+    adapter.normalize(RG_CALL)
+    event = adapter.normalize(_search_then_output([{"type": "input_text", "text": "Output:\nsetup.py\n"}]))
+
+    assert event is not None
+    results = json.loads(event.tool_results[0].content)["result"]["results"]
+    assert results == [{"path": "setup.py", "file": "setup.py"}]
+
+
+def test_a_bare_prose_line_is_still_dropped(adapter: CodexAdapter) -> None:
+    """Loosening the bare-line filter must not admit stray prose as a file."""
+    adapter.normalize(RG_CALL)
+    event = adapter.normalize(
+        _search_then_output([{"type": "input_text", "text": "Output:\nNo files were searched\n"}])
+    )
+
+    assert event is not None
+    results = json.loads(event.tool_results[0].content)["result"]["results"]
+    assert results == []
 
 
 def test_unreadable_search_output_neither_raises_nor_erases(adapter: CodexAdapter) -> None:

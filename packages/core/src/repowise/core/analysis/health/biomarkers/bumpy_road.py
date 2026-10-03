@@ -12,6 +12,7 @@ configurable threshold while CCN is also non-trivial.
 
 from __future__ import annotations
 
+from ..complexity.dispatch import judged_ccn
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -28,7 +29,7 @@ class BumpyRoadDetector:
         for fn in ctx.all_functions:
             if fn.bumps < self._BUMP_THRESHOLD:
                 continue
-            if fn.ccn < self._CCN_THRESHOLD:
+            if judged_ccn(fn) < self._CCN_THRESHOLD:
                 continue
             severity = (
                 Severity.HIGH

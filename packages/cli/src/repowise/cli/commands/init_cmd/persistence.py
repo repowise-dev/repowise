@@ -29,7 +29,11 @@ from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.models import count_stub_fallbacks
-from repowise.core.index_scope import file_page_scope, stamp_index_scope
+from repowise.core.index_scope import (
+    dropped_files_scope,
+    file_page_scope,
+    stamp_index_scope,
+)
 from repowise.core.repo_config import config_dependency_fingerprints
 
 logger = structlog.get_logger(__name__)
@@ -93,13 +97,21 @@ async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str]
                             Page.content,
                             Page.summary,
                             Page.target_path,
+                            Page.digest,
                         ).where(Page.id.in_(batch))
                     )
                 ).all()
             await fts.index_many(
                 [
-                    (page_id, title or "", content or "", summary or "", target_path or "")
-                    for page_id, title, content, summary, target_path in rows
+                    (
+                        page_id,
+                        title or "",
+                        content or "",
+                        summary or "",
+                        target_path or "",
+                        digest or "",
+                    )
+                    for page_id, title, content, summary, target_path, digest in rows
                 ]
             )
     except Exception as exc:  # pragma: no cover - defensive
@@ -181,12 +193,14 @@ async def persist_result(
             # transaction: it heals a best-effort checkpoint failure, and if
             # this write also fails the ledger below cannot claim ANALYSIS is
             # complete with parser-default complexity still on disk.
-            if getattr(result, "health_report", None) is not None:
-                await persist_symbol_analysis(
-                    session, repo.id, getattr(result, "parsed_files", None)
-                )
-            await persist_analysis(result, session, repo.id)
-            await persist_generation(result, session, repo.id)
+            with timed(timings, "persist.analysis"):
+                if getattr(result, "health_report", None) is not None:
+                    await persist_symbol_analysis(
+                        session, repo.id, getattr(result, "parsed_files", None)
+                    )
+                await persist_analysis(result, session, repo.id)
+            with timed(timings, "persist.generation"):
+                await persist_generation(result, session, repo.id)
             # persist_generation has already upserted the current pages, so the
             # sweep only retires structurally-keyed pages this run did not
             # reproduce. Without it the incremental-index path (every normal
@@ -263,12 +277,7 @@ async def persist_result(
         if fts is not None and swept_page_ids:
             await fts.delete_many(swept_page_ids)
         if fts is not None and result.generated_pages:
-            await fts.index_many(
-                [
-                    (page.page_id, page.title, page.content, page.summary, page.target_path)
-                    for page in result.generated_pages
-                ]
-            )
+            await fts.index_pages(result.generated_pages)
         await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
 
     # Stamp the analysis (+ generation) phases in the resume ledger now that
@@ -363,6 +372,11 @@ def _stamp_full_init_scope(
         )
     else:
         pages = {"effective_cap": None, "eligible": None, "generated": None, "omitted": None}
+    from repowise.cli.providers import semantic_search_status
+
+    semantic = semantic_search_status(
+        embedder_name_resolved, getattr(result, "embed_failed_pages", 0)
+    )
     stamp_index_scope(
         state,
         {"commit_limit": resolved_commit_limit, "max_file_pages": max_file_pages},
@@ -370,6 +384,7 @@ def _stamp_full_init_scope(
         content_provenance="model",
         git_tier="full",
         git_commit_cap=resolved_commit_limit,
+        dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
         file_pages={"configured_cap": max_file_pages, **pages},
         analysis={"unavailable": unavailable, "skipped": []},
         provider={
@@ -381,8 +396,8 @@ def _stamp_full_init_scope(
         },
         search={
             "full_text": "available",
-            "semantic": "unavailable" if embedder_name_resolved == "mock" else "available",
-            "next_command": "repowise reindex" if embedder_name_resolved == "mock" else None,
+            "semantic": semantic,
+            "next_command": "repowise reindex" if semantic == "unavailable" else None,
         },
         upgrade={"status": "not_applicable", "retryable": False, "completed_stages": []},
     )

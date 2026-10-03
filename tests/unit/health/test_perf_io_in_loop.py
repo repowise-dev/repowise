@@ -23,6 +23,7 @@ from repowise.core.analysis.health.biomarkers.string_concat_in_loop import (
     StringConcatInLoopDetector,
 )
 from repowise.core.analysis.health.complexity import PerfHit, walk_file
+from repowise.core.analysis.health.perf.io_boundaries import collect_io_names
 from repowise.core.analysis.health.scoring import score_file
 
 _FIXTURE_DIR = Path(__file__).resolve().parents[2] / "fixtures" / "lang_samples"
@@ -52,6 +53,31 @@ _CASES = [
         b"        session.execute(select(r))\n",
         [("io_in_loop", "db")],
         "db execute in a data-dependent loop",
+    ),
+    (
+        "python",
+        b"def f(client, queries):\n"
+        b"    for q in queries:\n"
+        b"        client.request(q).execute()\n"
+        b"        client.scalar(q)\n",
+        [],
+        "execute / scalar with no db evidence is an SDK verb, not a DB sink",
+    ),
+    (
+        "python",
+        b"def f(cur, ids):\n"
+        b"    for i in ids:\n"
+        b"        cur.execute('SELECT * FROM t WHERE id = %s', (i,))\n",
+        [("io_in_loop", "db")],
+        "a SQL statement argument is db evidence without an import",
+    ),
+    (
+        "python",
+        b"def f(client, ids):\n"
+        b"    for i in ids:\n"
+        b"        client.table('t').select('*').eq('id', i).execute()\n",
+        [("io_in_loop", "db")],
+        "a PostgREST table chain is db evidence without an import",
     ),
     (
         "python",
@@ -327,6 +353,42 @@ def test_python_fixture_counts():
     assert {"requests", "httpx", "subprocess"} <= set(fc.io_boundary_names)
 
 
+@pytest.mark.parametrize(
+    "use_block,expected",
+    [
+        (b"use {std::fs, reqwest::Client};\n", "filesystem"),
+        (b"use {reqwest::Client, std::fs};\n", "network"),
+    ],
+)
+def test_a_use_block_naming_two_io_modules_takes_the_first(use_block, expected):
+    # Picking from an unordered set made the kind follow PYTHONHASHSEED. Under
+    # any seed the old pick agreed for both orders, so one case failed.
+    fc = walk_file("t.rs", "rust", use_block + b"fn f() {}\n")
+    assert fc.io_boundary_names
+    assert set(fc.io_boundary_names.values()) == {expected}
+
+
+class _FakeImportNode:
+    def __init__(self, node_type: str, text: bytes, children: list[_FakeImportNode] | None = None):
+        self.type = node_type
+        self.text = text
+        self.children = children or []
+
+
+def test_rust_local_use_paths_are_not_io_boundaries():
+    root = _FakeImportNode(
+        "source_file",
+        b"",
+        [
+            _FakeImportNode("use_declaration", b"use crate::request::Foo;"),
+            _FakeImportNode("use_declaration", b"use super::http::fetch;"),
+            _FakeImportNode("use_declaration", b"use self::fs::helper;"),
+        ],
+    )
+
+    assert collect_io_names(root, "rust") == {}
+
+
 def test_typescript_fixture_counts():
     fc = _walk("typescript/perf_io_in_loop.ts", "typescript")
     counts = _kinds(fc.perf_hits)
@@ -373,6 +435,16 @@ def test_detectors_only_consume_their_own_kind():
     assert len(BlockingSyncInAsyncDetector().detect(ctx)) == 1
 
 
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [("src/render.ts", 1), ("src/__tests__/render.spec.ts", 0), ("tests/test_render.py", 0)],
+)
+def test_string_concat_not_reported_in_test_files(path, expected):
+    ctx = _ctx([PerfHit("string_concat_in_loop", 2, "f", "")])
+    ctx.file_path = path
+    assert len(StringConcatInLoopDetector().detect(ctx)) == expected
+
+
 def test_no_perf_hits_yields_no_findings():
     assert IoInLoopDetector().detect(_ctx([])) == []
 
@@ -415,3 +487,47 @@ def test_a_sink_in_a_chunked_loop_carries_the_fact(header: str, chunked: bool):
     assert all((h.loop is not None and h.loop.chunked) is chunked for h in loop_hits)
     finding = IoInLoopDetector().detect(_ctx(loop_hits))[0]
     assert finding.details.get("chunked_iteration", False) is chunked
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        # A function bound to a name is named for it.
+        (
+            "const build = (parts: string[]) => {\n"
+            "  for (const p of parts) {\n"
+            "    fs.readFileSync(p)\n"
+            "  }\n"
+            "}\n",
+            "build",
+        ),
+        # A callback is named for the call it is passed to, as the walker names it.
+        (
+            "it('reads', () => {\n"
+            "  for (const p of parts) {\n"
+            "    fs.readFileSync(p)\n"
+            "  }\n"
+            "})\n",
+            "it callback",
+        ),
+        # A lambda inside a named function keeps that function's name.
+        (
+            "function render(parts: string[]) {\n"
+            "  return parts.map((p) => {\n"
+            "    for (const c of p) {\n"
+            "      fs.readFileSync(c)\n"
+            "    }\n"
+            "  })\n"
+            "}\n",
+            "render",
+        ),
+        # Top-level script code has no function to name.
+        ("for (const p of parts) {\n  fs.readFileSync(p)\n}\n", None),
+    ],
+)
+def test_a_hit_is_named_for_its_enclosing_function(source: str, expected: str | None):
+    fc = walk_file("f.ts", "typescript", source.encode())
+    hits = [h for h in fc.perf_hits if h.kind == "io_in_loop"]
+    if not hits:
+        pytest.skip("typescript grammar unavailable")
+    assert {h.function for h in hits} == {expected}

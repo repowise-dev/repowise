@@ -119,7 +119,7 @@ class InProcessGraphStore(GraphStore):
 
     def pagerank(self) -> dict[str, float]:
         if self._pagerank_cache is None:
-            file_subgraph = self._file_subgraph()
+            file_subgraph = self._centrality_subgraph()
             if file_subgraph.number_of_nodes() == 0:
                 self._pagerank_cache = {}
             else:
@@ -128,7 +128,7 @@ class InProcessGraphStore(GraphStore):
 
     def betweenness_centrality(self) -> dict[str, float]:
         if self._betweenness_cache is None:
-            file_subgraph = self._file_subgraph()
+            file_subgraph = self._centrality_subgraph()
             if file_subgraph.number_of_nodes() == 0:
                 self._betweenness_cache = {}
             else:
@@ -182,7 +182,7 @@ class InProcessGraphStore(GraphStore):
         for one graph.
 
         That parity covers :meth:`pagerank` and :meth:`betweenness_centrality`,
-        the two builder metrics computed over ``file_subgraph``. It does *not*
+        which both sides compute over it minus test-to-test edges. It does *not*
         make :meth:`communities` agree with the pipeline: that path runs
         ``detect_file_communities``, which excludes ``external`` deliberately,
         allowlists ``FILE_DEPENDENCY_EDGE_TYPES`` rather than denying temporal
@@ -210,6 +210,14 @@ class InProcessGraphStore(GraphStore):
                 if attrs.get("edge_type") in TEMPORAL_EDGE_TYPES
             ]
         )
+        return sub
+
+    def _centrality_subgraph(self) -> nx.DiGraph:
+        """:meth:`_file_subgraph` minus test-to-test edges, as ``GraphBuilder.centrality_subgraph``."""
+        from ...ingestion.graph._metrics import is_test_to_test_edge
+
+        sub = self._file_subgraph()
+        sub.remove_edges_from([(u, v) for u, v in sub.edges() if is_test_to_test_edge(sub, u, v)])
         return sub
 
 

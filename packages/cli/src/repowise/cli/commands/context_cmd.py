@@ -20,6 +20,7 @@ _INCLUDE_BLOCKS = (
     "health",
     "skeleton",
     "doc_drift",
+    "symbols",
 )
 
 #: Card keys the projection replaces or drops. Everything else passes through.
@@ -53,7 +54,7 @@ _REPLACED_KEYS = frozenset(
 #: ``docs`` stays: for a **symbol** target the whole card lives there
 #: (``signature``, ``docstring``, ``used_by``, ``candidates``), and for a file
 #: target it holds ``symbols`` — the list a caller pipes into ``repowise
-#: symbol`` — plus ``content_md``/``documentation`` when ``--include full_doc``
+#: symbol``, plus ``content_md``/``digest_md``/``documentation`` when ``--include full_doc``
 #: asked for them. Denylisting ``docs`` wholesale projected a symbol target to
 #: an empty card and made ``--include full_doc`` an inert flag.
 _LIFTED_DOC_KEYS = ("title", "summary")
@@ -134,9 +135,10 @@ def project(payload: dict, targets: tuple[str, ...]) -> dict:
 
     A target the tool could not resolve gets a card carrying only ``error``,
     and that key survives the trim. Top-level ``truncated`` /
-    ``dropped_targets`` / ``dropped_symbols`` are kept whenever they say
-    something — a silently dropped target is exactly the thing a caller must
-    not have to diff two payloads to notice.
+    ``dropped_targets`` / ``dropped_symbols`` / ``dropped_blocks`` and the
+    ``recovery`` call are kept whenever they say something: a silently
+    dropped target is exactly the thing a caller must not have to diff two
+    payloads to notice.
     """
     cards = payload.get("targets") or {}
     out: dict = {
@@ -144,7 +146,7 @@ def project(payload: dict, targets: tuple[str, ...]) -> dict:
     }
     if payload.get("truncated"):
         out["truncated"] = True
-    for key in ("dropped_targets", "dropped_symbols", "omission_marker"):
+    for key in ("dropped_targets", "recovery", "dropped_symbols", "dropped_blocks", "omission_marker"):
         # omission_marker is the only handle on what truncation banked, so a
         # `truncated: true` without it says content went missing and offers no
         # way to get it back.

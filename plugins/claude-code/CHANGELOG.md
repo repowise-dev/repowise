@@ -2,6 +2,46 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## Unreleased
+
+### Added
+- Lens, a Claude Code mod that ships in the plugin (`hooks/lens/lens.js`,
+  registered through the `modules` entry in `hooks.json`). It shows the index
+  to the person at the keyboard: setup, freshness and savings rows above the
+  prompt, the file's caller and contributor counts in the spinner, margin notes
+  under Edit and Write repeating what the augment hook flagged, a row under
+  Bash output `repowise distill` shortened, a `get_change_risk` review beneath
+  Claude's answer after a turn that edits files (with `Run tests`, `Why` and
+  `Details` buttons), and a `/lens` pane with Flow (a dashboard of each turn
+  with Repowise), a map of the repo lit by Claude's turn with its story under
+  it, an Ask tab (`get_why` or `get_answer`) and a session recap. After a compaction it offers
+  a `Brief Claude` button. In the desktop app the map draws as SVG.
+- Six `userConfig` toggles: `lens_margin`, `lens_squeeze`, `lens_review` and
+  `lens_flow` (on by default), and `lens_pane_autoopen` and `lens_map_health`
+  (off).
+- Lens needs Claude Code 2.1.287 or later. Older versions, and sessions where
+  mods are switched off, load the rest of the plugin unchanged. Lens never
+  denies, holds or rewrites Claude's tool calls. It approves only its own
+  read-only calls to this plugin's MCP server (`get_context`,
+  `get_change_risk`, `get_why`, `get_answer`), and sends Claude nothing
+  without a button press. Ask questions that do not start with "why" go to
+  `get_answer`, which may use the model your repo configures. See
+  [docs/agent/LENS.md](../../docs/agent/LENS.md) and its
+  [footprint](../../docs/agent/LENS.md#footprint).
+
+## 0.54.0
+
+### Changed
+- The `coverage` command documents gating a change in CI with
+  `repowise coverage check`: the report, threshold and output-format options,
+  and the report formats the parser reads (Go cover profiles, JaCoCo and
+  repowise JSON joined LCOV, Cobertura, Clover and coverage.py).
+- The `impacted-tests` command documents `--format args` and `--runner`, and
+  that the selection answers `:all` whenever it is not certain.
+- No MCP tool was added, removed or renamed, and `hooks.json` still mirrors the
+  global augment matcher. The new coverage re-ingest hook is opt-in and
+  repository-local, written by the CLI, so the plugin does not ship it.
+
 ## 0.53.0
 
 ### Changed

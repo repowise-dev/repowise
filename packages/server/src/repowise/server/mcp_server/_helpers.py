@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import is_governing
+from repowise.core.analysis.decisions.lifecycle import HISTORY_CURRENCIES, is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.persistence.models import (
     Repository,
@@ -429,6 +429,7 @@ def _build_origin_story(
         "available": True,
         "primary_author": primary,
         "author_commit_pct": git_meta.primary_owner_commit_pct,
+        "author_line_pct": getattr(git_meta, "primary_owner_line_pct", None),
         "contributors": authors,
         "total_commits": total,
         "first_commit": first_date,
@@ -519,7 +520,8 @@ def _alignment_score(
             else ""
         )
         return "low", (
-            "Every accepted decision here is deprecated/superseded. "
+            "Every accepted decision here is deprecated/superseded, or names only "
+            "files that no longer exist. "
             "This file likely contains technical debt that should be migrated." + trailer
         )
     if candidates:
@@ -569,7 +571,7 @@ def _compute_alignment(
     deprecated = [
         d
         for d in governing
-        if currencies.get(d["id"]) in ("superseded", "dismissed")
+        if currencies.get(d["id"]) in HISTORY_CURRENCIES
     ]
     # Repository-wide, not scoped to the matched records: the sibling
     # denominator is drawn from decisions naming *other* files in the same
@@ -608,7 +610,8 @@ def _compute_alignment(
         "governing_count": len(governing),
         "active_count": len(accepted),
         "candidate_count": len(candidates),
-        # Accepted once and withdrawn since, whether superseded or dismissed.
+        # Accepted once and now history: superseded, dismissed, or naming only
+        # files gone at HEAD.
         "deprecated_count": len(deprecated),
         "uncheckable_count": len(uncheckable),
         "stale_count": len(stale),

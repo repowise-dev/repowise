@@ -8,12 +8,11 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.attention import (
     PER_SOURCE_CAP,
-    SEVERITY_RANK,
     AttentionSource,
     AttentionView,
     DecisionAttentionInput,
@@ -24,6 +23,10 @@ from repowise.core.analysis.attention import (
     severity_of_file_score,
     silo_source,
 )
+from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
+from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
+from repowise.core.persistence.crud.analysis.refactoring import shown_plan_predicate
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DocDriftFinding,
@@ -79,6 +82,7 @@ async def _health_items(session: AsyncSession, repo_id: str) -> tuple[list[dict]
         HealthFinding.repository_id == repo_id,
         HealthFinding.status == "open",
         HealthFinding.file_path.not_in(_test_paths(repo_id)),
+        HealthFinding.biomarker_type.not_in(excluded_types()),
     )
     rows = (
         await session.execute(
@@ -100,7 +104,10 @@ async def _health_items(session: AsyncSession, repo_id: str) -> tuple[list[dict]
     # The biomarker to name each file by: its own heaviest one. Bounded to the
     # handful of files above, so this is a keyed read rather than a scan.
     paths = [r.file_path for r in rows]
+    # A history marker names only when the file has nothing an edit can fix,
+    # the same rule `primary_finding` applies everywhere else.
     lead_biomarker: dict[str, str] = {}
+    history_lead: dict[str, str] = {}
     for path, biomarker in (
         await session.execute(
             select(HealthFinding.file_path, HealthFinding.biomarker_type)
@@ -108,6 +115,11 @@ async def _health_items(session: AsyncSession, repo_id: str) -> tuple[list[dict]
             .order_by(HealthFinding.health_impact.desc())
         )
     ).all():
+        if biomarker_category(biomarker) == HISTORY_CATEGORY:
+            history_lead.setdefault(path, biomarker)
+        else:
+            lead_biomarker.setdefault(path, biomarker)
+    for path, biomarker in history_lead.items():
         lead_biomarker.setdefault(path, biomarker)
 
     items = [
@@ -133,14 +145,17 @@ async def _health_items(session: AsyncSession, repo_id: str) -> tuple[list[dict]
     return items, int(total), ""
 
 
+#: The scanner's severity words on the attention ladder.
+_SECURITY_SEVERITY = {"high": "high", "med": "medium", "low": "low"}
+
+
 async def _security_items(session: AsyncSession, repo_id: str) -> tuple[list[dict], int, str]:
     """Security findings, high severity first.
 
     ``SecurityFinding`` has no status column: rows are replaced wholesale by
     each scan, so every stored row is open by construction and there is nothing
-    to filter on. It also only ever writes ``high`` or ``low`` — the router's
-    docstring mentions a ``med`` that the scanner never emits — so the two
-    middle bands of the ladder are simply unused here.
+    to filter on. The scanner writes ``high``, ``med`` and ``low``; ``med`` is
+    the security layer's spelling of the ladder's ``medium``.
     """
     rows = (
         (
@@ -148,9 +163,13 @@ async def _security_items(session: AsyncSession, repo_id: str) -> tuple[list[dic
                 select(SecurityFinding)
                 .where(SecurityFinding.repository_id == repo_id)
                 .order_by(
-                    # `high` before anything else, then newest. Expressed as a
-                    # sort key rather than two queries.
-                    (SecurityFinding.severity != "high"),
+                    # Most severe first, then newest. Expressed as a sort key
+                    # rather than a query per band.
+                    case(
+                        (SecurityFinding.severity == "high", 0),
+                        (SecurityFinding.severity == "med", 1),
+                        else_=2,
+                    ),
                     SecurityFinding.detected_at.desc(),
                 )
                 .limit(PER_SOURCE_CAP)
@@ -188,7 +207,7 @@ async def _security_items(session: AsyncSession, repo_id: str) -> tuple[list[dic
             "description": (
                 f"{row.kind}{f' in commit {row.commit_sha[:7]}' if row.commit_sha else ''}"
             ),
-            "severity": row.severity if row.severity in SEVERITY_RANK else "medium",
+            "severity": _SECURITY_SEVERITY.get(row.severity, "medium"),
             "target_id": row.file_path,
             "subtype": row.kind,
             # Nothing separates two `high` secrets but recency, and a secret
@@ -259,15 +278,17 @@ async def _refactoring_items(session: AsyncSession, repo_id: str) -> tuple[list[
     ``medium``: a thing you could improve never outranks a thing that is
     wrong.
     """
+    shown = (
+        RefactoringSuggestion.repository_id == repo_id,
+        RefactoringSuggestion.status == "open",
+        RefactoringSuggestion.file_path.not_in(_test_paths(repo_id)),
+        shown_plan_predicate(),
+    )
     rows = (
         (
             await session.execute(
                 select(RefactoringSuggestion)
-                .where(
-                    RefactoringSuggestion.repository_id == repo_id,
-                    RefactoringSuggestion.status == "open",
-                    RefactoringSuggestion.file_path.not_in(_test_paths(repo_id)),
-                )
+                .where(*shown)
                 .order_by(RefactoringSuggestion.impact_delta.desc())
                 .limit(PER_SOURCE_CAP)
             )
@@ -276,14 +297,7 @@ async def _refactoring_items(session: AsyncSession, repo_id: str) -> tuple[list[
         .all()
     )
     total = (
-        await session.scalar(
-            select(func.count(RefactoringSuggestion.id)).where(
-                RefactoringSuggestion.repository_id == repo_id,
-                RefactoringSuggestion.status == "open",
-                RefactoringSuggestion.file_path.not_in(_test_paths(repo_id)),
-            )
-        )
-        or 0
+        await session.scalar(select(func.count(RefactoringSuggestion.id)).where(*shown)) or 0
     )
     items = [
         {
@@ -321,6 +335,7 @@ async def _dead_code_items(session: AsyncSession, repo_id: str) -> tuple[list[di
                     DeadCodeFinding.repository_id == repo_id,
                     DeadCodeFinding.status == "open",
                     DeadCodeFinding.safe_to_delete.is_(True),
+                DeadCodeFinding.kind.not_in(REVIEW_ONLY_KINDS),
                     DeadCodeFinding.file_path.not_in(_test_paths(repo_id)),
                 )
                 .order_by(DeadCodeFinding.confidence.desc())
@@ -336,6 +351,7 @@ async def _dead_code_items(session: AsyncSession, repo_id: str) -> tuple[list[di
                 DeadCodeFinding.repository_id == repo_id,
                 DeadCodeFinding.status == "open",
                 DeadCodeFinding.safe_to_delete.is_(True),
+                DeadCodeFinding.kind.not_in(REVIEW_ONLY_KINDS),
                 DeadCodeFinding.file_path.not_in(_test_paths(repo_id)),
             )
         )
@@ -346,7 +362,8 @@ async def _dead_code_items(session: AsyncSession, repo_id: str) -> tuple[list[di
             "id": f"dead-{row.id}",
             "type": "dead_code",
             "title": row.symbol_name or row.file_path,
-            "description": f"Unreachable {row.symbol_kind or 'symbol'} ({row.lines} lines)",
+            "description": f"Unreachable {row.symbol_kind or 'symbol'}"
+            + (f" ({row.lines} lines)" if row.lines is not None else ""),
             "severity": "low",
             "target_id": row.file_path,
             "subtype": row.kind,

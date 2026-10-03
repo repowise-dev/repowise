@@ -15,6 +15,7 @@ const KEYS = {
   chatAskControlsHidden: "repowise_chat_ask_controls_hidden",
   chatSelectionAskHidden: "repowise_chat_selection_ask_hidden",
   chatHintSeen: "repowise_chat_hint_seen",
+  hostedTipsHidden: "repowise_hosted_tips_hidden",
 } as const;
 
 function read(key: string): string {
@@ -72,6 +73,24 @@ export const config = {
   /** Whether the pill has already introduced itself once in this browser. */
   getChatHintSeen: () => read(KEYS.chatHintSeen) === "1",
   setChatHintSeen: () => write(KEYS.chatHintSeen, "1"),
+
+  /** Whether the repowise.dev tips are hidden. Storage can throw (private
+   *  window, blocked site data): a failed read means shown, a failed write
+   *  keeps the choice until reload. */
+  getHostedTipsHidden: () => {
+    try {
+      return read(KEYS.hostedTipsHidden) === "1";
+    } catch {
+      return false;
+    }
+  },
+  setHostedTipsHidden: (v: boolean) => {
+    try {
+      write(KEYS.hostedTipsHidden, v ? "1" : "");
+    } catch {
+      /* Storage unavailable. */
+    }
+  },
 };
 
 /** Fires when any chat affordance's visibility changes in this tab.

@@ -110,6 +110,55 @@
   )
 ) @symbol.def
 
+; A definition returning a pointer or a reference wraps the function_declarator:
+; ``Node *make(...)``, ``char **argv(...)``, ``Foo& Foo::operator=(...)``, and a
+; function returning a function pointer, ``int (*handler(int k))(int)``.
+; Queries cannot recurse, so each wrapper depth is listed (up to two pointer
+; levels; ``T ***f()`` is not matched); the name shapes are
+; the ones the unwrapped patterns above accept. ``reference_declarator`` does
+; not name its declarator field, so its child is matched unnamed.
+(function_definition
+  declarator: [
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: [
+          (identifier) @symbol.name
+          (field_identifier) @symbol.name
+          (qualified_identifier name: (identifier) @symbol.name)
+          (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
+          (qualified_identifier name: (operator_name) @symbol.name)
+        ]
+        parameters: (parameter_list) @symbol.params))
+    (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: [
+            (identifier) @symbol.name
+            (field_identifier) @symbol.name
+            (qualified_identifier name: (identifier) @symbol.name)
+            (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
+            (qualified_identifier name: (operator_name) @symbol.name)
+          ]
+          parameters: (parameter_list) @symbol.params)))
+    (reference_declarator
+      (function_declarator
+        declarator: [
+          (identifier) @symbol.name
+          (field_identifier) @symbol.name
+          (qualified_identifier name: (identifier) @symbol.name)
+          (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
+          (qualified_identifier name: (operator_name) @symbol.name)
+        ]
+        parameters: (parameter_list) @symbol.params))
+    (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (function_declarator
+            declarator: (identifier) @symbol.name
+            parameters: (parameter_list) @symbol.params))))
+  ]
+) @symbol.def
+
 ; Class
 (class_specifier
   name: (type_identifier) @symbol.name
@@ -141,16 +190,6 @@
 (template_declaration
   (struct_specifier
     name: (type_identifier) @symbol.name
-  )
-) @symbol.def
-
-; Template function: template<typename T> T func(T x) { ... }
-(template_declaration
-  (function_definition
-    declarator: (function_declarator
-      declarator: (identifier) @symbol.name
-      parameters: (parameter_list) @symbol.params
-    )
   )
 ) @symbol.def
 
@@ -191,6 +230,31 @@
     declarator: (identifier) @symbol.name
     parameters: (parameter_list) @symbol.params
   )
+) @symbol.def
+
+; ... returning a pointer or a reference, the same wrappers as definitions
+(declaration
+  declarator: [
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @symbol.name
+        parameters: (parameter_list) @symbol.params))
+    (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @symbol.name
+          parameters: (parameter_list) @symbol.params)))
+    (reference_declarator
+      (function_declarator
+        declarator: (identifier) @symbol.name
+        parameters: (parameter_list) @symbol.params))
+    (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (function_declarator
+            declarator: (identifier) @symbol.name
+            parameters: (parameter_list) @symbol.params))))
+  ]
 ) @symbol.def
 
 ; In-class member-function declaration: ``void Seek(const Slice&);``
@@ -370,7 +434,7 @@
 ; carries no import statement naming the type — only the ``#include``.
 ; Without these captures every header type reads as an unused export. The
 ; shared ``@param.type`` capture name routes through the C head extractor
-; (see parser_helpers.TYPE_HEAD_EXTRACTORS); pointer/array declarator
+; (see lang_helpers.type_heads.TYPE_HEAD_EXTRACTORS); pointer/array declarator
 ; wrapping lives on the declarator side, and primitive builtins are filtered.
 
 ; Parameter types: void f(Widget *w)

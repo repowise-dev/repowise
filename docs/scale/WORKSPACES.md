@@ -1,6 +1,6 @@
 # Workspaces, Multi-Repo Support
 
-Repowise workspaces let you index and analyze multiple repositories together. You get per-repo documentation, graphs, and search, plus cross-repo intelligence: co-change detection, API contract extraction, and package dependency mapping.
+A workspace indexes several repositories together. Each repo keeps its own docs, graph and search, and the workspace adds cross-repo analysis: co-change, API contracts matched provider to consumer, package dependencies, a service-level system graph, breaking-change and test-impact checks, and architecture rules.
 
 ---
 
@@ -11,11 +11,14 @@ Repowise workspaces let you index and analyze multiple repositories together. Yo
 3. [How It Works](#how-it-works)
 4. [Workspace Commands](#workspace-commands)
 5. [Cross-Repo Intelligence](#cross-repo-intelligence)
-6. [Architecture Metrics](#architecture-metrics)
-7. [Web UI](#web-ui)
-8. [MCP Integration](#mcp-integration)
-9. [File Layout](#file-layout)
-10. [FAQ](#faq)
+6. [External Systems](#external-systems)
+7. [System Graph](#system-graph) and [Extraction Diagnostics](#extraction-diagnostics)
+8. [Web UI](#web-ui) and [Live System Map](#live-system-map)
+9. [Cross-Repo Blast Radius](#cross-repo-blast-radius), [Breaking-Change Guard](#breaking-change-guard), [Cross-Repo Test Impact](#cross-repo-test-impact)
+10. [Architecture Conformance](#architecture-conformance) and [Architecture Metrics](#architecture-metrics)
+11. [MCP Integration](#mcp-integration)
+12. [File Layout](#file-layout)
+13. [FAQ](#faq)
 
 ---
 
@@ -28,15 +31,14 @@ Use a workspace when your project spans multiple git repositories that are relat
 - **Microservices** that communicate over HTTP, gRPC, or message topics
 - Any set of repos where you want to understand **cross-repo dependencies and co-change patterns**
 
-If you only have a single repo, `repowise init` works as before, no workspace needed.
+With a single repo, `repowise init` needs no workspace.
 
 ---
 
 ## Quick Start
 
-### 1. Organize your repos
-
-Put related repos under a common parent directory:
+Put related repos under a common parent directory. The parent can itself be a
+git repo (a monorepo with sub-repos).
 
 ```
 my-workspace/
@@ -45,47 +47,22 @@ my-workspace/
   shared-libs/      # git repo
 ```
 
-Or, if your workspace root is itself a git repo (e.g., a monorepo with sub-repos):
-
-```
-my-project/         # git repo (monorepo)
-  .git/
-  backend/          # git repo
-  frontend/         # git repo
-```
-
-### 2. Initialize the workspace
-
 ```bash
 cd my-workspace
 repowise init .
 ```
 
-Repowise will:
-
-1. **Scan** for git repositories (up to 3 levels deep)
-2. **Prompt you to select** which repos to index
-3. **Ask you to pick a primary repo** (the default for MCP queries)
-4. **Walk you through provider setup** (LLM provider, model, cost estimate)
-5. **Index each repo**, parse files, build graphs, index git history
-6. **Generate documentation** for each repo (unless `--no-prose`)
-7. **Run cross-repo analysis**, co-changes, API contracts, package deps
-8. **Register MCP servers** with Claude Desktop and Claude Code
-
-### 3. Explore
+`repowise init .` scans for git repositories up to 3 levels deep, asks which to
+index and which is the primary repo (the default for MCP queries), walks you
+through provider setup, then indexes each repo, generates its docs (unless
+`--no-prose`), runs the cross-repo analysis, and registers the MCP server with
+your editors.
 
 ```bash
-# Check workspace status
-repowise status --workspace
-
-# List workspace repos
-repowise workspace list
-
-# Start the web UI
-repowise serve
-
-# Search across all repos
-repowise search "authentication flow"
+repowise status --workspace           # workspace status
+repowise workspace list               # repos and index state
+repowise serve                        # web UI
+repowise search "authentication flow" # search across repos
 ```
 
 ---
@@ -102,7 +79,7 @@ Each repo is indexed independently into its own `.repowise/wiki.db`, the same fo
 |---------|-------------|-----------|
 | Per-repo docs, graph, search | Yes | Yes (for each repo) |
 | Co-change detection | Within repo | Within + across repos |
-| API contract extraction | No | Yes (HTTP, gRPC, topics) |
+| API contract extraction | No | Yes (HTTP, gRPC, topics, sockets, data) |
 | Package dependency mapping | No | Yes |
 | Web UI | Repo pages | Repo pages + workspace dashboard |
 | MCP | One server per repo | One server, all repos |
@@ -111,117 +88,37 @@ Each repo is indexed independently into its own `.repowise/wiki.db`, the same fo
 
 ## Workspace Commands
 
-### `repowise init .`
+Run these from anywhere inside the workspace. Flags and examples for each are
+in the [CLI reference](../reference/CLI_REFERENCE.md#workspace-commands).
 
-Initialize a workspace in the current directory. Scans for git repos, prompts for selection, and indexes everything.
+| Command | What it does |
+|---------|--------------|
+| `repowise init .` | Initialize the workspace: scan for repos, select, index (`--no-prose` for a free structure-only wiki, `-x` to exclude globs) |
+| `repowise workspace list` | Repos in the workspace with their index status |
+| `repowise workspace add <path>` | Add and index a repo (`--alias`, `--no-docs`, `--no-index`) |
+| `repowise workspace remove <alias>` | Remove a repo from the workspace (files are not deleted) |
+| `repowise workspace scan` | Find repos not yet added |
+| `repowise workspace set-default <alias>` | Change the default repo for MCP queries |
+| `repowise workspace diagnostics` | Explain the contract link count ([Extraction Diagnostics](#extraction-diagnostics)) |
+| `repowise workspace check` | Architecture lint; exits non-zero on findings ([Architecture Conformance](#architecture-conformance)) |
+| `repowise workspace metrics` | Propagation cost, cyclic core, service roles, 1-10 score ([Architecture Metrics](#architecture-metrics)) |
+| `repowise workspace impacted-tests <repo:path>...` | Tests in consumer repos to run for a provider change ([Cross-Repo Test Impact](#cross-repo-test-impact)) |
 
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--no-prose` | Parse and analyze, wiki rendered from structure, no LLM (free) |
-| `-x, --exclude` | Glob patterns to exclude (e.g., `-x "node_modules/"`) |
-| `--yes` | Skip confirmation prompts |
-| `--concurrency N` | Max concurrent file parses (default: auto) |
-
-**Example:**
-
-```bash
-repowise init . -x "node_modules/" -x "*.lock" -x "vendor/"
-```
-
-### `repowise workspace list`
-
-Show all repos in the workspace with their index status.
-
-```bash
-repowise workspace list
-```
-
-### `repowise workspace add <path>`
-
-Add a new repo to an existing workspace and index it.
-
-```bash
-repowise workspace add ../new-service --alias api-gateway
-```
-
-### `repowise workspace remove <alias>`
-
-Remove a repo from the workspace (does not delete files).
-
-```bash
-repowise workspace remove api-gateway
-```
-
-### `repowise workspace scan`
-
-Re-scan the workspace directory for new repos that haven't been added yet.
-
-```bash
-repowise workspace scan
-```
-
-### `repowise workspace set-default <alias>`
-
-Change which repo is the default for MCP queries.
-
-```bash
-repowise workspace set-default backend
-```
-
-### `repowise workspace diagnostics`
-
-Explain the cross-repo contract link count, per-repo provider/consumer counts, unmatched consumers grouped by reason, and orphan providers. See [Extraction Diagnostics](#extraction-diagnostics).
-
-```bash
-repowise workspace diagnostics            # human-readable report
-repowise workspace diagnostics --json     # raw JSON
-repowise workspace diagnostics --repo api # limit to one repo
-```
-
-### `repowise workspace check`
-
-Architecture lint: check the declared `conformance:` rules against the system graph and detect dependency cycles. Exits non-zero on any finding, so it gates CI. See [Architecture Conformance](#architecture-conformance).
-
-```bash
-repowise workspace check                  # human-readable report; exit 1 on findings
-repowise workspace check --json           # raw report JSON
-```
-
-### `repowise workspace metrics`
-
-Architecture-complexity metrics: propagation cost, the cyclic core, per-service roles, and a deterministic 1-10 architecture score. See [Architecture Metrics](#architecture-metrics).
-
-```bash
-repowise workspace metrics                # human-readable summary
-repowise workspace metrics --json         # raw metrics JSON
-```
-
-### `repowise workspace impacted-tests <repo:path>...`
-
-Given one or more changed provider files, list the tests in consumer repos worth running. See [Cross-Repo Test Impact](#cross-repo-test-impact).
-
-```bash
-repowise workspace impacted-tests backend:app/routers/users.py
-repowise workspace impacted-tests backend:app/routers/users.py --target-repo frontend --format list | cut -d: -f2- | xargs npx vitest run
-repowise workspace impacted-tests backend:app/routers/users.py --format json
-```
+The report commands take `--format table|json` (`impacted-tests` also takes
+`list`); `--json` is a deprecated alias.
 
 ---
 
 ## Cross-Repo Intelligence
 
-When you initialize a workspace with 2+ repos, repowise runs three types of cross-repo analysis:
+When a workspace has two or more repos, repowise runs three kinds of cross-repo analysis. Each repo also gets its own [external systems](#external-systems) registry.
 
 ### Co-Change Detection
 
 Analyzes git history across repos to find files that frequently change together. For example, if `backend/api/routes.py` and `frontend/src/api/client.ts` are always modified in the same time window, they get a high co-change score.
 
-Useful for:
-- Understanding implicit dependencies between repos
-- Knowing what frontend files to check when a backend API changes
-- Identifying tightly coupled components
+Use it to find implicit dependencies between repos, such as the frontend files
+to check when a backend API changes.
 
 ### API Contract Extraction
 
@@ -263,66 +160,23 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 | Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")`, `ws` `WebSocketServer({ path })`, NestJS `@WebSocketGateway`; events: socket.io `emit` (server and client), Laravel broadcast events (`broadcastOn` / `broadcastAs`), `Broadcast::on`, Pusher `trigger` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)`, browser/Node `new WebSocket(url)`; events: socket.io `on` / `@SubscribeMessage`, Laravel Echo `listen` and `useEcho`, pusher-js `bind` |
 
 Socket detection is toggled by `detect_socket` in the `contracts:` block below.
-An endpoint is identified by its path (`socket::/hubs/game`); a message by its
-event within a scope, `socket::<scope>#<event>`, where the scope is a socket.io
-namespace (`/` unless the file names one) or a broadcast channel. Channels keep
-the wire prefix Pusher gives them (`private-orders.{param}`), and Echo's event
-names are read the way Echo formats them, so `.listen('OrderShipped')` meets a
-Laravel event class `App\Events\OrderShipped` and `.listen('.order.shipped')`
-meets `broadcastAs()` returning `order.shipped`. The emitting side is the
-provider. socket.io, amqplib's `publish`/`consume`, BullMQ, Redis and NestJS
-calls are read only in a file importing the library, since `emit`, `on`,
-`publish` and `subscribe` are common method names.
+A topic, queue or route name is resolved when it is a literal or a constant the
+same file assigns once; a name built at runtime is skipped, not guessed. HTTP
+routes match on their full path, with router mount prefixes stitched on first.
+An ambiguous target becomes a lower-confidence **candidate** link, and a unique
+one an **exact** link. The exact naming and matching rules for each transport
+(socket scopes, pattern subscriptions, RabbitMQ bindings, Laravel queues, ORM
+table defaults, framework route prefixes, client base URLs) are in the
+[contract matching reference](../reference/WORKSPACE_CONTRACTS.md).
 
-A topic, queue or exchange name is read the way a URL is: a literal, or a name
-the same file assigns exactly once to a literal (Python, Go, Java, PHP class
-constants, and JS/TS `const` including object and enum members such as
-`QUEUES.ticketSold`), is resolved; a name built at runtime is skipped rather
-than guessed. An SQS queue URL is named by its last path segment and an SNS
-topic ARN by its last field. A subscription by pattern (NATS `orders.*` /
-`orders.>`, Redis `psubscribe`, Kafka `topicPattern`) links to every publisher
-whose name it matches. A Laravel job dispatched without a queue runs on the
-queue its class declares (`public $queue`, `$this->onQueue()`, `viaQueue()`),
-found by the class's fully qualified name; one left on the connection's
-default queue is not recorded, since every app has one. RabbitMQ
-publishers name an exchange and a routing key while consumers name a queue, so
-a queue binding found anywhere in the workspace connects the two: each consumer
-of the bound queue links to the exchange's publishers whose routing key the
-binding pattern accepts (`*` and `#` follow topic-exchange rules; an empty key
-or pattern matches everything, while a key the source does not settle matches
-nothing). Such a link carries the exchange as its `contract_id` and the queue as
-`consumer_contract_id`. When no consumer of the bound queue is found, the
-binding site itself is linked. A publish to the default exchange
-(`publish('', 'jobs')`) is a publish to the queue `jobs`.
+Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in
+the [system graph](#system-graph). The consumer side (SQL string matching) is
+heuristic and lower-confidence than the ORM-based providers, and data contracts
+get table-level removal checks only, no field-level diffing.
 
-Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](#system-graph). An ORM model with no explicit table name takes its library's default: the Prisma model name, the TypeORM class name in snake case, the Sequelize model name pluralized, the Eloquent class name in snake case and plural. A service that only models a table (an ORM class, no migration) is linked to the service whose migration or DDL defines that table's schema, when exactly one service defines it; two services that each migrate a table of one name are read as separate databases and not linked. The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
-
-HTTP routes are matched on their **full** path: a router mount prefix
-(`APIRouter(prefix=...)`, `include_router(prefix=...)`, Express `app.use('/x', router)`,
-Go route groups, Laravel `Route::prefix(...)->group(...)` and `Route::group(['prefix' => ...])`)
-is stitched onto each handler path before matching. Laravel's `routes/api.php` is
-served under `/api` unless `bootstrap/app.php` (`apiPrefix`) or a route provider says
-otherwise, and `Route::resource` / `apiResource` expand into the routes they register. A NestJS
-route is served at the app's `setGlobalPrefix` (unless its `exclude` list names the route), then
-its URI version (`enableVersioning`, `@Version`), then the `@Controller` prefix. A call through an
-axios, ky, got or ofetch instance is read with the instance's `baseURL` / `prefixUrl`, also when
-another file imports the instance. An Angular `HttpClient` call is read on any receiver typed
-or injected as `HttpClient`, with `environment.apiUrl` folded from `src/environments/` and class
-fields built on it; a base an interceptor prepends is not read. A client call
-whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) matches
-on the host-relative path; the link is **exact** when exactly one workspace service
-provides that path and a lower-confidence **candidate** when the target is ambiguous.
-
-**Over REST.** `GET /api/workspace/contracts` lists contracts and links,
-filterable by `contract_type`, `repo` and `role`. Each contract carries its
-line, its ingestion symbol id and the extractor's `meta`; each link carries both
-symbol ids and both service boundaries. The request/response `schema` is not on
-the list, because it runs to full inline type declarations and only one is ever
-needed at a time: fetch it with
-`GET /api/workspace/contracts/detail?repo=<alias>&file=<path>&id=<contract-id>`,
-which returns that one contract with its schema, its links, and its unmatched
-reason. All three parameters are required, since a contract id alone is not
-unique across repos.
+Over REST, `GET /api/workspace/contracts` lists contracts and links (filter by
+`contract_type`, `repo`, `role`), and `GET /api/workspace/contracts/detail`
+returns one contract with its schema.
 
 **Tuning extraction** via the `contracts:` block in `.repowise-workspace.yaml`:
 
@@ -358,30 +212,53 @@ Reads package manifests (`package.json`, `composer.json`, `pyproject.toml`,
 `Cargo.toml`, `go.mod`, `.csproj`, and Maven `pom.xml`) to detect when one repo
 depends on another as a package or project.
 
-npm and composer dependencies match in two ways: a local path (`file:` specs,
-workspace globs, composer `path` repositories) that resolves into a sibling repo,
-or a package name that exactly one sibling repo publishes. For npm, a repo
-publishes its root `package.json` and its declared workspace members, so a
-vendored or fixture `package.json` never claims a name. For composer, every
-`composer.json` up to three directories deep counts, outside `vendor/`, hidden
-directories, tests, fixtures and examples, which covers split packages such as
-`src/Illuminate/Support/composer.json`. A name two repos publish links to
-neither.
+npm and composer dependencies match through a local path that resolves into a
+sibling repo, or a package name that exactly one sibling repo publishes; a name
+two repos publish links to neither. Maven matching is filesystem-only: it links
+an active direct compile/runtime dependency when exactly one workspace project
+publishes that `groupId:artifactId`, and never runs Maven or downloads
+artifacts. Details: [contract matching reference](../reference/WORKSPACE_CONTRACTS.md#package-matching).
 
-Maven matching is filesystem-only and coordinate-based. Repowise resolves local
-reactor modules, local parents, properties, and dependency-management versions,
-then links an active direct compile/runtime dependency only when exactly one
-selected workspace project publishes that `groupId:artifactId`. Test, provided,
-system, optional, profile-only, ambiguous, and external dependencies do not create
-production package edges. Bounded diagnostics retain the reason for Maven
-non-matches. When a repository has a root `pom.xml`, only that declared reactor is
-eligible; unrelated nested example or fixture POMs are not treated as producers.
+---
 
-This does **not** execute Maven, read user settings, download artifacts, resolve
-plugins/transitive dependencies/imported BOMs, or infer generated sources. A Maven
-package edge is also not a published symbol-level code API or a runnable Maven
-target recommendation; those capabilities are reported separately and remain
-unsupported.
+## External Systems
+
+Every indexed repo, in a workspace or not, keeps a registry of the third-party
+packages it declares. repowise reads dependency manifests during indexing; no
+package is downloaded and no build tool runs.
+
+| Ecosystem | Manifests read |
+|-----------|----------------|
+| npm | `package.json` |
+| PyPI | `pyproject.toml` (PEP 621, optional dependencies, Poetry groups), `requirements*.txt` |
+| Cargo | `Cargo.toml` |
+| Go | `go.mod` |
+| NuGet | `*.csproj` |
+| Maven | `pom.xml` |
+| CMake | `find_package(...)` calls in `CMakeLists.txt` |
+
+Each declaration keeps its name, version, the manifest it came from, and whether
+it is a dev dependency. A dependency on the repo's own packages is dropped: it
+is part of the codebase, not an external system. Two tags are added from
+built-in name lists:
+
+- **Category**: `framework` (fastapi, react, spring, gin), `service` (a network
+  dependency such as stripe, openai, an AWS or Azure SDK, a database driver),
+  `tool` (eslint, pytest, vite) or `library`, the default. The lists are
+  deliberately small, so an unknown package stays `library`.
+- **I/O kind**: `db`, `network`, `filesystem`, `subprocess` or `lock`, when the
+  package is a known boundary of that kind. Unknown names have none.
+
+The registry also links each package to the import edges that reach it, so you
+can see which parts of the codebase use it. In the dashboard this is the
+**Packages** tab on a repo's Architecture page: declared packages with their
+importing communities, and a drill-down to the importing files. The C4 view
+uses the same registry to draw external boxes. Over REST:
+`GET /api/repos/{repo_id}/external-systems/summary`.
+
+This is a declared-dependency view. It does not resolve transitive
+dependencies or lockfiles, and it does not match a package to a sibling
+workspace repo; that is [Package Dependency Scanning](#package-dependency-scanning).
 
 ---
 
@@ -391,7 +268,7 @@ The contracts, package dependencies, and co-changes above are each a flat list. 
 
 **Nodes are services, not repos.** A monorepo with three detected service boundaries (a `package.json` / `composer.json` / `go.mod` / `Cargo.toml` sub-directory) shows three nodes; the repo is a grouping attribute on each node. A repo with no sub-boundary collapses to a single repo-root node. Each node carries its provider/consumer counts, the contract types it participates in, and flags for orphan/isolated services.
 
-**Edges are typed and honest.** Every edge carries:
+**Edges are typed.** Every edge carries:
 
 - a `kind`, `http`, `grpc`, `event`, `package`, `co_change`, or `db`;
 - a `match_type`, `exact`, `candidate`, `manual`, or `inferred`;
@@ -407,9 +284,9 @@ Fetch it over REST with `GET /api/workspace/system-graph`, or explore it visuall
 When the cross-repo link count looks low, diagnostics explain why. Computed alongside contract matching, they report, per repo and contract type, how many providers and consumers were found, which consumers went unmatched (and why), and which providers have no consumer at all.
 
 ```bash
-repowise workspace diagnostics            # human-readable report
-repowise workspace diagnostics --json     # raw JSON
-repowise workspace diagnostics --repo api # limit to one repo
+repowise workspace diagnostics                # human-readable report
+repowise workspace diagnostics --format json  # raw JSON
+repowise workspace diagnostics --repo api     # limit to one repo
 ```
 
 The report covers:
@@ -422,7 +299,7 @@ The report covers:
   - `external_host`, the call targets a literal third-party host (Stripe, Formspree, ...) that is not a workspace service, so it is intentionally excluded from matching.
 - **Orphan providers**, endpoints declared but never consumed by any repo.
 - **Weak links**, matched links below the confidence threshold.
-- **Extraction coverage**: how many contracts came from the parsed symbol table (`index`) versus a text dialect (`regex`), and how many HTTP client calls were located but could not be resolved to an endpoint. The HTTP coverage percentage is calls resolved over calls located — it is not total recall, because a call no dialect recognises is not in either number. It is the figure that turns a large orphan-provider count from alarming into explained.
+- **Extraction coverage**: how many contracts came from the parsed symbol table (`index`) versus a text dialect (`regex`), and how many HTTP client calls were located but could not be resolved to an endpoint. The HTTP coverage percentage is calls resolved over calls located. It is not total recall, because a call no dialect recognises is not in either number. It is the figure that turns a large orphan-provider count from alarming into explained.
 
 The same data is available over REST at `GET /api/workspace/diagnostics` and is embedded in the system graph artifact's `diagnostics` block.
 
@@ -451,29 +328,29 @@ The System Map renders the [system graph](#system-graph) as an always-current di
 
 - **Service nodes**, coloured by category (service, frontend, worker, library, external), with a health ring rolled up from the owning repo and small flags for orphan or isolated services.
 - **Typed edges** distinguished by `kind` (colour + glyph) and by `match_type` (solid for exact/manual, dashed for candidate, dotted for inferred co-change). Behavioral co-change edges read differently from structural contract/dependency edges.
-- **Filters** to toggle each edge kind on or off, and a **service ↔ repo** switch that collapses a monorepo's services into one node per repository.
+- **Filters** to toggle each edge kind on or off, and a **service / repo** switch that collapses a monorepo's services into one node per repository.
 - **Drill-down**: click a service to inspect its providers/consumers and connected services; click an edge to see its match type, confidence, weight, and the underlying contract evidence, with a jump to the Contracts view.
 - A **legend** explaining the edge colours, dash patterns, and the health scale.
 
-The map appears once the workspace has at least two indexed repositories with detected relationships; it shows honest empty states otherwise.
+The map appears once the workspace has at least two indexed repositories with detected relationships; it shows an empty state otherwise.
 
 ---
 
 ## Cross-Repo Blast Radius
 
-Blast radius answers a single question: **if I change this service, which downstream services and repos are structurally exposed?** It walks the [system graph](#system-graph) *against* its edge direction, a `consumer → provider` edge means changing the provider may impact the consumer, and returns every reachable service ranked by an impact score.
+Blast radius answers a single question: **if I change this service, which downstream services and repos are structurally exposed?** It walks the [system graph](#system-graph) *against* its edge direction (a consumer-to-provider edge means changing the provider may impact the consumer) and returns every reachable service ranked by an impact score.
 
 Two edge classes are weighted and labelled distinctly:
 
-- **Structural** edges (http / grpc / event / package / db) assert a real dependency, a contract or an import. They propagate impact at full weight and surface under the compatibility-named **will break** field, but mean structural reach rather than certain runtime failure.
-- **Behavioral** co-change edges only assert that two files historically *changed together*. They are correlation, not a call, so they propagate at half weight (one named constant, `BEHAVIORAL_EDGE_WEIGHT`) and surface as **may drift**.
+- **Structural** edges (http / grpc / event / package / db) assert a real dependency, a contract or an import. They propagate impact at full weight and surface under the compatibility-named **will break** field, but mean structural reach, not certain runtime failure.
+- **Behavioral** co-change edges only assert that two files historically *changed together*. They are correlation, not a call, so they propagate at half weight and surface as **may drift**.
 
 Each impacted service carries its `distance` (hops from the change) and `score` (0-1, with distance decay and the behavioral weighting baked in). Nearer, structural impact ranks highest.
 
 Use it three ways:
 
 - **REST**, `GET /api/workspace/blast-radius?target=<node-id-or-repo>&max_depth=3&include_behavioral=true`. `target` is a node id (`repo` or `repo::service/path`) or a repo alias (expands to all its services).
-- **MCP**, the `get_blast_radius` tool (workspace mode) gives an agent the impacted set before it touches a high-fan-out provider. The `get_risk` PR-mode directive also gains `will_break_consumers` and `missing_cross_repo_cochanges` so a diff in one repo flags its cross-repo fallout.
+- **MCP**, the opt-in `get_blast_radius` tool (workspace mode, `mcp.tools: ["+get_blast_radius"]`) gives an agent the impacted set before it touches a high-fan-out provider. The `get_risk` PR-mode directive also gains `will_break_consumers` and `missing_cross_repo_cochanges` so a diff in one repo flags its cross-repo fallout.
 - **System Map**, pick a service in the **Blast radius** control above the map; the reachable set ripples (highlighted, the rest dimmed, badges grading intensity), and a side panel lists the impacted services. Click any impacted service to walk the impact outward from there.
 
 ---
@@ -482,13 +359,13 @@ Use it three ways:
 
 Where blast radius answers *what could be affected*, the breaking-change guard answers a sharper question: **did a provider contract change incompatibly?** On every `repowise update --workspace`, freshly extracted contracts are diffed against the previously indexed set. Each finding carries the consumer files linked to the endpoint, but that link proves endpoint exposure only. It does not prove use of the changed field, a runtime failure, or deployment safety.
 
-Detected change kinds (a registry, adding a kind is one new rule, never an `if/elif`):
+Detected change kinds:
 
 | Kind | Severity | Fires when |
 |------|----------|-----------|
 | `removed_endpoint` | breaking | A provider route / gRPC method / topic that existed before is gone |
 | `removed_field` | breaking (response) / warning (request) | A request or response field disappeared |
-| `field_type_changed` | breaking | A field's type changed (e.g. `string → int64`) |
+| `field_type_changed` | breaking | A field's type changed (e.g. `string -> int64`) |
 | `field_number_changed` | breaking | A proto field's wire number changed |
 | `field_required` | breaking | A request field became required, or a new required request field was added; legacy proto/signature behavior is preserved |
 | `field_required_relaxed` | breaking | A required OpenAPI response field became optional |
@@ -496,13 +373,16 @@ Detected change kinds (a registry, adding a kind is one new rule, never an `if/e
 | `field_enum_changed` | breaking | An OpenAPI request enum lost values, or a response enum gained values |
 | `schema_comparison_uncertain` | warning | Schema source/fidelity, completeness, or selected response changed, so field compatibility was not inferred |
 
-OpenAPI comparison covers the common supported subset of `3.0.x`, `3.1.x`, and `3.2.x`: JSON/YAML documents; path/query/header/cookie parameters using OpenAPI's default `style`, `explode`, and `allowReserved` behavior; one `application/json` request body; exactly one explicit JSON 2xx response; recursive objects and arrays; exact primitive types; requiredness; normalized nullability; finite homogeneous scalar enums; and bounded same-document JSON Pointer references. Request rules describe values the provider accepts; response rules describe values consumers may receive, so requiredness, nullability, enum values, and constrained/unconstrained enum transitions reverse between the two sides. Operation removal remains the transport-neutral contract rule.
-
-Only complete sides with the same schema source and comparison-fidelity key are field-diffed. Unsupported/unresolved nodes, extraction-strategy changes, and response-selection changes become warning-level uncertainty rather than shortened schemas or false removals. Remote/cross-file references, composition, additional-properties semantics, arbitrary JSON Schema constraints, non-JSON or ambiguous media, multiple materially different success responses, and OpenAPI 2.0 are outside this boundary. No network dereferencing occurs.
+Field-level comparison covers proto, signatures and a supported subset of
+OpenAPI `3.0.x` to `3.2.x` (JSON request bodies, one JSON 2xx response, objects,
+arrays, primitive types, requiredness, nullability, scalar enums, same-document
+references). Anything outside that subset becomes a warning-level
+`schema_comparison_uncertain`, never a false removal. The exact boundary:
+[contract matching reference](../reference/WORKSPACE_CONTRACTS.md#openapi-comparison-boundary).
 
 **Compatible changes stay quiet**: examples include an optional request addition, a request enum widening, a request becoming nullable, a response enum narrowing, a response becoming non-nullable, an additional response field in the supported open-object subset, and a brand-new endpoint. A rename remains a removal plus an addition; no rename inference is attempted.
 
-Endpoint-exposed consumers are resolved from the matched contract links, the same provider↔consumer evidence the [system graph](#system-graph)'s edges are built from. The evidence is direct and endpoint-level: it identifies a consumer file linked to the changed contract, but not the exact field it uses. Transitive structural reach stays the job of blast radius.
+Endpoint-exposed consumers are resolved from the matched contract links, the same provider-consumer evidence the [system graph](#system-graph)'s edges are built from. The evidence is direct and endpoint-level: it identifies a consumer file linked to the changed contract, but not the exact field it uses. Transitive structural reach stays the job of blast radius.
 
 Use it three ways:
 
@@ -536,7 +416,7 @@ Results are capped per consumer and provider pair so one widely-called helper ca
 Use it three ways:
 
 - **CLI**, `repowise workspace impacted-tests <repo:path>...`, the command above.
-- **REST**, `GET /api/workspace/test-impact?repo=<alias>&file=<path>`. Repeat `file` for several changed files in the same repo. The response carries the same fields the `--format json` output has: `recommendations` (each with its consumer repo, the `consumer_files` and bound `consumer_symbol_ids` that reached the test, `basis`, `via`, `confidence` and the contract ids that produced it), `unresolved` with a reason per link, `files_analyzed` with the state each landed on, and the `summary` counts. Over the API an empty answer's `summary.reason` is `no_contract_data`, `no_matching_links` or `lookup_failed`.
+- **REST**, `GET /api/workspace/test-impact?repo=<alias>&file=<path>` (repeat `file` for several changed files), with the same fields as `--format json`. Field list: [contract matching reference](../reference/WORKSPACE_CONTRACTS.md#test-impact-over-rest).
 - **Web UI**, a provider contract's page (`/workspace/contracts/detail`) ends in a **Tests to run** section: the tests grouped by consumer repo, each marked measured or inferred and saying whether the coverage map, the call graph or the import graph found it, and a **Could not determine** list naming the consumer file and the reason. A consumer contract has no such section, since tests are found on the consumer side.
 
 ---
@@ -587,20 +467,20 @@ A rule with `allow: false` (the default) is a **deny** rule: a structural depend
 
 ### Dependency cycles
 
-Independently of any rules, conformance detects **circular dependencies** among services over structural edges (`A → B → … → A`). A cycle means the services cannot be built, deployed, or reasoned about independently. Cycle detection runs even with zero rules declared, so every workspace gets it for free.
+Independently of any rules, conformance detects **circular dependencies** among services over structural edges (`A -> B -> ... -> A`). A cycle means the services cannot be built, deployed, or reasoned about independently. Cycle detection runs even with zero rules declared, so every workspace gets it.
 
 ### Using it
 
 - **CLI**, `repowise workspace check` prints violations and cycles and exits non-zero when any are found, so it gates CI (the architecture lint):
 
   ```bash
-  repowise workspace check          # human-readable report; exit 1 on findings
-  repowise workspace check --json    # raw report JSON (still exits 1 on findings)
+  repowise workspace check                # human-readable report; exit 1 on findings
+  repowise workspace check --format json  # raw report JSON (still exits 1 on findings)
   ```
 
   It recomputes from the persisted system graph, so editing rules and re-running picks them up without a full re-index.
 - **REST**, `GET /api/workspace/conformance` returns the report from the most recent update (filterable by `repo`).
-- **MCP**, `get_conformance` exposes violations and cycles to an agent; the `get_risk` PR-mode directive gains `conformance_violations` and `dependency_cycles` blocks for the findings the diff's repo participates in.
+- **MCP**, `get_conformance` exposes violations and cycles to an agent. It is opt-in (`mcp.tools: ["+get_conformance"]`, see [MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_conformance)). Without it, the `get_risk` PR-mode directive still gains `conformance_violations` and `dependency_cycles` blocks for the findings the diff's repo participates in.
 - **Conformance view**, the web UI's Conformance page renders a **dependency-structure matrix (DSM)**: services on both axes, each filled cell a dependency tinted by transport, with rule violations ringed red and cycle cells amber. Governance panels list the violations and cycles. Violations also badge the offending edges on the [Live System Map](#live-system-map) (toggle **Conformance**), reusing the same additive overlay as the breaking-change guard.
 
 ---
@@ -623,26 +503,27 @@ Conformance and the cycle finder answer *per-relationship* questions (is this ed
 
 ### Using it
 
-- **CLI**, `repowise workspace metrics` prints the score, propagation cost, cyclic core, dependency-cycle count, and the per-role service breakdown. CI-friendly plain output; `--json` emits the raw metrics.
+- **CLI**, `repowise workspace metrics` prints the score, propagation cost, cyclic core, dependency-cycle count, and the per-role service breakdown. CI-friendly plain output; `--format json` emits the raw metrics.
 
   ```bash
-  repowise workspace metrics          # human-readable summary
-  repowise workspace metrics --json    # raw metrics JSON
+  repowise workspace metrics                # human-readable summary
+  repowise workspace metrics --format json  # raw metrics JSON
   ```
 
 - **REST**, `GET /api/workspace/architecture` returns the workspace metrics plus the per-service roles. Computed at request time from the system graph (no separate artifact); the conformance violation count, if a report exists, is folded into the score.
-- **MCP**, `get_architecture` gives an agent the score, propagation cost, core members, and role breakdown in one call, the system-structure read to consult before a cross-service refactor.
+- **MCP**, `get_architecture` gives an agent the score, propagation cost, core members, and role breakdown in one call, the system-structure read to consult before a cross-service refactor. It is opt-in, like `get_conformance` (`mcp.tools: ["+get_architecture"]`).
 - **Web**, the **architecture score** appears as a stat on both the Conformance and System Map pages. The DSM header shows score / propagation cost / core size and tints each service's diagonal cell by its role, so the on-diagonal core block stands out. On the Live System Map, toggle **Core** to highlight the cyclic core, and the inspector shows any selected service's role and visibility profile.
 
 ---
 
 ## MCP Integration
 
-Workspace init automatically registers MCP servers with Claude Desktop and Claude Code. The MCP server is workspace-aware:
+Workspace init registers the MCP server with your editors (skip with `--no-editor-setup`). The MCP server is workspace-aware:
 
 - **Default repo context**, queries go to the primary repo unless you specify otherwise
-- **Cross-repo tools**, MCP tools can query across repos and return enriched context with co-change and contract data; `get_blast_radius` answers cross-repo downstream impact (see [Cross-Repo Blast Radius](#cross-repo-blast-radius)); `get_conformance` answers architecture rule violations and dependency cycles (see [Architecture Conformance](#architecture-conformance)); `get_architecture` answers whole-system coupling, the cyclic core, and the architecture score (see [Architecture Metrics](#architecture-metrics))
-- **Repo parameter**, most tools accept an optional `repo` parameter to target a specific repo. Four also accept `"all"` to query across the workspace: `get_overview` (workspace topology and a summary per repo), `search_codebase` (results from every repo), `get_dead_code` (findings from every repo) and `get_why` with a query (decisions from every repo). The other tools answer about one repo at a time
+- **Cross-repo context**, single-repo tools add co-change and contract evidence from the other repos
+- **Repo parameter**, most tools accept an optional `repo` parameter to target a specific repo. Four also accept `"all"` to query across the workspace: `get_overview` (the cross-repo topology), `search_codebase` (results from every repo), `get_dead_code` (findings from every repo) and `get_why` with a query (decisions from every repo). The other tools answer about one repo at a time; see [MCP_TOOLS.md](../agent/MCP_TOOLS.md#workspace-mode)
+- **Opt-in workspace tools**, off by default and enabled with `mcp.tools` in `.repowise/config.yaml`: `get_blast_radius` ([Cross-Repo Blast Radius](#cross-repo-blast-radius)), `get_conformance` ([Architecture Conformance](#architecture-conformance)) and `get_architecture` ([Architecture Metrics](#architecture-metrics))
 
 ---
 
@@ -662,17 +543,13 @@ my-workspace/
   .claude/
     CLAUDE.md                      # Workspace-level CLAUDE.md for AI editors
   backend/
-    .repowise/                     # Per-repo index data
-      wiki.db                      # SQLite database (pages, graph, symbols, git)
-      lancedb/                     # Vector embeddings
-      config.yaml                  # Repo-level config
-      mcp.json                     # MCP server config
+    .repowise/                     # Per-repo index, same as single-repo mode
   frontend/
     .repowise/
-      wiki.db
-      lancedb/
-      ...
 ```
+
+What lives in each repo's `.repowise/` is described in
+[CONFIG.md](../reference/CONFIG.md#the-repowise-directory).
 
 ### What goes in `.gitignore`
 
@@ -684,7 +561,7 @@ Add these to your `.gitignore`:
 .repowise-workspace.yaml
 ```
 
-The workspace config and data are local, they reference absolute paths and contain generated analysis that should be rebuilt per-machine.
+The workspace config and data are local: they can reference absolute paths and contain generated analysis that should be rebuilt per-machine.
 
 ---
 
@@ -692,7 +569,7 @@ The workspace config and data are local, they reference absolute paths and conta
 
 ### Can I add repos that live outside the workspace directory?
 
-Yes. Use `repowise workspace add /path/to/external-repo`. The path will be stored relative to the workspace root if possible, or as an absolute path otherwise.
+Yes. Use `repowise workspace add /path/to/external-repo`. The path is stored relative to the workspace root if possible, or as an absolute path otherwise.
 
 ### What happens if I run `repowise init` (without `.`) in a workspace?
 
@@ -719,7 +596,7 @@ repowise watch --workspace
 
 ### How do I re-run just the cross-repo analysis?
 
-Currently, cross-repo analysis runs automatically during `repowise init .` and `repowise update --workspace`. To force a re-run, use `repowise init .` again, it will detect existing indexes and only re-run what's needed.
+Cross-repo analysis runs during `repowise init .` and `repowise update --workspace`. To force a re-run, run `repowise init .` again; it detects existing indexes and only re-runs what is needed.
 
 ### Does the MCP server handle multiple repos?
 
@@ -727,4 +604,4 @@ Yes. A single MCP server instance serves all workspace repos. It uses lazy-loadi
 
 ### Can I use `repowise` with git worktrees?
 
-Yes, and it's automatic. Running `repowise init` or `repowise update` inside a linked worktree detects the base checkout, seeds the worktree's index from it, and incrementally updates only the files that differ on your branch. No flags needed; `--seed-from <path>` and `--no-seed` exist as overrides. See [WORKTREES.md](WORKTREES.md).
+Yes, automatically. Running `repowise init` or `repowise update` inside a linked worktree detects the base checkout, seeds the worktree's index from it, and incrementally updates only the files that differ on your branch. No flags needed; `--seed-from <path>` and `--no-seed` exist as overrides. See [WORKTREES.md](WORKTREES.md).

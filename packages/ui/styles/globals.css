@@ -354,11 +354,14 @@
 
   /* Micro sizes for dense chrome: `caption` (10px) for uppercase micro-labels
      and axis ticks, `2xs` (11px) for secondary metadata one step under xs.
-     Use these instead of arbitrary text-[10px]/text-[11px] brackets. */
+     Use these instead of arbitrary text-[10px]/text-[11px] brackets.
+     `xs` and `sm` sit on the product scan ladder (52/22/18/15/12/10, see the
+     design language): 12px secondary copy and 15px body. They were 13 and
+     14px, which put every caption and body line off the ladder. */
   --text-caption: 0.625rem;
   --text-2xs: 0.6875rem;
-  --text-xs: 0.8125rem;
-  --text-sm: 0.875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.9375rem;
   --text-base: 0.9375rem;
   --text-lg: 1.0625rem;
   --text-xl: 1.375rem;

@@ -269,6 +269,45 @@ def test_malformed_composer_does_not_crash(tmp_path):
     assert "PHP" in names  # PHP language still added (file existed)
 
 
+@pytest.mark.parametrize(
+    "pkg",
+    [
+        {"main": "index.js", "dependencies": ["react"]},
+        {"main": "index.js", "devDependencies": "react"},
+    ],
+)
+def test_non_object_dependency_table_does_not_crash(tmp_path, pkg):
+    (tmp_path / "package.json").write_text(json.dumps(pkg), encoding="utf-8")
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "Node.js" in names
+    assert "React" not in names
+
+
+def test_non_string_versions_yield_no_version(tmp_path):
+    pkg = {"engines": {"node": 20}, "dependencies": {"typescript": 5, "react": None}}
+    (tmp_path / "package.json").write_text(json.dumps(pkg), encoding="utf-8")
+    versions = {i.name: i.version for i in detect_tech_stack(tmp_path)}
+    assert versions["Node.js"] is None
+    assert versions["TypeScript"] is None
+    assert versions["React"] is None
+
+
+def test_non_utf8_pyproject_does_not_crash(tmp_path):
+    (tmp_path / "pyproject.toml").write_bytes(
+        b'[project]\n# caf\xe9\ndependencies = ["fastapi", "pytest"]\n'
+    )
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "Python" in names
+    assert "FastAPI" in names
+    assert detect_build_commands(tmp_path)["test"] == "pytest"
+
+
+def test_non_utf8_go_mod_does_not_crash(tmp_path):
+    (tmp_path / "go.mod").write_bytes(b"module example.com/caf\xe9\n\ngo 1.22\n")
+    versions = {i.name: i.version for i in detect_tech_stack(tmp_path)}
+    assert versions["Go"] == "1.22"
+
+
 # ---------------------------------------------------------------------------
 # detect_tech_stack memoisation
 # ---------------------------------------------------------------------------

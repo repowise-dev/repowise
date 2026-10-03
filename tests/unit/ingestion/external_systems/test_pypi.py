@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from repowise.core.ingestion.external_systems import pypi
+from repowise.core.ingestion.external_systems import extract_external_systems, pypi
 
 
 def _write(tmp_path: Path, rel: str, content: str) -> Path:
@@ -82,3 +82,17 @@ def test_requirements_txt(tmp_path):
 def test_malformed_pyproject_returns_empty(tmp_path):
     p = _write(tmp_path, "pyproject.toml", "not [ valid toml")
     assert pypi.parse(p, tmp_path) == []
+
+
+def test_uv_workspace_members_not_external(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "app"\ndependencies = ["app-core", "httpx"]\n'
+        '[tool.uv.workspace]\nmembers = ["packages/*"]\n',
+        encoding="utf-8",
+    )
+    core = tmp_path / "packages" / "core"
+    core.mkdir(parents=True)
+    (core / "pyproject.toml").write_text(
+        '[project]\nname = "app_core"\ndependencies = ["app"]\n', encoding="utf-8"
+    )
+    assert {r.name for r in extract_external_systems(tmp_path)} == {"httpx"}

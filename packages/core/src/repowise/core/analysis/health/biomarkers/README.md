@@ -51,7 +51,8 @@ Organizational (cap −3.5):
 - `developer_congestion` — too many active authors competing on a file.
 - `knowledge_loss` — primary authors no longer active (de-rated to 0.4).
 - `hidden_coupling` — files that co-change in history without an explicit
-  import edge between them.
+  import edge between them. Advisory: filed here, deducts nothing (it showed no
+  defect signal on a held-out, pre-registered test).
 - `function_hotspot` — functions that are both structurally complex and
   frequently modified (per-function churn from the FULL-tier blame index).
 - `code_age_volatility` — dormant functions (median line age ≥ 1y) that

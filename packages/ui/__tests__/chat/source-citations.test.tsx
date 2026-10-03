@@ -41,7 +41,7 @@ describe("extractSources", () => {
         id: "d1",
         name: "get_dead_code",
         arguments: {},
-        result: { high_confidence: [{ file_path: "packages/web/unused.ts" }] },
+        result: { tiers: { high: { findings: [{ file_path: "packages/web/unused.ts" }] } } },
         status: "done",
       },
       {

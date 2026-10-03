@@ -9,12 +9,15 @@ from an empty recommendation population.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.coverage.freshness import coverage_freshness
+from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET, rank_tests
+from repowise.core.analysis.test_selection import expand_test_scopes
 from repowise.core.exclusion import is_excluded
 from repowise.core.persistence.models import Repository
 
@@ -41,21 +44,20 @@ def _freshness(
             "ingested_commit": ingested_commit,
             "indexed_commit": None,
         }
-    if not ingested_commit or not indexed_commit:
-        return {
-            "status": "unknown",
-            "reason": "coverage_or_index_commit_unavailable",
-            "ingested_commit": ingested_commit,
-            "indexed_commit": indexed_commit,
-        }
+    status = coverage_freshness(ingested_commit, indexed_commit)
     return {
-        "status": "current" if ingested_commit == indexed_commit else "stale",
-        "reason": None
-        if ingested_commit == indexed_commit
-        else "coverage_commit_differs_from_index",
+        "status": status,
+        "reason": _FRESHNESS_REASONS[status],
         "ingested_commit": ingested_commit,
         "indexed_commit": indexed_commit,
     }
+
+
+_FRESHNESS_REASONS: dict[str, str | None] = {
+    "current": None,
+    "stale": "coverage_commit_differs_from_index",
+    "unknown": "coverage_or_index_commit_unavailable",
+}
 
 
 def _recommendation_sort_key(row: dict[str, Any]) -> tuple[int, int, str, str]:
@@ -113,7 +115,7 @@ async def analyze_test_impact(
     Reads the coverage map and graph reachability for *changed_files*, then
     hands both to :func:`assemble_test_impact`.
     """
-    from repowise.core.analysis.test_reachability import tests_reaching_by_tier
+    from repowise.core.analysis.test_reachability import load_test_files, tests_reaching_by_tier
     from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
 
     changed = _changed_paths(changed_files, exclude_spec)
@@ -155,8 +157,12 @@ async def analyze_test_impact(
                 coverage_error = type(exc).__name__
 
     inference_error: str | None = None
+    test_files: set[str] = set()
     try:
-        reached_by_file = await tests_reaching_by_tier(session, repository_id, changed)
+        test_files = await load_test_files(session, repository_id)
+        reached_by_file = await tests_reaching_by_tier(
+            session, repository_id, changed, test_files=test_files
+        )
     except Exception as exc:
         reached_by_file = {}
         inference_error = type(exc).__name__
@@ -170,6 +176,7 @@ async def analyze_test_impact(
         measured,
         inferred,
         summary,
+        repository_test_files=test_files,
         indexed_commit=indexed_commit,
         indexed_commit_error=indexed_commit_error,
         coverage_error=coverage_error,
@@ -202,6 +209,7 @@ def assemble_test_impact(
     coverage_error: str | None = None,
     inference_error: str | None = None,
     indexed_commit_error: str | None = None,
+    repository_test_files: Collection[str] = (),
 ) -> dict[str, Any]:
     """Fold coverage and reachability evidence into the test-impact result.
 
@@ -210,7 +218,8 @@ def assemble_test_impact(
     when *coverage_summary* reports pairs. *inferred_by_file* maps a changed path
     to ``{"tests": [...], "via": tier}``, both keys required, with ``tests`` the
     uncapped list (``ReachedBy.all_tests``, not the display-capped ``tests``);
-    paths outside *changed_files* are ignored. *coverage_summary* carries
+    paths outside *changed_files* are ignored. That list is used as the walk
+    found it, except where a scope file expanded (below). *coverage_summary* carries
     ``pair_count``, ``test_count``, ``source_file_count``, ``ingested_at``,
     ``source_format`` and ``ingested_commit_sha``. The ``*_error`` arguments
     are the exception type names of a failed read; each marks the analysis degraded.
@@ -220,6 +229,14 @@ def assemble_test_impact(
     A deleted path has no head side to cover, so "no measured tests" there is a
     consequence of the deletion and not a coverage gap. Without it every path is
     treated as present, which is the historical behaviour.
+
+    *repository_test_files* are the repository's test files, which an inferred
+    ``conftest.py`` or test-package ``__init__.py`` expands into (the runnable
+    ones under its directory). Without them such a file drops out. An expanded
+    list is ranked nearest-first and capped at ``MAX_TESTS_PER_TARGET`` per
+    changed file, so ``files[*].inferred_tests`` and the recommendations it
+    feeds are bounded; ``inferred_tests_total`` and
+    ``inference.candidates_before_dedup`` keep the count before the cap.
     """
     changed = _changed_paths(changed_files, exclude_spec)
     repository = repository or repository_id
@@ -310,12 +327,17 @@ def assemble_test_impact(
     for path, reached in inferred_by_file.items():
         if path not in inferred_tests_by_file:
             continue
+        expanded = expand_test_scopes(reached["tests"], repository_test_files)
         kept_tests = [
             test_id
-            for test_id in reached["tests"]
+            for test_id in expanded
             if not (exclude_spec and is_excluded(test_id, exclude_spec))
         ]
         inferred_totals_by_file[path] = len(kept_tests)
+        if expanded != list(reached["tests"]):
+            # A root conftest stands for every test in the repository: rank the
+            # expansion nearest-first and keep the walk's own per-target cap.
+            kept_tests = rank_tests(path, kept_tests)[:MAX_TESTS_PER_TARGET]
         for test_id in kept_tests:
             inferred_tests_by_file[path].append(test_id)
             key = (repository_id, test_id)
@@ -418,7 +440,7 @@ def assemble_test_impact(
                 "measured_tests": measured_tests,
                 "measured_tests_total": len(measured_tests),
                 "inferred_tests": inferred_tests,
-                "inferred_tests_total": len(inferred_tests),
+                "inferred_tests_total": inferred_totals_by_file.get(path, len(inferred_tests)),
             }
         )
 

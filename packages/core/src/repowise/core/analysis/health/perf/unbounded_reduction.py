@@ -55,7 +55,7 @@ class _FileScan:
                 awaited=False,
                 is_attribute=self.dialect.callee_is_attribute(call),
                 io_names=self.io_names,
-                has_db_import="db" in self.io_names.values(),
+                has_db_import="db" in self.io_names.values() or self.dialect.shows_a_query(call),
             )
             == "db"
         )

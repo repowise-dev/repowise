@@ -75,6 +75,39 @@ def render_changed_files(file_diffs: list, *, verbose: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+def render_cascade_budget_warning(
+    budget: int, skipped_files: int, split: tuple[int, int] | None
+) -> None:
+    """Warn that the cascade budget left pages stale, and how each kind catches up.
+
+    ``split`` is ``(model_pages, structural_pages)``; ``None`` prints the
+    unsplit warning.
+    """
+    full = f"--cascade-budget {budget + skipped_files}"
+    console.print(
+        f"\n[yellow]⚠ Cascade budget of {budget} pages was reached. {skipped_files} "
+        "dependent files were skipped and their pages marked stale.[/yellow]"
+    )
+    if split is None:
+        console.print(f"[yellow]  Pass `{full}` to regenerate them all.[/yellow]\n")
+        return
+    model, structural = split
+    if structural:
+        console.print(
+            f"  {structural} structural pages (file / cycle) refresh on the next "
+            "[cyan]repowise update[/cyan], no model needed."
+        )
+    if model:
+        console.print(
+            f"  {model} model-written pages: run [cyan]repowise generate --stale[/cyan] "
+            f"to rewrite them (it estimates the cost first), or pass `{full}` "
+            "to regenerate everything in this run."
+        )
+    else:
+        console.print(f"  Pass `{full}` to regenerate them in this run.")
+    console.print()
+
+
 def make_generation_progress() -> Progress:
     """Build the live page-generation progress bar (owl spinner + running cost),
     matching the columns ``init`` uses for its generation phase.
@@ -283,6 +316,7 @@ def show_full_completion(
         build_completion_panel("repowise update complete", metrics, next_steps=next_steps)
     )
     console.print()
+    _slow_update_hint(elapsed)
 
 
 def show_index_only_completion(
@@ -338,6 +372,7 @@ def show_index_only_completion(
         )
     )
     console.print()
+    _slow_update_hint(elapsed)
 
 
 def show_workspace_completion(
@@ -374,6 +409,18 @@ def show_workspace_completion(
         build_completion_panel("repowise workspace update complete", metrics, next_steps=next_steps)
     )
     console.print()
+    _slow_update_hint(elapsed)
+
+
+#: An update slower than this is one a hosted index would have saved.
+_SLOW_UPDATE_SECONDS = 60
+
+
+def _slow_update_hint(elapsed: float) -> None:
+    if elapsed > _SLOW_UPDATE_SECONDS:
+        from repowise.cli.hints import maybe_hint
+
+        maybe_hint("slow_update")
 
 
 # ---------------------------------------------------------------------------

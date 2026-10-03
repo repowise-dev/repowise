@@ -14,6 +14,7 @@
     "./types": "./src/types.ts",
     "./blast-radius": "./src/blast-radius.ts",
     "./c4": "./src/c4.ts",
+    "./cache": "./src/cache.ts",
     "./chat": "./src/chat.ts",
     "./code-health": "./src/code-health.ts",
     "./costs": "./src/costs.ts",
@@ -34,9 +35,11 @@
     "./meta": "./src/meta.ts",
     "./modules": "./src/modules.ts",
     "./overview": "./src/overview.ts",
+    "./actions": "./src/actions.ts",
     "./pagination": "./src/pagination.ts",
     "./owners": "./src/owners.ts",
     "./pages": "./src/pages.ts",
+    "./platform": "./src/platform.ts",
     "./providers": "./src/providers.ts",
     "./refactoring": "./src/refactoring.ts",
     "./repos": "./src/repos.ts",
@@ -64,6 +67,6 @@
     "@types/react": "^19.0.0",
     "react": "^19.0.0",
     "typescript": "^5.6.0",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.11"
   }
 }

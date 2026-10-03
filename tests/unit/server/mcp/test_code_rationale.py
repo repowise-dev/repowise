@@ -296,6 +296,47 @@ def test_grep_comment_candidates_skips_gitignored_file(tmp_path):
     assert "stale/leak.py" not in cands
 
 
+def test_grep_comment_candidates_bounds_a_pasted_issue_body(tmp_path, monkeypatch):
+    """A long issue body must not become an unbounded alternation or output."""
+    from repowise.server.mcp_server import _code_rationale as cr
+
+    repo = _git_repo(tmp_path, _CALLER_CAP_FILES)
+    seen: list[list[str]] = []
+    real_run = subprocess.run
+
+    def spy(args, **kwargs):
+        seen.append(list(args))
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(cr.subprocess, "run", spy)
+    filler = " ".join(f"longnoun{chr(97 + i % 26)}{chr(97 + i // 26)}" for i in range(60))
+    numbers = " ".join(str(n) for n in range(100, 120))
+    question = f"why is the caller list capped at 50 {filler} {numbers}"
+    cands = grep_comment_candidates(str(repo), question)
+
+    args = seen[0]
+    pattern = args[args.index("-E") + 1]
+    # Longest nouns are kept, so the 10-char filler crowds out "caller".
+    assert pattern.count("longnoun") == 2 * cr._MAX_GREP_NOUNS
+    assert "caller" not in pattern
+    # The first numbers in question order: 50, 100, 101, 102.
+    assert "102" in pattern and "103" not in pattern
+    # Per-file counts, never one output line per matched source line.
+    assert "-c" in args and "-n" not in args
+    assert cands == []
+
+
+def test_grep_comment_candidates_ranks_by_per_file_count(tmp_path):
+    repo = _git_repo(
+        tmp_path,
+        {
+            "one.py": "# caller cap 50\n",
+            "three.py": "# caller cap 50\n# caller cap 50 again\n# caller 50 here\n",
+        },
+    )
+    assert grep_comment_candidates(str(repo), "caller capped at 50") == ["three.py", "one.py"]
+
+
 def test_grep_comment_candidates_needs_a_noun(tmp_path):
     # Numbers but no content noun (all stopwords) -> nothing to anchor on.
     repo = _git_repo(tmp_path, _CALLER_CAP_FILES)
