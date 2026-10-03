@@ -7,9 +7,18 @@ SPEC = LanguageSpec(
     display_name="VB.NET",
     import_support="full",
     # VB.NET tests follow the MSTest/xUnit conventions (FooTests/FooTest),
-    # mostly as sibling files in the same project.
+    # mostly as sibling files in the same project. Test-project directory
+    # suffixes are the .NET set shared with csharp (#2662).
     test_camel_suffixes=("Test", "Tests", "Spec", "Specs"),
-    test_dir_suffixes=(".Tests", ".Specs"),
+    test_dir_suffixes=(
+        ".Tests",
+        ".Specs",
+        ".UnitTests",
+        ".IntegrationTests",
+        ".FunctionalTests",
+        ".FuzzTests",
+        ".UnitTest",
+    ),
     extensions=frozenset({".vb"}),
     grammar_package="tree_sitter_vb_dotnet",
     scm_file="vbnet.scm",

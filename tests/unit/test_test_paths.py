@@ -204,6 +204,24 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("util/env_posix_test_helper.h", None, "test"),
     ("absl/strings/str_cat.h", None, ""),
     ("crates/searcher/src/searcher/util.rs", None, ""),
+    # #2662: Jest manual mocks live in a root `__mocks__/` beside node_modules or
+    # beside the mocked module, never in a test tree, so the dunder dir counts
+    # wherever it sits, like `__fixtures__`. Bare `mocks` stays tree-gated: this
+    # repo's analysis/health/mocks/ and ktor-client-mock are product code.
+    ("__mocks__/axios.js", None, "support"),
+    ("src/__mocks__/api.ts", None, "support"),
+    ("src/__mocks__/api.test.ts", None, "test"),  # a test-shaped name still wins
+    ("src/mocks/handlers.ts", None, ""),
+    ("packages/core/src/repowise/core/analysis/health/mocks/lexicon.py", None, ""),
+    ("ktor-client-mock/common/src/io/ktor/client/engine/mock/MockEngine.kt", None, ""),
+    # #2662: .NET test projects are also named Foo.UnitTests, Foo.IntegrationTests
+    # and Foo.FuzzTests (PowerToys). A shipped Foo.Testing library is not one, and a
+    # scaffolding dir inside a test project is support, as under tests/.
+    ("Settings.UI.UnitTests/ViewModelTests/General.cs", None, "test"),
+    ("Hosts.FuzzTests/Fuzz.cs", None, "test"),
+    ("Foo.IntegrationTests/Sql/Db.cs", None, "test"),
+    ("Foo.IntegrationTests/Helpers/Db.cs", None, "support"),
+    ("src/Polly.Testing/ResiliencePipelineExtensions.cs", None, ""),
 )
 
 

@@ -122,7 +122,7 @@ _TEST_EXACT_STEMS: frozenset[str] = frozenset({"test", "tests"})
 # not. A test-shaped filename still wins over them, so
 # ``tests/helpers/test_builders.py`` stays a test.
 _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
-    {"fixtures", "factories", "support", "helpers", "mocks", "__mocks__"}
+    {"fixtures", "factories", "support", "helpers", "mocks"}
 )
 
 # Scaffolding directories whose names mean test material *wherever* they sit,
@@ -131,15 +131,18 @@ _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
 # product directories (a sports app's fixtures list), and on this repo plus its
 # two siblings 230 of 231 ``fixtures/`` files already sit inside a test tree, so
 # the tree requirement costs nothing and the widening would buy nothing.
-# ``__fixtures__`` is the same convention with the JS dunder wrapper that
-# ``__tests__``/``__mocks__`` use, and carries no other meaning. ``testdata`` is
-# the Go convention the toolchain itself reserves - ``go build`` ignores any
-# directory of that name - which is why it needs no Go file to corroborate it:
-# the golden files inside are JSON and YAML, and asking the file's own language
-# would never fire on them. ``__snapshots__`` is where Jest and Vitest write the
-# ``.snap`` output a snapshot test compares against; the ``.test.`` infix used to
-# catch those files by accident, and stopped once filename rules became source
-# rules.
+# ``__fixtures__`` and ``__mocks__`` are the same convention with the JS dunder
+# wrapper that ``__tests__`` uses, and carry no other meaning. Jest reads manual
+# mocks from a root ``__mocks__/`` beside ``node_modules`` and from a
+# ``__mocks__/`` beside the module it replaces, so neither sits in a test tree
+# (#2662); bare ``mocks`` stays above, because it names product code too.
+# ``testdata`` is the Go convention the toolchain itself reserves - ``go build``
+# ignores any directory of that name - which is why it needs no Go file to
+# corroborate it: the golden files inside are JSON and YAML, and asking the
+# file's own language would never fire on them. ``__snapshots__`` is where Jest
+# and Vitest write the ``.snap`` output a snapshot test compares against; the
+# ``.test.`` infix used to catch those files by accident, and stopped once
+# filename rules became source rules.
 #
 # Support rather than test, deliberately: golden data is what a test reads, not
 # a test. So the union counts it (#1103's reporter asked for exactly that) while
@@ -147,7 +150,7 @@ _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
 # Matched on the segment's words run together too, so ``test-data/`` and
 # ``test_data/`` are the same golden data rather than a test tree.
 _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
-    {"__fixtures__", "__snapshots__", "testdata"}
+    {"__fixtures__", "__mocks__", "__snapshots__", "testdata"}
 )
 
 
