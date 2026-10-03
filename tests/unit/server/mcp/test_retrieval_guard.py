@@ -2,7 +2,7 @@
 
 Indexes ``tests/fixtures/sample_repo`` for real (deterministic generation, the
 SQL tables, full-text search and a keyless vector store, no API key), then asks
-``search_codebase`` and ``get_answer`` every question in
+``search_codebase`` and ``get_answer`` the corpus questions in
 ``tests/fixtures/mcp/retrieval_guard_corpus.json`` through the real tool
 middleware and scores the files each response serves against hand-read gold.
 
@@ -11,25 +11,35 @@ from about 19 to about 3, and one sent plain English words that equal exported
 method names to symbol search. Neither failed a test, because no test measured
 what a response actually serves.
 
+Arms: ``search`` (default limit), ``search_limit10``, ``answer`` (no provider,
+the degraded retrieval-only shape) and ``answer_synth`` (a stub provider whose
+fixed answer cites the first file in its prompt, so the synthesised projection
+runs). The stub answer is fixed, so that arm measures projection and response
+shape, not answer quality.
+
 Metrics, per arm, each a mean over questions:
 
 - ``cov@1`` / ``cov@5``: share of gold in the first k served files, divided by
   ``min(k, len(gold))`` so a perfect ranking scores 1.0 at every depth.
 - ``cov_all``: share of gold anywhere in the response.
 - ``precision``: gold served / files served (0 when nothing is served).
-- ``files`` and ``tokens``: medians of files served and response tokens.
+- ``tokens``: median response tokens. ``files`` (median files served) is
+  informational and never gated.
 
 Coverage is never read without the precision beside it: serving every file in
 the repository would max out coverage and is not an improvement.
 
 Fails when any coverage depth or precision drops by more than its tolerance
 against ``tests/fixtures/mcp/retrieval_guard_baseline.json``, or median tokens
-grow by more than ``TOKEN_TOLERANCE``. Improvements pass with a note asking for
-a baseline refresh. To refresh after an intentional ranking change::
+grow by more than ``TOKEN_TOLERANCE``. Improvements pass, but they are only
+locked in once the baseline is refreshed and committed; the note saying so is
+printed with ``-s`` and written to the CI step summary. To refresh::
 
     REPOWISE_UPDATE_RETRIEVAL_BASELINE=1 uv run pytest tests/unit/server/mcp/test_retrieval_guard.py -s
 
-and commit the baseline with the change, quoting the before/after table.
+and commit the baseline with the change, quoting the before/after table. For
+per-question detail, set ``REPOWISE_RETRIEVAL_GUARD_DUMP=<file>`` to write each
+question's served files there (never committed) and diff two runs.
 """
 
 from __future__ import annotations
@@ -48,32 +58,36 @@ SAMPLE_REPO = FIXTURES / "sample_repo"
 CORPUS_PATH = FIXTURES / "mcp" / "retrieval_guard_corpus.json"
 BASELINE_PATH = FIXTURES / "mcp" / "retrieval_guard_baseline.json"
 UPDATE_ENV = "REPOWISE_UPDATE_RETRIEVAL_BASELINE"
+DUMP_ENV = "REPOWISE_RETRIEVAL_GUARD_DUMP"
 
-# Absolute drops on a 0-1 scale. 0.03 lets one single-gold question move
-# (1/48 = 0.021) and fails on two.
+# Absolute drops on a 0-1 scale. 0.03 lets one single-gold question of the
+# current corpus move and fails on two.
 COVERAGE_TOLERANCE = 0.03
 PRECISION_TOLERANCE = 0.03
 # Relative growth of the median response.
-TOKEN_TOLERANCE = 0.15
+TOKEN_TOLERANCE = 0.10
 
 COVERAGE_KEYS = ("cov@1", "cov@5", "cov_all")
 ARMS = {
     "search": ("search_codebase", {}),
     "search_limit10": ("search_codebase", {"limit": 10}),
     "answer": ("get_answer", {}),
+    "answer_synth": ("get_answer", {}),
 }
 
+# Everything the budgeter, ``_meta``, projection and answer config read from
+# the environment. A developer's MAX_MCP_OUTPUT_TOKENS=2000 or a REPOWISE_*
+# flag would otherwise change the measured shape. Prefixes, so a new
+# REPOWISE_* switch is pinned without editing this list.
+_ENV_PREFIXES = ("REPOWISE_", "MAX_MCP_OUTPUT_TOKENS")
+
 # Top-level keys read first, in this order, so served order follows what an
-# agent reads first. Every other key is still walked afterwards.
-_PRIORITY_KEYS = (
-    "citations",
-    "results",
-    "best_guesses",
-    "candidate_files",
-    "candidates",
-    "fallback_targets",
-    "retrieval",
-)
+# agent reads first. Every other key is still walked afterwards. A degraded
+# answer's citations are an unranked fallback; its best_guesses are score
+# ranked and the hint points the agent at them.
+_SEARCH_KEYS = ("results", "candidates", "fallback_targets", "retrieval")
+_ANSWER_ORDER = ("citations", "candidate_files", "best_guesses")
+_DEGRADED_ANSWER_ORDER = ("best_guesses", "candidate_files", "citations")
 _LINE_SUFFIX = re.compile(r":\d+(?:-\d+)?$")
 
 
@@ -119,7 +133,8 @@ def served_files(response: dict, known: set[str]) -> list[str]:
             for value in node.values():
                 walk(value)
 
-    keys = [k for k in _PRIORITY_KEYS if k in response]
+    first = _DEGRADED_ANSWER_ORDER if response.get("degraded") else _ANSWER_ORDER
+    keys = [k for k in (*first, *_SEARCH_KEYS) if k in response]
     keys += [k for k in response if k not in keys and k != "_meta"]
     for key in keys:
         walk(response[key])
@@ -274,7 +289,37 @@ def test_served_files_reads_every_path_bearing_field() -> None:
         "candidate_files": ["e.py"],
         "_meta": {"scope_hint": "f.py", "targets": ["f.py"]},
     }
-    assert served_files(response, known) == ["a.py", "c.py", "b.py", "e.py", "d.py"]
+    assert served_files(response, known) == ["a.py", "e.py", "b.py", "c.py", "d.py"]
+    degraded = {**response, "degraded": "no-llm-provider"}
+    assert served_files(degraded, known) == ["b.py", "e.py", "a.py", "c.py", "d.py"]
+
+
+def _pin_environment(monkeypatch) -> None:
+    for name in list(os.environ):
+        if name.startswith(_ENV_PREFIXES) and name not in (UPDATE_ENV, DUMP_ENV):
+            monkeypatch.delenv(name)
+    # The cache keys on the question alone, so the synthesised arm would read
+    # the degraded arm's row for the same question.
+    monkeypatch.setenv("REPOWISE_ANSWER_DISABLE_CACHE", "1")
+
+
+class _StubProvider:
+    """A confident fixed answer citing the first indexed file in the prompt."""
+
+    provider_name = "mock"
+    model_name = "mock-1"
+
+    def __init__(self, known: set[str]) -> None:
+        self._known = known
+
+    async def generate(self, *, user_prompt: str, **_kwargs):
+        from types import SimpleNamespace
+
+        found = [(user_prompt.find(p), -len(p), p) for p in self._known if p in user_prompt]
+        top = min(found)[2] if found else "the retrieved code"
+        return SimpleNamespace(
+            content=f"This is implemented in `{top}`. `{top}` defines the code that handles it."
+        )
 
 
 async def test_retrieval_does_not_regress(tmp_path, monkeypatch) -> None:
@@ -287,13 +332,15 @@ async def test_retrieval_does_not_regress(tmp_path, monkeypatch) -> None:
     from repowise.server.mcp_server._budget.budgeter import estimate_response_tokens
     from repowise.server.mcp_server.tool_answer import answer as answer_mod
 
+    _pin_environment(monkeypatch)
     started = time.perf_counter()
     engine, factory, fts, vector_store, repo, known = await _index_sample_repo(tmp_path)
     indexed = time.perf_counter()
 
-    # No provider may resolve, whatever keys the environment holds: the guard
-    # measures retrieval, and CI has no keys anyway.
-    monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", lambda _p: None)
+    # The provider is always chosen here, whatever keys the environment holds.
+    stub = _StubProvider(known)
+    provider: dict[str, object] = {"value": None}
+    monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", lambda _p: provider["value"])
     ready = asyncio.Event()
     ready.set()
     for name, value in {
@@ -316,6 +363,7 @@ async def test_retrieval_does_not_regress(tmp_path, monkeypatch) -> None:
         for q in questions:
             for arm, (tool, kwargs) in ARMS.items():
                 first = "query" if tool == "search_codebase" else "question"
+                provider["value"] = stub if arm == "answer_synth" else None
                 response = await tools[tool](**{first: q["query"]}, **kwargs)
                 rows[arm].append(
                     {
@@ -330,9 +378,14 @@ async def test_retrieval_does_not_regress(tmp_path, monkeypatch) -> None:
         await engine.dispose()
 
     metrics = {arm: score(arm_rows) for arm, arm_rows in rows.items()}
-    per_question = {
-        arm: {r["id"]: r["served"][:5] for r in arm_rows} for arm, arm_rows in rows.items()
-    }
+    if dump := os.environ.get(DUMP_ENV):
+        Path(dump).write_text(
+            json.dumps(
+                {arm: {r["id"]: r["served"] for r in arm_rows} for arm, arm_rows in rows.items()},
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
     baseline = (
         json.loads(BASELINE_PATH.read_text(encoding="utf-8")) if BASELINE_PATH.exists() else None
     )
@@ -341,39 +394,39 @@ async def test_retrieval_does_not_regress(tmp_path, monkeypatch) -> None:
         f"retrieval guard: {len(questions)} questions, index {indexed - started:.1f}s, "
         f"queries {time.perf_counter() - indexed:.1f}s\n{table}"
     )
-    print("\n" + report)
-    if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
-        with open(summary, "a", encoding="utf-8") as fh:
-            fh.write(f"### Retrieval guard\n\n```\n{report}\n```\n")
+
+    def emit(text: str) -> None:
+        print("\n" + text)
+        if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(summary, "a", encoding="utf-8") as fh:
+                fh.write(f"```\n{text}\n```\n")
+
+    emit(report)
 
     if os.environ.get(UPDATE_ENV):
         BASELINE_PATH.write_text(
-            json.dumps(
-                {"metrics": metrics, "top5_served": per_question}, indent=2, sort_keys=True
-            )
-            + "\n",
-            encoding="utf-8",
+            json.dumps({"metrics": metrics}, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         return
 
     assert baseline is not None, f"no baseline; run with {UPDATE_ENV}=1 to create it"
     regressions, improvements = compare(metrics, baseline["metrics"])
     if regressions:
-        moved = [
-            f"  {arm} {qid}: {was} -> {per_question[arm].get(qid)}"
-            for arm, by_id in baseline.get("top5_served", {}).items()
-            for qid, was in by_id.items()
-            if arm in per_question and per_question[arm].get(qid) != was
+        misses = [
+            f"  {arm} {r['id']}: gold {r['gold']} served {r['served'][:5]}"
+            for arm, arm_rows in rows.items()
+            for r in arm_rows
+            if not set(r["gold"]) <= set(r["served"][:5])
         ]
         pytest.fail(
             "retrieval regressed beyond tolerance:\n  "
             + "\n  ".join(regressions)
-            + f"\n\n{table}\n\nquestions whose top 5 moved:\n"
-            + "\n".join(moved[:40])
+            + f"\n\n{table}\n\nquestions with gold outside the top 5 now:\n"
+            + "\n".join(misses[:40])
             + f"\n\nIf intended, refresh with {UPDATE_ENV}=1 (see module docstring)."
         )
     if improvements:
-        print(
-            "retrieval improved; refresh the baseline so the gain is locked in:\n  "
-            + "\n  ".join(improvements)
+        emit(
+            "retrieval improved; commit a refreshed baseline "
+            f"({UPDATE_ENV}=1) so the gain is locked in:\n  " + "\n  ".join(improvements)
         )
