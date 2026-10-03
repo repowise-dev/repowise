@@ -8,12 +8,10 @@ import {
 /**
  * The reader lens over a deterministic page.
  *
- * A file page's `## In the code` and `## Questions this page answers` are
- * written for the index, not for a reader: one is a bag of the file's own
- * tokens, the other is question-shaped text so a query has something to match.
- * They cannot be dropped upstream — `content` is a single string that FTS
- * indexes, the vector store embeds and `get_context` returns verbatim — so the
- * lens is where they stop being a reader's problem.
+ * A file page's `## Questions this page answers` is written for the index,
+ * not for a reader: question-shaped text so a query has something to match.
+ * It lives in `content`, which FTS indexes and `get_context` returns, so the
+ * lens is where it stops being a reader's problem.
  *
  * What the rendered page actually emits is pinned on the Python side, against
  * the template rather than against a string typed here.
@@ -35,10 +33,6 @@ const PAGE = [
   "## Questions this page answers",
   "",
   "- What does `src/walk.py` export?",
-  "",
-  "## In the code",
-  "",
-  "prune_dirs max_depth node_modules",
 ].join("\n");
 
 describe("filterMarkdownByPersona", () => {
@@ -46,8 +40,7 @@ describe("filterMarkdownByPersona", () => {
     const out = filterMarkdownByPersona(PAGE, "contributor");
 
     expect(out).not.toContain("## Questions this page answers");
-    expect(out).not.toContain("## In the code");
-    expect(out).not.toContain("prune_dirs max_depth node_modules");
+    expect(out).not.toContain("What does `src/walk.py` export?");
   });
 
   it("keeps the reference material the default reader came for", () => {
@@ -82,5 +75,25 @@ describe("filterMarkdownByPersona", () => {
 
   it("still reports no effect on a page with nothing to hide", () => {
     expect(personaFilteringApplies("# Title\n\n## Overview\n\nProse.\n")).toBe(false);
+  });
+});
+
+describe("whole-heading matching", () => {
+  it("keeps a step-named section that starts like a hidden heading", () => {
+    const page = [
+      "# Ingestion",
+      "",
+      "## Source files become symbols",
+      "",
+      "Parsing turns bytes into records.",
+      "",
+      "## Source",
+      "",
+      "```py\nx = 1\n```",
+    ].join("\n");
+    const out = filterMarkdownByPersona(page, "overview");
+
+    expect(out).toContain("## Source files become symbols");
+    expect(out).not.toContain("## Source\n");
   });
 });

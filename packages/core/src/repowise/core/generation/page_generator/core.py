@@ -25,6 +25,7 @@ import structlog
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedResponse
 
+from ..agent_digest import rejoin_questions
 from ..context.evidence import (
     EvidenceItem,
     EvidenceSelection,
@@ -130,6 +131,7 @@ class PriorPage:
     source_hash: str
     model_name: str
     content: str
+    digest: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
@@ -393,7 +395,9 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
                     target_path=target_path,
                 )
                 return GeneratedResponse(
-                    content=prior.content,
+                    # The stored body lost its questions to the digest; the
+                    # response it was split from carried them.
+                    content=rejoin_questions(prior.content, prior.digest),
                     input_tokens=0,
                     output_tokens=0,
                     cached_tokens=0,

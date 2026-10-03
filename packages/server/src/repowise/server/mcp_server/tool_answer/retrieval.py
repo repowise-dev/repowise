@@ -240,8 +240,14 @@ async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
         return len(top)
     try:
         async with get_session(ctx.session_factory) as session:
-            res = await session.execute(select(Page.id, Page.content).where(Page.id.in_(page_ids)))
-            content_by_id = {row[0]: (row[1] or "") for row in res.all()}
+            res = await session.execute(
+                select(Page.id, Page.content, Page.digest).where(Page.id.in_(page_ids))
+            )
+            # The digest carries what the page answers in an agent's words.
+            content_by_id = {
+                row[0]: "\n\n".join(part for part in (row[1], row[2]) if part)
+                for row in res.all()
+            }
     except Exception:
         # Never fail the answer over an excerpt fetch, but never hide it either.
         _log.warning(

@@ -930,7 +930,6 @@ class StructuralRenderMixin:
         ctx: Any,
         target_path: str,
         title: str,
-        module_git_summary: dict | None,
     ) -> GeneratedPage:
         return self._stub_page(
             page_type="module_page",
@@ -938,7 +937,6 @@ class StructuralRenderMixin:
             title=title,
             template="module_page.j2",
             ctx=ctx,
-            module_git_summary=module_git_summary,
         )
 
     def _stub_repo_overview(

@@ -88,47 +88,11 @@ Use these to explain *why* the subsystem is shaped the way it is. Do not invent 
 {% endfor %}
 {% endif %}
 
-{# Health and history signals a reader cannot get from the code alone. Only
-   surfaced when git metadata supplied them; all zero/empty degrades to nothing
-   rather than a fabricated number. This is repowise's differentiation — weave
-   the true ones into the narrative, do not tabulate them mechanically. #}
-{%- set _health = [] -%}
-{%- if ctx.hotspot_count > 0 -%}{%- set _ = _health.append(ctx.hotspot_count ~ " file" ~ ("s" if ctx.hotspot_count != 1 else "") ~ " flagged as change hotspots") -%}{%- endif -%}
-{%- if ctx.single_owner_files > 0 -%}{%- set _ = _health.append(ctx.single_owner_files ~ " file" ~ ("s" if ctx.single_owner_files != 1 else "") ~ " with a bus factor of one (single-maintainer risk)") -%}{%- endif -%}
-{%- if ctx.bugfix_total > 0 -%}{%- set _ = _health.append(ctx.bugfix_total ~ " bug-fix commit" ~ ("s" if ctx.bugfix_total != 1 else "") ~ " in recent history" ~ (", most in `" ~ ctx.most_fixed_file.path ~ "`" if ctx.most_fixed_file else "")) -%}{%- endif -%}
-{%- if ctx.stable_count > 0 -%}{%- set _ = _health.append(ctx.stable_count ~ " file" ~ ("s" if ctx.stable_count != 1 else "") ~ " that have been stable") -%}{%- endif -%}
-{% if _health %}
-### Subsystem health (from git history — state the notable ones plainly)
-{% for h in _health %}
-- {{ h }}
-{% endfor %}
-{% endif %}
-
-{% if ctx.coupled_modules %}
-### Change-coupled with (co-changes in history, not import edges)
-These modules change together with this one in history and nothing in the dependency graph accounts for it — hidden coupling worth naming.
-{% for cm in ctx.coupled_modules %}
-- `{{ cm.path }}` ({{ cm.count }} co-changing file{{ "s" if cm.count != 1 else "" }})
-{% endfor %}
-{% endif %}
-
-{% if ctx.top_owners %}
-### Ownership
-{% for o in ctx.top_owners %}
-- **{{ o.name }}** — primary maintainer of {{ o.file_count }} file(s)
-{% endfor %}
-{% endif %}
-
 {% if ctx.key_classes %}
 ### Class hierarchy
 {% for h in ctx.key_classes %}
 - `{{ h.child }}` {{ h.kind }} `{{ h.parent }}`{% if h.parent_file is defined and h.parent_file %} (in `{{ h.parent_file }}`){% endif %}
 {% endfor %}
-{% endif %}
-
-{% if module_git_summary is defined and module_git_summary %}
-### Recent activity
-Most active file: `{{ module_git_summary.most_active_file }}` ({{ module_git_summary.most_active_commits_90d }} commits in 90 days).
 {% endif %}
 
 {% if ctx.declared_files %}
@@ -150,7 +114,6 @@ Write the page now from the material above. Requirements:
 - Synthesise across the whole file set. Draw on the material as a body of evidence; a file-by-file walkthrough is a failure even when accurate. Draw on many files, not one.
 - Put any enumerable list (key files, dependencies, decisions) in a markdown table where it reads better than prose.
 - Name the subsystem's key files and the neighbouring modules it consumes or serves in backticks exactly as written above so they resolve to wiki links. Mention a neighbour only where it explains this subsystem's role — no links for density, no reciprocal mentions for symmetry.
-- Weave the true health and history signals (hotspots, bus factor, change coupling, fix history) into the narrative where they explain the subsystem's character. Skip any that are absent; never invent one.
 - State behaviour only when an excerpt shows it; otherwise say what the file declares.
 - A commit subject is history, not current behaviour: if you cite one, label it (historical, <date>).
 - Third person throughout. No concluding or summary section.

@@ -709,6 +709,8 @@ async def _resolve_one_target(
                 docs["summary"] = page.summary or ""
                 if want_full_doc:
                     docs["content_md"] = page.content
+                    if page.digest:
+                        docs["digest_md"] = page.digest
                 if page.human_notes:
                     docs["human_notes"] = page.human_notes
             # Symbols in this file
@@ -818,6 +820,10 @@ async def _resolve_one_target(
                 docs["section"] = page.section_number
             if want_full_doc:
                 docs["content_md"] = page.content
+                # Questions, identifiers, public API and git signals: kept off
+                # the reader's page body, served to agents beside it.
+                if page.digest:
+                    docs["digest_md"] = page.digest
             # Non-file children only; file children are in "files" below.
             res = await session.execute(
                 select(Page)

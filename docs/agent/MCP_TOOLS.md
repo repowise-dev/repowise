@@ -170,7 +170,7 @@ A triage card for files, modules or symbols: summary, symbols with signatures an
 
 A file's compact symbol list holds its top 15 symbols: types (classes, interfaces, structs, traits, enums, type aliases, impls, modules) first, then functions and methods, then the rest, each group by centrality. `symbols_truncated` gives the total, and `include=["symbols"]` lists them all. When the response budget trims the list further, it keeps symbols by kind and name match, not centrality. A row without `symbol_id` is `path::name`; methods and overload variants carry theirs, so pass a row's id to `get_symbol` when it has one.
 
-`skeleton` renders a file with bodies elided: every signature, the imports, and the bodies of its most central symbols, with line ranges on every elision. `doc_drift` lists the documents that name the file and whether they carry drift. An empty `callers` or `callees` list comes with a `*_basis` saying how much of that language's calls the graph resolved; read it before concluding nothing calls a symbol.
+`full_doc` returns the page as `content_md`, plus `digest_md` on pages that carry an agent digest: the questions the page answers, its concept index, public API and git signals. Both are dropped first when the response is over budget. `skeleton` renders a file with bodies elided: every signature, the imports, and the bodies of its most central symbols, with line ranges on every elision. `doc_drift` lists the documents that name the file and whether they carry drift. An empty `callers` or `callees` list comes with a `*_basis` saying how much of that language's calls the graph resolved; read it before concluding nothing calls a symbol.
 
 ```
 get_context(targets=["src/auth/middleware.ts", "src/api/routes.ts"], include=["callers"])

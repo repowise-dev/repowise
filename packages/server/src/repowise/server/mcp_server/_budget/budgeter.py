@@ -348,7 +348,12 @@ def _with_budget_reason(prior_reason: Any) -> str:
 # Heavy optional fields we can strip from a target's docs block without losing
 # its identity. Ordering matters: earlier entries are dropped first because they
 # carry the most bytes per unit of navigational value.
-HEAVY_DOC_FIELDS: tuple[str, ...] = ("content_md", "documentation", "file_summary")
+HEAVY_DOC_FIELDS: tuple[str, ...] = (
+    "content_md",
+    "digest_md",
+    "documentation",
+    "file_summary",
+)
 
 
 def symbol_priority(sym: dict[str, Any], query_terms: set[str]) -> tuple[int, int, int]:

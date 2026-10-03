@@ -201,6 +201,11 @@ class Page(Base):
     # Surfaced by get_context as the default narrative; content is gated
     # behind include=["full_doc"] to keep MCP responses small.
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Agent digest (markdown): what a page carries for search and agents but
+    # not for a reader, e.g. the questions it answers, its identifiers, public
+    # API and git signals. Indexed and served by MCP beside ``content``; the
+    # reader shows it only on request. See ``generation/agent_digest.py``.
+    digest: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     target_path: Mapped[str] = mapped_column(Text, nullable=False)
     source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)

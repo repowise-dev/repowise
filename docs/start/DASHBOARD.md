@@ -61,7 +61,11 @@ The generated wiki: a page tree on the left, the rendered page in the middle
 with mermaid diagrams, code blocks that link into the file views, a confidence
 badge, a freshness indicator, backlinks, and a regenerate action for a single
 page. A command palette (`⌘K` / `Ctrl+K`) jumps between pages. Reader personas
-re-filter prose for the audience you pick. You can attach human notes to a page,
+re-filter prose for the audience you pick. Module pages keep the material
+written for search and agents (the questions a page answers, its identifiers,
+public API and git signals) out of the body; the **Reference** tab above the
+page shows it, and a small History card beside the page summarises owners,
+hotspots and fix history. You can attach human notes to a page,
 and those notes survive regeneration.
 
 The sidebar auto-collapses to icons here so the page gets the width, and

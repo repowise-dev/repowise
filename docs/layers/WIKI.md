@@ -262,7 +262,10 @@ Changing the language later does not retranslate existing pages. Re-run
   SQLite full-text and vector results through Reciprocal Rank Fusion, biased by
   PageRank, then expands one to two hops along the imports and projected-calls
   graph for flow-shaped questions. Full-text works with no embedder; semantic
-  search needs one configured.
+  search needs one configured. A module page's agent digest (the questions it
+  answers, its concept index, public API and git signals) is stored beside the
+  page body, indexed with it, and returned by `get_context` as `digest_md`
+  with `include=["full_doc"]`.
 - **CLI**: `repowise ask`, `repowise search`, `repowise context`.
 - **Dashboard**: `repowise serve`, then the Docs tab.
 - **Files**: `repowise export --format markdown|html|json`, written to

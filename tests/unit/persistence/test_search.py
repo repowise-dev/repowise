@@ -157,7 +157,7 @@ async def _indexed_ids(fts) -> set[str]:
 async def test_index_many_writes_the_same_rows_as_indexing_one_at_a_time(async_engine):
     """The batch path is the single-page path, so the two must not diverge."""
     pages = [
-        (f"p{i}", f"Title {i}", f"content about widgets number {i}", f"sum {i}", f"a/b{i}.py")
+        (f"p{i}", f"Title {i}", f"content about widgets number {i}", f"sum {i}", f"a/b{i}.py", "")
         for i in range(20)
     ]
 
@@ -183,7 +183,7 @@ async def test_index_many_spans_more_ids_than_one_statement_can_bind(fts):
     A wiki is thousands of pages, so the first real corpus would have been the
     first test of this path.
     """
-    pages = [(f"p{i}", f"Title {i}", "a page about chunking", "", f"{i}.py") for i in range(1200)]
+    pages = [(f"p{i}", f"Title {i}", "a page about chunking", "", f"{i}.py", "") for i in range(1200)]
 
     await fts.index_many(pages)
     assert len(await _indexed_ids(fts)) == 1200
@@ -197,8 +197,8 @@ async def test_a_page_id_repeated_in_one_batch_keeps_its_last_entry(fts):
     """Every id is deleted before any is inserted, so a duplicate would double."""
     await fts.index_many(
         [
-            ("p1", "First", "a page about alpacas", "", "a.py"),
-            ("p1", "Second", "a page about zebras", "", "a.py"),
+            ("p1", "First", "a page about alpacas", "", "a.py", ""),
+            ("p1", "Second", "a page about zebras", "", "a.py", ""),
         ]
     )
 
@@ -246,6 +246,7 @@ async def test_path_only_match_outranks_content_only_match(fts):
                 "An unrelated module about parsing and graphs. " * 3,
                 "Filler.",
                 f"packages/core/other/mod{i}.py",
+                "",
             )
             for i in range(10)
         ]
@@ -334,6 +335,7 @@ async def test_index_pages_scans_the_index_once_per_id_chunk(async_engine, fts):
             content=f"Module {i} documents widget number {i}.",
             summary=f"summary {i}",
             target_path=f"m{i}.py",
+            digest="",
         )
         for i in range(1100)
     ]

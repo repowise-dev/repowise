@@ -142,7 +142,7 @@ async def _all_pages_for_reconciliation(session: object, repo_id: str) -> list:
     was the live index.
 
     Four columns rather than whole rows: the id to match against the stores,
-    the content for the information floor, metadata_json for the stub
+    the content and digest for the information floor, metadata_json for the stub
     predicate, and target_path to tell whether the file is excluded. Nothing downstream reads any other field, and hydrating full
     ORM objects for every page only to discard them is what made a cap look
     necessary in the first place.
@@ -152,7 +152,7 @@ async def _all_pages_for_reconciliation(session: object, repo_id: str) -> list:
     from repowise.core.persistence.models import Page
 
     result = await session.execute(  # type: ignore[attr-defined]
-        select(Page.id, Page.content, Page.metadata_json, Page.target_path).where(
+        select(Page.id, Page.content, Page.digest, Page.metadata_json, Page.target_path).where(
             Page.repository_id == repo_id
         )
     )
@@ -511,7 +511,7 @@ def _run_repo_checks(
                     indexable_ids = {
                         p.id
                         for p in pages
-                        if meets_information_floor(p.content or "")
+                        if meets_information_floor(p.content or "", digest=p.digest or "")
                         and not is_excluded(
                             (p.target_path or "").split("::", 1)[0], exclude_spec
                         )
@@ -838,7 +838,7 @@ def _run_repo_checks(
                         # ORM rows key on ``id``, not ``page_id``, so they go
                         # to index_many as tuples rather than to index_pages.
                         batch = [
-                            (p.id, p.title, p.content, p.summary, p.target_path)
+                            (p.id, p.title, p.content, p.summary, p.target_path, p.digest)
                             for p in rows.scalars().all()
                         ]
                         await fts.index_many(batch)
@@ -921,6 +921,7 @@ def _run_repo_checks(
                                     summary=page.summary or "",
                                     content=page.content or "",
                                     page_metadata=page.metadata_json,
+                                    digest=page.digest or "",
                                 )
                                 if item is None:
                                     # Below the information floor, so its absence

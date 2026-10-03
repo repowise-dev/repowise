@@ -127,8 +127,8 @@ def measure_opening_frames(pages: list[GeneratedPage]) -> OpeningFrameReport:
     )
 
 
-# The heading over the identifiers appended to a module page after the model
-# has written it. Counted for the same reason the questions block is: the table
+# The heading over the identifiers rendered into a module page's digest after
+# the model has written it. Counted for the same reason the questions block is: the table
 # is conditional (a module exporting nothing renders none), so only the ratio
 # is readable, and nothing else in a run would report it going to zero.
 CONCEPT_INDEX_HEADING = "## Concept index"
@@ -145,7 +145,7 @@ def _count_concept_indexes(pages: list[GeneratedPage]) -> dict[str, int]:
     eligible = [p for p in pages if p.page_type == "module_page"]
     return {
         "eligible_pages": len(eligible),
-        "with_index": sum(1 for p in eligible if CONCEPT_INDEX_HEADING in (p.content or "")),
+        "with_index": sum(1 for p in eligible if CONCEPT_INDEX_HEADING in (p.digest or "")),
     }
 
 
