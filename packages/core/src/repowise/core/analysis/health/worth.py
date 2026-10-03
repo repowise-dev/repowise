@@ -16,6 +16,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Literal
 
+from .complexity.dispatch import DISPATCH_SHARE
 from .rows import detail_map, field
 
 #: Problem-size cut points. Each is a multiple of the detector's own bar: CCN
@@ -29,10 +30,6 @@ SIZE_NESTING = (5, 6, 8, 99)
 SIZE_MARKERS = frozenset(
     {"complex_method", "nested_complexity", "brain_method", "large_method", "bumpy_road"}
 )
-#: A function whose largest dispatch on one value holds this share of its
-#: decision points is usually fine as it is. Fitted on the dev labels only:
-#: share >= 0.6 held 9 labelled complexity rows, 8 of them rejected.
-DISPATCH_SHARE = 0.6
 #: How far past its bars (see :func:`worth_size`) a function must sit to be
 #: worth doing first: CCN 40, 200 lines or nesting 6. The same size from which
 #: an item is titled "break up".
@@ -291,7 +288,6 @@ def perf_low_priority(row: Any) -> LowPriority | None:
 
 __all__ = [
     "CHAIN_SHARE",
-    "DISPATCH_SHARE",
     "EXTREME_MAGNITUDE",
     "LOW_PRIORITY_LABEL",
     "SIZE_CCN",
