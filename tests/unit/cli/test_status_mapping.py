@@ -79,6 +79,21 @@ def test_an_unindexed_directory_is_not_a_broken_mapping(tmp_path: Path) -> None:
     assert report["reason"] is None
 
 
+def test_a_store_with_no_database_is_invalid(tmp_path: Path) -> None:
+    """``.repowise/`` exists but holds no ``wiki.db``: a partial or stale init.
+
+    ``status_command`` classifies the checkout as indexed on the directory's
+    existence alone, so this state has to be refused here or the healthy
+    reading carries through to both the table and the JSON.
+    """
+    repo = _checkout(tmp_path, 3)
+    (repo / ".repowise").mkdir()
+
+    report = status_cmd._mapping_report(repo)
+    assert report["mapping_valid"] is False
+    assert report["reason"] == "index database is missing"
+
+
 def test_a_store_with_no_repository_row_is_invalid(tmp_path: Path) -> None:
     """``.repowise/`` exists but no row resolves the checkout."""
     repo = _checkout(tmp_path, 3)

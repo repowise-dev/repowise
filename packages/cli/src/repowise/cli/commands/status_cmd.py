@@ -176,8 +176,21 @@ def _mapping_report(repo_path: Path) -> dict[str, Any]:
 
     db_path = get_repowise_dir(repo_path) / "wiki.db"
     if not db_path.exists() and not db_configured():
-        # Nothing indexed to diverge from; an unindexed directory is not a
-        # broken mapping, which is the right default this replaces.
+        if get_repowise_dir(repo_path).exists():
+            # A store directory with no database in it is a partial or stale
+            # init. The caller reads ``indexed`` off the directory's existence
+            # alone, so calling the mapping valid here would carry that reading
+            # through as healthy.
+            return {
+                "repository_id": None,
+                "indexed_root": None,
+                "indexed_files": 0,
+                "working_tree_files": None,
+                "mapping_valid": False,
+                "reason": "index database is missing",
+            }
+        # Nothing indexed to diverge from; a checkout with no store at all is
+        # not a broken mapping.
         return {
             "repository_id": None,
             "indexed_root": None,
