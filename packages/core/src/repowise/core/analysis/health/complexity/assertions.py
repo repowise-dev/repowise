@@ -118,7 +118,7 @@ def _split_callee_matches_assert(call_node: Node) -> bool:
     rather than in the narrow one on purpose: the narrow tier is what the
     calibrated block markers count, and admitting these names there was measured
     to move assertion runs. Promoting it is a calibrated change needing its own
-    before/after. LANGUAGE_SUPPORT.md#code-health-coverage.
+    before/after. docs/architecture/language-support.md#test-quality-markers-per-language.
     """
     if call_node.child_by_field_name("function") is not None:
         return False
