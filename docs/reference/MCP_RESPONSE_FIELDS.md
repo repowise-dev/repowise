@@ -5,6 +5,7 @@ The field dictionary for every repowise MCP tool response. [MCP_TOOLS.md](../age
 ## Contents
 
 - [The `_meta` envelope](#the-_meta-envelope)
+- [On the wire](#on-the-wire)
 - [Truncation and recovery](#truncation-and-recovery)
 - [Ignored arguments](#ignored-arguments)
 - [Next-call shape](#next-call-shape)
@@ -43,6 +44,12 @@ Routine responses carry a lean envelope. `get_overview`, called once per session
 | `state` | Only when something fired | `degraded` with `degraded_reasons`, `partial`, `truncated`. A roll-up of the response's own flags |
 
 `list_repos`, `get_architecture`, `get_blast_radius`, `get_conformance` and `get_dependency_path` carry no freshness fields. Neither does a workspace-wide `search_codebase(repo="all")`, since there is no single indexed commit to compare.
+
+---
+
+## On the wire
+
+Each result carries the payload twice, as MCP allows: `structuredContent` is `{"result": <payload>}` (the tools advertise an `outputSchema`), and the text block is the same payload as compact JSON, with no indentation. Clients that read `structuredContent` see no difference; clients that forward the text block send fewer tokens. Set `REPOWISE_MCP_PRETTY_JSON=1` in the server's environment to restore indented text for a client that depends on it.
 
 ---
 

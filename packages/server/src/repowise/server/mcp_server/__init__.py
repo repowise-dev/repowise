@@ -219,6 +219,51 @@ def tool_middleware(fn: Any) -> Any:
     return record(budget(timed(instrument(budget(quantize(trust(shield(fn))))))))
 
 
+#: Restores FastMCP's indented text block, for a client that turns out to need it.
+PRETTY_JSON_ENV = "REPOWISE_MCP_PRETTY_JSON"
+
+
+def wire_result(payload: Any) -> Any:
+    """*payload* as FastMCP would serve it, with the text block compact.
+
+    FastMCP renders the text with ``indent=2`` beside a structured copy that is
+    already compact. The same ``fallback=str`` keeps a value JSON cannot hold
+    rendering as before, and the structured copy is converted exactly as
+    FastMCP converts it. Anything but a dict, or ``REPOWISE_MCP_PRETTY_JSON=1``,
+    is left to FastMCP's own conversion.
+    """
+    import os
+
+    pretty = os.environ.get(PRETTY_JSON_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+    if pretty or not isinstance(payload, dict):
+        return payload
+    import pydantic_core
+    from mcp.types import CallToolResult, TextContent
+
+    text = pydantic_core.to_json(payload, fallback=str).decode()
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        structuredContent={"result": pydantic_core.to_jsonable_python(payload)},
+    )
+
+
+def registered_tool(fn: Any) -> Any:
+    """What the server registers: :func:`tool_middleware` plus the wire text.
+
+    Kept out of ``tool_middleware`` because tests and the CLI await the
+    middleware-wrapped functions directly and expect the dict back.
+    """
+    from functools import wraps
+
+    inner = tool_middleware(fn)
+
+    @wraps(inner)
+    async def wrapped(*args: Any, **kwargs: Any) -> Any:
+        return wire_result(await inner(*args, **kwargs))
+
+    return wrapped
+
+
 def ensure_full_surface() -> Any:
     """Import every tool module and attach the registry to the FastMCP server.
 
@@ -255,7 +300,7 @@ def ensure_full_surface() -> Any:
     from repowise.core.registry import mcp_tool_registry
     from repowise.server.mcp_server._tool_selection import snapshot_full_surface
 
-    mcp_tool_registry.apply(_mcp, middleware=tool_middleware)
+    mcp_tool_registry.apply(_mcp, middleware=registered_tool)
 
     # Snapshot the full registered surface so per-server tool selection
     # (single-repo vs workspace, config/CLI overrides) can rebuild from it.
