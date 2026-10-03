@@ -99,6 +99,70 @@ export function doFetch(url: string, init: RequestInit): Promise<Response> {
   return (config.fetch ?? fetch)(url, init);
 }
 
+/** Request a bare HTTP primitive accepts: plain-object headers, string body. */
+export interface MinimalRequestInit {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  signal?: AbortSignal;
+}
+
+/** Response a bare HTTP primitive returns: plain-object headers, text body. */
+export interface MinimalResponse {
+  status: number;
+  ok: boolean;
+  headers: Record<string, string>;
+  text: string;
+}
+
+export type MinimalFetch = (url: string, init: MinimalRequestInit) => Promise<MinimalResponse>;
+
+function headersToRecord(headers: HeadersInit | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!headers) return out;
+  if (Array.isArray(headers)) {
+    for (const [name, value] of headers) out[name] = value;
+  } else if (typeof (headers as Headers).forEach === "function") {
+    (headers as Headers).forEach((value, name) => {
+      out[name] = value;
+    });
+  } else {
+    Object.assign(out, headers);
+  }
+  return out;
+}
+
+/**
+ * Wraps a minimal HTTP primitive as a `fetch` for `configureApiClient`. Pure:
+ * it never constructs `Headers` or `Response`, so it runs where those globals
+ * do not exist. The returned object carries what this client reads (`ok`,
+ * `status`, `statusText`, `json()`, `text()`); `statusText` is empty because
+ * the primitive does not report one.
+ */
+export function createAdapterFetch(minimal: MinimalFetch): typeof fetch {
+  const adapted = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url =
+      typeof input === "string" ? input : "href" in input ? input.href : input.url;
+    const body = init?.body;
+    if (body != null && typeof body !== "string") {
+      throw new TypeError("createAdapterFetch only sends string bodies");
+    }
+    const request: MinimalRequestInit = { headers: headersToRecord(init?.headers) };
+    if (init?.method) request.method = init.method;
+    if (body != null) request.body = body;
+    if (init?.signal) request.signal = init.signal;
+    const res = await minimal(url, request);
+    return {
+      ok: res.ok,
+      status: res.status,
+      statusText: "",
+      json: async () => JSON.parse(res.text) as unknown,
+      text: async () => res.text,
+    } as unknown as Response;
+  };
+  return adapted as typeof fetch;
+}
+
 export async function apiGet<T>(
   path: string,
   params?: Record<string, string | number | boolean | undefined>,
