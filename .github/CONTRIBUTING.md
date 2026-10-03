@@ -65,7 +65,7 @@ uv run repowise serve                # dashboard + MCP server on localhost
 ```
 
 Then point your coding agent at the MCP server (see the
-[Start in minutes](../README.md#start-in-minutes-no-api-key) for Claude Code, Codex
+[Start in minutes](../README.md#quickstart) for Claude Code, Codex
 and others) and ask it questions directly:
 
 ```

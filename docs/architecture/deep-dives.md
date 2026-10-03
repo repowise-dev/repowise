@@ -1,6 +1,6 @@
-# Repowise Deep Dives — Complete Guide
+# Repowise Deep Dives
 
-This document covers systems that are referenced but not fully explained in `architecture-guide.md` and `graph-algorithms-guide.md`. Each section is self-contained with full intuition, implementation details, and the math behind the algorithms.
+This document covers systems that are referenced but not fully explained in [ARCHITECTURE.md](ARCHITECTURE.md) and [graph-algorithms.md](graph-algorithms.md). Each section is self-contained with full intuition, implementation details, and the math behind the algorithms.
 
 ---
 

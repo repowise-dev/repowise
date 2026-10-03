@@ -367,7 +367,7 @@ hooks:
 ### The `mcp:` block
 
 Controls which tools the MCP server advertises. The default surface is curated
-(11 tools in single-repo mode, plus 2 workspace-only tools in workspace mode);
+(10 tools in single-repo mode, plus `list_repos` in workspace mode; seven more are opt-in);
 this block lets you opt extra tools in or trim the set down. The `repowise mcp
 --tools` / `--all` flags override it for a single launch.
 

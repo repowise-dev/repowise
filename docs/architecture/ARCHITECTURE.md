@@ -10,14 +10,16 @@ they fit together. Read this before contributing.
 
 ### Package READMEs
 
-For per-package detail (installation, full API reference, all CLI flags, file maps):
+Each Python and web package has a short contributor README that says what the
+package is and where its code lives. The detail is in this document and in
+[`CLI_REFERENCE.md`](../reference/CLI_REFERENCE.md).
 
 | Package | README | What it covers |
 |---------|--------|----------------|
-| `packages/core` | [`packages/core/README.md`](../../packages/core/README.md) | Ingestion, generation, persistence, providers; all key classes with code examples |
-| `packages/cli` | [`packages/cli/README.md`](../../packages/cli/README.md) | CLI entrypoints and flags; full surface in [`CLI_REFERENCE.md`](../reference/CLI_REFERENCE.md) |
-| `packages/server` | [`packages/server/README.md`](../../packages/server/README.md) | All REST API endpoints, 11 MCP tools, webhook setup, scheduler jobs |
-| `packages/web` | [`packages/web/README.md`](../../packages/web/README.md) | Every frontend file with purpose, API client, hooks, components, pages |
+| `packages/core` | [`packages/core/README.md`](../../packages/core/README.md) | Ingestion, analysis, generation, persistence and providers |
+| `packages/cli` | [`packages/cli/README.md`](../../packages/cli/README.md) | The `repowise` command; full surface in [`CLI_REFERENCE.md`](../reference/CLI_REFERENCE.md) |
+| `packages/server` | [`packages/server/README.md`](../../packages/server/README.md) | REST API, the MCP server (18 registered tools, 10 on by default), webhooks, scheduler |
+| `packages/web` | [`packages/web/README.md`](../../packages/web/README.md) | The local dashboard and how to run it in development |
 
 ---
 
@@ -78,7 +80,7 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 │      Three Stores     │   │              Consumers                  │
 │                      │   │                                         │
 │  SQL (wiki pages,    │   │  Web UI     MCP Server   GitHub Action  │
-│  jobs, symbols,      │   │  (Next.js)  (11 tools)   (CI/CD)        │
+│  jobs, symbols,      │   │  (Next.js)  (18 tools)   (CI/CD)        │
 │  versions)           │   │                                         │
 │                      │   │  repowise CLI                           │
 │  Vector (LanceDB /   │   │  (init, update, watch,                  │
@@ -532,15 +534,15 @@ architecture.
 
 **Named binding resolution** (`NamedBinding` dataclass in `ingestion/models.py`) ensures
 that aliased imports, barrel re-exports, and namespace imports resolve to the correct
-definition site. The parser's `_extract_import_bindings()` produces bindings for each
-import statement, and `GraphBuilder.build()` populates `Import.resolved_file` from them.
+definition site. `extract_import_bindings()` in `ingestion/extractors/bindings/` (one extractor
+per language) produces bindings for each import statement, and `GraphBuilder.build()` populates `Import.resolved_file` from them.
 Barrel files (`__init__.py`, `index.ts`) are followed one hop to resolve re-exports.
 
 **Two-tier graph isolation:**
 
 Symbol nodes and their `DEFINES`/`HAS_METHOD`/`CALLS` edges are stored in the same
 `DiGraph` as file nodes, but `file_subgraph()` returns a view containing only `file`
-and `package` nodes. All file-level metrics (PageRank, betweenness, SCCs, Louvain)
+and `package` nodes. All file-level metrics (PageRank, betweenness, SCCs, community detection)
 run on this subgraph so that the large number of symbol nodes does not distort centrality
 scores.
 
@@ -552,7 +554,7 @@ After graph construction, the builder computes:
   Logged as warnings. Require special generation handling (see below).
 - **Betweenness centrality**: identifies "bridge" symbols whose removal would
   disconnect the graph. These are the most critical to document well.
-- **Community detection (Louvain)**: discovers logical modules even when the
+- **Community detection (Leiden when the `graph-extra` extra is installed, Louvain otherwise)**: discovers logical modules even when the
   directory structure doesn't reflect them. These communities become module pages.
 
 **Circular dependency handling:**
@@ -1089,9 +1091,10 @@ and supports two transports:
 
 Canonical reference: [`docs/agent/MCP_TOOLS.md`](../agent/MCP_TOOLS.md).
 A single-repo server advertises **10** tools by default (the canonical set).
-Workspace mode adds `list_repos`. Six specialists are registered but opt-in:
+Workspace mode adds `list_repos`. Seven specialists are registered but opt-in:
 `get_architecture`, `get_blast_radius`, `get_dependency_path`,
-`get_execution_flows`, `generate_refactoring_code`, and `get_conformance`.
+`get_execution_flows`, `generate_refactoring_code`, `get_conformance`, and
+`set_finding_status`.
 
 | Tool | What it answers | When to call |
 |------|----------------|-------------|

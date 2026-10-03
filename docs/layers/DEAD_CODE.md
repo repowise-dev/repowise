@@ -1,374 +1,247 @@
 # Dead Code
 
 Repowise reports the files nothing imports, the exported symbols nothing uses,
-and the packages nothing depends on, each with a confidence score and the
-evidence behind it. Pure graph traversal and SQL: no LLM calls, no network, and
-it finishes in under 10 seconds on any repo size.
+and the packages nothing depends on. Each finding carries a confidence score,
+a deletion-readiness flag and the evidence behind both. The analysis is graph
+traversal plus git history: it needs no LLM key, makes no network calls, and
+runs as part of `repowise init` and `repowise update`.
 
-The layer surfaces candidates. You decide. Static reachability can prove that
-nothing *imports* a file; it can never prove nothing *loads* it. Everything below
-is built around that asymmetry.
+Treat every finding as a candidate. Static reachability can show that nothing
+*imports* a file; it cannot show that nothing *loads* it. The confidence
+scores, caps and exemptions below all follow from that gap.
 
 ## Quick start
 
 ```bash
-repowise init                                    # dead-code findings populate during indexing
-repowise dead-code                               # the report
-repowise dead-code --safe-only --min-confidence 0.8   # cleanup-ready only
+repowise init                     # findings are computed during indexing
+repowise dead-code                # the report
+repowise dead-code --safe-only    # deletion-ready findings only
 repowise dead-code --kind unused_export --format json
-repowise dead-code --repo backend                # workspace, one repo
 ```
 
 ```
-repowise dead-code
+ Kind              File / Symbol            Confidence  Ready?  Lines  Reason
+ unused_export     formatLegacyDate               100%    ✓       14  Public symbol 'formatLegacyDate' has no importers
+ unreachable_file  src/legacy/parser.ts           100%    ✗      212  File has no importers (in_degree=0)
+ unreachable_file  config/feature_flags.py         40%    ✗       31  File has no importers (in_degree=0)
 
-  23 findings · 4 safe to delete
-
-  ✓ utils/legacy_parser.ts          file      1.00   safe to delete
-  ✓ auth/session.ts                 file      0.92   safe to delete
-  ✓ helpers/formatDate              export    0.71   safe to delete
-  ✗ analytics/v1/tracker.ts         file      0.41   recent activity, review first
+Cleanup-candidate lines: 14 (high 2, medium 1 confidence)
 ```
 
-From an agent:
+From an agent, `get_dead_code()` or `get_dead_code(tier="high", safe_only=True)`.
+In the dashboard, open the **Dead code** view of a repository.
 
-```python
-get_dead_code()
-get_dead_code(min_confidence=0.8, tier="high", safe_only=True)
-get_dead_code(kind="unused_export", group_by="owner")
-```
+## What it finds
 
-## The four finding kinds
+| Kind | Meaning | Shown by default |
+|------|---------|------------------|
+| `unreachable_file` | No file in the repository imports this file, and it is not an entry point. | Yes |
+| `unused_export` | A public, top-level symbol that no import, call, inheritance or type reference reaches. | Yes |
+| `zombie_package` | A top-level package that no other package in the repository imports. | Yes |
+| `unused_internal` | A private or underscore-prefixed symbol that nothing calls. | No, opt in |
 
-| Kind | What it means | How it is computed | Base confidence |
-|------|---------------|--------------------|-----------------|
-| `unreachable_file` | No file in the repo imports this one. | File-node in-degree of 0 on the dependency graph, after entry points and the never-flag allowlist are removed. | Scored from git age (below) |
-| `unused_export` | A public symbol nothing imports. | No `imports` edge names the symbol (or `*`, or a TypeScript `export { local as alias }` rename), and no `calls` / `extends` / `implements` / `method_implements` / `dispatches_to` / `framework_binds` / `reads` / `references` / `type_use` edge reaches it. Member kinds (`method`, `field`, `property`, `enum_member`) are excluded from this pass across all languages since they are accessed through their container, not imported by name. Top-level `export const` primitives, objects, and arrays in TypeScript and JavaScript are fully evaluated (they are always importable by name). | `1.00` when an importer of the containing file names one of its symbols (so the file is alive and its importers list what they take, but not this symbol); `0.60`, never safe to delete, when no importer names a symbol of the file (no importer at all, a C `#include`, a C# `using`), for every C, C++ and Objective-C symbol (the preprocessor reaches symbols through macros and typedef aliases no edge records), and for a C# class holding extension methods (called as `x.Method()` without naming the class); `0.30` when the name ends in `_DEPRECATED` / `_LEGACY` / `_COMPAT` — then capped as described below |
-| `unused_internal` | A private or underscore-prefixed symbol nothing calls. | No `calls` edge, and no cross-file importer pulls the name (which would mean a dispatch-table lookup). Off by default. | `0.65` |
-| `zombie_package` | A whole top-level package no other package imports. | No inter-package import edges into it. Never marked safe to delete. | `0.50` |
+Methods, fields, properties and enum members are never reported as unused
+exports: they are reached through their container. `unused_internal` is
+withheld from the dashboard and default MCP responses because its measured
+precision was very low ([Accuracy and limits](#accuracy-and-limits)); ask for
+it with `--include-internals` or `include_internals=True`.
 
-`unused_internal` is opt-in (`--include-internals`); `zombie_package` is on by
-default and can be turned off with `--no-include-zombie-packages`. Passing
-`--kind` overrides both toggles, so `--kind unused_internal` enables internals on
-its own.
+## Reading the results
 
-### An unused export must survive a search for its own name
+### Confidence
 
-The base confidences above score how strong the evidence for deadness is. They
-do not ask whether a use would have been visible at all — and "no import edge"
-only means "unused" in a language where using a symbol requires importing it.
-That holds in Python and TypeScript. It is false for a same-package Kotlin or
-Go reference, a same-translation-unit C++ type, an intra-crate Rust path, and a
-C# or Swift member of the same module, where a use needs no import. The same
-blind spot swallows a use written through an aliased import, an attribute call
-on an imported module, or a handler named by string from infrastructure config.
+Confidence runs from `0.0` to `1.0` and measures how strong the evidence for
+deadness is. It starts from a base value per kind and can only be lowered:
 
-So before an `unused_export` keeps a confidence above `0.40`, the repository is
-searched for the symbol's name. If the name is written anywhere other than the
-declaration itself — in any indexed file, including non-code ones such as
-Terraform or YAML — the finding is capped at `0.40`, loses `safe_to_delete`,
-and its reason names where the name was found. The same cap applies when the
-search could not be run at all, because not looking and looking without finding
-are different results.
+- **Unreachable files** are scored from git activity. A file untouched for a
+  year or more starts at `1.00`; one still being committed to starts at `0.40`;
+  a file under 30 days old starts at `0.55`, because it is often unfinished.
+- **Unused exports** start at `1.00` when the file has importers and none of
+  them takes this symbol. When that check is impossible (no importer names
+  individual symbols, or the language reaches symbols through a preprocessor)
+  the start is `0.60`. Deprecated symbols start at `0.30`.
+- **Unused internals** start at `0.65`. **Zombie packages** start at `0.50`.
 
-The check only ever suppresses. A name written solely in a comment counts as a
-use, so this costs recall and buys precision, which is the trade the top tier
-exists for. Nothing is removed from the report: the cap lands exactly on the
-default `min_confidence`, so a capped finding still appears as a review
-candidate and only stops claiming to be deletion-ready.
+Several caps then pull a finding down to `0.40`, the review tier: a runtime
+loader in the same directory, a path that looks like config or bootstrap code,
+an unused export's name written somewhere else in the repository, or a name that
+appears in a file repowise could not index. Each cap adds a line to the
+finding's evidence saying why.
 
-Two caveats on the numbers. `unused_internal` is disabled entirely for Rust,
-because rustc's own `dead_code` lint already reports unused private items with
-macro expansion and type information this analysis cannot match, so a private
-Rust helper is never flagged here. And the `lines` count on file and package findings is an
-estimate (symbol count times ten), not a real line count, so treat the
-"reclaimable lines" roll-up as an order of magnitude rather than a figure.
+### Tiers
 
-A .NET reference assembly (`ref/*.cs`) is the compile-time API of a library.
-Its files are never reported, and neither is a C# file or type it lists: that
-is public API, used outside the repository.
+| Tier | Confidence | Meaning |
+|------|-----------|---------|
+| High | `>= 0.7` | No references found. Strong cleanup candidate. |
+| Medium | `0.4` to `0.7` | Likely unused, but something indirect may reach it. Review first. |
+| Low | `< 0.4` | Plausibly used at runtime (dynamic loading, reflection, published API). Investigate first. |
 
-### A C or C++ name written anywhere else is a use
+The CLI, the dashboard and `get_dead_code` use the same tier floors, so a
+finding lands in the same tier on every surface. The default `min_confidence`
+is `0.4` everywhere, which hides the low tier unless you ask for it.
 
-C, C++ and Objective-C symbols are used in ways that carry no edge: a callback
-passed to `SetTimer`, a function reached through a `#define` alias, a P/Invoke
-export named in a C# `[LibraryImport]`, an icall registered in a table header,
-a `.def` EXPORTS line, an assembly label. So an `unused_export` or
-`unused_internal` in these languages is dropped when any of the names its
-declaration introduces is written outside a declaration of it, in any code
-file or in a `.def`, `.asm` or `.s` file. A typedef contributes its tag and
-every alias (`typedef struct _X {...} X, *PX;`), and an enum its enumerators.
-Declarations do not count (the header prototype of a `.cpp` function), and
-neither do comments, prose strings and documentation. A COM method declared
-with `IFACEMETHODIMP` or `STDMETHODIMP` fills an interface slot and is never
-reported.
+### `safe_to_delete`
 
-### How unreachable-file confidence is scored
+A finding is deletion-ready (the CLI's "Ready?" column) only when its
+confidence is `0.7` or higher and its path carries no runtime-load risk factor
+(config, environment, bootstrap, database, script or served-asset paths).
+Unreachable files, zombie packages and unused internals are never marked
+deletion-ready, whatever their confidence. In practice `safe_to_delete` means
+"an unused export with strong evidence".
 
-An orphaned file that nobody has touched in a year is a much stronger signal than
-one added last week. Confidence starts from git activity:
+### Exempt by construction
 
-| Condition | Confidence |
-|-----------|-----------|
-| No commits in 90 days, last touched over a year ago | `1.00` |
-| No commits in 90 days, last touched over 180 days ago | `0.90` |
-| No commits in 90 days, last touched over 90 days ago | `0.80` |
-| No commits in 90 days, no other signal | `0.70` |
-| No commits in 90 days, but the file is under 30 days old | `0.55` (may be work in progress) |
-| Still being committed to | `0.40` |
+Some files and symbols are never reported, because static reachability is the
+wrong tool for them. This covers entry points and programs (`__main__.py`,
+`main.go`, files with a shebang), build and CI files and anything they name by
+path, test files, generated code, vendored trees, framework routes such as
+Next.js `page.tsx`, and symbols registered by a framework decorator or
+annotation (pytest fixtures, Flask and FastAPI routes, Celery tasks, Spring
+stereotypes, and similar). Names that follow dynamic-dispatch conventions
+(`*Handler`, `*Plugin`, `register_*`, `on_*` and others) are treated as used.
+The full lists live in [the internals doc](../architecture/dead-code.md).
 
-Then it only ever goes down. These caps apply:
+### Empty results
 
-- **Dynamic imports nearby.** If any file in the same directory uses a runtime
-  loader, confidence is capped at `0.40`.
-- **Imported by namespace.** A C# `using` names a namespace, never a file, and
-  a same-namespace `new T()` needs no `using` at all, so a C# file is capped at
-  `0.40` whatever its age.
-- **Its type is named elsewhere.** When another file writes the name of a type
-  the file declares, confidence is capped at `0.40` and the evidence names
-  that file: Java, C# and Swift use a type from its own package or module
-  without an import.
-- **Runtime-load risk factors.** If the path looks like config, environment,
-  bootstrap, database, script, or runtime-asset code, confidence is capped at
-  `0.40` and the finding carries an evidence line explaining why. These are
-  exactly the files wired up by a config key or a string path rather than an
-  import, so "nothing imports it" is weak evidence. The full token set, matched
-  against the filename split on `. _ -` and against directory segments:
+An empty report means no finding cleared the confidence floor, not that the
+repository has no dead code. The CLI prints how many findings were hidden below
+the floor. An index whose dead-code pass failed also reads as empty; pass
+`--min-confidence 0.0` to compute live.
 
-  | Factor | Filename tokens | Directory segments |
-  |---|---|---|
-  | `config` | `config`, `configs`, `configuration`, `conf`, `settings`, `setting`, `setup` | `config/`, `configs/`, `settings/` |
-  | `environment` | `env`, `environment`, `environ`, `dotenv` | `env/`, `environments/` |
-  | `bootstrap` | `bootstrap`, `startup`, `entrypoint` | `bootstrap/` |
-  | `database` | `database`, `db`, `schema`, `seed`, `seeds`, `migration`, `migrations`, `datastore`, `sqlite` | `database/`, `db/`, `migrations/` |
-  | `script` | — | `scripts/`, `bin/`, `tasks/` |
-  | `asset` | `sw`, plus the token pair `service` + `worker` | `public/`, `static/`, `www/` |
+## Tuning and suppressing
 
-  Broad identifiers (`app`, `main`, `index`, `core`, `base`, `util`) are
-  deliberately excluded: they would cap ordinary modules. `src/assets/` is
-  likewise absent, because that is the Vite / Vue / Angular convention for
-  *bundled* source, which is imported normally.
+- **Confidence floor.** `--min-confidence` (CLI) or `min_confidence` (MCP).
+  The index stores findings at `0.4` and above, so the CLI answers from the
+  index at that floor or higher and computes a fresh analysis below it.
+- **Scope.** `--kind`, `--no-unreachable`, `--no-unused-exports`,
+  `--include-internals`, `--no-include-zombie-packages`. Passing `--kind`
+  overrides the individual toggles.
+- **Triage in the dashboard.** Each finding has a status: `open`,
+  `acknowledged`, `resolved` or `false_positive`. Set it per row or resolve in
+  bulk. A finding you have acted on stays out of the open list across later
+  `repowise update` runs; it is not re-opened.
+- **Excluding paths.** `.repowiseIgnore` files and `exclude_patterns` in
+  `.repowise/config.yaml` remove paths from indexing (see
+  [CONFIG.md](../reference/CONFIG.md)). An excluded file's own imports leave
+  the graph too, so a file only it imported can then surface as unreachable.
+- **In source.** A Java or Kotlin symbol annotated `@SuppressWarnings("unused")`
+  is treated as deliberately unused and is not reported. A symbol marked
+  deprecated (by annotation, or by a `_DEPRECATED`, `_LEGACY` or `_COMPAT`
+  name suffix) drops to `0.30`, below the default floor.
+- **Turning the MCP tool off.** `mcp: {tools: ["-get_dead_code"]}` in
+  `.repowise/config.yaml`.
 
-## Confidence tiers and `safe_to_delete`
+There is no allowlist file for dead-code findings; use the dashboard status.
 
-A finding is presented as **safe to delete** only when confidence is at or above
-`0.70` **and** the path carries no runtime-load risk factor **and** the name does
-not match a dynamic-dispatch pattern (`*Plugin`, `*Handler`, `*Adapter`,
-`*Middleware`, `*Mixin`, `*Command`, `register_*`, `on_*`, `*_view`,
-`*_endpoint`, `*_route`, `*_callback`, `*_signal`, `*_task`). Zombie packages are
-never safe to delete regardless of confidence.
+## False positives and dynamic code
 
-The safety re-derivation is monotonic: it only ever downgrades a stored flag,
-never upgrades it, so findings written by an older version stay honest.
+When a file contains a runtime loader, repowise assumes its neighbours in the
+same directory may be reached through it and caps their confidence at `0.40`.
+Markers are recognised in Python, JavaScript and TypeScript, Java, Kotlin,
+Ruby, PHP, Go, Swift, Scala, Rust, C# and C/C++. Examples: `importlib.import_module`,
+dynamic `import(` and `require.context(`, `Class.forName(`, `ServiceLoader.load(`,
+`const_get(`, `plugin.Open(` and `//go:embed`, `NSClassFromString(`,
+`Activator.CreateInstance(`, and `dlopen(` / `LoadLibrary(` in C. Dynamic edges
+found by the language extractors count the same way.
 
-The two surfaces bracket the tiers differently, which is worth knowing before you
-compare numbers:
+The cases where a finding is most likely wrong:
 
-| Surface | High | Medium | Low | Default floor |
-|---------|------|--------|-----|---------------|
-| CLI (`repowise dead-code`) | `>= 0.7` | `0.4` to `0.7` | `< 0.4` | `--min-confidence 0.4` |
-| MCP (`get_dead_code`) | `>= 0.8` | `0.5` to `0.8` | `< 0.5` | `min_confidence=0.4` |
+- **Reflection and string-keyed dispatch** that matches no marker, naming
+  convention or framework hint: a class named in a YAML file, a handler looked
+  up in a registry dict.
+- **Entry points the graph did not recognise**, such as a serverless handler or
+  a binary target with an unusual layout. A whole directory lighting up is
+  usually this.
+- **Barrel re-exports.** Barrel files are exempt as unreachable files, but a
+  symbol re-exported through one for external callers can surface as an
+  unused export.
+- **Published libraries.** Code consumed outside the repository has no
+  importer inside it. Packaged .NET projects are detected and held at `0.30`;
+  other ecosystems are not.
+- **Test-only usage counts as usage.** A symbol only its tests import is not
+  reported. There is no "used only in tests" classification.
 
-Both surfaces share the same default floor (`0.4`), so both return the same
-findings. Only the tier labelling differs: MCP brackets both cutovers higher
-(`0.8`/`0.5` against the CLI's `0.7`/`0.4`), because an agent acting on a
-finding is riskier than a human reading a table. The two rows are deliberately
-different, so do not flatten them to matching numbers.
+The evidence list on each finding says which signals applied. Read it before
+deleting anything.
 
-When findings exist below the floor — for example, deprecated exports
-(confidence `0.30`, see the kind table above) — the CLI prints a dim footer
-line: `N finding(s) hidden below threshold; pass --min-confidence 0.0 to see
-them.` The report and its buckets are unaffected; the footer is the only
-visible change.
+## Workspaces
 
-## What is exempt by construction
+In a workspace, a file dead inside its own repo may be the surface another repo
+depends on. `get_dead_code` checks each finding against the cross-repo data
+before returning it:
 
-Before anything is scored, repowise removes what it knows is framework-loaded,
-generated, or convention-wired. Static reachability is simply the wrong tool for
-these, so they are never flagged rather than flagged and down-weighted.
+- If the file changes together with files in other repos (git co-change),
+  confidence is halved and the finding gains a `cross_repo_note` naming those
+  repos.
+- Otherwise, if the finding is an unused export and another repo depends on
+  this one as a package, confidence is cut to 30% of its value with a note to
+  verify consumers.
 
-| Group | Examples |
-|-------|---------|
-| Entry points | Anything the graph marked `is_entry_point`, plus `__init__.py`, `__main__.py`, `conftest.py`, `manage.py`, `wsgi.py`, `asgi.py`, `setup.py`, `main.go` |
-| Build files | Any file a build tool runs by name, classified by type in `code_origin`: Gradle `*.gradle(.kts)`, `pom.xml`, `CMakeLists.txt`, `*.cmake`, Makefiles, `meson.build`, Bazel `BUILD` / `*.bzl`, MSBuild `.props` / `.targets`, crate-root `build.rs`, `magefile.go`, `noxfile.py`, bundler configs. A directory holding only build files is not a package |
-| Shell scripts | `*.sh`, `*.bash`, `*.zsh`. Invoked by name from CI configs and Makefiles; static reachability is meaningless |
-| Programs | Any file whose first line is a shebang, and any Python file with a top-level `if __name__ == "__main__":` block. Nothing imports an entry point |
-| Files a runner names | A file a CI workflow (`.github/workflows/`, `.gitlab-ci.yml`, `.circleci/`, `.buildkite/`), build file (above), task file (`Dockerfile`, `tox.ini`), manifest (`pyproject.toml`, `package.json`, `setup.cfg`) or shell script names by path. A doc that names a file only caps it at `0.40` |
-| Build-named JVM classes | A class whose fully-qualified name a `build.gradle(.kts)` quotes: `esplugin { classname '...' }`, `implementationClass`, `mainClass` |
-| Framework routes | Next.js `page.tsx` / `layout.tsx` / `route.ts` / `middleware.ts`, SvelteKit `+page.svelte`, Nuxt `pages/*.vue`, Remix entry files, ASP.NET minimal-API `Apis/` / `Endpoints/`, Blazor and Razor code-behind |
-| Test files | `*_test.go`, `*.test.ts`, `*.spec.ts`, `*_test.cc`, `*Test.java`, `**/tests/*.rs`, `src/test/java/`, MSTest and xUnit project layouts, `__tests__/`, `__mocks__/` |
-| Generated code | protoc `*.pb.go` / `*.pb.cs` / `*.pb.cc`, Qt MOC/UIC/RCC, Bison/Flex, SWIG, Cython, stringer, MapStruct `*MapperImpl.java`, Dagger, AutoValue, Roslyn `*.g.cs`, Dart `*.g.dart` / `*.freezed.dart`, `**/generated/**` |
-| Reflective loading | Alembic `versions/*.py`, Django migrations, EF entity configurations, COM `*ClassFactory.cpp`, Win32 `*NativeMethods.cs`, ETW event classes |
-| Vendored trees | `vendor/`, `third_party/`, `deps/`, `external/`, `extern/`, `contrib/`, `submodules/` |
-| Build artifacts | `build/`, `cmake-build-*/`, `_deps/`, `*.min.js`, `*.bundle.js` |
-| Non-code languages | Config and infra languages from the language registry, plus anything the parser could not identify |
+The adjustment runs after tiering, so it lowers the displayed confidence
+without moving a finding between tiers. `repo="all"` merges every workspace
+repo and tags each finding with its alias. The CLI has no cross-repo pass:
+`--repo <alias>` analyzes one repo in isolation (the primary repo by default).
+See [WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
 
-Symbols decorated by a framework are treated as live too: pytest fixtures, Flask
-and FastAPI routes, Django `admin.register` and signal receivers, Celery tasks,
-Click and Typer commands, and the JVM stereotype and routing annotations
-(`@Component`, `@Service`, `@RestController`, `@Entity`, `@KafkaListener`,
-`@GetMapping`, `@Test`, JAX-RS `@Path` / `@GET`), and JMH `@State`,
-`@BenchmarkMode` and `@Benchmark`. Every annotation of a Java or Kotlin
-declaration counts, not only the first. A Java, Kotlin or Scala export whose
-name is written in another code file, or further down its own file, is
-dropped: those languages use a type from its own package by its bare name,
-with no import. Decorator *suffixes* are matched
-too, so `@my_local_group.command` and `@api.get` register even when the receiver
-has a project-local name.
+## Accuracy and limits
 
-Two more targeted rescues: an `interface` in a file with no incoming `implements`
-edges is capped at `0.40` (implementor detection is heuristic, and missing
-evidence is not evidence of absence), and COM contract methods
-(`QueryInterface`, `AddRef`, `Release`) are capped the same way because they are
-dispatched through native vtables.
+- `unused_internal` was measured at under 1% precision on 1,511 hand-labelled
+  findings from one TypeScript/Python monorepo, which is why it is withheld by
+  default. Private symbols used within their own file are often invisible to
+  the graph.
+- Whole unreachable files were measured well below the deletion-ready bar
+  (build scripts, manifests and runtime loaders read files by path), so they
+  are never marked `safe_to_delete`.
+- Unused-export confidence is only as good as the graph's call and import
+  resolution for that language. `get_dead_code` reports this per language in
+  `summary.call_resolution_basis`.
+- Languages without dynamic-import markers get no dynamic-import cap.
+- Rust private items are never reported: rustc's `dead_code` lint covers them
+  with type and macro information this analysis lacks.
+- The name search that caps unused exports counts a name written only in a
+  comment as a use. This trades recall for precision.
 
-**Symbol-kind exemptions in the unused-export pass.** Class methods, struct
-fields, properties, and enum members are never evaluated as unused exports across
-all languages — they are only reachable through their enclosing container, not
-independently importable. Top-level `export const` declarations in TypeScript and
-JavaScript (`export const API_URL = "..."`, `export const config = {...}`) are
-*not* exempt: they are module-level named exports and are fully evaluated. Non-exported
-constants (declared without `export`) are automatically private and never reach
-the pass.
+For benchmark method across layers, see [BENCHMARKS.md](../BENCHMARKS.md).
 
-Zombie-package detection additionally ignores directories that are not packages
-at all: `.github`, `.vscode`, `.devcontainer`, `docs`, `scripts`, `assets`,
-`static`, `public`, `tests`, `benches`, `fuzz`, and their siblings, and any
-directory whose code is only Dockerfiles, Makefiles and shell scripts, which
-are run rather than imported.
+## Where it shows up
 
-## Dynamic-import awareness
+- **CLI** `repowise dead-code`; **MCP** `get_dead_code` (on by default).
+- **Dashboard:** the Dead code view (tiers, a safe-to-delete pile, an owner
+  leaderboard, status triage) and the dead-code signal on the graph view.
+  Module health includes each module's dead-code share; contributor profiles
+  carry dead-code files and lines per owner.
+- **Editor:** the VS Code extension's findings tree.
 
-When a file uses a runtime loader, repowise assumes its neighbours may be reached
-through it and caps their confidence at `0.40`. Detected markers include:
+## Reference
 
-- **Python**: `importlib.import_module`, `__import__(`, `importlib.reload`, `pkgutil.iter_modules`
-- **JS/TS**: dynamic `import(`, `require.context(`, `import.meta.glob(`,
-  `React.lazy(`, `next/dynamic`, `jest.mock(` / `vi.mock(`, and the
-  `'use server'` / `'use client'` boundary directives
+### `repowise dead-code [PATH]`
 
-This is a text scan over source, grouped by file extension. Languages without
-markers in the table get no dynamic-import protection, which is one of the honest
-limits below.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--min-confidence FLOAT` | `0.4` | Minimum confidence. Below `0.4` the analysis runs live. |
+| `--safe-only` | off | Only deletion-ready findings. |
+| `--kind KIND` | all | `unreachable_file`, `unused_export`, `unused_internal` or `zombie_package`. Overrides the toggles below. |
+| `--format` | `table` | `table`, `json` or `md`. |
+| `--include-internals` / `--no-include-internals` | off | Report unused private symbols. |
+| `--include-zombie-packages` / `--no-include-zombie-packages` | on | Report packages nothing else imports. |
+| `--no-unreachable` | off | Skip unreachable-file findings. |
+| `--no-unused-exports` | off | Skip unused-export findings. |
+| `--repo ALIAS` | primary repo | Workspace mode: analyze this repo. |
+| `--no-workspace` | off | Force single-repo mode inside a workspace. |
 
-## Workspaces: cross-repo consumers
+The CLI reads stored findings when the index is at `HEAD` and the request fits
+what was stored; otherwise it analyzes the working tree live, and says which.
+JSON rows carry `kind`, `file_path`, `symbol_name`, `confidence`, `reason`,
+`safe_to_delete`, `risk_factors`, `lines` and `primary_owner`. Full command
+reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-dead-code-path).
 
-In a workspace, a file that is dead inside its own repo may still be the surface
-another repo depends on. `get_dead_code` checks every finding against the
-cross-repo graph before returning it:
-
-- **The file cross-changes with files in other repos.** Confidence is halved and
-  the finding gains a `cross_repo_note` naming those repos. This is a behavioral
-  signal drawn from git co-change history, not an import edge, so read it as
-  "something over there moves when this moves".
-- **Another repo depends on this one as a package**, the finding is an
-  `unused_export`, and there was no co-change signal. Confidence is cut to 30% of
-  its value with a note saying the export may be consumed and should be verified.
-
-The adjustment runs after tiering, so it lowers the displayed confidence without
-moving a finding between tiers. `repo="all"` aggregates every workspace repo,
-sorts by confidence then size, and tags each finding with its repo alias.
-
-The CLI has no cross-repo pass yet: `repowise dead-code --repo <alias>` analyzes
-that one repo in isolation. See [WORKSPACES.md](../scale/WORKSPACES.md) for how
-the cross-repo graph is built.
-
-## Known false-positive sources
-
-The layer is conservative, but it is still a static analysis over a static graph.
-These are the cases where a finding is most likely wrong:
-
-- **Reflection and string-keyed dispatch.** A class instantiated from a name in a
-  config file, a handler looked up in a registry dict, a Java class loaded by
-  `Class.forName`. The dynamic-pattern name list and the `.register` decorator
-  suffix catch the common shapes; nothing catches all of them.
-- **Dynamic imports in unmodelled languages.** The marker table covers Python,
-  JS/TS, Java, Kotlin, Ruby, PHP, Go, Swift, Scala, Rust, C#, and C/C++.
-  Languages without dynamic import markers or framework hints do not detect
-  runtime loading, so an orphan in those unmodelled languages carries no
-  dynamic-import cap.
-- **Entry points the graph did not mark.** A binary target, a CLI script, or a
-  serverless handler that neither the allowlist nor the entry-point pass
-  recognized reads as unreachable every time. If you see a whole directory light
-  up, that is usually the cause.
-- **Barrel re-exports.** `__init__.py` and index barrels are exempt from being
-  flagged as unreachable *files*, but they are deliberately not exempt in the
-  unused-export pass: a symbol defined in a barrel that nobody imports should
-  still be reported. A symbol re-exported through a barrel to external callers
-  can therefore surface as an unused export.
-- **Python `__all__` is read for visibility, never as a rescue.** A literal
-  module-level `__all__` (list, tuple or set of string constants) raises the
-  names it lists to `public`, even underscore-prefixed ones; a name it omits
-  keeps its name-based visibility, because the list is often stale and
-  demoting on absence would hide a genuinely dead export. Membership is capped
-  at the visibility label: it sets no export marker, mints no edge, and
-  suppresses no finding, so declaring a public API there does not by itself
-  rescue a symbol. Lists built at runtime (comprehensions, `+=`,
-  concatenation) are treated as absent. The rescues that do apply are the
-  `__init__.py` exemption, the dunder-name skip, and intra-module reference
-  tracking.
-- **Test-only usage reads as usage.** A test file's import produces a real graph
-  edge, so a symbol only its tests touch is not flagged. That is deliberate, but
-  it also means repowise will not tell you a symbol is *exclusively* exercised by
-  tests. There is no "used only in tests" classification.
-- **Recently added code.** A file under 30 days old with no importers is capped
-  at `0.55` precisely because it is often unfinished, not dead.
-- **Interfaces and abstract bases.** Reached only through implementors, which is
-  heuristic detection. Capped, not suppressed.
-
-The evidence list on every finding tells you which of these applied. Read it
-before deleting anything.
-
-## CLI reference
-
-| Flag | Description |
-|------|-------------|
-| `--min-confidence` | Minimum confidence threshold (default `0.4`) |
-| `--safe-only` | Only findings marked safe to delete |
-| `--kind` | `unreachable_file`, `unused_export`, `unused_internal`, `zombie_package` |
-| `--format` | `table` (default), `json`, `md` |
-| `--include-internals` / `--no-include-internals` | Private and underscore symbols (default: off) |
-| `--include-zombie-packages` / `--no-include-zombie-packages` | Unused declared packages (default: on) |
-| `--no-unreachable` | Skip unreachable-file findings |
-| `--no-unused-exports` | Skip unused-export findings |
-| `--repo` | Workspace mode: target one repo (defaults to primary) |
-| `--workspace` / `--no-workspace` | Force workspace or single-repo mode |
-
-Full command reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-dead-code-path).
-
-## The `get_dead_code` MCP tool
-
-Findings come back grouped into high, medium, and low tiers, each with the file
-path, kind, confidence, line count, and a cleanup impact estimate.
-
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| `kind` | all | One of the four finding kinds |
-| `min_confidence` | `0.4` | `0.7` and above is cleanup-ready only |
-| `tier` | all | `high` (`>= 0.8`), `medium`, `low` |
-| `safe_only` | `false` | Deletion-ready only, excluding runtime-load risk |
-| `limit` | `20` | Per tier, clamped to 25 |
-| `directory` / `owner` | none | Path-prefix and primary-owner filters |
-| `group_by` | none | Roll up by `directory` or `owner` instead of a flat list |
-| `include_internals` | `false` | Private and underscore symbols |
-| `include_zombie_packages` | `true` | |
-| `no_unreachable` / `no_unused_exports` | `false` | |
-| `repo` | primary | Workspace mode |
-
-This is a tool for cleanup sweeps, not targeted fixes. Turn it off entirely with
-`mcp: {tools: ["-get_dead_code"]}` in `.repowise/config.yaml`. Parameter details:
-[MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_dead_code).
-
-## Where else it shows up
-
-- The generated `CLAUDE.md` lists dead-code candidates alongside hotspots and
-  decisions.
-- Contributor profiles carry a dead-code burden per author.
-- Module health folds dead-code percentage into its 0-100 composite.
-- `repowise update` recomputes findings for changed files only.
+MCP parameters and response shape: [`get_dead_code` in MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_dead_code).
 
 ## See also
 
-- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): how dead code fits the wider index.
-- [CODE_HEALTH.md](CODE_HEALTH.md): the scoring layer that shares the same graph and git data.
-- [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md): which languages parse into the graph the analysis walks.
+- [architecture/dead-code.md](../architecture/dead-code.md): exemption lists,
+  risk tokens, per-language rescues and confidence scoring internals.
+- [CODE_HEALTH.md](CODE_HEALTH.md): the health layer, built on the same graph
+  and git data.
+- [GRAPH.md](GRAPH.md): the dependency graph the analysis walks.
+- [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md): which languages parse into that graph.

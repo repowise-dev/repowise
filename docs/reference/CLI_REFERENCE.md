@@ -73,7 +73,8 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 [`workspace set-default`](#repowise-workspace-set-default-alias) ·
 [`workspace diagnostics`](#repowise-workspace-diagnostics) ·
 [`workspace check`](#repowise-workspace-check) ·
-[`workspace metrics`](#repowise-workspace-metrics-path)
+[`workspace metrics`](#repowise-workspace-metrics-path) ·
+[`workspace impacted-tests`](#repowise-workspace-impacted-tests-repopath)
 
 **Maintenance**
 [`doctor`](#repowise-doctor-path) ·
@@ -1645,7 +1646,7 @@ repowise savings sync --dry-run
 Mine local agent transcripts for recurring command fumbles, consecutive runs
 of the same base command where the first failed and a later variant succeeded
 (wrong tool, wrong path, unknown flag, missing argument). Report-only by
-default; entirely local. See [DISTILL.md](../agent/DISTILL.md#repowise-corrections--recurring-command-fumbles).
+default; entirely local. See [DISTILL.md](../agent/DISTILL.md#repowise-corrections-recurring-command-fumbles).
 
 | Flag | Description |
 |------|-------------|
@@ -1805,6 +1806,26 @@ repowise workspace metrics
 repowise workspace metrics --format json
 ```
 
+### `repowise workspace impacted-tests <repo:path>...`
+
+Given changed provider files (`repo:path`), list the tests in consumer repos worth running. Each consumer call site lands in one state (measured, inferred, none, unresolved). See [Cross-repo test impact](../scale/WORKSPACES.md#cross-repo-test-impact).
+
+| Flag | Description |
+|------|-------------|
+| `--path` | Workspace root (default: auto-detect from cwd) |
+| `--call-depth` | Call graph walk depth, 1-8 (default: 3) |
+| `--import-depth` | Import graph fallback depth, 1-3 (default: 1) |
+| `--no-measured` | Exclude coverage-backed recommendations |
+| `--no-inferred` | Exclude graph-inferred recommendations |
+| `--min-confidence` | Minimum contract link confidence, 0.0-1.0 (default: 0.0) |
+| `--target-repo` | Limit to these consumer repo aliases (repeatable) |
+| `--format` | `table` (default), `json`, or `list` (one `repo:test-file` per line). `--json` is a deprecated alias |
+
+```bash
+repowise workspace impacted-tests backend:app/routers/users.py
+repowise workspace impacted-tests backend:app/routers/users.py --target-repo frontend --format list
+```
+
 See [Workspaces](../scale/WORKSPACES.md) for the full multi-repo guide.
 
 ---
@@ -1884,9 +1905,10 @@ hook surfaces, never decisions.
 
 Manage the Distill command-rewrite hooks (Claude Code + Codex PreToolUse).
 When installed, noisy agent commands (tests, builds, git status/log/diff,
-searches, listings) are rewritten to `repowise distill <command>`, pending
-your approval by default, so the agent sees a compact, errors-first
-rendering.
+searches, listings) are rewritten to `repowise distill <command>` without a
+prompt by default (`permission: allow`), so the agent sees a compact,
+errors-first rendering. `--allow-rule` seeds a `Bash(repowise distill:*)` /
+`PowerShell(repowise distill:*)` allow rule, needed only under `permission: ask`.
 
 ```bash
 repowise hook rewrite install        # writes ~/.claude/settings.json (idempotent)
