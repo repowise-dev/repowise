@@ -43,7 +43,6 @@ from repowise.core.persistence.models import (
 )
 from repowise.server.mcp_server._basis import call_resolution_basis
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
-from repowise.server.mcp_server._budget.budgeter import symbol_priority
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
     _decision_body,
@@ -88,6 +87,19 @@ _RANK_LOOKUP_CHUNK = 500
 #: file's types and functions in most real files.
 _SYMBOL_CAP = 15
 
+# Card rank by ``SymbolKind``: the types a file defines, then its callables,
+# then values. Wider than the budgeter's ``symbol_priority`` table, which
+# ranks ``type_alias``, ``impl`` and ``module`` with variables.
+_TYPE_KINDS = frozenset(
+    {"class", "interface", "struct", "trait", "enum", "type", "type_alias", "impl", "module"}
+)
+_CALLABLE_KINDS = frozenset({"function", "method", "macro", "decorator"})
+
+
+def _kind_rank(kind: str | None) -> int:
+    kind = (kind or "").lower()
+    return 0 if kind in _TYPE_KINDS else 1 if kind in _CALLABLE_KINDS else 2
+
 
 async def _compact_symbol_rows(
     session: AsyncSession, repo_id: str, file_path: str, symbols: Any
@@ -117,8 +129,9 @@ async def _compact_symbol_rows(
         sid = symbol_identity(s.symbol_id)
         if sid != f"{path}::{s.name}":
             row["symbol_id"] = sid
-        kind_rank = symbol_priority(row, set())[0]
-        scored.append(((-kind_rank, -rank.get(s.symbol_id, 0.0), s.start_line or 0), row))
+        scored.append(
+            ((_kind_rank(s.kind), -rank.get(s.symbol_id, 0.0), s.start_line or 0), row)
+        )
     scored.sort(key=lambda pair: pair[0])
     return [row for _, row in scored]
 
@@ -180,37 +193,75 @@ _RST_EXTS = (".rst",)
 _MD_HEADING = re.compile(r" {0,3}#{1,6}(\s|$)")
 _MD_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
 _RST_ADORNMENT = re.compile(r"([!-/:-@\[-`{-~])\1+")
+# Lines that open with a comment marker: licence banners and the like.
+_COMMENT_PREFIXES = ("#", "//", "--", "/*", "*", "<!--")
 
 
 def _markdown_headings(lines: list[str]) -> list[str]:
-    """ATX headings outside fenced code blocks, where ``#`` is a comment."""
+    """ATX headings outside front matter, fenced code and HTML comments."""
     headings: list[str] = []
+    start = 0
+    if lines and lines[0].strip() == "---":
+        close = next((i for i in range(1, len(lines)) if lines[i].strip() in ("---", "...")), None)
+        if close is not None:
+            start = close + 1
     fence = ""
-    for ln in lines:
-        m = _MD_FENCE.match(ln)
-        if m:
-            marker = m.group(1)
-            if not fence:
-                fence = marker
-            elif marker[0] == fence[0] and len(marker) >= len(fence):
+    in_comment = False
+    for ln in lines[start:]:
+        if in_comment:
+            in_comment = "-->" not in ln
+            continue
+        if fence:
+            # Only a bare run of the opening character, at least as long, closes.
+            bare = ln.strip()
+            if bare and set(bare) == {fence[0]} and len(bare) >= len(fence):
                 fence = ""
             continue
-        if not fence and _MD_HEADING.match(ln):
+        m = _MD_FENCE.match(ln)
+        if m:
+            fence = m.group(1)
+            continue
+        opened = ln.find("<!--")
+        if opened != -1 and "-->" not in ln[opened + 4 :]:
+            in_comment = True
+            continue
+        if _MD_HEADING.match(ln):
             headings.append(ln.strip())
     return headings
+
+
+def _rst_table_lines(lines: list[str]) -> set[int]:
+    """Line indexes inside simple tables: a blank-free block with 3+ ``=`` borders."""
+    inside: set[int] = set()
+    i = 0
+    while i < len(lines):
+        if not lines[i].strip():
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and lines[j].strip():
+            j += 1
+        borders = sum(1 for k in range(i, j) if set(lines[k].strip()) <= {"=", " "})
+        if borders >= 3 and set(lines[i].strip()) <= {"=", " "}:
+            inside.update(range(i, j))
+        i = j
+    return inside
 
 
 def _rst_headings(lines: list[str]) -> list[str]:
     """Section titles: an unindented line underlined by punctuation at least as long.
 
     Indented lines (literal and directive bodies) are never titles, so a
-    ``# comment`` inside a ``code-block`` is not one either.
+    ``# comment`` inside a ``code-block`` is not one either, and neither is a
+    row of a simple table framed by ``=`` borders.
     """
+    tables = _rst_table_lines(lines)
     headings: list[str] = []
     for i in range(len(lines) - 1):
         title, under = lines[i].rstrip(), lines[i + 1].rstrip()
         if (
-            title
+            i not in tables
+            and title
             and not title[0].isspace()
             and not _RST_ADORNMENT.fullmatch(title)
             and _RST_ADORNMENT.fullmatch(under)
@@ -225,7 +276,8 @@ def _outline_lines(text: str, file_path: str) -> tuple[str, list[str]]:
 
     Returns the kind of excerpt chosen so the caller can label it truthfully.
     A heading-less document falls through to head lines rather than reporting
-    an empty outline.
+    an empty outline. Head lines skip comment banners unless that is all
+    the file has.
     """
     lines = text.splitlines()
     lower = file_path.lower()
@@ -237,7 +289,9 @@ def _outline_lines(text: str, file_path: str) -> tuple[str, list[str]]:
         headings = []
     if headings:
         return "headings", headings
-    return "head", [ln.rstrip() for ln in lines if ln.strip()]
+    head = [ln.rstrip() for ln in lines if ln.strip()]
+    content = [ln for ln in head if not ln.lstrip().startswith(_COMMENT_PREFIXES)]
+    return "head", content or head
 
 
 def _file_preview(repo_root: Any, file_path: str) -> dict[str, Any] | None:
@@ -680,6 +734,8 @@ async def _resolve_one_target(
                 )
                 if not want_all_symbols and len(symbols) > _SYMBOL_CAP:
                     docs["symbols"] = docs["symbols"][:_SYMBOL_CAP]
+                    # The budgeter's own total, so a later trim cannot report 15.
+                    docs["symbols_total"] = len(symbols)
                     docs["symbols_truncated"] = {
                         "shown": _SYMBOL_CAP,
                         "total": len(symbols),

@@ -24,7 +24,7 @@ async def repository(session, populated_db) -> Repository:
 
 @pytest.fixture
 async def dense_file(session, populated_db) -> None:
-    """18 module variables first, then 3 classes, 4 functions and 2 variants."""
+    """18 module variables first, then 3 classes, 4 functions, 2 variants, a type alias."""
     rid = populated_db
     session.add(
         GraphNode(
@@ -35,6 +35,7 @@ async def dense_file(session, populated_db) -> None:
     rows += [(f"Klass{i}", "class", f"Klass{i}") for i in range(3)]
     rows += [(f"fn_{i}", "function", f"fn_{i}") for i in range(4)]
     rows += [("run", "method", "Klass0::run"), ("fn_0", "function", "fn_0#2")]
+    rows += [("Alias", "type_alias", "Alias")]
     for line, (name, kind, tail) in enumerate(rows, start=1):
         sid = f"{_FILE}::{tail}"
         session.add(
@@ -77,20 +78,36 @@ async def test_default_card_is_capped_and_ranked(session, repository, dense_file
     symbols = docs["symbols"]
     assert len(symbols) == _SYMBOL_CAP == 15
     assert docs["symbols_truncated"]["shown"] == 15
-    assert docs["symbols_truncated"]["total"] == 27
+    assert docs["symbols_truncated"]["total"] == 28
+    assert docs["symbols_total"] == 28
     assert "include=['symbols']" in docs["symbols_truncated"]["hint"]
     kinds = [s["kind"] for s in symbols]
-    assert kinds[:3] == ["class"] * 3
-    assert set(kinds[3:9]) == {"function", "method"}
-    assert kinds[9:] == ["variable"] * 6
+    # A type alias is a type, not a value, though the budgeter's table misses it.
+    assert kinds[:4] == ["class"] * 3 + ["type_alias"]
+    assert set(kinds[4:10]) == {"function", "method"}
+    assert kinds[10:] == ["variable"] * 5
     # Centrality orders within a kind, start line breaks ties.
-    assert [s["name"] for s in symbols[3:5]] == ["fn_3", "fn_0"]
-    assert [s["name"] for s in symbols[9:11]] == ["VAR_0", "VAR_1"]
+    assert [s["name"] for s in symbols[4:6]] == ["fn_3", "fn_0"]
+    assert [s["name"] for s in symbols[10:12]] == ["VAR_0", "VAR_1"]
+
+
+async def test_budget_trim_of_a_capped_card_keeps_the_true_total(
+    session, repository, dense_file
+) -> None:
+    """The budgeter's ``symbols_total`` must count the file, not the 15-row cut."""
+    from repowise.server.mcp_server._budget.budgeter import truncate_to_budget
+
+    card = await _card(session, repository, _FILE)
+    result = truncate_to_budget({"targets": {_FILE: card}}, 1200, record_counts=True)
+    docs = result["targets"][_FILE]["docs"]
+    assert len(docs["symbols"]) < _SYMBOL_CAP
+    assert docs["symbols_emitted"] == len(docs["symbols"])
+    assert docs["symbols_total"] == 28
 
 
 async def test_include_symbols_returns_every_symbol(session, repository, dense_file) -> None:
     docs = (await _card(session, repository, _FILE, _DEFAULT | {"symbols"}))["docs"]
-    assert len(docs["symbols"]) == 27
+    assert len(docs["symbols"]) == 28
     assert "symbols_truncated" not in docs
 
 
@@ -100,7 +117,7 @@ async def test_symbol_id_dropped_only_when_derivable(session, repository, dense_
     # A method and an overload variant cannot be rebuilt from path::name.
     assert set(by_id) == {f"{_FILE}::Klass0::run", f"{_FILE}::fn_0#2"}
     plain = [s for s in docs["symbols"] if "symbol_id" not in s]
-    assert len(plain) == 25
+    assert len(plain) == 26
 
 
 async def test_unresolved_symbol_degrade_lists_every_symbol(
@@ -109,4 +126,4 @@ async def test_unresolved_symbol_degrade_lists_every_symbol(
     """The caller is hunting for a name, so the fallback card is uncapped."""
     card = await _card(session, repository, f"{_FILE}::Missing")
     assert card["resolved_to"] == _FILE
-    assert len(card["docs"]["symbols"]) == 27
+    assert len(card["docs"]["symbols"]) == 28

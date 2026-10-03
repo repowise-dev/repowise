@@ -168,7 +168,7 @@ A triage card for files, modules or symbols: summary, symbols with signatures an
 
 **Key return fields:** `targets` keyed by target, each with title, summary, symbols, `hotspot`, `fix_history` (files with counted bug fixes), `episodes`, decision titles, `file_preview` (for files with no symbols), `resolved_to` (a symbol miss falling back to its file); `dropped_targets` and `recovery` when the budget forced targets out; `_meta.complete` for whole files served.
 
-A file's compact symbol list holds its top 15 symbols, classes and types first, then functions and methods, then the rest, each group by centrality; `symbols_truncated` gives the total, and `symbols` lists them all. A row without `symbol_id` is `path::name`; methods and overload variants carry theirs, so pass a row's id to `get_symbol` when it has one.
+A file's compact symbol list holds its top 15 symbols: types (classes, interfaces, structs, traits, enums, type aliases, impls, modules) first, then functions and methods, then the rest, each group by centrality. `symbols_truncated` gives the total, and `include=["symbols"]` lists them all. When the response budget trims the list further, it keeps symbols by kind and name match, not centrality. A row without `symbol_id` is `path::name`; methods and overload variants carry theirs, so pass a row's id to `get_symbol` when it has one.
 
 `skeleton` renders a file with bodies elided: every signature, the imports, and the bodies of its most central symbols, with line ranges on every elision. `doc_drift` lists the documents that name the file and whether they carry drift. An empty `callers` or `callees` list comes with a `*_basis` saying how much of that language's calls the graph resolved; read it before concluding nothing calls a symbol.
 

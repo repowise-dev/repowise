@@ -113,6 +113,46 @@ def test_rst_headings_come_from_adornment_not_hash_lines(tmp_path) -> None:
     assert preview["heading_count"] == 3
 
 
+def test_a_fence_closes_only_on_a_bare_marker(tmp_path) -> None:
+    """```python inside an open fence is code, not the fence's end."""
+    (tmp_path / "n.md").write_text(
+        "# Top\n\n```\n```python\n# still code\n```\n\n## After\n",
+        encoding="utf-8",
+    )
+    assert _file_preview(tmp_path, "n.md")["headings"] == ["# Top", "## After"]
+
+
+def test_front_matter_and_html_comments_hold_no_headings(tmp_path) -> None:
+    (tmp_path / "fm.md").write_text(
+        "---\ntitle: x\n# yaml comment\n---\n\n<!--\n# commented out\n-->\n"
+        "<!-- # inline --> \n# Real\n",
+        encoding="utf-8",
+    )
+    preview = _file_preview(tmp_path, "fm.md")
+    assert preview["headings"] == ["# Real"]
+    assert preview["heading_count"] == 1
+
+
+def test_rst_simple_table_rows_are_not_titles(tmp_path) -> None:
+    (tmp_path / "t.rst").write_text(
+        "Guide\n=====\n\n=====\nName\n=====\nfoo\nbar\n=====\n\nUsage\n-----\n",
+        encoding="utf-8",
+    )
+    assert _file_preview(tmp_path, "t.rst")["headings"] == ["Guide", "Usage"]
+
+
+def test_head_lines_skip_a_comment_banner(tmp_path) -> None:
+    """A licence banner says nothing about the file; its keys do."""
+    (tmp_path / "b.yaml").write_text(
+        "# Copyright 2026 Example\n# Licensed under the Apache License\n#\n"
+        "name: svc\nport: 8080\nreplicas: 2\nimage: x\n",
+        encoding="utf-8",
+    )
+    assert _file_preview(tmp_path, "b.yaml")["head"] == ["name: svc", "port: 8080", "replicas: 2"]
+    (tmp_path / "only.sh").write_text("# just a comment\n", encoding="utf-8")
+    assert _file_preview(tmp_path, "only.sh")["head"] == ["# just a comment"]
+
+
 def test_non_markdown_preview_returns_head_lines(tmp_path) -> None:
     """Config and data files keep their keys at the top, so head lines carry them."""
     (tmp_path / "c.yaml").write_text("\n\nname: svc\nport: 8080\n", encoding="utf-8")

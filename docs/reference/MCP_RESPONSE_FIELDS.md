@@ -134,7 +134,7 @@ Per target, under `targets`:
 
 | Field | Meaning |
 |-------|---------|
-| title, summary, symbols | Docs summary and the symbols defined, with signatures and line numbers. Compact cards list the top 15 (types, then functions and methods, then the rest, by centrality) with `symbols_truncated` `{shown, total, hint}`; `include=["symbols"]` lists all. A row without `symbol_id` is `path::name` |
+| title, summary, symbols | Docs summary and the symbols defined, with signatures and line numbers. Compact cards list the top 15 (types, then functions and methods, then the rest, by centrality) with `symbols_truncated` `{shown, total, hint}` and `symbols_total`; a budget trim below that keeps symbols by kind and name match, not centrality; `include=["symbols"]` lists all. A row without `symbol_id` is `path::name` |
 | `hotspot` | Churn flag |
 | `fix_history` | Only on files with counted bug fixes: count, age, `bug_magnet`. A cue to call `get_risk` |
 | `episodes` | Count of dated records bound to the target; `get_why` serves their bodies |
