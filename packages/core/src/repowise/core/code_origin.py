@@ -493,11 +493,13 @@ def _is_tool_example(name: str, dirs: list[str]) -> bool:
     return _SOURCE_ROOT not in dirs[: dirs.index(example_dir)]
 
 
-# A docs-named folder that is not plainly ``docs`` (``doc``,
-# ``documentation-website``, ``docs-site``) counts only with evidence: a
-# docs-site generator's config in it or one level down (Writerside keeps its
+# A docs-named folder that is not plainly ``docs`` counts only with evidence:
+# a docs-site generator's config in it or one level down (Writerside keeps its
 # under ``Writerside/``). Without one it may be a shipped package.
-_DOCS_SITE_NAME_RE = re.compile(r"^(?:docs?|documentation)(?:[-_.].*)?$")
+_DOCS_SITE_NAMES = frozenset({"doc", "documentation"})
+# ``documentation-website``, ``docs-site``: a suffixed name is as often a
+# service (``doc-service``, ``docs-api``), so it needs a generator-specific file.
+_DOCS_SITE_SUFFIXED_RE = re.compile(r"^(?:docs?|documentation)[-_.]")
 _DOCS_SITE_MARKERS = frozenset(
     {
         "writerside.cfg",
@@ -506,38 +508,47 @@ _DOCS_SITE_MARKERS = frozenset(
         "docusaurus.config.js",
         "docusaurus.config.ts",
         "docusaurus.config.mjs",
-        "hugo.toml",
-        "hugo.yaml",
-        "_config.yml",  # Jekyll
-        "conf.py",  # Sphinx
         "book.toml",  # mdBook
         "antora.yml",
         "docfx.json",
         ".vitepress",
     }
 )
+# Generic config names that mean a docs site only beside the site's own files,
+# and only under a plain ``doc`` / ``documentation`` folder.
+_DOCS_SITE_PAIRED_MARKERS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("conf.py", frozenset({"index.rst", "index.md"})),  # Sphinx
+    ("_config.yml", frozenset({"_posts", "_layouts"})),  # Jekyll
+)
+
+
+def _has_docs_site_config(names: set[str], paired: bool) -> bool:
+    if names & _DOCS_SITE_MARKERS:
+        return True
+    return paired and any(
+        config in names and names & companions
+        for config, companions in _DOCS_SITE_PAIRED_MARKERS
+    )
+
+
+def _entry_names(folder: str) -> tuple[set[str], list[str]]:
+    """Lower-cased entry names in *folder*, and its subfolders' paths."""
+    try:
+        with os.scandir(folder) as entries:
+            listed = [(e.name.lower(), e.path, e.is_dir()) for e in entries]
+    except OSError:
+        return set(), []
+    return {name for name, _, _ in listed}, [path for _, path, is_dir in listed if is_dir]
 
 
 @lru_cache(maxsize=4096)
-def _is_docs_site(folder: str) -> bool:
-    """Whether *folder* (an absolute path) holds a docs-site generator config."""
-    try:
-        with os.scandir(folder) as entries:
-            children = [(e.name.lower(), e.path, e.is_dir()) for e in entries]
-    except OSError:
-        return False
-    if any(name in _DOCS_SITE_MARKERS for name, _, _ in children):
-        return True
-    for _, child, is_dir in children:
-        if not is_dir:
-            continue
-        try:
-            with os.scandir(child) as entries:
-                if any(e.name.lower() in _DOCS_SITE_MARKERS for e in entries):
-                    return True
-        except OSError:
-            continue
-    return False
+def _is_docs_site(folder: str, paired: bool) -> bool:
+    """Whether *folder* (an absolute path) or a direct subfolder holds a
+    docs-site generator's config."""
+    names, subfolders = _entry_names(folder)
+    return _has_docs_site_config(names, paired) or any(
+        _has_docs_site_config(_entry_names(sub)[0], paired) for sub in subfolders
+    )
 
 
 def _is_docs_example(
@@ -554,8 +565,10 @@ def _is_docs_example(
         return False
     parts = normalized.split("/")
     return any(
-        _DOCS_SITE_NAME_RE.match(d)
-        and _is_docs_site(os.path.join(os.fspath(repo_root), *parts[: i + 1]))
+        (d in _DOCS_SITE_NAMES or _DOCS_SITE_SUFFIXED_RE.match(d))
+        and _is_docs_site(
+            os.path.join(os.fspath(repo_root), *parts[: i + 1]), d in _DOCS_SITE_NAMES
+        )
         for i, d in enumerate(dirs)
     )
 
@@ -696,8 +709,8 @@ def code_origin(
     taken for someone else's.
 
     *repo_root* lets a docs-named folder other than ``docs`` count as docs
-    when it holds a docs-site generator's config; without it only the path
-    rules apply.
+    when it holds a docs-site generator's config. ``None`` skips that check,
+    so such a folder stays production and only the path rules apply.
     """
     split = _split(path)
     if split is None:
