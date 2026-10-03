@@ -16,7 +16,7 @@ import time
 import uuid
 from pathlib import Path
 
-from repowise.cli.helpers import console, warn
+from repowise.cli.helpers import as_commit_id, console, warn
 
 _SEED_TEMPDIR_STALENESS_SECS = 3600
 
@@ -203,8 +203,10 @@ def seed_index_from_base(
             break
 
         try:
+            if as_commit_id(last_sync_commit) is None:
+                raise subprocess.CalledProcessError(1, "git merge-base")
             subprocess.check_call(
-                ["git", "merge-base", "--is-ancestor", last_sync_commit, "HEAD"],
+                ["git", "merge-base", "--is-ancestor", "--end-of-options", last_sync_commit, "HEAD"],
                 cwd=r_path,
                 stderr=subprocess.DEVNULL,
             )
