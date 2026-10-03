@@ -3,7 +3,7 @@
 // Django payloads (test/fixtures).
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Hook, ModApi, On, PluginOptions } from "../src/mod-api";
-import { MAP_COPY } from "../src/views/copy";
+import { MAP_COPY, PANE_COPY } from "../src/views/copy";
 import { fixture } from "./fake-host";
 
 type Hooks = Record<string, Hook<any>>;
@@ -46,6 +46,9 @@ function uiFake(calls: Calls): ModApi["ui"] {
       Box: (props) => ({ el: "Box", props }),
       Text: (props) => ({ el: "Text", props }),
       Raster: (props) => ({ el: "Raster", props }),
+      Button: (props) => ({ el: "Button", props }),
+      Input: (props) => ({ el: "Input", props }),
+      Markdown: (props) => ({ el: "Markdown", props }),
     }),
     open: async (pane) => {
       calls.open.push(pane);
@@ -169,7 +172,9 @@ describe("register, for the map", () => {
   it("session.start registers /lens", async () => {
     const { $, calls } = fakeDollar();
     await hooks["session.start"]!($, {}, async () => undefined);
-    expect(calls.commands).toEqual([{ name: "lens", description: MAP_COPY.command, immediate: true }]);
+    expect(calls.commands).toEqual([
+      { name: "lens", description: PANE_COPY.command, argumentHint: "[map | ask <question> | recap]", immediate: true },
+    ]);
   });
 });
 
@@ -208,10 +213,10 @@ async function opened(d: Full = fullDollar()): Promise<Full> {
 const render = async (d: Full) => (await hooks["ui.render:Pane"]!(d.$, pane(), async () => THEIRS)) as Tree;
 
 describe("the map pane", () => {
-  it("/lens opens the pane without taking the keyboard and prints nothing", async () => {
+  it("/lens opens the pane with the keyboard (it was asked for) and prints nothing", async () => {
     const d = await started();
     expect(await hooks["command.run:lens"]!(d.$, { command: "lens" }, async () => ({ text: "core" }))).toEqual({});
-    expect(d.calls.open).toEqual([{ id: "lens", title: "Lens", rows: 28 }]);
+    expect(d.calls.open).toEqual([{ id: "lens", title: "Lens", rows: 29, focus: true }]);
   });
 
   it("/lens on a surface that cannot place the pane says why in one band line", async () => {
@@ -226,8 +231,9 @@ describe("the map pane", () => {
     const d = await opened();
     const tree = await render(d);
     const r = flatten(tree).find((n) => n.el === "Raster")!;
-    expect(r.props).toMatchObject({ key: "lens-map", columns: 180, rows: 49 });
-    expect(r.props.cells).toHaveLength(180 * 49 * 16);
+    // The pane's 55 rows less the tab row and the legend.
+    expect(r.props).toMatchObject({ key: "lens-map", columns: 180, rows: 48 });
+    expect(r.props.cells).toHaveLength(180 * 48 * 16);
     expect(textOf(tree).some((t) => /^1,\d{3} of 2,970 files drawn at this size/.test(t))).toBe(true);
   });
 
@@ -246,9 +252,9 @@ describe("the map pane", () => {
     await render(d);
     await hooks["tool.call"]!(d.$, editQuery, async () => ({ result: {} }));
     await until(() => d.calls.blit.length >= 2);
-    expect(d.calls.blit[0]).toMatchObject({ requestId: "lens", key: "lens-map", columns: 180, rows: 49 });
+    expect(d.calls.blit[0]).toMatchObject({ requestId: "lens", key: "lens-map", columns: 180, rows: 48 });
     const shown = textOf(await render(d));
-    // At 180x49 one of the twelve is under a pixel: counted, not hidden.
+    // At 180x48 one of the twelve is under a pixel: counted, not hidden.
     expect(shown).toContain("edited query.py · 12 files import it (from imports, not calls) · 1 not drawn");
     expect(shown).toContain("1 file read");
     expect(asked(d, "/blast-radius")).toBe(1);
@@ -373,7 +379,7 @@ describe("the map pane", () => {
       throw new Error("no table");
     };
     expect(await hooks["ui.render:Pane"]!(d.$, pane(), async () => THEIRS)).toBe(THEIRS);
-    expect(d.calls.logs).toEqual(["lens: map render failed: Error: no table"]);
+    expect(d.calls.logs).toEqual(["lens: pane render failed: Error: no table"]);
   });
 
   it("loaded mid-session: learns the cwd from the first call and observes from the next", async () => {
@@ -410,7 +416,8 @@ describe("auto-open", () => {
     const d = await start({ lens_pane_autoopen: true }, true);
     await hooks["tool.call"]!(d.$, read, async () => ({ result: {} }));
     await hooks["tool.call"]!(d.$, read, async () => ({ result: {} }));
-    expect(d.calls.open).toEqual([{ id: "lens", title: "Lens", rows: 28 }]);
+    // Never the keyboard: the person did not ask for it.
+    expect(d.calls.open).toEqual([{ id: "lens", title: "Lens", rows: 29 }]);
     await until(() => asked(d, "/health/map") === 1);
   });
 

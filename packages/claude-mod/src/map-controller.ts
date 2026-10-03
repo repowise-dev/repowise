@@ -34,7 +34,8 @@ export interface MapIO {
   /** Debug log only (`--debug-file`), never the user's screen. */
   debug(message: string): void;
   blit(cells: string, columns: number, rows: number): Promise<{ deny?: string }>;
-  openPane(): Promise<UiOpenResult>;
+  /** `focus` only when the person asked for the pane; an automatic open never takes the keyboard. */
+  openPane(focus: boolean): Promise<UiOpenResult>;
   closePane(): Promise<void>;
 }
 
@@ -170,12 +171,12 @@ export class LensMap {
     if (action.type === "read") void this.autoOpen(io);
   }
 
-  /** /lens: open the pane (asked, so placed at any width) and start what it shows. */
+  /** /lens: open the pane with focus (asked, so placed at any width) and start what it shows. */
   async request(io: MapIO): Promise<void> {
     this.requested = true;
     this.band = null;
     if (this.feed.status === "failed") this.feed = { status: "idle" };
-    const opened = await io.openPane();
+    const opened = await io.openPane(true);
     if (!opened.isPlaced) this.band = notPlacedLine(opened.reason);
     this.fetchWanted(io);
     io.redraw();
@@ -184,6 +185,11 @@ export class LensMap {
   /** A main-loop turn ended: the band row has been seen. */
   turnEnded(): void {
     this.band = null;
+  }
+
+  /** Another tab is shown: nothing of the map is on screen to animate. */
+  offScreen(): void {
+    this.drawn = null;
   }
 
   /** The pane's tree; starts the feed fetch when the map is wanted and not yet asked for. */
@@ -278,7 +284,7 @@ export class LensMap {
   private async autoOpen(io: MapIO): Promise<void> {
     if (!this.mayAutoOpen()) return;
     this.autoOpenTried = true;
-    const opened = await io.openPane();
+    const opened = await io.openPane(false);
     if (this.disposed || this.requested) return;
     if (opened.isPlaced) {
       this.requested = true;

@@ -6,17 +6,19 @@
 
 import { getSavings } from "@repowise-dev/api-client/costs";
 import { discover, isWindowsPath, readFreshness, type Discovery } from "./data/discovery";
-import { callTool, fetchFileContext, isOwnLensCall, resetMcp, warmMcp } from "./data/mcp";
+import { callTool, fetchFileContext, isOwnLensCall, mcpReady, resetMcp, warmMcp } from "./data/mcp";
 import { withTimeout } from "./data/transport";
 import { fit } from "./format";
 import type { Host } from "./host";
 import { LensMap, type MapIO, type MapRepo } from "./map-controller";
 import type {
   CheckNext,
+  CommandRunEvent,
   ModApi,
   On,
   PaneRenderEvent,
   PluginOptions,
+  PostCompactEvent,
   PostToolUseEvent,
   RenderEvent,
   SessionStartEvent,
@@ -26,6 +28,7 @@ import type {
   ToolResultEvent,
   ToolUseEvent,
   TurnCompleteEvent,
+  UiInputEvent,
 } from "./mod-api";
 import {
   EDIT_TOOLS,
@@ -37,14 +40,18 @@ import {
   notesFromAugment,
   savingsSince,
   savingsTotals,
+  touchedPath,
 } from "./model/events";
+import { askReply, askRoute, lensCommand, whyDraft, type PaneTab } from "./model/ask";
 import { hintFor, initialSession, reduce, type SavingsDelta, type SessionAction, type SessionState } from "./model/session";
 import { bandView } from "./views/band";
 import { materialize, type ElementTable, type Node } from "./views/elements";
 import { marginView } from "./views/margin";
 import { isFileEdit, isRetryable, shouldReview, type ChangeRisk } from "./model/review";
-import { HINTS, MAP_COPY, REVIEW_TIMEOUT_S } from "./views/copy";
+import { BRIEF_PRESS, briefText } from "./views/brief";
+import { HINTS, MAP_COPY, PANE_COPY, REVIEW_TIMEOUT_S } from "./views/copy";
 import { MAP_KEY } from "./views/mapPane";
+import { ASK_KEY, TABS, TAB_PRESS, TAB_ROWS, askView, paneView, recapView } from "./views/pane";
 import { PRESS, directiveRows, reviewText, runTestsText, withCard } from "./views/review";
 import { spinnerSuffix } from "./views/spinner";
 import { bashText, parseSqueeze, type Squeeze } from "./model/squeeze";
@@ -57,8 +64,10 @@ const SAVINGS_COOLDOWN_MS = 60_000;
 /** The server's key in the plugin's .mcp.json. */
 const MCP_SERVER_KEY = "repowise";
 const PANE_ID = "lens";
-/** Rows an inline pane asks for: the tallest inline map (20) plus a legend wrapped once. */
-const PANE_ROWS = 28;
+/** Rows an inline pane asks for: the tabs, the tallest inline map (20) and a legend wrapped once. */
+const PANE_ROWS = 29;
+/** get_why took 22 s cold on Django, get_answer about 4 s. */
+const ASK_TIMEOUT_MS = 30_000;
 
 let state: SessionState = initialSession;
 /** Bumped per session, so a refresh started in an earlier one never lands in this one. */
@@ -148,8 +157,13 @@ function bind($: ModApi): Bound {
     redraw: () => $.ui.invalidate("ui.render"),
     debug: (message) => $.ui.log(`lens: ${message}`, { to: "debug" }),
     blit: (cells, columns, rows) => $.ui.blit({ requestId: PANE_ID, key: MAP_KEY, cells, columns, rows }),
-    // No focus: the map has no controls, and the prompt keeps the keyboard.
-    openPane: () => $.ui.open({ id: PANE_ID, title: MAP_COPY.title, rows: PANE_ROWS }),
+    // Focus only when asked (/lens, a press): an automatic open leaves the prompt the keyboard.
+    openPane: (focus) =>
+      $.ui.open(
+        focus
+          ? { id: PANE_ID, title: MAP_COPY.title, rows: PANE_ROWS, focus: true }
+          : { id: PANE_ID, title: MAP_COPY.title, rows: PANE_ROWS },
+      ),
     closePane: () => $.ui.close({ id: PANE_ID }),
   };
 }
@@ -250,7 +264,7 @@ async function onSessionStart(
     resetMcp();
     warmMcp(b.host);
     refresh(b);
-    await $.command.register({ name: "lens", description: MAP_COPY.command, immediate: true });
+    await $.command.register({ name: "lens", description: PANE_COPY.command, argumentHint: PANE_COPY.argumentHint, immediate: true });
     map.setReducedMotion((await $.settings.read())["prefersReducedMotion"] === true);
   } catch (err) {
     // Lens stays quiet; the session is unaffected.
@@ -385,6 +399,79 @@ function pressRunTests($: ModApi): void {
   }
 }
 
+/** `Why`: the pane's Ask tab, its field holding the decision that governs the edit; nothing is asked until Enter. */
+function pressWhy($: ModApi): void {
+  const b = bind($);
+  try {
+    const decision = state.review.decision;
+    if (decision === null) return;
+    dispatch(b, { type: "tab", tab: "ask", draft: whyDraft(decision) });
+    map.request(b).catch((err: unknown) => b.debug(`why failed: ${String(err)}`));
+  } catch (err) {
+    b.debug(`why failed: ${String(err)}`);
+  }
+}
+
+/** `Brief Claude`: the session brief as a visible prompt; the offer then retires. */
+function pressBrief($: ModApi): void {
+  const b = bind($);
+  try {
+    const brief = briefText(state);
+    dispatch(b, { type: "briefDone" });
+    if (brief === null) return;
+    $.prompt.submit({ text: brief }).catch((err: unknown) => b.debug(`brief failed: ${String(err)}`));
+  } catch (err) {
+    b.debug(`brief failed: ${String(err)}`);
+  }
+}
+
+// Only offers the brief: the compaction and its summary pass on untouched.
+async function onPostCompact(
+  $: ModApi,
+  e: PostCompactEvent,
+  next: (e: PostCompactEvent) => Promise<unknown>,
+): Promise<unknown> {
+  try {
+    dispatch(bind($), { type: "compacted" });
+  } catch (err) {
+    bind($).debug(`PostCompact failed: ${String(err)}`);
+  }
+  return next(e);
+}
+
+/**
+ * Asks the index, one question at a time. Only called from a live hook (the
+ * Ask field's `ui.input`, or `/lens ask`): `callTool` starts the call at
+ * once, which is when the engine approves Lens's own lookup.
+ */
+function startAsk(b: Bound, question: string): void {
+  const q = question.trim();
+  if (q === "" || state.ask.phase === "asking") return;
+  const { tool, args } = askRoute(q);
+  dispatch(b, { type: "asked", question: q, tool });
+  const gen = generation;
+  callTool<unknown>(b.host, tool, args, { timeoutMs: ASK_TIMEOUT_MS })
+    .then((reply) => {
+      if (gen === generation) dispatch(b, { type: "answered", question: q, answer: askReply(tool, reply) });
+    })
+    .catch((err: unknown) => {
+      b.debug(`ask failed: ${String(err)}`);
+      const message = fit((err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "", ERROR_CELLS);
+      if (gen === generation) dispatch(b, { type: "askFailed", question: q, tool, message });
+    });
+}
+
+// The Ask field's Enter. The lookup starts here, in Lens's own hook, so the
+// engine approves it; the field's own closure does nothing.
+async function onAskInput($: ModApi, e: UiInputEvent, next: (e: UiInputEvent) => Promise<unknown>): Promise<unknown> {
+  try {
+    if (e.kind === "submit" && e.element === ASK_KEY) startAsk(bind($), e.value);
+  } catch (err) {
+    bind($).debug(`ask failed: ${String(err)}`);
+  }
+  return next(e);
+}
+
 /** `Details`: the review's full directive in the transcript, one row per line, for the user only. */
 function pressDetails($: ModApi): void {
   try {
@@ -407,7 +494,9 @@ async function onBand($: ModApi, e: RenderEvent, next: (e: RenderEvent) => Promi
     const elements = $.ui.resolve(e);
     const ours = materialize(tree, elements, {
       [PRESS.tests]: () => pressRunTests($),
+      [PRESS.why]: () => pressWhy($),
       [PRESS.details]: () => pressDetails($),
+      [BRIEF_PRESS]: () => pressBrief($),
     });
     const box = elements["Box"];
     if (theirs === null || theirs === undefined || box === undefined) return ours;
@@ -492,7 +581,10 @@ function fileToolStarted(b: Bound, e: ToolCallEvent): string | null {
 
 function editLanded(b: Bound, e: ToolCallEvent, result: unknown): void {
   try {
-    if (reviewOn && isFileEdit(e, result)) reviewAfterEdit(b);
+    if (!isFileEdit(e, result)) return;
+    const path = touchedPath(e, cwd, state.repoRoot);
+    if (path !== null) dispatch(b, { type: "touched", path });
+    if (reviewOn) reviewAfterEdit(b);
   } catch (err) {
     b.debug(`tool.call failed: ${String(err)}`);
   }
@@ -588,11 +680,21 @@ async function onToolUse($: ModApi, e: ToolUseEvent, next: (e: ToolUseEvent) => 
   }
 }
 
-async function onLensCommand($: ModApi): Promise<unknown> {
+// `/lens`, `/lens map`, `/lens recap`, `/lens ask <question>`: the pane, with
+// focus, on the tab asked for (else the last one shown).
+async function onLensCommand($: ModApi, e: CommandRunEvent): Promise<unknown> {
   const b = bind($);
   try {
+    const asked = lensCommand(e.args ?? "");
+    if (asked.tab !== null) dispatch(b, { type: "tab", tab: asked.tab });
     if (discovery === null || mapRepo(discovery) === null) refresh(b);
     await map.request(b);
+    // Right after the session starts the server may not have connected yet:
+    // this hook waits for it, so the lookup still starts while the hook is live.
+    if (asked.question !== null) {
+      await mcpReady(b.host);
+      startAsk(b, asked.question);
+    }
   } catch (err) {
     b.debug(`/lens failed: ${String(err)}`);
   }
@@ -600,17 +702,35 @@ async function onLensCommand($: ModApi): Promise<unknown> {
   return {};
 }
 
+function selectTab($: ModApi, tab: PaneTab): void {
+  try {
+    dispatch(bind($), { type: "tab", tab });
+  } catch (err) {
+    bind($).debug(`tab failed: ${String(err)}`);
+  }
+}
+
+/** The shown tab's body; the map draws only on its own tab. */
+function tabBody(b: Bound, e: PaneRenderEvent): Node {
+  const { bodyColumns, placement, scroll } = e.props;
+  const tab = state.pane.tab;
+  if (tab !== "map") map.offScreen();
+  if (tab === "ask") return askView(state, bodyColumns);
+  if (tab === "recap") return recapView(state, { count: map.trail.reads.length, capped: map.trail.readsCapped }, bodyColumns);
+  const d = discovery;
+  const notice = d === null ? MAP_COPY.looking : HINTS[hintFor(d.mode, d.liteReason) ?? "no-index"];
+  const bodyRows = scroll.bodyRows - TAB_ROWS;
+  return map.paneTree(b, { surface: e.surface, notice, bodyColumns, placement, bodyRows });
+}
+
 async function onPane($: ModApi, e: PaneRenderEvent, next: (e: PaneRenderEvent) => Promise<unknown>): Promise<unknown> {
   if (e.requestId !== PANE_ID) return next(e);
   const b = bind($);
   try {
-    const d = discovery;
-    const notice = d === null ? MAP_COPY.looking : HINTS[hintFor(d.mode, d.liteReason) ?? "no-index"];
-    const { bodyColumns, placement, scroll } = e.props;
-    const tree = map.paneTree(b, { surface: e.surface, notice, bodyColumns, placement, bodyRows: scroll.bodyRows });
-    return materialize(tree, $.ui.resolve(e));
+    const presses = Object.fromEntries(TABS.map((tab) => [TAB_PRESS[tab], () => selectTab($, tab)]));
+    return materialize(paneView(state.pane.tab, tabBody(b, e)), $.ui.resolve(e), presses);
   } catch (err) {
-    b.debug(`map render failed: ${String(err)}`);
+    b.debug(`pane render failed: ${String(err)}`);
     return next(e);
   }
 }
@@ -620,11 +740,15 @@ export function register(on: On, options: PluginOptions = {}): void {
   reviewOn = options["lens_review"] !== false;
   autoOpenOn = options["lens_pane_autoopen"] === true;
   on("session.start", onSessionStart);
-  if (reviewOn) on("turn.start", onTurnStart);
+  on("turn.start", onTurnStart);
   on("turn.complete", onTurnComplete);
   on("ui.render", { component: "AbovePrompt" }, onBand);
   on("ui.render", { component: "Pane" }, onPane);
   on("command.run", { command: "lens" }, onLensCommand);
+  // Literals, so the static check reads the matcher: this plugin's Ask field (ASK_KEY).
+  on("ui.input", { plugin: "repowise", element: "lens-ask" }, onAskInput);
+  // The brief is only offered: nothing here hooks `session.compact`.
+  on("classic.PostCompact", onPostCompact);
   on("tool.call", onToolCall);
   on("tool.check", onToolCheck);
   on("ui.render", { component: "Spinner" }, onSpinner);

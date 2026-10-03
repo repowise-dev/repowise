@@ -163,3 +163,21 @@ export function fromToolCall(
   if (out.isError === true || isContentGrep(e.tool, out)) return null;
   return e.tool === "Grep" || e.tool === "Glob" ? searchAction(out, ctx) : fileAction(e, ctx);
 }
+
+/**
+ * The file an edit wrote, as the recap and the brief name it: repo-relative
+ * inside the repo (case kept), else absolute; null without a path.
+ */
+export function touchedPath(
+  e: { file_path?: unknown; [arg: string]: unknown },
+  cwd: string | null,
+  repoRoot: string | null,
+): string | null {
+  const raw = typeof e.file_path === "string" ? e.file_path : e["notebook_path"];
+  if (typeof raw !== "string") return null;
+  const base = cwd ?? repoRoot;
+  if (base === null) return raw;
+  const isWindows = /^[A-Za-z]:[\/]|^[\/]{2}/.test(base);
+  const abs = absolutePath(raw, { cwd: base, isWindows });
+  return (repoRoot === null ? null : relativeTo(abs, repoRoot, isWindows)) ?? abs;
+}

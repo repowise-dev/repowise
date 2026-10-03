@@ -6,7 +6,7 @@
 import { HEALTH_BAND_LABEL, HEALTH_BAND_ORDER } from "@repowise-dev/types/health";
 import { BRAND, DARK_CANVAS, DARK_CANVAS_BAND } from "@repowise-dev/ui/brand";
 import { fit } from "../format";
-import { MAP_COPY, callersLine, readsLine, scopeParts, type ScopeFacts } from "./copy";
+import { MAP_COPY, SCOPE_REST, callersLine, indexedPart, readsLine, scopeParts, type ScopeFacts } from "./copy";
 import { box, raster, text, type Node } from "./elements";
 import type { MapLayout } from "./map";
 import { EDIT_TINT, type ResolvedOverlay } from "./overlay";
@@ -98,19 +98,29 @@ function marksOf(resolved: ResolvedOverlay): Swatch[] {
   return marks;
 }
 
-/** Scope parts joined with ` · `, wrapped onto at most two rows so the last parts survive a narrow pane. */
-function scopeRows(parts: readonly string[], columns: number): string[] {
-  return packRows(parts, (p) => p.length, columns, SEP.length)
+/**
+ * Scope parts joined with ` · `, wrapped onto at most two rows. When they
+ * need more, the parts that do not change the reading leave first (the "rest"
+ * note, then the index age), so the counts and the cap clause survive.
+ */
+function scopeRows(scope: ScopeFacts, columns: number): string[] {
+  const rows = (parts: readonly string[]) => packRows(parts, (p) => p.length, columns, SEP.length);
+  let parts = scopeParts(scope);
+  for (const optional of [SCOPE_REST, scope.indexed === null ? null : indexedPart(scope.indexed)]) {
+    if (rows(parts).length <= 2) break;
+    parts = parts.filter((p) => p !== optional);
+  }
+  return rows(parts)
     .slice(0, 2)
     .map((row) => row.join(SEP));
 }
 
 function factRows(resolved: ResolvedOverlay, scope: ScopeFacts, columns: number): string[] {
   const facts: string[] = [];
-  const reads = readsLine(resolved.reads, resolved.matched);
+  const reads = readsLine(resolved.reads, resolved.matched, columns);
   if (reads !== null) facts.push(reads);
-  if (resolved.edit !== null) facts.push(callersLine(resolved.edit.name, resolved.edit.callers, resolved.edit.notDrawn));
-  return [...facts, ...scopeRows(scopeParts(scope), columns)];
+  if (resolved.edit !== null) facts.push(callersLine(resolved.edit.name, resolved.edit.callers, resolved.edit.notDrawn, columns));
+  return [...facts, ...scopeRows(scope, columns)];
 }
 
 export function legendView(resolved: ResolvedOverlay, scope: ScopeFacts, columns: number): Node[] {

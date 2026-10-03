@@ -1,0 +1,29 @@
+{
+  "mode": "search",
+  "query": "why does Session merge environment settings?",
+  "reason": "No decision record covers this question. The commit history below carry its terms. They are quoted from the code and its history, not a ruling: read them as evidence, not as the recorded reason.",
+  "answer_basis": "archaeology",
+  "decisions": [],
+  "git_archaeology": {
+    "summary": "No recorded rationale for this question. 1 commit(s) carry its terms: history, not a stated reason.",
+    "git_log": [
+      {
+        "sha": "827bbe2a7e40",
+        "message": "docs: correct error in 'merge_environment_settings' usage",
+        "date": "2019-02-04",
+        "evidence_refs": [
+          {
+            "id": "ev_8964f795d9001bd297ca",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "827bbe2a7e40078b2dfb3a29d5f7d6df9a336b62",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      }
+    ]
+  }
+}

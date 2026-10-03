@@ -4,7 +4,7 @@
  */
 
 import { formatNumber } from "@repowise-dev/ui/lib/format";
-import { countOf } from "../format";
+import { countOf, fit } from "../format";
 import type { FileContext, HintKind, IndexFreshness, MarginNote, SavingsDelta } from "../model/session";
 import type { Squeeze } from "../model/squeeze";
 import type { Callers } from "../model/trail";
@@ -77,6 +77,7 @@ export const REVIEWING = "Reviewing the change...";
 export const REVIEW_TIMEOUT_S = 20;
 export const REVIEW_TIMED_OUT = `Change review timed out after ${REVIEW_TIMEOUT_S} s`;
 export const RUN_TESTS = "Run tests";
+export const WHY = "Why";
 export const DETAILS = "Details";
 /** Branch overlap is a fact, not a health band: a neutral mark plus words. */
 export const OVERLAP_MARK = "◦";
@@ -185,7 +186,6 @@ export function runTestsPrompt(t: { tests: string[]; truncated: boolean; total: 
 // The living map.
 
 export const MAP_COPY = {
-  command: "Open the Lens map: code health, where Claude reads, what an edit reaches",
   title: "Lens",
   looking: "Lens map: looking for the local server",
   loading: "Lens map: loading the health map",
@@ -214,32 +214,165 @@ export interface ScopeFacts {
   cap: number;
 }
 
+/** Scope parts a narrow legend may leave out; the counts and the cap always stay. */
+export const SCOPE_REST = "rest empty or too small";
+export function indexedPart(age: string): string {
+  return `indexed ${age}`;
+}
+
 /** The scope, as parts the legend joins with ` · ` and wraps onto two rows when narrow. */
 export function scopeParts(s: ScopeFacts): string[] {
   const parts =
     s.drawn === s.repositoryTotal
       ? [`${countOf(s.drawn, "file", "files")}, all drawn`]
-      : [`${formatNumber(s.drawn)} of ${countOf(s.repositoryTotal, "file", "files")} drawn at this size`, "rest empty or too small"];
-  if (s.indexed !== null) parts.push(`indexed ${s.indexed}`);
+      : [`${formatNumber(s.drawn)} of ${countOf(s.repositoryTotal, "file", "files")} drawn at this size`, SCOPE_REST];
+  if (s.indexed !== null) parts.push(indexedPart(s.indexed));
   if (s.beyondCap > 0) parts.push(`${formatNumber(s.beyondCap)} beyond the ${formatNumber(s.cap)}-file cap`);
   return parts;
 }
 
-/** Reads so far (`200+` once capped), what was not drawn, and what the last search matched. */
-export function readsLine(reads: { count: number; capped: boolean; notDrawn: number }, matched: number | null): string | null {
-  const parts: string[] = [];
+/**
+ * Reads so far (`200+` once capped), what was not drawn, and what the last
+ * search matched. Narrower than `columns`, a short form that keeps every count.
+ */
+export function readsLine(
+  reads: { count: number; capped: boolean; notDrawn: number },
+  matched: number | null,
+  columns = Number.POSITIVE_INFINITY,
+): string | null {
+  const count = reads.capped ? `${formatNumber(reads.count)}+` : formatNumber(reads.count);
+  const full: string[] = [];
+  const short: string[] = [];
   if (reads.count > 0) {
-    parts.push(reads.capped ? `${formatNumber(reads.count)}+ files read` : countOf(reads.count, "file read", "files read"));
+    full.push(reads.capped ? `${count} files read` : countOf(reads.count, "file read", "files read"));
+    short.push(`${count} read`);
   }
-  if (reads.notDrawn > 0) parts.push(`${formatNumber(reads.notDrawn)} not drawn`);
-  if (matched !== null) parts.push(`last search matched ${countOf(matched, "file", "files")}`);
-  return parts.length === 0 ? null : parts.join(" · ");
+  if (reads.notDrawn > 0) {
+    full.push(`${formatNumber(reads.notDrawn)} not drawn`);
+    short.push(`${formatNumber(reads.notDrawn)} not drawn`);
+  }
+  if (matched !== null) {
+    full.push(`last search matched ${countOf(matched, "file", "files")}`);
+    short.push(`search matched ${formatNumber(matched)}`);
+  }
+  if (full.length === 0) return null;
+  const line = full.join(" · ");
+  return line.length <= columns ? line : short.join(" · ");
 }
 
-/** The importers of the edited file: inferred from the import graph, not observed calls. */
-export function callersLine(name: string, callers: Callers | null, notDrawn: number): string {
+/**
+ * The importers of the edited file: inferred from the import graph, not
+ * observed calls. Narrower than `columns`, a short form that keeps the counts
+ * and cuts the file name instead (the legend's swatch names the basis).
+ */
+export function callersLine(name: string, callers: Callers | null, notDrawn: number, columns = Number.POSITIVE_INFINITY): string {
   if (callers === null || callers.status === "loading") return `edited ${name} · finding the files that import it`;
   if (callers.status === "failed") return `edited ${name} · import graph unavailable`;
-  const found = `edited ${name} · ${countOf(callers.paths.length, "file imports", "files import")} it (from imports, not calls)`;
-  return notDrawn === 0 ? found : `${found} · ${formatNumber(notDrawn)} not drawn`;
+  const missing = notDrawn === 0 ? "" : ` · ${formatNumber(notDrawn)} not drawn`;
+  const full = `edited ${name} · ${countOf(callers.paths.length, "file imports", "files import")} it (from imports, not calls)${missing}`;
+  if (full.length <= columns) return full;
+  const rest = ` · ${formatNumber(callers.paths.length)} import it${missing}`;
+  return `edited ${fit(name, columns - "edited ".length - rest.length)}${rest}`;
+}
+
+// The pane's tabs, Ask and Recap.
+
+export const PANE_COPY = {
+  command: "Open Lens: the health map, ask the index, and the session recap",
+  argumentHint: "[map | ask <question> | recap]",
+  tabs: { map: "Map", ask: "Ask", recap: "Recap" },
+  askLabel: "ask ",
+  askPlaceholder: "why ...? reads the decision records; anything else asks get_answer",
+  askSubmit: "ask",
+  askIdle: "Answers come from this repo's Repowise index, with the evidence it cites.",
+  noEvidence: "no evidence cited",
+} as const;
+
+/** Characters of a reply the Ask tab draws; the Markdown element takes at most 10,000. */
+export const ASK_CHARS = 4_000;
+
+export function askingLine(tool: string): string {
+  return `asking ${tool}...`;
+}
+
+export function askFailedLine(tool: string, message: string): string {
+  return `${tool} could not answer: ${message}`;
+}
+
+export function askCut(chars: number): string {
+  return `reply cut at ${formatNumber(chars)} characters`;
+}
+
+export function moreRows(more: number): string {
+  return `and ${formatNumber(more)} more`;
+}
+
+export const RECAP_COPY = {
+  files: "Files touched",
+  health: "Code health (last review)",
+  findings: "Findings (last review)",
+  tests: "Tests queued (last review)",
+  saved: "Saved",
+  decisions: "Decisions surfaced",
+  overlap: "Branches overlapping (last review)",
+  noReview: "no change review this session",
+  notCompared: "not compared",
+  noTests: "none named",
+  noOverlap: "none found",
+  notReported: "not reported",
+  noSavings: "nothing yet since this session started",
+  savingsNeedServer: "needs the local server: repowise serve --no-ui",
+  noDecisions: "none",
+  footer: "0 model calls · nothing uploaded",
+} as const;
+
+/** `4 edited · 41 read or edited`, `200+` once the trail is capped. */
+export function filesTouched(edited: number, reads: { count: number; capped: boolean }): string {
+  const read = reads.capped ? `${formatNumber(reads.count)}+` : formatNumber(reads.count);
+  return `${formatNumber(edited)} edited · ${read} read or edited`;
+}
+
+export function findingsCounts(resolved: number, total: number): string {
+  return `${formatNumber(resolved)} resolved · ${formatNumber(total)} new`;
+}
+
+export function testsQueued(t: { total: number; files: boolean; measured: boolean }): string {
+  const count = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
+  return `${count}, ${t.measured ? "measured" : "inferred"}`;
+}
+
+export function decisionsSurfaced(titles: readonly string[]): string {
+  return `${formatNumber(titles.length)}: ${titles.join("; ")}`;
+}
+
+/**
+ * Lens itself never calls a model or uploads anything; `get_answer` may use
+ * the model a repo configures, which the footer then says.
+ */
+export function recapFooter(modelAsks: number): string {
+  if (modelAsks === 0) return RECAP_COPY.footer;
+  const asks = countOf(modelAsks, "Ask reply", "Ask replies");
+  return `Lens: ${RECAP_COPY.footer} · ${asks} from get_answer may have used this repo's configured model`;
+}
+
+// The brief after a compaction: a visible prompt, sent only on a press.
+
+export const BRIEF_COPY = {
+  compacted: "context compacted",
+  button: "Brief Claude",
+  intro: "The context was compacted. Lens brief of this session, from Repowise index lookups (no model):",
+  files: "Files edited:",
+  decisions: "Decisions in play:",
+  review: "Open review items:",
+} as const;
+
+/** Characters the brief may take, about 300 tokens. */
+export const BRIEF_CHARS = 1_200;
+
+export function briefDecision(title: string, reviewed: boolean): string {
+  return reviewed ? `${title} (standing decision)` : `${title} (found in the code, not yet reviewed)`;
+}
+
+export function briefTests(t: { tests: string[]; measured: boolean }): string {
+  return `tests to run, ${testsBasis(t.measured)}: ${t.tests.join(" ")}`;
 }

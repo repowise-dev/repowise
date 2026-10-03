@@ -64,11 +64,14 @@ export interface ModApi {
     /** `transcript`: a dim row of its own; `debug`: the debug log alone. */
     log(text: string, options: { to: "debug" | "transcript" }): void;
     resolve(e: { props: object }): Record<string, (props: Record<string, unknown>) => unknown>;
-    open(pane: { id: string; title?: string; rows?: number }): Promise<UiOpenResult>;
+    /** `focus`: the pane takes the keyboard (only when the person asked for it). */
+    open(pane: { id: string; title?: string; rows?: number; focus?: boolean }): Promise<UiOpenResult>;
     close(pane: { id: string }): Promise<void>;
     blit(args: { requestId: string; key: string; cells: string; columns: number; rows: number }): Promise<{ deny?: string }>;
   };
-  command: { register(command: { name: string; description: string; immediate?: true }): Promise<unknown> };
+  command: {
+    register(command: { name: string; description: string; argumentHint?: string; immediate?: true }): Promise<unknown>;
+  };
   settings: { read(): Promise<Readonly<Record<string, unknown>>> };
 }
 
@@ -122,6 +125,24 @@ export interface PostToolUseEvent {
   tool_input: unknown;
 }
 
+/** `/lens <args>`: everything after the name, as typed. */
+export interface CommandRunEvent {
+  args?: string;
+}
+
+/** A change of, or Enter in, an `Input` a render hook drew. */
+export interface UiInputEvent {
+  plugin: string;
+  element: string;
+  kind: "change" | "submit";
+  value: string;
+}
+
+/** After the conversation was compacted; Lens reads nothing of it. */
+export interface PostCompactEvent {
+  trigger?: "manual" | "auto";
+}
+
 export type Hook<E> = ($: ModApi, e: E, next: (e: E) => Promise<unknown>) => Promise<unknown>;
 
 /** The plugin's `userConfig` values, fixed for one activation. */
@@ -140,5 +161,7 @@ export interface On {
   /** `next(e)` resolves to the settings hooks' folded result, `{ additionalContext: string[] }`. */
   (event: "classic.PostToolUse", hook: Hook<PostToolUseEvent>): unknown;
   (event: "ui.render", matcher: { component: "Pane" }, hook: Hook<PaneRenderEvent>): unknown;
-  (event: "command.run", matcher: { command: string }, hook: Hook<unknown>): unknown;
+  (event: "command.run", matcher: { command: string }, hook: Hook<CommandRunEvent>): unknown;
+  (event: "ui.input", matcher: { plugin: string; element: string }, hook: Hook<UiInputEvent>): unknown;
+  (event: "classic.PostCompact", hook: Hook<PostCompactEvent>): unknown;
 }

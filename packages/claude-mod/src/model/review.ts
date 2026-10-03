@@ -18,6 +18,8 @@ export interface ReviewState {
   /** Claude (or a subagent) edited a file since the main turn started. */
   edited: boolean;
   outcome: ReviewOutcome;
+  /** The decision the augment hook said governs a file edited this turn, as it titled it. */
+  decision: string | null;
 }
 
 export type ReviewAction =
@@ -25,15 +27,16 @@ export type ReviewAction =
   | { type: "fileEdited" }
   | { type: "reviewStarted" }
   | { type: "reviewed"; risk: ChangeRisk }
-  | { type: "reviewFailed"; reason: "error" | "timeout"; message: string };
+  | { type: "reviewFailed"; reason: "error" | "timeout"; message: string }
+  | { type: "decisionNoted"; title: string };
 
-export const initialReview: ReviewState = { edited: false, outcome: { phase: "none" } };
+export const initialReview: ReviewState = { edited: false, outcome: { phase: "none" }, decision: null };
 
 export function reduceReview(state: ReviewState, action: ReviewAction): ReviewState {
   switch (action.type) {
     case "turnStarted":
       // A new turn retires the last review and drops one still in flight.
-      return state.edited || state.outcome.phase !== "none" ? initialReview : state;
+      return state.edited || state.outcome.phase !== "none" || state.decision !== null ? initialReview : state;
     case "fileEdited":
       return state.edited ? state : { ...state, edited: true };
     case "reviewStarted":
@@ -42,6 +45,8 @@ export function reduceReview(state: ReviewState, action: ReviewAction): ReviewSt
       return { ...state, outcome: { phase: "done", risk: action.risk } };
     case "reviewFailed":
       return { ...state, outcome: { phase: "failed", reason: action.reason, message: action.message } };
+    case "decisionNoted":
+      return state.decision === action.title ? state : { ...state, decision: action.title };
   }
 }
 

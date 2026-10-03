@@ -14,7 +14,7 @@ function lines(node: Node | null): string[] {
   if (node === null) return [];
   if (node.type === "Text") return node.children;
   if (node.type === "Button") return [node.props.label];
-  if (node.type === "Raster") return [];
+  if (node.type !== "Box") return [];
   return node.children.flatMap(lines);
 }
 

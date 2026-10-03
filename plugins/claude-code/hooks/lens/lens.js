@@ -86,8 +86,8 @@ function headersToRecord(headers) {
 }
 __name(headersToRecord, "headersToRecord");
 function createAdapterFetch(minimal) {
-  const adapted = /* @__PURE__ */ __name(async (input, init) => {
-    const url = typeof input === "string" ? input : "href" in input ? input.href : input.url;
+  const adapted = /* @__PURE__ */ __name(async (input2, init) => {
+    const url = typeof input2 === "string" ? input2 : "href" in input2 ? input2.href : input2.url;
     const body = init?.body;
     if (body != null && typeof body !== "string") {
       throw new TypeError("createAdapterFetch only sends string bodies");
@@ -352,7 +352,7 @@ __name(readFreshness, "readFreshness");
 
 // src/data/mcp.ts
 var PLUGIN_NAME = "repowise";
-var LENS_TOOLS = ["get_context", "get_change_risk"];
+var LENS_TOOLS = ["get_context", "get_change_risk", "get_why", "get_answer"];
 var PLUGIN_SERVER_FORMS = ["plugin:repowise:repowise", "plugin_repowise_repowise"];
 var DEFAULT_TIMEOUT_MS = 1e4;
 var resolvedServer = null;
@@ -372,6 +372,13 @@ function warmMcp(host) {
   resolving = asked;
 }
 __name(warmMcp, "warmMcp");
+async function mcpReady(host, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  warmMcp(host);
+  const pending = resolving;
+  if (resolvedServer === null && pending !== null) await withTimeout(pending, timeoutMs, "MCP connect").catch(() => void 0);
+  return resolvedServer !== null;
+}
+__name(mcpReady, "mcpReady");
 function toolName(serverForm, tool) {
   return `mcp__${serverForm.replace(/[^A-Za-z0-9_-]/g, "_")}__${tool}`;
 }
@@ -508,8 +515,8 @@ var EDIT_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write"]);
 var STANDING = /^\[repowise\] .+? is governed by a standing decision: (.+?)(?: because .*)?\.$/;
 var MINED = /^\[repowise\] .+? has a decision recorded in it, mined but not reviewed: (.+?)(?: because .*)?\.$/;
 var FIXES = /^\[repowise\] .+? has been bug-fixed (\d+)x in the last 6 months, last (.+?)(?: \(bug magnet\))?(?:; mostly in (.+?))?\.$/;
-function stripConfirmed(line) {
-  return line.replace(/ \(confirmed across \d+ sessions\)\.$/, ".");
+function stripConfirmed(line2) {
+  return line2.replace(/ \(confirmed across \d+ sessions\)\.$/, ".");
 }
 __name(stripConfirmed, "stripConfirmed");
 function notesFromAugment(additionalContext) {
@@ -517,10 +524,10 @@ function notesFromAugment(additionalContext) {
   const notes = [];
   const lines = additionalContext.filter((c) => typeof c === "string").flatMap((c) => c.split(/\r?\n/));
   for (const raw of lines) {
-    const line = stripConfirmed(raw.trim());
-    const standing = STANDING.exec(line);
-    const decision = standing ?? MINED.exec(line);
-    const fixes = FIXES.exec(line);
+    const line2 = stripConfirmed(raw.trim());
+    const standing = STANDING.exec(line2);
+    const decision = standing ?? MINED.exec(line2);
+    const fixes = FIXES.exec(line2);
     if (decision !== null && !notes.some((n) => n.kind === "decision")) {
       notes.push({ kind: "decision", reviewed: standing !== null, title: decision[1] });
     } else if (fixes !== null && !notes.some((n) => n.kind === "fixes")) {
@@ -592,6 +599,16 @@ function fromToolCall(e, outcome, ctx) {
   return e.tool === "Grep" || e.tool === "Glob" ? searchAction(out, ctx) : fileAction(e, ctx);
 }
 __name(fromToolCall, "fromToolCall");
+function touchedPath(e, cwd2, repoRoot) {
+  const raw = typeof e.file_path === "string" ? e.file_path : e["notebook_path"];
+  if (typeof raw !== "string") return null;
+  const base = cwd2 ?? repoRoot;
+  if (base === null) return raw;
+  const isWindows = /^[A-Za-z]:[\/]|^[\/]{2}/.test(base);
+  const abs = absolutePath(raw, { cwd: base, isWindows });
+  return (repoRoot === null ? null : relativeTo(abs, repoRoot, isWindows)) ?? abs;
+}
+__name(touchedPath, "touchedPath");
 
 // src/model/trail.ts
 var MAX_READS = 200;
@@ -680,6 +697,7 @@ var REVIEWING = "Reviewing the change...";
 var REVIEW_TIMEOUT_S = 20;
 var REVIEW_TIMED_OUT = `Change review timed out after ${REVIEW_TIMEOUT_S} s`;
 var RUN_TESTS = "Run tests";
+var WHY = "Why";
 var DETAILS = "Details";
 var OVERLAP_MARK = "◦";
 function reviewFailed(message) {
@@ -772,7 +790,6 @@ function runTestsPrompt(t) {
 }
 __name(runTestsPrompt, "runTestsPrompt");
 var MAP_COPY = {
-  command: "Open the Lens map: code health, where Claude reads, what an edit reaches",
   title: "Lens",
   looking: "Lens map: looking for the local server",
   loading: "Lens map: loading the health map",
@@ -789,30 +806,135 @@ function notPlacedLine(reason) {
   return `Lens map needs a wider terminal: ${reason}`;
 }
 __name(notPlacedLine, "notPlacedLine");
+var SCOPE_REST = "rest empty or too small";
+function indexedPart(age) {
+  return `indexed ${age}`;
+}
+__name(indexedPart, "indexedPart");
 function scopeParts(s) {
-  const parts = s.drawn === s.repositoryTotal ? [`${countOf(s.drawn, "file", "files")}, all drawn`] : [`${formatNumber(s.drawn)} of ${countOf(s.repositoryTotal, "file", "files")} drawn at this size`, "rest empty or too small"];
-  if (s.indexed !== null) parts.push(`indexed ${s.indexed}`);
+  const parts = s.drawn === s.repositoryTotal ? [`${countOf(s.drawn, "file", "files")}, all drawn`] : [`${formatNumber(s.drawn)} of ${countOf(s.repositoryTotal, "file", "files")} drawn at this size`, SCOPE_REST];
+  if (s.indexed !== null) parts.push(indexedPart(s.indexed));
   if (s.beyondCap > 0) parts.push(`${formatNumber(s.beyondCap)} beyond the ${formatNumber(s.cap)}-file cap`);
   return parts;
 }
 __name(scopeParts, "scopeParts");
-function readsLine(reads, matched) {
-  const parts = [];
+function readsLine(reads, matched, columns = Number.POSITIVE_INFINITY) {
+  const count2 = reads.capped ? `${formatNumber(reads.count)}+` : formatNumber(reads.count);
+  const full = [];
+  const short = [];
   if (reads.count > 0) {
-    parts.push(reads.capped ? `${formatNumber(reads.count)}+ files read` : countOf(reads.count, "file read", "files read"));
+    full.push(reads.capped ? `${count2} files read` : countOf(reads.count, "file read", "files read"));
+    short.push(`${count2} read`);
   }
-  if (reads.notDrawn > 0) parts.push(`${formatNumber(reads.notDrawn)} not drawn`);
-  if (matched !== null) parts.push(`last search matched ${countOf(matched, "file", "files")}`);
-  return parts.length === 0 ? null : parts.join(" · ");
+  if (reads.notDrawn > 0) {
+    full.push(`${formatNumber(reads.notDrawn)} not drawn`);
+    short.push(`${formatNumber(reads.notDrawn)} not drawn`);
+  }
+  if (matched !== null) {
+    full.push(`last search matched ${countOf(matched, "file", "files")}`);
+    short.push(`search matched ${formatNumber(matched)}`);
+  }
+  if (full.length === 0) return null;
+  const line2 = full.join(" · ");
+  return line2.length <= columns ? line2 : short.join(" · ");
 }
 __name(readsLine, "readsLine");
-function callersLine(name, callers, notDrawn) {
+function callersLine(name, callers, notDrawn, columns = Number.POSITIVE_INFINITY) {
   if (callers === null || callers.status === "loading") return `edited ${name} · finding the files that import it`;
   if (callers.status === "failed") return `edited ${name} · import graph unavailable`;
-  const found = `edited ${name} · ${countOf(callers.paths.length, "file imports", "files import")} it (from imports, not calls)`;
-  return notDrawn === 0 ? found : `${found} · ${formatNumber(notDrawn)} not drawn`;
+  const missing = notDrawn === 0 ? "" : ` · ${formatNumber(notDrawn)} not drawn`;
+  const full = `edited ${name} · ${countOf(callers.paths.length, "file imports", "files import")} it (from imports, not calls)${missing}`;
+  if (full.length <= columns) return full;
+  const rest = ` · ${formatNumber(callers.paths.length)} import it${missing}`;
+  return `edited ${fit(name, columns - "edited ".length - rest.length)}${rest}`;
 }
 __name(callersLine, "callersLine");
+var PANE_COPY = {
+  command: "Open Lens: the health map, ask the index, and the session recap",
+  argumentHint: "[map | ask <question> | recap]",
+  tabs: { map: "Map", ask: "Ask", recap: "Recap" },
+  askLabel: "ask ",
+  askPlaceholder: "why ...? reads the decision records; anything else asks get_answer",
+  askSubmit: "ask",
+  askIdle: "Answers come from this repo's Repowise index, with the evidence it cites.",
+  noEvidence: "no evidence cited"
+};
+var ASK_CHARS = 4e3;
+function askingLine(tool) {
+  return `asking ${tool}...`;
+}
+__name(askingLine, "askingLine");
+function askFailedLine(tool, message) {
+  return `${tool} could not answer: ${message}`;
+}
+__name(askFailedLine, "askFailedLine");
+function askCut(chars) {
+  return `reply cut at ${formatNumber(chars)} characters`;
+}
+__name(askCut, "askCut");
+function moreRows(more) {
+  return `and ${formatNumber(more)} more`;
+}
+__name(moreRows, "moreRows");
+var RECAP_COPY = {
+  files: "Files touched",
+  health: "Code health (last review)",
+  findings: "Findings (last review)",
+  tests: "Tests queued (last review)",
+  saved: "Saved",
+  decisions: "Decisions surfaced",
+  overlap: "Branches overlapping (last review)",
+  noReview: "no change review this session",
+  notCompared: "not compared",
+  noTests: "none named",
+  noOverlap: "none found",
+  notReported: "not reported",
+  noSavings: "nothing yet since this session started",
+  savingsNeedServer: "needs the local server: repowise serve --no-ui",
+  noDecisions: "none",
+  footer: "0 model calls · nothing uploaded"
+};
+function filesTouched(edited, reads) {
+  const read = reads.capped ? `${formatNumber(reads.count)}+` : formatNumber(reads.count);
+  return `${formatNumber(edited)} edited · ${read} read or edited`;
+}
+__name(filesTouched, "filesTouched");
+function findingsCounts(resolved, total) {
+  return `${formatNumber(resolved)} resolved · ${formatNumber(total)} new`;
+}
+__name(findingsCounts, "findingsCounts");
+function testsQueued(t) {
+  const count2 = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
+  return `${count2}, ${t.measured ? "measured" : "inferred"}`;
+}
+__name(testsQueued, "testsQueued");
+function decisionsSurfaced(titles) {
+  return `${formatNumber(titles.length)}: ${titles.join("; ")}`;
+}
+__name(decisionsSurfaced, "decisionsSurfaced");
+function recapFooter(modelAsks) {
+  if (modelAsks === 0) return RECAP_COPY.footer;
+  const asks = countOf(modelAsks, "Ask reply", "Ask replies");
+  return `Lens: ${RECAP_COPY.footer} · ${asks} from get_answer may have used this repo's configured model`;
+}
+__name(recapFooter, "recapFooter");
+var BRIEF_COPY = {
+  compacted: "context compacted",
+  button: "Brief Claude",
+  intro: "The context was compacted. Lens brief of this session, from Repowise index lookups (no model):",
+  files: "Files edited:",
+  decisions: "Decisions in play:",
+  review: "Open review items:"
+};
+var BRIEF_CHARS = 1200;
+function briefDecision(title, reviewed) {
+  return reviewed ? `${title} (standing decision)` : `${title} (found in the code, not yet reviewed)`;
+}
+__name(briefDecision, "briefDecision");
+function briefTests(t) {
+  return `tests to run, ${testsBasis(t.measured)}: ${t.tests.join(" ")}`;
+}
+__name(briefTests, "briefTests");
 
 // ../../node_modules/d3-hierarchy/src/hierarchy/count.js
 function count(node) {
@@ -1493,14 +1615,23 @@ function box(props, children) {
   return { type: "Box", props, children };
 }
 __name(box, "box");
-function button(key, hotkey, label) {
-  return { type: "Button", props: { key, label, hotkey, plain: true } };
+function button(key, hotkey, label, dimColor = false) {
+  return { type: "Button", props: { key, label, hotkey, plain: true, ...dimColor ? { dimColor } : {} } };
 }
 __name(button, "button");
 function raster(props) {
   return { type: "Raster", props };
 }
 __name(raster, "raster");
+function input(props) {
+  return { type: "Input", props };
+}
+__name(input, "input");
+function markdown(text2) {
+  return { type: "Markdown", props: { text: text2 } };
+}
+__name(markdown, "markdown");
+var SUBMIT_IN_HOOK = /* @__PURE__ */ __name(() => void 0, "SUBMIT_IN_HOOK");
 function materialize(node, table, presses = {}) {
   const build = table[node.type];
   if (!build) throw new Error(`element ${node.type} is not on this surface`);
@@ -1509,7 +1640,8 @@ function materialize(node, table, presses = {}) {
     if (!onPress) throw new Error(`button ${node.props.key} has no action`);
     return build({ ...node.props, onPress });
   }
-  if (node.type === "Raster") return build({ ...node.props });
+  if (node.type === "Input") return build({ ...node.props, onSubmit: SUBMIT_IN_HOOK });
+  if (node.type === "Raster" || node.type === "Markdown" || node.type === "Svg") return build({ ...node.props });
   const children = node.type === "Text" ? node.children : node.children.map((child) => materialize(child, table, presses));
   return build({ ...node.props, children });
 }
@@ -1745,16 +1877,22 @@ function marksOf(resolved) {
   return marks;
 }
 __name(marksOf, "marksOf");
-function scopeRows(parts, columns) {
-  return packRows(parts, (p) => p.length, columns, SEP.length).slice(0, 2).map((row) => row.join(SEP));
+function scopeRows(scope, columns) {
+  const rows = /* @__PURE__ */ __name((parts2) => packRows(parts2, (p) => p.length, columns, SEP.length), "rows");
+  let parts = scopeParts(scope);
+  for (const optional of [SCOPE_REST, scope.indexed === null ? null : indexedPart(scope.indexed)]) {
+    if (rows(parts).length <= 2) break;
+    parts = parts.filter((p) => p !== optional);
+  }
+  return rows(parts).slice(0, 2).map((row) => row.join(SEP));
 }
 __name(scopeRows, "scopeRows");
 function factRows(resolved, scope, columns) {
   const facts = [];
-  const reads = readsLine(resolved.reads, resolved.matched);
+  const reads = readsLine(resolved.reads, resolved.matched, columns);
   if (reads !== null) facts.push(reads);
-  if (resolved.edit !== null) facts.push(callersLine(resolved.edit.name, resolved.edit.callers, resolved.edit.notDrawn));
-  return [...facts, ...scopeRows(scopeParts(scope), columns)];
+  if (resolved.edit !== null) facts.push(callersLine(resolved.edit.name, resolved.edit.callers, resolved.edit.notDrawn, columns));
+  return [...facts, ...scopeRows(scope, columns)];
 }
 __name(factRows, "factRows");
 function legendView(resolved, scope, columns) {
@@ -1772,8 +1910,8 @@ function mapPaneView(layout, cells, resolved, scope) {
   ]);
 }
 __name(mapPaneView, "mapPaneView");
-function noticeView(line, columns) {
-  return box({ key: "lens-map-pane", flexDirection: "column" }, [text(fit(line, columns), { dimColor: true, wrap: "truncate-end" })]);
+function noticeView(line2, columns) {
+  return box({ key: "lens-map-pane", flexDirection: "column" }, [text(fit(line2, columns), { dimColor: true, wrap: "truncate-end" })]);
 }
 __name(noticeView, "noticeView");
 
@@ -1876,12 +2014,12 @@ var LensMap = class {
     if (action.type === "edit") this.fetchWanted(io);
     if (action.type === "read") void this.autoOpen(io);
   }
-  /** /lens: open the pane (asked, so placed at any width) and start what it shows. */
+  /** /lens: open the pane with focus (asked, so placed at any width) and start what it shows. */
   async request(io) {
     this.requested = true;
     this.band = null;
     if (this.feed.status === "failed") this.feed = { status: "idle" };
-    const opened = await io.openPane();
+    const opened = await io.openPane(true);
     if (!opened.isPlaced) this.band = notPlacedLine(opened.reason);
     this.fetchWanted(io);
     io.redraw();
@@ -1889,6 +2027,10 @@ var LensMap = class {
   /** A main-loop turn ended: the band row has been seen. */
   turnEnded() {
     this.band = null;
+  }
+  /** Another tab is shown: nothing of the map is on screen to animate. */
+  offScreen() {
+    this.drawn = null;
   }
   /** The pane's tree; starts the feed fetch when the map is wanted and not yet asked for. */
   paneTree(io, pane) {
@@ -1970,7 +2112,7 @@ var LensMap = class {
   async autoOpen(io) {
     if (!this.mayAutoOpen()) return;
     this.autoOpenTried = true;
-    const opened = await io.openPane();
+    const opened = await io.openPane(false);
     if (this.disposed || this.requested) return;
     if (opened.isPlaced) {
       this.requested = true;
@@ -2006,12 +2148,45 @@ var LensMap = class {
   }
 };
 
+// src/model/ask.ts
+function askRoute(question) {
+  return /^\s*why\b/i.test(question) ? { tool: "get_why", args: { query: question } } : { tool: "get_answer", args: { question } };
+}
+__name(askRoute, "askRoute");
+function askReply(tool, reply) {
+  const body = typeof reply === "object" && reply !== null ? reply : {};
+  return tool === "get_why" ? { tool, reply: body } : { tool, reply: body };
+}
+__name(askReply, "askReply");
+function mayHaveUsedModel(a) {
+  return a.tool === "get_answer" && a.reply.degraded !== "no-llm-provider";
+}
+__name(mayHaveUsedModel, "mayHaveUsedModel");
+function lensCommand(args) {
+  const [word = "", ...rest] = args.trim().split(/\s+/);
+  const question = rest.join(" ");
+  switch (word.toLowerCase()) {
+    case "map":
+    case "recap":
+      return { tab: word.toLowerCase(), question: null };
+    case "ask":
+      return { tab: "ask", question: question === "" ? null : question };
+    default:
+      return { tab: null, question: null };
+  }
+}
+__name(lensCommand, "lensCommand");
+function whyDraft(decision) {
+  return `why ${decision}`;
+}
+__name(whyDraft, "whyDraft");
+
 // src/model/review.ts
-var initialReview = { edited: false, outcome: { phase: "none" } };
+var initialReview = { edited: false, outcome: { phase: "none" }, decision: null };
 function reduceReview(state2, action) {
   switch (action.type) {
     case "turnStarted":
-      return state2.edited || state2.outcome.phase !== "none" ? initialReview : state2;
+      return state2.edited || state2.outcome.phase !== "none" || state2.decision !== null ? initialReview : state2;
     case "fileEdited":
       return state2.edited ? state2 : { ...state2, edited: true };
     case "reviewStarted":
@@ -2020,6 +2195,8 @@ function reduceReview(state2, action) {
       return { ...state2, outcome: { phase: "done", risk: action.risk } };
     case "reviewFailed":
       return { ...state2, outcome: { phase: "failed", reason: action.reason, message: action.message } };
+    case "decisionNoted":
+      return state2.decision === action.title ? state2 : { ...state2, decision: action.title };
   }
 }
 __name(reduceReview, "reduceReview");
@@ -2066,7 +2243,13 @@ var initialSession = {
   contexts: {},
   notes: {},
   savings: null,
-  review: initialReview
+  review: initialReview,
+  lastReview: null,
+  touched: [],
+  pane: { tab: "map", draft: "" },
+  ask: { phase: "idle" },
+  modelAsks: 0,
+  compacted: false
 };
 function hintFor(mode, liteReason) {
   if (mode === "full" || mode === "no-repo") return null;
@@ -2097,22 +2280,61 @@ function reduce(state2, action) {
       return state2.running?.id === action.id ? { ...state2, running: null } : state2;
     case "contextLoaded":
       return { ...state2, contexts: { ...state2.contexts, [action.file]: action.context } };
-    case "notesFor":
-      return action.notes.length === 0 ? state2 : { ...state2, notes: { ...state2.notes, [action.id]: action.notes } };
+    case "notesFor": {
+      if (action.notes.length === 0) return state2;
+      const notes = { ...state2.notes, [action.id]: action.notes };
+      const decision = action.notes.find((n) => n.kind === "decision");
+      const review = decision === void 0 ? state2.review : reduceReview(state2.review, { type: "decisionNoted", title: decision.title });
+      return { ...state2, notes, review };
+    }
     case "savings":
       return { ...state2, savings: action.delta.tokens > 0 ? action.delta : null };
-    default: {
-      const review = reduceReview(state2.review, action);
-      return review === state2.review ? state2 : { ...state2, review };
+    case "touched":
+      return state2.touched.includes(action.path) ? state2 : { ...state2, touched: [...state2.touched, action.path] };
+    case "tab":
+      return { ...state2, pane: { tab: action.tab, draft: action.draft ?? state2.pane.draft } };
+    case "asked":
+      return { ...state2, ask: { phase: "asking", question: action.question, tool: action.tool }, pane: { ...state2.pane, draft: "" } };
+    case "answered": {
+      const modelAsks = state2.modelAsks + (mayHaveUsedModel(action.answer) ? 1 : 0);
+      return { ...state2, modelAsks, ask: { phase: "answered", question: action.question, answer: action.answer } };
     }
+    case "askFailed":
+      return { ...state2, ask: { phase: "failed", question: action.question, tool: action.tool, message: action.message } };
+    case "compacted":
+      return state2.compacted ? state2 : { ...state2, compacted: true };
+    case "briefDone":
+      return state2.compacted ? { ...state2, compacted: false } : state2;
+    default:
+      return reduceTurn(state2, action);
   }
 }
 __name(reduce, "reduce");
+function reduceTurn(state2, action) {
+  const review = reduceReview(state2.review, action);
+  const compacted = action.type === "turnStarted" ? false : state2.compacted;
+  const lastReview = action.type === "reviewed" ? action.risk : state2.lastReview;
+  if (review === state2.review && compacted === state2.compacted && lastReview === state2.lastReview) return state2;
+  return { ...state2, review, compacted, lastReview };
+}
+__name(reduceTurn, "reduceTurn");
+function surfacedDecisions(state2) {
+  const seen = /* @__PURE__ */ new Map();
+  for (const notes of Object.values(state2.notes)) {
+    for (const n of notes) if (n.kind === "decision" && !seen.has(n.title)) seen.set(n.title, n.reviewed);
+  }
+  return [...seen].map(([title, reviewed]) => ({ title, reviewed }));
+}
+__name(surfacedDecisions, "surfacedDecisions");
 
 // src/views/review.ts
-var PRESS = { tests: "lens-review-tests", details: "lens-review-details" };
+var PRESS = { tests: "lens-review-tests", why: "lens-review-why", details: "lens-review-details" };
+function emptyDiff(risk) {
+  return risk.status === "nothing_to_score" || risk.health_delta?.scope?.changed === 0;
+}
+__name(emptyDiff, "emptyDiff");
 function scored(risk) {
-  return risk.error === void 0 && risk.status !== "nothing_to_score";
+  return risk.error === void 0 && !emptyDiff(risk);
 }
 __name(scored, "scored");
 var COMPARED = /* @__PURE__ */ new Set(["available", "partial"]);
@@ -2202,7 +2424,7 @@ function cardSegments(risk) {
 __name(cardSegments, "cardSegments");
 function doneText(risk) {
   if (risk.error !== void 0) return reviewFailed(risk.error);
-  if (risk.status === "nothing_to_score") return null;
+  if (emptyDiff(risk)) return null;
   return cardSegments(risk).join(" · ");
 }
 __name(doneText, "doneText");
@@ -2218,9 +2440,10 @@ function reviewText(outcome) {
   }
 }
 __name(reviewText, "reviewText");
-function buttons(risk) {
+function buttons(risk, decision) {
   const out = [];
   if (testsToRun(risk) !== null) out.push(button(PRESS.tests, "1", RUN_TESTS));
+  if (decision !== null) out.push(button(PRESS.why, "2", WHY));
   if (risk.directive !== void 0) out.push(button(PRESS.details, "3", DETAILS));
   return out;
 }
@@ -2230,8 +2453,8 @@ function buttonCells(pressable) {
   return pressable.reduce((n, b) => n + (b.type === "Button" ? b.props.label.length + 3 : 0) + GAP2, 0);
 }
 __name(buttonCells, "buttonCells");
-function quietInBand(risk) {
-  return isClear(risk) && testsToRun(risk) === null && overlap(risk) === null;
+function quietInBand(risk, decision) {
+  return isClear(risk) && testsToRun(risk) === null && overlap(risk) === null && decision === null;
 }
 __name(quietInBand, "quietInBand");
 function summaryParts(risk, room) {
@@ -2244,9 +2467,9 @@ function summaryParts(risk, room) {
   return parts;
 }
 __name(summaryParts, "summaryParts");
-function resultRow(risk, columns) {
-  if (!scored(risk) || quietInBand(risk)) return null;
-  const pressable = buttons(risk);
+function resultRow(risk, columns, decision) {
+  if (!scored(risk) || quietInBand(risk, decision)) return null;
+  const pressable = buttons(risk, decision);
   const room = Math.max(0, columns - buttonCells(pressable));
   return box({ key: "lens-review", flexDirection: "row", columnGap: GAP2 }, [
     box({ flexDirection: "row" }, summaryParts(risk, room)),
@@ -2254,9 +2477,9 @@ function resultRow(risk, columns) {
   ]);
 }
 __name(resultRow, "resultRow");
-function reviewBandRow(outcome, columns) {
+function reviewBandRow(outcome, columns, decision = null) {
   if (outcome.phase === "reviewing") return text(fit(REVIEWING, columns), { dimColor: true, wrap: "truncate-end" });
-  return outcome.phase === "done" ? resultRow(outcome.risk, columns) : null;
+  return outcome.phase === "done" ? resultRow(outcome.risk, columns, decision) : null;
 }
 __name(reviewBandRow, "reviewBandRow");
 function directiveRows(outcome) {
@@ -2278,6 +2501,60 @@ function withCard(result, answer, card) {
 }
 __name(withCard, "withCard");
 
+// src/views/brief.ts
+var BRIEF_PRESS = "lens-brief";
+var ITEM_CHARS = 240;
+function listWithin(head, items, room) {
+  const cut = items.map((i) => fit(i, ITEM_CHARS));
+  for (let k = cut.length; k >= 0; k--) {
+    const more = cut.length - k;
+    const shown = cut.slice(0, k).join("; ");
+    const tail = more === 0 ? "" : `${shown === "" ? "" : "; "}and ${more} more`;
+    const line2 = `${head} ${shown}${tail}`;
+    if (line2.length <= room) return line2;
+  }
+  return fit(`${head} and ${cut.length} more`, room);
+}
+__name(listWithin, "listWithin");
+function reviewItems(state2) {
+  const risk = state2.lastReview;
+  if (risk === null || risk.error !== void 0) return [];
+  const findings = (risk.health_delta?.findings_total ?? 0) > 0 ? (risk.health_delta?.top_findings ?? []).map(findingLine) : [];
+  const tests = testsToRun(risk);
+  const shared = overlap(risk);
+  return [
+    ...findings,
+    ...tests === null ? [] : [briefTests(tests)],
+    ...shared === null ? [] : [overlapLine(shared.branches, shared.files, shared.more)]
+  ];
+}
+__name(reviewItems, "reviewItems");
+function briefText(state2) {
+  const sections = [
+    [BRIEF_COPY.files, [...state2.touched]],
+    [BRIEF_COPY.decisions, surfacedDecisions(state2).map((d) => briefDecision(d.title, d.reviewed))],
+    [BRIEF_COPY.review, reviewItems(state2)]
+  ];
+  const filled = sections.filter(([, items]) => items.length > 0);
+  if (filled.length === 0) return null;
+  let brief = BRIEF_COPY.intro;
+  filled.forEach(([head, items], i) => {
+    const room = Math.floor((BRIEF_CHARS - brief.length) / (filled.length - i)) - 1;
+    brief += `
+${listWithin(head, items, Math.max(0, room))}`;
+  });
+  return brief;
+}
+__name(briefText, "briefText");
+function briefBandRow(state2, columns) {
+  if (!state2.compacted || briefText(state2) === null) return null;
+  return box({ key: "lens-brief", flexDirection: "row", columnGap: 2 }, [
+    text(fit(BRIEF_COPY.compacted, Math.max(1, columns - BRIEF_COPY.button.length - 5)), { dimColor: true }),
+    button(BRIEF_PRESS, "1", BRIEF_COPY.button)
+  ]);
+}
+__name(briefBandRow, "briefBandRow");
+
 // src/views/band.ts
 var MAX_BAND_ROWS = 2;
 function bandRows(state2, columns = Number.POSITIVE_INFINITY) {
@@ -2290,7 +2567,7 @@ function bandRows(state2, columns = Number.POSITIVE_INFINITY) {
 __name(bandRows, "bandRows");
 function bandView(state2, viewport, extra = []) {
   if (viewport.hasSurvey) return null;
-  const review = reviewBandRow(state2.review.outcome, viewport.columns);
+  const review = briefBandRow(state2, viewport.columns) ?? reviewBandRow(state2.review.outcome, viewport.columns, state2.review.decision);
   const own = [...bandRows(state2, viewport.columns), ...extra];
   const rows = own.slice(0, review === null ? MAX_BAND_ROWS : MAX_BAND_ROWS - 1);
   if (rows.length === 0 && review === null) return null;
@@ -2310,6 +2587,150 @@ function marginView(notes) {
 }
 __name(marginView, "marginView");
 
+// src/views/answer.ts
+var LIST_ROWS = 5;
+var ROW_CHARS = 300;
+var code = /* @__PURE__ */ __name((s) => `\`${s.replace(/`/g, "'")}\``, "code");
+var line = /* @__PURE__ */ __name((s, chars = ROW_CHARS) => fit(s.replace(/\s+/g, " ").trim(), chars), "line");
+function ids(refs) {
+  const found = (refs ?? []).map((r) => r.id).filter((id) => typeof id === "string");
+  return found.length === 0 ? "" : ` · ${found.map(code).join(" ")}`;
+}
+__name(ids, "ids");
+function list(head, rows, row, total) {
+  if (rows === void 0 || rows.length === 0) return [];
+  const shown = rows.slice(0, LIST_ROWS);
+  const more = Math.max(total ?? 0, rows.length) - shown.length;
+  return [`**${head}**`, ...shown.map((r) => `- ${row(r)}`), ...more > 0 ? [`- ${moreRows(more)}`] : []];
+}
+__name(list, "list");
+function answerHead(a) {
+  const parts = ["**get_answer**"];
+  if (a.confidence !== void 0) parts.push(`confidence: ${a.confidence}`);
+  if (a.retrieval_quality !== void 0) parts.push(`retrieval: ${a.retrieval_quality}`);
+  if (a.degraded !== void 0) parts.push(`not synthesized: ${a.degraded}`);
+  return parts.join(" · ");
+}
+__name(answerHead, "answerHead");
+function answerMarkdown(a) {
+  const cited = a.citations ?? [];
+  const evidence = cited.length === 0 ? PANE_COPY.noEvidence : `cited: ${cited.map(code).join(", ")}`;
+  return [answerHead(a), a.answer ?? "", evidence];
+}
+__name(answerMarkdown, "answerMarkdown");
+var decisionRow = /* @__PURE__ */ __name((d) => {
+  const facts = [d.status, d.authority, d.confidence === null || d.confidence === void 0 ? void 0 : `confidence ${d.confidence}`].filter((f) => f !== void 0).join(" · ");
+  const id = d.id === void 0 ? "" : ` · ${code(d.id)}`;
+  const body = d.decision === void 0 ? "" : `: ${line(d.decision)}`;
+  return `**${line(d.title, 120)}**${facts === "" ? "" : ` (${facts})`}${id}${body}`;
+}, "decisionRow");
+var commitRow = /* @__PURE__ */ __name((c) => `${code(c.sha ?? "?")} ${line(c.message ?? "", 160)}${c.date === void 0 ? "" : ` (${c.date.slice(0, 10)})`}${ids(c.evidence_refs)}`, "commitRow");
+var rationaleRow = /* @__PURE__ */ __name((r) => `${code(r.lines === void 0 ? r.path : `${r.path}:${r.lines[0]}`)} ${line(r.comment)}${ids(r.evidence_refs)}`, "rationaleRow");
+function whyMarkdown(w) {
+  const head = w.answer_basis === void 0 ? "**get_why**" : `**get_why** · basis: ${w.answer_basis}`;
+  const commits = w.git_archaeology?.git_log ?? w.git_archaeology?.file_commits;
+  return [
+    head,
+    ...w.reason === void 0 ? [] : [w.reason],
+    ...list("Decisions", w.decisions, decisionRow),
+    ...list("Commits", commits, commitRow),
+    ...list("Rationale in the code", w.code_rationale, rationaleRow, w.code_rationale_total)
+  ];
+}
+__name(whyMarkdown, "whyMarkdown");
+function replyMarkdown(question, a) {
+  const body = a.tool === "get_answer" ? answerMarkdown(a.reply) : whyMarkdown(a.reply);
+  const text2 = [`> ${line(question, 200)}`, ...body].join("\n\n");
+  if (text2.length <= ASK_CHARS) return text2;
+  const note = `
+
+_${askCut(ASK_CHARS)}_`;
+  return `${text2.slice(0, ASK_CHARS - note.length).trimEnd()}${note}`;
+}
+__name(replyMarkdown, "replyMarkdown");
+
+// src/views/pane.ts
+var TABS = ["map", "ask", "recap"];
+var TAB_PRESS = { map: "lens-tab-map", ask: "lens-tab-ask", recap: "lens-tab-recap" };
+var ASK_KEY = "lens-ask";
+var TAB_ROWS = 1;
+function tabsView(current) {
+  return box(
+    { key: "lens-tabs", flexDirection: "row", columnGap: 2 },
+    TABS.map((tab, i) => button(TAB_PRESS[tab], String(i + 1), PANE_COPY.tabs[tab], tab !== current))
+  );
+}
+__name(tabsView, "tabsView");
+var dim = /* @__PURE__ */ __name((line2, columns) => text(fit(line2, columns), { dimColor: true, wrap: "truncate-end" }), "dim");
+function askStatus(state2, columns) {
+  const ask = state2.ask;
+  switch (ask.phase) {
+    case "idle":
+      return [dim(PANE_COPY.askIdle, columns)];
+    case "asking":
+      return [dim(`> ${ask.question}`, columns), dim(askingLine(ask.tool), columns)];
+    case "failed":
+      return [dim(`> ${ask.question}`, columns), dim(askFailedLine(ask.tool, ask.message), columns)];
+    case "answered":
+      return [markdown(replyMarkdown(ask.question, ask.answer))];
+  }
+}
+__name(askStatus, "askStatus");
+function askView(state2, columns) {
+  const field = input({
+    key: ASK_KEY,
+    label: PANE_COPY.askLabel,
+    placeholder: PANE_COPY.askPlaceholder,
+    submitLabel: PANE_COPY.askSubmit,
+    autoFocus: true,
+    ...state2.pane.draft === "" ? {} : { value: state2.pane.draft }
+  });
+  return box({ key: "lens-ask-tab", flexDirection: "column" }, [field, ...askStatus(state2, columns)]);
+}
+__name(askView, "askView");
+function reviewRows(state2) {
+  const risk = state2.lastReview;
+  if (risk === null) return [[RECAP_COPY.health, RECAP_COPY.noReview]];
+  const hd = risk.health_delta;
+  const compared = hd !== void 0 && (hd.status === "available" || hd.status === "partial");
+  const tests = testsToRun(risk);
+  const shared = overlap(risk);
+  const branches = shared !== null ? overlapLine(shared.branches, shared.files, shared.more) : risk.branch_overlap === void 0 ? RECAP_COPY.notReported : RECAP_COPY.noOverlap;
+  return [
+    [RECAP_COPY.health, health(risk).words],
+    [RECAP_COPY.findings, compared ? findingsCounts(hd.resolved, hd.findings_total) : RECAP_COPY.notCompared],
+    [RECAP_COPY.tests, tests === null ? RECAP_COPY.noTests : testsQueued(tests)],
+    [RECAP_COPY.overlap, branches]
+  ];
+}
+__name(reviewRows, "reviewRows");
+function savedRow(state2) {
+  if (state2.savings !== null) return savingsLine(state2.savings, Number.POSITIVE_INFINITY);
+  return state2.mode === "full" ? RECAP_COPY.noSavings : RECAP_COPY.savingsNeedServer;
+}
+__name(savedRow, "savedRow");
+function recapRows(state2, reads) {
+  const decisions = surfacedDecisions(state2).map((d) => d.title);
+  return [
+    [RECAP_COPY.files, filesTouched(state2.touched.length, reads)],
+    ...reviewRows(state2),
+    [RECAP_COPY.saved, savedRow(state2)],
+    [RECAP_COPY.decisions, decisions.length === 0 ? RECAP_COPY.noDecisions : decisionsSurfaced(decisions)]
+  ];
+}
+__name(recapRows, "recapRows");
+function recapView(state2, reads, columns) {
+  const rows = recapRows(state2, reads).map(
+    ([label, value]) => box({ flexDirection: "row" }, [text(`${label}: `, { dimColor: true }), text(fit(value, Math.max(1, columns - label.length - 2)), { wrap: "truncate-end" })])
+  );
+  return box({ key: "lens-recap", flexDirection: "column" }, [...rows, dim(recapFooter(state2.modelAsks), columns)]);
+}
+__name(recapView, "recapView");
+function paneView(tab, body) {
+  return box({ key: "lens-pane", flexDirection: "column" }, [tabsView(tab), body]);
+}
+__name(paneView, "paneView");
+
 // src/views/spinner.ts
 function spinnerSuffix(state2) {
   if (state2.running === null) return null;
@@ -2320,19 +2741,19 @@ __name(spinnerSuffix, "spinnerSuffix");
 
 // src/model/squeeze.ts
 var MARKER = /^\[repowise#([0-9a-f]{12}): (\d+) lines omitted \(~(\d+) tokens\); restore: repowise expand \1\]$/;
-function markerOf(line) {
-  const m = MARKER.exec(line.trim());
+function markerOf(line2) {
+  const m = MARKER.exec(line2.trim());
   return m === null ? null : { ref: m[1], lines: Number(m[2]), tokens: Number(m[3]) };
 }
 __name(markerOf, "markerOf");
-var isBlank = /* @__PURE__ */ __name((line) => line.trim() === "", "isBlank");
+var isBlank = /* @__PURE__ */ __name((line2) => line2.trim() === "", "isBlank");
 function trailingMarkers(lines) {
   let end = lines.length;
   const markers = [];
   while (end > 0) {
-    const line = lines[end - 1];
-    const marker = isBlank(line) ? null : markerOf(line);
-    if (!isBlank(line) && marker === null) break;
+    const line2 = lines[end - 1];
+    const marker = isBlank(line2) ? null : markerOf(line2);
+    if (!isBlank(line2) && marker === null) break;
     if (marker !== null) markers.unshift(marker);
     end--;
   }
@@ -2345,8 +2766,8 @@ var PYTEST_ERRORS = /\b(\d+) errors?\b/;
 var JEST_SUMMARY = /^\s*Tests?:\s.*?\b(\d+) failed\b/;
 var CARGO_SUMMARY = /^test result: \w+\. \d+ passed; (\d+) failed;/;
 var GO_FAIL = /^--- FAIL:/;
-function pytestCounts(line) {
-  const m = PYTEST_SUMMARY.exec(line);
+function pytestCounts(line2) {
+  const m = PYTEST_SUMMARY.exec(line2);
   if (m === null) return null;
   return { failed: Number(PYTEST_FAILED.exec(m[1])?.[1] ?? 0), errors: Number(PYTEST_ERRORS.exec(m[1])?.[1] ?? 0) };
 }
@@ -2354,13 +2775,13 @@ __name(pytestCounts, "pytestCounts");
 function runnerFailures(kept) {
   let cargo = 0;
   let go = 0;
-  for (const line of kept) {
-    const pytest = pytestCounts(line);
+  for (const line2 of kept) {
+    const pytest = pytestCounts(line2);
     if (pytest !== null) return pytest;
-    const jest = JEST_SUMMARY.exec(line);
+    const jest = JEST_SUMMARY.exec(line2);
     if (jest !== null) return { failed: Number(jest[1]), errors: 0 };
-    cargo += Number(CARGO_SUMMARY.exec(line)?.[1] ?? 0);
-    if (GO_FAIL.test(line)) go++;
+    cargo += Number(CARGO_SUMMARY.exec(line2)?.[1] ?? 0);
+    if (GO_FAIL.test(line2)) go++;
   }
   return { failed: cargo + go, errors: 0 };
 }
@@ -2411,7 +2832,8 @@ var SAVINGS_TIMEOUT_MS = 3e4;
 var SAVINGS_COOLDOWN_MS = 6e4;
 var MCP_SERVER_KEY = "repowise";
 var PANE_ID = "lens";
-var PANE_ROWS = 28;
+var PANE_ROWS = 29;
+var ASK_TIMEOUT_MS = 3e4;
 var state = initialSession;
 var generation = 0;
 var running = false;
@@ -2463,8 +2885,10 @@ function bind($) {
     redraw: /* @__PURE__ */ __name(() => $.ui.invalidate("ui.render"), "redraw"),
     debug: /* @__PURE__ */ __name((message) => $.ui.log(`lens: ${message}`, { to: "debug" }), "debug"),
     blit: /* @__PURE__ */ __name((cells, columns, rows) => $.ui.blit({ requestId: PANE_ID, key: MAP_KEY, cells, columns, rows }), "blit"),
-    // No focus: the map has no controls, and the prompt keeps the keyboard.
-    openPane: /* @__PURE__ */ __name(() => $.ui.open({ id: PANE_ID, title: MAP_COPY.title, rows: PANE_ROWS }), "openPane"),
+    // Focus only when asked (/lens, a press): an automatic open leaves the prompt the keyboard.
+    openPane: /* @__PURE__ */ __name((focus) => $.ui.open(
+      focus ? { id: PANE_ID, title: MAP_COPY.title, rows: PANE_ROWS, focus: true } : { id: PANE_ID, title: MAP_COPY.title, rows: PANE_ROWS }
+    ), "openPane"),
     closePane: /* @__PURE__ */ __name(() => $.ui.close({ id: PANE_ID }), "closePane")
   };
 }
@@ -2546,7 +2970,7 @@ async function onSessionStart($, e, next) {
     resetMcp();
     warmMcp(b.host);
     refresh(b);
-    await $.command.register({ name: "lens", description: MAP_COPY.command, immediate: true });
+    await $.command.register({ name: "lens", description: PANE_COPY.command, argumentHint: PANE_COPY.argumentHint, immediate: true });
     map.setReducedMotion((await $.settings.read())["prefersReducedMotion"] === true);
   } catch (err) {
     b.debug(`session.start failed: ${String(err)}`);
@@ -2653,6 +3077,63 @@ function pressRunTests($) {
   }
 }
 __name(pressRunTests, "pressRunTests");
+function pressWhy($) {
+  const b = bind($);
+  try {
+    const decision = state.review.decision;
+    if (decision === null) return;
+    dispatch(b, { type: "tab", tab: "ask", draft: whyDraft(decision) });
+    map.request(b).catch((err) => b.debug(`why failed: ${String(err)}`));
+  } catch (err) {
+    b.debug(`why failed: ${String(err)}`);
+  }
+}
+__name(pressWhy, "pressWhy");
+function pressBrief($) {
+  const b = bind($);
+  try {
+    const brief = briefText(state);
+    dispatch(b, { type: "briefDone" });
+    if (brief === null) return;
+    $.prompt.submit({ text: brief }).catch((err) => b.debug(`brief failed: ${String(err)}`));
+  } catch (err) {
+    b.debug(`brief failed: ${String(err)}`);
+  }
+}
+__name(pressBrief, "pressBrief");
+async function onPostCompact($, e, next) {
+  try {
+    dispatch(bind($), { type: "compacted" });
+  } catch (err) {
+    bind($).debug(`PostCompact failed: ${String(err)}`);
+  }
+  return next(e);
+}
+__name(onPostCompact, "onPostCompact");
+function startAsk(b, question) {
+  const q = question.trim();
+  if (q === "" || state.ask.phase === "asking") return;
+  const { tool, args } = askRoute(q);
+  dispatch(b, { type: "asked", question: q, tool });
+  const gen = generation;
+  callTool(b.host, tool, args, { timeoutMs: ASK_TIMEOUT_MS }).then((reply) => {
+    if (gen === generation) dispatch(b, { type: "answered", question: q, answer: askReply(tool, reply) });
+  }).catch((err) => {
+    b.debug(`ask failed: ${String(err)}`);
+    const message = fit((err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "", ERROR_CELLS);
+    if (gen === generation) dispatch(b, { type: "askFailed", question: q, tool, message });
+  });
+}
+__name(startAsk, "startAsk");
+async function onAskInput($, e, next) {
+  try {
+    if (e.kind === "submit" && e.element === ASK_KEY) startAsk(bind($), e.value);
+  } catch (err) {
+    bind($).debug(`ask failed: ${String(err)}`);
+  }
+  return next(e);
+}
+__name(onAskInput, "onAskInput");
 function pressDetails($) {
   try {
     for (const row of directiveRows(state.review.outcome) ?? []) $.ui.log(row, { to: "transcript" });
@@ -2664,14 +3145,16 @@ __name(pressDetails, "pressDetails");
 async function onBand($, e, next) {
   const theirs = await next(e);
   try {
-    const line = map.bandLine();
+    const line2 = map.bandLine();
     const viewport = { columns: e.props.bodyColumns ?? 80, hasSurvey: e.props.hasSurvey === true };
-    const tree = bandView(state, viewport, line === null ? [] : [line]);
+    const tree = bandView(state, viewport, line2 === null ? [] : [line2]);
     if (tree === null) return theirs;
     const elements = $.ui.resolve(e);
     const ours = materialize(tree, elements, {
       [PRESS.tests]: () => pressRunTests($),
-      [PRESS.details]: () => pressDetails($)
+      [PRESS.why]: () => pressWhy($),
+      [PRESS.details]: () => pressDetails($),
+      [BRIEF_PRESS]: () => pressBrief($)
     });
     const box2 = elements["Box"];
     if (theirs === null || theirs === void 0 || box2 === void 0) return ours;
@@ -2744,7 +3227,10 @@ function fileToolStarted(b, e) {
 __name(fileToolStarted, "fileToolStarted");
 function editLanded(b, e, result) {
   try {
-    if (reviewOn && isFileEdit(e, result)) reviewAfterEdit(b);
+    if (!isFileEdit(e, result)) return;
+    const path = touchedPath(e, cwd, state.repoRoot);
+    if (path !== null) dispatch(b, { type: "touched", path });
+    if (reviewOn) reviewAfterEdit(b);
   } catch (err) {
     b.debug(`tool.call failed: ${String(err)}`);
   }
@@ -2762,15 +3248,15 @@ async function onToolCheck($, e, next) {
 }
 __name(onToolCheck, "onToolCheck");
 async function onSpinner($, e, next) {
-  let line = null;
+  let line2 = null;
   try {
-    line = spinnerSuffix(state);
+    line2 = spinnerSuffix(state);
   } catch (err) {
     bind($).debug(`spinner render failed: ${String(err)}`);
   }
-  if (line === null) return next(e);
+  if (line2 === null) return next(e);
   const theirs = typeof e.props.suffix === "string" ? e.props.suffix : "";
-  return next({ ...e, props: { ...e.props, suffix: `${theirs} ${line}` } });
+  return next({ ...e, props: { ...e.props, suffix: `${theirs} ${line2}` } });
 }
 __name(onSpinner, "onSpinner");
 function below(elements, theirs, tree) {
@@ -2825,28 +3311,51 @@ async function onToolUse($, e, next) {
   }
 }
 __name(onToolUse, "onToolUse");
-async function onLensCommand($) {
+async function onLensCommand($, e) {
   const b = bind($);
   try {
+    const asked = lensCommand(e.args ?? "");
+    if (asked.tab !== null) dispatch(b, { type: "tab", tab: asked.tab });
     if (discovery === null || mapRepo(discovery) === null) refresh(b);
     await map.request(b);
+    if (asked.question !== null) {
+      await mcpReady(b.host);
+      startAsk(b, asked.question);
+    }
   } catch (err) {
     b.debug(`/lens failed: ${String(err)}`);
   }
   return {};
 }
 __name(onLensCommand, "onLensCommand");
+function selectTab($, tab) {
+  try {
+    dispatch(bind($), { type: "tab", tab });
+  } catch (err) {
+    bind($).debug(`tab failed: ${String(err)}`);
+  }
+}
+__name(selectTab, "selectTab");
+function tabBody(b, e) {
+  const { bodyColumns, placement, scroll } = e.props;
+  const tab = state.pane.tab;
+  if (tab !== "map") map.offScreen();
+  if (tab === "ask") return askView(state, bodyColumns);
+  if (tab === "recap") return recapView(state, { count: map.trail.reads.length, capped: map.trail.readsCapped }, bodyColumns);
+  const d = discovery;
+  const notice = d === null ? MAP_COPY.looking : HINTS[hintFor(d.mode, d.liteReason) ?? "no-index"];
+  const bodyRows = scroll.bodyRows - TAB_ROWS;
+  return map.paneTree(b, { surface: e.surface, notice, bodyColumns, placement, bodyRows });
+}
+__name(tabBody, "tabBody");
 async function onPane($, e, next) {
   if (e.requestId !== PANE_ID) return next(e);
   const b = bind($);
   try {
-    const d = discovery;
-    const notice = d === null ? MAP_COPY.looking : HINTS[hintFor(d.mode, d.liteReason) ?? "no-index"];
-    const { bodyColumns, placement, scroll } = e.props;
-    const tree = map.paneTree(b, { surface: e.surface, notice, bodyColumns, placement, bodyRows: scroll.bodyRows });
-    return materialize(tree, $.ui.resolve(e));
+    const presses = Object.fromEntries(TABS.map((tab) => [TAB_PRESS[tab], () => selectTab($, tab)]));
+    return materialize(paneView(state.pane.tab, tabBody(b, e)), $.ui.resolve(e), presses);
   } catch (err) {
-    b.debug(`map render failed: ${String(err)}`);
+    b.debug(`pane render failed: ${String(err)}`);
     return next(e);
   }
 }
@@ -2855,11 +3364,13 @@ function register(on, options = {}) {
   reviewOn = options["lens_review"] !== false;
   autoOpenOn = options["lens_pane_autoopen"] === true;
   on("session.start", onSessionStart);
-  if (reviewOn) on("turn.start", onTurnStart);
+  on("turn.start", onTurnStart);
   on("turn.complete", onTurnComplete);
   on("ui.render", { component: "AbovePrompt" }, onBand);
   on("ui.render", { component: "Pane" }, onPane);
   on("command.run", { command: "lens" }, onLensCommand);
+  on("ui.input", { plugin: "repowise", element: "lens-ask" }, onAskInput);
+  on("classic.PostCompact", onPostCompact);
   on("tool.call", onToolCall);
   on("tool.check", onToolCheck);
   on("ui.render", { component: "Spinner" }, onSpinner);

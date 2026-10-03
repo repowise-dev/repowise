@@ -2,7 +2,9 @@
  * Session state and its reducer. Pure: no I/O, no clock, no `$`.
  */
 
-import { initialReview, reduceReview, type ReviewAction, type ReviewState } from "./review";
+import type { AskReply, AskState, AskTool, PaneTab } from "./ask";
+import { mayHaveUsedModel } from "./ask";
+import { initialReview, reduceReview, type ChangeRisk, type ReviewAction, type ReviewState } from "./review";
 
 /** `no-repo`: not inside a git work tree, so there is nothing to index and Lens stays quiet. */
 export type Mode = "full" | "lite" | "no-index" | "no-cli" | "no-repo";
@@ -75,6 +77,17 @@ export interface SessionState {
   savings: SavingsDelta | null;
   /** The last turn's change review. */
   review: ReviewState;
+  /** The latest review that came back this session, kept past the turn for the recap and the brief. */
+  lastReview: ChangeRisk | null;
+  /** Files Claude (or a subagent) wrote this session, repo-relative when inside the repo, each once. */
+  touched: readonly string[];
+  /** The pane's tab, and the text the Ask field starts with. */
+  pane: { tab: PaneTab; draft: string };
+  ask: AskState;
+  /** Ask replies that may have used the index's own model (see `mayHaveUsedModel`). */
+  modelAsks: number;
+  /** The context was compacted and the brief not yet sent or passed over. */
+  compacted: boolean;
 }
 
 export type SessionAction =
@@ -85,6 +98,13 @@ export type SessionAction =
   | { type: "contextLoaded"; file: string; context: FileContext }
   | { type: "notesFor"; id: string; notes: readonly MarginNote[] }
   | { type: "savings"; delta: SavingsDelta }
+  | { type: "touched"; path: string }
+  | { type: "tab"; tab: PaneTab; draft?: string }
+  | { type: "asked"; question: string; tool: AskTool }
+  | { type: "answered"; question: string; answer: AskReply }
+  | { type: "askFailed"; question: string; tool: AskTool; message: string }
+  | { type: "compacted" }
+  | { type: "briefDone" }
   | ReviewAction;
 
 export const initialSession: SessionState = {
@@ -98,6 +118,12 @@ export const initialSession: SessionState = {
   notes: {},
   savings: null,
   review: initialReview,
+  lastReview: null,
+  touched: [],
+  pane: { tab: "map", draft: "" },
+  ask: { phase: "idle" },
+  modelAsks: 0,
+  compacted: false,
 };
 
 export function hintFor(mode: Mode, liteReason: LiteReason | undefined): HintKind | null {
@@ -133,13 +159,51 @@ export function reduce(state: SessionState, action: SessionAction): SessionState
       return state.running?.id === action.id ? { ...state, running: null } : state;
     case "contextLoaded":
       return { ...state, contexts: { ...state.contexts, [action.file]: action.context } };
-    case "notesFor":
-      return action.notes.length === 0 ? state : { ...state, notes: { ...state.notes, [action.id]: action.notes } };
+    case "notesFor": {
+      if (action.notes.length === 0) return state;
+      const notes = { ...state.notes, [action.id]: action.notes };
+      const decision = action.notes.find((n) => n.kind === "decision");
+      const review = decision === undefined ? state.review : reduceReview(state.review, { type: "decisionNoted", title: decision.title });
+      return { ...state, notes, review };
+    }
     case "savings":
       return { ...state, savings: action.delta.tokens > 0 ? action.delta : null };
-    default: {
-      const review = reduceReview(state.review, action);
-      return review === state.review ? state : { ...state, review };
+    case "touched":
+      return state.touched.includes(action.path) ? state : { ...state, touched: [...state.touched, action.path] };
+    case "tab":
+      return { ...state, pane: { tab: action.tab, draft: action.draft ?? state.pane.draft } };
+    case "asked":
+      // The field starts empty once its text was asked.
+      return { ...state, ask: { phase: "asking", question: action.question, tool: action.tool }, pane: { ...state.pane, draft: "" } };
+    case "answered": {
+      const modelAsks = state.modelAsks + (mayHaveUsedModel(action.answer) ? 1 : 0);
+      return { ...state, modelAsks, ask: { phase: "answered", question: action.question, answer: action.answer } };
     }
+    case "askFailed":
+      return { ...state, ask: { phase: "failed", question: action.question, tool: action.tool, message: action.message } };
+    case "compacted":
+      return state.compacted ? state : { ...state, compacted: true };
+    case "briefDone":
+      return state.compacted ? { ...state, compacted: false } : state;
+    default:
+      return reduceTurn(state, action);
   }
+}
+
+/** The review's actions; a new turn also retires the brief offer, and a landed review is kept for the recap. */
+function reduceTurn(state: SessionState, action: ReviewAction): SessionState {
+  const review = reduceReview(state.review, action);
+  const compacted = action.type === "turnStarted" ? false : state.compacted;
+  const lastReview = action.type === "reviewed" ? action.risk : state.lastReview;
+  if (review === state.review && compacted === state.compacted && lastReview === state.lastReview) return state;
+  return { ...state, review, compacted, lastReview };
+}
+
+/** Each decision the augment hook surfaced on an edit this session, once, in the order seen. */
+export function surfacedDecisions(state: SessionState): Array<{ title: string; reviewed: boolean }> {
+  const seen = new Map<string, boolean>();
+  for (const notes of Object.values(state.notes)) {
+    for (const n of notes) if (n.kind === "decision" && !seen.has(n.title)) seen.set(n.title, n.reviewed);
+  }
+  return [...seen].map(([title, reviewed]) => ({ title, reviewed }));
 }

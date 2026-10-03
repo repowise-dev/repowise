@@ -10,8 +10,8 @@ import { feed } from "./django";
 
 function texts(node: Node): string[] {
   if (node.type === "Text") return [node.children.join("")];
-  if (node.type === "Raster") return [];
   if (node.type === "Button") return [node.props.label];
+  if (node.type !== "Box") return [];
   return node.children.flatMap(texts);
 }
 
@@ -102,9 +102,9 @@ describe("copy", () => {
 describe("mapPaneView", () => {
   const layout = layoutMap(feed.files, 120, 20, true);
   const root = "C:\\work\\django";
-  const view = (t: TrailState, columns = 120) => {
+  const view = (t: TrailState, columns = 120, facts = scope) => {
     const resolved = resolveOverlay(layout, t, root);
-    return mapPaneView({ ...layout, columns }, frameCells(layout, resolved.overlay), resolved, scope);
+    return mapPaneView({ ...layout, columns }, frameCells(layout, resolved.overlay), resolved, facts);
   };
 
   it("draws the Raster at the layout's size and the legend outside it, with every band word", () => {
@@ -141,6 +141,31 @@ describe("mapPaneView", () => {
   it("wraps the scope onto a second row when narrow, so the age survives", () => {
     const shown = rows(view(initialTrail, 50));
     expect(shown.slice(-2)).toEqual(["1,639 of 2,970 files drawn at this size", "rest empty or too small · indexed 2h ago"]);
+  });
+
+  it("at 60 columns the edit and reads rows keep every count, in a short form", () => {
+    let t = reduceTrail(initialTrail, { type: "read", path: "c:/elsewhere/x.py" });
+    t = reduceTrail(t, { type: "search", paths: ["c:/work/django/django/db/models/base.py"] });
+    t = reduceTrail(t, { type: "edit", path: "c:/work/django/django/db/models/query.py" });
+    const paths = ["django/db/models/base.py", ...Array.from({ length: 10 }, (_, i) => `not/in/feed${i}.py`)];
+    t = reduceTrail(t, { type: "callers", edits: 1, callers: { status: "ready", paths } });
+    const shown = rows(view(t, 60));
+    expect(shown).toContain("edited query.py · 11 import it · 10 not drawn");
+    expect(shown).toContain("2 files read · 1 not drawn · last search matched 1 file");
+    const long = callersLine("a_very_long_module_name_that_goes_on_and_on.py", { status: "ready", paths }, 10, 40);
+    expect(long).toMatch(/· 11 import it · 10 not drawn$/);
+    expect(long.length).toBeLessThanOrEqual(40);
+    expect(readsLine({ count: 200, capped: true, notDrawn: 1_234 }, 1_204, 60)).toBe("200+ read · 1,234 not drawn · search matched 1,204");
+  });
+
+  it("at 60 columns the cap clause survives; the rest note and the age leave first", () => {
+    const capped = { ...scope, drawn: 1_500, repositoryTotal: 8_281, beyondCap: 4_281 };
+    const shown = rows(view(initialTrail, 60, capped));
+    expect(shown.slice(-2)).toEqual(["1,500 of 8,281 files drawn at this size · indexed 2h ago", "4,281 beyond the 4,000-file cap"]);
+    expect(rows(view(initialTrail, 45, capped)).slice(-2)).toEqual(["1,500 of 8,281 files drawn at this size", "4,281 beyond the 4,000-file cap"]);
+    expect(rows(view(initialTrail, 120, capped)).at(-1)).toBe(
+      "1,500 of 8,281 files drawn at this size · rest empty or too small · indexed 2h ago · 4,281 beyond the 4,000-file cap",
+    );
   });
 
   it("noticeView is one dim line, fitted", () => {

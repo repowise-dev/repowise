@@ -1,0 +1,552 @@
+{
+  "mode": "path",
+  "path": "django/db/models/query.py",
+  "answer_basis": "rationale",
+  "decisions": [],
+  "git_archaeology": {
+    "summary": "No architectural decisions found for django/db/models/query.py, but git archaeology recovered 50 direct commit(s), 1 cross-reference(s), and 29 git log result(s). Review these to understand the intent behind this code.",
+    "git_log": [
+      {
+        "sha": "99672c672a15",
+        "message": "Refs #36593, #37187 -- Avoided spurious select_related() warning in ModelAdmin.",
+        "date": "2026-06-25",
+        "evidence_refs": [
+          {
+            "id": "ev_8bf8eb410e85f4c04c6d",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "99672c672a1537aeb0d1fd5911ca6f04154cc091",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "ca5746b8680a",
+        "message": "Fixed #37143 -- Added missing chunk_size=None check to QuerySet.aiterator().",
+        "date": "2026-06-07",
+        "evidence_refs": [
+          {
+            "id": "ev_bfe153f73c4f51cf2536",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "ca5746b8680a5e7e14014d365c0610f825df1dae",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "f970a98e4643",
+        "message": "Fixed #37142 -- Moved django_file_prefixes() to django.utils.warnings.",
+        "date": "2026-06-06",
+        "evidence_refs": [
+          {
+            "id": "ev_55f2b2d6bde6df529dc3",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "f970a98e464320c09dde8d45009eadfb4d038a57",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "fbe902d4a4b8",
+        "message": "Refs #37097 -- Removed compilation-time order clearing on combined queries on Oracle.",
+        "date": "2026-05-13",
+        "evidence_refs": [
+          {
+            "id": "ev_771a4cbc951420a05e5a",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "fbe902d4a4b8b9dcb371509b25ba8feff3852e64",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "f386d8ec7cbf",
+        "message": "Fixed #36593 -- Deprecated QuerySet.select_related() with no arguments.",
+        "date": "2025-09-05",
+        "evidence_refs": [
+          {
+            "id": "ev_a26d850458daa53480e1",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "f386d8ec7cbf42b350f5958b552cd3492a493d5b",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "5cf9c7fde7cf",
+        "message": "Refs #28586 -- Added DEFAULT_FETCH_MODE module constant.",
+        "date": "2026-04-19",
+        "evidence_refs": [
+          {
+            "id": "ev_eb6161dfad80f269cbb9",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "5cf9c7fde7cf18c1ab4d529d187f45fb0225bb58",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "3b161e60964a",
+        "message": "Fixed #37016 -- Avoided propagating invalid arguments from When() to Q().",
+        "date": "2026-04-02",
+        "evidence_refs": [
+          {
+            "id": "ev_4e797f7b925aa6066141",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "3b161e60964aff99eddcd2627a486d81c1836b3a",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "804607df0e17",
+        "message": "Refs #28455 -- Avoided QuerySet cloning in simple prefetch_related() usages.",
+        "date": "2026-01-10",
+        "evidence_refs": [
+          {
+            "id": "ev_abbc275b8f809a1a6470",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "804607df0e174c524a3ea880b8ecbb555ecb4abb",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "8d8a8713432a",
+        "message": "Refs #28455 -- Implemented private API methods for preventing QuerySet cloning.",
+        "date": "2021-07-20",
+        "evidence_refs": [
+          {
+            "id": "ev_cca3f15b4428298ba9a3",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "8d8a8713432a88737c4400610eef11c5c8457b86",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "08b4dfc5734f",
+        "message": "Fixed #36857 -- Added QuerySet.totally_ordered property.",
+        "date": "2026-01-10",
+        "evidence_refs": [
+          {
+            "id": "ev_bd24388d9061b003aaae",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "08b4dfc5734f5d2fce685eabcd65385a6656db2f",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "6380e3f01e10",
+        "message": "Fixed #36644 -- Enabled empty order_by() to avoid pk ordering by first()/last().",
+        "date": "2026-02-05",
+        "evidence_refs": [
+          {
+            "id": "ev_ee5f298c2eef7b881bbe",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "6380e3f01e10f815de8c0223e3fd4bacb69f3808",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "087bb9e8f347",
+        "message": "Refs #36644 -- Applied default ordering after union().",
+        "date": "2026-02-05",
+        "evidence_refs": [
+          {
+            "id": "ev_e48ef4a7510112a6cfd9",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "087bb9e8f3478d53f12b1737af865992af17c5f2",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "040bb3eba72e",
+        "message": "Fixed #35442 -- Prevented N+1 queries in RelatedManager with only().",
+        "date": "2026-01-05",
+        "evidence_refs": [
+          {
+            "id": "ev_bdc67c384271288dc945",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "040bb3eba72eb45020dd025d3f83094a0fcaf22f",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "6d4d99b3cef4",
+        "message": "Fixed #36702 -- Made bulk_create() return pk values set by an expression.",
+        "date": "2025-11-06",
+        "evidence_refs": [
+          {
+            "id": "ev_b76a3851a356652e3a30",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "6d4d99b3cef4a6d931de02f89a493fb345dc438e",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "3c3f46357718",
+        "message": "Refs CVE-2025-64459 -- Avoided propagating invalid arguments to Q on dictionary expansion.",
+        "date": "2025-09-24",
+        "evidence_refs": [
+          {
+            "id": "ev_ae26fb6ad65907cff9fb",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "3c3f46357718166069948625354b8315a8505262",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "4744e9939b65",
+        "message": "Fixed #36683 -- Added error message on QuerySet.update() following distinct(*fields).",
+        "date": "2025-10-23",
+        "evidence_refs": [
+          {
+            "id": "ev_ad80528acee2a60a1d36",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "4744e9939b65d168c531e5e23d1ac8a4445ac7f9",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "e244d8bbb743",
+        "message": "Refs #28586 - Copied fetch mode in QuerySet.create().",
+        "date": "2025-09-04",
+        "evidence_refs": [
+          {
+            "id": "ev_9a30add8a84803f4ada2",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "e244d8bbb743eec413eb241139b6345885db39d9",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "6dc9b0401803",
+        "message": "Refs #28586 -- Copied fetch modes to related objects.",
+        "date": "2025-04-14",
+        "evidence_refs": [
+          {
+            "id": "ev_ce8cf5004d9f33209a5d",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "6dc9b04018032dccbb5ad8347f7ddf4341316166",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "e097e8a12f21",
+        "message": "Fixed #28586 -- Added model field fetch modes.",
+        "date": "2023-11-29",
+        "evidence_refs": [
+          {
+            "id": "ev_93f632cac1d086936130",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "e097e8a12f21a4e92594830f1ad1942b31916d0f",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "02eed4f37879",
+        "message": "Fixed #36648, Refs #33772 -- Accounted for composite pks in first()/last() when aggregating.",
+        "date": "2025-10-13",
+        "evidence_refs": [
+          {
+            "id": "ev_46bfd7fc67982b29c59e",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "02eed4f37879b2077496f86bb1378a076b981233",
+            "provenance": "historical",
+            "source": "archaeology:git_log",
+            "source_kind": "archaeology:git_log",
+            "verification_basis": "historical"
+          }
+        ]
+      }
+    ],
+    "file_commits": [
+      {
+        "sha": "99672c67",
+        "message": "Refs #36593, #37187 -- Avoided spurious select_related() warning in ModelAdmin.",
+        "date": "2026-06-25T20:47:00+00:00",
+        "evidence_refs": [
+          {
+            "id": "ev_8bf8eb410e85f4c04c6d",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "99672c672a1537aeb0d1fd5911ca6f04154cc091",
+            "provenance": "historical",
+            "source": "archaeology:file_commits",
+            "source_kind": "archaeology:file_commits",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "ca5746b8",
+        "message": "Fixed #37143 -- Added missing chunk_size=None check to QuerySet.aiterator().",
+        "date": "2026-06-18T14:40:42+00:00",
+        "evidence_refs": [
+          {
+            "id": "ev_bfe153f73c4f51cf2536",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "ca5746b8680a5e7e14014d365c0610f825df1dae",
+            "provenance": "historical",
+            "source": "archaeology:file_commits",
+            "source_kind": "archaeology:file_commits",
+            "verification_basis": "historical"
+          }
+        ]
+      },
+      {
+        "sha": "f970a98e",
+        "message": "Fixed #37142 -- Moved django_file_prefixes() to django.utils.warnings.",
+        "date": "2026-06-10T14:17:34+00:00",
+        "evidence_refs": [
+          {
+            "id": "ev_55f2b2d6bde6df529dc3",
+            "repository": "default",
+            "kind": "commit",
+            "commit": "f970a98e464320c09dde8d45009eadfb4d038a57",
+            "provenance": "historical",
+            "source": "archaeology:file_commits",
+            "source_kind": "archaeology:file_commits",
+            "verification_basis": "historical"
+          }
+        ]
+      }
+    ]
+  },
+  "code_rationale": [
+    {
+      "path": "django/db/models/query.py",
+      "lines": [
+        81,
+        88
+      ],
+      "comment": "__aiter__() is a *synchronous* method that has to then return an *asynchronous* iterator/generator. Thus, nest an async generator inside it. This is a generic iterable converter for now, and is going to suffer a performance penalty on large sets of items due to the cost of crossing over the sync barrier for each chunk. Custom __aiter__() methods should be added to each Iterable subclass, but that needs some work in the Compiler first.",
+      "matched_terms": [],
+      "provenance": "extracted_rationale",
+      "evidence_refs": [
+        {
+          "id": "ev_31e393e22918fcab5a3b",
+          "repository": "default",
+          "kind": "file_content",
+          "path": "django/db/models/query.py",
+          "line": 81,
+          "content_id": "bab6cd6762357c198c4b",
+          "range": [
+            81,
+            88
+          ],
+          "provenance": "extracted_rationale",
+          "source": "live_code_rationale",
+          "source_kind": "code_comment",
+          "verification": "exact",
+          "verification_basis": "live"
+        }
+      ]
+    },
+    {
+      "path": "django/db/models/query.py",
+      "lines": [
+        153,
+        153
+      ],
+      "comment": "Avoid overwriting objects loaded by, e.g., select_related().",
+      "matched_terms": [],
+      "provenance": "extracted_rationale",
+      "evidence_refs": [
+        {
+          "id": "ev_d8f7624113dc11517dc1",
+          "repository": "default",
+          "kind": "file_content",
+          "path": "django/db/models/query.py",
+          "line": 153,
+          "content_id": "bce737ae0a8f24fffcf1",
+          "range": [
+            153,
+            153
+          ],
+          "provenance": "extracted_rationale",
+          "source": "live_code_rationale",
+          "source_kind": "code_comment",
+          "verification": "exact",
+          "verification_basis": "live"
+        }
+      ]
+    },
+    {
+      "path": "django/db/models/query.py",
+      "lines": [
+        156,
+        157
+      ],
+      "comment": "Avoid fetching potentially deferred attributes that would result in unexpected queries.",
+      "matched_terms": [],
+      "provenance": "extracted_rationale",
+      "evidence_refs": [
+        {
+          "id": "ev_2625aa6ea06d5c2189bd",
+          "repository": "default",
+          "kind": "file_content",
+          "path": "django/db/models/query.py",
+          "line": 156,
+          "content_id": "95e0e85096e916ccbcde",
+          "range": [
+            156,
+            157
+          ],
+          "provenance": "extracted_rationale",
+          "source": "live_code_rationale",
+          "source_kind": "code_comment",
+          "verification": "exact",
+          "verification_basis": "live"
+        }
+      ]
+    },
+    {
+      "path": "django/db/models/query.py",
+      "lines": [
+        177,
+        177
+      ],
+      "comment": "Cache some things for performance reasons outside the loop.",
+      "matched_terms": [],
+      "provenance": "extracted_rationale",
+      "evidence_refs": [
+        {
+          "id": "ev_0e6831ae4655faf6121b",
+          "repository": "default",
+          "kind": "file_content",
+          "path": "django/db/models/query.py",
+          "line": 177,
+          "content_id": "e25f7c40a26de0a9fe12",
+          "range": [
+            177,
+            177
+          ],
+          "provenance": "extracted_rationale",
+          "source": "live_code_rationale",
+          "source_kind": "code_comment",
+          "verification": "exact",
+          "verification_basis": "live"
+        }
+      ]
+    },
+    {
+      "path": "django/db/models/query.py",
+      "lines": [
+        240,
+        240
+      ],
+      "comment": "extra(select=...) cols are always at the start of the row.",
+      "matched_terms": [],
+      "provenance": "extracted_rationale",
+      "evidence_refs": [
+        {
+          "id": "ev_eff2c2b8f0f096f509de",
+          "repository": "default",
+          "kind": "file_content",
+          "path": "django/db/models/query.py",
+          "line": 240,
+          "content_id": "70b631880ebe9ab3bf48",
+          "range": [
+            240,
+            240
+          ],
+          "provenance": "extracted_rationale",
+          "source": "live_code_rationale",
+          "source_kind": "code_comment",
+          "verification": "exact",
+          "verification_basis": "live"
+        }
+      ]
+    }
+  ],
+  "code_rationale_total": 38
+}

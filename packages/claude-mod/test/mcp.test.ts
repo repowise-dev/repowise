@@ -4,6 +4,7 @@ import {
   fetchFileContext,
   isOwnLensCall,
   LENS_TOOLS,
+  mcpReady,
   PLUGIN_NAME,
   resetMcp,
   toolName,
@@ -25,6 +26,21 @@ async function warmed(host: ReturnType<typeof fakeHost>): Promise<typeof host> {
   await new Promise((resolve) => setTimeout(resolve, 0));
   return host;
 }
+
+describe("mcpReady", () => {
+  it("waits for the server name, then says whether it resolved", async () => {
+    expect(await mcpReady(fakeHost())).toBe(true);
+    expect(await mcpReady(fakeHost())).toBe(true);
+    resetMcp();
+    expect(await mcpReady(fakeHost({ connected: false }))).toBe(false);
+  });
+
+  it("gives up on a server that never answers, after its timeout", async () => {
+    const host = fakeHost();
+    host.mcp.server = () => new Promise(() => undefined);
+    expect(await mcpReady(host, 10)).toBe(false);
+  });
+});
 
 describe("callTool", () => {
   it("calls the server under the name the engine resolved, and returns `result`", async () => {
@@ -171,7 +187,9 @@ describe("isOwnLensCall", () => {
   });
 
   it("allowlists only the tools a shipped feature calls", () => {
-    expect(LENS_TOOLS).toEqual(["get_context", "get_change_risk"]);
+    expect(LENS_TOOLS).toEqual(["get_context", "get_change_risk", "get_why", "get_answer"]);
+    expect(isOwnLensCall({ ...own, tool: "mcp__plugin_repowise_repowise__get_why" }, PLUGIN_NAME)).toBe(true);
+    expect(isOwnLensCall({ ...own, tool: "mcp__plugin_repowise_repowise__get_answer" }, PLUGIN_NAME)).toBe(true);
   });
 
   it("spells a server's tools the way tool.check names them", () => {

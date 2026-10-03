@@ -10,10 +10,10 @@ async function load(options: Record<string, boolean> = {}): Promise<Hooks> {
   vi.resetModules();
   const { register } = await import("../src/register");
   const hooks: Hooks = {};
-  // Hooks with a matcher are keyed by it: `ui.render:AbovePrompt`, `command.run:lens`.
+  // Hooks with a matcher are keyed by it: `ui.render:AbovePrompt`, `command.run:lens`, `ui.input:lens-ask`.
   const on = ((event: string, a: unknown, b?: unknown) => {
-    const matcher = a as { component?: string; command?: string };
-    const key = b === undefined ? event : `${event}:${matcher.component ?? matcher.command}`;
+    const matcher = a as { component?: string; command?: string; element?: string };
+    const key = b === undefined ? event : `${event}:${matcher.component ?? matcher.command ?? matcher.element}`;
     hooks[key] = (b ?? a) as Hook<any>;
   }) as On;
   register(on, options);
@@ -146,6 +146,7 @@ beforeEach(async () => {
 describe("register", () => {
   it("registers its hooks and nothing else", () => {
     expect(Object.keys(hooks).sort()).toEqual([
+      "classic.PostCompact",
       "classic.PostToolUse",
       "command.run:lens",
       "session.start",
@@ -153,6 +154,7 @@ describe("register", () => {
       "tool.check",
       "turn.complete",
       "turn.start",
+      "ui.input:lens-ask",
       "ui.render:AbovePrompt",
       "ui.render:Pane",
       "ui.render:Spinner",
@@ -765,11 +767,11 @@ describe("change review", () => {
     expect(timedOut.text).toBe("Change review timed out after 20 s");
   });
 
-  it("with lens_review off, nothing is reviewed and no turn.start hook is registered", async () => {
+  it("with lens_review off, nothing is reviewed", async () => {
     hooks = await load({ lens_review: false });
-    expect(Object.keys(hooks)).not.toContain("turn.start");
     const d = reviewing(async () => mcpResult(FINDINGS));
     await hooks["session.start"]!(d.$, {}, async () => undefined);
+    await hooks["turn.start"]!(d.$, {}, async () => undefined);
     await hooks["tool.call"]!(d.$, EDIT, async () => EDITED);
     const result = { text: "Done." };
     expect(await hooks["turn.complete"]!(d.$, DONE, async () => result)).toBe(result);

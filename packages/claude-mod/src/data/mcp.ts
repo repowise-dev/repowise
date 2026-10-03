@@ -14,7 +14,7 @@ import { withTimeout } from "./transport";
 export const PLUGIN_NAME = "repowise";
 
 /** Only the tools a shipped Lens feature calls. All read-only. */
-export const LENS_TOOLS = ["get_context", "get_change_risk"] as const;
+export const LENS_TOOLS = ["get_context", "get_change_risk", "get_why", "get_answer"] as const;
 export type LensTool = (typeof LENS_TOOLS)[number];
 
 /** Both spellings of this plugin's server seen at runtime; Lens calls and approves no other. */
@@ -51,6 +51,18 @@ export function warmMcp(host: Host): void {
       if (resolving === asked) resolving = null;
     });
   resolving = asked;
+}
+
+/**
+ * Waits for the server name, for a hook that stays live while it waits (a
+ * command): the call it then starts is still started inside that hook.
+ * True once resolved; false when the server did not connect in time.
+ */
+export async function mcpReady(host: Host, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<boolean> {
+  warmMcp(host);
+  const pending = resolving;
+  if (resolvedServer === null && pending !== null) await withTimeout(pending, timeoutMs, "MCP connect").catch(() => undefined);
+  return resolvedServer !== null;
 }
 
 /** How a server's tools are named in `tool.check` (`mcp__plugin_repowise_repowise__get_context`). */

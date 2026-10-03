@@ -38,6 +38,12 @@ describe("session reducer", () => {
       notes: {},
       savings: null,
       review: initialReview,
+      lastReview: null,
+      touched: [],
+      pane: { tab: "map", draft: "" },
+      ask: { phase: "idle" },
+      modelAsks: 0,
+      compacted: false,
     });
   });
 

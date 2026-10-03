@@ -17,6 +17,7 @@ import {
   REVIEW_TIMED_OUT,
   REVIEWING,
   RUN_TESTS,
+  WHY,
   diffShape,
   directiveLines,
   findingLine,
@@ -40,12 +41,12 @@ import {
 import { box, button, text, type Node } from "./elements";
 
 /** Button keys; register.ts maps each to what its press runs. */
-export const PRESS = { tests: "lens-review-tests", details: "lens-review-details" } as const;
+export const PRESS = { tests: "lens-review-tests", why: "lens-review-why", details: "lens-review-details" } as const;
 
 /** Green, amber and red mean health and nothing else (dark tokens: terminals are dark). */
 type HealthColor = typeof DARK.success | typeof DARK.warning | typeof DARK.error;
 
-interface HealthWords {
+export interface HealthWords {
   /** The card's sentence. */
   words: string;
   /** The band's few words. */
@@ -56,9 +57,14 @@ interface HealthWords {
 type Directive = NonNullable<ChangeRisk["directive"]>;
 type Delta = NonNullable<ChangeRisk["health_delta"]>;
 
+/** A diff with nothing in it: the server's own status, or a scope of 0 changed files (an edit reverted). */
+function emptyDiff(risk: ChangeRisk): boolean {
+  return risk.status === "nothing_to_score" || risk.health_delta?.scope?.changed === 0;
+}
+
 /** A result the card can describe: not a server error and not an empty diff. */
 function scored(risk: ChangeRisk): boolean {
-  return risk.error === undefined && risk.status !== "nothing_to_score";
+  return risk.error === undefined && !emptyDiff(risk);
 }
 
 /** Delta statuses where both sides were compared, fully or in part. */
@@ -89,7 +95,7 @@ function findingsWords(d: Directive, hd: Delta): HealthWords {
   return { words, short: newFindings(hd.findings_total, tone.required), color: tone.color };
 }
 
-function health(risk: ChangeRisk): HealthWords {
+export function health(risk: ChangeRisk): HealthWords {
   const d = risk.directive;
   const hd = risk.health_delta;
   if (d === undefined || hd === undefined) return NOT_REPORTED;
@@ -98,7 +104,7 @@ function health(risk: ChangeRisk): HealthWords {
   return findingsWords(d, hd);
 }
 
-function overlap(risk: ChangeRisk): { branches: string[]; files: string[]; more: boolean } | null {
+export function overlap(risk: ChangeRisk): { branches: string[]; files: string[]; more: boolean } | null {
   const block = risk.branch_overlap;
   const branches = block?.branches ?? [];
   if (branches.length === 0) return null;
@@ -156,8 +162,8 @@ function cardSegments(risk: ChangeRisk): string[] {
 
 function doneText(risk: ChangeRisk): string | null {
   if (risk.error !== undefined) return reviewFailed(risk.error);
-  // An empty diff has nothing to say.
-  if (risk.status === "nothing_to_score") return null;
+  // An empty diff has nothing to say (its percentile would rank a diff of nothing).
+  if (emptyDiff(risk)) return null;
   return cardSegments(risk).join(" · ");
 }
 
@@ -174,10 +180,11 @@ export function reviewText(outcome: ReviewOutcome): string | null {
   }
 }
 
-/** `1: Run tests` and `3: Details` (2 stays free for a later action). */
-function buttons(risk: ChangeRisk): Node[] {
+/** `1: Run tests`, `2: Why` (only when a decision governs an edited file) and `3: Details`. */
+function buttons(risk: ChangeRisk, decision: string | null): Node[] {
   const out: Node[] = [];
   if (testsToRun(risk) !== null) out.push(button(PRESS.tests, "1", RUN_TESTS));
+  if (decision !== null) out.push(button(PRESS.why, "2", WHY));
   if (risk.directive !== undefined) out.push(button(PRESS.details, "3", DETAILS));
   return out;
 }
@@ -189,9 +196,9 @@ function buttonCells(pressable: Node[]): number {
   return pressable.reduce((n, b) => n + (b.type === "Button" ? b.props.label.length + 3 : 0) + GAP, 0);
 }
 
-/** A review the band has nothing to add to: clear, no tests to run, nobody else in these files. */
-function quietInBand(risk: ChangeRisk): boolean {
-  return isClear(risk) && testsToRun(risk) === null && overlap(risk) === null;
+/** A review the band has nothing to add to: clear, no tests to run, nobody else in these files, no decision. */
+function quietInBand(risk: ChangeRisk, decision: string | null): boolean {
+  return isClear(risk) && testsToRun(risk) === null && overlap(risk) === null && decision === null;
 }
 
 /** The health word in its color, then the overlap words when they fit in `room`. */
@@ -205,9 +212,9 @@ function summaryParts(risk: ChangeRisk, room: number): Node[] {
   return parts;
 }
 
-function resultRow(risk: ChangeRisk, columns: number): Node | null {
-  if (!scored(risk) || quietInBand(risk)) return null;
-  const pressable = buttons(risk);
+function resultRow(risk: ChangeRisk, columns: number, decision: string | null): Node | null {
+  if (!scored(risk) || quietInBand(risk, decision)) return null;
+  const pressable = buttons(risk, decision);
   const room = Math.max(0, columns - buttonCells(pressable));
   return box({ key: "lens-review", flexDirection: "row", columnGap: GAP }, [
     box({ flexDirection: "row" }, summaryParts(risk, room)),
@@ -216,9 +223,9 @@ function resultRow(risk: ChangeRisk, columns: number): Node | null {
 }
 
 /** The band's review row: a placeholder while the review runs, then the health word and the buttons. */
-export function reviewBandRow(outcome: ReviewOutcome, columns: number): Node | null {
+export function reviewBandRow(outcome: ReviewOutcome, columns: number, decision: string | null = null): Node | null {
   if (outcome.phase === "reviewing") return text(fit(REVIEWING, columns), { dimColor: true, wrap: "truncate-end" });
-  return outcome.phase === "done" ? resultRow(outcome.risk, columns) : null;
+  return outcome.phase === "done" ? resultRow(outcome.risk, columns, decision) : null;
 }
 
 /** The full directive, as `Details` prints it, one transcript row per line; null when the result carries none. */

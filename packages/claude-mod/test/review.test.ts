@@ -19,12 +19,12 @@ function drawn(node: Node | null): string[] {
   if (node === null) return [];
   if (node.type === "Text") return node.children;
   if (node.type === "Button") return [`${node.props.hotkey}: ${node.props.label}`];
-  if (node.type === "Raster") return [];
+  if (node.type !== "Box") return [];
   return node.children.flatMap(drawn);
 }
 
 function colors(node: Node | null): string[] {
-  if (node === null || node.type === "Button" || node.type === "Raster") return [];
+  if (node === null || node.type === "Button" || node.type === "Raster" || node.type === "Input" || node.type === "Markdown" || node.type === "Svg") return [];
   if (node.type === "Text") return node.props.color === undefined ? [] : [node.props.color];
   return node.children.flatMap(colors);
 }
@@ -169,6 +169,17 @@ describe("review card beneath the answer", () => {
     expect(reviewText(done("nothing-to-score"))).toBeNull();
   });
 
+  it("a review of 0 changed files (an edit reverted) shows no card and no diff shape", () => {
+    const base = risk("findings");
+    const reverted: ChangeRisk = {
+      ...base,
+      risk_percentile: 100,
+      health_delta: { ...base.health_delta!, scope: { ...base.health_delta!.scope!, changed: 0, analyzed: 0, eligible: 0 } },
+    };
+    expect(reviewText({ phase: "done", risk: reverted })).toBeNull();
+    expect(reviewBandRow({ phase: "done", risk: reverted }, 100)).toBeNull();
+  });
+
   it("an error and a timeout each say so in one line", () => {
     expect(reviewText({ phase: "failed", reason: "error", message: "repowise MCP server is not connected" })).toBe(
       "Change review could not run: repowise MCP server is not connected",
@@ -286,7 +297,7 @@ describe("review band row", () => {
       hint: "no-server" as const,
       hintsShown: ["no-server" as const],
       freshness: { changedFiles: 3 },
-      review: { edited: true, outcome: done("findings") },
+      review: { edited: true, outcome: done("findings"), decision: null },
     };
     const band = bandView(state, { columns: 120, hasSurvey: false });
     expect(drawn(band)).toEqual([
@@ -295,7 +306,7 @@ describe("review band row", () => {
       "1: Run tests",
       "3: Details",
     ]);
-    expect(bandView({ ...initialSession, review: { edited: true, outcome: { phase: "reviewing" } } }, { columns: 80, hasSurvey: true })).toBeNull();
+    expect(bandView({ ...initialSession, review: { edited: true, outcome: { phase: "reviewing" }, decision: null } }, { columns: 80, hasSurvey: true })).toBeNull();
   });
 });
 
