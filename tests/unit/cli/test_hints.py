@@ -60,7 +60,7 @@ class TestShowing:
         assert "Publish it free: repowise publish" in out
         url = urlparse(_url(out))
         assert url.path == "/hosted" and url.fragment == "mcp"
-        assert parse_qs(url.query) == {"src": ["cli_init_success"], "aid": ["abc123def456"]}
+        assert parse_qs(url.query) == {"src": ["cli_init_success"]}
         assert recorded == {"hint_shown": "init_success"}
 
     def test_link_has_no_install_id_with_telemetry_off(self, stderr, monkeypatch):
@@ -111,7 +111,7 @@ class TestNeverShown:
         assert not hints.maybe_hint("init_success")
 
     def test_json_output(self, stderr):
-        assert not hints.maybe_hint("ask_nokey", fmt="json")
+        assert not hints.maybe_hint("init_success", fmt="json")
 
     def test_signed_in(self, stderr):
         credentials.save(
@@ -187,21 +187,6 @@ class TestPlacement:
         monkeypatch.setattr(hints, "maybe_hint", lambda hint_id, **kw: asked.append(hint_id))
         reporting._slow_update_hint(elapsed)
         assert asked == expected
-
-    def test_ask_without_a_key_hints(self, monkeypatch, tmp_path):
-        from repowise.cli.commands import ask_cmd
-
-        asked: list[tuple[str, str]] = []
-        monkeypatch.setattr(
-            hints, "maybe_hint", lambda hint_id, fmt="text": asked.append((hint_id, fmt))
-        )
-        payload = {"answer": "", "degraded": "no-llm-provider"}
-        monkeypatch.setattr(ask_cmd._ta, "run", lambda *a, **k: payload)
-        monkeypatch.setattr(ask_cmd._ta, "resolve_indexed_repo", lambda **k: tmp_path)
-        monkeypatch.setattr(ask_cmd._ta, "print_index_note", lambda *a, **k: None)
-        monkeypatch.setattr(ask_cmd._ta, "emit_error", lambda *a, **k: None)
-        result = CliRunner().invoke(_cli(), ["ask", "how?", "--path", str(tmp_path)])
-        assert asked == [("ask_nokey", "table")], result.output
 
 
 def _cli():

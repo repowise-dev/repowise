@@ -2158,7 +2158,7 @@ repowise telemetry disable
 ### `repowise config hints on|off`
 
 Now and then, at a moment where it would help (a finished `init`, a slow
-`update`, `ask` with no LLM key), the CLI prints one dim line on stderr about
+`update`), the CLI prints one dim line on stderr about
 what repowise.dev adds, with a link. At most one per run, each at most once a
 week. Never under `--format json`, in CI, when stderr is not a terminal, when
 you are signed in, or from `mcp`, `serve`, `watch` and hooks.

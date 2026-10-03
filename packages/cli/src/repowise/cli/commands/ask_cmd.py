@@ -160,10 +160,6 @@ def ask_command(
         return
     _render(projected)
     _ta.print_index_note(payload, fmt)
-    if payload.get("degraded") == "no-llm-provider":
-        from repowise.cli.hints import maybe_hint
-
-        maybe_hint("ask_nokey", fmt=fmt)
 
 
 def _render(projected: dict) -> None:
