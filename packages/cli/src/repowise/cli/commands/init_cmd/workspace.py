@@ -502,7 +502,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             except RuntimeError as e:
                 if "Event loop is closed" not in str(e):
                     raise
-                
+
     # Write state.json so `repowise update` knows the base commit
     head = get_head_commit(repo.path)
     pages_count = len(result.generated_pages or [])
@@ -596,8 +596,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         state["knowledge_graph"] = build_kg_state(kg)
-        
-        state.pop("degraded", None)
+    state.pop("degraded", None)
     if persist_warnings:
         state["degraded"] = persist_warnings
     # A workspace repo is fully indexed here (concept tree included), so stamp
