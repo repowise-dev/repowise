@@ -346,6 +346,183 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_edited_test_file_leads_inferred_tests_to_run(tmp_path, monkeypatch) -> None:
+    """A test the change edits outranks a wider generic test that only imports more files.
+
+    Reach ranking alone puts the generic importer first. The edited test file
+    runs the change by definition, so it leads, and still leads when enough
+    generic tests would otherwise push it past the cap of 10.
+    """
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(
+        repo,
+        {
+            "src/dup.py": "a\n",
+            "src/tok.py": "b\n",
+            "tests/test_duplication.py": "def test_dup():\n    assert True\n",
+        },
+        "chore: seed",
+    )
+    _commit(
+        repo,
+        {
+            "src/dup.py": "a\nc\n",
+            "src/tok.py": "b\nc\n",
+            "tests/test_duplication.py": "def test_dup():\n    assert True\n    assert 1\n",
+        },
+        "feat: edit source and its test",
+    )
+
+    factory = await _factory_with_repo(None)
+    async with factory() as s:
+        nodes = [
+            ("src/dup.py", False),
+            ("src/tok.py", False),
+            ("tests/test_duplication.py", True),
+            ("tests/test_aaa_generic.py", True),
+        ]
+        nodes.extend((f"tests/test_generic_{i}.py", True) for i in range(12))
+        for path, is_test in nodes:
+            s.add(GraphNode(repository_id="repo1", node_id=path, node_type="file", is_test=is_test))
+        edges = [
+            ("tests/test_duplication.py", "src/dup.py"),
+            ("tests/test_aaa_generic.py", "src/dup.py"),
+            ("tests/test_aaa_generic.py", "src/tok.py"),
+        ]
+        edges.extend((f"tests/test_generic_{i}.py", "src/dup.py") for i in range(12))
+        edges.extend((f"tests/test_generic_{i}.py", "src/tok.py") for i in range(12))
+        for source, target in edges:
+            s.add(
+                GraphEdge(
+                    repository_id="repo1",
+                    source_node_id=source,
+                    target_node_id=target,
+                    edge_type="imports",
+                )
+            )
+        await s.commit()
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo), session_factory=factory)
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    it = (await module.get_change_risk(baseline=0))["impacted_tests"]
+
+    assert it["basis"] == "inferred"
+    assert it["tests_to_run"][0] == "tests/test_duplication.py"
+    assert "tests/test_aaa_generic.py" in it["tests_to_run"]
+    assert it["tests_to_run"].index("tests/test_duplication.py") < it["tests_to_run"].index(
+        "tests/test_aaa_generic.py"
+    )
+    assert len(it["tests_to_run"]) == 10
+    assert it["truncated"] is True
+    assert it["total"] == 14
+    assert "tests/test_duplication.py" in it["tests_to_run"]
+
+
+@pytest.mark.asyncio
+async def test_edited_test_file_absent_from_graph_is_still_listed(tmp_path, monkeypatch) -> None:
+    """A known test file the change edits is listed even if the graph never reaches it."""
+    from repowise.core.persistence.models import GraphNode
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"tests/test_local.py": "def test_local():\n    assert True\n"}, "chore: seed")
+    _commit(
+        repo,
+        {"tests/test_local.py": "def test_local():\n    assert False\n"},
+        "feat: edit test only",
+    )
+
+    factory = await _factory_with_repo(None)
+    async with factory() as s:
+        s.add(
+            GraphNode(
+                repository_id="repo1",
+                node_id="tests/test_local.py",
+                node_type="file",
+                is_test=True,
+            )
+        )
+        await s.commit()
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo), session_factory=factory)
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    it = (await module.get_change_risk(baseline=0))["impacted_tests"]
+
+    assert it["basis"] == "inferred"
+    assert it["tests_to_run"] == ["tests/test_local.py"]
+    assert it["total"] == 1
+    assert it["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_edited_test_ids_lead_measured_tests_to_run(tmp_path, monkeypatch) -> None:
+    """Measured ids for an edited test file lead, compared on the file part before ::."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(
+        repo,
+        {
+            "src/app.py": "a\n",
+            "tests/test_app.py": "def test_app():\n    assert True\n",
+            "tests/test_wide.py": "def test_wide():\n    assert True\n",
+        },
+        "chore: seed",
+    )
+    _commit(
+        repo,
+        {
+            "src/app.py": "a\nb\n",
+            "src/other.py": "o\n",
+            "tests/test_app.py": "def test_app():\n    assert True\n    assert 1\n",
+        },
+        "feat: edit app and its test",
+    )
+
+    factory = await _factory_with_repo(
+        [
+            # Changed lines are app.py:2 and other.py:1. The wide test reaches both,
+            # so reach ranking alone puts it ahead of the edited test file.
+            _tc("tests/test_app.py::test_app", "src/app.py", [2], "tests/test_app.py"),
+            _tc("tests/test_wide.py::test_wide_app", "src/app.py", [2], "tests/test_wide.py"),
+            _tc("tests/test_wide.py::test_wide_other", "src/other.py", [1], "tests/test_wide.py"),
+        ]
+    )
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo), session_factory=factory)
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    it = (await module.get_change_risk(baseline=0))["impacted_tests"]
+
+    assert it["basis"] == "measured"
+    assert it["tests_to_run"][0] == "tests/test_app.py::test_app"
+    assert it["tests_to_run"] == [
+        "tests/test_app.py::test_app",
+        "tests/test_wide.py::test_wide_app",
+        "tests/test_wide.py::test_wide_other",
+    ]
+    assert it["total"] == 3
+    assert it["truncated"] is False
+    assert it["map_present"] is True
+
+
+@pytest.mark.asyncio
 async def test_impacted_tests_overflow_cap_is_honest(tmp_path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
