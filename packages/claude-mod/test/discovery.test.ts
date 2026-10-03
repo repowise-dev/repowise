@@ -157,7 +157,7 @@ describe("probeServer", () => {
 describe("discover", () => {
   it("full: live lock, healthy server, repo listed", async () => {
     const h = host({ files: { [STATE]: "{}", [LOCK]: fixture("locks/valid.json") }, http: server() });
-    expect(await discover(h)).toEqual({ mode: "full", repoRoot: ROOT });
+    expect(await discover(h)).toEqual({ mode: "full", repoRoot: ROOT, repoId: "repo-requests" });
     expect(h.calls.connect).toBe(0);
   });
 

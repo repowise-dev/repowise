@@ -4,7 +4,7 @@
  */
 
 import type { MinimalFetch } from "@repowise-dev/api-client";
-import type { ProcessRunResult } from "./mod-api";
+import type { McpToolResult, ProcessRunResult } from "./mod-api";
 
 export interface Host {
   session: { cwd(): Promise<string> };
@@ -22,5 +22,8 @@ export interface Host {
   mcp: {
     /** Waits for the server to connect; false when it cannot (the CLI is not installed). */
     connect(): Promise<boolean>;
+    /** The name `call` takes for the server, or null when it does not connect. */
+    server(): Promise<string | null>;
+    call(server: string, tool: string, args: Record<string, unknown>): Promise<McpToolResult>;
   };
 }

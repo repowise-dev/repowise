@@ -10,6 +10,20 @@
   "homepage": "https://repowise.dev",
   "repository": "https://github.com/repowise-dev/repowise",
   "license": "AGPL-3.0",
+  "userConfig": {
+    "lens_margin": {
+      "type": "boolean",
+      "title": "Lens margin notes",
+      "description": "Under an Edit or Write, show the governing decision or recent fix history the Repowise hook flagged for that file.",
+      "default": true
+    },
+    "lens_squeeze": {
+      "type": "boolean",
+      "title": "Lens squeeze rows",
+      "description": "Under a Bash result that repowise distill shortened, show the lines before and after and the command that restores the rest.",
+      "default": true
+    }
+  },
   "keywords": [
     "codebase",
     "code-intelligence",

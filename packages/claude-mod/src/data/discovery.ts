@@ -17,6 +17,8 @@ export interface Discovery {
   mode: Mode;
   liteReason?: LiteReason;
   repoRoot: string | null;
+  /** The local server's id for this repo, in full mode. */
+  repoId?: string;
 }
 
 const HEALTH_TIMEOUT_MS = 800;
@@ -153,11 +155,11 @@ async function unindexedMode(host: Host, cwd: string): Promise<Mode> {
 }
 
 /** The local server's state: only a loopback lock with a pid not known dead is probed. */
-async function serverState(host: Host, repoRoot: string): Promise<ServerProbe["kind"]> {
+async function serverState(host: Host, repoRoot: string): Promise<ServerProbe> {
   const lock = await readServeLock(host, repoRoot);
-  if (!lock || !isLoopbackUrl(lock.url)) return "down";
-  if ((await isPidAlive(host, lock.pid, repoRoot)) === false) return "down";
-  return (await probeServer(host, lock, repoRoot)).kind;
+  if (!lock || !isLoopbackUrl(lock.url)) return { kind: "down" };
+  if ((await isPidAlive(host, lock.pid, repoRoot)) === false) return { kind: "down" };
+  return probeServer(host, lock, repoRoot);
 }
 
 export async function discover(host: Host): Promise<Discovery> {
@@ -165,9 +167,9 @@ export async function discover(host: Host): Promise<Discovery> {
   const repoRoot = await findIndexedRoot(host, cwd);
   if (repoRoot === null) return { mode: await unindexedMode(host, cwd), repoRoot };
   const server = await serverState(host, repoRoot);
-  if (server === "ok") return { mode: "full", repoRoot };
+  if (server.kind === "ok") return { mode: "full", repoRoot, repoId: server.repoId };
   if (!(await mcpReachable(host))) return { mode: "no-cli", repoRoot };
-  const liteReason: LiteReason = server === "down" ? "no-server" : server;
+  const liteReason: LiteReason = server.kind === "down" ? "no-server" : server.kind;
   return { mode: "lite", liteReason, repoRoot };
 }
 

@@ -1,0 +1,132 @@
+/**
+ * Lens's own read-only calls to this plugin's repowise MCP server, and the
+ * rule for approving them. The engine approves a call only when it STARTS
+ * while one of Lens's hooks is live, so a caller starts the call inside its
+ * hook (awaited or `void`), never from a timer or a late promise.
+ */
+
+import type { Host } from "../host";
+import type { McpToolResult } from "../mod-api";
+import type { FileContext } from "../model/session";
+import { withTimeout } from "./transport";
+
+/** This plugin's name, as `next.origin.plugin` reports it. */
+export const PLUGIN_NAME = "repowise";
+
+/** Only the tools a shipped Lens feature calls. All read-only. */
+export const LENS_TOOLS = ["get_context"] as const;
+export type LensTool = (typeof LENS_TOOLS)[number];
+
+/** Both spellings of this plugin's server seen at runtime; Lens calls and approves no other. */
+const PLUGIN_SERVER_FORMS: readonly string[] = ["plugin:repowise:repowise", "plugin_repowise_repowise"];
+
+const DEFAULT_TIMEOUT_MS = 10_000;
+
+let resolvedServer: string | null = null;
+let resolving: Promise<void> | null = null;
+
+/** Forget the resolved server; a new session resolves again. */
+export function resetMcp(): void {
+  resolvedServer = null;
+  resolving = null;
+}
+
+/**
+ * Asks the engine, once, which name this plugin's server runs under, and
+ * keeps it only when it is one of this plugin's own forms. Never awaited by a
+ * caller: connecting can take seconds, and an MCP call started after its hook
+ * returned is refused (REST through `$.http` from a late continuation works;
+ * a late MCP call does not).
+ */
+export function warmMcp(host: Host): void {
+  if (resolvedServer !== null || resolving !== null) return;
+  const asked = host.mcp
+    .server()
+    .then((name) => {
+      if (name !== null && PLUGIN_SERVER_FORMS.includes(name)) resolvedServer = name;
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      // Unresolved: the next hook asks again.
+      if (resolving === asked) resolving = null;
+    });
+  resolving = asked;
+}
+
+/** How a server's tools are named in `tool.check` (`mcp__plugin_repowise_repowise__get_context`). */
+export function toolName(serverForm: string, tool: string): string {
+  return `mcp__${serverForm.replace(/[^A-Za-z0-9_-]/g, "_")}__${tool}`;
+}
+
+const OWN_TOOL_NAMES: ReadonlySet<string> = new Set(
+  PLUGIN_SERVER_FORMS.flatMap((form) => LENS_TOOLS.map((tool) => toolName(form, tool))),
+);
+
+/**
+ * Whether a `tool.check` is for one of Lens's own calls: a plugin-made call
+ * (id `toolu_plugin_`), raised by this plugin, to an allowlisted tool on this
+ * plugin's server. Anything else keeps the engine's verdict.
+ */
+export function isOwnLensCall(e: { tool: string; tool_use_id?: string | undefined }, originPlugin: unknown): boolean {
+  if (originPlugin !== PLUGIN_NAME) return false;
+  if (typeof e.tool_use_id !== "string" || !e.tool_use_id.startsWith("toolu_plugin_")) return false;
+  return OWN_TOOL_NAMES.has(e.tool);
+}
+
+function parse<T>(result: McpToolResult, tool: string): T {
+  const text = result.content[0]?.text;
+  if (result.isError) throw new Error(`${tool} failed: ${String(text).slice(0, 200)}`);
+  if (typeof text !== "string") throw new Error(`${tool} returned no text`);
+  const parsed = JSON.parse(text) as { result?: T };
+  // Claude Code hands the tool's structured result over as `{"result": ...}`;
+  // a plain MCP client sees the bare object. Both are the same server's answer.
+  return (parsed !== null && typeof parsed === "object" && "result" in parsed ? parsed.result : parsed) as T;
+}
+
+/**
+ * Calls one allowlisted tool and returns the parsed `result`. The call starts
+ * synchronously, so it starts while the calling hook is live (the engine
+ * approves Lens's call only then); with no server name resolved yet it does
+ * not start at all and rejects, and the caller tries again from a later hook.
+ * Rejects on timeout or a tool error; nothing retries after the hook.
+ */
+export function callTool<T>(
+  host: Host,
+  tool: LensTool,
+  args: Record<string, unknown>,
+  opts: { timeoutMs?: number } = {},
+): Promise<T> {
+  if (resolvedServer === null) {
+    warmMcp(host);
+    return Promise.reject(new Error("repowise MCP server name not resolved yet"));
+  }
+  const call = host.mcp.call(resolvedServer, tool, args).then((r) => parse<T>(r, tool));
+  return withTimeout(call, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, tool);
+}
+
+// Typed here, not shared: the MCP server has no generated TypeScript types,
+// and Lens reads three fields of a larger card.
+interface ContextTarget {
+  error?: string;
+  callers?: unknown[];
+  callers_total?: number;
+  ownership?: { contributor_count?: number | null };
+}
+
+/** The file card's caller and contributor counts; null when the index does not know the file. */
+export async function fetchFileContext(host: Host, path: string): Promise<FileContext | null> {
+  const result = await callTool<{ targets?: Record<string, ContextTarget> }>(host, "get_context", {
+    targets: [path],
+    include: ["callers", "ownership"],
+  });
+  const target = result.targets?.[path];
+  if (target === undefined || target.error !== undefined) return null;
+  // The server stamps `callers_total` on every reduction of the list (its
+  // construction cap and its response budget alike), so without it the list is whole.
+  const callers = target.callers_total ?? target.callers?.length;
+  const contributors = target.ownership?.contributor_count;
+  return {
+    callerFiles: typeof callers === "number" ? callers : null,
+    contributors: typeof contributors === "number" ? contributors : null,
+  };
+}

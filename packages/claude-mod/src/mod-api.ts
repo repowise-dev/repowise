@@ -21,6 +21,11 @@ export interface HttpResponse {
   text: string;
 }
 
+export interface McpToolResult {
+  content: Array<{ type: string; text?: string }>;
+  isError: boolean;
+}
+
 export interface RenderEvent {
   props: { hasSurvey?: boolean; bodyColumns?: number };
 }
@@ -37,11 +42,14 @@ export interface ModApi {
   http: {
     fetch(url: string, init: { method?: string; headers?: Record<string, string>; body?: string }): Promise<HttpResponse>;
   };
-  mcp: { connect(server: string): Promise<{ isConnected: boolean }> };
+  mcp: {
+    connect(server: string): Promise<{ isConnected: boolean; server?: string }>;
+    call(server: string, tool: string, args?: Record<string, unknown>): Promise<McpToolResult>;
+  };
   ui: {
     invalidate(event: "ui.render"): void;
     log(text: string, options: { to: "debug" }): void;
-    resolve(e: RenderEvent): Record<string, (props: Record<string, unknown>) => unknown>;
+    resolve(e: { props: object }): Record<string, (props: Record<string, unknown>) => unknown>;
   };
 }
 
@@ -49,10 +57,56 @@ export interface TurnCompleteEvent {
   agentId?: string;
 }
 
+/** A tool call as `tool.call` sees it: the tool's own arguments ride beside these keys. */
+export interface ToolCallEvent {
+  tool: string;
+  tool_use_id: string;
+  agentId?: string;
+  file_path?: unknown;
+}
+
+export interface ToolCheckEvent {
+  tool: string;
+  input: unknown;
+  /** Absent on a query (`$.tool.check`). */
+  tool_use_id?: string;
+}
+
+/** `next` of `tool.check` also says whose call is being decided. */
+export type CheckNext = ((e: ToolCheckEvent) => Promise<unknown>) & { origin: { plugin: string; tier?: string } };
+
+export interface SpinnerEvent {
+  props: { word: string; message: string | null; suffix: string; mode: string };
+}
+
+export interface ToolResultEvent {
+  props: { tool_use_id: string; tool: string; output: unknown; isErrored: boolean };
+}
+
+export interface ToolUseEvent {
+  props: { tool_use_id: string; tool: string; input: unknown; isRunning: boolean; isErrored: boolean };
+}
+
+export interface PostToolUseEvent {
+  tool_name: string;
+  tool_use_id: string;
+  tool_input: unknown;
+}
+
 export type Hook<E> = ($: ModApi, e: E, next: (e: E) => Promise<unknown>) => Promise<unknown>;
+
+/** The plugin's `userConfig` values, fixed for one activation. */
+export type PluginOptions = Readonly<Record<string, string | number | boolean | readonly string[]>>;
 
 export interface On {
   (event: "session.start", hook: Hook<unknown>): unknown;
   (event: "turn.complete", hook: Hook<TurnCompleteEvent>): unknown;
   (event: "ui.render", matcher: { component: "AbovePrompt" }, hook: Hook<RenderEvent>): unknown;
+  (event: "tool.call", hook: Hook<ToolCallEvent>): unknown;
+  (event: "tool.check", hook: ($: ModApi, e: ToolCheckEvent, next: CheckNext) => Promise<unknown>): unknown;
+  (event: "ui.render", matcher: { component: "Spinner" }, hook: Hook<SpinnerEvent>): unknown;
+  (event: "ui.render", matcher: { component: "ToolResult" }, hook: Hook<ToolResultEvent>): unknown;
+  (event: "ui.render", matcher: { component: "ToolUse" }, hook: Hook<ToolUseEvent>): unknown;
+  /** `next(e)` resolves to the settings hooks' folded result, `{ additionalContext: string[] }`. */
+  (event: "classic.PostToolUse", hook: Hook<PostToolUseEvent>): unknown;
 }

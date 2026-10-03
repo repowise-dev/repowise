@@ -126,6 +126,14 @@ async function apiGet(path, params, fetchOptions) {
 }
 __name(apiGet, "apiGet");
 
+// ../api-client/src/costs.ts
+async function getSavings(repoId, opts = {}) {
+  return apiGet(`/api/repos/${repoId}/savings`, {
+    days: opts.days
+  });
+}
+__name(getSavings, "getSavings");
+
 // ../api-client/src/health.ts
 async function getHealth() {
   return apiGet("/health");
@@ -280,9 +288,9 @@ async function unindexedMode(host, cwd) {
 __name(unindexedMode, "unindexedMode");
 async function serverState(host, repoRoot) {
   const lock = await readServeLock(host, repoRoot);
-  if (!lock || !isLoopbackUrl(lock.url)) return "down";
-  if (await isPidAlive(host, lock.pid, repoRoot) === false) return "down";
-  return (await probeServer(host, lock, repoRoot)).kind;
+  if (!lock || !isLoopbackUrl(lock.url)) return { kind: "down" };
+  if (await isPidAlive(host, lock.pid, repoRoot) === false) return { kind: "down" };
+  return probeServer(host, lock, repoRoot);
 }
 __name(serverState, "serverState");
 async function discover(host) {
@@ -290,9 +298,9 @@ async function discover(host) {
   const repoRoot = await findIndexedRoot(host, cwd);
   if (repoRoot === null) return { mode: await unindexedMode(host, cwd), repoRoot };
   const server = await serverState(host, repoRoot);
-  if (server === "ok") return { mode: "full", repoRoot };
+  if (server.kind === "ok") return { mode: "full", repoRoot, repoId: server.repoId };
   if (!await mcpReachable(host)) return { mode: "no-cli", repoRoot };
-  const liteReason = server === "down" ? "no-server" : server;
+  const liteReason = server.kind === "down" ? "no-server" : server.kind;
   return { mode: "lite", liteReason, repoRoot };
 }
 __name(discover, "discover");
@@ -324,14 +332,146 @@ async function readFreshness(host, repoRoot) {
 }
 __name(readFreshness, "readFreshness");
 
+// src/data/mcp.ts
+var PLUGIN_NAME = "repowise";
+var LENS_TOOLS = ["get_context"];
+var PLUGIN_SERVER_FORMS = ["plugin:repowise:repowise", "plugin_repowise_repowise"];
+var DEFAULT_TIMEOUT_MS = 1e4;
+var resolvedServer = null;
+var resolving = null;
+function resetMcp() {
+  resolvedServer = null;
+  resolving = null;
+}
+__name(resetMcp, "resetMcp");
+function warmMcp(host) {
+  if (resolvedServer !== null || resolving !== null) return;
+  const asked = host.mcp.server().then((name) => {
+    if (name !== null && PLUGIN_SERVER_FORMS.includes(name)) resolvedServer = name;
+  }).catch(() => void 0).finally(() => {
+    if (resolving === asked) resolving = null;
+  });
+  resolving = asked;
+}
+__name(warmMcp, "warmMcp");
+function toolName(serverForm, tool) {
+  return `mcp__${serverForm.replace(/[^A-Za-z0-9_-]/g, "_")}__${tool}`;
+}
+__name(toolName, "toolName");
+var OWN_TOOL_NAMES = new Set(
+  PLUGIN_SERVER_FORMS.flatMap((form) => LENS_TOOLS.map((tool) => toolName(form, tool)))
+);
+function isOwnLensCall(e, originPlugin) {
+  if (originPlugin !== PLUGIN_NAME) return false;
+  if (typeof e.tool_use_id !== "string" || !e.tool_use_id.startsWith("toolu_plugin_")) return false;
+  return OWN_TOOL_NAMES.has(e.tool);
+}
+__name(isOwnLensCall, "isOwnLensCall");
+function parse(result, tool) {
+  const text2 = result.content[0]?.text;
+  if (result.isError) throw new Error(`${tool} failed: ${String(text2).slice(0, 200)}`);
+  if (typeof text2 !== "string") throw new Error(`${tool} returned no text`);
+  const parsed = JSON.parse(text2);
+  return parsed !== null && typeof parsed === "object" && "result" in parsed ? parsed.result : parsed;
+}
+__name(parse, "parse");
+function callTool(host, tool, args, opts = {}) {
+  if (resolvedServer === null) {
+    warmMcp(host);
+    return Promise.reject(new Error("repowise MCP server name not resolved yet"));
+  }
+  const call = host.mcp.call(resolvedServer, tool, args).then((r) => parse(r, tool));
+  return withTimeout(call, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, tool);
+}
+__name(callTool, "callTool");
+async function fetchFileContext(host, path) {
+  const result = await callTool(host, "get_context", {
+    targets: [path],
+    include: ["callers", "ownership"]
+  });
+  const target = result.targets?.[path];
+  if (target === void 0 || target.error !== void 0) return null;
+  const callers = target.callers_total ?? target.callers?.length;
+  const contributors = target.ownership?.contributor_count;
+  return {
+    callerFiles: typeof callers === "number" ? callers : null,
+    contributors: typeof contributors === "number" ? contributors : null
+  };
+}
+__name(fetchFileContext, "fetchFileContext");
+
 // src/model/events.ts
 function fromTurnComplete(e) {
   return e.agentId === void 0 ? { type: "turnCompleted" } : null;
 }
 __name(fromTurnComplete, "fromTurnComplete");
+var FILE_TOOLS = /* @__PURE__ */ new Set(["Read", "Edit", "Write"]);
+var slashes = /* @__PURE__ */ __name((p) => p.replace(/\\/g, "/").replace(/\/+$/, ""), "slashes");
+function fileTarget(e, repoRoot) {
+  if (!FILE_TOOLS.has(e.tool) || repoRoot === null || typeof e.file_path !== "string") return null;
+  const root = slashes(repoRoot);
+  const file = slashes(e.file_path);
+  const windows = /^[A-Za-z]:\//.test(root) || root.startsWith("//");
+  const fold = /* @__PURE__ */ __name((p) => windows ? p.toLowerCase() : p, "fold");
+  if (!fold(file).startsWith(`${fold(root)}/`)) return null;
+  return file.slice(root.length + 1);
+}
+__name(fileTarget, "fileTarget");
+var EDIT_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write"]);
+var STANDING = /^\[repowise\] .+? is governed by a standing decision: (.+?)(?: because .*)?\.$/;
+var MINED = /^\[repowise\] .+? has a decision recorded in it, mined but not reviewed: (.+?)(?: because .*)?\.$/;
+var FIXES = /^\[repowise\] .+? has been bug-fixed (\d+)x in the last 6 months, last (.+?)(?: \(bug magnet\))?(?:; mostly in (.+?))?\.$/;
+function stripConfirmed(line) {
+  return line.replace(/ \(confirmed across \d+ sessions\)\.$/, ".");
+}
+__name(stripConfirmed, "stripConfirmed");
+function notesFromAugment(additionalContext) {
+  if (!Array.isArray(additionalContext)) return [];
+  const notes = [];
+  const lines = additionalContext.filter((c) => typeof c === "string").flatMap((c) => c.split(/\r?\n/));
+  for (const raw of lines) {
+    const line = stripConfirmed(raw.trim());
+    const standing = STANDING.exec(line);
+    const decision = standing ?? MINED.exec(line);
+    const fixes = FIXES.exec(line);
+    if (decision !== null && !notes.some((n) => n.kind === "decision")) {
+      notes.push({ kind: "decision", reviewed: standing !== null, title: decision[1] });
+    } else if (fixes !== null && !notes.some((n) => n.kind === "fixes")) {
+      notes.push({ kind: "fixes", count: Number(fixes[1]), age: fixes[2], symbol: fixes[3] ?? null });
+    }
+  }
+  return notes;
+}
+__name(notesFromAugment, "notesFromAugment");
+function savingsTotals(s) {
+  return {
+    tokens: s.saved_input_tokens,
+    inferredTokens: Math.min(s.inferred_saved_input_tokens, s.saved_input_tokens),
+    usd: s.priced_input_savings_usd
+  };
+}
+__name(savingsTotals, "savingsTotals");
+function savingsSince(now, base) {
+  const tokens = now.tokens - base.tokens;
+  const inferredTokens = now.inferredTokens - base.inferredTokens;
+  const usd = now.usd - base.usd;
+  if (tokens < 0 || inferredTokens < 0 || usd < 0) return null;
+  return { tokens, inferredTokens: Math.min(inferredTokens, tokens), usd };
+}
+__name(savingsSince, "savingsSince");
 
 // src/model/session.ts
-var initialSession = { mode: null, freshness: null, hint: null, hintsShown: [] };
+var initialSession = {
+  mode: null,
+  freshness: null,
+  hint: null,
+  hintsShown: [],
+  repoRoot: null,
+  running: null,
+  contexts: {},
+  notes: {},
+  savings: null
+};
 function hintFor(mode, liteReason) {
   if (mode === "full" || mode === "no-repo") return null;
   if (mode === "lite") return liteReason ?? "no-server";
@@ -344,14 +484,27 @@ function reduce(state2, action) {
       const kind = hintFor(action.mode, action.liteReason);
       const indexed = action.mode === "full" || action.mode === "lite";
       const freshness = indexed ? action.freshness : null;
+      const repoRoot = indexed ? action.repoRoot ?? null : null;
+      const savings = action.mode === "full" ? state2.savings : null;
       if (kind !== null && !state2.hintsShown.includes(kind)) {
-        return { mode: action.mode, freshness, hint: kind, hintsShown: [...state2.hintsShown, kind] };
+        const hintsShown = [...state2.hintsShown, kind];
+        return { ...state2, mode: action.mode, freshness, repoRoot, savings, hint: kind, hintsShown };
       }
       const hint = state2.hint === kind ? state2.hint : null;
-      return { ...state2, mode: action.mode, freshness, hint };
+      return { ...state2, mode: action.mode, freshness, repoRoot, savings, hint };
     }
     case "turnCompleted":
       return state2.hint === null ? state2 : { ...state2, hint: null };
+    case "toolStarted":
+      return { ...state2, running: action.tool };
+    case "toolEnded":
+      return state2.running?.id === action.id ? { ...state2, running: null } : state2;
+    case "contextLoaded":
+      return { ...state2, contexts: { ...state2.contexts, [action.file]: action.context } };
+    case "notesFor":
+      return action.notes.length === 0 ? state2 : { ...state2, notes: { ...state2.notes, [action.id]: action.notes } };
+    case "savings":
+      return { ...state2, savings: action.delta.tokens > 0 ? action.delta : null };
   }
 }
 __name(reduce, "reduce");
@@ -381,6 +534,39 @@ function freshnessLine(f) {
   return `index behind HEAD${changed} · repowise update`;
 }
 __name(freshnessLine, "freshnessLine");
+function spinnerLine(file, ctx) {
+  const parts = [file.slice(file.lastIndexOf("/") + 1)];
+  if (ctx.callerFiles) parts.push(countOf(ctx.callerFiles, "caller file", "caller files"));
+  if (ctx.contributors) parts.push(countOf(ctx.contributors, "contributor", "contributors"));
+  return parts.join(" · ");
+}
+__name(spinnerLine, "spinnerLine");
+function squeezeLine(s) {
+  const parts = [`${countOf(s.originalLines, "line", "lines")} → ${s.keptLines.toLocaleString("en-US")}`];
+  if (s.omittedTokens > 0) parts.push(`~${countOf(s.omittedTokens, "token", "tokens")} omitted`);
+  const failures = [s.failed > 0 ? `${s.failed.toLocaleString("en-US")} failed` : "", s.errors > 0 ? countOf(s.errors, "error", "errors") : ""];
+  if (s.failed + s.errors > 0) parts.push(failures.filter((f) => f !== "").join(", "));
+  const more = s.refs.length > 1 ? ` (+${s.refs.length - 1} more)` : "";
+  parts.push(`repowise expand ${s.refs[0]}${more}`);
+  return parts.join(" · ");
+}
+__name(squeezeLine, "squeezeLine");
+function marginLine(note) {
+  if (note.kind === "decision") {
+    return note.reviewed ? `a standing decision covers this file: ${note.title}` : `a decision found in this file, not yet reviewed: ${note.title}`;
+  }
+  const where = note.symbol === null ? "" : `, mostly in ${note.symbol}`;
+  return `fixed ${countOf(note.count, "time", "times")} in 6 months, most recently ${note.age}${where}`;
+}
+__name(marginLine, "marginLine");
+function savingsLine(d, columns) {
+  const inferred = d.inferredTokens > 0 ? ` (${d.inferredTokens.toLocaleString("en-US")} inferred)` : "";
+  const usd = d.usd >= 5e-3 ? ` · $${d.usd.toFixed(2)}` : "";
+  const head = `${countOf(d.tokens, "token", "tokens")}${inferred}${usd} saved`;
+  const full = `${head} since this session started · all agents on this repo`;
+  return full.length <= columns ? full : `${head} this session · all agents`;
+}
+__name(savingsLine, "savingsLine");
 
 // src/views/elements.ts
 function text(value, props = {}) {
@@ -401,16 +587,17 @@ __name(materialize, "materialize");
 
 // src/views/band.ts
 var MAX_BAND_ROWS = 2;
-function bandRows(state2) {
+function bandRows(state2, columns = Number.POSITIVE_INFINITY) {
   const rows = [];
   if (state2.hint !== null) rows.push(HINTS[state2.hint]);
   if (state2.freshness !== null) rows.push(freshnessLine(state2.freshness));
+  if (state2.savings !== null) rows.push(savingsLine(state2.savings, columns));
   return rows.slice(0, MAX_BAND_ROWS);
 }
 __name(bandRows, "bandRows");
 function bandView(state2, viewport) {
   if (viewport.hasSurvey) return null;
-  const rows = bandRows(state2);
+  const rows = bandRows(state2, viewport.columns);
   if (rows.length === 0) return null;
   return box(
     { key: "lens-band", flexDirection: "column" },
@@ -419,8 +606,116 @@ function bandView(state2, viewport) {
 }
 __name(bandView, "bandView");
 
+// src/views/margin.ts
+var MAX_MARGIN_LINES = 2;
+function marginView(notes) {
+  if (notes === void 0 || notes.length === 0) return null;
+  return box(
+    { key: "lens-margin", flexDirection: "column" },
+    notes.slice(0, MAX_MARGIN_LINES).map((n) => text(`  ${marginLine(n)}`, { dimColor: true, wrap: "truncate-end" }))
+  );
+}
+__name(marginView, "marginView");
+
+// src/views/spinner.ts
+function spinnerSuffix(state2) {
+  if (state2.running === null) return null;
+  const ctx = state2.contexts[state2.running.file];
+  return ctx === void 0 ? null : spinnerLine(state2.running.file, ctx);
+}
+__name(spinnerSuffix, "spinnerSuffix");
+
+// src/model/squeeze.ts
+var MARKER = /^\[repowise#([0-9a-f]{12}): (\d+) lines omitted \(~(\d+) tokens\); restore: repowise expand \1\]$/;
+function markerOf(line) {
+  const m = MARKER.exec(line.trim());
+  return m === null ? null : { ref: m[1], lines: Number(m[2]), tokens: Number(m[3]) };
+}
+__name(markerOf, "markerOf");
+var isBlank = /* @__PURE__ */ __name((line) => line.trim() === "", "isBlank");
+function trailingMarkers(lines) {
+  let end = lines.length;
+  const markers = [];
+  while (end > 0) {
+    const line = lines[end - 1];
+    const marker = isBlank(line) ? null : markerOf(line);
+    if (!isBlank(line) && marker === null) break;
+    if (marker !== null) markers.unshift(marker);
+    end--;
+  }
+  return { kept: lines.slice(0, end), markers };
+}
+__name(trailingMarkers, "trailingMarkers");
+var PYTEST_SUMMARY = /^=+ (.*\b(?:passed|failed|error|errors|skipped)\b.*) =+$/;
+var PYTEST_FAILED = /\b(\d+) failed\b/;
+var PYTEST_ERRORS = /\b(\d+) errors?\b/;
+var JEST_SUMMARY = /^\s*Tests?:\s.*?\b(\d+) failed\b/;
+var CARGO_SUMMARY = /^test result: \w+\. \d+ passed; (\d+) failed;/;
+var GO_FAIL = /^--- FAIL:/;
+function pytestCounts(line) {
+  const m = PYTEST_SUMMARY.exec(line);
+  if (m === null) return null;
+  return { failed: Number(PYTEST_FAILED.exec(m[1])?.[1] ?? 0), errors: Number(PYTEST_ERRORS.exec(m[1])?.[1] ?? 0) };
+}
+__name(pytestCounts, "pytestCounts");
+function runnerFailures(kept) {
+  let cargo = 0;
+  let go = 0;
+  for (const line of kept) {
+    const pytest = pytestCounts(line);
+    if (pytest !== null) return pytest;
+    const jest = JEST_SUMMARY.exec(line);
+    if (jest !== null) return { failed: Number(jest[1]), errors: 0 };
+    cargo += Number(CARGO_SUMMARY.exec(line)?.[1] ?? 0);
+    if (GO_FAIL.test(line)) go++;
+  }
+  return { failed: cargo + go, errors: 0 };
+}
+__name(runnerFailures, "runnerFailures");
+function parseSqueeze(output) {
+  const { kept, markers } = trailingMarkers(output.split(/\r?\n/));
+  if (markers.length === 0) return null;
+  const refs = /* @__PURE__ */ new Set();
+  let lines = 0;
+  let tokens = 0;
+  for (const m of markers) {
+    if (refs.has(m.ref)) continue;
+    refs.add(m.ref);
+    lines += m.lines;
+    tokens += m.tokens;
+  }
+  return {
+    originalLines: kept.length + lines,
+    keptLines: kept.length,
+    omittedTokens: tokens,
+    ...runnerFailures(kept),
+    refs: [...refs]
+  };
+}
+__name(parseSqueeze, "parseSqueeze");
+function bashText(output) {
+  if (typeof output === "string") return output;
+  const stdout = output?.stdout;
+  return typeof stdout === "string" ? stdout : null;
+}
+__name(bashText, "bashText");
+
+// src/views/squeeze.ts
+var BAR_CELLS = 12;
+function squeezeBar(s, cells = BAR_CELLS) {
+  const filled = Math.min(cells, Math.max(1, Math.round(cells * s.keptLines / Math.max(1, s.originalLines))));
+  return `${"█".repeat(filled)}${"░".repeat(cells - filled)}`;
+}
+__name(squeezeBar, "squeezeBar");
+function squeezeView(s) {
+  return text(`${squeezeBar(s)} ${squeezeLine(s)}`, { dimColor: true, wrap: "truncate-end" });
+}
+__name(squeezeView, "squeezeView");
+
 // src/register.ts
 var PROCESS_TIMEOUT_MS = 5e3;
+var SAVINGS_TIMEOUT_MS = 3e4;
+var SAVINGS_COOLDOWN_MS = 6e4;
 var MCP_SERVER_KEY = "repowise";
 var state = initialSession;
 var generation = 0;
@@ -428,6 +723,11 @@ var running = false;
 var dirty = false;
 var latest = null;
 var mcpConnected = false;
+var savingsBase = null;
+var savingsBusy = false;
+var savingsAskedAt = Number.NEGATIVE_INFINITY;
+var squeezes = /* @__PURE__ */ new Map();
+var contextAsked = /* @__PURE__ */ new Set();
 function bind($) {
   const host = {
     session: { cwd: /* @__PURE__ */ __name(() => $.session.cwd(), "cwd") },
@@ -446,7 +746,12 @@ function bind($) {
       return $.http.fetch(url, request);
     }, "http"),
     mcp: {
-      connect: /* @__PURE__ */ __name(async () => mcpConnected ||= (await $.mcp.connect(MCP_SERVER_KEY)).isConnected, "connect")
+      connect: /* @__PURE__ */ __name(async () => mcpConnected ||= (await $.mcp.connect(MCP_SERVER_KEY)).isConnected, "connect"),
+      server: /* @__PURE__ */ __name(async () => {
+        const r = await $.mcp.connect(MCP_SERVER_KEY);
+        return r.isConnected && typeof r.server === "string" ? r.server : null;
+      }, "server"),
+      call: /* @__PURE__ */ __name((server, tool, args) => $.mcp.call(server, tool, args), "call")
     }
   };
   return {
@@ -469,11 +774,31 @@ async function refreshOnce(b, gen) {
   const indexed = found.mode === "full" || found.mode === "lite";
   const freshness = indexed && found.repoRoot !== null ? await readFreshness(h, found.repoRoot) : null;
   if (gen !== generation) return;
-  const action = { type: "discovered", mode: found.mode, freshness };
+  if (indexed) warmMcp(h);
+  const action = { type: "discovered", mode: found.mode, freshness, repoRoot: found.repoRoot };
   if (found.liteReason !== void 0) action.liteReason = found.liteReason;
   dispatch(b, action);
+  if (found.repoId !== void 0) refreshSavings(b, found.repoId, gen);
 }
 __name(refreshOnce, "refreshOnce");
+function refreshSavings(b, repoId, gen) {
+  const now = Date.now();
+  if (savingsBusy || now - savingsAskedAt < SAVINGS_COOLDOWN_MS) return;
+  savingsBusy = true;
+  savingsAskedAt = now;
+  withTimeout(getSavings(repoId), SAVINGS_TIMEOUT_MS, "savings").then((s) => {
+    if (gen !== generation) return;
+    const totals = savingsTotals(s);
+    const delta = savingsBase?.repoId === repoId ? savingsSince(totals, savingsBase.totals) : null;
+    if (delta !== null) {
+      dispatch(b, { type: "savings", delta });
+      return;
+    }
+    if (savingsBase !== null) dispatch(b, { type: "savings", delta: { tokens: 0, inferredTokens: 0, usd: 0 } });
+    savingsBase = { repoId, totals };
+  }).catch((err) => b.debug(`savings failed: ${String(err)}`)).finally(() => savingsBusy = false);
+}
+__name(refreshSavings, "refreshSavings");
 function refresh(b) {
   latest = b;
   if (running) {
@@ -493,6 +818,12 @@ async function onSessionStart($, e, next) {
   try {
     generation++;
     state = initialSession;
+    contextAsked.clear();
+    squeezes.clear();
+    savingsBase = null;
+    savingsAskedAt = Number.NEGATIVE_INFINITY;
+    resetMcp();
+    warmMcp(b.host);
     refresh(b);
   } catch (err) {
     b.debug(`session.start failed: ${String(err)}`);
@@ -530,10 +861,125 @@ async function onBand($, e, next) {
   }
 }
 __name(onBand, "onBand");
-function register(on) {
+function fetchContext(b, file) {
+  if (contextAsked.has(file)) return;
+  contextAsked.add(file);
+  const gen = generation;
+  fetchFileContext(b.host, file).then((context) => {
+    if (gen !== generation || context === null) return;
+    dispatch(b, { type: "contextLoaded", file, context });
+  }).catch((err) => {
+    contextAsked.delete(file);
+    b.debug(`context for ${file} failed: ${String(err)}`);
+  });
+}
+__name(fetchContext, "fetchContext");
+async function onToolCall($, e, next) {
+  const b = bind($);
+  let file = null;
+  try {
+    file = fileTarget(e, state.repoRoot);
+    if (file !== null) {
+      dispatch(b, { type: "toolStarted", tool: { id: e.tool_use_id, file } });
+      fetchContext(b, file);
+    }
+  } catch (err) {
+    b.debug(`tool.call failed: ${String(err)}`);
+  }
+  try {
+    return await next(e);
+  } finally {
+    if (file !== null) dispatch(b, { type: "toolEnded", id: e.tool_use_id });
+  }
+}
+__name(onToolCall, "onToolCall");
+async function onToolCheck($, e, next) {
+  try {
+    if (isOwnLensCall(e, next.origin?.plugin)) {
+      return { decision: "allow", reason: "Repowise Lens: its own read-only index lookup" };
+    }
+  } catch (err) {
+    bind($).debug(`tool.check failed: ${String(err)}`);
+  }
+  return next(e);
+}
+__name(onToolCheck, "onToolCheck");
+async function onSpinner($, e, next) {
+  let line = null;
+  try {
+    line = spinnerSuffix(state);
+  } catch (err) {
+    bind($).debug(`spinner render failed: ${String(err)}`);
+  }
+  if (line === null) return next(e);
+  const theirs = typeof e.props.suffix === "string" ? e.props.suffix : "";
+  return next({ ...e, props: { ...e.props, suffix: `${theirs} ${line}` } });
+}
+__name(onSpinner, "onSpinner");
+function below(elements, theirs, tree) {
+  const ours = materialize(tree, elements);
+  const box2 = elements["Box"];
+  if (theirs === null || theirs === void 0 || box2 === void 0) return ours;
+  return box2({ flexDirection: "column", children: [theirs, ours] });
+}
+__name(below, "below");
+function squeezeOf(e) {
+  const id = e.props.tool_use_id;
+  const known = squeezes.get(id);
+  if (known !== void 0 || e.props.tool !== "Bash") return known ?? null;
+  const out = bashText(e.props.output);
+  const found = out === null ? null : parseSqueeze(out);
+  if (found !== null) squeezes.set(id, found);
+  return found;
+}
+__name(squeezeOf, "squeezeOf");
+async function onToolResult($, e, next) {
+  const theirs = await next(e);
+  try {
+    const s = squeezeOf(e);
+    return s === null ? theirs : below($.ui.resolve(e), theirs, squeezeView(s));
+  } catch (err) {
+    bind($).debug(`squeeze render failed: ${String(err)}`);
+    return theirs;
+  }
+}
+__name(onToolResult, "onToolResult");
+async function onPostToolUse($, e, next) {
+  const result = await next(e);
+  try {
+    if (EDIT_TOOLS.has(e.tool_name) && !e.tool_use_id.startsWith("toolu_plugin_")) {
+      const notes = notesFromAugment(result?.additionalContext);
+      if (notes.length > 0) dispatch(bind($), { type: "notesFor", id: e.tool_use_id, notes });
+    }
+  } catch (err) {
+    bind($).debug(`PostToolUse failed: ${String(err)}`);
+  }
+  return result;
+}
+__name(onPostToolUse, "onPostToolUse");
+async function onToolUse($, e, next) {
+  const theirs = await next(e);
+  try {
+    const tree = marginView(state.notes[e.props.tool_use_id]);
+    return tree === null ? theirs : below($.ui.resolve(e), theirs, tree);
+  } catch (err) {
+    bind($).debug(`margin render failed: ${String(err)}`);
+    return theirs;
+  }
+}
+__name(onToolUse, "onToolUse");
+function register(on, options = {}) {
   on("session.start", onSessionStart);
   on("turn.complete", onTurnComplete);
   on("ui.render", { component: "AbovePrompt" }, onBand);
+  on("tool.call", onToolCall);
+  on("tool.check", onToolCheck);
+  on("ui.render", { component: "Spinner" }, onSpinner);
+  if (options["lens_squeeze"] !== false) on("ui.render", { component: "ToolResult" }, onToolResult);
+  if (options["lens_margin"] !== false) {
+    on("classic.PostToolUse", onPostToolUse);
+    on("ui.render", { component: "ToolUse" }, onToolUse);
+  }
 }
 __name(register, "register");
 export {

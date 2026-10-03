@@ -26,7 +26,17 @@ describe("hintFor", () => {
 
 describe("session reducer", () => {
   it("starts with no mode and nothing to show", () => {
-    expect(initialSession).toEqual({ mode: null, freshness: null, hint: null, hintsShown: [] });
+    expect(initialSession).toEqual({
+      mode: null,
+      freshness: null,
+      hint: null,
+      hintsShown: [],
+      repoRoot: null,
+      running: null,
+      contexts: {},
+      notes: {},
+      savings: null,
+    });
   });
 
   it("outside a repo shows nothing at all", () => {

@@ -16,6 +16,42 @@ export interface IndexFreshness {
   changedFiles: number | null;
 }
 
+/** What the spinner shows for a file. null fields are unknown, not zero. */
+export interface FileContext {
+  /** Files that import this one or call into it (the server's file-level rollup). */
+  callerFiles: number | null;
+  contributors: number | null;
+}
+
+/** A Read, Edit or Write running on a file inside the indexed repo. */
+export interface RunningTool {
+  id: string;
+  /** Repo-relative, forward slashes. */
+  file: string;
+}
+
+/**
+ * One exception the augment hook flagged on an edited file, as it worded it.
+ * Lens reads these; the thresholds and caps are the hook's own.
+ */
+export type MarginNote =
+  | { kind: "decision"; reviewed: boolean; title: string }
+  | { kind: "fixes"; count: number; age: string; symbol: string | null };
+
+/**
+ * What the savings ledger gained since the session's first snapshot. It
+ * covers every agent on this repo: savings events carry a per-connection id,
+ * not Claude's session id.
+ */
+export interface SavingsDelta {
+  /** Input tokens saved, measured and inferred together. */
+  tokens: number;
+  /** The inferred part of `tokens`. */
+  inferredTokens: number;
+  /** Priced input savings in US dollars; unpriced tokens add nothing here. */
+  usd: number;
+}
+
 export interface SessionState {
   /** null until the first discovery settles. */
   mode: Mode | null;
@@ -25,13 +61,38 @@ export interface SessionState {
   hint: HintKind | null;
   /** Every hint already shown this session, so none comes back. */
   hintsShown: readonly HintKind[];
+  /** The indexed repo's root, once discovered. */
+  repoRoot: string | null;
+  /** The file tool running now, if any. */
+  running: RunningTool | null;
+  /** File context fetched this session, by repo-relative path. */
+  contexts: Readonly<Record<string, FileContext>>;
+  /** Margin notes by the Edit or Write call they belong to. */
+  notes: Readonly<Record<string, readonly MarginNote[]>>;
+  /** Shown only once something was saved; full mode only. */
+  savings: SavingsDelta | null;
 }
 
 export type SessionAction =
-  | { type: "discovered"; mode: Mode; liteReason?: LiteReason; freshness: IndexFreshness | null }
-  | { type: "turnCompleted" };
+  | { type: "discovered"; mode: Mode; liteReason?: LiteReason; freshness: IndexFreshness | null; repoRoot?: string | null }
+  | { type: "turnCompleted" }
+  | { type: "toolStarted"; tool: RunningTool }
+  | { type: "toolEnded"; id: string }
+  | { type: "contextLoaded"; file: string; context: FileContext }
+  | { type: "notesFor"; id: string; notes: readonly MarginNote[] }
+  | { type: "savings"; delta: SavingsDelta };
 
-export const initialSession: SessionState = { mode: null, freshness: null, hint: null, hintsShown: [] };
+export const initialSession: SessionState = {
+  mode: null,
+  freshness: null,
+  hint: null,
+  hintsShown: [],
+  repoRoot: null,
+  running: null,
+  contexts: {},
+  notes: {},
+  savings: null,
+};
 
 export function hintFor(mode: Mode, liteReason: LiteReason | undefined): HintKind | null {
   if (mode === "full" || mode === "no-repo") return null;
@@ -45,15 +106,30 @@ export function reduce(state: SessionState, action: SessionAction): SessionState
       const kind = hintFor(action.mode, action.liteReason);
       const indexed = action.mode === "full" || action.mode === "lite";
       const freshness = indexed ? action.freshness : null;
+      const repoRoot = indexed ? (action.repoRoot ?? null) : null;
+      // Savings come from the local server: the row leaves with it.
+      const savings = action.mode === "full" ? state.savings : null;
       if (kind !== null && !state.hintsShown.includes(kind)) {
-        return { mode: action.mode, freshness, hint: kind, hintsShown: [...state.hintsShown, kind] };
+        const hintsShown = [...state.hintsShown, kind];
+        return { ...state, mode: action.mode, freshness, repoRoot, savings, hint: kind, hintsShown };
       }
       // A hint for a state that no longer holds (the server came up) leaves at once.
       const hint = state.hint === kind ? state.hint : null;
-      return { ...state, mode: action.mode, freshness, hint };
+      return { ...state, mode: action.mode, freshness, repoRoot, savings, hint };
     }
     case "turnCompleted":
       // A hint stays up through the first turn that ends while it shows, then retires.
       return state.hint === null ? state : { ...state, hint: null };
+    case "toolStarted":
+      return { ...state, running: action.tool };
+    case "toolEnded":
+      // Calls overlap: only the one shown clears the slot.
+      return state.running?.id === action.id ? { ...state, running: null } : state;
+    case "contextLoaded":
+      return { ...state, contexts: { ...state.contexts, [action.file]: action.context } };
+    case "notesFor":
+      return action.notes.length === 0 ? state : { ...state, notes: { ...state.notes, [action.id]: action.notes } };
+    case "savings":
+      return { ...state, savings: action.delta.tokens > 0 ? action.delta : null };
   }
 }
