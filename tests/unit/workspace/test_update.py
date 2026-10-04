@@ -427,6 +427,99 @@ class TestUpdateWorkspace:
         assert state.get("config_fingerprint")
         assert state.get("config_dependency_fingerprints")
 
+    def test_shared_db_missing_fingerprint_is_stale(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A shared-database repo with a row and no config fingerprint is stale.
+
+        Dry run omits stale repos, so an empty result list is the verdict.
+        """
+        repo = _make_git_repo(tmp_path, "backend")
+        head = get_head_commit(repo)
+        _write_state(repo, head)
+        assert not (repo / ".repowise" / "wiki.db").exists()
+
+        shared_db = tmp_path / "shared.db"
+        db_url = f"sqlite+aiosqlite:///{shared_db}"
+        monkeypatch.setenv("REPOWISE_DB_URL", db_url)
+
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_repository,
+        )
+
+        async def _seed() -> None:
+            engine = create_engine(db_url)
+            try:
+                await init_db(engine)
+                sf = create_session_factory(engine)
+                async with get_session(sf) as session:
+                    await upsert_repository(
+                        session,
+                        name=repo.name,
+                        local_path=str(repo.resolve()),
+                        head_commit=head,
+                    )
+            finally:
+                await engine.dispose()
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=head)],
+        )
+
+        async def _run():
+            await _seed()
+            return await update_workspace(
+                tmp_path, ws_config, dry_run=True, run_hooks=False
+            )
+
+        import asyncio
+
+        results = asyncio.run(_run())
+        assert results == []
+
+    def test_shared_db_missing_row_without_fingerprint_stays_up_to_date(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No shared-database row keeps a missing fingerprint off the stale path."""
+        repo = _make_git_repo(tmp_path, "backend")
+        head = get_head_commit(repo)
+        _write_state(repo, head)
+        assert not (repo / ".repowise" / "wiki.db").exists()
+
+        shared_db = tmp_path / "shared.db"
+        db_url = f"sqlite+aiosqlite:///{shared_db}"
+        monkeypatch.setenv("REPOWISE_DB_URL", db_url)
+
+        from repowise.core.persistence import create_engine, init_db
+
+        async def _init_schema() -> None:
+            engine = create_engine(db_url)
+            try:
+                await init_db(engine)
+            finally:
+                await engine.dispose()
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=head)],
+        )
+
+        async def _run():
+            await _init_schema()
+            return await update_workspace(
+                tmp_path, ws_config, dry_run=True, run_hooks=False
+            )
+
+        import asyncio
+
+        results = asyncio.run(_run())
+        assert len(results) == 1
+        assert results[0].updated is False
+        assert results[0].skipped_reason == "up_to_date"
+
     def test_repo_filter(self, tmp_path: Path) -> None:
         """--repo flag should only update the specified repo."""
         repo_a = _make_git_repo(tmp_path, "backend")
