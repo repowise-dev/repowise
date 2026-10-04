@@ -81,6 +81,26 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("spec/models/user.rb", None, ""),
     ("spec/openapi/users.yaml", None, ""),
     ("spec/support/helper.rb", None, "support"),
+    # perl-style t/: `t/` is a test tree for python whatever the filename
+    # (celery layout), and needs a test-shaped filename otherwise — same
+    # ambiguous-token mechanism as `spec/` above (#2962)
+    ("t/unit/app/test_app.py", "python", "test"),
+    ("t/unit/conftest.py", "python", "support"),
+    ("t/unit/tasks/task_config.py", "python", "test"),
+    ("t/integration/tasks.py", "python", "test"),
+    ("t/smoke/tasks.py", "python", "test"),
+    ("t/unit/contrib/proj/foo/tasks.py", "python", "test"),
+    # ...so without the language, only a corroborating filename counts
+    ("t/unit/app/test_app.py", None, "test"),
+    ("t/unit/tasks/task_config.py", None, ""),
+    # ...a non-source file under t/ stays as it is without corroboration
+    ("t/data/expected.json", None, ""),
+    ("t/assets/image.png", None, ""),
+    # ...and a bare `t` that is not a directory segment stays production
+    ("src/t.py", None, ""),
+    ("src/t.py", "python", ""),
+    ("latest/x.py", None, ""),
+    ("contest/x.py", None, ""),
     # e2e suites
     ("e2e/login.ts", None, "test"),
     # production code that merely contains the word: the unanchored

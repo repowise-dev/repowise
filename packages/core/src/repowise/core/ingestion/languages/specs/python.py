@@ -11,6 +11,9 @@ SPEC = LanguageSpec(
     test_stem_prefixes=("test_",),
     test_fixture_stems=("conftest",),
     suite_anchor_stems=("conftest",),
+    # Perl-style t/: a Python file under t/ is test material whatever its
+    # name (fixtures, helpers, task modules) — no filename corroboration.
+    test_dir_tokens=("t",),
     extensions=frozenset({".py", ".pyi"}),
     grammar_package="tree_sitter_python",
     scm_file="python.scm",

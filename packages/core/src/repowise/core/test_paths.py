@@ -99,11 +99,13 @@ _REPO_METADATA_DIR = ".github"
 _SEGMENT_WORD_SEPARATORS = re.compile(r"[-_.]+")
 
 # Tokens that also name non-test directories in the wild: "spec(s)" is as often
-# OpenAPI/language specifications as it is RSpec. These count only when the
+# OpenAPI/language specifications as it is RSpec, and "t" is a single letter
+# that shows up in real directory names. These count only when the
 # filename corroborates, or when the file's own language declares the token
 # (Ruby's spec/ needs no corroboration - a Ruby file under spec/ is RSpec
-# material whatever its name).
-_AMBIGUOUS_TEST_DIR_TOKENS: frozenset[str] = frozenset({"spec", "specs"})
+# material whatever its name; Python's t/ likewise - a Python file under t/
+# is test material whatever its name).
+_AMBIGUOUS_TEST_DIR_TOKENS: frozenset[str] = frozenset({"spec", "specs", "t"})
 
 # A whole module named for testing and nothing else: Django's per-app
 # ``myapp/tests.py`` and Rust's ``#[cfg(test)] mod tests;`` in ``tests.rs``,
@@ -402,8 +404,9 @@ def is_test_path(path: str, language: str | None = None) -> bool:
 
     Test *support* (``conftest.py``, ``tests/factories/user.py``) is
     deliberately not a test here - see :func:`is_test_support_path`. Pass
-    *language* when it is known: it decides the ambiguous ``spec/`` case, which
-    is RSpec for Ruby and a specification folder for everything else.
+    *language* when it is known: it decides the ambiguous ``spec/``/``t/``
+    cases, which are RSpec for Ruby and a Perl-style test tree for Python,
+    and specification or miscellaneous folders for everything else.
     """
     return _classify(path, language) == "test"
 
