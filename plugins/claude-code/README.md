@@ -168,6 +168,36 @@ to upgrade pages with a model.
 
 **Stale results after code changes:** run `/repowise:update`.
 
+## What this plugin runs and sends
+
+The plugin itself is Markdown (commands and skills), a `hooks.json`, an
+`.mcp.json` and the Lens module. Everything it runs comes from the `repowise`
+CLI you install with pip:
+
+- **MCP server:** `.mcp.json` starts `repowise mcp`, which reads the index in
+  your repo's `.repowise/` folder.
+- **Hooks:** the three hooks run `repowise-augment` when it is on PATH and do
+  nothing otherwise. They read the local index only.
+- **Lens:** reads the local index through the plugin's own MCP server and,
+  for the map, through `repowise serve` on a loopback address. It makes no
+  network requests of its own.
+
+Network traffic from the `repowise` CLI and MCP server:
+
+- **Anonymous usage telemetry** to `https://api.repowise.dev/telemetry/events`:
+  command and tool names, coarse counts and timings, and an anonymous install
+  id. Never source code, file paths, repo or symbol names, or query text. Turn
+  it off with `DO_NOT_TRACK=1` or `REPOWISE_TELEMETRY_DISABLED=1`; details at
+  https://repowise.dev/telemetry.
+- **Your model and embedding provider**, only if you configure one: page
+  generation in `init` and `update`, and `get_answer`, send code excerpts and
+  your question to that provider. With no provider configured nothing is sent,
+  and `get_answer` answers from local retrieval.
+- **Version checks and downloads:** the CLI reads the latest version from PyPI,
+  and `repowise serve` downloads its web UI from the project's GitHub release.
+- **repowise.dev**, only when you run an account command yourself
+  (`repowise login`, `repowise publish`, or sending feedback).
+
 ## License
 
 AGPL-3.0, same as repowise. See the [repository](https://github.com/repowise-dev/repowise).
