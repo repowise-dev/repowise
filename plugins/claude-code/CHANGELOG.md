@@ -2,6 +2,23 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## Unreleased
+
+### Changed
+- Lens no longer approves its own MCP lookups. It registers no `tool.check`
+  hook, so `get_context`, `get_change_risk`, `get_why` and `get_answer` calls
+  from Lens ask Claude Code's permission like any other MCP call. The README's
+  Permissions section lists the four allow rules that let them run without a
+  prompt.
+- Each command's `allowed-tools` now names the exact `repowise` commands it
+  runs (for example `Bash(repowise health:*)`) in place of any Bash command.
+  `/repowise:init` no longer pre-approves `Write`, and asks with
+  `AskUserQuestion`.
+- `/repowise:init` no longer reads provider key variables from the
+  environment; `repowise init` detects a configured key itself.
+- The plugin README lists what Lens runs, reads, fetches and submits, and the
+  manifest carries the directory listing fields and an icon.
+
 ## 0.55.0
 
 ### Added
