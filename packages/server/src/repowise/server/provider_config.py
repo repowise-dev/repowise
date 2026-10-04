@@ -112,6 +112,20 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "requires_key": True,
     },
     {
+        "id": "cheaperinference",
+        "name": "Cheaper Inference",
+        "default_model": "gpt-5.4-mini",
+        "models": [
+            "gpt-5.4-mini",
+            "gpt-5.4",
+            "claude-sonnet-5",
+            "gemini-3.1-pro",
+            "deepseek-v4-flash",
+        ],
+        "env_keys": ["CHEAPER_INFERENCE_API_KEY"],
+        "requires_key": True,
+    },
+    {
         "id": "ollama",
         "name": "Ollama (Local)",
         "default_model": "qwen3.5:4b",

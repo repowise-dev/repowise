@@ -16,6 +16,7 @@ Built-in providers:
     deepseek   — deepseek-v4-flash, deepseek-v4-pro via api.deepseek.com
     kimi       — kimi-for-coding, kimi-for-coding-highspeed, and K2.x models
     edenai     — many vendors (mistral/gpt/claude/gemini) via Eden AI's EU gateway
+    cheaperinference — several labs (gpt/claude/gemini/deepseek) via Cheaper Inference
     ollama     — local inference (llama3.2, codellama, etc.)
     litellm    — 100+ providers via LiteLLM proxy
     codex_cli  — local authenticated Codex CLI via codex exec

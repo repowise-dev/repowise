@@ -11,6 +11,7 @@ Built-in providers:
     - deepseek    → DeepSeekProvider
     - kimi        → KimiProvider
     - edenai      → EdenAIProvider
+    - cheaperinference → CheaperInferenceProvider
     - ollama      → OllamaProvider
     - litellm     → LiteLLMProvider
     - codex_cli   → CodexCliProvider
@@ -56,6 +57,10 @@ _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "deepseek": ("repowise.core.providers.llm.deepseek", "DeepSeekProvider"),
     "kimi": ("repowise.core.providers.llm.kimi", "KimiProvider"),
     "edenai": ("repowise.core.providers.llm.edenai", "EdenAIProvider"),
+    "cheaperinference": (
+        "repowise.core.providers.llm.cheaperinference",
+        "CheaperInferenceProvider",
+    ),
     "codex_cli": ("repowise.core.providers.llm.codex_cli", "CodexCliProvider"),
     "claude_cli": ("repowise.core.providers.llm.claude_cli", "ClaudeCliProvider"),
     "opencode": ("repowise.core.providers.llm.opencode", "OpenCodeProvider"),
@@ -78,6 +83,7 @@ PROVIDER_API_KEY_ENVS: dict[str, tuple[str, ...]] = {
     "deepseek": ("DEEPSEEK_API_KEY",),
     "kimi": ("KIMI_API_KEY",),
     "edenai": ("EDENAI_API_KEY",),
+    "cheaperinference": ("CHEAPER_INFERENCE_API_KEY",),
     "litellm": ("LITELLM_API_KEY",),
 }
 
@@ -90,6 +96,7 @@ PROVIDER_BASE_URL_ENVS: dict[str, tuple[str, ...]] = {
     "deepseek": ("DEEPSEEK_BASE_URL",),
     "kimi": ("KIMI_BASE_URL",),
     "edenai": ("EDENAI_BASE_URL",),
+    "cheaperinference": ("CHEAPER_INFERENCE_BASE_URL",),
     "ollama": ("OLLAMA_BASE_URL",),
     "litellm": ("LITELLM_BASE_URL", "LITELLM_API_BASE"),
 }
@@ -125,6 +132,7 @@ PROVIDER_AUTODETECT_ORDER: tuple[str, ...] = (
     # and an unrelated EDENAI_API_KEY in the environment must not silently take
     # over from a provider the user was already resolving to.
     "edenai",
+    "cheaperinference",
 )
 
 # An env var set to "" or whitespace means "not set". CI systems and agent
@@ -338,6 +346,7 @@ def get_provider(
             "deepseek": "openai",  # deepseek uses the openai package
             "kimi": "openai",  # kimi uses the openai package
             "edenai": "openai",  # edenai uses the openai package
+            "cheaperinference": "openai",  # cheaperinference uses the openai package
             "litellm": "litellm",
             "codex_cli": "@openai/codex",
             "claude_cli": "@anthropic-ai/claude-code",
