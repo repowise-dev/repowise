@@ -6,7 +6,7 @@
 
 import { getSavings } from "@repowise-dev/api-client/costs";
 import { discover, isWindowsPath, readFreshness, type Discovery } from "./data/discovery";
-import { callTool, fetchFileContext, isOwnLensCall, mcpReady, resetMcp, warmMcp } from "./data/mcp";
+import { callTool, fetchFileContext, mcpReady, resetMcp, warmMcp } from "./data/mcp";
 import { withTimeout } from "./data/transport";
 import { fit } from "./format";
 import type { Host } from "./host";
@@ -19,7 +19,6 @@ import { MAP_PRESSES } from "./views/mapPane";
 import { knowsOf, type Knows } from "./model/inspect";
 import { LensMap, type MapIO, type MapRepo } from "./map-controller";
 import type {
-  CheckNext,
   CommandRunEvent,
   ModApi,
   On,
@@ -32,7 +31,6 @@ import type {
   SessionStartEvent,
   SpinnerEvent,
   ToolCallEvent,
-  ToolCheckEvent,
   ToolResultEvent,
   ToolUseEvent,
   TurnCompleteEvent,
@@ -366,7 +364,7 @@ async function fetchReview(b: Bound): Promise<SessionAction> {
 /**
  * Starts a review of the working tree, not awaited. Only ever called while a
  * Lens hook is live (an edit's tool.call, or turn.complete), which is when the
- * engine approves the call.
+ * engine runs the call.
  */
 function startReview(b: Bound): StartedReview {
   const review: StartedReview = { gen: reviewGeneration, covers: editsThisTurn, settled: false, outcome: fetchReview(b) };
@@ -520,7 +518,7 @@ async function onPostCompact(
 /**
  * Asks the index, one question at a time. Only called from a live hook (the
  * Ask field's `ui.input`, or `/lens ask`): `callTool` starts the call at
- * once, which is when the engine approves Lens's own lookup.
+ * once, which is when the engine runs Lens's own lookup.
  */
 function startAsk(b: Bound, question: string): void {
   const q = question.trim();
@@ -545,7 +543,7 @@ function startAsk(b: Bound, question: string): void {
 }
 
 // The Ask field's Enter. The lookup starts here, in Lens's own hook, so the
-// engine approves it; the field's own closure does nothing.
+// engine runs it; the field's own closure does nothing.
 async function onAskInput($: ModApi, e: UiInputEvent, next: (e: UiInputEvent) => Promise<unknown>): Promise<unknown> {
   try {
     if (e.kind === "submit" && e.element === ASK_KEY) startAsk(bind($), e.value);
@@ -592,7 +590,7 @@ async function onBand($: ModApi, e: RenderEvent, next: (e: RenderEvent) => Promi
 
 /**
  * Fetches a file's context once per session, started here and not awaited:
- * the engine approves Lens's call because it starts while this hook is live,
+ * the engine runs Lens's call because it starts while this hook is live,
  * and the spinner shows it from the first render after it lands.
  * Ceiling: cached for the session, so an index update mid-session is not seen.
  */
@@ -714,19 +712,6 @@ function editLanded(b: Bound, e: ToolCallEvent, result: unknown): void {
   } catch (err) {
     b.debug(`tool.call failed: ${String(err)}`);
   }
-}
-
-// The one approval Lens gives: its own read-only lookups. Every other
-// question keeps the engine's verdict, untouched.
-async function onToolCheck($: ModApi, e: ToolCheckEvent, next: CheckNext): Promise<unknown> {
-  try {
-    if (isOwnLensCall(e, next.origin?.plugin)) {
-      return { decision: "allow", reason: "Repowise Lens: its own read-only index lookup" };
-    }
-  } catch (err) {
-    bind($).debug(`tool.check failed: ${String(err)}`);
-  }
-  return next(e);
 }
 
 // Rewrites only the suffix prop, so the engine keeps drawing (and animating) the line.
@@ -949,9 +934,10 @@ export function register(on: On, options: PluginOptions = {}): void {
   // The brief is only offered: nothing here hooks `session.compact`.
   on("classic.PostCompact", onPostCompact);
   on("tool.call", onToolCall);
-  on("tool.check", onToolCheck);
   on("ui.render", { component: "Spinner" }, onSpinner);
-  if (options["lens_squeeze"] !== false) on("ui.render", { component: "ToolResult" }, onToolResult);
+  if (options["lens_squeeze"] !== false) {
+    on("ui.render", { component: "ToolResult" }, onToolResult);
+  }
   if (options["lens_margin"] !== false) {
     on("classic.PostToolUse", onPostToolUse);
     on("ui.render", { component: "ToolUse" }, onToolUse);

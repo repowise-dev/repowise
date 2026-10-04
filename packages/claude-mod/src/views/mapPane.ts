@@ -229,14 +229,14 @@ const MORE = "…";
  * under a blit.
  */
 export function keyRow(keys: MapKeyState, style: MapStyle, columns: number): Node {
-  const on: [MapKeyName, boolean][] = [
+  const offered: [MapKeyName, boolean][] = [
     ["next", keys.items],
     ["previous", keys.items],
     ["zoom", keys.zoomable],
     ["up", keys.zoomed],
     ["clear", keys.selected],
   ];
-  const all = [...on.filter(([, shown]) => shown).map(([name]) => ({ name, label: MAP_KEYS_COPY[name] as string })), { name: "health" as const, label: style.health ? MAP_COPY.healthOn : MAP_COPY.healthOff }];
+  const all = [...offered.filter(([, shown]) => shown).map(([name]) => ({ name, label: MAP_KEYS_COPY[name] as string })), { name: "health" as const, label: style.health ? MAP_COPY.healthOn : MAP_COPY.healthOff }];
   const ranked = [...all].sort((a, b) => KEY_PRIORITY.indexOf(a.name) - KEY_PRIORITY.indexOf(b.name));
   // The top `n` keys by priority, with the gaps between them and the `…` when some are left out.
   const cells = (n: number) => ranked.slice(0, n).reduce((w, k) => w + keyCells(k.label) + GAP, 0) + (n < all.length ? MORE.length : -GAP);

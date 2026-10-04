@@ -93,35 +93,11 @@ test('outside a git work tree the band stays empty', async ($, on) => {
 const OWN_TOOL = 'mcp__plugin_repowise_repowise__get_context'
 const CORE = { decision: 'ask', reason: 'core' }
 
-/** Stands in for another plugin that asks about Lens's tool. */
-const foreign = {
-  name: 'foreign',
-  register(on: any) {
-    on('turn.start', async ($: any, e: any, next: any) => {
-      const verdict = await $.tool.check({ tool: 'mcp__plugin_repowise_repowise__get_context', input: {} })
-      return { ...(await next(e)), verdict }
-    })
-  },
-}
-
-test("Claude's own call to a Lens tool keeps the engine's verdict", async ($, on) => {
+test("Lens leaves every permission decision to Claude Code, its own lookups included", async ($, on) => {
   on('tool.check', () => CORE)
   expect(await $.tool.check({ tool: OWN_TOOL, input: {}, tool_use_id: 'toolu_01abc' } as any)).toEqual(CORE)
-  // A plugin-shaped id is not enough: the engine raised it, not Lens.
   expect(await $.tool.check({ tool: OWN_TOOL, input: {}, tool_use_id: 'toolu_plugin_01' } as any)).toEqual(CORE)
-})
-
-test('a tool outside the allowlist is never approved', async ($, on) => {
-  on('tool.check', () => CORE)
-  const tool = 'mcp__plugin_repowise_repowise__get_dead_code'
-  expect(await $.tool.check({ tool, input: {}, tool_use_id: 'toolu_plugin_01' } as any)).toEqual(CORE)
   expect(await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'toolu_plugin_02' } as any)).toEqual(CORE)
-})
-
-test("another plugin's question about a Lens tool keeps the engine's verdict", { plugins: [foreign] }, async ($, on) => {
-  on('tool.check', () => CORE)
-  on('turn.start', () => ({ turnId: 't1' }))
-  expect(await ($ as any).turn.start({ turnId: 't1', prompt: 'hi' })).toMatchObject({ verdict: CORE })
 })
 
 const SPINNER = {

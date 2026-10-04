@@ -1,8 +1,9 @@
 /**
- * Lens's own read-only calls to this plugin's repowise MCP server, and the
- * rule for approving them. The engine approves a call only when it STARTS
- * while one of Lens's hooks is live, so a caller starts the call inside its
- * hook (awaited or `void`), never from a timer or a late promise.
+ * Lens's own read-only calls to this plugin's repowise MCP server. They go
+ * through Claude Code's permission rules like any MCP call, and the engine
+ * runs one only when it STARTS while one of Lens's hooks is live, so a caller
+ * starts the call inside its hook (awaited or `void`), never from a timer or
+ * a late promise.
  */
 
 import type { Host } from "../host";
@@ -10,14 +11,11 @@ import type { McpToolResult } from "../mod-api";
 import type { FileContext } from "../model/session";
 import { withTimeout } from "./transport";
 
-/** This plugin's name, as `next.origin.plugin` reports it. */
-export const PLUGIN_NAME = "repowise";
-
 /** Only the tools a shipped Lens feature calls. All read-only. */
 export const LENS_TOOLS = ["get_context", "get_change_risk", "get_why", "get_answer"] as const;
 export type LensTool = (typeof LENS_TOOLS)[number];
 
-/** Both spellings of this plugin's server seen at runtime; Lens calls and approves no other. */
+/** Both spellings of this plugin's server seen at runtime; Lens calls no other. */
 const PLUGIN_SERVER_FORMS: readonly string[] = ["plugin:repowise:repowise", "plugin_repowise_repowise"];
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -65,26 +63,6 @@ export async function mcpReady(host: Host, timeoutMs = DEFAULT_TIMEOUT_MS): Prom
   return resolvedServer !== null;
 }
 
-/** How a server's tools are named in `tool.check` (`mcp__plugin_repowise_repowise__get_context`). */
-export function toolName(serverForm: string, tool: string): string {
-  return `mcp__${serverForm.replace(/[^A-Za-z0-9_-]/g, "_")}__${tool}`;
-}
-
-const OWN_TOOL_NAMES: ReadonlySet<string> = new Set(
-  PLUGIN_SERVER_FORMS.flatMap((form) => LENS_TOOLS.map((tool) => toolName(form, tool))),
-);
-
-/**
- * Whether a `tool.check` is for one of Lens's own calls: a plugin-made call
- * (id `toolu_plugin_`), raised by this plugin, to an allowlisted tool on this
- * plugin's server. Anything else keeps the engine's verdict.
- */
-export function isOwnLensCall(e: { tool: string; tool_use_id?: string | undefined }, originPlugin: unknown): boolean {
-  if (originPlugin !== PLUGIN_NAME) return false;
-  if (typeof e.tool_use_id !== "string" || !e.tool_use_id.startsWith("toolu_plugin_")) return false;
-  return OWN_TOOL_NAMES.has(e.tool);
-}
-
 function parse<T>(result: McpToolResult, tool: string): T {
   const text = result.content[0]?.text;
   if (result.isError) throw new Error(`${tool} failed: ${String(text).slice(0, 200)}`);
@@ -98,7 +76,7 @@ function parse<T>(result: McpToolResult, tool: string): T {
 /**
  * Calls one allowlisted tool and returns the parsed `result`. The call starts
  * synchronously, so it starts while the calling hook is live (the engine
- * approves Lens's call only then); with no server name resolved yet it does
+ * runs Lens's call only then); with no server name resolved yet it does
  * not start at all and rejects, and the caller tries again from a later hook.
  * Rejects on timeout or a tool error; nothing retries after the hook.
  */

@@ -55,7 +55,7 @@ import { packRows } from "./mapPane";
 import { OWL_WIDTH, owl, owlEyes, type OwlState } from "./owl";
 import { THISTLE, flowTheme, hills, loch, type FlowTheme } from "./theme";
 
-export const FLOW_KEY = "lens-flow";
+export const FLOW_BOX_ID = "lens-flow";
 export const FLOW_NEXT = "lens-flow-next";
 export const FLOW_PREV = "lens-flow-prev";
 /** How long the owl stays happy after a turn ends. */
@@ -102,7 +102,7 @@ export interface FlowViewInput {
 }
 
 /** The Button key of an openable row. */
-export const rowKey = (id: string): string => `${FLOW_KEY}-${id}`;
+export const rowKey = (id: string): string => `${FLOW_BOX_ID}-${id}`;
 
 /** Every Button key the tab may draw, with the row it opens (null for the hotkeys). */
 export function flowPresses(state: FlowState): Array<[key: string, id: string | null]> {
@@ -464,5 +464,5 @@ export function flowView(state: FlowState, v: FlowViewInput): Node {
   const room = Math.max(MIN_BODY, v.rows - head.length - fixed.length - after.length - 1);
   const calls = turn === undefined ? [] : windowed(callLines(state, turn, v, theme), room, state.open);
   const callNodes = section(FLOW_COPY.calls, calls.map((l) => l.node));
-  return box({ key: FLOW_KEY, flexDirection: "column" }, [...head, ...fixed, ...callNodes, ...after]);
+  return box({ key: FLOW_BOX_ID, flexDirection: "column" }, [...head, ...fixed, ...callNodes, ...after]);
 }
