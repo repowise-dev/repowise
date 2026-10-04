@@ -1,7 +1,7 @@
 ---
 frontmatter: |
     description: Work with architectural decisions — list, inspect health, add, or confirm auto-proposed decisions.
-    allowed-tools: Bash, Read
+    allowed-tools: Bash(repowise decision:*), Read
 ---
 
 # Repowise Decisions

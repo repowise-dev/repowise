@@ -1,6 +1,6 @@
 ---
 description: Scan for security signals — working-tree scanning already runs during init/update; use --history to walk full git history for leaked secrets.
-allowed-tools: Bash, Read
+allowed-tools: Bash(repowise security scan:*), Read
 ---
 
 # Repowise Security
