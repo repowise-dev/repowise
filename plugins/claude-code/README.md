@@ -180,7 +180,7 @@ CLI you install with pip:
   nothing otherwise. They read the local index only.
 - **Lens:** reads the local index through the plugin's own MCP server and,
   for the map, through `repowise serve` on a loopback address. It contacts no
-  other host. The [Lens](#lens-1) list below says exactly what it runs and
+  other host. The [Lens list](#what-lens-runs-and-reads) below says exactly what it runs and
   reads.
 
 Network traffic from the `repowise` CLI and MCP server:
@@ -199,7 +199,7 @@ Network traffic from the `repowise` CLI and MCP server:
 - **repowise.dev**, only when you run an account command yourself
   (`repowise login`, `repowise publish`, or sending feedback).
 
-### Lens
+### What Lens runs and reads
 
 Lens is the mod in `hooks/lens/lens.js`, built from `packages/claude-mod`.
 Everything it does goes through Claude Code's mods API:
