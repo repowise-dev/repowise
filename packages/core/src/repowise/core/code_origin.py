@@ -323,7 +323,7 @@ def _is_example_dir(segment: str) -> bool:
 
 def _is_docs_example(dirs: list[str]) -> bool:
     # Anything under a docs root already counts, examples beneath it included.
-    return any(d in _DOCS_ROOT_TOKENS for d in dirs) or bool(dirs and _is_example_dir(dirs[0]))
+    return any(d in _DOCS_ROOT_TOKENS for d in dirs) or any(_is_example_dir(d) for d in dirs)
 
 
 # Close to ``perf/causal.py``'s tooling parts, with two differences: the

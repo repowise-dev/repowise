@@ -25,6 +25,7 @@ import structlog
 from ...entry_candidacy import is_reachability_root
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from ...ingestion.symbol_identity import base_symbol_id, overload_sets
+from ...code_origin import code_origin
 from .c_name_uses import (
     DEFINITION_HEADER_LINES,
     DeclarationSites,
@@ -1015,6 +1016,8 @@ class DeadCodeAnalyzer:
                 continue
             if _is_fixture_path(str(node)):
                 continue
+            if code_origin(str(node)) == "docs_example":
+                continue
 
             if is_file_reachable(str(node), self.graph, rescues):
                 continue
@@ -1330,6 +1333,8 @@ class DeadCodeAnalyzer:
         if _is_fixture_path(str(node)):
             return None
         if self._should_never_flag(str(node), whitelist):
+            return None
+        if code_origin(str(node)) == "docs_example":
             return None
 
         symbol_pairs = self._defined_symbols(node)
