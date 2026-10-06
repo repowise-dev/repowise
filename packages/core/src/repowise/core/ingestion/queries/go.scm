@@ -91,6 +91,48 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; Generic function call: F[T](args)
+(call_expression
+  (index_expression
+    (identifier) @call.target
+    (identifier)
+  )
+  (argument_list) @call.arguments
+) @call.site
+
+; Generic method/package call: pkg.F[T](args)
+(call_expression
+  (index_expression
+    (selector_expression
+      (identifier) @call.receiver
+      (field_identifier) @call.target
+    )
+    (identifier)
+  )
+  (argument_list) @call.arguments
+) @call.site
+
+; Generic function call: F[T](args)
+(call_expression
+  function: (index_expression
+    operand: (identifier) @call.target
+    index: (_)
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Generic method/package call: pkg.F[T](args)
+(call_expression
+  function: (index_expression
+    operand: (selector_expression
+      operand: (identifier) @call.receiver
+      field: (field_identifier) @call.target
+    )
+    index: (_)
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
 ; Qualified function value passed as call argument: f(pkg.Handler, ...)
 ; Rescues functions used as first-class values — passed as callbacks, middleware,
 ; or handlers rather than called directly. A reference and not a call: nothing
