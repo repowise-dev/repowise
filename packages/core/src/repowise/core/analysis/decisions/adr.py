@@ -34,11 +34,9 @@ def _is_adr_dir(rel_dir: str) -> bool:
     if not rel_dir:
         return False
     parts = rel_dir.lower().split("/")
-    if parts[-1] in _ADR_DIR_NAMES:
-        return True
-    if len(parts) >= 2 and f"{parts[-2]}/{parts[-1]}" in _ADR_SUFFIXES:
-        return True
-    return False
+    return parts[-1] in _ADR_DIR_NAMES or (
+        len(parts) >= 2 and f"{parts[-2]}/{parts[-1]}" in _ADR_SUFFIXES
+    )
 
 # Nygard/MADR section headings. Mapped to the ExtractedDecision fields they
 # populate during the deterministic (LLM-free) parse.
