@@ -87,6 +87,10 @@ def test_tokenize_file_reads_tsx_with_the_jsx_grammar():
 
 
 def test_tokenize_file_pascal_normalizes_identifiers_and_literals():
+    # Calls tokenize_file() directly with an inline byte literal, so it
+    # needs its own best-effort guard rather than inheriting one from a
+    # fixture-driven helper.
+    pytest.importorskip("tree_sitter_pascal", reason="run `uv sync --all-packages`")
     source = (
         b"unit U;\n interface\n implementation\n"
         b" procedure Foo;\n begin\n   WriteLn('hello', 42);\n end;\n end.\n"

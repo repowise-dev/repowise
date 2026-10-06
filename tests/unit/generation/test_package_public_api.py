@@ -155,8 +155,9 @@ async def test_public_api_reaches_the_prompt_excerpts(tmp_path, sample_config):
         public_api=api,
     )
     prompt = provider._calls[-1]["user_prompt"]
-    assert "### Public API" in prompt
-    assert "- `Client` (class, `packages/sdk/src/client.ts`): `` class Client" in prompt
+    assert '"public_api": [' in prompt
+    assert '"name": "Client"' in prompt
+    assert '"signature": "class Client' in prompt
     assert "Talks to the service." in prompt
 
 

@@ -116,6 +116,19 @@ def test_search_attributes_to_hit_files_and_symbols():
     assert demand == {"pkg/a.py": 1, "pkg/b.py": 1, "pkg/c.py": 1}
 
 
+def test_search_prefers_the_served_path():
+    # ``file`` and ``target_path`` are aliases; ``path`` is the openable file.
+    payload = {
+        "results": [
+            {"path": "pkg/a.py", "file": "pkg/old.py"},
+            {"path": "pkg/b.py", "target_path": "pkg/other.py"},
+        ]
+    }
+    events = [_search_call("s1"), _result("s1", payload)]
+    demand = mine_events_demand(events, REPO_PREFIX)
+    assert demand == {"pkg/a.py": 1, "pkg/b.py": 1}
+
+
 def test_two_calls_accumulate():
     events = [
         _answer_call("a1"),

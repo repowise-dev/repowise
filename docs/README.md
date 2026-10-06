@@ -32,6 +32,7 @@ For a map of every layer and how they feed each other, read
 | [agent/MCP_TOOLS.md](agent/MCP_TOOLS.md) | The ten task-shaped tools, what each answers, and the opt-in extras |
 | [agent/HOOKS.md](agent/HOOKS.md) | Context and warnings that reach the agent without it asking |
 | [agent/DISTILL.md](agent/DISTILL.md) | Compress noisy command output before your agent reads it |
+| [agent/LENS.md](agent/LENS.md) | Lens in the Claude Code plugin: the spinner, change review, Flow and the `/lens` map shown while Claude works |
 | [layers/GRAPH.md](layers/GRAPH.md) | The dependency graph, and how much to trust each edge |
 | [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 26 parsed to a full AST, 40 on the support ladder |
 
@@ -131,5 +132,6 @@ For a map of every layer and how they feed each other, read
 Agent and editor pages: [Codex](agent/CODEX.md) ·
 [opencode](agent/OPENCODE.md) · [Hermes](agent/HERMES.md) ·
 [VS Code](agent/VSCODE.md) ·
+[Lens for Claude Code](agent/LENS.md) ·
 [Claude Code as a provider](agent/CLAUDE_CODE_PROVIDER.md) ·
 [all integrations](agent/INTEGRATIONS.md).

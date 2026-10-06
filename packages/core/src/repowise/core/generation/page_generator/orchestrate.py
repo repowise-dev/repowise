@@ -754,6 +754,7 @@ class _GenerationRun:
                         try:
                             await self.vector_store.embed_batch(embed_items)
                         except Exception as e:
+                            self.gen.embed_failed_pages += len(embed_items)
                             log.warning(
                                 "rag.embed_batch_failed",
                                 level=level,
@@ -1075,6 +1076,7 @@ def _embed_item(page: GeneratedPage) -> tuple[str, str, dict] | None:
         summary=page.summary,
         content=page.content,
         page_metadata=page.metadata,
+        digest=page.digest,
     )
 
 

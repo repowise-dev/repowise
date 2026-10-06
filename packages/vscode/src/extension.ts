@@ -4,11 +4,12 @@ import { existsSync } from "node:fs";
 import { Commands, REPO_DIR, WORKSPACE_DIR } from "./constants";
 import { createLogger } from "./core/log";
 import { createApi } from "./core/api";
-import { createCache } from "./core/cache";
+import { createCache } from "@repowise-dev/api-client/cache";
 import { createCliRunner } from "./core/cliRunner";
 import { RepowiseContext } from "./core/context";
 import { registerStatusBar } from "./features/statusBar";
 import { registerOnboarding } from "./features/onboarding";
+import { registerHosted } from "./features/hosted";
 import { registerServerManager } from "./features/serverManager";
 import { registerMcp } from "./features/mcp";
 import { registerDiagnostics } from "./features/diagnostics";
@@ -83,6 +84,7 @@ export function activate(extCtx: vscode.ExtensionContext): void {
   extCtx.subscriptions.push(
     registerStatusBar(ctx),
     registerOnboarding(ctx),
+    registerHosted(ctx, extCtx.globalState),
     registerServerManager(ctx),
     registerMcp(ctx),
     registerDiagnostics(ctx),

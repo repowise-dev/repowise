@@ -2,6 +2,65 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## Unreleased
+
+### Changed
+- Lens no longer approves its own MCP lookups. It registers no `tool.check`
+  hook, so `get_context`, `get_change_risk`, `get_why` and `get_answer` calls
+  from Lens ask Claude Code's permission like any other MCP call. The README's
+  Permissions section lists the four allow rules that let them run without a
+  prompt.
+- Each command's `allowed-tools` now names the exact `repowise` commands it
+  runs (for example `Bash(repowise health:*)`) in place of any Bash command.
+  `/repowise:init` no longer pre-approves `Write`, and asks with
+  `AskUserQuestion`.
+- `/repowise:init` no longer reads provider key variables from the
+  environment; `repowise init` detects a configured key itself.
+- The plugin README lists what Lens runs, reads, fetches and submits, and the
+  manifest carries the directory listing fields and an icon.
+
+## 0.55.0
+
+### Added
+- Lens, a Claude Code mod that ships in the plugin (`hooks/lens/lens.js`,
+  registered through the `modules` entry in `hooks.json`). It shows the index
+  to the person at the keyboard: setup, freshness and savings rows above the
+  prompt, the file's caller and contributor counts in the spinner, margin notes
+  under Edit and Write repeating what the augment hook flagged, a row under
+  Bash output `repowise distill` shortened, a `get_change_risk` review beneath
+  Claude's answer after a turn that edits files (with `Run tests`, `Why` and
+  `Details` buttons), and a `/lens` pane with Flow (a dashboard of each turn
+  with Repowise), a map of the repo lit by Claude's turn with its story under
+  it, an Ask tab (`get_why` or `get_answer`) and a session recap. After a compaction it offers
+  a `Brief Claude` button. In the desktop app the map draws as SVG.
+- Six `userConfig` toggles: `lens_margin`, `lens_squeeze`, `lens_review` and
+  `lens_flow` (on by default), and `lens_pane_autoopen` and `lens_map_health`
+  (off).
+- Lens needs Claude Code 2.1.287 or later. Older versions, and sessions where
+  mods are switched off, load the rest of the plugin unchanged. Lens never
+  denies, holds or rewrites Claude's tool calls. It approves only its own
+  read-only calls to this plugin's MCP server (`get_context`,
+  `get_change_risk`, `get_why`, `get_answer`), and sends Claude nothing
+  without a button press. Ask questions that do not start with "why" go to
+  `get_answer`, which may use the model your repo configures. See
+  [docs/agent/LENS.md](../../docs/agent/LENS.md) and its
+  [footprint](../../docs/agent/LENS.md#footprint).
+
+### Changed
+- The `code-health` skill leads a "what should I refactor?" answer with the
+  `fix_first` queue and opens an item with `get_health(fix_id=...)` for its
+  steps and the tests to run.
+- The `ask` command follows the `candidate_files` that `get_answer` now
+  returns at every confidence. The `context` command and the
+  `codebase-exploration` skill note that a symbol row without a `symbol_id` is
+  addressed as `path::name`.
+- No MCP tool was added, removed or renamed, and `hooks.json` still mirrors the
+  augment matcher in `claude_config.py`.
+
+### Fixed
+- The `security` command passed `--output json` to history scans; the flag is
+  `--format json`.
+
 ## 0.54.0
 
 ### Changed

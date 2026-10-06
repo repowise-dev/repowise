@@ -7,6 +7,7 @@ import { WebhookSection } from "@/components/settings/webhook-section";
 import { McpSection } from "@/components/settings/mcp-section";
 import { McpToolsSection } from "@/components/settings/mcp-tools-section";
 import { DisplaySection } from "@/components/settings/display-section";
+import { HostedNudgeSlot } from "@/components/hosted/hosted-nudge-slot";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -31,6 +32,7 @@ export default function SettingsPage() {
       <ConnectionSection />
       <ProviderSection />
       <DisplaySection />
+      <HostedNudgeSlot candidates={["mcp"]} />
       <McpSection />
       <McpToolsSection />
       <WebhookSection />

@@ -367,7 +367,7 @@ def _bind_first_file(tool: ToolUse, results: list[dict[str, str]]) -> None:
     if not isinstance(tool.input, dict) or tool.input.get("path"):
         return
     for result in results:
-        file_path = result.get("file") if isinstance(result, dict) else None
+        file_path = (result.get("path") or result.get("file")) if isinstance(result, dict) else None
         if isinstance(file_path, str) and file_path:
             tool.input["path"] = file_path
             return
@@ -441,9 +441,13 @@ def _rewrite_search_output(output: Any) -> dict | None:
             continue
         match = _RG_MATCH_RE.match(line)
         if match:
-            results.append({"file": match.group("path").replace("\\", "/")})
+            path = match.group("path").replace("\\", "/")
         elif _looks_like_a_bare_path(line):
-            results.append({"file": line.replace("\\", "/")})
+            path = line.replace("\\", "/")
+        else:
+            continue
+        # Both keys, as search_codebase serves them while ``file`` is an alias.
+        results.append({"path": path, "file": path})
 
     return {"result": {"results": results}}
 

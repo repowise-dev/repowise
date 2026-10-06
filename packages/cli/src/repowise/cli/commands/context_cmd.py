@@ -20,6 +20,7 @@ _INCLUDE_BLOCKS = (
     "health",
     "skeleton",
     "doc_drift",
+    "symbols",
 )
 
 #: Card keys the projection replaces or drops. Everything else passes through.
@@ -53,7 +54,7 @@ _REPLACED_KEYS = frozenset(
 #: ``docs`` stays: for a **symbol** target the whole card lives there
 #: (``signature``, ``docstring``, ``used_by``, ``candidates``), and for a file
 #: target it holds ``symbols`` — the list a caller pipes into ``repowise
-#: symbol`` — plus ``content_md``/``documentation`` when ``--include full_doc``
+#: symbol``, plus ``content_md``/``digest_md``/``documentation`` when ``--include full_doc``
 #: asked for them. Denylisting ``docs`` wholesale projected a symbol target to
 #: an empty card and made ``--include full_doc`` an inert flag.
 _LIFTED_DOC_KEYS = ("title", "summary")

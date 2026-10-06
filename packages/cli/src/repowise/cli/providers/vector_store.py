@@ -49,6 +49,34 @@ def existing_vector_dim(lance_dir: Path) -> int | None:
     return dim
 
 
+def semantic_search_status(embedder: str | None, embed_failed_pages: int) -> str:
+    """Whether a run left semantic search usable: ``available`` or not.
+
+    Read from what the run did, not only from the embedder's name: a real
+    embedder whose vector writes failed leaves the same empty index the mock
+    does, and calling it available hid exactly that.
+    """
+    if not embedder or embedder == "mock" or embed_failed_pages:
+        return "unavailable"
+    return "available"
+
+
+def embed_failure_message(embedder: str | None, embed_failed_pages: int) -> str | None:
+    """The error a run exits with when a real embedder failed to write.
+
+    ``None`` for the mock: its vectors were never semantic, so losing them
+    changes nothing a reader relies on.
+    """
+    if not embed_failed_pages or not embedder or embedder == "mock":
+        return None
+    return (
+        f"Embedding failed for {embed_failed_pages} page(s), so semantic search is "
+        "unavailable (full-text search still works). Fix the cause in the warning "
+        "above (for a broken LanceDB install: pip install --force-reinstall lancedb), "
+        "then run: repowise reindex"
+    )
+
+
 def _mock_would_clobber(lance_dir: Path, embedder: Any) -> bool:
     """True when writing *embedder* into the store at *lance_dir* would drop it.
 
@@ -72,14 +100,16 @@ def build_vector_store(repo_path: Path, embedder: Any) -> Any | None:
     """Build the repo-local vector store, preferring LanceDB.
 
     Uses LanceDB at ``.repowise/lancedb`` so previously-embedded pages and
-    decisions stay matchable across runs; falls back to an in-memory store
-    (which only sees this run's vectors) when LanceDB isn't installed.
+    decisions stay matchable across runs. There is no in-memory fallback:
+    the store imports lancedb on first use, so a missing or broken install
+    fails there with a named error, which the embed step reports as a failed
+    embed rather than a run that only looked healthy.
 
     Returns ``None`` when handing back a store would destroy the existing one
     (see :func:`_mock_would_clobber`). Every caller already treats ``None`` as
     "embedding is off for this run"; full-text search is unaffected either way.
     """
-    from repowise.core.persistence.vector_store import InMemoryVectorStore
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
 
     lance_dir = repo_path / ".repowise" / "lancedb"
     if _mock_would_clobber(lance_dir, embedder):
@@ -102,10 +132,5 @@ def build_vector_store(repo_path: Path, embedder: Any) -> Any | None:
             "Set an\nembedder key and run [cyan]repowise reindex[/cyan] to refresh it."
         )
         return None
-    try:
-        from repowise.core.persistence.vector_store import LanceDBVectorStore
-
-        lance_dir.mkdir(parents=True, exist_ok=True)
-        return LanceDBVectorStore(str(lance_dir), embedder=embedder)
-    except ImportError:
-        return InMemoryVectorStore(embedder)
+    lance_dir.mkdir(parents=True, exist_ok=True)
+    return LanceDBVectorStore(str(lance_dir), embedder=embedder)

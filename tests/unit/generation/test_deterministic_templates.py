@@ -230,6 +230,28 @@ def test_as_markdown_drops_rest_directives():
     assert "Body text." in out
 
 
+def test_as_markdown_turns_a_rest_title_into_a_heading():
+    """Left as text, the underline renders and the title becomes the summary."""
+    from repowise.core.generation.page_generator.structural import as_markdown
+
+    out = as_markdown("Tagged JSON\n~~~~~~~~~~~\n\nA compact representation.\n")
+    assert out == "### Tagged JSON\n\nA compact representation."
+
+
+def test_as_markdown_drops_the_overline_of_a_rest_title():
+    from repowise.core.generation.page_generator.structural import as_markdown
+
+    out = as_markdown("=========\nBig Title\n=========\n\nSome prose.")
+    assert out == "### Big Title\n\nSome prose."
+
+
+def test_as_markdown_leaves_a_short_rule_under_prose_alone():
+    """reST requires the underline to be at least as long as the title."""
+    from repowise.core.generation.page_generator.structural import as_markdown
+
+    assert as_markdown("A longer line of prose.\n---\n") == "A longer line of prose.\n---"
+
+
 def test_as_markdown_dedents_so_the_body_is_not_a_code_block():
     """Four leading spaces would make markdown render the body as code."""
     from repowise.core.generation.page_generator.structural import as_markdown
@@ -424,7 +446,7 @@ def test_module_page_leads_with_the_concept_title(generator):
     group is; the line beneath says where to go and look.
     """
     ctx = _module_ctx(generator._assembler, ["src/ingest/read.py", "src/parse/ast.py"])
-    page = generator._stub_module_page(ctx, "src/ingest", "Ingestion Pipeline", None)
+    page = generator._stub_module_page(ctx, "src/ingest", "Ingestion Pipeline")
 
     assert page.title == "Ingestion Pipeline"
     assert page.content.startswith("# Ingestion Pipeline\n")
@@ -441,7 +463,7 @@ def test_module_page_of_root_files_says_so(generator):
     top level.
     """
     ctx = _module_ctx(generator._assembler, ["setup.py", "main.py"])
-    page = generator._stub_module_page(ctx, "root", "Project Entry Points", None)
+    page = generator._stub_module_page(ctx, "root", "Project Entry Points")
 
     assert "Repository root" in page.content
     assert "`.`" not in page.content
@@ -529,14 +551,15 @@ def test_file_page_renders_german_headings_and_prose(german_generator):
         "## Öffentliche API",
         "## Abhängigkeiten",
         "## Wird verwendet von",
-        "## Nutzungshinweise",
         "## Fragen, die diese Seite beantwortet",
     ):
         assert heading in page.content, heading
     # The file vocabulary is embedded from metadata, never rendered.
     assert "## Im Code" not in page.content
-    assert "Sie stellt 1 öffentliches Symbol bereit" in page.content
-    assert "Importiert von 1 Datei in diesem Repository." in page.content
+    assert "`parser.py` definiert `parse_file`." in page.content
+    assert "Die Datei wird von `src/pipeline.py` importiert." in page.content
+    assert "Die Datei gehört zur Schicht ingestion." in page.content
+    assert "Die Datei ist ein Einstiegspunkt." in page.content
     # Identifiers are never translated, in any language.
     assert "`src/service/parser.py`" in page.content
     assert "`parse_file`" in page.content

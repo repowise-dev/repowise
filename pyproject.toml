@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repowise"
-version = "0.54.0"
+version = "0.55.0"
 description = "The codebase intelligence layer for your AI coding agent — dependency graph, git history, dead code, decisions, and code health, exposed over MCP"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -106,7 +106,7 @@ dependencies = [
     "anthropic>=0.40,<1",
     "openai>=1.50,<3",
     "google-genai>=1.0,<2",
-    "litellm>=1.84.0,<2",
+    "litellm>=1.90.7,<2",
 ]
 
 [project.optional-dependencies]

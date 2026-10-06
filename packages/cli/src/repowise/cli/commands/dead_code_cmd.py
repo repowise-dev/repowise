@@ -16,7 +16,7 @@ from repowise.cli.helpers import (
     repo_index_session,
     resolve_command_target,
     run_async,
-    silence_logs_for_machine_output,
+    silence_logs_for_machine_output_until_close,
 )
 from repowise.cli.output import notice_console
 from repowise.core.analysis.dead_code.models import DeadCodeFindingData, DeadCodeReport
@@ -283,7 +283,7 @@ def dead_code_command(
     detection is not yet supported — run once per repo for now.
     """
     if fmt != "table":
-        silence_logs_for_machine_output()
+        silence_logs_for_machine_output_until_close()
 
     target = resolve_command_target(
         path=path,

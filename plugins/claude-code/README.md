@@ -125,6 +125,30 @@ No LLM, no network. (`repowise init` installs the same hooks in
 `~/.claude/settings.json`; running both is safe — duplicate enrichment is
 de-duplicated.)
 
+## Lens
+
+Lens is the part of the plugin you see, a Claude Code mod that ships in
+`hooks/lens/`. It adds the file's reach to the spinner, margin notes under
+edits, a row under output `repowise distill` shortened, a change review under
+Claude's answer after a turn that edits files, and a `/lens` pane with Flow (a dashboard
+of each turn: what an edit reaches, where Claude's context came from, what
+Repowise answered), a map of the repo lit by Claude's turn with its story
+underneath, Ask, and a session recap. Lens never blocks or rewrites Claude's
+tool calls, makes no model calls of its own, and sends Claude nothing unless you
+press a button. Ask questions that do not start with "why" go to `get_answer`,
+which may use the model your repo configures. See
+[the footprint](../../docs/agent/LENS.md#footprint) for the full list.
+
+It needs Claude Code 2.1.287 or later and an indexed repo. The map and the
+savings row also need `repowise serve --no-ui`. Six `userConfig` toggles
+control it: `lens_margin`, `lens_squeeze`, `lens_review` and `lens_flow` (on by
+default), and `lens_pane_autoopen` and `lens_map_health` (off). In the map,
+`j` and `k` walk the files Claude's turn lit, `z` and `u` zoom into and out of a
+folder, `x` clears the selection and `h` switches health colours. On an older Claude Code, or where mods are switched
+off, the rest of the plugin works as before.
+
+Guide: [docs/agent/LENS.md](../../docs/agent/LENS.md)
+
 ## Requirements
 
 - Python 3.11+
@@ -143,6 +167,116 @@ template-rendered (no embeddings). Run `/repowise:reindex`, or `repowise generat
 to upgrade pages with a model.
 
 **Stale results after code changes:** run `/repowise:update`.
+
+## What this plugin runs and sends
+
+The plugin itself is Markdown (commands and skills), a `hooks.json`, an
+`.mcp.json` and the Lens module. Everything it runs comes from the `repowise`
+CLI you install with pip:
+
+- **MCP server:** `.mcp.json` starts `repowise mcp`, which reads the index in
+  your repo's `.repowise/` folder.
+- **Hooks:** the three hooks run `repowise-augment` when it is on PATH and do
+  nothing otherwise. They read the local index only.
+- **Lens:** reads the local index through the plugin's own MCP server and,
+  for the map, through `repowise serve` on a loopback address. It contacts no
+  other host. The [Lens list](#what-lens-runs-and-reads) below says exactly what it runs and
+  reads.
+
+Network traffic from the `repowise` CLI and MCP server:
+
+- **Anonymous usage telemetry** to `https://api.repowise.dev/telemetry/events`:
+  command and tool names, coarse counts and timings, and an anonymous install
+  id. Never source code, file paths, repo or symbol names, or query text. Turn
+  it off with `DO_NOT_TRACK=1` or `REPOWISE_TELEMETRY_DISABLED=1`; details in
+  [docs/reference/TELEMETRY.md](https://github.com/repowise-dev/repowise/blob/main/docs/reference/TELEMETRY.md).
+- **Your model and embedding provider**, only if you configure one: page
+  generation in `init` and `update`, and `get_answer`, send code excerpts and
+  your question to that provider. With no provider configured nothing is sent,
+  and `get_answer` answers from local retrieval.
+- **Version checks and downloads:** the CLI reads the latest version from PyPI,
+  and `repowise serve` downloads its web UI from the project's GitHub release.
+- **repowise.dev**, only when you run an account command yourself
+  (`repowise login`, `repowise publish`, or sending feedback).
+
+### What Lens runs and reads
+
+Lens is the mod in `hooks/lens/lens.js`, built from `packages/claude-mod`.
+Everything it does goes through Claude Code's mods API:
+
+- **Programs it runs** (`$.process.run`, read-only, 5 second timeout):
+  `git rev-parse --is-inside-work-tree` to tell whether the session is in a git
+  repo, and `git rev-parse HEAD` plus `git diff --name-only <indexed> <HEAD> --`
+  to count the files changed since the last index (`<indexed>` is the commit in
+  `.repowise/state.json`, used only when it is a bare hex sha). To check that a
+  `repowise serve` or `repowise update` named in a lock file is still running
+  it runs `tasklist /FI "PID eq <pid>" /NH /FO CSV` on Windows and
+  `ps -p <pid> -o pid=` elsewhere.
+- **Files it reads** (`$.fs`): `.repowise/state.json`, `.repowise/serve.lock.json`
+  and `.repowise/.update.lock` in the repo and the folders above the session's
+  directory. It writes no files.
+- **MCP tools it calls itself** (`$.mcp.call`, on this plugin's own `repowise`
+  server only): `get_context` for a file Claude starts reading or editing (the
+  caller count and owner in the spinner), `get_change_risk` after a turn that
+  edits files (the review card), and `get_why` or `get_answer` when you ask a
+  question in the Ask tab or with `/lens ask`. `get_answer` may use the model
+  your repo configures; the others are local. These calls go through Claude
+  Code's permission rules like Claude's own; see [Permissions](#permissions)
+  below.
+- **The one host it fetches** (`$.http.fetch`): the `repowise serve` address in
+  `.repowise/serve.lock.json`, and only when that address is plain `http` on a
+  loopback host (`127.0.0.1`, `localhost` or `::1`). It asks that server for
+  its health, its repo list, the health map, the blast radius of a file Claude
+  edited (the file's path) and the savings ledger. Nothing it reads from the
+  conversation goes anywhere else.
+- **What it reads from the conversation:** each tool call's name, a few of its
+  arguments (file paths, the start of a Bash command) and the size of its
+  result; the first 160 characters of your prompt at `turn.start`; and at
+  `turn.complete` the answer's
+  text (to place the review card under it), the turn's duration and how it
+  ended. It keeps these in memory for the session's Flow tab and map, and
+  writes none of it to disk.
+- **Prompts it submits** (`$.prompt.submit`), only when you press the button:
+  `Run tests` sends `Run the tests Repowise names for this change, ...: <test
+  ids>`. `Brief Claude` (offered after a compaction) sends `The context was
+  compacted. This brief is built from the Repowise index and this session's
+  edits:` followed by up to three lines, `Files edited:`, `Decisions in play:`
+  and `Open review items:`, at most 1,200 characters. `Why` submits nothing:
+  it fills the Ask field with `why <decision title>` and waits for Enter.
+- **Hooks that decide or change something:** Lens registers no `tool.check`
+  hook, so it never approves or denies a tool call. Its `tool.call` hook passes
+  every call and result on unchanged. `turn.complete` adds the review card as
+  a line under Claude's answer, which Claude does not read. `command.run`
+  answers only `/lens`
+  (opening the pane on the tab you name, and asking with `/lens ask`).
+  `classic.PostCompact` only offers the brief, and `classic.PostToolUse` reads
+  the note the Repowise hook added for an edit to show it in the margin; both
+  pass their event and result on unchanged.
+- **No reflective tricks:** the bundle is plain, unminified esbuild output with
+  no `Proxy`, getters or `then` methods of its own.
+
+#### Permissions
+
+Lens's own lookups ask Claude Code's permission like any MCP tool call. To let
+them run without a prompt, allow the four read-only tools once, for example
+with `/permissions` or in `.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_repowise_repowise__get_context",
+      "mcp__plugin_repowise_repowise__get_change_risk",
+      "mcp__plugin_repowise_repowise__get_why",
+      "mcp__plugin_repowise_repowise__get_answer"
+    ]
+  }
+}
+```
+
+Without the rules, a lookup that is refused (in auto mode, `dontAsk`, or
+`claude -p`) leaves that part of Lens empty: no file card in the spinner, no
+review card, or an error line in the Ask tab. The rest of Lens works.
 
 ## License
 

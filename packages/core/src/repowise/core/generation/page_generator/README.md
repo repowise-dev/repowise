@@ -16,7 +16,7 @@ generates them in ordered, concurrency-bounded levels:
 | 2 | `file_page` | topo-ordered; tier-1 LLM or tier-2 template |
 | 3 | `scc_page` | circular-dependency cycles |
 | 4 | `module_page` | community / directory groups |
-| 6/7/8 | `repo_overview` + `architecture_diagram`, `infra_page`, `onboarding` | merged batch |
+| 6/7/8 | `repo_overview`, `infra_page`, `onboarding` | merged batch |
 
 ### Tiered doc generation
 

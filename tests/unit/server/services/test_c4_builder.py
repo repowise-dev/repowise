@@ -381,3 +381,114 @@ async def test_l2_skips_edges_to_config_files(async_session):
         "pkg:packages/a",
         1,
     )
+
+
+async def _add_test_import(session, repo) -> None:
+    """A test in web importing core: not a dependency of web on core."""
+    await batch_upsert_graph_nodes(
+        session,
+        repo.id,
+        [{"node_id": "packages/web/tests/test_api.py", "node_type": "file", "language": "python", "symbol_count": 1}],
+    )
+    await batch_upsert_graph_edges(
+        session,
+        repo.id,
+        [{"source_node_id": "packages/web/tests/test_api.py", "target_node_id": "packages/core/ingestion/graph.py", "edge_type": "imports"}],
+    )
+    await session.commit()
+
+
+def test_roll_up_drops_edges_touching_a_test_file():
+    from repowise.core.analysis.c4.relations import roll_up_edges
+
+    boxes = {"a/src/x.py": "a", "a/tests/test_x.py": "a", "b/src/y.py": "b"}
+    rolled = roll_up_edges(
+        [
+            ("a/src/x.py", "b/src/y.py", "imports"),
+            ("a/tests/test_x.py", "b/src/y.py", "imports"),
+        ],
+        boxes,
+    )
+    assert rolled == {("a", "b"): (1, frozenset({"imports"}))}
+
+
+@pytest.mark.asyncio
+async def test_container_view_and_dependencies_agree_without_tests(async_session):
+    repo = await _seed_monorepo(async_session)
+    await _add_test_import(async_session, repo)
+
+    containers, relations = await c4_builder.container_dependencies(async_session, repo.id)
+    view = await c4_builder.build_l2(async_session, repo.id)
+
+    assert {c.path for c in containers} == {"packages/core", "packages/web"}
+    internal = [(r.source_id, r.target_id, r.edge_count) for r in relations]
+    assert internal == [("pkg:packages/web", "pkg:packages/core", 1)]
+    in_view = [
+        (r.source_id, r.target_id, r.edge_count)
+        for r in view.relations
+        if not r.target_id.startswith("ext:")
+    ]
+    assert in_view == internal
+
+
+@pytest.mark.asyncio
+async def test_container_dependencies_honour_exclusions(async_session):
+    import pathspec
+
+    repo = await _seed_monorepo(async_session)
+    spec = pathspec.PathSpec.from_lines("gitwildmatch", ["packages/web/lib/"])
+    _, relations = await c4_builder.container_dependencies(
+        async_session, repo.id, exclude_spec=spec
+    )
+    assert relations == []
+
+
+@pytest.mark.asyncio
+async def test_overview_dependency_block_is_cached_and_empty_for_one_package(async_session):
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_overview.graph import (
+        _build_package_dependencies,
+        reset_cache,
+    )
+
+    reset_cache()
+    repo = await _seed_monorepo(async_session)
+    handle = SimpleNamespace(id=repo.id, head_commit="c1")
+    expected = {
+        "edges": [{"from": "packages/web", "to": "packages/core", "verb": "imports", "weight": 1}]
+    }
+    block = await _build_package_dependencies(async_session, handle)
+    assert block == expected
+
+    # Same index state: served from the cache, blind to a new edge. A new
+    # commit re-derives it.
+    await batch_upsert_graph_edges(
+        async_session,
+        repo.id,
+        [{"source_node_id": "packages/web/app/page.tsx", "target_node_id": "packages/core/ingestion/graph.py", "edge_type": "imports"}],
+    )
+    await async_session.commit()
+    block["edges"].clear()
+    assert await _build_package_dependencies(async_session, handle) == expected
+    moved = SimpleNamespace(id=repo.id, head_commit="c2")
+    assert (await _build_package_dependencies(async_session, moved))["edges"][0]["weight"] == 2
+
+    single = await upsert_repository(async_session, name="single", local_path="/tmp/single")
+    await batch_upsert_graph_nodes(
+        async_session,
+        single.id,
+        [
+            {"node_id": "pyproject.toml", "node_type": "file", "language": "toml", "symbol_count": 0},
+            {"node_id": "src/app.py", "node_type": "file", "language": "python", "symbol_count": 1},
+            {"node_id": "src/util.py", "node_type": "file", "language": "python", "symbol_count": 1},
+        ],
+    )
+    await batch_upsert_graph_edges(
+        async_session,
+        single.id,
+        [{"source_node_id": "src/app.py", "target_node_id": "src/util.py", "edge_type": "imports"}],
+    )
+    await async_session.commit()
+    single_handle = SimpleNamespace(id=single.id, head_commit="c1")
+    assert await _build_package_dependencies(async_session, single_handle) == {}

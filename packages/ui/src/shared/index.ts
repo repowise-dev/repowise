@@ -31,6 +31,7 @@ export {
   type DismissibleNoticeProps,
   type NoticeTone,
 } from "./dismissible-notice";
+export { HostedNudge, type HostedNudgeProps } from "./hosted-nudge";
 export { InfoTip, type InfoTipProps } from "./info-tip";
 export { OwlLoader, type OwlLoaderProps } from "./owl-loader";
 export {

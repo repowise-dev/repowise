@@ -558,6 +558,17 @@ hover, and refactoring plans as CodeLens. One install also registers the MCP ser
 so the same index serves you and your agent. Install from the Marketplace or Open VSX
 and run **Repowise: Set Up This Repository**. [VS Code guide →](docs/agent/VSCODE.md)
 
+<img src=".github/assets/lens.gif" alt="Lens in Claude Code on Django: Claude edits query.py, which turns amber on the map while the 12 files that import it light up in plum; a second edit to django/conf/__init__.py lights its 248 importers, and Flow lists what to check before accepting" width="100%" />
+
+**In Claude Code**, Lens ships inside the Repowise plugin and shows you what the index
+knows while Claude works: the file it is on and how many files depend on it, a change
+review after a turn that edits files (code health, tests to run, other branches on the
+same files), and `/lens`, a pane with Flow (what to check before accepting each turn),
+a map of the repo lit by what Claude searched, opened and edited and what its edits
+reach, Ask, and a session recap. Nothing reaches Claude unless you press a button, and
+Lens makes no model calls of its own. It needs Claude Code 2.1.287 or later, and the
+map needs `repowise serve --no-ui` running. [Lens guide →](docs/agent/LENS.md)
+
 ---
 
 ## The ten MCP tools
@@ -825,6 +836,13 @@ on our own codebase in the open:
 [live snapshot](https://www.repowise.dev/s/5a6b93fa9a69) ·
 [explore public repos](https://www.repowise.dev/explore).
 
+Already indexed locally? `repowise publish` puts the same repo on repowise.dev in one
+command: it asks repowise.dev to index the repo's GitHub remote, so nothing is uploaded
+from your machine and only what you have pushed is published. A hosted index usually
+takes about 10 minutes. Public repos publish on a free account (up to 2 repos, no card);
+private repos and more repos need Pro, free for 10 days with a card.
+[What hosted adds →](https://repowise.dev/hosted?src=oss_readme)
+
 ---
 
 ## Privacy
@@ -872,6 +890,7 @@ repowise distill pytest   # compact, errors-first, reversible command output
 repowise saved            # tokens and dollars saved by distillation
 repowise workspace add    # multi-repo workspace management
 repowise doctor           # check setup, API keys, index drift
+repowise publish          # put this repo on repowise.dev (indexed from GitHub; public repos free)
 repowise uninstall        # remove what repowise wrote, and say what it left
 ```
 

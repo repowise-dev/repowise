@@ -316,6 +316,7 @@ def show_full_completion(
         build_completion_panel("repowise update complete", metrics, next_steps=next_steps)
     )
     console.print()
+    _slow_update_hint(elapsed)
 
 
 def show_index_only_completion(
@@ -371,6 +372,7 @@ def show_index_only_completion(
         )
     )
     console.print()
+    _slow_update_hint(elapsed)
 
 
 def show_workspace_completion(
@@ -407,6 +409,18 @@ def show_workspace_completion(
         build_completion_panel("repowise workspace update complete", metrics, next_steps=next_steps)
     )
     console.print()
+    _slow_update_hint(elapsed)
+
+
+#: An update slower than this is one a hosted index would have saved.
+_SLOW_UPDATE_SECONDS = 60
+
+
+def _slow_update_hint(elapsed: float) -> None:
+    if elapsed > _SLOW_UPDATE_SECONDS:
+        from repowise.cli.hints import maybe_hint
+
+        maybe_hint("slow_update")
 
 
 # ---------------------------------------------------------------------------

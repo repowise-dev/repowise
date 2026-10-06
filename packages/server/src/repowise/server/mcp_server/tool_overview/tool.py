@@ -26,6 +26,7 @@ from repowise.server.mcp_server.tool_overview.decisions import _build_key_decisi
 from repowise.server.mcp_server.tool_overview.graph import (
     _build_architecture,
     _build_community_summary,
+    _build_package_dependencies,
     _load_community_nodes,
 )
 from repowise.server.mcp_server.tool_overview.health import _build_code_health
@@ -57,8 +58,8 @@ from repowise.server.mcp_server.tool_overview.workspace import (
 async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
     """Architecture map for an unfamiliar repo — first call when you don't know your way around.
 
-    Returns the synthesised overview summary, key modules, entry points,
-    architecture layers, code health, repo-wide git health, and
+    Returns the overview summary, key modules, entry points, architecture
+    layers and package dependencies, code health, repo-wide git health, and
     ``next_actions`` (top work for the week and quarter).
     Skip this on subsequent calls — once you have the map, jump straight to
     ``get_context`` / ``get_answer``.
@@ -121,6 +122,9 @@ async def _repo_overview(
     entry_point_ids = await _resolve_entry_point_ids(session, repository, exclude_spec)
     all_git = await _load_git_rows(session, repository, exclude_spec)
     architecture = await _build_architecture(session, repository)
+    dependencies = await _build_package_dependencies(session, repository, exclude_spec)
+    if dependencies:
+        architecture = {**architecture, "dependencies": dependencies}
     code_health = await _build_code_health(session, repository)
     next_actions, next_actions_reason = await _build_next_actions(session, repository)
     requested = await _requested_blocks(session, repository, exclude_spec, all_git, want)

@@ -1,6 +1,7 @@
 /**
- * Fix first renders core's queue as it arrives: the header states the scope
- * exactly, the lead opens with its steps and Verify, and actions appear only
+ * Fix first renders core's queue as it arrives: the section starts closed
+ * with its count, the header states the scope exactly, each row is two scan
+ * lines that open onto the why, steps and Verify, and actions appear only
  * where the item can back them.
  */
 
@@ -27,7 +28,21 @@ function renderList(overrides: Partial<React.ComponentProps<typeof FixFirstList>
   );
 }
 
+/** Rows start closed; open one by its title. */
+function openRow(item: FixItem) {
+  fireEvent.click(screen.getByRole("button", { name: new RegExp(item.title.replace(/[()]/g, "\\$&")) }));
+}
+
 describe("Fix first header", () => {
+  it("starts closed, with the title and the item count on the toggle", () => {
+    const { container } = renderList();
+    const details = container.querySelector("details")!;
+    expect(details.open).toBe(false);
+    const summary = container.querySelector("summary")!;
+    expect(summary.textContent).toContain("Fix first");
+    expect(summary.textContent).toContain("3 items");
+  });
+
   it("states shown of eligible and every nonzero exclusion with its count", () => {
     expect(fixFirstScopeSentence(FIX_FIRST_QUEUE)).toBe(
       "3 of 423 eligible items. Excluded: 612 in tests, 91 tooling, 5 generated, " +
@@ -63,6 +78,11 @@ describe("Fix first header", () => {
 describe("Fix first items", () => {
   it("renders tier as a word, the imperative title, and file:line linking to the file view", () => {
     renderList();
+    const closed = screen.getAllByRole("listitem").filter((li) => li.parentElement?.tagName === "OL")[0]!;
+    // Closed, the row is tier, title, file:line and gain; the rest waits behind it.
+    expect(within(closed).getByText("+1.7 health on this file")).toBeTruthy();
+    expect(within(closed).queryByText(REFACTOR.why)).toBeNull();
+    openRow(REFACTOR);
     const items = screen.getAllByRole("listitem").filter((li) => li.parentElement?.tagName === "OL");
     const lead = items[0]!;
     expect(within(lead).getByText("Now")).toBeTruthy();
@@ -77,8 +97,9 @@ describe("Fix first items", () => {
     expect(within(lead).getByText("Small")).toBeTruthy();
   });
 
-  it("opens the lead with steps marked mechanical, Verify with reasons, and a copyable command", () => {
+  it("opens a row onto steps marked mechanical, Verify with reasons, and a copyable command", () => {
     renderList();
+    openRow(REFACTOR);
     expect(screen.getByText(/Extract lines 60-122 of quick_repo_scan into compute_info\(repo_path\)/)).toBeTruthy();
     expect(screen.getAllByText("Mechanical").length).toBe(1);
     expect(screen.getByText("tests/unit/cli/test_repo_scanner.py")).toBeTruthy();
@@ -91,7 +112,7 @@ describe("Fix first items", () => {
 
   it("says no guarding tests were found when Verify is empty", () => {
     renderList();
-    fireEvent.click(screen.getByRole("button", { name: new RegExp(FINDING.title.replace(/[()]/g, "\\$&")) }));
+    openRow(FINDING);
     expect(screen.getByText(/No guarding tests found/)).toBeTruthy();
   });
 
@@ -100,6 +121,7 @@ describe("Fix first items", () => {
     expect(fixPlanLabel(PERF)).toBe("Open the performance fix");
     expect(fixPlanLabel(FINDING)).toBeNull();
     renderList();
+    openRow(REFACTOR);
     expect(screen.getByRole("link", { name: "Open the refactoring plan" }).getAttribute("href")).toBe(
       "/plan/refop3_8ba13d978db910d160b1",
     );
@@ -108,12 +130,13 @@ describe("Fix first items", () => {
   it("offers triage only for an item backed by a finding id, and writes through the host", async () => {
     const onTriage = vi.fn().mockResolvedValue(undefined);
     renderList({ onTriage });
+    openRow(REFACTOR);
     fireEvent.click(screen.getByRole("button", { name: "Acknowledged" }));
     await waitFor(() => expect(onTriage).toHaveBeenCalledWith(REFACTOR, "acknowledged"));
     expect(await screen.findByText("Saved as acknowledged.")).toBeTruthy();
 
     // The perf item maps to no finding, so it has no triage control.
-    fireEvent.click(screen.getByRole("button", { name: new RegExp(PERF.title) }));
+    openRow(PERF);
     expect(screen.getAllByRole("button", { name: "Acknowledged" }).length).toBe(1);
   });
 
@@ -134,6 +157,7 @@ describe("Fix first agent prompt", () => {
   it("shows the prompt the host loads for the item", async () => {
     const loadPrompt = vi.fn().mockResolvedValue("Prompt from core");
     renderList({ loadPrompt });
+    openRow(REFACTOR);
     fireEvent.click(screen.getByRole("button", { name: "Copy prompt for an agent" }));
     expect(await screen.findByText("Prompt from core")).toBeTruthy();
     expect(loadPrompt).toHaveBeenCalledWith(REFACTOR, expect.any(String));

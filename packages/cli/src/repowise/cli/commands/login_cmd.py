@@ -178,6 +178,17 @@ def login_command(with_token: bool, device_name: str | None) -> None:
         _greet(account)
         return
 
+    browser_sign_in(device, src="cli_login")
+
+
+def browser_sign_in(device: str | None, *, src: str) -> dict:
+    """Run the browser PKCE sign-in and return the account (``{}`` when the
+    platform did not answer ``/auth/me``). ``src`` credits a signup that
+    starts here to the command that sent the person. Raises
+    ``click.ClickException`` when the sign-in does not complete.
+    """
+    from repowise.cli.platform import auth, credentials
+
     # Browser PKCE flow.
     verifier, challenge = auth.make_pkce_pair()
     state = secrets.token_urlsafe(16)
@@ -197,6 +208,7 @@ def login_command(with_token: bool, device_name: str | None) -> None:
             code_challenge=challenge,
             state=state,
             device_name=device,
+            src=src,
         )
         console.print("Opening your browser to sign in to Repowise...")
         console.print(f"If it doesn't open, visit:\n  [cyan]{url}[/cyan]\n")
@@ -231,6 +243,7 @@ def login_command(with_token: bool, device_name: str | None) -> None:
         auth.store_account_snapshot(account)
     _link_anonymous_id()
     _greet(account or {})
+    return account or {}
 
 
 @click.command(name="logout")

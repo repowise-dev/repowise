@@ -41,6 +41,7 @@ export const Commands = {
   showKnowledgeGraph: "repowise.showKnowledgeGraph",
   showDecisionTimeline: "repowise.showDecisionTimeline",
   showSettings: "repowise.showSettings",
+  publish: "repowise.publish",
 } as const;
 
 /**
@@ -57,6 +58,8 @@ export const InternalCommands = {
   handPlanToCopilot: "repowise.handPlanToCopilot",
   /** Hand a refactoring plan to Claude Code; bound to code actions. */
   handPlanToClaudeCode: "repowise.handPlanToClaudeCode",
+  /** The one-time "publish to repowise.dev" prompt; fired after setup succeeds. */
+  offerPublish: "repowise.offerPublish",
 } as const;
 
 /**

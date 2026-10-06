@@ -23,6 +23,7 @@ from repowise.server.mcp_server._retrieval_rank import rerank_by_context_coverag
 from repowise.server.mcp_server.tool_answer.config import (
     _BACKEND_PATH_PREFIXES,
     _BACKEND_QUESTION_TOKENS,
+    _CANDIDATE_FILES_POOL,
     _COVERAGE_FLOOR,
     _DEFINES_CHAR_BUDGET,
     _DOMAIN_PENALTY,
@@ -85,6 +86,18 @@ def serialize_candidates(hits: list[dict], *, limit: int = _CANDIDATE_LIMIT) -> 
         if len(out) >= limit:
             break
     return out
+
+
+def serialize_candidate_files(hits: list[dict]) -> list[str]:
+    """Distinct openable file paths in rank order, paths only, no hydration."""
+    paths: list[str] = []
+    for h in hits:
+        path = hit_file_path(h)
+        if path and path not in paths:
+            paths.append(path)
+            if len(paths) >= _CANDIDATE_FILES_POOL:
+                break
+    return paths
 
 
 def serialize_hits(
@@ -227,8 +240,14 @@ async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
         return len(top)
     try:
         async with get_session(ctx.session_factory) as session:
-            res = await session.execute(select(Page.id, Page.content).where(Page.id.in_(page_ids)))
-            content_by_id = {row[0]: (row[1] or "") for row in res.all()}
+            res = await session.execute(
+                select(Page.id, Page.content, Page.digest).where(Page.id.in_(page_ids))
+            )
+            # The digest carries what the page answers in an agent's words.
+            content_by_id = {
+                row[0]: "\n\n".join(part for part in (row[1], row[2]) if part)
+                for row in res.all()
+            }
     except Exception:
         # Never fail the answer over an excerpt fetch, but never hide it either.
         _log.warning(

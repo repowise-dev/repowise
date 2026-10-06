@@ -16,6 +16,7 @@ not cost the caller a file.
 from __future__ import annotations
 
 from repowise.server.mcp_server._page_paths import (
+    add_row_paths,
     file_candidates,
     file_path_of,
     hit_file_path,
@@ -72,6 +73,37 @@ class TestHitFilePath:
         """
         hit = {"page_type": "module_page", "target_path": "pkg/cmd", "file": "pkg/cmd"}
         assert hit_file_path(hit) is None
+
+
+class TestAddRowPaths:
+    """Every row naming a file gets one ``path``; the old fields stay as aliases."""
+
+    def test_each_row_kind(self):
+        symbol = {"type": "symbol", "symbol_id": "a.py::f", "file": "a.py"}
+        file_row = {"type": "file", "page_id": "file_page:b.py", "file": "b.py"}
+        file_page = {"page_type": "file_page", "target_path": "c.py"}
+        spotlight = {
+            "page_type": "symbol_spotlight",
+            "target_path": "d.py",
+            "file": "d.py",
+            "symbol_id": "d.py::G",
+        }
+        module = _page("module_page", "pkg/cmd")
+        unloaded = _page("file_page", "")
+        add_row_paths([symbol, file_row, file_page, spotlight, module, unloaded])
+
+        assert symbol["path"] == symbol["file"] == "a.py"
+        assert file_row["path"] == file_row["file"] == "b.py"
+        assert file_page == {"page_type": "file_page", "path": "c.py"}
+        assert spotlight["path"] == spotlight["file"] == "d.py"
+        assert "target_path" not in spotlight
+        # Pathless rows keep their key in target_path and get no path.
+        assert module == _page("module_page", "pkg/cmd")
+        assert unloaded == _page("file_page", "")
+
+    def test_a_served_row_still_resolves_after_its_target_path_is_dropped(self):
+        row = add_row_paths([_page("file_page", "c.py")])[0]
+        assert hit_file_path(row) == "c.py"
 
 
 class TestFileCandidates:

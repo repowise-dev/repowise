@@ -50,7 +50,16 @@ import {
   buildCoverageAiPrompt,
   type CoverageFilePromptInput,
 } from "./ai-prompt-builder";
-import { scoreBadgeClass } from "./tokens";
+import { bandForScore } from "@repowise-dev/types/health";
+import { scoreTextColor } from "./tokens";
+
+/** Plain figure; the band colour appears only where health is actually weak. */
+function quietScoreText(score: number): string {
+  const band = bandForScore(score);
+  return band === "needs_work" || band === "at_risk"
+    ? scoreTextColor(score)
+    : "text-[var(--color-text-secondary)]";
+}
 import { COVERAGE_REPORT_FORMATS_LABEL } from "./coverage-formats";
 import { CiHint } from "../shared/ci-hint";
 import type { CodeHealthAdapter } from "./code-health-adapter";
@@ -340,9 +349,7 @@ function CoverageBody({
         f.health_score == null ? (
           <span className="text-[var(--color-text-tertiary)]">—</span>
         ) : (
-          <span
-            className={`inline-block rounded px-1.5 py-0.5 text-xs font-semibold ${scoreBadgeClass(f.health_score)}`}
-          >
+          <span className={`text-xs font-medium tabular-nums ${quietScoreText(f.health_score)}`}>
             {f.health_score.toFixed(1)}
           </span>
         ),
@@ -600,9 +607,7 @@ const gapColumns: ResponsiveColumn<ReachedFileRow>[] = [
       f.health_score == null ? (
         <span className="text-[var(--color-text-tertiary)]">—</span>
       ) : (
-        <span
-          className={`inline-block rounded px-1.5 py-0.5 text-xs font-semibold ${scoreBadgeClass(f.health_score)}`}
-        >
+        <span className={`text-xs font-medium tabular-nums ${quietScoreText(f.health_score)}`}>
           {f.health_score.toFixed(1)}
         </span>
       ),

@@ -2405,3 +2405,34 @@ async def test_a_targeted_read_returns_its_connection(setup_mcp, health_data, fa
     gc.collect()
     async with factory() as s:
         assert (await s.execute(text("SELECT count(*) FROM repositories"))).scalar() == 1
+
+
+@pytest.mark.asyncio
+async def test_dashboard_unanalysed_file_count_name(setup_mcp, health_data, session):
+    """The dashboard names the unscored-file count as the HTTP API does."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.mcp_server import get_health
+
+    absent = await get_health()
+    assert "unanalysed_file_count" not in absent
+    assert "unanalysed_files" not in absent
+
+    row = (
+        (
+            await session.execute(
+                select(HealthFileMetric).where(HealthFileMetric.repository_id == health_data)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    row.score = None
+    await session.flush()
+
+    dashboard = await get_health()
+    assert dashboard["unanalysed_file_count"] == 1
+    only = await get_health(only=["unanalysed_file_count"])
+    assert only["unanalysed_file_count"] == 1
+    assert "unknown_only_keys" not in only

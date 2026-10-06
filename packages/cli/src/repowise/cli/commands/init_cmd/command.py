@@ -252,6 +252,7 @@ def _run_deterministic_generation_phase(
     embedder_was_requested: bool,
     resume: bool,
     timings: Any | None = None,
+    warnings: list[str] | None = None,
 ) -> str:
     """Render the whole wiki from templates, for ``init --index-only``.
 
@@ -319,6 +320,7 @@ def _run_deterministic_generation_phase(
         resume=resume,
         verbose=True,
         timings=timings,
+        warnings=warnings,
     )
     return embedder
 
@@ -1429,6 +1431,9 @@ def init_command(
                         )
                     )
                 except ProviderError as exc:
+                    from repowise.cli.hints import maybe_hint
+
+                    maybe_hint("provider_fail")
                     raise reasoned_error(
                         f"Provider validation failed: {exc}",
                         reason="provider_validation_failed",
@@ -1560,6 +1565,9 @@ def init_command(
                 f"\n{mini(EYES_SLEEPY)} [{WARN}]Interrupted.[/] Indexed work so far has been "
                 "saved — run [bold]repowise init --resume[/] to continue where it stopped."
             )
+            from repowise.cli.hints import maybe_hint
+
+            maybe_hint("interrupt")
             return
 
     # What the run degraded on, in a place an agent can read after the
@@ -1629,6 +1637,7 @@ def init_command(
             embedder_was_requested=embedder_was_requested,
             resume=resume,
             timings=callback.table,
+            warnings=run_warnings,
         )
     else:
         gen_stop, cost_declined = _run_generation_phase(
@@ -1691,6 +1700,7 @@ def init_command(
                 embedder_name_resolved=embedder_name_resolved,
                 resume=resume,
                 timings=callback.table,
+                warnings=run_warnings,
             )
 
     # ---- Persistence ----
@@ -1819,6 +1829,7 @@ def init_command(
     base_state["run_mode"] = run_mode
     base_state["git_tier"] = git_tier_for_run_mode(run_mode)
     apply_git_history_coverage_state(base_state, result)
+    from repowise.cli.providers import semantic_search_status
     from repowise.core.generation.selection import count_documentable_files
     from repowise.core.index_scope import dropped_files_scope, file_page_scope, stamp_index_scope
 
@@ -1860,8 +1871,10 @@ def init_command(
         search={
             "full_text": "available" if result.generated_pages else "unavailable",
             "semantic": (
-                "available"
-                if result.generated_pages and _scope_embedder and _scope_embedder != "mock"
+                semantic_search_status(
+                    _scope_embedder, getattr(result, "embed_failed_pages", 0)
+                )
+                if result.generated_pages
                 else "unavailable"
             ),
             "next_command": "repowise reindex" if result.generated_pages else None,
@@ -2017,3 +2030,13 @@ def init_command(
         setup=_setup_outcome,
         files_written=files_written,
     )
+    # Raised last, so everything above is kept: pages, state and full-text
+    # search are fine. Exiting 0 here is what let a scripted run record a
+    # healthy semantic index that held no vectors.
+    from repowise.cli.providers import embed_failure_message
+
+    _embed_error = embed_failure_message(
+        _scope_embedder, getattr(result, "embed_failed_pages", 0)
+    )
+    if _embed_error:
+        raise click.ClickException(_embed_error)

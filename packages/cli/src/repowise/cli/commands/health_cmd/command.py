@@ -21,7 +21,7 @@ from repowise.cli.helpers import (
     load_state,
     resolve_command_target,
     run_async,
-    silence_logs_for_machine_output,
+    silence_logs_for_machine_output_until_close,
 )
 from repowise.core.analysis.health.counts import (
     COUNTS,
@@ -196,7 +196,7 @@ def health_command(
     # machine-readable format so stdout is pure JSON/Markdown and safe to
     # pipe into jq or other tools (e.g. `repowise health --format json | jq .kpis`).
     if fmt != "table":
-        silence_logs_for_machine_output()
+        silence_logs_for_machine_output_until_close()
 
     # Status output goes to stderr when the user asked for a machine-readable
     # format — otherwise rich's banner pollutes stdout and breaks

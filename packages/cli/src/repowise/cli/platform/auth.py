@@ -15,7 +15,6 @@ then simply proceeds anonymously.
 from __future__ import annotations
 
 import base64
-import contextlib
 import hashlib
 import secrets
 import time
@@ -50,8 +49,11 @@ def build_authorize_url(
     code_challenge: str,
     state: str,
     device_name: str | None,
+    src: str = "cli_login",
 ) -> str:
     from urllib.parse import urlencode
+
+    from repowise.cli.platform.links import attribution_params
 
     params = {
         "client_id": CLIENT_ID,
@@ -65,14 +67,10 @@ def build_authorize_url(
     if device_name:
         params["device_name"] = device_name
     # Where the visit came from, so a signup that starts here is credited to
-    # the CLI. The install id rides along only with telemetry on; the site
-    # uses it to tie this install's usage to the new account.
-    params["src"] = "cli_login"
-    with contextlib.suppress(Exception):
-        from repowise.cli.platform import identity, settings
-
-        if settings.is_enabled():
-            params["aid"] = identity.get_anonymous_id()
+    # the CLI command that sent it. The install id rides along only with
+    # telemetry on; the site uses it to tie this install's usage to the new
+    # account.
+    params.update(attribution_params(src))
     return f"{AUTHORIZE_URL}?{urlencode(params)}"
 
 

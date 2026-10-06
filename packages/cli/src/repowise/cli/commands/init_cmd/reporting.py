@@ -118,6 +118,16 @@ def _render_defect_accuracy(result: Any) -> None:
     console.print()
 
 
+#: From this many files, the hosted pitch is staying fresh without a long local
+#: run. Lower than the fast-mode offer on purpose: a hint costs nothing to skip.
+_LARGE_REPO_FILES = 1000
+
+
+def completion_hint(run_mode: str, file_count: int) -> str:
+    """Which hint a finished init earns: big repos hear about freshness."""
+    return "large_repo" if run_mode == "fast" or file_count >= _LARGE_REPO_FILES else "init_success"
+
+
 def show_completion(
     *,
     repo_path: Any,
@@ -143,6 +153,10 @@ def show_completion(
     from repowise.core.index_scope import resolve_index_scope
 
     _scope = resolve_index_scope(load_state(Path(repo_path)), load_config(Path(repo_path)))
+
+    # Unavailable also describes a keyless run; only a failed write earns
+    # the failure line.
+    _embed_failed = getattr(result, "embed_failed_pages", 0)
 
     _graph_final = result.graph_builder.graph()
     _dc_unreachable = sum(
@@ -251,11 +265,22 @@ def show_completion(
         # Fast mode reaches this branch too, and it generates nothing, so the
         # note has to check rather than assume.
         if result.generated_pages:
+            # Read from the stamped scope, so the note cannot contradict what
+            # status and MCP report for the same run.
+            if _embed_failed:
+                _search_note = "Full-text\n  search works now."
+            elif _scope["search"]["semantic"] == "available":
+                _search_note = "Full-text\n  and semantic search work now."
+            else:
+                _search_note = (
+                    "Full-text\n  search works now; semantic search needs an embedder "
+                    "(Ollama is the keyless one)."
+                )
             console.print(
                 "  [dim]Every page is derived from structure and says so in its footer. "
-                "Full-text\n  search works now; semantic search needs an embedder "
-                "(Ollama is the keyless one).[/dim]"
+                f"{_search_note}[/dim]"
             )
+            _print_embed_failure(_embed_failed)
         else:
             console.print(
                 "  [dim]No wiki pages: fast mode indexes the graph and git history only.\n"
@@ -320,6 +345,7 @@ def show_completion(
             build_completion_panel("repowise init complete", metrics, next_steps=next_steps)
         )
         console.print()
+        _print_embed_failure(_embed_failed)
         _render_defect_accuracy(result)
         # A concise, dynamic MCP note (who is connected, how others connect)
         # replaces the old wall of manual per-client config: init already wrote
@@ -328,9 +354,24 @@ def show_completion(
             console.print(_line)
         console.print()
 
+    # One quiet stderr line about repowise.dev (see hints.py for when it is
+    # shown); a big repo hears about staying fresh instead.
+    from repowise.cli.hints import maybe_hint
+
+    maybe_hint(completion_hint(run_mode, result.file_count))
+
     print_files_written(console, Path(repo_path), files_written or [])
 
     _show_generation_checks(result)
+
+
+def _print_embed_failure(failed: int) -> None:
+    if failed:
+        console.print(
+            f"  [{WARN}]Semantic search is unavailable:[/] embedding failed for "
+            f"{failed} page(s). See the warning above, then run "
+            "[bold]repowise reindex[/bold]."
+        )
 
 
 def _show_generation_checks(result: Any) -> None:

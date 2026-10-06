@@ -1,0 +1,57 @@
+{#- A module page's agent digest (``wiki_pages.digest``): indexed and served to
+    agents beside the page body, shown in the reader only on request. Rendered
+    from the index after the model has written the page, so every name, path
+    and number here is the index's own. The questions are the exception: the
+    model writes them and ``agent_digest.split_questions`` moves them here.
+
+    Each section renders only when it has rows: a heading with nothing under it
+    claims the module has none, in the same shape as a real answer. -#}
+{% if questions %}
+{{ questions }}
+
+{% endif %}
+{% if public_api %}
+## Public API
+
+What a consumer imports, read off the package manifests and re-exports.
+
+{% for e in public_api -%}
+- `{{ e.name }}` ({{ e.kind }}, `{{ e.file }}`){% if e.alias_of %}, another name for `{{ e.alias_of }}`{% endif %}{% if e.signature %}: `` {{ e.signature | oneline }} ``{% endif %}
+{% endfor %}
+
+{% endif %}
+{% if concept_rows %}
+## Concept index
+
+What the page calls things, the identifier to search for, and where it lives.
+
+| Concept | Symbol | File |
+| --- | --- | --- |
+{% for row in concept_rows -%}
+| {{ row.concept }} | `{{ row.symbol }}` | `{{ row.file }}` |
+{% endfor -%}
+{%- if concept_omitted %}
+_{{ concept_omitted }} further public symbol{{ "s" if concept_omitted != 1 else "" }} in this module are not listed._
+{% endif %}
+
+{% endif %}
+{% if signals %}
+## Signals
+
+From git history over the {{ signals.get("files", 0) }} files this page covers.
+
+{% if signals.get("hotspots") %}- Change hotspots: {{ signals.get("hotspots") }}
+{% endif %}
+{%- if signals.get("bus_factor_one") %}- Files with a bus factor of one: {{ signals.get("bus_factor_one") }}
+{% endif %}
+{%- if signals.get("bug_fixes") %}- Bug-fix commits: {{ signals.get("bug_fixes") }}{% if signals.get("most_fixed_file") %}, most in `{{ signals.get("most_fixed_file") }}`{% endif %}
+{% endif %}
+{%- if signals.get("stable") %}- Stable files: {{ signals.get("stable") }}
+{% endif %}
+{%- if signals.get("owners") %}- Primary maintainers: {% for o in signals.get("owners") %}{{ o.name }} ({{ o.files }} file{{ "s" if o.files != 1 else "" }}){% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{%- if signals.get("most_active_file") %}- Most active file: `{{ signals.get("most_active_file") }}` ({{ signals.get("most_active_commits_90d") }} commits in 90 days)
+{% endif %}
+{%- if signals.get("co_changes") %}- Changes together with (no import edge explains it): {% for c in signals.get("co_changes") %}`{{ c.path }}` ({{ c.files }} file{{ "s" if c.files != 1 else "" }}){% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{% endif %}

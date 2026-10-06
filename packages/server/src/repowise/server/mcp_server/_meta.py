@@ -36,7 +36,27 @@ from repowise.server.mcp_server._rounding import round_float
 # and its version field are unchanged, so a consumer reading the old shape has
 # no way to notice from index_scope itself — the envelope version is where a
 # wire-shape change is announced. REPOWISE_MCP_INDEX_SCOPE=full restores it.
-MCP_CONTRACT_VERSION = 2
+# 3: the lean envelope. Diagnostics (this version, timing, budget accounting,
+# an uncapped completeness block, a complete index_scope digest, savings) leave
+# routine responses; get_overview and REPOWISE_MCP_DEBUG_META=1 keep them.
+MCP_CONTRACT_VERSION = 3
+
+#: Restores the diagnostic ``_meta`` fields on every response, for diagnosis.
+DEBUG_META_ENV = "REPOWISE_MCP_DEBUG_META"
+
+#: Called once per session, so it is where the whole envelope is worth its bytes.
+_FULL_META_TOOLS = frozenset({"get_overview"})
+
+
+def full_meta(tool: str | None = None) -> bool:
+    """Whether *tool*'s response keeps the diagnostic ``_meta`` fields.
+
+    Read per call, like the scope switch, so a client-spawned server picks a
+    change up without a restart.
+    """
+    if tool in _FULL_META_TOOLS:
+        return True
+    return os.environ.get(DEBUG_META_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 # Only warn about age when we have no other signal AND the index is genuinely
 # old. A short threshold here would nag on every call and train the agent to
@@ -301,7 +321,7 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
     """
     if repository is None:
         return {}
-    out: dict[str, Any] = {"contract_version": MCP_CONTRACT_VERSION}
+    out: dict[str, Any] = {"contract_version": MCP_CONTRACT_VERSION} if full_meta() else {}
 
     updated_at = getattr(repository, "updated_at", None)
     age_days: int | None = None
@@ -385,15 +405,15 @@ def build_meta(
     serves) to scope ``stale_warning`` to actually-affected content — see
     :func:`freshness_from_repo`.
 
-    ``index_scope`` rides on every response, so it carries the compact
-    projection: the run mode, the provenance, the git tier, one word for
-    whether the index is whole, and a fingerprint identifying the canonical
-    object. See :func:`build_meta_with_full_scope` for the calls that are
+    ``index_scope`` carries the compact projection (the run mode, the
+    provenance, the git tier, one word for whether the index is whole, and a
+    fingerprint identifying the canonical object), and only when that word is
+    not ``complete``. See :func:`build_meta_with_full_scope` for the calls that are
     worth the whole thing.
 
     Stable shape:
       {
-        "timing_ms":       float,  # tool wall-time (omitted if None)
+        "timing_ms":       float,  # tool wall-time (REPOWISE_MCP_DEBUG_META only)
         "hint":            str,    # short follow-up suggestion (omitted if None)
         "cached":          bool,   # only included when True
         "index_age_days":  int,    # days since last `repowise update`
@@ -402,8 +422,9 @@ def build_meta(
         ...extras
       }
     """
-    out: dict[str, Any] = {"contract_version": MCP_CONTRACT_VERSION}
-    if timing_ms is not None:
+    full = full_meta()
+    out: dict[str, Any] = {"contract_version": MCP_CONTRACT_VERSION} if full else {}
+    if timing_ms is not None and full:
         # Through the shared quantizer, not ``round(..., 2)``. A wall-clock
         # duration is a float like any other on this wire, and two decimal
         # places is not the same rule the rest of the payload follows: a
@@ -422,7 +443,10 @@ def build_meta(
     if repository is not None:
         out.update(freshness_from_repo(repository, targets=targets))
         scope = index_scope_for_response(getattr(repository, "local_path", None))
-        if scope is not None:
+        # A complete digest restates the default; only a gap is news.
+        if scope is not None and (
+            full or _canonical_scope_requested() or scope.get("status") != "complete"
+        ):
             out["index_scope"] = scope
     out.update(_embedder_meta())
     out.update(_release_meta())
@@ -439,7 +463,7 @@ def build_meta_with_full_scope(**kwargs: Any) -> dict[str, Any]:
     every caller must read past to learn it does not apply to them belongs
     beside the one caller it does.
     """
-    meta = build_meta(**kwargs)
+    meta = {"contract_version": MCP_CONTRACT_VERSION, **build_meta(**kwargs)}
     repository = kwargs.get("repository")
     if repository is not None:
         scope = read_index_scope(getattr(repository, "local_path", None))
@@ -473,7 +497,8 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
     raw_meta = result.get("_meta")
     meta = raw_meta if isinstance(raw_meta, dict) else {}
     result["_meta"] = meta
-    meta.setdefault("contract_version", MCP_CONTRACT_VERSION)
+    if full_meta():
+        meta.setdefault("contract_version", MCP_CONTRACT_VERSION)
     if evidence_kind:
         meta.setdefault("evidence_kind", evidence_kind)
     if evidence_kind == "structural":
@@ -530,7 +555,7 @@ def semantic_search_state() -> bool | None:
     status = getattr(_state, "_embedder_status", None)
     if not status:
         return None
-    if status.get("degraded"):
+    if status.get("degraded") or getattr(_state, "_vector_store_errors", None):
         return False
     return status.get("active") != "mock"
 
@@ -569,7 +594,8 @@ def _embedder_meta() -> dict[str, Any]:
         # Embedder never initialised, so there is nothing to report either way.
         # Absence means "not evaluated", distinct from an explicit ``false``.
         return {}
-    if not status.get("degraded"):
+    store_errors = getattr(_state, "_vector_store_errors", None) or {}
+    if not status.get("degraded") and not store_errors:
         if status.get("active") == "mock":
             return {"embedder": "mock", "embedder_degraded": False, "semantic_search": False}
         return {"embedder_degraded": False}
@@ -578,7 +604,7 @@ def _embedder_meta() -> dict[str, Any]:
         "embedder_degraded": True,
         "semantic_search": False,
     }
-    reason = status.get("reason")
+    reason = status.get("reason") or " ".join(store_errors.values())
     if reason:
         out["embedder_warning"] = reason
     return out
@@ -711,5 +737,8 @@ def answer_hint(
             "rates the ranked hits; start from the first one."
         )
     if confidence == "low":
-        return "Low confidence — Read the listed fallback_targets to verify before answering."
+        return (
+            "Low confidence. Read the top evidence row or candidate_files to "
+            "verify before answering."
+        )
     return None

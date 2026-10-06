@@ -9,8 +9,10 @@ import { FirstIndexExperience } from "@/components/repos/first-index-experience"
 import { QuickActionsWrapper } from "@/components/dashboard/quick-actions-wrapper";
 import { AskAnythingRow } from "@/components/overview/ask-anything-row";
 import { NextActionsPanel } from "@/components/overview/next-actions-panel";
+import { PublishOverviewSection } from "@/components/hosted/publish";
 import {
   OverviewBody,
+  OverviewSection,
   RepoIdentityHeader,
   type OverviewRoutes,
   type RepoIdentityMeta,
@@ -138,6 +140,7 @@ export default async function OverviewPage({ params }: Props) {
       slots={{
         header,
         ask: <AskAnythingRow repoId={id} />,
+        beforeExplore: <PublishOverviewSection repoId={id} />,
         // A server that predates actions returns 404; the page then keeps the
         // attention areas in their old place rather than showing an empty list.
         actions: actions ? (

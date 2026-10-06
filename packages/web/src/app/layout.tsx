@@ -104,7 +104,7 @@ export default async function RootLayout({
                       it could not be clicked. */}
                   <main
                     id="main-content"
-                    className="flex flex-1 flex-col overflow-auto min-w-0"
+                    className="relative flex flex-1 flex-col overflow-auto min-w-0"
                   >
                     {children}
                   </main>

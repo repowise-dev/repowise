@@ -467,6 +467,9 @@ class PythonPerfDialect(BasePerfDialect):
                 return first.text.decode("utf-8", "replace")
         return None
 
+    def iterable_node(self, node: Node) -> Node | None:
+        return node.child_by_field_name("right") if node.type == "for_statement" else None
+
     # ``itertools.batched``, ``more_itertools.chunked`` and hand-rolled peers.
     _CHUNKING_CALLS: frozenset[str] = frozenset(
         {"batched", "chunked", "ichunked", "chunks", "iter_chunks", "grouper"}

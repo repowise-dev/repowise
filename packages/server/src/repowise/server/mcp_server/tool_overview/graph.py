@@ -1,7 +1,8 @@
-"""Graph-derived overview blocks: code communities and architecture layers."""
+"""Graph-derived overview blocks: code communities, layers and package dependencies."""
 
 from __future__ import annotations
 
+import copy
 import json
 from collections import Counter, defaultdict
 from typing import Any
@@ -17,6 +18,22 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.models import GraphNode
 from repowise.server.mcp_server._helpers import filter_graph_nodes
+from repowise.server.mcp_server._index_state import index_state_key
+from repowise.server.services.c4_builder import container_dependencies
+
+#: Heaviest package edges the overview carries; the container view draws them all.
+_DEPENDENCY_EDGES = 10
+
+# The roll-up reads every graph edge, and it changes only with the index, so it
+# is cached per repo, index state and exclusion rules (the compiled rule set is
+# itself cached, so its identity is stable while the rules are).
+_DEPENDENCY_CACHE: dict[tuple[str, str, int], dict[str, Any]] = {}
+_DEPENDENCY_CACHE_LIMIT = 16
+
+
+def reset_cache() -> None:
+    """Drop every cached dependency block. For tests and an in-process re-index."""
+    _DEPENDENCY_CACHE.clear()
 
 
 async def _load_community_nodes(
@@ -110,3 +127,45 @@ async def _build_architecture(session: Any, repository: Any) -> dict[str, Any]:
         "tour_available": bool(kg_tour),
         "tour_step_count": len(kg_tour),
     }
+
+
+async def _build_package_dependencies(
+    session: Any, repository: Any, exclude_spec: Any = None
+) -> dict[str, Any]:
+    """Package-to-package edges, heaviest first; empty for a single-package repo.
+
+    The containers and roll-up are the container view's, so test files add no
+    weight in either. ``weight`` counts the file pairs behind an edge.
+    """
+    key = (repository.id, index_state_key(repository), id(exclude_spec))
+    cached = _DEPENDENCY_CACHE.get(key)
+    if cached is None:
+        cached = await _package_dependencies(session, repository.id, exclude_spec)
+        if len(_DEPENDENCY_CACHE) >= _DEPENDENCY_CACHE_LIMIT:
+            _DEPENDENCY_CACHE.clear()
+        _DEPENDENCY_CACHE[key] = cached
+    # A copy: the response is shaped after this returns.
+    return copy.deepcopy(cached)
+
+
+async def _package_dependencies(session: Any, repo_id: str, exclude_spec: Any) -> dict[str, Any]:
+    containers, relations = await container_dependencies(
+        session, repo_id, exclude_spec=exclude_spec
+    )
+    path_of = {c.id: c.path or "." for c in containers}
+    edges = [
+        {
+            "from": path_of[r.source_id],
+            "to": path_of[r.target_id],
+            "verb": r.label,
+            "weight": r.edge_count,
+        }
+        for r in relations[:_DEPENDENCY_EDGES]
+        if r.source_id in path_of and r.target_id in path_of
+    ]
+    if not edges:
+        return {}
+    block: dict[str, Any] = {"edges": edges}
+    if len(relations) > len(edges):
+        block["edges_total"] = len(relations)
+    return block

@@ -261,7 +261,7 @@ class TestDecisionDownweight:
 
         mcp_mod._vector_store.search = fake_search
         result = await search_codebase("sqlite store", limit=5, kind="implementation")
-        paths = [r["target_path"] for r in result["results"]]
+        paths = [r["path"] for r in result["results"]]
         assert paths == ["src/auth/service.py"]
 
     @pytest.mark.asyncio
@@ -443,7 +443,7 @@ class TestNoiseDemotion:
 
         mcp_mod._vector_store.search = fake_search
         result = await search_codebase("how does the auth service work")
-        paths = [r["target_path"] for r in result["results"]]
+        paths = [r["path"] for r in result["results"]]
         assert paths[0] == "src/auth/service.py"
         assert "tests/unit/test_service.py" in paths  # demoted, not dropped
 
@@ -474,7 +474,7 @@ class TestNoiseDemotion:
 
         mcp_mod._vector_store.search = fake_search
         result = await search_codebase("how is the auth service tested")
-        assert result["results"][0]["target_path"] == "tests/unit/test_service.py"
+        assert result["results"][0]["path"] == "tests/unit/test_service.py"
 
 
 class TestClassifyHitKind:
@@ -1243,14 +1243,14 @@ class TestFusion:
         mcp_mod._fts.search = fake_fts
 
         result = await search_codebase("session cache layer", limit=10)
-        by_path = {r["target_path"]: r for r in result["results"]}
+        by_path = {r["path"]: r for r in result["results"]}
         # All three surface — including the FTS-only page the old path dropped.
         assert {"src/both.py", "src/vec.py", "src/fts.py"} <= set(by_path)
         assert by_path["src/vec.py"]["sources"] == ["vector"]
         assert by_path["src/fts.py"]["sources"] == ["fts"]
         assert by_path["src/both.py"]["sources"] == ["fts", "vector"]
         # A page both retrievers rank #1 fuses to the top.
-        assert result["results"][0]["target_path"] == "src/both.py"
+        assert result["results"][0]["path"] == "src/both.py"
 
     @pytest.mark.asyncio
     async def test_vector_miss_falls_through_to_fts(self, setup_mcp):
@@ -1274,7 +1274,7 @@ class TestFusion:
         mcp_mod._fts.search = fake_fts
 
         result = await search_codebase("session cache layer", limit=10)
-        by_path = {r["target_path"]: r for r in result["results"]}
+        by_path = {r["path"]: r for r in result["results"]}
         assert by_path["src/fts_rescue.py"]["sources"] == ["fts"]
 
 
@@ -1368,8 +1368,9 @@ class TestSearchCandidates:
         result = await search_codebase("how are requests issued", limit=10)
 
         hit = result["results"][0]
-        assert hit["target_path"] == "api/client.go"
-        assert hit["file"] == "api/client.go"
+        assert hit["path"] == "api/client.go"
+        assert "target_path" not in hit  # same string as path
+        assert hit["file"] == "api/client.go"  # alias for one minor release
         assert hit["symbol_id"] == "api/client.go::HTTP"
         assert hit["file"] == "api/client.go"
         assert result["candidates"] == [{"path": "api/client.go"}]
@@ -1563,3 +1564,288 @@ async def test_an_exact_test_class_outranks_an_exact_code_function(
         "tests/test_widget.py::Widgets",
         "src/widget/core.py::Widgets",
     ]
+
+
+def _add_symbols(session, rid, rows):
+    """Seed ``(path, name, qualified_name, line)`` WikiSymbol rows."""
+    from repowise.core.persistence.models import WikiSymbol
+
+    for path, name, qualified, line in rows:
+        session.add(
+            WikiSymbol(
+                id=f"dw-{path}-{qualified}", repository_id=rid, file_path=path,
+                symbol_id=f"{path}::{qualified}", name=name, qualified_name=qualified,
+                kind="function", signature=name, start_line=line, end_line=line + 5,
+                language="python",
+            )
+        )
+
+
+_WIDGET_ROWS = [
+    ("src/widget/core.py", "widget", "widget", 10),
+    ("src/widget/core.py", "widget", "Box.widget", 40),
+    ("src/widget/listing.py", "widget_list", "widget_list", 1),
+    ("src/widget/drop.py", "widget_drop", "widget_drop", 1),
+    ("src/widget/sync.py", "widget_sync", "widget_sync", 1),
+]
+
+
+class TestDistinctFileWindow:
+    """Code-location windows spend ``limit`` on distinct files."""
+
+    def test_collapse_folds_same_file_symbols_and_keeps_repos_apart(self):
+        from repowise.server.mcp_server.tool_search import _collapse_by_file
+
+        hits = [
+            {"type": "symbol", "name": "a", "file": "x.py", "start_line": 1},
+            {"type": "symbol", "name": "b", "file": "x.py", "start_line": 9},
+            {"type": "symbol", "name": "c", "file": "x.py", "start_line": 5, "repo": "other"},
+            {"page_type": "module_page", "target_path": "pkg"},
+            {"page_type": "file_page", "target_path": "y.py"},
+            {"page_type": "symbol_spotlight", "target_path": "y.py"},
+        ]
+        out = _collapse_by_file(hits)
+        assert [h.get("name") or h["target_path"] for h in out] == ["a", "c", "pkg", "y.py"]
+        assert out[0]["symbols"] == ["b:9"]
+        assert "symbols" not in out[1]
+
+    def test_a_dominant_file_counts_what_its_cap_left_out(self):
+        from repowise.server.mcp_server.tool_search import _collapse_by_file
+
+        hits = [
+            {"type": "symbol", "name": f"s{i}", "file": "x.py", "start_line": i}
+            for i in range(10)
+        ]
+        (row,) = _collapse_by_file(hits)
+        assert row["symbols"] == ["s1:1", "s2:2", "s3:3", "s4:4", "s5:5", "+4 more"]
+
+    def test_pages_are_dropped_only_for_symbols_the_window_shows(self):
+        from repowise.server.mcp_server.tool_search import _hybrid_window
+
+        def sym(f):
+            return {"type": "symbol", "name": "x", "file": f}
+
+        def page(f):
+            return {"type": "page", "target_path": f, "relevance_score": 0.5}
+
+        # Four symbol files, but limit 4 with three pages shows only two
+        # symbols, so the page for d.py is the only way d.py is served.
+        symbols = [sym("a.py"), sym("b.py"), sym("c.py"), sym("d.py")]
+        out = _hybrid_window(
+            "compare Foo Bar", symbols, [page("d.py"), page("e.py"), page("f.py")], 4, True
+        )
+        assert [r.get("file") or r["target_path"] for r in out] == ["a.py", "b.py", "d.py", "e.py"]
+        # A page whose file a shown symbol covers gives its slot back.
+        out = _hybrid_window(
+            "compare Foo Bar", symbols, [page("b.py"), page("e.py"), page("f.py")], 4, True
+        )
+        assert [r.get("file") or r["target_path"] for r in out] == ["a.py", "b.py", "e.py", "f.py"]
+
+    @pytest.mark.asyncio
+    async def test_the_federated_page_leg_serves_one_row_per_file(self, setup_mcp):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server._helpers import _resolve_repo_context
+        from repowise.server.mcp_server.tool_search import _search_single_repo
+
+        await _seed_page("file_page:api/client.go", "api/client.go")
+        await _seed_page(
+            "symbol_spotlight:api/client.go::HTTP", "api/client.go::HTTP", "symbol_spotlight"
+        )
+        await _seed_page("file_page:api/server.go", "api/server.go")
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result("file_page:api/client.go", "c", "file_page", "api/client.go", 0.9),
+                _mk_result(
+                    "symbol_spotlight:api/client.go::HTTP",
+                    "HTTP",
+                    "symbol_spotlight",
+                    "api/client.go::HTTP",
+                    0.8,
+                ),
+                _mk_result("file_page:api/server.go", "s", "file_page", "api/server.go", 0.7),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        out = await _search_single_repo(await _resolve_repo_context(None), "requests", 2, None)
+        assert [r["target_path"] for r in out] == ["api/client.go", "api/server.go"]
+
+    @pytest.mark.asyncio
+    async def test_hybrid_limit_buys_distinct_files(self, session, populated_db, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        _add_symbols(session, populated_db, _WIDGET_ROWS)
+        await session.commit()
+
+        res = await search_codebase("widget", mode="hybrid", limit=3)
+        files = [r["file"] for r in res["results"]]
+        assert len(files) == 3 and len(set(files)) == 3
+        # The exact name still leads, carrying its same-file sibling.
+        lead = res["results"][0]
+        assert lead["symbol_id"] == "src/widget/core.py::Box.widget"
+        assert lead["symbols"] == ["widget:10"]
+
+    @pytest.mark.asyncio
+    async def test_symbol_mode_still_lists_each_overload(self, session, populated_db, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        _add_symbols(session, populated_db, _WIDGET_ROWS)
+        await session.commit()
+
+        res = await search_codebase("widget", mode="symbol", limit=3)
+        ids = [r["symbol_id"] for r in res["results"]]
+        assert ids[:2] == ["src/widget/core.py::Box.widget", "src/widget/core.py::widget"]
+        assert all("symbols" not in r for r in res["results"])
+        # Symbol rows serve path, with file as the transition alias.
+        assert all(r["path"] == r["file"] == "src/widget/core.py" for r in res["results"][:2])
+
+    @pytest.mark.asyncio
+    async def test_concept_window_serves_one_row_per_file(self, setup_mcp):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        await _seed_page("file_page:api/client.go", "api/client.go")
+        await _seed_page(
+            "symbol_spotlight:api/client.go::HTTP", "api/client.go::HTTP", "symbol_spotlight"
+        )
+        await _seed_page("file_page:api/server.go", "api/server.go")
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result("file_page:api/client.go", "client.go", "file_page", "api/client.go", 0.9),
+                _mk_result(
+                    "symbol_spotlight:api/client.go::HTTP",
+                    "HTTP",
+                    "symbol_spotlight",
+                    "api/client.go::HTTP",
+                    0.8,
+                ),
+                _mk_result("file_page:api/server.go", "server.go", "file_page", "api/server.go", 0.7),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        res = await search_codebase("how are requests issued", mode="concept", limit=2)
+        assert [r["path"] for r in res["results"]] == ["api/client.go", "api/server.go"]
+
+
+class TestPathlessPagesInCodeLocationModes:
+    """Hybrid windows drop pages naming no file; concept windows keep them."""
+
+    async def _seed(self):
+        import repowise.server.mcp_server as mcp_mod
+
+        await _seed_page("module_page:pkg/cmd/release", "pkg/cmd/release", "module_page")
+        await _seed_page(
+            "onboarding:onboarding/how_it_works", "onboarding/how_it_works", "onboarding"
+        )
+        await _seed_page("file_page:pkg/cmd/release/list.go", "pkg/cmd/release/list.go")
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result(
+                    "module_page:pkg/cmd/release", "Release", "module_page", "pkg/cmd/release", 0.9
+                ),
+                _mk_result(
+                    "onboarding:onboarding/how_it_works",
+                    "Guided Tour",
+                    "onboarding",
+                    "onboarding/how_it_works",
+                    0.8,
+                ),
+                _mk_result(
+                    "file_page:pkg/cmd/release/list.go",
+                    "list.go",
+                    "file_page",
+                    "pkg/cmd/release/list.go",
+                    0.7,
+                ),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+
+    @pytest.mark.asyncio
+    async def test_hybrid_drops_module_and_onboarding_pages(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        await self._seed()
+        res = await search_codebase("listing releases in order", mode="hybrid", limit=5)
+        pages = [r["page_type"] for r in res["results"] if r["type"] == "page"]
+        assert pages == ["file_page"]
+
+    @pytest.mark.asyncio
+    async def test_concept_keeps_them(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        await self._seed()
+        res = await search_codebase("listing releases in order", mode="concept", limit=5)
+        assert [r["page_type"] for r in res["results"]] == [
+            "module_page",
+            "onboarding",
+            "file_page",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_concept_rows_carry_path_only_when_they_name_a_file(self, setup_mcp):
+        """A pathless page keeps its key in target_path; a file page's moves to path."""
+        from repowise.server.mcp_server import search_codebase
+
+        await self._seed()
+        res = await search_codebase("listing releases in order", mode="concept", limit=5)
+        module, onboarding, file_page = res["results"]
+        for pathless, key in ((module, "pkg/cmd/release"), (onboarding, "onboarding/how_it_works")):
+            assert "path" not in pathless
+            assert pathless["target_path"] == key
+        assert file_page["path"] == "pkg/cmd/release/list.go"
+        assert "target_path" not in file_page
+        # Not derivable without target_path, so the id stays for citations.
+        assert file_page["page_id"] == "file_page:pkg/cmd/release/list.go"
+
+    @pytest.mark.asyncio
+    async def test_federated_rows_carry_path(self, setup_mcp, monkeypatch):
+        from repowise.server.mcp_server import search_codebase, tool_search
+
+        await self._seed()
+        ctx = await tool_search._resolve_repo_context(None)
+
+        async def one_context():
+            return [ctx]
+
+        monkeypatch.setattr(tool_search, "_resolve_all_contexts", one_context)
+        res = await search_codebase("listing releases in order", mode="concept", repo="all")
+        by_type = {r["page_type"]: r for r in res["results"]}
+        assert by_type["file_page"]["path"] == "pkg/cmd/release/list.go"
+        assert "path" not in by_type["module_page"]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_window_does_not_repeat_its_grep_hint(self, setup_mcp):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+        from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
+
+        await _seed_page("module_page:pkg/cmd/release", "pkg/cmd/release", "module_page")
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result(
+                    "module_page:pkg/cmd/release", "Release", "module_page", "pkg/cmd/release", 0.9
+                )
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        res = await search_codebase("where is validate_trigger_nonce defined", mode="hybrid")
+        assert res["results"] == []
+        assert "No indexed symbol is named" in res["note"]
+        assert "Any page here" not in res["note"]
+        assert EXHAUSTIVE_SWEEP_HINT not in res["note"]
+        assert EXHAUSTIVE_SWEEP_HINT in res["grep_hint"]
+
+    @pytest.mark.asyncio
+    async def test_hybrid_keeps_them_when_pages_are_asked_for(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        await self._seed()
+        res = await search_codebase(
+            "listing releases in order", mode="hybrid", page_type="module_page"
+        )
+        pages = [r["page_type"] for r in res["results"] if r["type"] == "page"]
+        assert pages == ["module_page"]

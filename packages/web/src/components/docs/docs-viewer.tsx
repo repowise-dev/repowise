@@ -304,11 +304,14 @@ export function DocsViewer({
     [repoId],
   );
 
-  const hasTargetPath = !!page?.target_path;
   const targetPath = page?.target_path ?? "";
+  // Decided by page type, not path shape: a module page's target is a
+  // directory, which every row below would answer with nothing, and the
+  // reader already gives module pages their own history card.
+  const showSignals = !!targetPath && page?.page_type !== "module_page";
   // Security findings only make sense for real source files.
   const isFilePath =
-    hasTargetPath &&
+    showSignals &&
     !targetPath.includes("::") &&
     !targetPath.startsWith("onboarding/") &&
     !targetPath.startsWith("layer:");
@@ -347,7 +350,7 @@ export function DocsViewer({
         ) : undefined
       }
       intelligenceSlot={
-        hasTargetPath ? (
+        showSignals ? (
           // One "Signals" block, not five. At a glance, Importance, Community,
           // Call graph and Security each announced themselves with their own
           // uppercase label over a handful of rows, so the rail was mostly

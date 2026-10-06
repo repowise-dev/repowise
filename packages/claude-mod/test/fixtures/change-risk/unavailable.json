@@ -1,0 +1,154 @@
+{
+  "directive": {
+    "status": "unknown",
+    "headline": "Change health could not be compared: No changed file is health-analyzable, so nothing was compared.",
+    "reasons": [
+      "1 changed file were not analysed, so this is not a clean bill."
+    ],
+    "next_actions": [
+      "No measured test map; run the suite covering the changed files.",
+      "Review the skipped files by hand; they were not compared."
+    ]
+  },
+  "health_delta": {
+    "status": "unavailable",
+    "explanation": "No changed file is health-analyzable, so nothing was compared.",
+    "basis": "both_sides_analyzed",
+    "introduced": 0,
+    "worsened": 0,
+    "resolved": 0,
+    "by_dimension": {},
+    "by_severity": {},
+    "scope": {
+      "changed": 1,
+      "eligible": 0,
+      "analyzed": 0,
+      "skipped": 0,
+      "failed": 0
+    },
+    "top_findings": [],
+    "findings_total": 0,
+    "findings_emitted": 0,
+    "base": {
+      "ref": "HEAD",
+      "sha": "3bb56ba566ce783ebdc4e61929522fd1648c2527",
+      "kind": "commit"
+    },
+    "head": {
+      "ref": "WORKTREE",
+      "sha": "",
+      "kind": "working_tree"
+    },
+    "analyzer": {
+      "analyzer_version": 38,
+      "rules_fingerprint": "2f1b53b61c545f3ce5e44371e52b0428f710f8cee6f8d8547f8ca5c474e864fd",
+      "performance_model_version": 3
+    },
+    "skipped": {
+      "total": 1,
+      "by_reason": {
+        "unsupported_language": 1
+      }
+    }
+  },
+  "ref": "working tree",
+  "working_tree": true,
+  "fix_history": {
+    "available": true,
+    "density": 0.0,
+    "percentile": 21.8,
+    "files": [
+      {
+        "path": "tox.ini",
+        "churn": 2,
+        "fix_pressure": 0.0
+      }
+    ]
+  },
+  "risk_percentile": 34.0,
+  "review_priority": "moderate",
+  "classification": "Typical",
+  "exclude_patterns": [],
+  "is_fix": false,
+  "impacted_tests": {
+    "status": "no_map",
+    "basis": "none",
+    "map_present": false,
+    "tests_to_run": [],
+    "tests_to_run_kind": null,
+    "total": 0,
+    "truncated": false,
+    "line_coverage": {
+      "untested_changes": [],
+      "stale_test_candidates": [],
+      "covered": [],
+      "no_coverage_data": []
+    },
+    "summary": "No per-test coverage map ingested and no test reaches the changed files in the graph; run the full suite. Inferred from the dependency graph, not measured. For the line-precise answer build the map with `coverage run --contexts=test` then `repowise coverage add`."
+  },
+  "branch_overlap": {
+    "base": "origin/main",
+    "current": "main",
+    "branches": [
+      {
+        "branch": "origin/3.0",
+        "ahead": 234,
+        "behind": 1206,
+        "last_commit": "2018-06-14",
+        "files": [
+          {
+            "file": "tox.ini",
+            "basis": "same file"
+          }
+        ]
+      },
+      {
+        "branch": "origin/proposed/3.0.0",
+        "ahead": 161,
+        "behind": 1206,
+        "last_commit": "2018-03-08",
+        "files": [
+          {
+            "file": "tox.ini",
+            "basis": "same file"
+          }
+        ]
+      }
+    ],
+    "scanned": 6,
+    "total": 6,
+    "truncated": false,
+    "summary": "2 of 6 open branches (6 exist) edit files this change also edits."
+  },
+  "diff_shape": "Diff shape: bigger than 34% of this repo's recent commits. Size and spread, not danger. Mechanics: get_change_risk(include=['diagnostics']).",
+  "_meta": {
+    "contract_version": 2,
+    "timing_ms": 1242.0,
+    "index_age_days": 49,
+    "indexed_commit": "4ed3d1b3204c",
+    "live_head": "3bb56ba566ce",
+    "index_behind": true,
+    "index_scope": {
+      "version": 1,
+      "projection": "compact",
+      "run_mode": "standard",
+      "content_provenance": "template",
+      "git_tier": "full",
+      "status": "unknown",
+      "fingerprint": "118fda63ca3a",
+      "full": "get_overview()"
+    },
+    "embedder": "mock",
+    "embedder_degraded": false,
+    "semantic_search": false,
+    "source": "live_git",
+    "response_budget": {
+      "limit_chars": 24000,
+      "tier": "default",
+      "serialized_chars": 3031
+    },
+    "completeness": {
+      "capped": false
+    }
+  }
+}

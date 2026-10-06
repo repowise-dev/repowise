@@ -256,14 +256,20 @@ def _enclosing_loops(
     node: Node, dialect: BasePerfDialect, loop_kinds: frozenset[str], fn_kinds: frozenset[str]
 ) -> list[Node]:
     """The data-dependent loops around *node* in its function, innermost first;
-    walked up only for hits."""
+    walked up only for hits. A loop whose iterable holds *node* is not one."""
     loops: list[Node] = []
     cur = node.parent
     for _ in range(64):
         if cur is None or cur.type in fn_kinds:
             break
         if cur.type in loop_kinds and cur.is_named and not dialect.is_constant_loop(cur):
-            loops.append(cur)
+            iterable = dialect.iterable_node(cur)
+            # ``for row in result.all():`` runs ``.all()`` once per pass of the loop
+            # around it, so the for loop itself is not what repeats it.
+            if iterable is None or not (
+                iterable.start_byte <= node.start_byte and node.end_byte <= iterable.end_byte
+            ):
+                loops.append(cur)
         cur = cur.parent
     return loops
 

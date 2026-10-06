@@ -258,6 +258,15 @@ def _rollup_child_pages(rollup: Any, groups: list[Any]) -> list[dict]:
     return [{"title": g.display, "path": g.key} for g in children]
 
 
+def _execution_flows(graph_builder: Any) -> list[Any]:
+    """The run's traced execution flows, for module pages that host one."""
+    try:
+        return list(graph_builder.execution_flows().flows)
+    except Exception as exc:
+        log.warning("module_page.execution_flows_unavailable", error=str(exc))
+        return []
+
+
 def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 4 (module_page), allow-set filtered."""
     gen = run.gen
@@ -267,6 +276,7 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     if not isinstance(parsed_by_path, dict) or not parsed_by_path:
         parsed_by_path = {p.file_info.path: p for p in run.parsed_files}
     package_roots = package_roots_from_paths(set(parsed_by_path))
+    flows = _execution_flows(run.graph_builder)
     for mg in run.sel_module_groups:
         # Read from the wider set: a chapter's prose is about its whole
         # subsystem, while ``file_paths`` is the narrower, disjoint claim on who
@@ -333,6 +343,7 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     public_api=compute_public_api(material, parsed_by_path, package_roots),
                     parsed_files=parsed_by_path,
                     source_map=run.source_map,
+                    execution_flows=flows,
                 ),
             )
         )
@@ -414,28 +425,22 @@ async def _module_corroboration(run: _GenerationRun) -> list[str]:
 async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 6 (repo_overview).
 
-    The overview carries the architecture map. That map used to sit on a page
-    of its own, which described the same repository at the same altitude in the
-    same words — the two shared roughly a quarter of their vocabulary, so a
-    reader meeting both read one thing twice. The diagram is what that page
-    uniquely had, so it moved here and the page retired; its id redirects.
+    The overview carries the system map, built from the run's structure. It
+    used to sit on a page of its own that described the same repository at the
+    same altitude; that page retired and its id redirects here.
     """
-    from ..architecture_mermaid import build_overview_mermaid
     from ..context.readme_digest import readme_digest
     from ..overview_tables import select_capabilities
+    from .system_map import build_run_system_map
 
     gen = run.gen
-    overview_mermaid = build_overview_mermaid(run.kg_ctx)
-    if not overview_mermaid:
-        # The retired page drew its own diagram when the graph could not supply
-        # one, so this used to degrade to a worse map rather than to none. Now
-        # the wiki simply ships without one, which is worth knowing about.
-        log.warning(
-            "generation.overview_architecture_map_empty",
-            repo_name=run.repo_name,
-        )
     coros: list[tuple[str, Any]] = []
     if run._emit(compute_page_id("repo_overview", run.repo_name)):
+        system_map = build_run_system_map(run)
+        if system_map is None:
+            # Said out loud: a front page that quietly loses its diagram is the
+            # failure shape worth hearing about.
+            log.warning("generation.overview_system_map_empty", repo_name=run.repo_name)
         # What the repository calls its own capabilities, in its own words.
         # Mined once per run and shared with level 8. A term reaches the page
         # only when the structural side names it too, so the front page never
@@ -469,7 +474,7 @@ async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     # Repo-wide scope is right here; only the choice of ten was
                     # list position.
                     decision_records=rank_decisions(run.decisions_all)[:10],
-                    overview_mermaid=overview_mermaid,
+                    system_map=system_map,
                     source_map=run.source_map,
                     # Per-package file counts come from the files this run
                     # actually parsed, not from the package manifests, so a

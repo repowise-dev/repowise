@@ -11,7 +11,8 @@ from repowise.core.sessions.adapters.base import (
     INTENT_TOOL_CALLS,
     INTENT_TURNS,
 )
-from repowise.core.sessions.adapters.codex import _normalize_tool_name
+from repowise.core.sessions.adapters.codex import _bind_first_file, _normalize_tool_name
+from repowise.core.sessions.events import ToolUse
 from repowise.core.sessions.miners.decisions import mine_events
 
 FIXTURE = Path(__file__).parent / "data" / "codex_session.jsonl"
@@ -207,6 +208,12 @@ def test_normalize_handles_mcp_function_call_and_output(adapter: CodexAdapter) -
     assert call_event.tool_uses[0].input["path"] == "app.py"
 
 
+def test_a_search_binds_its_served_path_over_the_file_alias() -> None:
+    tool = ToolUse(id="c1", name="search_codebase", input={"query": "q"})
+    _bind_first_file(tool, [{"path": "new.py", "file": "old.py"}])
+    assert tool.input["path"] == "new.py"
+
+
 def test_function_call_decision_gets_file_attribution(adapter: CodexAdapter) -> None:
     """A `function_call` tool use must reach the decision miner like `custom_tool_call` does.
 
@@ -310,7 +317,7 @@ def test_a_content_match_binds_the_path_not_the_matched_line(adapter: CodexAdapt
 
     assert event is not None
     results = json.loads(event.tool_results[0].content)["result"]["results"]
-    assert results == [{"file": "src/app.py"}]
+    assert results == [{"path": "src/app.py", "file": "src/app.py"}]
 
 
 def test_a_root_level_content_match_still_binds_its_path(adapter: CodexAdapter) -> None:
@@ -324,7 +331,7 @@ def test_a_root_level_content_match_still_binds_its_path(adapter: CodexAdapter) 
 
     assert event is not None
     results = json.loads(event.tool_results[0].content)["result"]["results"]
-    assert results == [{"file": "app.py"}]
+    assert results == [{"path": "app.py", "file": "app.py"}]
     assert call_event is not None
     assert call_event.tool_uses[0].input["path"] == "app.py"
 
@@ -336,7 +343,7 @@ def test_a_bare_root_level_filename_is_kept(adapter: CodexAdapter) -> None:
 
     assert event is not None
     results = json.loads(event.tool_results[0].content)["result"]["results"]
-    assert results == [{"file": "setup.py"}]
+    assert results == [{"path": "setup.py", "file": "setup.py"}]
 
 
 def test_a_bare_prose_line_is_still_dropped(adapter: CodexAdapter) -> None:

@@ -37,7 +37,7 @@ from repowise.cli.helpers import (
     get_db_url_for_repo,
     resolve_command_target,
     run_async,
-    silence_logs_for_machine_output,
+    silence_logs_for_machine_output_until_close,
 )
 from repowise.cli.output import emit_json, format_option, notice_console
 
@@ -130,7 +130,7 @@ def security_scan(
         return
 
     if output_format == "json":
-        silence_logs_for_machine_output()
+        silence_logs_for_machine_output_until_close()
 
     from pathlib import Path
 
@@ -293,7 +293,7 @@ def security_check(
     if staged and revspec:
         raise click.UsageError("--staged checks the staged changes; drop REVSPEC.")
     if fmt != "table":
-        silence_logs_for_machine_output()
+        silence_logs_for_machine_output_until_close()
     try:
         _check(
             _CheckOptions(revspec, fail_on, baseline_path, write_baseline_path, repo, staged, fmt)

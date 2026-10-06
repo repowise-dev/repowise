@@ -129,6 +129,7 @@ def embed_item(
     summary: str,
     content: str,
     page_metadata: Mapping[str, object] | str | None = None,
+    digest: str = "",
 ) -> tuple[str, str, dict] | None:
     """Build the one ``(page_id, text, metadata)`` item every writer embeds.
 
@@ -160,7 +161,7 @@ def embed_item(
     page held out of one arm and kept in the other is still fetched, still
     occupies one of the fixed number of rows retrieval takes before it filters
     anything, and still displaces a page that could have answered. The test is
-    applied to ``content`` alone for that reason — the same input the
+    applied to ``content`` and ``digest`` for that reason, the same input the
     full-text side measures, so the two arms cannot disagree about a page.
 
     The page itself is untouched either way. It stays in ``wiki_pages``, still
@@ -171,7 +172,10 @@ def embed_item(
     ``page_metadata`` is the page's metadata, as a dict (a generated page) or
     the stored JSON string (a ``wiki_pages`` row). Only
     :data:`FILE_VOCABULARY_KEY` is read from it, and appended after the
-    content; the floor still measures ``content`` alone.
+    content; the floor does not measure it.
+
+    ``digest`` is the page's agent material (``wiki_pages.digest``), embedded
+    after the content for the same reason the vocabulary is.
     """
     if not title.strip():
         raise ValueError(
@@ -179,10 +183,12 @@ def embed_item(
             f"vector that cannot be found by name and reports nothing wrong; "
             f"pass the page's real title."
         )
-    if not meets_information_floor(content):
+    if not meets_information_floor(content, digest=digest):
         count_page_denied_a_vector()
         return None
-    parts = [p for p in (title, target_path, summary, content, _vocabulary(page_metadata)) if p]
+    parts = [
+        p for p in (title, target_path, summary, content, digest, _vocabulary(page_metadata)) if p
+    ]
     return (
         page_id,
         "\n".join(parts),

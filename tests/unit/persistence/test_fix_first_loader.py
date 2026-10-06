@@ -248,3 +248,39 @@ async def test_every_limit_and_id_is_a_slice_of_one_build(async_session, monkeyp
         **rows, item_id=second
     )
     assert builds == 1
+
+
+async def test_a_finding_item_verifies_with_measured_tests_of_its_lines(async_session) -> None:
+    """A finding with no plan takes its tests from coverage of its own lines."""
+    from repowise.core.persistence.models import TestCoverageEntry
+
+    rid = await seed_fix_first(async_session)
+    for test_id, lines in (
+        ("tests/test_plain.py::test_walk", [6, 7, 8]),
+        ("tests/test_plain.py::test_elsewhere", [50, 51]),
+    ):
+        async_session.add(
+            TestCoverageEntry(
+                repository_id=rid,
+                test_id=test_id,
+                test_file="tests/test_plain.py",
+                source_file="src/plain.py",
+                covered_lines_json=json.dumps(lines),
+                source_format="coverage_json",
+            )
+        )
+    await async_session.flush()
+    loaded = await load_fix_first(async_session, rid)
+    walk = next(i for i in loaded.items if i.target.file_path == "src/plain.py")
+    assert walk.kind == "finding"
+    assert walk.verify.basis == "measured"
+    assert [t.path for t in walk.verify.tests] == ["tests/test_plain.py::test_walk"]
+    assert walk.verify.tests_total == 1
+    assert walk.verify.command == "pytest tests/test_plain.py::test_walk"
+
+
+async def test_a_finding_item_with_no_tests_stays_unknown(async_session) -> None:
+    rid = await seed_fix_first(async_session)
+    loaded = await load_fix_first(async_session, rid)
+    walk = next(i for i in loaded.items if i.target.file_path == "src/plain.py")
+    assert (walk.verify.tests, walk.verify.basis) == ((), "unknown")

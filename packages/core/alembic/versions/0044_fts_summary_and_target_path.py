@@ -34,7 +34,13 @@ from collections.abc import Sequence
 
 from alembic import op
 
-from repowise.core.persistence.search import PG_FTS_EXPRESSION
+# Frozen at this revision's shape. A migration that imports the live search
+# constants replays a later column set on a database that does not have it.
+PG_FTS_EXPRESSION = (
+    "to_tsvector('english', "
+    "COALESCE(title,'') || ' ' || COALESCE(content,'') || ' ' "
+    "|| COALESCE(summary,'') || ' ' || COALESCE(target_path,''))"
+)
 
 # revision identifiers
 revision: str = "0044"
