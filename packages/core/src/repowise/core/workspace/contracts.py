@@ -62,7 +62,8 @@ CONTRACTS_FILENAME = "contracts.json"
 # base, and Prisma, TypeORM, Sequelize, Drizzle and Knex tables.
 # Version 13 adds Angular HttpClient calls, with bases folded from environment
 # files and class fields.
-CONTRACTS_VERSION = 13
+# Version 14 adds MassTransit message-type topic contracts (C# and VB.NET).
+CONTRACTS_VERSION = 14
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
 #: A queue is read by one consumer group; a topic, subject or channel fans
@@ -548,15 +549,18 @@ async def run_contract_extraction(
         DataExtractor,
         GrpcExtractor,
         HttpExtractor,
+        MassTransitExtractor,
         OpenApiExtractor,
         SocketExtractor,
         TopicExtractor,
         assign_service,
+        build_message_type_index,
         detect_service_boundaries,
         merge_openapi_providers,
     )
     from .extractors.base import iter_source_files, make_exclude_predicate
     from .extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
+    from .extractors.masstransit import MessageTypeIndex
     from .matching import annotate_consumer_targets, match_contracts
 
     contract_config = ws_config.contracts
@@ -583,6 +587,16 @@ async def run_contract_extraction(
         else CodeSurface()
     )
 
+    # A MassTransit consumer resolves its message type against every repo's
+    # contract projects, so the type index is workspace-wide too.
+    message_types = (
+        await asyncio.to_thread(
+            build_message_type_index, repo_paths, exclude, contract_config.contract_project_pattern
+        )
+        if contract_config.detect_topics
+        else MessageTypeIndex()
+    )
+
     # Which repos can be carried forward, and which must be re-extracted.
     # Probing a repo's state costs a `git rev-parse` and a dirty check; the
     # alternative is trusting changed_repos, which is exactly the trust a stale
@@ -599,10 +613,13 @@ async def run_contract_extraction(
     # and its HEAD is unchanged, so nothing else here would notice.
     # The published-package set joins it because a code consumer depends on
     # *another* repo's manifests: adding the repo that publishes what this one
-    # imports moves no HEAD here, so nothing else would notice.
+    # imports moves no HEAD here, so nothing else would notice. The message-type
+    # set joins it for the same reason: a new contract type in one repo changes
+    # which calls in an unchanged repo resolve.
     config_fp = hashlib.sha256(
         json.dumps(
-            [contract_config.to_dict(), sorted(code_surface.members)], sort_keys=True
+            [contract_config.to_dict(), sorted(code_surface.members), sorted(message_types.fqns)],
+            sort_keys=True,
         ).encode()
     ).hexdigest()[:16]
 
@@ -671,6 +688,7 @@ async def run_contract_extraction(
             extractors.append(SocketExtractor())
         if contract_config.detect_topics:
             extractors.append(TopicExtractor())
+            extractors.append(MassTransitExtractor(contract_config.contract_project_pattern))
         if contract_config.detect_data:
             extractors.append(DataExtractor())
         code_rows = code_surface.for_repo(alias)
@@ -708,6 +726,8 @@ async def run_contract_extraction(
                 kwargs = {"repo_index": repo_index, "stats": stats}
             elif isinstance(extractor, OpenApiExtractor):
                 kwargs = {"stats": stats}
+            elif isinstance(extractor, MassTransitExtractor):
+                kwargs = {"message_types": message_types, "stats": stats}
             else:
                 kwargs = {}
             found = await asyncio.to_thread(

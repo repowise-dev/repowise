@@ -7,6 +7,7 @@ Pure data module with no CLI or DB dependencies. Handles the
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,8 @@ _log = logging.getLogger("repowise.workspace.config")
 WORKSPACE_CONFIG_FILENAME = ".repowise-workspace.yaml"
 WORKSPACE_DATA_DIR = ".repowise-workspace"
 CURRENT_VERSION = 1
+# A ``Contracts`` directory name, with or without a dotted prefix (``Sample.Contracts``).
+DEFAULT_CONTRACT_PROJECT_PATTERN = r"(?:.+\.)?contracts"
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +102,18 @@ class ManualContractLink:
         )
 
 
+def _valid_pattern(value: Any) -> str:
+    """*value* as a contract project pattern, or the default when it is not a regex."""
+    if value is None:
+        return DEFAULT_CONTRACT_PROJECT_PATTERN
+    try:
+        re.compile(str(value))
+    except re.error:
+        _log.warning("Invalid contracts.contract_project_pattern %r; using the default", value)
+        return DEFAULT_CONTRACT_PROJECT_PATTERN
+    return str(value)
+
+
 @dataclass
 class ContractConfig:
     """Configuration for contract detection (Phase 4)."""
@@ -119,6 +134,9 @@ class ContractConfig:
     # Extra glob patterns (added to the built-in test/spec defaults) whose files
     # are skipped during contract extraction.
     exclude_globs: list[str] = field(default_factory=list)
+    # A directory name matching this regex (in full, ignoring case) marks a .NET
+    # project whose types are MassTransit message contracts.
+    contract_project_pattern: str = DEFAULT_CONTRACT_PROJECT_PATTERN
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -135,6 +153,8 @@ class ContractConfig:
             d["service_bases"] = dict(self.service_bases)
         if self.exclude_globs:
             d["exclude_globs"] = list(self.exclude_globs)
+        if self.contract_project_pattern != DEFAULT_CONTRACT_PROJECT_PATTERN:
+            d["contract_project_pattern"] = self.contract_project_pattern
         return d
 
     @classmethod
@@ -150,6 +170,7 @@ class ContractConfig:
             manual_links=manual,
             service_bases={str(k): str(v) for k, v in data.get("service_bases", {}).items()},
             exclude_globs=[str(g) for g in data.get("exclude_globs", [])],
+            contract_project_pattern=_valid_pattern(data.get("contract_project_pattern")),
         )
 
 
