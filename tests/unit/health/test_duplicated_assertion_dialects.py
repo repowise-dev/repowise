@@ -45,7 +45,12 @@ _CASES = {
             'Assert.Contains("x", r.Tags);',
             "Assert.Equal(\n        1,\n        r.First());",
         ],
-        ["Assert.IsNotNull(r);", "Assert.True(done);", "r.Should().NotBeNull();", "Assert.Null(err);"],
+        [
+            "Assert.IsNotNull(r);",
+            "Assert.True(done);",
+            "r.Should().NotBeNull();",
+            "Assert.Null(err);",
+        ],
     ),
     "typescript": (
         "tests/foo.test.ts",
@@ -75,6 +80,23 @@ _CASES = {
             "assert r.first() == (\n        1\n    )",
         ],
         ["assert r is not None", "assert done", "assert not err", "assert ok, 'message'"],
+    ),
+    "php": (
+        "tests/FooTest.php",
+        "<?php\nclass FooTest {{\n  public function testIt() {{\n{body}\n  }}\n}}\n",
+        [
+            "$this->assertEquals(5, $r->count);",
+            "$this->assertEquals('a', $r->name);",
+            "$this->assertEquals(2, $r->size());",
+            "$this->assertContains('x', $r->tags);",
+            "$this->assertEquals(\n        1,\n        $r->first());",
+        ],
+        [
+            "$this->assertNotNull($r);",
+            "$this->assertTrue($done);",
+            "$this->assertNull($err);",
+            "self::assertFalse($failed);",
+        ],
     ),
 }
 
@@ -117,6 +139,8 @@ def test_five_real_checks_are_reported_four_are_not(language: str):
         ("csharp", "Assert.Equal(expected, Compute());"),
         ("python", "assert x == compute()"),
         ("typescript", "expect(x).toBe(5);"),
+        ("php", "$this->assertEquals(5, getCount());"),
+        ("php", "$this->assertNull($x->getY());"),
     ],
 )
 def test_a_value_check_is_not_a_flag_check(language: str, line: str):
@@ -126,13 +150,16 @@ def test_a_value_check_is_not_a_flag_check(language: str, line: str):
 @pytest.mark.parametrize(
     ("language", "line"),
     [
-        ("java", "  assertNull(err, \"message\");"),
+        ("java", '  assertNull(err, "message");'),
         ("kotlin", "assertTrue(done)"),
         ("csharp", "Assert.IsFalse(failed);"),
         ("python", "self.assertIsNone(err)"),
         ("javascript", "assert.ok(done);"),
         ("rust", "assert!(ok);"),
         ("go", "require.NotNil(t, err)"),
+        ("php", "$this->assertNotNull($x);"),
+        ("php", "self::assertTrue($done);"),
+        ("php", "static::assertNull($err, 'custom msg');"),
     ],
 )
 def test_flag_checks_per_language(language: str, line: str):

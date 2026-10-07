@@ -313,16 +313,51 @@ class LanguageNodeMap:
     misread_scope: Callable[[Node], object] | None = None
 
 
-
 # Scalar type names C and C++ share, Win32's typedefs included because C/C++ on
 # Windows spells ints and strings that way.
 _C_SCALARS = frozenset(
     {
-        "char", "short", "int", "long", "float", "double", "signed", "unsigned", "bool",
-        "_Bool", "wchar_t", "char8_t", "char16_t", "char32_t", "size_t", "ssize_t",
-        "ptrdiff_t", "intptr_t", "uintptr_t", "int8_t", "int16_t", "int32_t", "int64_t",
-        "uint8_t", "uint16_t", "uint32_t", "uint64_t", "BOOL", "BYTE", "WORD", "DWORD", "UINT",
-        "ULONG", "LONG", "INT", "WCHAR", "LPCWSTR", "LPWSTR", "LPCSTR", "LPSTR", "PCWSTR",
+        "char",
+        "short",
+        "int",
+        "long",
+        "float",
+        "double",
+        "signed",
+        "unsigned",
+        "bool",
+        "_Bool",
+        "wchar_t",
+        "char8_t",
+        "char16_t",
+        "char32_t",
+        "size_t",
+        "ssize_t",
+        "ptrdiff_t",
+        "intptr_t",
+        "uintptr_t",
+        "int8_t",
+        "int16_t",
+        "int32_t",
+        "int64_t",
+        "uint8_t",
+        "uint16_t",
+        "uint32_t",
+        "uint64_t",
+        "BOOL",
+        "BYTE",
+        "WORD",
+        "DWORD",
+        "UINT",
+        "ULONG",
+        "LONG",
+        "INT",
+        "WCHAR",
+        "LPCWSTR",
+        "LPWSTR",
+        "LPCSTR",
+        "LPSTR",
+        "PCWSTR",
         "PWSTR",
     }
 )
@@ -428,8 +463,23 @@ _JS = _TS  # identical control-flow nodes; tree-sitter-javascript shares shape.
 _GO = LanguageNodeMap(
     scalar_type_names=frozenset(
         {
-            "string", "bool", "byte", "rune", "int", "int8", "int16", "int32", "int64",
-            "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "float32", "float64",
+            "string",
+            "bool",
+            "byte",
+            "rune",
+            "int",
+            "int8",
+            "int16",
+            "int32",
+            "int64",
+            "uint",
+            "uint8",
+            "uint16",
+            "uint32",
+            "uint64",
+            "uintptr",
+            "float32",
+            "float64",
         }
     ),
     function_kinds=frozenset({"function_declaration", "method_declaration"}),
@@ -470,7 +520,27 @@ _GO = LanguageNodeMap(
 _JAVA = LanguageNodeMap(
     ctor_kinds=frozenset({"constructor_declaration"}),
     fixed_signature_markers=frozenset({"Override"}),
-    scalar_type_names=frozenset({"boolean", "byte", "short", "int", "long", "float", "double", "char", "String", "Boolean", "Byte", "Short", "Integer", "Long", "Float", "Double", "Character"}),
+    scalar_type_names=frozenset(
+        {
+            "boolean",
+            "byte",
+            "short",
+            "int",
+            "long",
+            "float",
+            "double",
+            "char",
+            "String",
+            "Boolean",
+            "Byte",
+            "Short",
+            "Integer",
+            "Long",
+            "Float",
+            "Double",
+            "Character",
+        }
+    ),
     function_kinds=frozenset({"method_declaration", "constructor_declaration"}),
     lambda_kinds=frozenset({"lambda_expression"}),
     branch_kinds=frozenset({"if_statement", "ternary_expression"}),
@@ -542,8 +612,24 @@ _RUST = LanguageNodeMap(
     trait_impl_kinds=frozenset({"impl_item"}),
     scalar_type_names=frozenset(
         {
-            "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128",
-            "usize", "f32", "f64", "bool", "char", "str", "String",
+            "i8",
+            "i16",
+            "i32",
+            "i64",
+            "i128",
+            "isize",
+            "u8",
+            "u16",
+            "u32",
+            "u64",
+            "u128",
+            "usize",
+            "f32",
+            "f64",
+            "bool",
+            "char",
+            "str",
+            "String",
         }
     ),
     function_kinds=frozenset({"function_item"}),
@@ -617,7 +703,19 @@ _KOTLIN = LanguageNodeMap(
     ctor_kinds=frozenset({"secondary_constructor"}),
     fixed_signature_markers=frozenset({"override"}),
     scalar_type_names=frozenset(
-        {"Int", "Long", "Short", "Byte", "Boolean", "Char", "Float", "Double", "String", "UInt", "ULong"}
+        {
+            "Int",
+            "Long",
+            "Short",
+            "Byte",
+            "Boolean",
+            "Char",
+            "Float",
+            "Double",
+            "String",
+            "UInt",
+            "ULong",
+        }
     ),
     function_kinds=frozenset({"function_declaration"}),
     lambda_kinds=frozenset({"lambda_literal", "anonymous_function"}),
@@ -701,8 +799,7 @@ _DART = LanguageNodeMap(
 _CPP = LanguageNodeMap(
     misread_scope=misread_scope_keyword,
     fixed_signature_markers=frozenset({"override", "final"}),
-    scalar_type_names=_C_SCALARS
-    | frozenset({"string", "wstring", "string_view", "wstring_view"}),
+    scalar_type_names=_C_SCALARS | frozenset({"string", "wstring", "string_view", "wstring_view"}),
     function_kinds=frozenset({"function_definition"}),
     lambda_kinds=frozenset({"lambda_expression"}),
     branch_kinds=frozenset({"if_statement", "conditional_expression"}),
@@ -796,24 +893,61 @@ _CSHARP = LanguageNodeMap(
     # data-driven tests, whose arguments the runner supplies.
     fixed_signature_markers=frozenset(
         {
-            "override", "extern", "DllImport", "LibraryImport", "LoggerMessage",
-            "Theory", "InlineData", "MemberData", "ClassData", "DataRow", "DataTestMethod",
-            "DynamicData", "TestCase", "TestCaseSource",
+            "override",
+            "extern",
+            "DllImport",
+            "LibraryImport",
+            "LoggerMessage",
+            "Theory",
+            "InlineData",
+            "MemberData",
+            "ClassData",
+            "DataRow",
+            "DataTestMethod",
+            "DynamicData",
+            "TestCase",
+            "TestCaseSource",
         }
     ),
     explicit_impl_kinds=frozenset({"explicit_interface_specifier"}),
     public_api_modifiers=frozenset({"public", "protected"}),
     public_api_type_kinds=frozenset(
         {
-            "class_declaration", "struct_declaration", "record_declaration",
-            "record_struct_declaration", "interface_declaration",
+            "class_declaration",
+            "struct_declaration",
+            "record_declaration",
+            "record_struct_declaration",
+            "interface_declaration",
         }
     ),
     scalar_type_names=frozenset(
         {
-            "bool", "byte", "sbyte", "char", "short", "ushort", "int", "uint", "long", "ulong",
-            "float", "double", "decimal", "string", "nint", "nuint", "String", "Boolean",
-            "Int16", "Int32", "Int64", "UInt16", "UInt32", "UInt64", "Double", "Single",
+            "bool",
+            "byte",
+            "sbyte",
+            "char",
+            "short",
+            "ushort",
+            "int",
+            "uint",
+            "long",
+            "ulong",
+            "float",
+            "double",
+            "decimal",
+            "string",
+            "nint",
+            "nuint",
+            "String",
+            "Boolean",
+            "Int16",
+            "Int32",
+            "Int64",
+            "UInt16",
+            "UInt32",
+            "UInt64",
+            "Double",
+            "Single",
         }
     ),
     function_kinds=frozenset(
@@ -1137,7 +1271,9 @@ _FSHARP = LanguageNodeMap(
     switch_kinds=frozenset({"match_expression"}),
     case_kinds=frozenset({"rules"}),
     boolean_operator_kinds=frozenset(),
-    class_kinds=frozenset({"anon_type_defn", "record_type_defn", "union_type_defn", "enum_type_defn"}),
+    class_kinds=frozenset(
+        {"anon_type_defn", "record_type_defn", "union_type_defn", "enum_type_defn"}
+    ),
     self_identifiers=frozenset(),
     member_access_kinds=frozenset(),
     assert_call_kinds=frozenset({"application_expression"}),
@@ -1182,6 +1318,38 @@ _OBJC = LanguageNodeMap(
 )
 
 
+_PHP = LanguageNodeMap(
+    function_kinds=frozenset({"function_definition", "method_declaration"}),
+    lambda_kinds=frozenset({"anonymous_function", "arrow_function"}),
+    branch_kinds=frozenset({"if_statement", "else_if_clause", "conditional_expression"}),
+    loop_kinds=frozenset({"for_statement", "foreach_statement", "while_statement", "do_statement"}),
+    try_kinds=frozenset({"try_statement"}),
+    catch_kinds=frozenset({"catch_clause"}),
+    switch_kinds=frozenset({"switch_statement", "match_expression"}),
+    case_kinds=frozenset({"case_statement", "match_conditional_expression"}),
+    boolean_operator_kinds=frozenset(),
+    boolean_operator_text_kinds=frozenset({"binary_expression"}),
+    class_kinds=frozenset(
+        {"class_declaration", "trait_declaration", "interface_declaration", "enum_declaration"}
+    ),
+    self_identifiers=frozenset({"$this"}),
+    member_access_kinds=frozenset(
+        {"member_access_expression", "member_call_expression", "nullsafe_member_access_expression"}
+    ),
+    assert_call_kinds=frozenset(
+        {"member_call_expression", "scoped_call_expression", "function_call_expression"}
+    ),
+    call_kinds=frozenset(
+        {
+            "member_call_expression",
+            "scoped_call_expression",
+            "function_call_expression",
+            "nullsafe_member_call_expression",
+        }
+    ),
+)
+
+
 LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "python": _PY,
     "typescript": _TS,
@@ -1211,6 +1379,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     # No "elixir" entry on purpose. See the note above ``_FSHARP``.
     "fsharp": _FSHARP,
     "objectivec": _OBJC,
+    "php": _PHP,
 }
 
 

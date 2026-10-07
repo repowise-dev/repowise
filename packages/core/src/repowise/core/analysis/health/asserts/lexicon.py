@@ -271,6 +271,10 @@ FLAG_CHECK_PATTERNS: dict[str, tuple[str, ...]] = {
     ),
     "rust": (rf"^assert!{_CALL_ON_NAME}{_END}",),
     "go": (r"^(?:assert|require)\.(?:Not)?(?:Nil|True|False)\(\s*\w+\s*,\s*!?\w+\s*\)$",),
+    "php": (
+        rf"^(?:\$this->|self::|static::)?assert(?:Not)?Null\(\s*(?:{_MSG}\s*,\s*)?!?\$?\w+\s*(?:,\s*{_MSG})?\s*\){_END}",
+        rf"^(?:\$this->|self::|static::)?assert(?:True|False)\(\s*(?:{_MSG}\s*,\s*)?!?\$?\w+\s*(?:,\s*{_MSG})?\s*\){_END}",
+    ),
 }
 for _alias, _base in (("tsx", "typescript"), ("javascript", "typescript"), ("jsx", "typescript")):
     FLAG_CHECK_PATTERNS[_alias] = FLAG_CHECK_PATTERNS[_base]

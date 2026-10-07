@@ -48,7 +48,16 @@ _BODY_FIELD_NAMES = (
 # node types for the same construct -- either can be a chain's last arm
 # (bare ``if`` when it has no further ``else``, ``ifElse`` when it does).
 _ELSE_IF_NODE_KINDS = frozenset(
-    {"if_statement", "if_expression", "elif_clause", "elsif", "if_let_expression", "if", "ifElse"}
+    {
+        "if_statement",
+        "if_expression",
+        "elif_clause",
+        "elsif",
+        "else_if_clause",
+        "if_let_expression",
+        "if",
+        "ifElse",
+    }
 )
 
 # Token spelling(s) an else-if continuation's previous sibling carries when
@@ -88,14 +97,15 @@ def _is_elif_continuation(node: Node) -> bool:
 
     - Python: a dedicated ``elif_clause`` node (always a continuation).
     - Ruby: a dedicated ``elsif`` node (always a continuation).
-    - TypeScript / Rust / C++: the else-if is wrapped in an ``else_clause``.
+    - PHP: a dedicated ``else_if_clause`` node (always a continuation).
+    - TypeScript / Rust / C++ / PHP (with space): the else-if is wrapped in an ``else_clause``.
     - Java / Go / C# / Dart / Kotlin / Pascal: the else-if node is the
       sibling that immediately follows the parent ``if``'s else token
       (spelled ``else`` in those grammars, ``kElse`` in Pascal's).
     """
     if node.type not in _ELSE_IF_NODE_KINDS:
         return False
-    if node.type in ("elif_clause", "elsif"):
+    if node.type in ("elif_clause", "elsif", "else_if_clause"):
         return True
     parent = node.parent
     if parent is None:

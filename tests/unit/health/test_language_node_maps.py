@@ -59,7 +59,9 @@ def test_elixir_reports_nothing_rather_than_a_wrong_function() -> None:
     No grammar guard here on purpose: ``walk_file`` returns on the missing-map
     check before it ever asks for a parser, so this holds either way.
     """
-    source = "defmodule A do\n  def one(x), do: x\nend\n\ndefmodule B do\n  def two(y), do: y\nend\n"
+    source = (
+        "defmodule A do\n  def one(x), do: x\nend\n\ndefmodule B do\n  def two(y), do: y\nend\n"
+    )
     fc = walk_file("sample.ex", "elixir", source.encode("utf-8"))
     assert fc.functions == []
 
@@ -417,3 +419,106 @@ public class A {
 }
 """
     assert _rows("typescript", typescript, "ts")["pick"] == _rows("java", java, "java")["pick"] == 4
+
+
+# --------------------------------------------------------------------------- #
+# PHP
+# --------------------------------------------------------------------------- #
+
+_PHP_CASES: list[tuple[str, str, dict[str, int]]] = [
+    (
+        "functions and methods are walked with CCN entry 1",
+        """<?php
+function standalone($x) {
+    return $x;
+}
+class Service {
+    public function handle($x) {
+        return $x;
+    }
+}
+""",
+        {"standalone": 1, "handle": 1},
+    ),
+    (
+        "if, elseif, else if and ternaries add branch points",
+        """<?php
+function branches($a, $b) {
+    if ($a > 0) {
+        return 1;
+    } elseif ($a < 0) {
+        return 2;
+    } else if ($b > 0) {
+        return 3;
+    }
+    return $b ? 4 : 5;
+}
+""",
+        {"branches": 5},
+    ),
+    (
+        "boolean operators &&, ||, and, or add to CCN",
+        """<?php
+function booleans($a, $b, $c, $d) {
+    if ($a && $b) {
+        return 1;
+    }
+    if ($c || $d) {
+        return 2;
+    }
+    return ($a and $b) or ($c and $d);
+}
+""",
+        {"booleans": 8},
+    ),
+    (
+        "loops and try-catch add complexity",
+        """<?php
+function control_flow($items) {
+    try {
+        foreach ($items as $item) {
+            while ($item > 0) {
+                $item--;
+            }
+        }
+    } catch (Exception $e) {
+        echo $e->getMessage();
+    }
+}
+""",
+        {"control_flow": 4},
+    ),
+    (
+        "match and switch expressions count dispatch",
+        """<?php
+function dispatch($x) {
+    switch ($x) {
+        case 1:
+            return 10;
+        case 2:
+            return 20;
+        default:
+            return 0;
+    }
+}
+function matching($x) {
+    return match ($x) {
+        1 => 10,
+        2, 3 => 20,
+        default => 0,
+    };
+}
+""",
+        {"dispatch": 2, "matching": 2},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [(src, exp) for _, src, exp in _PHP_CASES],
+    ids=[label for label, _, _ in _PHP_CASES],
+)
+def test_php_complexity(source: str, expected: dict[str, int]) -> None:
+    _require_language("php")
+    assert _rows("php", source, "php") == expected

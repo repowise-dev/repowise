@@ -585,9 +585,7 @@ def test_cpp_namespace_or_type_after_a_macro_is_not_a_function(tmp_path):
 
 
 @pytest.mark.parametrize("language", ["cpp", "c"])
-def test_function_behind_a_macro_with_an_aggregate_return_type_stays_a_function(
-    tmp_path, language
-):
+def test_function_behind_a_macro_with_an_aggregate_return_type_stays_a_function(tmp_path, language):
     # The stray ``struct S`` lands in the head as it does for a misread scope,
     # but the declarator is a real function_declarator.
     source = b"""int plain(void) { return 0; }
@@ -859,4 +857,61 @@ def test_ruby_assertion_blocks():
     assert many.assertion_blocks, "expected a run of assert calls"
     assert many.assertion_blocks[0][2] == 5
     few = _find(results, "test_few_asserts")
+    assert few is not None and few.assertion_blocks == []
+
+
+def test_php_nesting_and_ccn():
+    results = _walk("php/nested.php", "php")
+    deep = _find(results, "deeply_nested")
+    assert deep is not None
+    assert deep.ccn == 5, f"expected CCN 5, got {deep.ccn}"
+    assert deep.max_nesting == 4, f"expected nesting 4, got {deep.max_nesting}"
+    many = _find(results, "many_branches")
+    assert many is not None
+    # if + if + && + elseif + || + else if + base path
+    assert many.ccn == 7, f"expected CCN 7, got {many.ccn}"
+    assert many.max_nesting == 1, f"expected nesting 1, got {many.max_nesting}"
+    wordy = _find(results, "wordy")
+    assert wordy is not None and wordy.ccn == 3  # and + or
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0
+    assert shallow.param_count == 1
+    loops = _find(results, "loops_galore")
+    assert loops is not None
+    assert loops.ccn == 4  # for + foreach + do-while + 1
+    assert loops.max_nesting == 1
+    tc = _find(results, "try_catch_finally")
+    assert tc is not None
+    assert tc.ccn == 4  # if + 2 catch clauses + 1
+
+
+def test_php_lambdas_and_closures():
+    results = _walk("php/nested.php", "php")
+    fn = _find(results, "lambda_and_arrow")
+    assert fn is not None
+    # anonymous_function branch rolls into lambda_and_arrow
+    assert fn.ccn >= 3
+
+
+def test_php_classes_lcom4():
+    classes = _walk_classes("php/classes.php", "php")
+    cohesive = classes.get("CohesiveClass")
+    split = classes.get("SplitClass")
+    assert cohesive is not None and split is not None
+    assert cohesive.method_count == 4
+    assert split.method_count == 4
+    assert cohesive.lcom4 == 1
+    assert split.lcom4 >= 2
+    trait = classes.get("LoggableTrait")
+    assert trait is not None
+    assert trait.method_count == 2
+
+
+def test_php_assertion_blocks():
+    results = _walk("php/assertions.php", "php")
+    many = _find(results, "testManyAsserts")
+    assert many is not None
+    assert many.assertion_blocks, "expected a run of assert calls"
+    assert many.assertion_blocks[0][2] == 5
+    few = _find(results, "testFewAsserts")
     assert few is not None and few.assertion_blocks == []

@@ -183,7 +183,7 @@ handled too: the call node is matched as the statement itself.)
 
 Ships control-flow + assertion mappings for **all eleven full-tier
 languages** (Python, TypeScript, JavaScript, Go, Java, Kotlin, Rust, C++,
-C#, Scala, Ruby) plus the `tsx`/`jsx` aliases and Dart; class-level (LCOM4 /
+C#, Scala, Ruby) plus the `tsx`/`jsx` aliases, Dart, Object Pascal, and PHP; class-level (LCOM4 /
 god-class) mappings for all of those except **Go** (methods attach to a type
 via an external receiver, so there is no single grouping node). Ruby maps
 `class_kinds` (size / god-class facts) but leaves `member_access_kinds`
