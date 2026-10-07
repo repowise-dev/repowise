@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -41,6 +42,26 @@ class DeadCodeFindingData:
     # only; file/package-kind findings leave both None).
     start_line: int | None = None
     end_line: int | None = None
+
+    @property
+    def is_spanned_symbol(self) -> bool:
+        """A named symbol finding whose declaration lines are known."""
+        return (
+            self.kind in (DeadCodeKind.UNUSED_EXPORT, DeadCodeKind.UNUSED_INTERNAL)
+            and bool(self.symbol_name)
+            and self.start_line is not None
+            and self.end_line is not None
+        )
+
+
+def drop_used(
+    findings: list[DeadCodeFindingData],
+    candidates: list[DeadCodeFindingData],
+    is_used: Callable[[DeadCodeFindingData], bool],
+) -> list[DeadCodeFindingData]:
+    """*findings* without the *candidates* that *is_used* holds for. Returns a new list."""
+    dropped = {id(f) for f in candidates if is_used(f)}
+    return [f for f in findings if id(f) not in dropped]
 
 
 @dataclass

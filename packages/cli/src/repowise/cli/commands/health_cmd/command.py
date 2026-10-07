@@ -20,7 +20,7 @@ from repowise.cli.helpers import (
     load_state,
     resolve_command_target,
     run_async,
-    silence_logs_for_machine_output,
+    silence_logs_for_machine_output_until_close,
 )
 from repowise.core.analysis.health.counts import (
     COUNTS,
@@ -31,6 +31,7 @@ from repowise.core.analysis.health.counts import (
     project as project_counts,
 )
 from repowise.core.analysis.health.models import split_by_origin
+from repowise.core.analysis.health.rows import split_unscored
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
 from repowise.core.analysis.health.scoring import compute_kpis
 from repowise.core.store_location import resolve_store_dir
@@ -195,7 +196,7 @@ def health_command(
     # machine-readable format so stdout is pure JSON/Markdown and safe to
     # pipe into jq or other tools (e.g. `repowise health --format json | jq .kpis`).
     if fmt != "table":
-        silence_logs_for_machine_output()
+        silence_logs_for_machine_output_until_close()
 
     # Status output goes to stderr when the user asked for a machine-readable
     # format — otherwise rich's banner pollutes stdout and breaks
@@ -355,6 +356,9 @@ def health_command(
     # Taken before the projection, so a row the projection cannot read still
     # keeps its findings rather than reading as a file that left the repo.
     scoped_paths = {m.file_path for m in metrics}
+    # Files in a language health has no dialect for carry no score: they are
+    # counted, never ranked or averaged.
+    metrics, unanalysed = split_unscored(metrics)
     code_shape = parse_counts(counts) == "code_shape"
     if code_shape:
         # No `unscored` counterpart to the API's: this command scores live, so
@@ -481,12 +485,17 @@ def health_command(
         band_str = f" [[{band_color}]{BAND_LABEL[band]}[/{band_color}]]"
     console.print(
         f"\nCode health: [bold]{avg if avg is not None else '?'}[/bold]/10{band_str} · "
-        f"Hotspot: [bold]{kpis.get('hotspot_health', '?')}[/bold]/10 · "
-        f"Worst: [bold]{kpis.get('worst_performer_score', '?')}[/bold]/10 "
-        f"({kpis.get('worst_performer_path', 'n/a')})"
+        f"Hotspot: [bold]{kpis.get('hotspot_health') or '?'}[/bold]/10 · "
+        f"Worst: [bold]{kpis.get('worst_performer_score') or '?'}[/bold]/10 "
+        f"({kpis.get('worst_performer_path') or 'n/a'})"
     )
     if code_shape:
         console.print("[dim]Counting code shape only — change history is left out.[/dim]")
+    if unanalysed:
+        console.print(
+            f"[dim]{unanalysed} file(s) not analysed: health does not support "
+            "their language yet.[/dim]"
+        )
     _render_split_line(kpis)
     _render_distribution_line(health_distribution(metrics))
 

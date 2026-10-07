@@ -218,13 +218,13 @@ class TestPublicApi:
                 _symbol("SourceFile", "variable", signature="SourceFile = tuple[str, str]"),
             ]
         )
-        table = render(generator, ctx).split("## Public API", 1)[1].split("Also defined", 1)[0]
+        listed = render(generator, ctx).split("## Public API", 1)[1].split("Also defined", 1)[0]
 
-        assert "`walk_repo`" in table
+        assert "- `def walk_repo() -> None`" in listed
         # A capitalised module-level variable is a type alias, not module state.
-        assert "`SourceFile`" in table
-        for demoted in ("`log`", "`__all__`", "`__init__`"):
-            assert demoted not in table
+        assert "- `SourceFile = tuple[str, str]`" in listed
+        for demoted in ("structlog", "__all__", "__init__"):
+            assert demoted not in listed
 
     def test_a_demoted_name_is_still_spelled_on_the_page(self, generator):
         # ``content`` is the index entry as well as the page. A name the table
@@ -251,7 +251,7 @@ class TestPublicApi:
         assert "## Public API" in page
         assert '`__all__ = ["walk_repo"]`' in page
 
-    def test_the_signature_column_reads_as_a_declaration(self, generator):
+    def test_the_signature_reads_as_a_declaration(self, generator):
         ctx = _context(
             symbols=[
                 _symbol(
@@ -266,10 +266,36 @@ class TestPublicApi:
                 )
             ]
         )
-        row = next(ln for ln in render(generator, ctx).splitlines() if ln.startswith("| `walk_repo`"))
+        row = next(
+            ln for ln in render(generator, ctx).splitlines() if ln.startswith("- `def walk_repo")
+        )
 
         assert "( root" not in row
-        assert row.rstrip(" |").endswith("-> Iterator[tuple[Path, list[str], list[str]]]")
+        assert row.endswith("-> Iterator[tuple[Path, list[str], list[str]]]`")
+
+    def test_each_entry_carries_the_first_sentence_of_its_docstring(self, generator):
+        walk = _symbol("walk_repo")
+        walk["docstring"] = "Yield every directory under *root*.\n\nPrunes as it goes."
+        page = render(generator, _context(symbols=[walk]))
+
+        assert "- `def walk_repo() -> None`: Yield every directory under *root*." in page
+        assert "Prunes as it goes." not in page
+
+    def test_methods_sit_under_their_class(self, generator):
+        ctx = _context(
+            symbols=[
+                _symbol("WalkSnapshot", "class", signature="class WalkSnapshot"),
+                _symbol(
+                    "is_live",
+                    "method",
+                    signature="def is_live(self, path: str) -> bool",
+                    parent_name="WalkSnapshot",
+                ),
+            ]
+        )
+        page = render(generator, ctx)
+
+        assert "- `class WalkSnapshot`\n  - `def is_live(self, path: str) -> bool`" in page
 
 
 # ---------------------------------------------------------------------------
@@ -287,17 +313,23 @@ DEPS = [
 
 class TestDependencyGrouping:
 
-    def test_paths_are_grouped_by_directory_busiest_first(self, generator):
+    def test_one_line_per_directory_busiest_first(self, generator):
         section = render(generator, _context(dependencies=DEPS)).split("## Depends on", 1)[1]
-        headings = [ln for ln in section.splitlines() if ln.startswith("**`")]
+        lines = [ln for ln in section.splitlines() if ln.startswith("- ")]
 
-        assert headings[:2] == ["**`pkg/resolvers`**", "**`pkg/pipeline`**"]
+        assert lines[:2] == [
+            "- `pkg/resolvers/go.py`, `pkg/resolvers/ruby.py`, `pkg/resolvers/swift.py`",
+            "- `pkg/pipeline/run.py`",
+        ]
 
     def test_every_path_is_still_printed_whole(self, generator):
         page = render(generator, _context(dependencies=DEPS, dependents=DEPS))
+        used_by = page.split("## Used by", 1)[1].split("## Depends on", 1)[0]
+        depends_on = page.split("## Depends on", 1)[1]
 
         for path in DEPS:
-            assert f"- `{path}`" in page
+            assert f"`{path}`" in used_by
+            assert f"`{path}`" in depends_on
 
     def test_grouping_leaves_no_gap_between_sections(self, generator):
         page = render(
@@ -312,35 +344,271 @@ class TestLayerRole:
     @pytest.mark.parametrize(
         "role,expected",
         [
-            ("edge_connector", "boundary"),
-            ("entry_point", "entry point"),
-            ("internal", "internal to its layer"),
+            ("edge_connector", "It belongs to the Core Pipeline layer, and other layers import it."),
+            ("entry_point", "It belongs to the Core Pipeline layer and is an entry point into it."),
+            ("internal", "It belongs to the Core Pipeline layer."),
         ],
     )
     def test_the_role_is_spelled_for_a_reader(self, generator, role, expected):
         page = render(generator, _context(kg_layer_name="Core Pipeline", kg_layer_role=role))
 
         assert expected in page
-        assert "edge_connector" not in page
+        assert role not in page
 
 
 class TestOverview:
-    def test_a_file_with_no_docstring_borrows_the_graph_summary(self, generator):
+    def test_a_test_file_borrows_the_graph_summary(self, generator):
         page = render(
             generator,
-            _context(docstring=None, kg_node_summary="Prunes junk directories during a walk."),
+            _context(docstring=None, is_test=True, kg_node_summary="Tests for the walker."),
         )
 
-        assert "Prunes junk directories during a walk." in page
-        # The structural sentence still follows it: it is what names the
-        # language and the layer.
-        assert "is a python source file" in page
+        assert "## Overview\n\nTests for the walker." in page
+
+    def test_code_that_defines_symbols_is_described_by_them(self, generator):
+        # The graph's summary would only restate the names, less precisely.
+        page = render(
+            generator,
+            _context(docstring=None, kg_node_summary="Service module walk defining walk_repo."),
+        )
+
+        assert "Service module" not in page
+        assert "`walk.py` defines `walk_repo`." in page
 
     def test_a_docstring_still_wins(self, generator):
         page = render(generator, _context(kg_node_summary="Machine summary."))
 
         assert "Walks a repository tree." in page
         assert "Machine summary." not in page
+
+
+class TestOpening:
+    """The first paragraph is the page summary ``get_context`` and search show,
+    so it has to say something specific about the file on every page."""
+
+    def test_without_a_docstring_it_says_what_the_file_defines_and_who_uses_it(
+        self, generator
+    ):
+        ctx = _context(
+            docstring=None,
+            symbols=[_symbol(n) for n in ("walk_repo", "load", "dump", "prune", "scan")],
+            dependents=[*DEPS, "tests/test_walk.py"],
+        )
+        page = generator._render_page(
+            page_type="file_page",
+            target_path=ctx.file_path,
+            title="File: pkg/mod/walk.py",
+            template="file_page.j2",
+            ctx=ctx,
+        )
+
+        assert page.summary == (
+            "`walk.py` defines `walk_repo`, `load`, `dump` and 2 more. "
+            "It is imported by 5 files (1 of them tests). "
+            "Of the others, 3 are in `pkg/resolvers`."
+        )
+
+    def test_a_short_neighbourhood_is_named_in_full(self, generator):
+        page = render(
+            generator,
+            _context(docstring=None, dependents=["pkg/cli/main.py"], dependencies=DEPS[:2]),
+        )
+
+        assert "It is imported by `pkg/cli/main.py`." in page
+        assert "It imports `pkg/resolvers/go.py` and `pkg/resolvers/ruby.py`." in page
+
+    def test_the_docstring_leads_and_the_facts_follow_it(self, generator):
+        page = render(generator, _context(dependents=["pkg/cli/main.py"]))
+        overview = page.split("## Overview\n\n", 1)[1].split("\n\n## ", 1)[0]
+
+        assert overview == (
+            "Walks a repository tree.\n\n"
+            "It defines `walk_repo`. It is imported by `pkg/cli/main.py`."
+        )
+
+    def test_a_rest_titled_docstring_is_summarised_by_its_prose(self, generator):
+        ctx = _context(docstring="Tagged JSON\n~~~~~~~~~~~\n\nA compact representation.")
+        page = generator._render_page(
+            page_type="file_page",
+            target_path=ctx.file_path,
+            title="File: pkg/mod/walk.py",
+            template="file_page.j2",
+            ctx=ctx,
+        )
+
+        assert page.summary == "A compact representation."
+
+    def test_an_overlined_rest_title_is_not_the_summary(self, generator):
+        ctx = _context(docstring="=========\nBig Title\n=========\n\nSome prose.")
+        page = generator._render_page(
+            page_type="file_page",
+            target_path=ctx.file_path,
+            title="File: pkg/mod/walk.py",
+            template="file_page.j2",
+            ctx=ctx,
+        )
+
+        assert page.summary == "Some prose."
+
+    def test_rust_impl_blocks_and_fields_are_not_definitions(self, generator):
+        ctx = _context(
+            docstring=None,
+            symbols=[
+                _symbol("Foo", "struct", signature="pub struct Foo"),
+                _symbol("x", "property", signature="pub x: i32"),
+                _symbol("Foo", "impl", signature="impl Foo"),
+                _symbol("area", "method", signature="pub fn area(&self) -> f64", parent_name="Foo"),
+                _symbol("Foo", "impl", signature="impl Foo"),
+            ],
+        )
+        page = render(generator, ctx)
+
+        assert "`walk.py` defines `Foo`." in page
+        assert page.count("impl Foo") == 0
+        assert "- `pub struct Foo`\n  - `pub fn area(&self) -> f64`" in page
+
+    def test_a_method_of_an_unlisted_class_is_nested_not_top_level(self, generator):
+        ctx = _context(
+            docstring=None,
+            symbols=[_symbol("run", "method", signature="def run(self)", parent_name="_Impl")],
+        )
+        page = render(generator, ctx)
+
+        assert "defines `run`" not in page
+        assert "- `_Impl`\n  - `def run(self)`" in page
+
+    def test_a_barrel_keeps_the_graph_summary(self, generator):
+        page = render(
+            generator,
+            _context(docstring=None, kg_tags=["barrel"], kg_node_summary="Re-export barrel for x/."),
+        )
+
+        assert "## Overview\n\nRe-export barrel for x/." in page
+
+    def test_the_fallback_uses_the_right_article(self, generator):
+        page = render(generator, _context(docstring=None, symbols=[], language="elixir"))
+
+        assert "`walk.py` is an elixir file." in page
+
+    def test_a_directory_is_named_only_when_it_clearly_leads(self, generator):
+        spread = ["a/one.py", "b/two.py", "c/three.py", "d/four.py"]
+        page = render(generator, _context(docstring=None, dependents=spread))
+
+        assert "It is imported by 4 files." in page
+        assert " are in " not in page
+
+    def test_types_are_named_before_values(self, generator):
+        ctx = _context(
+            docstring=None,
+            symbols=[
+                _symbol("T_hook", "variable", signature="T_hook = TypeVar('T_hook')"),
+                _symbol("helper"),
+                _symbol("Walker", "class", signature="class Walker"),
+            ],
+        )
+
+        assert "`walk.py` defines `Walker`, `helper` and `T_hook`." in render(generator, ctx)
+
+    def test_a_single_directory_is_said_once(self, generator):
+        page = render(generator, _context(dependents=[*DEPS[:3], "pkg/resolvers/zig.py"]))
+
+        assert "It is imported by 4 files. All of them are in `pkg/resolvers`." in page
+
+    def test_importers_that_are_all_tests_name_no_directory(self, generator):
+        tests = [f"tests/test_{n}.py" for n in ("a", "b", "c", "d")]
+        page = render(generator, _context(dependents=tests))
+
+        assert "It is imported by 4 files (4 of them tests)." in page
+        assert "Of the others" not in page
+
+    def test_an_entry_point_says_so(self, generator):
+        page = render(generator, _context(is_entry_point=True))
+
+        assert "It is an entry point." in page
+
+    def test_a_file_the_index_knows_nothing_about_still_gets_a_sentence(self, generator):
+        page = render(generator, _context(docstring=None, symbols=[]))
+
+        assert "## Overview\n\n`walk.py` is a python file." in page
+
+
+# A backslash at a line end joins it to the next: the page's paragraphs are
+# single lines, wider than the source allows.
+GOLDEN = """# pkg/mod/walk.py
+
+## Overview
+
+`walk.py` defines `WalkSnapshot` and `walk_repo`. It is imported by `pkg/cli/main.py`.
+
+It imports 4 files from this repository. 3 of them are in `pkg/resolvers`. \
+It belongs to the Core Pipeline layer, and other layers import it.
+
+## Public API
+
+- `def walk_repo() -> None`: Yield every directory under *root*.
+- `class WalkSnapshot`
+  - `def is_live(self, path: str) -> bool`
+
+Also defined: `log = structlog.get_logger(__name__)`.
+
+## Used by
+
+- `pkg/cli/main.py`
+
+## Depends on
+
+- `pkg/resolvers/go.py`, `pkg/resolvers/ruby.py`, `pkg/resolvers/swift.py`
+- `pkg/pipeline/run.py`
+
+## History
+
+27 commits in its history, 9 in the last 90 days. The last landed on 2026-08-17. \
+**Ada Lovelace** is its primary maintainer, at 62% of commits. \
+12 of those commits fixed a bug. It is one of the repository's change hotspots.
+
+## Changes together with
+
+Files that change in the same commits as this one without importing it or being imported by it.
+
+- `pkg/mod/persist.py`: 28 shared commits (last together on 2026-08-29)
+
+## Questions this page answers
+
+- What does `pkg/mod/walk.py` export?
+- Where is `walk_repo` defined?
+- What imports `pkg/mod/walk.py`?
+
+---
+
+*Generated from parsed code, the import graph and git history.*"""
+
+
+def test_a_whole_page_renders_as_expected(generator):
+    """One page end to end, so spacing and section order are pinned too."""
+    walk = _symbol("walk_repo")
+    walk["docstring"] = "Yield every directory under *root*. Prunes as it goes."
+    ctx = _context(
+        docstring=None,
+        symbols=[
+            walk,
+            _symbol("WalkSnapshot", "class", signature="class WalkSnapshot"),
+            _symbol(
+                "is_live",
+                "method",
+                signature="def is_live(self, path: str) -> bool",
+                parent_name="WalkSnapshot",
+            ),
+            _symbol("log", "variable", signature="log = structlog.get_logger(__name__)"),
+        ],
+        dependents=["pkg/cli/main.py"],
+        dependencies=DEPS,
+        git_metadata=GIT,
+        co_change_pages=[{"path": "pkg/mod/persist.py", "commits": 28, "last": "2026-08-29"}],
+        kg_layer_name="Core Pipeline",
+        kg_layer_role="edge_connector",
+    )
+
+    assert render(generator, ctx).strip() == GOLDEN
 
 
 # ---------------------------------------------------------------------------

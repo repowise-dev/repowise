@@ -73,7 +73,8 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 [`workspace set-default`](#repowise-workspace-set-default-alias) ·
 [`workspace diagnostics`](#repowise-workspace-diagnostics) ·
 [`workspace check`](#repowise-workspace-check) ·
-[`workspace metrics`](#repowise-workspace-metrics-path)
+[`workspace metrics`](#repowise-workspace-metrics-path) ·
+[`workspace impacted-tests`](#repowise-workspace-impacted-tests-repopath)
 
 **Maintenance**
 [`doctor`](#repowise-doctor-path) ·
@@ -209,6 +210,14 @@ repowise init . --no-prose -x "node_modules/"        # workspace, no LLM
 repowise init . --no-workspace                        # force single-repo, even in a workspace root
 ```
 
+**Exit status when embedding fails.** With a real embedder (anything but
+`mock`), a run whose page vectors fail to write, for example because the
+LanceDB install is broken, still saves its pages and full-text index but
+exits `1`, records `search.semantic: unavailable` in the index scope, and names
+the fix: reinstall the dependency, then `repowise reindex`. `update` follows the
+same rule, and a workspace `init` exits `1` after saving every repo, naming the
+repos whose embed failed. The keyless `mock` embedder never fails a run this way.
+
 **Documentation output limit.** Set `max_tokens` in
 `.repowise/config.yaml` to bound each model-written page. It is persistent, not
 a per-run flag, and is honored by `init`, `update`, `generate`, `restyle`,
@@ -273,7 +282,7 @@ See [WORKTREES.md](../scale/WORKTREES.md).
 
 `state.json:index_scope` is the canonical machine-readable description used by `status --format json`, `/api/repos`, generated agent guidance, and MCP `_meta.index_scope`. It separately records run mode, content provenance (`none`, `template`, or `model`), Git tier, configured commit cap, achieved Git-history coverage, configured/effective file-page caps, eligible/generated/omitted file-page counts, unavailable/skipped analysis, search availability, provider choices, and upgrade state. Older indexes project missing facts as `unknown`/`null`; a configured cap is never reported as achieved coverage and a missing analysis result is never reported as a clean result.
 
-Over MCP, an ordinary tool response carries a **compact projection** of this object rather than all of it: the run mode, content provenance, Git tier, a `status` of `complete`, `partial`, `degraded`, `upgrading` or `unknown`, the names of any degraded analyses, and a `fingerprint` identifying the canonical object. `get_overview` carries the canonical object in full, with the same `fingerprint` beside it, so a held copy can be checked against a later digest without either side resending it. `status` reaches `complete` only when the evidence exists and is clean; an index whose coverage was never recorded reports `unknown`. Set `REPOWISE_MCP_INDEX_SCOPE=full` to put the canonical object on every MCP response, as builds before `_meta.contract_version` 2 did.
+Over MCP, an ordinary tool response carries a **compact projection** of this object rather than all of it: the run mode, content provenance, Git tier, a `status` of `complete`, `partial`, `degraded`, `upgrading` or `unknown`, the names of any degraded analyses, and a `fingerprint` identifying the canonical object. `get_overview` carries the canonical object in full, with the same `fingerprint` beside it, so a held copy can be checked against a later digest without either side resending it. `status` reaches `complete` only when the evidence exists and is clean; an index whose coverage was never recorded reports `unknown`. Since `_meta` contract 3 an ordinary response leaves a `complete` digest out, so only a gap rides on it. Set `REPOWISE_MCP_INDEX_SCOPE=full` to put the canonical object on every MCP response, as builds before `_meta.contract_version` 2 did.
 
 **Examples:**
 
@@ -580,7 +589,7 @@ call.
 
 | Flag | Description |
 |------|-------------|
-| `--include` | Opt-in block, repeatable: `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `health`, `skeleton`, `doc_drift` |
+| `--include` | Opt-in block, repeatable: `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `health`, `skeleton`, `doc_drift`, `symbols` |
 | `--no-compact` | Add structure, imports and docstrings to each card |
 
 ```bash
@@ -1645,7 +1654,7 @@ repowise savings sync --dry-run
 Mine local agent transcripts for recurring command fumbles, consecutive runs
 of the same base command where the first failed and a later variant succeeded
 (wrong tool, wrong path, unknown flag, missing argument). Report-only by
-default; entirely local. See [DISTILL.md](../agent/DISTILL.md#repowise-corrections--recurring-command-fumbles).
+default; entirely local. See [DISTILL.md](../agent/DISTILL.md#repowise-corrections-recurring-command-fumbles).
 
 | Flag | Description |
 |------|-------------|
@@ -1805,6 +1814,26 @@ repowise workspace metrics
 repowise workspace metrics --format json
 ```
 
+### `repowise workspace impacted-tests <repo:path>...`
+
+Given changed provider files (`repo:path`), list the tests in consumer repos worth running. Each consumer call site lands in one state (measured, inferred, none, unresolved). See [Cross-repo test impact](../scale/WORKSPACES.md#cross-repo-test-impact).
+
+| Flag | Description |
+|------|-------------|
+| `--path` | Workspace root (default: auto-detect from cwd) |
+| `--call-depth` | Call graph walk depth, 1-8 (default: 3) |
+| `--import-depth` | Import graph fallback depth, 1-3 (default: 1) |
+| `--no-measured` | Exclude coverage-backed recommendations |
+| `--no-inferred` | Exclude graph-inferred recommendations |
+| `--min-confidence` | Minimum contract link confidence, 0.0-1.0 (default: 0.0) |
+| `--target-repo` | Limit to these consumer repo aliases (repeatable) |
+| `--format` | `table` (default), `json`, or `list` (one `repo:test-file` per line). `--json` is a deprecated alias |
+
+```bash
+repowise workspace impacted-tests backend:app/routers/users.py
+repowise workspace impacted-tests backend:app/routers/users.py --target-repo frontend --format list
+```
+
 See [Workspaces](../scale/WORKSPACES.md) for the full multi-repo guide.
 
 ---
@@ -1884,9 +1913,10 @@ hook surfaces, never decisions.
 
 Manage the Distill command-rewrite hooks (Claude Code + Codex PreToolUse).
 When installed, noisy agent commands (tests, builds, git status/log/diff,
-searches, listings) are rewritten to `repowise distill <command>`, pending
-your approval by default, so the agent sees a compact, errors-first
-rendering.
+searches, listings) are rewritten to `repowise distill <command>` without a
+prompt by default (`permission: allow`), so the agent sees a compact,
+errors-first rendering. `--allow-rule` seeds a `Bash(repowise distill:*)` /
+`PowerShell(repowise distill:*)` allow rule, needed only under `permission: ask`.
 
 ```bash
 repowise hook rewrite install        # writes ~/.claude/settings.json (idempotent)
@@ -2051,6 +2081,10 @@ Rebuild the vector search index by re-embedding all wiki pages. No LLM calls, on
 | `--embedder` | `gemini`, `openai`, `openrouter`, `ollama`, `edenai`, `mock`, or `auto` (default: auto) |
 | `--batch-size` | Embedding batch size (default: 32) |
 
+A reindex that writes every item with a real embedder marks semantic search
+available again in the index scope, clearing what a failed `init` or `update`
+recorded.
+
 ```bash
 repowise reindex
 repowise reindex --embedder gemini --batch-size 50
@@ -2068,6 +2102,12 @@ Run health checks on the wiki setup. Auto-detects workspace mode; in workspace m
 | `--workspace` / `-w` | Force workspace mode |
 | `--no-workspace` | Force single-repo mode |
 | `--format` | Output: `table` (default) or `json` |
+
+A `Vector store` row fails when `.repowise/lancedb` exists but cannot be
+opened, and names the error. A store that opens but holds none of the indexable
+pages reports them all missing rather than in sync. `--repair` does not re-embed
+such a store with a paid embedder: it prints the page count and points to
+`repowise reindex`.
 
 ```bash
 repowise doctor                          # auto-detects
@@ -2133,6 +2173,21 @@ repowise telemetry disable
 
 ---
 
+### `repowise config hints on|off`
+
+Now and then, at a moment where it would help (a finished `init`, a slow
+`update`), the CLI prints one dim line on stderr about
+what repowise.dev adds, with a link. At most one per run, each at most once a
+week. Never under `--format json`, in CI, when stderr is not a terminal, when
+you are signed in, or from `mcp`, `serve`, `watch` and hooks.
+
+```bash
+repowise config hints off       # also: REPOWISE_NO_HINTS=1 or DO_NOT_TRACK=1
+repowise config hints on
+```
+
+---
+
 ### `repowise login`
 
 Sign in to your hosted repowise.dev account. This is unrelated to LLM provider
@@ -2168,6 +2223,32 @@ Show the Repowise account this machine is signed in to.
 
 ```bash
 repowise whoami
+```
+
+### `repowise publish [PATH]`
+
+Put this repo on repowise.dev. The command reads the GitHub `origin` remote and
+asks repowise.dev to index it there: nothing is uploaded from your machine, so
+only what you have pushed is published. Signed out, it runs the `repowise login`
+browser sign-in first. A hosted index usually takes about 10 minutes.
+
+On success it prints the indexing page (and opens it), the repo page for when it
+is ready, and the MCP address to add in Claude.ai or ChatGPT. When repowise.dev
+refuses, it says why and links the next step: a private repo on a free account
+goes to the repo's page, which starts the Pro trial (10 days free, card
+required) and the GitHub App install; a paid account without the GitHub App
+gets the install link; the free plan's 2-repo limit links the trial checkout.
+A repo without a GitHub remote is not published.
+
+| Flag | Description |
+|------|-------------|
+| `--ref` | Branch or tag on GitHub to publish (default: the branch you are on if it is pushed, else the default branch) |
+| `--no-open` | Don't open the indexing page in the browser |
+
+```bash
+repowise publish                 # publish the repo in this directory
+repowise publish --ref release   # publish another pushed branch
+repowise publish --no-open
 ```
 
 ---

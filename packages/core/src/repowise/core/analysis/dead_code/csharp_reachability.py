@@ -39,6 +39,7 @@ import os
 import posixpath
 import re
 from collections.abc import Iterable, Mapping
+from collections.abc import Set as AbstractSet
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -337,46 +338,106 @@ def build_csharp_named_files(
         # answer ``ReachabilityRescues`` gives a caller with no source at all.
         return frozenset(candidates)
     names = _NameIndex(_ProjectScopes(dotnet_index))
+    assembly_level: set[str] = set()
     for path in candidates:
         blob = source_map.get(path)
         if blob is None and repo_root is not None:
             blob = _read(repo_root, path)
-        names.add_candidate(graph, path, blob)
-    if names.waiting:
-        names.declarers = _declaring_files(graph, names.types.keys())
-        for path, blob in _corpus(source_map, dotnet_index, repo_root):
-            names.scan(path, blob)
+        types, extensions = _declared_names(graph, path, blob)
+        if _is_assembly_level(blob, bool(types)):
+            assembly_level.add(path)
+            continue
+        names.add(path, {name: path for name in types}, {name: path for name in extensions})
+    names.scan_corpus(graph, source_map, dotnet_index, repo_root)
+    return frozenset(assembly_level | names.named)
+
+
+def build_csharp_named_types(
+    graph: Any,
+    source_map: Mapping[str, bytes],
+    wanted: Mapping[str, AbstractSet[str]],
+    *,
+    dotnet_index: Any | None = None,
+    repo_root: Path | None = None,
+) -> frozenset[tuple[str, str]]:
+    """The ``(path, name)`` pairs of *wanted* that another file in scope names.
+
+    The symbol-level form of :func:`build_csharp_named_files`, with the same
+    scope and the same rules, asked of one top-level type at a time: *wanted*
+    maps a ``.cs`` file to the public types the unused-export pass would
+    report there. A holder class counts as named when one of its extension
+    methods is invoked as a member. With no source at all nothing is named,
+    which leaves every finding as it was before this pass.
+    """
+    if not source_map and dotnet_index is None:
+        return frozenset()
+    names = _NameIndex(_ProjectScopes(dotnet_index))
+    for path, group in wanted.items():
+        extensions = {
+            method: (path, holder)
+            for method, holder in _extension_holders(graph, path)
+            if holder in group
+        }
+        types = {name.encode("ascii", "ignore"): (path, name) for name in group}
+        # ``[NotNullWhen(...)]`` names ``NotNullWhenAttribute``.
+        types.update(
+            (token[: -len(_ATTRIBUTE)], owner)
+            for token, owner in list(types.items())
+            if token.endswith(_ATTRIBUTE)
+        )
+        names.add(path, types, extensions)
+    names.scan_corpus(graph, source_map, dotnet_index, repo_root)
     return frozenset(names.named)
 
 
+def _extension_holders(graph: Any, path: str) -> Iterable[tuple[bytes, str]]:
+    """``(extension method name, declaring class)`` for each one *path* declares."""
+    for data in _defined_symbols(graph, path):
+        if _is_extension_method(data) and data.get("parent_name"):
+            yield (data.get("name") or "").encode("ascii", "ignore"), data["parent_name"]
+
+
 class _NameIndex:
-    """Candidates by the names they declare, and which of them a file names."""
+    """Names some candidate declares, and which owners another file names.
+
+    An owner is what a match reports back: the file for the file-level pass,
+    ``(file, type)`` for the symbol-level one. Scope is always the file's.
+    """
 
     def __init__(self, scopes: _ProjectScopes) -> None:
         self.scopes = scopes
-        self.named: set[str] = set()
-        self.types: dict[bytes, list[str]] = {}
-        self.extensions: dict[bytes, list[str]] = {}
+        self.named: set[Any] = set()
+        self.types: dict[bytes, list[tuple[str, Any]]] = {}
+        self.extensions: dict[bytes, list[tuple[str, Any]]] = {}
         self.declarers: dict[bytes, set[str]] = {}
         self._scope: dict[str, tuple[frozenset[str], frozenset[str] | None]] = {}
 
-    @property
-    def waiting(self) -> bool:
-        return bool(self.types or self.extensions)
-
-    def add_candidate(self, graph: Any, path: str, blob: bytes | None) -> None:
-        types, extensions = _declared_names(graph, path, blob)
-        if _is_assembly_level(blob, bool(types)):
-            self.named.add(path)
-            return
-        for name in types:
-            self.types.setdefault(name, []).append(path)
-        for name in extensions:
-            self.extensions.setdefault(name, []).append(path)
+    def add(self, path: str, types: Mapping[bytes, Any], extensions: Mapping[bytes, Any]) -> None:
+        """Register *path*'s names, each mapped to the owner a match marks."""
+        for name, owner in types.items():
+            if name:
+                self.types.setdefault(name, []).append((path, owner))
+        for name, owner in extensions.items():
+            if name:
+                self.extensions.setdefault(name, []).append((path, owner))
         self._scope[path] = (_partner_paths(path) | {path}, self.scopes.seen_from(path))
 
+    def scan_corpus(
+        self,
+        graph: Any,
+        source_map: Mapping[str, bytes],
+        dotnet_index: Any | None,
+        repo_root: Path | None,
+    ) -> None:
+        """Mark every owner some file of the scanned corpus names."""
+        if not (self.types or self.extensions):
+            return
+        self.declarers = _declaring_files(graph, self.types.keys())
+        for path, blob in _corpus(source_map, dotnet_index, repo_root):
+            self.scan(path, blob)
+
     def scan(self, path: str, blob: bytes) -> None:
-        """Mark the candidates *path* names.
+        """Mark the owners *path* names.
 
         Matched on the raw bytes first and only re-matched with comments
         blanked when that would name something: blanking is the expensive
@@ -388,8 +449,8 @@ class _NameIndex:
             found = self._claimable(path, project, _code_only(blob))
         self.named.update(found)
 
-    def _claimable(self, path: str, project: str | None, blob: bytes) -> set[str]:
-        found: set[str] = set()
+    def _claimable(self, path: str, project: str | None, blob: bytes) -> set[Any]:
+        found: set[Any] = set()
         for token in set(_IDENT.findall(blob)) & self.types.keys():
             # A file declaring the name is declaring it, not using it.
             if path not in self.declarers.get(token, ()):
@@ -399,11 +460,13 @@ class _NameIndex:
                 found.update(self._visible(self.extensions[token], path, project))
         return found
 
-    def _visible(self, owners: list[str], user: str, project: str | None) -> Iterable[str]:
-        for owner in owners:
+    def _visible(
+        self, owners: list[tuple[str, Any]], user: str, project: str | None
+    ) -> Iterable[Any]:
+        for path, owner in owners:
             if owner in self.named:
                 continue
-            not_users, projects = self._scope[owner]
+            not_users, projects = self._scope[path]
             if user not in not_users and (projects is None or project in projects):
                 yield owner
 

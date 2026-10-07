@@ -21,6 +21,7 @@ from repowise.core.analysis.health.finding_identity import finding_public_id
 from repowise.core.analysis.health.fix_first.text import perf_cost
 from repowise.core.analysis.health.queue_rules import NULL_VALUE, FilterRule, SortKeys
 from repowise.core.analysis.health.rows import detail_map, field, json_field
+from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, perf_low_priority
 
 from .opportunities import PERFORMANCE_MODEL_VERSION
 from .opportunity_rank import DEFAULT_QUEUE_STATES, NON_LEADING_MARKERS
@@ -376,6 +377,8 @@ def serialize(row: Any, link: PlanLink, *, summary: bool = False) -> dict[str, A
         "plan_reference": link.public_id,
         "plan_status": link.state,
         "plan_reason": link.reason,
+        # Why it can wait; the stored rank already orders by loop size.
+        "lower_priority": LOW_PRIORITY_LABEL.get(perf_low_priority(row) or ""),
     }
     if summary:
         return payload

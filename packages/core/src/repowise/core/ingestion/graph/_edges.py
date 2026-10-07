@@ -150,12 +150,14 @@ class EdgesMixin:
             # a real `dynamic_*` edge.
             sub_type = e.edge_type
             graph_edge_type = sub_type if sub_type.startswith("dynamic") else f"dynamic_{sub_type}"
+            names = {"imported_names": list(e.imported_names)} if e.imported_names else {}
             self._graph.add_edge(
                 e.source,
                 e.target,
                 edge_type=graph_edge_type,
                 hint_source=e.hint_source,
                 weight=e.weight,
+                **names,
             )
             # A ``:test`` hint used to set ``is_test`` on the source node. Only
             # the Rust hinter emits one, for `#[test]` / `#[cfg(test)]` markers,
@@ -198,6 +200,10 @@ class EdgesMixin:
             source_map=self._source_map,
         )
 
+        # The .NET project index ``build()`` already made; handlers that scope
+        # by project read it instead of walking the tree for every .csproj again.
+        if getattr(self, "dotnet_index", None) is not None:
+            ctx._dotnet_index = self.dotnet_index
         count = add_framework_edges(self._graph, self._parsed_files, ctx, tech_stack)
         if count:
             log.info("Framework edges added", count=count)

@@ -243,7 +243,7 @@ def _query_health(repo_path: Path) -> dict | None:
                 # the worst-first sort twice with it).
                 metrics = await get_health_metrics(session, repo.id)
                 summary = await get_health_summary(session, repo.id, metrics=metrics)
-                if summary["file_count"] == 0:
+                if summary["file_count"] == 0 and not summary.get("unanalysed_file_count"):
                     return None
                 # Hotspot health from the one owner. This used to average the
                 # top 25% of files by NLOC, which ranks size rather than churn;
@@ -271,6 +271,12 @@ def _query_health_line(repo_path: Path) -> str | None:
     data = _query_health(repo_path)
     if not data:
         return None
+    if data["average_health"] is None:
+        # Every file is in a language health has no dialect for.
+        return (
+            f"[bold]Health:[/bold] not analysed · {data['unanalysed_file_count']} files in "
+            "languages health does not support yet"
+        )
     worst_path = data["worst_performer_path"] or "n/a"
     worst_score = data["worst_performer_score"]
     from repowise.core.analysis.health.grading import (

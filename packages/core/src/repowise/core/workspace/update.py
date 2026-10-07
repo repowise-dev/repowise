@@ -877,8 +877,8 @@ async def update_workspace(
         )
         stored_config_fp = state.get("config_fingerprint")
         config_state_missing = (
-            (resolve_store_dir(abs_path) / "wiki.db").is_file()
-            and stored_config_fp is None
+            stored_config_fp is None
+            and await _has_persisted_repo_index(abs_path)
         )
         if not is_stale and (
             config_state_missing

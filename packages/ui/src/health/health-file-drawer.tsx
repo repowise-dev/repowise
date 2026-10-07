@@ -30,6 +30,7 @@ import { CollapsibleSection } from "../shared/collapsible-section";
 import { formatRelativeTimeOrNull } from "../lib/format";
 import { Sparkline } from "./sparkline";
 import { ACTIONABILITY_LABEL } from "./performance/presentation";
+import { HEALTH_UNSUPPORTED_LABEL } from "./map/lens";
 import {
   SEVERITY_CHIP,
   SEVERITY_LABEL,
@@ -50,6 +51,7 @@ import type {
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import { SeverityMark } from "./severity-mark";
 import { VerificationTag } from "./verification-tag";
+import { LowerPriorityTag } from "./lower-priority-tag";
 import { ImpactFigure } from "./impact-figure";
 
 export interface HealthDrawerFinding {
@@ -67,11 +69,13 @@ export interface HealthDrawerFinding {
   dimension?: BiomarkerDimension | string;
   /** `"unverified"` for a provisional finding type. */
   verification?: string | null;
+  lower_priority?: string | null;
 }
 
 export interface HealthDrawerMetric {
   file_path: string;
-  score: number;
+  /** `null` when health has no dialect for the file's language. */
+  score: number | null;
   /** Structural counters — null when the host has no metric row for the
    *  file, so the drawer can say "not measured" instead of a misleading 0. */
   max_ccn: number | null;
@@ -230,6 +234,7 @@ export function HealthFileDrawer({
             {CATEGORY_LABEL[info.category]}
           </span>
           <VerificationTag verification={f.verification} />
+          <LowerPriorityTag reason={f.lower_priority} />
           {(() => {
             // A history marker wears a neutral "Watch" chip instead of its
             // pillar's: it is scored, but nothing in this file will clear it.
@@ -461,25 +466,15 @@ export function HealthFileDrawer({
                   <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
                     Code health
                   </p>
-                  <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-                    <span
-                      className="text-[40px] font-semibold leading-none tracking-tight tabular-nums"
-                      style={{ color: healthBandColor(bandForScore(metric.score)) }}
-                    >
-                      {formatScore(metric.score)}
-                    </span>
-                    <span className="text-xs text-[var(--color-text-tertiary)]">out of 10</span>
-                  </div>
-                  <span
-                    className="w-fit rounded-full border px-2.5 py-0.5 text-[11px] font-medium"
-                    style={{
-                      color: healthBandColor(bandForScore(metric.score)),
-                      borderColor: `color-mix(in srgb, ${healthBandColor(bandForScore(metric.score))} 40%, transparent)`,
-                      background: `color-mix(in srgb, ${healthBandColor(bandForScore(metric.score))} 9%, transparent)`,
-                    }}
-                  >
-                    {HEALTH_BAND_LABEL[bandForScore(metric.score)]}
-                  </span>
+                  {metric.score == null ? (
+                    // Nothing measured this file, so there is no number and no
+                    // band: the words the map's grey node carries instead.
+                    <p className="text-sm text-[var(--color-text-secondary)]">
+                      Not analysed. {HEALTH_UNSUPPORTED_LABEL}.
+                    </p>
+                  ) : (
+                    <ScoreLede score={metric.score} />
+                  )}
 
                   {trend && trend.points.length >= 2 ? (
                     <div className="mt-1 flex items-center gap-2">
@@ -841,6 +836,33 @@ function MeasuredNum({ v }: { v: number | null }) {
  * carry their band colour; counters are plain, because a nesting depth of 3 is
  * not good or bad news on its own.
  */
+/** The score and its band, for a file that has one. */
+function ScoreLede({ score }: { score: number }) {
+  return (
+    <>
+      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+        <span
+          className="text-[40px] font-semibold leading-none tracking-tight tabular-nums"
+          style={{ color: healthBandColor(bandForScore(score)) }}
+        >
+          {formatScore(score)}
+        </span>
+        <span className="text-xs text-[var(--color-text-tertiary)]">out of 10</span>
+      </div>
+      <span
+        className="w-fit rounded-full border px-2.5 py-0.5 text-[11px] font-medium"
+        style={{
+          color: healthBandColor(bandForScore(score)),
+          borderColor: `color-mix(in srgb, ${healthBandColor(bandForScore(score))} 40%, transparent)`,
+          background: `color-mix(in srgb, ${healthBandColor(bandForScore(score))} 9%, transparent)`,
+        }}
+      >
+        {HEALTH_BAND_LABEL[bandForScore(score)]}
+      </span>
+    </>
+  );
+}
+
 function MetricGrid({ metric }: { metric: HealthDrawerMetric }) {
   const cells: { label: string; value: React.ReactNode }[] = [
     {

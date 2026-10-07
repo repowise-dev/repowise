@@ -25,6 +25,7 @@ Capture-name conventions (shared across ALL .scm files):
 from __future__ import annotations
 
 import re
+import sys
 from collections.abc import Iterable
 from dataclasses import replace
 from functools import cache
@@ -63,9 +64,11 @@ from .extractors.bindings.ts_js import (
 )
 from .extractors.synthetic_symbols import extract_synthetic_symbols
 from .extractors.visibility import (
+    py_module_all_names,
     refine_cpp_visibility,
     refine_csharp_visibility,
     refine_java_visibility,
+    refine_py_visibility,
     refine_rust_visibility,
     refine_ts_visibility,
     ts_deferred_export_names,
@@ -793,6 +796,35 @@ def _attribute_decorators(def_node: Node, language: str, src: str) -> list[str]:
     return []
 
 
+def _declared_modifiers(def_node: Node, node_types: frozenset[str], src: str) -> tuple[str, ...]:
+    """Lowercased keyword modifiers written in *def_node*'s modifier children.
+
+    Keywords are the anonymous leaves of those children (C# ``modifier`` >
+    ``override``, Kotlin ``modifiers`` > ``member_modifier`` > ``override``) or
+    a named leaf that is itself a modifier (VB.NET ``modifier`` ``Overrides``).
+    Named leaves such as Scala's ``protected[this]`` qualifier are not
+    keywords. Annotations and attributes nested among them are skipped: they
+    are decorators, not modifiers. The words are interned: a handful of
+    distinct values repeat on every symbol.
+    """
+    if not node_types:
+        return ()
+    words: list[str] = []
+    stack = [c for c in reversed(def_node.children) if c.type in node_types]
+    while stack:
+        node = stack.pop()
+        if "annotation" in node.type or "attribute" in node.type:
+            continue
+        if node.child_count == 0:
+            text = _node_text(node, src).strip()
+            keyword = not node.is_named or "modifier" in node.type
+            if keyword and text.isalpha():
+                words.append(sys.intern(text.lower()))
+            continue
+        stack.extend(reversed(node.children))
+    return tuple(words)
+
+
 def _rust_outer_attributes(def_node: Node, src: str) -> list[str]:
     """Rust: outer attributes (#[...]) are preceding siblings of the item."""
     attrs: list[str] = []
@@ -833,6 +865,7 @@ def _refine_visibility(
     visibility: str,
     name: str,
     ts_deferred_exports: frozenset[str] | None,
+    py_all_names: frozenset[str] | None,
     src: str,
 ) -> tuple[str, bool]:
     """``(visibility, is_exported_symbol)`` after the language's AST-context rules."""
@@ -855,6 +888,11 @@ def _refine_visibility(
     # inline, via ``export { x }`` lists, or ``export default x``.
     if language in _TS_JS_LANGUAGES:
         return refine_ts_visibility(def_node, visibility, name, ts_deferred_exports), False
+    # Python: a literal ``__all__`` raises the names it lists to public; it
+    # never demotes the ones it omits. GDScript shares ``py_visibility`` but
+    # has no ``__all__``, so the gate is on the language, not the fn.
+    if language == "python":
+        return refine_py_visibility(def_node, visibility, name, py_all_names), False
     # Rust: a trait's items may not write ``pub`` of their own, so the
     # trait's modifier is the only place their visibility is stated.
     if language == "rust":
@@ -984,6 +1022,11 @@ def _statement_imports(
         return [_dart_import(stmt_node, module_node, module_text, raw, src)]
     if language == "rust" and stmt_node.type == "use_declaration":
         return _rust_use_imports(stmt_node, module_text, raw, src)
+    if language == "rust" and stmt_node.type == "macro_invocation":
+        from .extractors.bindings.rust import macro_mod_imports
+
+        # Most top-level calls (``s! { struct ... }``) declare no module.
+        return macro_mod_imports(module_node, raw) if "mod" in raw else []
     if language in _TS_JS_LANGUAGES and _is_dynamic_esm_import(stmt_node):
         # ``import('./mod')`` binds a module namespace at runtime, so it is a
         # wildcard, which keeps the target's exports live.
@@ -1042,14 +1085,14 @@ def _scala_imports(stmt_node: Node, raw: str, src: str) -> list[Import]:
 
 def _php_imports(stmt_node: Node, raw: str, src: str) -> list[Import]:
     """PHP: one ``use`` declaration can name several classes, each its own file."""
-    from .extractors.bindings.php import php_use_clauses
+    from .extractors.bindings.php import php_class_name, php_use_clauses
     from .models import NamedBinding
 
     return [
         Import(
             raw_statement=raw,
             module_path=fqn,
-            imported_names=[local],
+            imported_names=[php_class_name(fqn)],
             is_relative=False,
             resolved_file=None,
             bindings=[NamedBinding(local_name=local, exported_name=fqn, source_file=None)],
@@ -1117,7 +1160,8 @@ def _generic_import(
     stmt_node: Node, module_text: str, raw: str, language: str, src: str
 ) -> Import:
     """The single Import of a statement no language-specific shape claims."""
-    if language == "rust" and stmt_node.type == "mod_item":
+    is_module_declaration = language == "rust" and stmt_node.type == "mod_item"
+    if is_module_declaration:
         module_text = _rust_mod_path_attribute(stmt_node, src) or module_text
 
     # JVM wildcard imports: the query captures the scoped identifier only,
@@ -1142,6 +1186,7 @@ def _generic_import(
         resolved_file=None,
         bindings=bindings,
         is_reexport=_is_reexport_import(stmt_node, raw, language),
+        is_module_declaration=is_module_declaration,
     )
 
 
@@ -1419,7 +1464,10 @@ class ASTParser:
         local_refs: frozenset[str] = frozenset()
         if lang == "python":
             top_level_names = {s.name for s in symbols if s.name and not s.parent_name}
-            local_refs = extract_python_local_refs(src, top_level_names)
+            nested_classes = {
+                (s.parent_name, s.name) for s in symbols if s.kind == "class" and s.parent_name
+            }
+            local_refs = extract_python_local_refs(src, top_level_names, nested_classes)
 
         if len(symbols) > _SYMBOL_COUNT_WARN_THRESHOLD:
             log.warning(
@@ -1485,13 +1533,25 @@ class ASTParser:
         ts_deferred_exports: frozenset[str] | None = None
         if language in _TS_JS_LANGUAGES:
             ts_deferred_exports = ts_deferred_export_names(src)
+        # Literal module ``__all__`` names, once per file for the Python
+        # refinement. None means no signal (built at runtime or absent).
+        py_all_names: frozenset[str] | None = None
+        if language == "python":
+            py_all_names = py_module_all_names(src)
         cpp_exports = (
             collect_cpp_export_types(matches, src) if language == "cpp" else CppExportTypes()
         )
 
         for capture_dict in matches:
             built = self._symbol_from_match(
-                capture_dict, config, file_info, src, cpp_exports, ts_deferred_exports, seen
+                capture_dict,
+                config,
+                file_info,
+                src,
+                cpp_exports,
+                ts_deferred_exports,
+                py_all_names,
+                seen,
             )
             if built is None:
                 continue
@@ -1524,6 +1584,7 @@ class ASTParser:
         src: str,
         cpp_exports: CppExportTypes,
         ts_deferred_exports: frozenset[str] | None,
+        py_all_names: frozenset[str] | None,
         seen: set[tuple[int, str]],
     ) -> tuple[Symbol, Node] | None:
         """One query match as a symbol and its definition node, or None to drop it.
@@ -1550,7 +1611,7 @@ class ASTParser:
             config,
             language,
             src,
-            cpp_exports.parent_ids,
+            cpp_exports.container_ids,
             keep_nested=object_owner is not None,
         )
         if kind is None:
@@ -1572,6 +1633,7 @@ class ASTParser:
             config.visibility_fn(name, modifier_texts),
             name,
             ts_deferred_exports,
+            py_all_names,
             src,
         )
 
@@ -1629,6 +1691,7 @@ class ASTParser:
             type_parameter_count=(
                 _csharp_type_parameter_count(def_node) if language == "csharp" else None
             ),
+            modifiers=_declared_modifiers(def_node, config.modifier_node_types, src),
         )
         return symbol, def_node
 
@@ -1638,7 +1701,7 @@ class ASTParser:
         config: LanguageConfig,
         language: str,
         src: str,
-        export_type_parent_ids: frozenset[int],
+        container_ids: frozenset[int],
         *,
         keep_nested: bool = False,
     ) -> str | None:
@@ -1655,7 +1718,7 @@ class ASTParser:
         if (
             not keep_nested
             and node_type not in _MODULE_ANCHORED_NODE_TYPES
-            and _has_callable_ancestor(def_node, config.symbol_node_types, export_type_parent_ids)
+            and _has_callable_ancestor(def_node, config.symbol_node_types, container_ids)
         ):
             return None
 
@@ -1795,9 +1858,19 @@ class ASTParser:
                 continue
 
             raw = _node_text(stmt_node, src).strip()
-            if raw in seen_raws:
+            # A Rust ``mod`` item's text excludes its outer attributes, so two
+            # ``#[cfg]``-gated ``mod imp;`` declarations targeting different
+            # ``#[path]`` files collide on the same raw text and the second
+            # file silently loses its import edge (and is then reported as
+            # dead code). Qualify the dedup key with the path override.
+            dedup_key = raw
+            if language == "rust" and stmt_node.type == "mod_item":
+                mod_path_attr = _rust_mod_path_attribute(stmt_node, src)
+                if mod_path_attr is not None:
+                    dedup_key = f"{raw}|path={mod_path_attr}"
+            if dedup_key in seen_raws:
                 continue
-            seen_raws.add(raw)
+            seen_raws.add(dedup_key)
 
             module_text = _node_text(module_nodes[0], src).strip().strip("\"'` ")
             if not module_text:

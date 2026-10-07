@@ -232,9 +232,14 @@ export interface DefectAccuracy {
 
 export interface HealthFileMetric {
   file_path: string;
-  score: number;
-  max_ccn: number;
-  max_nesting: number;
+  /**
+   * `null` when health has no dialect for the file's language: nothing
+   * measured it, so it has no score and no complexity figures. Render it as
+   * "not analysed", never as a number. Older servers always send a number.
+   */
+  score: number | null;
+  max_ccn: number | null;
+  max_nesting: number | null;
   nloc: number;
   has_test_file: boolean;
   line_coverage_pct: number | null;
@@ -337,6 +342,9 @@ export interface HealthFinding {
   /** `"unverified"` for a provisional finding type, shown because it was asked
    *  for by name. Null or absent for a validated type. */
   verification?: string | null;
+  /** Why the finding can wait ("lower priority: ..."); null when it is worth
+   *  doing first. Lower-priority findings are listed after the rest. */
+  lower_priority?: string | null;
 }
 
 export type PerformanceExecutionContext = "production" | "tooling" | "test" | "unknown";
@@ -485,6 +493,9 @@ export interface PerformanceOpportunity {
   /** Whether this cause may lead the dashboard. False for a marker below the
    *  leading bar (lazy loads outside Django). Absent on an older store. */
   may_lead?: boolean;
+  /** Why the opportunity can wait ("lower priority: ..."); null when its
+   *  production loop is known to grow with the data. */
+  lower_priority?: string | null;
   /** Exact stored match. Never inferred from file, marker, or rank. */
   plan_id: string | null;
   plan_status: PerformancePlanStatus;
@@ -648,7 +659,12 @@ export interface BiomarkerBreakdownRow {
 
 export interface HealthOverviewSummary {
   file_count: number;
-  average_health: number;
+  /** `null` when no file is scored: every file is in a language health has no
+   *  dialect for. */
+  average_health: number | null;
+  /** Files left out of every figure here because health has no dialect for
+   *  their language. Absent on an older server. */
+  unanalysed_file_count?: number;
   hotspot_health?: number | null;
   worst_performer_path: string | null;
   worst_performer_score: number | null;
@@ -872,11 +888,12 @@ export interface FileBreakdownCategory {
 export interface HealthFileBreakdownResponse {
   file_path: string;
   metric: HealthFileMetric | null;
+  /** `null` for a file with no score (no health dialect for its language). */
   breakdown: {
     score: number;
     total_deduction: number;
     categories: FileBreakdownCategory[];
-  };
+  } | null;
   findings: HealthFinding[];
   suggestions: Record<string, string>;
   /** Per-file score trajectory (silent when history is thin). */
@@ -1054,7 +1071,7 @@ export interface CoverageFileRow {
   ingested_at: string | null;
   ingested_commit_sha: string | null;
   covered_lines?: number[];
-  health_score?: number;
+  health_score?: number | null;
   nloc?: number;
 }
 
@@ -1121,7 +1138,7 @@ export type ReachedVia = "call-graph" | "import-graph";
 export interface ReachedFileRow {
   file_path: string;
   reached: boolean;
-  health_score?: number;
+  health_score?: number | null;
   nloc?: number;
 }
 

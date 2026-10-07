@@ -201,6 +201,11 @@ class Page(Base):
     # Surfaced by get_context as the default narrative; content is gated
     # behind include=["full_doc"] to keep MCP responses small.
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Agent digest (markdown): what a page carries for search and agents but
+    # not for a reader, e.g. the questions it answers, its identifiers, public
+    # API and git signals. Indexed and served by MCP beside ``content``; the
+    # reader shows it only on request. See ``generation/agent_digest.py``.
+    digest: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     target_path: Mapped[str] = mapped_column(Text, nullable=False)
     source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -2126,9 +2131,12 @@ class HealthFileMetric(Base):
         String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
     )
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
-    score: Mapped[float] = mapped_column(Float, nullable=False, default=10.0)
-    max_ccn: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    max_nesting: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # NULL for a file whose language health has no dialect for: nothing walked
+    # it, so a number would claim a measurement that never happened. A store
+    # created while these were NOT NULL is rebuilt by ``init_db``.
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_ccn: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_nesting: Mapped[int | None] = mapped_column(Integer, nullable=True)
     nloc: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     duplication_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     has_test_file: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -2156,7 +2164,8 @@ class HealthFileMetric(Base):
     # fills those in without re-scoring anything.
     is_test: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # Where the file's code comes from (``production`` / ``test`` /
-    # ``vendored`` / ``docs_example`` / ``generated`` / ``tooling``), decided
+    # ``vendored`` / ``docs_example`` / ``generated`` / ``tooling`` /
+    # ``build``), decided
     # by ``repowise.core.code_origin`` with the file's head in hand, so a
     # reader ranking what to fix never re-reads or re-parses the file. NULL on
     # rows written before the column existed.

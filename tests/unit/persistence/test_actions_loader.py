@@ -35,7 +35,7 @@ from tests.unit.persistence.helpers import insert_repo
 
 ANCHOR = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
 #: A size finding's deepest nested block: Fix first's first concrete step.
-DEEP = json.dumps({"deepest_block": {"start": 20, "end": 30}, "max_nesting": 4})
+DEEP = json.dumps({"deepest_block": {"start": 20, "end": 30}, "ccn": 44, "max_nesting": 4})
 NOW = ANCHOR + timedelta(days=1)
 
 
@@ -63,8 +63,8 @@ async def _seed(session) -> str:
         [
             GitMetadata(repository_id=rid, file_path="src/core.py", commit_count_90d=12,
                         last_commit_at=ANCHOR - timedelta(days=1), bug_magnet=True),
-            HealthFileMetric(repository_id=rid, file_path="src/core.py", max_ccn=12, nloc=300,
-                             is_test=False),
+            HealthFileMetric(repository_id=rid, file_path="src/core.py", score=10.0, max_ccn=12,
+                             nloc=300, is_test=False),
             HealthFinding(repository_id=rid, file_path="src/core.py", biomarker_type="change_entropy",
                           severity="high", health_impact=3.0),
             HealthFinding(repository_id=rid, file_path="src/core.py", biomarker_type="complex_method",
@@ -187,7 +187,7 @@ async def test_load_actions_view_composes_every_store(async_session) -> None:
     # higher-impact history marker, and the plan-ready loop; the fragile-file
     # rule does not repeat the file it already names.
     fixes = {a["target"]["path"]: a for a in rules["fix_first"]}
-    assert fixes["src/core.py"]["title"] == "Reduce the branching in run"
+    assert fixes["src/core.py"]["title"] == "Break up run (CCN 44)"
     assert fixes["src/repo.py"]["title"] == "Batch the database calls loops make through Repo.load"
     assert fixes["src/repo.py"]["effort"] == "S"
     assert "fragile_file" not in rules

@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import structlog
@@ -38,6 +38,7 @@ from ...ingestion.git_indexer.function_blame import (
 from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
+from ...installed_components import is_installed_component
 from ...test_paths import paired_test_names
 from ..dead_code.file_reachability import file_dependency_neighbors
 from ..graph_view import HasEdge, ImportEdgeView
@@ -46,9 +47,11 @@ from .asserts.lexicon import AssertVocabulary
 from .asserts.oracle_reach import collect_cross_file_oracles
 from .biomarkers import FileContext, detect_all
 from .complexity import FileComplexity, FunctionComplexity, walk_file
+from .complexity.languages import has_health_dialect
 from .coverage import is_test_file as _coverage_is_test_file
 from .dataflow import FileDataflowCache
 from .duplication import ClonePair, DuplicationReport
+from .duplication.detector import clone_ranges, union_line_count
 from .duplication.isolation import detect_clones_with_isolation as detect_clones
 from .finding_identity import SYMBOL_INDEX_KEY, SYMBOL_KEY, SYMBOL_LINE_KEY
 from .function_blame_rollup import blame_commit_entries, commit_spans
@@ -79,7 +82,7 @@ from .scope import scores_language
 from .scoring import (
     attach_impacts,
     compute_kpis,
-    deduction_split,
+    file_score_fields,
     remap_severities,
     score_file,
 )
@@ -94,12 +97,10 @@ log = structlog.get_logger(__name__)
 # and re-scores on mismatch (see ``update_cmd.persistence.full_rescore_due``),
 # instead of waiting out the 7-day decay timer.
 #
-# Reach, stated honestly: the gate is only consulted once an update reaches the
-# incremental path, so this lands on the next update that has changed files. A
-# repo with no new commits returns at the "already up to date" branch and picks
-# the correction up on its next commit; workspace members and the hosted
-# indexer do not run this path at all. That is the same reach the decay timer
-# already has — this extends that trigger rather than adding a wider one.
+# Reach: a single-repo ``repowise update`` checks it before the "already up to
+# date" return, so a checkout with no new commits re-scores on its next update
+# too, from the graph it re-parses, with no model call. Workspace members and
+# the hosted indexer do not run this path at all.
 #
 # Deliberately *not* folded into ``config_fingerprint``: that fingerprint means
 # "this repo's config content changed", and a workspace update answers drift in
@@ -524,6 +525,22 @@ def _commit_entries(fcx: FileComplexity, git_meta: dict) -> list:
     return list(git_meta.get("function_commit_shas") or ())
 
 
+def _partner(file_path: str, pair: ClonePair) -> str:
+    """The other file of *pair*: *file_path* itself for a clone inside it."""
+    return pair.file_b if pair.file_a == file_path else pair.file_a
+
+
+def _pct_of_kept(
+    file_path: str, clones: list[ClonePair], kept: list[ClonePair], dup_pct: float | None
+) -> float | None:
+    """*dup_pct* scaled to the lines the *kept* clones still cover."""
+    if len(kept) == len(clones) or not dup_pct:
+        return dup_pct
+    covered = union_line_count(clone_ranges(file_path, clones))
+    share = union_line_count(clone_ranges(file_path, kept)) / covered if covered else 0.0
+    return round(dup_pct * share, 2)
+
+
 def _read_source_lines(abs_path: str, read_source: SourceReader) -> list[str] | None:
     """Read a file's source as 1-indexed lines for the Extract Helper snippet.
 
@@ -726,6 +743,7 @@ class HealthAnalyzer:
         # answer cannot live on the cached walk.
         self._project_name: str | None = None
         self._origins: dict[str, CodeOrigin] = {}
+        self._installed_ui_dirs: dict[str, tuple[PurePosixPath, ...]] = {}
         # Every source read in the pass. Defaults to the working tree; a
         # revision comparison supplies bytes instead.
         self.read_source: SourceReader = source_reader or disk_source_reader
@@ -1328,7 +1346,7 @@ class HealthAnalyzer:
                     for path, hits in src.items():
                         by_file.setdefault(path, []).extend(hits)
             ranker = PerfRanker(index)
-            for path, hits in collect_centrality_gated(walked, ranker).items():
+            for path, hits in collect_centrality_gated(walked, ranker, self._origins).items():
                 by_file.setdefault(path, []).extend(hits)
             for _pf, fcx in walked:
                 extra = by_file.get(_pf.file_info.path)
@@ -1425,7 +1443,32 @@ class HealthAnalyzer:
             source,
             is_test=bool(pf.file_info.is_test),
             project=self._project(),
+            repo_root=self.repo_root,
         )
+
+    def _installed(self, path: str) -> bool:
+        return self.repo_root is not None and is_installed_component(
+            self.repo_root, path, self._installed_ui_dirs
+        )
+
+    def _without_kit_clones(
+        self, file_path: str, clones: list[ClonePair], dup_pct: float | None
+    ) -> tuple[list[ClonePair], float | None]:
+        """*clones* less those both of whose sides are components a component
+        CLI installed.
+
+        Copies of one upstream kit (shadcn/ui's ``dialog.tsx`` and
+        ``alert-dialog.tsx``, or the repeated item wrappers inside one of them)
+        are similar by design, so such a clone is not duplication anyone here
+        wrote. Every other finding on those files stands, and a clone with a
+        file outside the kit still counts.
+        The file's duplication share shrinks with the lines the dropped clones
+        alone covered.
+        """
+        if not clones or not self._installed(file_path):
+            return clones, dup_pct
+        kept = [p for p in clones if not self._installed(_partner(file_path, p))]
+        return kept, _pct_of_kept(file_path, clones, kept, dup_pct)
 
     def _save_walk_cache(self) -> None:
         """Persist the walk entries this pass used or produced, if any."""
@@ -1513,8 +1556,11 @@ class HealthAnalyzer:
         covered_lines: set[int] = set(cov.get("covered_lines") or ()) if cov else set()
         total_coverable_lines = int(cov.get("total_coverable_lines", 0)) if cov else 0
 
-        clones = dup_report.pairs_by_file.get(file_path, [])
-        dup_pct = dup_report.duplication_pct.get(file_path)
+        clones, dup_pct = self._without_kit_clones(
+            file_path,
+            dup_report.pairs_by_file.get(file_path, []),
+            dup_report.duplication_pct.get(file_path),
+        )
         # Read only for clone-bearing files, keeping the read proportional.
         source_lines = (
             _read_source_lines(pf.file_info.abs_path, self.read_source) if clones else None
@@ -1592,16 +1638,14 @@ class HealthAnalyzer:
         _mark_deepest_block(findings, fc_list)
 
         # The overall surfaced score stays == the defect dimension (no blend
-        # yet); the per-dimension scores ride alongside it, additively.
-        defect_score = scores["defect"]
-        maint_score = scores["maintainability"]
-        perf_score = scores["performance"]
-        structure_deduction, history_deduction = deduction_split(findings)
+        # yet); the per-dimension scores ride alongside it, additively. A
+        # language with no dialect stores none of them, and no complexity
+        # figures either: nothing walked the file.
+        analysed = has_health_dialect(pf.file_info.language)
         metric = HealthFileMetricData(
             file_path=file_path,
-            score=round(defect_score, 2),
-            max_ccn=max_ccn,
-            max_nesting=max_nesting,
+            max_ccn=max_ccn if analysed else None,
+            max_nesting=max_nesting if analysed else None,
             nloc=nloc,
             # The stored field answers "does something test this file" - that is
             # how the MCP payload documents it and how every UI renders it
@@ -1616,11 +1660,7 @@ class HealthAnalyzer:
             line_coverage_pct=line_cov,
             branch_coverage_pct=branch_cov,
             duplication_pct=dup_pct,
-            defect_score=round(defect_score, 2),
-            maintainability_score=(round(maint_score, 2) if maint_score is not None else None),
-            performance_score=(round(perf_score, 2) if perf_score is not None else None),
-            structure_deduction=structure_deduction,
-            history_deduction=history_deduction,
+            **file_score_fields(analysed, scores, findings),
             is_test=bool(pf.file_info.is_test),
             code_origin=self._origins.get(file_path) or self._origin(pf),
         )

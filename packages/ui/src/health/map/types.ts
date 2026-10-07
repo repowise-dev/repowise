@@ -9,7 +9,9 @@ import type { PerformanceActionabilityState } from "@repowise-dev/types/health";
 
 export interface CodeHealthMapFile {
   file_path: string;
-  score: number;
+  /** `null` when health has no dialect for the file's language: drawn grey,
+   *  like a file no performance detector covers, never as a score. */
+  score: number | null;
   nloc: number;
   module: string | null;
   line_coverage_pct: number | null;

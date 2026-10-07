@@ -359,6 +359,7 @@ async def run_pipeline(
                 derive_environment_facts=derive_environment_facts,
             )
             traversal_stats = None
+            graph_builder.restore_parse_only_attrs(parsed_files)
             # Rehydrated rows can predate the structural label, and nothing
             # else on this path recomputes it.
             label_co_change_structure(graph_builder, git_meta_map)

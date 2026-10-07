@@ -529,6 +529,9 @@ class GeneratedPage:
     # MCP get_context as the default narrative payload (content is gated behind
     # include=["full_doc"]).
     summary: str = ""
+    # Agent digest: material indexed and served to agents but kept out of the
+    # reader's page body. See :mod:`repowise.core.generation.agent_digest`.
+    digest: str = ""
     # Where this page sits in the wiki. Left unset by generators that do not
     # place their pages; the tree builder fills them in before persistence.
     # See the matching columns on the Page model for what each one means.

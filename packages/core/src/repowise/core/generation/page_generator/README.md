@@ -16,7 +16,7 @@ generates them in ordered, concurrency-bounded levels:
 | 2 | `file_page` | topo-ordered; tier-1 LLM or tier-2 template |
 | 3 | `scc_page` | circular-dependency cycles |
 | 4 | `module_page` | community / directory groups |
-| 6/7/8 | `repo_overview` + `architecture_diagram`, `infra_page`, `onboarding` | merged batch |
+| 6/7/8 | `repo_overview`, `infra_page`, `onboarding` | merged batch |
 
 ### Tiered doc generation
 
@@ -47,14 +47,16 @@ from repowise.core.generation.page_generator import PageGenerator, SYSTEM_PROMPT
 - `orchestrate.py` — `_GenerationRun` (per-call state, level runner) and
   `run_generate_all` (the entry point `generate_all` delegates to).
 - `levels.py` — pure per-level coroutine builders reading the run state.
-- `tiering.py` — `partition_file_tiers` (tier-1/tier-2 split by PageRank).
+- `structural.py` — renderers that build a page from structure with no model
+  call: the sole renderers (file pages among them) and the keyless stubs.
 - `prompts.py`, `validation.py`, `helpers.py` — constants and pure helpers.
 
 ## Extension points
 
 - New page type: add a `generate_*` method to `pertype.py`, a level builder to
   `levels.py`, and wire it into `_GenerationRun.execute()`.
-- New tier policy: extend `partition_file_tiers` / add a renderer template.
+- New structural page: add a renderer to `structural.py` and its template under
+  `templates/` (or `templates/stub/` for a keyless stub).
 - High-level synthesis evidence: `context/evidence.py` owns the provider-neutral,
   bounded selection and provenance channel shared by explicit
   `generation_context.files` and automatically derived exact references. An

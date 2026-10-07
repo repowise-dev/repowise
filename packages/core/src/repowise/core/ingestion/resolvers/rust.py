@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from .context import ResolverContext
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 
 def _get_frozen_path_set(ctx: ResolverContext) -> frozenset[str]:
@@ -341,3 +345,111 @@ def _probe_rust_path(
 ) -> str | None:
     """Probe for a Rust module path, trying ``.rs`` and ``mod.rs`` variants."""
     return _probe_rust_path_cached(base_dir, tuple(path_parts), path_set)
+
+
+def add_macro_rules_mod_imports(ctx: ResolverContext) -> int:
+    """Give each top-level ``name!()`` call the modules ``macro_rules! name`` declares.
+
+    A ``mod x;`` in a ``macro_rules!`` body is a template: it declares ``x`` in
+    the module that calls the macro, and nowhere if nothing calls it. The
+    definition and the call are paired by name within one crate (serde defines
+    ``crate_root!`` in ``crate_root.rs`` and calls it from ``lib.rs``). The
+    imports join the calling file's, so they resolve from there. Returns the
+    number added.
+    """
+    from tree_sitter import Parser
+
+    from ..parser import _get_language  # local import: avoid a cycle at module load
+
+    language = _get_language("rust")
+    sources = _rust_sources(ctx)
+    if language is None or not any(b"macro_rules!" in src for src in sources.values()):
+        return 0
+    parser = Parser(language)
+    templates: dict[tuple[str, str], list[Node]] = {}
+    for path, src in sources.items():
+        if b"macro_rules!" in src:
+            crate_root = _find_rust_crate_root(path, ctx)
+            for name, bodies in _mod_declaring_macros(parser.parse(src).root_node):
+                templates.setdefault((crate_root, name), []).extend(bodies)
+    if not templates:
+        return 0
+    return sum(
+        _add_called_macro_mods(ctx, path, src, templates, parser) for path, src in sources.items()
+    )
+
+
+def _rust_sources(ctx: ResolverContext) -> dict[str, bytes]:
+    parsed_files = ctx.parsed_files or {}
+    sources = ctx.source_map or {}
+    return {
+        path: sources[path]
+        for path, parsed in parsed_files.items()
+        if parsed is not None and parsed.file_info.language == "rust" and path in sources
+    }
+
+
+def _mod_declaring_macros(root: Node) -> list[tuple[str, list[Node]]]:
+    """``(name, rule bodies)`` of each top-level ``macro_rules!`` that declares a module."""
+    from ..extractors.bindings.rust import macro_body_mod_names
+
+    found = []
+    for node in root.children:
+        if node.type != "macro_definition":
+            continue
+        rules = (
+            rule.child_by_field_name("right")
+            for rule in node.children
+            if rule.type == "macro_rule"
+        )
+        bodies = [body for body in rules if body is not None]
+        if any(macro_body_mod_names(body) for body in bodies):
+            found.append((_node_name(node.child_by_field_name("name")), bodies))
+    return found
+
+
+def _add_called_macro_mods(
+    ctx: ResolverContext,
+    path: str,
+    src: bytes,
+    templates: dict[tuple[str, str], list[Node]],
+    parser: Any,
+) -> int:
+    """Append to *path*'s imports the modules of each template it calls."""
+    from ..extractors.bindings.rust import macro_mod_imports
+
+    crate_root = _find_rust_crate_root(path, ctx)
+    names = {name for root, name in templates if root == crate_root and f"{name}!".encode() in src}
+    if not names:
+        return 0
+    imports = ctx.parsed_files[path].imports
+    have = {imp.module_path for imp in imports if imp.imported_names == ["*"]}
+    called = [
+        imp
+        for name in _top_level_macro_calls(parser.parse(src).root_node, names)
+        for body in templates[(crate_root, name)]
+        for imp in macro_mod_imports(body, f"{name}!()")
+    ]
+    added = 0
+    for imp in called:
+        if imp.module_path not in have:
+            have.add(imp.module_path)
+            imports.append(imp)
+            added += 1
+    return added
+
+
+def _top_level_macro_calls(root: Node, names: set[str]) -> list[str]:
+    """Which of *names* the file calls as a macro at its top level, in order."""
+    called: dict[str, None] = {}
+    for node in root.children:
+        call = node.children[0] if node.type == "expression_statement" and node.children else node
+        if call.type == "macro_invocation":
+            name = _node_name(call.child_by_field_name("macro"))
+            if name in names:
+                called[name] = None
+    return list(called)
+
+
+def _node_name(node: Node | None) -> str:
+    return (node.text or b"").decode() if node is not None else ""

@@ -19,6 +19,7 @@ from typing import Any
 import structlog
 
 from repowise.cli.helpers import (
+    as_commit_id,
     console,
     head_commit_ts,
     load_config,
@@ -359,6 +360,8 @@ def resolve_repair_base(
     from_commit = marker.get("from_commit") if isinstance(marker, dict) else None
     if not from_commit or from_commit == base_ref:
         return base_ref, None
+    if as_commit_id(from_commit) is None or as_commit_id(base_ref) is None:
+        return base_ref, None
 
     def _git(*args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -366,7 +369,7 @@ def resolve_repair_base(
         )
 
     try:
-        if _git("merge-base", "--is-ancestor", from_commit, base_ref).returncode != 0:
+        if _git("merge-base", "--is-ancestor", "--end-of-options", from_commit, base_ref).returncode != 0:
             # Non-zero covers both "not an ancestor" (rebased, force-pushed,
             # branch switched) and "cannot resolve that object" (gc'd, or a
             # shallow clone that never fetched it), and git does not
@@ -375,7 +378,7 @@ def resolve_repair_base(
                 f"the recorded commit {from_commit[:8]} is not an ancestor of this "
                 "branch's history, or is not present in this clone"
             )
-        counted = _git("rev-list", "--count", f"{from_commit}..{head or 'HEAD'}")
+        counted = _git("rev-list", "--count", "--end-of-options", f"{from_commit}..{head or 'HEAD'}")
         if counted.returncode == 0 and int(counted.stdout.strip() or 0) > _REPAIR_MAX_COMMITS:
             return base_ref, (
                 f"the range has grown past {_REPAIR_MAX_COMMITS} commits, which is "
@@ -1650,6 +1653,41 @@ def _full_rescore_interval_days() -> float:
                 file=sys.stderr,
             )
     return _FULL_RESCORE_INTERVAL_DAYS
+
+
+def parser_changed(repo_path: Path) -> bool:
+    """Whether the stored graph edges were written by a different parser.
+
+    Compares the fingerprint ``persist_incremental_edges`` stamped on the repo
+    row with the running ``parser_fingerprint()``. An unstamped row, or a store
+    that cannot be read, is **not** a change, for the reason
+    :func:`health_analyzer_changed` gives: the next commit's widen stamps it.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.ingestion.parse_cache import parser_fingerprint
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_repository_by_path,
+        get_session,
+    )
+
+    async def _stored() -> str | None:
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                return repo.graph_edges_parser_fingerprint if repo is not None else None
+        finally:
+            await engine.dispose()
+
+    try:
+        stored = run_async(_stored())
+    except Exception as exc:
+        log.debug("parser_change_check_failed", error=str(exc))
+        return False
+    return stored is not None and stored != parser_fingerprint()
 
 
 def health_analyzer_changed(state: dict) -> bool:

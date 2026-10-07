@@ -33,6 +33,19 @@ It is a recommendation, not a requirement. Nothing is wiped until you choose to 
 
 ## Behaviour changes worth knowing about
 
+### 0.54.0: health re-scores once, and some git numbers move
+
+**Your first `update` re-scores the whole repository.** The health analyzer version moved from 31 to 36, so the first update after upgrading re-scores every file and takes longer than usual. The parser schema moved from 3 to 5 (Python import resolution and overload declarations), so that same update re-parses files instead of reading them from the parse cache. Nothing needs re-indexing: the store format is unchanged.
+
+**Some scores and counts change on that first update, by design:**
+
+- History windows are measured from the indexed commit, not the wall clock, so re-indexing an unchanged tree on a later day gives the same scores. Set `REPOWISE_GIT_WINDOW_ANCHOR=now` to keep the wall-clock behaviour.
+- A file with no code finding loses at most one point to git history, and `hidden_coupling` is still listed but no longer lowers the score. Files that were held down only by history can score higher.
+- "Commits" counts non-merge commits everywhere, and one person's noreply address, handle and local email merge into one contributor. Commit and contributor counts can go down.
+- Docs, config, workflow and data files gain commit history on the first update. They stay out of hotspot rankings.
+- Entry points are read from the package manifest first, so the entry-point list and the dead-code findings that depend on it can shift.
+- The full-text search index is widened and refilled the next time the index is opened. It happens once and needs no action.
+
 ### 0.53.0: health re-scores once, and workspace contracts re-extract
 
 **Your first `update` re-scores the whole repository.** The health analyzer version moved from 21 to 31 over this cycle: performance plans now claim only what the loop proves, two new performance markers landed, and Pascal gained loop, performance and assertion coverage. Each of those changes how a stored health number is computed, so the first update after upgrading re-scores every file and takes longer than usual. The next one is back to normal.

@@ -324,7 +324,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.hot_path_sync_io,
     category: "performance",
     description:
-      "A blocking subprocess or filesystem call in a hot, request-reachable function (top call-graph centrality or a churny file), even outside a loop. Its latency is paid on every call through the function. Advisory — a latency signal ranked by centrality, not always a defect.",
+      "A blocking subprocess or filesystem call in one of the repo's most-called functions, even outside a loop. Every call through the function waits for it. Advisory: a latency signal ranked by call-graph centrality, not proof of a request path, and not always a defect. Tests, tooling, examples, and generated or vendored code are not flagged.",
   },
   blocking_io_under_lock: {
     label: BIOMARKER_LABELS.blocking_io_under_lock,

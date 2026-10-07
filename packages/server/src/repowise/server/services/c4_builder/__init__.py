@@ -20,10 +20,13 @@ import json
 from collections import defaultdict
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.c4.actors import derive_actors
+from repowise.core.exclusion import is_excluded
 from repowise.core.ids import ExternalSystemId, SystemId, file_path_of, parse, render
 from repowise.core.ingestion.workspace_members import root_description
 from repowise.core.persistence import ExternalSystem, Repository
@@ -37,7 +40,6 @@ from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
 from repowise.core.support_paths import is_support_path
 from repowise.core.test_paths import is_test_related_path
 
-from .actors import derive_actors
 from .components import detect_components, detect_components_for_all
 from .containers import container_id, detect_containers
 from .models import (
@@ -72,6 +74,7 @@ __all__ = [
     "build_l2",
     "build_l3",
     "build_model",
+    "container_dependencies",
     "container_id",
     "load_repo",
 ]
@@ -239,6 +242,25 @@ async def build_l2(
     used_external_ids = {r.target_id for r in relations if _is_external_box(r.target_id)}
     pruned_externals = [e for e in externals if e.id in used_external_ids]
     return C4L2(containers=containers, external_systems=pruned_externals, relations=relations)
+
+
+async def container_dependencies(
+    session: AsyncSession, repo_id: str, *, exclude_spec: Any = None
+) -> tuple[list[Container], list[Relation]]:
+    """Containers and the relations between them: :func:`build_l2`'s boxes and
+    roll-up, without externals or box signals.
+
+    Files matching *exclude_spec* map to no box, so their edges never land.
+    """
+    repo = await load_repo(session, repo_id)
+    containers = await _detect_containers(session, repo_id, repo)
+    file_to_container = {
+        path: box
+        for path, box in (await _file_to_container_map(session, repo_id, containers)).items()
+        if not is_excluded(path, exclude_spec)
+    }
+    relations = await aggregate_relations(session, repo_id, file_to_box=file_to_container)
+    return containers, relations
 
 
 async def build_l3(session: AsyncSession, repo_id: str, container_id_value: str) -> C4L3 | None:

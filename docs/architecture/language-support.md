@@ -34,7 +34,7 @@ new language needs one only when it hits the same kind of wall.
 - [Multi-language files (the SFC pattern)](#multi-language-files-the-sfc-pattern)
 - [Per-language mechanics](#per-language-mechanics) · [Elixir](#elixir) · [F#](#f) · [Objective-C](#objective-c) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees)
 - [Optional language-specific passes](#optional-language-specific-passes)
-- [The three code-health dialect registries](#the-three-code-health-dialect-registries)
+- [The three code-health dialect registries](#the-three-code-health-dialect-registries) · [test-quality markers per language](#test-quality-markers-per-language)
 - [Workspace contract extraction](#workspace-contract-extraction)
 
 ---
@@ -463,11 +463,11 @@ The tiers, highest evidence first:
 | Confidence | Origins | Evidence |
 |:---:|---|---|
 | 0.95 | `same_file`, `self_scope`, `enclosing_class` | The callee is in this file, or on the caller's own class |
-| 0.93 | `receiver_same_file`, `receiver_typed_same_file`, `receiver_field_same_file`, `receiver_framework_same_file` | The receiver names a type declared in this file |
-| 0.90 | `same_package`, `import_scoped`, `receiver_same_package`, the three `*_same_package` typed variants, `self_inherited`, `enclosing_inherited` | A sibling file needing no import, or an explicit import |
-| 0.88 | `package_alias`, `module_alias`, `crate_root`, `receiver_import`, the three `*_import` typed variants | The receiver resolved through an imported file |
+| 0.93 | `receiver_same_file`, `receiver_typed_same_file`, `receiver_field_same_file`, `receiver_framework_same_file`, `scoped_name`, `receiver_extension_same_file`, `receiver_chain_same_file`, `return_type_same_file` | The receiver or returned type names a class in this file, every chained field stays in this file, or the call names its class directly |
+| 0.90 | `same_package`, `import_scoped`, `receiver_same_package`, `receiver_typed_same_package`, `receiver_field_same_package`, `receiver_framework_same_package`, `return_type_same_package`, `self_inherited`, `enclosing_inherited` | A sibling file needing no import, an explicit import, or one unambiguous ancestor |
+| 0.88 | `package_alias`, `module_alias`, `crate_root`, `receiver_import`, `receiver_typed_import`, `receiver_field_import`, `receiver_framework_import`, `receiver_extension_import`, `receiver_chain_import`, `return_type_import` | The receiver, chained field, returned type, or target resolved through an imported file or scoped alias |
 | 0.85 | `import_merged`, `same_target` | In *some* imported file, or some sibling translation unit; which one is unattributed |
-| 0.75 | `receiver_global`, the three `*_global` typed variants | The `(class, method)` pair exists somewhere in the repo |
+| 0.75 | `receiver_global`, `receiver_typed_global`, `receiver_field_global`, `receiver_framework_global`, `receiver_extension_global`, `return_type_global` | The `(class, method)` pair exists somewhere in the repo |
 | 0.50 | `global_unique` | The name is unique repo-wide. **A guess** |
 
 The typed variants come in three parallel families of four, one per *scope*,
@@ -871,6 +871,12 @@ when nothing on that chain carries a script, when the script would come from
 another scene's `instance=ExtResource(...)`, or when the resolved script declares
 no such function. It is never matched on the method name alone.
 
+A `uid://` reference resolves through the `.uid` sidecar Godot writes for
+scripts; scenes get no sidecar, so a scene uid resolves through the `path=` on
+its `[ext_resource]` header instead. An `addons/` tree is exempt from dead-code
+reporting only when a `project.godot` sits above it, so a plugin's own repo
+reports normally.
+
 Two constructs the upstream grammar rejects: `$%UniqueName` (`$` and `%` are
 separate node-path forms, so the pair fails), and a bare call to a function named
 `export` or `onready` (`export()`), which the grammar still reserves at statement
@@ -961,9 +967,9 @@ cognitive complexity and per-function markers. Optional additions widen it:
 metrics (LCOM4, god-class); `assert_kinds` / `assert_call_kinds` add
 assertion-block smells. See `complexity/README.md`.
 
-Note that C has **no map at all**, despite sharing the C++ grammar, so
-`get_language_map("c")` is `None` and the health pass never reaches a dialect for
-it. Registering C in the downstream registries would be dead configuration.
+C, F# and Objective-C have maps of their own (C separate from C++ despite the
+shared grammar), so they get complexity markers, but none of the three has a perf
+or dataflow dialect yet.
 
 ### 2. Performance: `analysis/health/perf/dialects/` (`PERF_DIALECTS`)
 
@@ -992,6 +998,10 @@ dialect reuses them instead of re-deriving them:
   this statement bind the name" question is per-grammar. (The Python, Ruby and
   Dart dialects predate the hook and keep their own tuned versions.)
 
+Object Pascal's DB and network sinks are gated on file-wide `uses` evidence: a
+file importing `FireDAC` gates every `.Open` / `.ExecSQL` / `.Post` in it,
+because a Pascal variable's declared type has no textual link back to its unit.
+
 ### 3. Dataflow: `analysis/health/dataflow/dialects/` (`DEFUSE_DIALECTS`)
 
 Intra-procedural CFG + def/use + reaching definitions, powering **Extract
@@ -1014,6 +1024,51 @@ out of that is a wrong suggestion.
 
 All three registries are purely additive and degrade to silence: an unmapped
 language produces no findings rather than wrong ones.
+
+### Test-quality markers per language
+
+The test-quality markers need per-language data beyond the node map, and a
+language with no row produces no signal.
+
+- **Assertion count** (`analysis/health/asserts/lexicon.py`) has two tiers. The
+  narrow tier is the fixed `assert` / `expect` prefix match the scored
+  assertion-block markers are calibrated on. The broad tier adds a per-language
+  row plus a repo's `health.assertions` config, feeds only the advisory count,
+  and matches names exactly, never as prefixes (prefix families such as `check`
+  and `validate` match production functions, not assertions). Oracles that are
+  not plain assertion statements are counted at the broad tier too:
+  `with pytest.raises(...)`, Java's split `object` + `name` call shape, chai
+  property chains (`expect(x).to.be.null`), expression-bodied test lambdas and
+  private `_assert_*` helpers.
+- **Mock saturation** (`analysis/health/mocks/lexicon.py`, `MOCK_DIALECTS`) has
+  rows for Python and JS/TS only. Go has no mock vocabulary. Java is held out
+  because Mockito states its checks as `verify(...)`, which counts toward
+  `verification_count` and not `assertion_count`, so an over-mocked Java test
+  arrives with a near-empty denominator.
+- **Assertion-free test** needs a per-language "is this a test case" rule
+  (`analysis/health/complexity/test_case.py`: a name prefix for Python, `TestXxx`
+  for Go, the `it(...)` / `test(...)` callback for JS/TS, `@Test` for Java) and
+  reports only for the detector's `SHIPPING_LANGUAGES` (JS, TS, TSX, Python).
+  Mock verification does count as an oracle here. Go and Java are classified but
+  not reported: Go hands `*testing.T` to package-level helpers and Java inherits
+  base-class helpers, which the oracle resolution below does not reliably reach.
+- **Oracle resolution.** A test that delegates its checks is not assertion-free.
+  Within a file, the names a function calls resolve against same-file functions
+  that assert. Across files, `asserts/oracle_reach.py` uses two lanes: a test
+  that is a graph symbol walks its own call edges (depth 2); an anonymous JS/TS
+  callback, which has no node, needs both a resolved edge from its file to the
+  asserting symbol and an unqualified call by name in its body. Only edges that
+  bind one definition are read (`import_merged` is excluded), and an unresolved
+  call suppresses nothing, so a gap leaves a false positive and never hides a
+  real finding.
+- **`.tsx` grammar.** A `.tsx` file is tagged `typescript`, but the complexity
+  walk, clone tokenizer and dataflow CFG pick the grammar from the path, so JSX
+  parses without error recovery.
+- **Every walked function is visible.** Markers read `all_functions`, the full
+  walked list, not a map keyed by function name, which would collapse anonymous
+  `it` callbacks and same-named methods on different classes to one row.
+  `duplicated_assertion_block` has no floor of its own; the `test_quality`
+  category cap (0.5) bounds its effect on a file's score.
 
 ---
 

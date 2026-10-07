@@ -27,7 +27,7 @@ and a narrow one for the same reason we keep two, but its wide list matches
 name prefixes; measured across three test corpora, the ambiguous English verbs
 in that shape (``check``, ``validate``, ``approve``, ``fail``) matched
 production functions under test and no assertions at all. Measurements and
-reasoning in LANGUAGE_SUPPORT.md#code-health-coverage.
+reasoning in docs/architecture/language-support.md#test-quality-markers-per-language.
 
 Both directions of error are understood. Over-counting shrinks a saturation
 ratio and can only suppress a finding; under-counting inflates it. A missing

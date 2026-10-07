@@ -90,6 +90,10 @@ ADO_METHODS: frozenset[str] = frozenset(
         "OpenAsync",
     }
 )
+# EF and ADO.NET verbs run on a context, query or command receiver. A bare
+# ``SaveChangesAsync()`` is the enclosing class's own method (a JSON-backed
+# store's save), not a DbContext round-trip.
+_RECEIVER_DB_METHODS: frozenset[str] = EF_ASYNC_METHODS | EF_EXEC_METHODS | ADO_METHODS
 # Dapper extension verbs (collide with EF / plain method names) — gated on db.
 DAPPER_METHODS: frozenset[str] = frozenset(
     {
@@ -224,7 +228,7 @@ class CSharpPerfDialect(BasePerfDialect):
         root_kind = io_names.get(root)
         db_ev = has_db_import or root_kind == "db"
 
-        if method in EF_ASYNC_METHODS or method in EF_EXEC_METHODS or method in ADO_METHODS:
+        if is_attribute and method in _RECEIVER_DB_METHODS:
             return "db"
         if method in HTTP_ASYNC_METHODS:
             return "network"

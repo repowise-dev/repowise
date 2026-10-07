@@ -150,6 +150,7 @@ def test_extractions_are_deterministic():
 
 def _find_extractions_reference(analysis, lmap):
     from repowise.core.analysis.health.dataflow.slice import (
+        _MAX_BODY_SHARE,
         _MAX_CANDIDATES,
         _MAX_PARAMS,
         _MAX_RETURNS,
@@ -159,11 +160,14 @@ def _find_extractions_reference(analysis, lmap):
         Extraction,
         _all_blocks,
         _declared_before_read,
+        _exit_macros,
+        _function_lines,
         _infer_in_out,
     _loop_carry_free,
     _outs_definitely_assigned,
         _sorted,
         _span_metrics,
+        _stmts_nloc,
         _unwrap_container,
         _var_lines,
     )
@@ -175,6 +179,8 @@ def _find_extractions_reference(analysis, lmap):
     if body is None:
         return []
     body_container = _unwrap_container(body, lmap.block_kinds)
+    lines = _function_lines(fn_node)
+    body_nloc = _stmts_nloc(body_container.named_children, lines)
     def_lines, use_lines = _var_lines(analysis.def_use)
     declared_first = _declared_before_read(analysis.def_use)
     decision_kinds = (
@@ -184,7 +190,13 @@ def _find_extractions_reference(analysis, lmap):
         | lmap.catch_kinds
         | lmap.boolean_operator_kinds
     )
-    jump_kinds = lmap.return_kinds | lmap.raise_kinds | lmap.break_kinds | lmap.continue_kinds
+    jump_kinds = (
+        lmap.return_kinds
+        | lmap.raise_kinds
+        | lmap.break_kinds
+        | lmap.continue_kinds
+        | lmap.yield_kinds
+    )
     scope_kinds = lmap.function_kinds | lmap.lambda_kinds
     tail_stmt_kinds = (
         lmap.statement_wrapper_kinds | lmap.local_decl_kinds
@@ -215,11 +227,13 @@ def _find_extractions_reference(analysis, lmap):
                 ):
                     continue
                 span = stmts[i : j + 1]
-                decisions, has_jump = _span_metrics(span, decision_kinds, jump_kinds, scope_kinds)
+                decisions, has_jump = _span_metrics(
+                    span, decision_kinds, jump_kinds, scope_kinds, _exit_macros(lmap)
+                )
                 if has_jump or decisions < _MIN_CCN_REMOVED:
                     continue
-                slice_nloc = sum(st.end_point[0] - st.start_point[0] + 1 for st in span)
-                if slice_nloc < _MIN_SLICE_NLOC:
+                slice_nloc = _stmts_nloc(span, lines)
+                if slice_nloc < _MIN_SLICE_NLOC or slice_nloc >= _MAX_BODY_SHARE * body_nloc:
                     continue
                 s = span[0].start_point[0] + 1
                 e = span[-1].end_point[0] + 1
@@ -524,11 +538,17 @@ def test_slice_nloc_counts_code_lines_not_comments():
                     total += limit
                 else:
                     total += x
+            total = min(total, limit * 10)
+            total = max(total, 0)
+            print(total)
             return total
         """
     fn = _first(src)
     lmap = get_language_map("python")
-    loop = [c for c in find_extractions(fn, lmap) if c.end_line - c.start_line >= 7]
+    # Spans ending with the loop (line 11), the ones holding the comments.
+    loop = [
+        c for c in find_extractions(fn, lmap) if c.end_line == 11 and c.end_line - c.start_line >= 5
+    ]
     assert loop
     assert all(c.slice_nloc <= c.end_line - c.start_line + 1 - 2 for c in loop)
 
@@ -695,3 +715,30 @@ def test_plan_params_leave_out_a_loop_counter_the_span_declares():
     plan = suggestions[0].plan
     assert plan["params"] == ["a", "n"]
     assert plan["returns"] == ["total"]
+
+
+def test_a_span_holding_nearly_the_whole_body_is_not_a_split():
+    # Everything but the closing return: lifting it would leave a function that
+    # only calls the helper, the smell moved under a new name.
+    lmap = get_language_map("python")
+    src = """
+        def tally(items, limit):
+            total = 0
+            seen = 0
+            for x in items:
+                if x > limit:
+                    total += limit
+                else:
+                    total += x
+                seen += 1
+            return total
+        """
+    assert find_extractions(_first(src), lmap) == []
+
+
+def test_a_span_leaving_real_work_behind_is_still_offered():
+    lmap = get_language_map("python")
+    fn = _first(_PROCESS)
+    (best, *_) = find_extractions(fn, lmap)
+    assert "average" in best.returns
+    assert best.end_line < fn.end_line

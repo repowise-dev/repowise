@@ -61,6 +61,10 @@ def test_a_folder_of_dockerfiles_is_not_a_zombie_package():
             "docker/entrypoint.sh": {"language": "shell"},
             "pkg/a.py": {"symbols": []},
             "lib/b.py": {"symbols": []},
+            # Each folder declares itself a package; only the Dockerfiles differ.
+            "docker/pyproject.toml": {"language": "toml"},
+            "pkg/pyproject.toml": {"language": "toml"},
+            "lib/pyproject.toml": {"language": "toml"},
         }
     )
     report = DeadCodeAnalyzer(graph).analyze({"min_confidence": 0.0})

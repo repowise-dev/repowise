@@ -74,6 +74,20 @@ class MSBuildProject:
         """Display name — the .csproj filename without extension."""
         return self.path.stem
 
+    @property
+    def published_id(self) -> str | None:
+        """The id this project publishes a package under, or None when it does not.
+
+        Packability is opt-in, never assumed: an SDK-style project is packable
+        by default, so treating silence as yes would make every internal
+        project in a solution a published library.
+        """
+        if self.is_packable is False:
+            return None
+        if not (self.is_packable or self.generate_package_on_build or self.package_id is not None):
+            return None
+        return self.package_id or self.assembly_name or self.path.stem
+
 
 # Strip XML namespace prefix from a tag — MSBuild docs say the namespace
 # is optional in SDK-style projects but legacy projects use

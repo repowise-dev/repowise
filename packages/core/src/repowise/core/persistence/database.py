@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool, StaticPool
-from sqlalchemy.schema import CreateIndex
+from sqlalchemy.schema import CreateIndex, CreateTable
 from sqlalchemy.sql import text
 
 from .models import Base
@@ -460,6 +460,43 @@ def _run_data_step(step: Callable[[object], object], connection: object) -> None
     step(connection)
 
 
+#: Tables a SQLite store rebuilds when a column the model now allows NULL in is
+#: still NOT NULL on disk: SQLite cannot relax a constraint in place, and the
+#: additive reconciler below never does. Leaf tables only, since nothing may
+#: reference a table that is copied, dropped and renamed. Each holds derived
+#: rows, so an interrupted rebuild costs a recompute, never source data.
+_SQLITE_REBUILD_FOR_NULLABLE: frozenset[str] = frozenset({"health_file_metrics"})
+
+
+def _relax_not_null(connection: object, table: object) -> None:
+    """Rebuild *table* from the model if a now-nullable column is NOT NULL.
+
+    SQLite's documented procedure: create the new shape under a staging name,
+    copy the shared columns, drop the old table, rename, recreate indexes.
+    """
+    live = {c["name"]: c for c in inspect(connection).get_columns(table.name)}  # type: ignore[attr-defined]
+    columns = [c for c in table.columns if c.name in live]  # type: ignore[attr-defined]
+    if not any(c.nullable and not live[c.name]["nullable"] for c in columns):
+        return
+    name = table.name  # type: ignore[attr-defined]
+    staging = f"_rebuild_{name}"
+    dialect = connection.dialect  # type: ignore[attr-defined]
+    ddl = str(CreateTable(table).compile(dialect=dialect))  # type: ignore[arg-type]
+    quoted = dialect.identifier_preparer.quote(name)
+    ddl = ddl.replace(f"CREATE TABLE {quoted} ", f'CREATE TABLE "{staging}" ', 1)
+    shared = ", ".join(f'"{c.name}"' for c in columns)
+    run = connection.execute  # type: ignore[attr-defined]
+    run(text(f'DROP TABLE IF EXISTS "{staging}"'))
+    run(text(ddl))
+    run(text(f'INSERT INTO "{staging}" ({shared}) SELECT {shared} FROM "{name}"'))
+    run(text(f'DROP TABLE "{name}"'))
+    run(text(f'ALTER TABLE "{staging}" RENAME TO "{name}"'))
+    # Indexes went with the old table. Not a per-row loop: one per declared index.
+    for index in table.indexes:  # type: ignore[attr-defined]
+        run(CreateIndex(index))
+    log.info("schema_table_rebuilt_for_nullable", table=name)
+
+
 def _reconcile_schema(connection: object) -> None:
     """Bring an existing database up to ``Base.metadata`` (additive only).
 
@@ -562,6 +599,15 @@ def _reconcile_schema(connection: object) -> None:
             data_step = _DATA_STEPS_ON_ADD.get(what)
             if data_step is not None and not any(name == what for name, _ in failures):
                 _run(f"{what}:data", lambda data_step=data_step: _run_data_step(data_step, connection))
+
+        # --- Nullability (SQLite only) -----------------------------------
+        # After the columns, so the copy carries every one of them, and before
+        # the indexes, which the rebuild recreates itself.
+        if continue_past_failure and table.name in _SQLITE_REBUILD_FOR_NULLABLE:
+            _run(
+                f"{table.name}:nullable",
+                lambda table=table: _relax_not_null(connection, table),
+            )
 
         # --- Indexes ---------------------------------------------------
         # Only model-declared indexes (i.e. ``Index(...)`` on the table

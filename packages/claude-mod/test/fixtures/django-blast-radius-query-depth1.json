@@ -1,0 +1,40 @@
+{
+ "transitive_affected": [
+  {
+   "path": "django/contrib/contenttypes/fields.py"
+  },
+  {
+   "path": "django/contrib/contenttypes/prefetch.py"
+  },
+  {
+   "path": "django/db/models/__init__.py"
+  },
+  {
+   "path": "django/db/models/base.py"
+  },
+  {
+   "path": "django/db/models/fields/related_descriptors.py"
+  },
+  {
+   "path": "django/db/models/manager.py"
+  },
+  {
+   "path": "django/db/models/sql/query.py"
+  },
+  {
+   "path": "tests/basic/tests.py"
+  },
+  {
+   "path": "tests/model_forms/tests.py"
+  },
+  {
+   "path": "tests/prefetch_related/models.py"
+  },
+  {
+   "path": "tests/prefetch_related/tests.py"
+  },
+  {
+   "path": "tests/raw_query/tests.py"
+  }
+ ]
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FileText,
   ArrowRight,
@@ -14,6 +14,7 @@ import { formatRelativeTime, formatTokens } from "../lib/format";
 import { getPageLabel, isStubFallbackPage } from "../lib/page-types";
 import { computeDocNav } from "./doc-nav";
 import { filterMarkdownByPersona, type ReaderPersona } from "./reader-persona";
+import { ModuleHistory } from "./module-history";
 import { WikiMarkdown } from "../wiki/wiki-markdown";
 import { TableOfContents } from "../wiki/table-of-contents";
 import { BacklinksPanel } from "../wiki/backlinks-panel";
@@ -24,12 +25,18 @@ import {
   type RelatedReason,
 } from "../wiki/wiki-links-types";
 import { Breadcrumb } from "../shared/breadcrumb";
+import { ViewTabs } from "../shared/view-tabs";
 import { Skeleton } from "../ui/skeleton";
 
 /** Related entries shown before the "+ N more" line. Five, not eight: the list
  *  is a suggestion of where to go next, and past about five it reads as a dump
  *  of everything the graph knows. */
 const RELATED_LIMIT = 5;
+
+const READER_VIEWS = [
+  { id: "page", label: "Page" },
+  { id: "reference", label: "Reference" },
+];
 
 const RELATED_REASON_LABELS: Record<RelatedReason, string> = {
   imports: "imports",
@@ -195,6 +202,8 @@ export function DocsReader({
 
   return (
     <DocsReaderBody
+      // Keyed so the Page / Reference choice resets with the page.
+      key={page.id}
       page={page}
       pages={pages}
       repoId={repoId}
@@ -306,6 +315,12 @@ function DocsReaderBody({
     () => filterMarkdownByPersona(bodyContent, persona),
     [bodyContent, persona],
   );
+
+  // The agent digest: questions, identifiers, public API and git signals the
+  // page carries for search and MCP, kept off the body and shown on request.
+  const digest = page.digest?.trim() ?? "";
+  const [view, setView] = useState<"page" | "reference">("page");
+  const showingReference = view === "reference" && digest !== "";
 
   // The nearest ancestor that is actually a module. Breadcrumbs now come from
   // the stored tree, whose ancestors can be a layer or the file a symbol was
@@ -429,6 +444,23 @@ function DocsReaderBody({
     return Comp;
   }, [goToPageId]);
 
+  /* No `prose` wrapper: every element the renderer emits is already styled
+     through our own tokens, so the plugin contributed exactly two things, a
+     hardcoded `prose-invert` that fed dark variables to light mode and
+     `code::before/::after { content: "`" }`, which printed literal backticks
+     around every unresolved inline ref. */
+  const article = (markdown: string) => (
+    <article data-chat-selection="" className="max-w-none leading-relaxed overflow-hidden">
+      <WikiMarkdown
+        content={markdown}
+        wikiLinks={wikiLinks}
+        buildHref={(pid) => buildPageHref(pid)}
+        LinkComponent={WikiInlineLink}
+        pages={pages}
+      />
+    </article>
+  );
+
   return (
     <div className="flex h-full">
       <div className="flex flex-col flex-1 min-w-0">
@@ -549,9 +581,9 @@ function DocsReaderBody({
                 after. Collapsed by default — it answers a question, it does not
                 raise one. */}
             {sources.length > 0 && (
-              <details className="group mb-6 rounded-lg border border-[var(--color-border-default)]">
+              <details className="group/toc mb-6 rounded-lg border border-[var(--color-border-default)]">
                 <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2 text-xs text-[var(--color-text-secondary)]">
-                  <ChevronRight className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)] transition-transform group-open:rotate-90" />
+                  <ChevronRight className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)] transition-transform group-open/toc:rotate-90" />
                   <span>
                     Built from {sources.length} source{sources.length === 1 ? "" : " files"}
                   </span>
@@ -597,24 +629,27 @@ function DocsReaderBody({
               </div>
             )}
 
-            {/* Markdown content.
-                No `prose` wrapper: every element the renderer emits is already
-                styled through our own tokens, so the plugin contributed exactly
-                two things — a hardcoded `prose-invert` that fed dark variables
-                to light mode, and `code::before/::after { content: "`" }`, which
-                printed literal backticks around every unresolved inline ref. */}
-            <article
-              data-chat-selection=""
-              className="max-w-none leading-relaxed overflow-hidden"
-            >
-              <WikiMarkdown
-                content={visibleContent}
-                wikiLinks={wikiLinks}
-                buildHref={(pid) => buildPageHref(pid)}
-                LinkComponent={WikiInlineLink}
-                pages={pages}
-              />
-            </article>
+            {/* Markdown content. A page with an agent digest gets a Page /
+                Reference switch: the body is what a reader came for, the
+                digest is what search and agents read, one click away. */}
+            {digest ? (
+              <ViewTabs
+                tabs={READER_VIEWS}
+                value={view}
+                onValueChange={(id) => setView(id === "reference" ? "reference" : "page")}
+                aria-label="Page or reference"
+              >
+                {showingReference && (
+                  <p className="mb-4 text-xs text-[var(--color-text-tertiary)]">
+                    What this page carries for search and agents: the questions it answers,
+                    the identifiers behind it and its git history.
+                  </p>
+                )}
+                {article(showingReference ? digest : visibleContent)}
+              </ViewTabs>
+            ) : (
+              article(visibleContent)
+            )}
 
             {/* The upgrade affordance, at the end of the content rather than
                 beside the title. Someone who has read to here knows the page is
@@ -714,6 +749,7 @@ function DocsReaderBody({
                 the intelligence sections and the contents. The breakpoint is
                 2xl, not lg — see the rail below for why. */}
             <div className="mt-10 grid gap-8 border-t border-[var(--color-border-default)] pt-6 sm:grid-cols-2 2xl:hidden">
+              <ModuleHistory metadata={page.metadata} />
               {intelligenceSlot && (
                 <div className="flex flex-col gap-4">{intelligenceSlot}</div>
               )}
@@ -765,7 +801,9 @@ function DocsReaderBody({
       {sidebarOpen && (
         <div className="hidden 2xl:block shrink-0 w-[300px] overflow-auto">
           <div className="flex flex-col gap-7 py-8 pl-6 pr-7">
-            <TableOfContents content={bodyContent} />
+            <TableOfContents content={showingReference ? digest : bodyContent} />
+
+            <ModuleHistory metadata={page.metadata} />
 
             {intelligenceSlot}
 

@@ -18,6 +18,7 @@ import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import { AskAboutThis } from "../chat/ask-about-this";
 import { SeverityMark } from "./severity-mark";
 import { VerificationTag } from "./verification-tag";
+import { LowerPriorityTag } from "./lower-priority-tag";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
 
@@ -34,6 +35,7 @@ export interface HealthWorkItemFinding {
   details?: BiomarkerDetailsRecord | null;
   /** `"unverified"` for a provisional finding type. */
   verification?: string | null;
+  lower_priority?: string | null;
 }
 
 export interface HealthWorkItem {
@@ -318,6 +320,7 @@ export function HealthWorkItemCard({
                       {biomarkerLabel(f.biomarker_type)}
                     </span>
                     <VerificationTag verification={f.verification} />
+                    <LowerPriorityTag reason={f.lower_priority} />
                     {f.function_name ? (
                       <span className="text-xs font-mono text-[var(--color-text-tertiary)]">{f.function_name}</span>
                     ) : null}

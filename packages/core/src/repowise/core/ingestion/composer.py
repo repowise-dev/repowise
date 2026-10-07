@@ -74,6 +74,9 @@ class ComposerManifest:
     psr4: tuple[tuple[str, tuple[str, ...]], ...] = ()
     psr0: tuple[tuple[str, tuple[str, ...]], ...] = ()
     classmap: tuple[str, ...] = ()
+    #: ``autoload.files``: loaded on every request by the autoloader, so a
+    #: file listed there needs no importer (global helper functions).
+    files: tuple[str, ...] = ()
     #: ``url`` of every ``{"type": "path"}`` repository, relative to ``rel_dir``
     #: exactly as written (it is a filesystem path, often ``../shared``).
     path_repositories: tuple[str, ...] = ()
@@ -125,10 +128,12 @@ def parse_composer(data: object, rel_dir: str = "") -> ComposerManifest | None:
     if not isinstance(data, dict):
         return None
     classmap: list[str] = []
+    files: list[str] = []
     for section in ("autoload", "autoload-dev"):
         block = data.get(section)
         if isinstance(block, dict):
             classmap.extend(_rebase(rel_dir, d) for d in _dirs(block.get("classmap")))
+            files.extend(_rebase(rel_dir, f) for f in _dirs(block.get("files")))
     repositories = data.get("repositories")
     if isinstance(repositories, dict):  # the keyed form composer also accepts
         repositories = list(repositories.values())
@@ -147,6 +152,7 @@ def parse_composer(data: object, rel_dir: str = "") -> ComposerManifest | None:
         psr4=_prefix_map(data, "psr-4", rel_dir),
         psr0=_prefix_map(data, "psr-0", rel_dir),
         classmap=tuple(classmap),
+        files=tuple(files),
         path_repositories=path_repos,
         extra=extra if isinstance(extra, dict) else {},
     )

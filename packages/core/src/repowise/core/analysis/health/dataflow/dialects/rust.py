@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BaseDefUseDialect, Occurrence, StatementDefUse
+from .base import BaseDefUseDialect, Occurrence, StatementDefUse, echoes
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -45,6 +45,7 @@ _ASSIGN_KINDS = frozenset({"assignment_expression"})
 _AUG_KINDS = frozenset({"compound_assignment_expr"})
 _LET_DECL = "let_declaration"
 _LET_CONDITION = "let_condition"  # ``if let PAT = expr`` / ``while let ...``
+_MATCH_ARM = "match_arm"  # ``PAT [if guard] => value``
 # Pattern containers whose identifier leaves are binders (defs).
 _PATTERN_CONTAINERS = frozenset(
     {
@@ -168,7 +169,7 @@ class RustDefUseDialect(BaseDefUseDialect):
             binders: list[Occurrence] = []
             self._targets(node.child_by_field_name("pattern"), binders, uses)
             defs.extend(binders)
-            uses.extend(binders)
+            uses.extend(echoes(binders))
             self._process(node.child_by_field_name("value"), defs, uses)
         else:
             self._process(node, defs, uses)
@@ -204,6 +205,10 @@ class RustDefUseDialect(BaseDefUseDialect):
         if t == _LET_CONDITION:
             self._condition(node, defs, uses)
             return
+        if t == _MATCH_ARM:
+            self._arm_pattern(node.child_by_field_name("pattern"), defs, uses)
+            self._process(node.child_by_field_name("value"), defs, uses)
+            return
         if t == _SCOPED_IDENTIFIER:  # a path, never a local read
             return
         if t in self.member_access_kinds:
@@ -218,18 +223,29 @@ class RustDefUseDialect(BaseDefUseDialect):
         for child in node.named_children:
             self._process(child, defs, uses)
 
-    def _process_may_def(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
-        """Process *node* whose writes execute only on some path (a match arm,
-        an expression-position ``if`` / loop, a ``let-else`` arm).
+    def _arm_pattern(
+        self, pattern: Node | None, defs: list[Occurrence], uses: list[Occurrence]
+    ) -> None:
+        """A match arm's pattern binds the names it holds for the arm's value.
 
-        Each def found within is recorded as a def AND a use, so a downstream
-        must-def proof can only get more conservative, never less.
+        The arm sits inside a ``match`` the CFG keeps as one statement, so these
+        are may-defs like the arm's other writes. A bare capitalised name
+        (``None``, ``MAX``) is a unit variant or a constant, not a binder: Rust
+        lints a capitalised binding, so the convention holds. The guard
+        (``y if y > 2``) only reads.
         """
-        inner_defs: list[Occurrence] = []
-        for child in node.named_children:  # not the node itself: no re-dispatch
-            self._process(child, inner_defs, uses)
-        defs.extend(inner_defs)
-        uses.extend(inner_defs)
+        if pattern is None:
+            return
+        guard = pattern.child_by_field_name("condition")
+        binders: list[Occurrence] = []
+        for child in pattern.named_children:
+            if guard is None or child.id != guard.id:
+                self._targets(child, binders, uses)
+        # The names exist from the end of the pattern, so the arm's value on
+        # the same line reads them, not an outer variable.
+        self._declare(binders, 0, pattern)
+        defs.extend(b for b in binders if not b.name[:1].isupper())
+        self._process(guard, defs, uses)
 
     # -- write-target extraction (assignment LHS + binding patterns) ----------
 
@@ -237,6 +253,8 @@ class RustDefUseDialect(BaseDefUseDialect):
         if node is None:
             return
         t = node.type
+        if t == _SCOPED_IDENTIFIER:  # a path (``std::i32::MAX``) never binds
+            return
         if t in self.identifier_kinds or t == _SHORTHAND_BINDER:
             defs.append(self._occ(node))
             return

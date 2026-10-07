@@ -9,7 +9,11 @@ from __future__ import annotations
 import networkx as nx
 import pytest
 
-from repowise.core.analysis.dead_code.constants import never_flag_match, never_flag_path
+from repowise.core.analysis.dead_code.constants import (
+    is_runner_file,
+    never_flag_match,
+    never_flag_path,
+)
 from repowise.core.analysis.dead_code.file_reachability import is_file_reachable
 
 
@@ -103,3 +107,42 @@ def test_vendored_and_generated_files_are_never_flagged(path):
 )
 def test_origin_near_misses_stay_flaggable(path):
     assert not never_flag_path(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # A build tool runs a build file by its name; nothing imports one.
+        "ktor-server/ktor-server-core/build.gradle.kts",
+        "gradle/plugins/ktorbuild.kmp.gradle.kts",
+        "settings.gradle.kts",
+        "crates/core/build.rs",
+        "src/bootstrap/build.rs",
+        "src/tools/x/build.rs",
+        "magefile.go",
+        "noxfile.py",
+        "cmake/Toolchain.cmake",
+    ],
+)
+def test_build_files_are_never_flagged(path):
+    assert never_flag_path(path)
+    assert not _unreachable(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/build.rs",  # a ``mod build;`` module
+        "src/main/kotlin/io/ktor/Settings.kt",
+        "lib/webpack.js",
+    ],
+)
+def test_build_near_misses_stay_flaggable(path):
+    assert not never_flag_path(path)
+
+
+def test_a_build_file_runs_what_it_names():
+    assert is_runner_file("CMakeLists.txt")
+    assert is_runner_file("server/build.gradle")
+    assert is_runner_file("eng/Versions.props")
+    assert not is_runner_file("src/main.c")

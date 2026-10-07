@@ -247,8 +247,9 @@ async def _queue_targets(
         # Absent means either filtered out above, or a file this reading
         # cannot score: under ``code_shape``, a row with no recorded split.
         # Ranking that on a stand-in 10.0 would put an unmeasured file at the
-        # top of a list ordered by how bad things are.
-        if m is None:
+        # top of a list ordered by how bad things are. The same holds for a
+        # file in a language health has no dialect for, stored with no score.
+        if m is None or m.score is None:
             continue
         if _is_history_only(fs, q, history):
             history_only += 1

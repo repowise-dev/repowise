@@ -664,3 +664,18 @@ describe("HealthFileDrawer leading cause", () => {
     expect(document.querySelector('[title="Code health pillar"]')).toBeNull();
   });
 });
+
+describe("HealthFileDrawer: a file with no score", () => {
+  it("says it was not analysed instead of printing a score and a band", () => {
+    render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric({ file_path: "src/Big.php", score: null, max_ccn: null, max_nesting: null })}
+        findings={[]}
+      />,
+    );
+    expect(screen.getByText(/Not analysed\. No detector for this language\./)).toBeInTheDocument();
+    expect(screen.queryByText("out of 10")).toBeNull();
+  });
+});

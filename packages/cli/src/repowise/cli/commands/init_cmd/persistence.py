@@ -97,13 +97,21 @@ async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str]
                             Page.content,
                             Page.summary,
                             Page.target_path,
+                            Page.digest,
                         ).where(Page.id.in_(batch))
                     )
                 ).all()
             await fts.index_many(
                 [
-                    (page_id, title or "", content or "", summary or "", target_path or "")
-                    for page_id, title, content, summary, target_path in rows
+                    (
+                        page_id,
+                        title or "",
+                        content or "",
+                        summary or "",
+                        target_path or "",
+                        digest or "",
+                    )
+                    for page_id, title, content, summary, target_path, digest in rows
                 ]
             )
     except Exception as exc:  # pragma: no cover - defensive
@@ -364,6 +372,11 @@ def _stamp_full_init_scope(
         )
     else:
         pages = {"effective_cap": None, "eligible": None, "generated": None, "omitted": None}
+    from repowise.cli.providers import semantic_search_status
+
+    semantic = semantic_search_status(
+        embedder_name_resolved, getattr(result, "embed_failed_pages", 0)
+    )
     stamp_index_scope(
         state,
         {"commit_limit": resolved_commit_limit, "max_file_pages": max_file_pages},
@@ -383,8 +396,8 @@ def _stamp_full_init_scope(
         },
         search={
             "full_text": "available",
-            "semantic": "unavailable" if embedder_name_resolved == "mock" else "available",
-            "next_command": "repowise reindex" if embedder_name_resolved == "mock" else None,
+            "semantic": semantic,
+            "next_command": "repowise reindex" if semantic == "unavailable" else None,
         },
         upgrade={"status": "not_applicable", "retryable": False, "completed_stages": []},
     )

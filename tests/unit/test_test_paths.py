@@ -126,6 +126,17 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("apps/client-e2e/src/app.cy.ts", None, "test"),
     ("apps/client-e2e/src/support/commands.ts", None, "support"),
     ("mylib/unit.tests/run.py", None, "test"),
+    # `test suite(s)` names a suite of tests when it is a build module with its
+    # own `src` root: a Gradle module of shared test classes, serde's no_std check
+    ("server/server-test-suites/jvm/src/io/x/suites/EngineStressSuite.kt", None, "test"),
+    ("server/server-test-suites/common/src/io/x/suites/Utils.kt", None, "test"),
+    ("server/x-test-suites/src/main/kotlin/io/x/ContentSuite.kt", None, "test"),
+    ("test_suite/no_std/src/main.rs", None, "test"),
+    # ...and not as a product feature folder or a docs page set
+    ("src/api/test-suites/route.ts", None, ""),
+    ("apps/web/src/features/test-suite/List.tsx", None, ""),
+    ("docs/test-suites/overview.md", None, ""),
+    ("conformance/test-suite/run.py", None, ""),
     # ...so a word that merely contains a test token, or a compound that is
     # *about* testing, is not a test tree
     ("src/latest-release/api.py", None, ""),
@@ -133,6 +144,9 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("docs/test-api/class-test.md", None, ""),
     ("docs/test-tools/index.md", None, ""),
     ("src/generators/e2e-project/index.ts", None, ""),
+    ("apps/office-suite/src/main.ts", None, ""),
+    ("packages/test-suite-runner/index.js", None, ""),
+    ("server/server-test-host/src/io/x/TestEngine.kt", None, ""),
     # singular `test` heads a compound naming one thing - a generator, an
     # executor, a package, an example project - in either spelling
     ("src/generators/component-test/index.ts", None, ""),
@@ -183,6 +197,13 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # Support directories count anywhere, .github included.
     (".github/test-data/expected.json", None, "support"),
     (".github/actions/notify/__snapshots__/Button.snap", None, "support"),
+    # C/C++ helpers shared by tests (abseil, leveldb)
+    ("absl/strings/cord_test_helpers.h", None, "test"),
+    ("absl/random/internal/distribution_test_util.cc", None, "test"),
+    ("absl/log/log_basic_test_impl.inc", None, "test"),
+    ("util/env_posix_test_helper.h", None, "test"),
+    ("absl/strings/str_cat.h", None, ""),
+    ("crates/searcher/src/searcher/util.rs", None, ""),
 )
 
 

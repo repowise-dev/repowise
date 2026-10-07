@@ -195,6 +195,8 @@ _PY_MODEL_NAME_RE = re.compile(r"^[A-Z]\w*[a-z]\w*$")
 
 class PythonPerfDialect(BasePerfDialect):
     language = "python"
+    lock_acquire_functions = frozenset({"acquire", "__enter__"})
+    spin_loop_header = re.compile(r"while\s+True\s*:")
     markers = frozenset(
         {
             "io_in_loop",
@@ -464,6 +466,9 @@ class PythonPerfDialect(BasePerfDialect):
             if first is not None and first.type == "identifier" and first.text is not None:
                 return first.text.decode("utf-8", "replace")
         return None
+
+    def iterable_node(self, node: Node) -> Node | None:
+        return node.child_by_field_name("right") if node.type == "for_statement" else None
 
     # ``itertools.batched``, ``more_itertools.chunked`` and hand-rolled peers.
     _CHUNKING_CALLS: frozenset[str] = frozenset(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from tree_sitter import Node
 
-from ...models import NamedBinding
+from ...models import Import, NamedBinding
 from ..helpers import node_text
 
 
@@ -120,3 +120,43 @@ def _walk_use_tree(
     exported = path.rsplit("::", 1)[-1]
     if exported and exported != "*":
         leaves.append((path, alias or exported, exported))
+
+
+def macro_mod_imports(token_tree: Node, raw: str) -> list[Import]:
+    """One ``mod`` import per module a macro's tokens declare.
+
+    ``cfg_if! { if #[cfg(unix)] { mod unix; } }`` declares ``unix`` in the
+    module that makes the call, the same as a ``mod unix;`` item there.
+    """
+    return [
+        Import(
+            raw_statement=raw,
+            module_path=name,
+            imported_names=["*"],
+            is_relative=False,
+            resolved_file=None,
+            bindings=[NamedBinding(local_name="*", exported_name=None, source_file=None)],
+        )
+        for name in dict.fromkeys(macro_body_mod_names(token_tree))
+    ]
+
+
+def macro_body_mod_names(token_tree: Node) -> list[str]:
+    """Module names declared in a macro token tree, nested trees included.
+
+    Only the exact tokens ``mod``, a plain name and ``;`` count: a ``$name``
+    metavariable or a ``mod x { ... }`` with a body is no file declaration,
+    and a declaration inside such a body belongs to that inline module, so
+    its tokens are not read.
+    """
+    kids = token_tree.children
+    types = [kid.type for kid in kids]
+    names = [
+        node_text(kids[i + 1], "")
+        for i in range(len(kids) - 2)
+        if types[i : i + 3] == ["mod", "identifier", ";"]
+    ]
+    for i, kid in enumerate(kids):
+        if kid.type == "token_tree" and types[max(i - 2, 0) : i] != ["mod", "identifier"]:
+            names.extend(macro_body_mod_names(kid))
+    return names

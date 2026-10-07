@@ -5,6 +5,7 @@ One dataclass per template; extracted from the former context_assembler.py.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -127,8 +128,9 @@ class ModulePageContext:
     public_api: list[dict] = field(default_factory=list)
     # Public API entries past the hard cap, counted, not listed.
     public_api_omitted: int = 0
-    # Rendered source excerpts, then one-line signatures for files with no excerpt.
-    code_excerpts: str = ""
+    # Exact source for the central symbols: [{"file", "symbol", "lines",
+    # "truncated", "code"}], then one-line signatures for files with no excerpt.
+    code_excerpts: list[dict] = field(default_factory=list)
     declared_files: list[str] = field(default_factory=list)
     # Git-derived subsystem health, aggregated over the page's member files.
     # All degrade to zero/empty when no git metadata is available, so the
@@ -162,6 +164,14 @@ class ModulePageContext:
     # Top files inside the module by PageRank, for the "key files" section.
     key_files: list[dict] = field(default_factory=list)
     top_owners: list[dict] = field(default_factory=list)
+    # What the model writes the page from: parts, import edges between them,
+    # key files, neighbours and a traced flow. See ``module_facts.py``.
+    facts: dict = field(default_factory=dict)
+
+    @property
+    def facts_json(self) -> str:
+        """The facts as the prompt shows them: readable JSON, arrows left unescaped."""
+        return json.dumps(self.facts, indent=1, ensure_ascii=False)
 
 
 @dataclass
@@ -210,15 +220,6 @@ class RepoOverviewContext:
     # table they feed reads the same on every render. Empty when the repository
     # has no packages to tabulate.
     package_stats: list[dict] = field(default_factory=list)
-
-
-@dataclass
-class ArchitectureDiagramContext:
-    repo_name: str
-    nodes: list[str]
-    edges: list[tuple[str, str]]
-    communities: dict[int, list[str]]
-    scc_groups: list[list[str]]
 
 
 @dataclass

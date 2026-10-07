@@ -1,6 +1,6 @@
 ---
 description: Why the code is shaped this way — decisions, rationale, and git archaeology (question, path, or decision-health dashboard).
-allowed-tools: Bash, Read
+allowed-tools: Bash(repowise why:*), Read
 ---
 
 # Repowise Why

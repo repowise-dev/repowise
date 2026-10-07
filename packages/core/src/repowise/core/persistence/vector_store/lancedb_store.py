@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,8 @@ __all__ = ["STORED_SNIPPET_CHARS", "LanceDBVectorStore", "read_recorded_vector_d
 # state. A several-thousand-path generation level can otherwise commit
 # gigabytes before returning even though the selected result is small.
 _SUMMARY_PATH_BATCH_SIZE = 100
+
+logger = logging.getLogger(__name__)
 
 # LanceDB caches each table version's manifest (default cap 1 GiB), and every
 # manifest lists all fragments so far. Writes are batched below, but update runs
@@ -134,6 +137,21 @@ def _last_row_per_page(batches: list[Any]) -> Any:
     return table
 
 
+class LanceDBUnavailableError(RuntimeError):
+    """lancedb is missing or broken: an install problem, not a store one."""
+
+
+def store_open_fix_hint(exc: BaseException) -> str:
+    """What to do about a store that would not open, by what actually failed.
+
+    Only an install problem earns "reinstall"; a locked or unreadable table
+    does not, and telling someone to reinstall for it sends them the wrong way.
+    """
+    if isinstance(exc, (LanceDBUnavailableError, ImportError, AttributeError)):
+        return "pip install --force-reinstall lancedb"
+    return "retry; if it persists, run repowise doctor"
+
+
 class LanceDBVectorStore(VectorStore):
     """Vector store backed by LanceDB (embedded, local file storage).
 
@@ -162,9 +180,14 @@ class LanceDBVectorStore(VectorStore):
             return
         try:
             import lancedb  # type: ignore[import]
-        except ImportError as exc:
-            raise RuntimeError(
-                "LanceDB is not installed. Install it with: pip install repowise-core[search]"
+
+            connect_async = lancedb.connect_async
+        except (ImportError, AttributeError) as exc:
+            # A partial install imports fine and lacks the async API, which
+            # used to surface as a bare AttributeError far from its cause.
+            raise LanceDBUnavailableError(
+                f"LanceDB is missing or broken ({type(exc).__name__}: {exc}). "
+                "Reinstall it with: pip install --force-reinstall lancedb"
             ) from exc
 
         # ``Session`` arrived after the oldest supported LanceDB; without it
@@ -175,7 +198,7 @@ class LanceDBVectorStore(VectorStore):
             if session_cls is not None
             else {}
         )
-        self._db = await lancedb.connect_async(self._db_path, **kwargs)
+        self._db = await connect_async(self._db_path, **kwargs)
         table_names = await self._db.table_names()
         if self._table_name in table_names:
             self._table = await self._db.open_table(self._table_name)
@@ -452,8 +475,20 @@ class LanceDBVectorStore(VectorStore):
         await self._ensure_connected()
         if self._table is None:
             return set()
-        rows = await self._table.query().select(["page_id"]).to_list()  # type: ignore[union-attr]
-        return {r["page_id"] for r in rows}
+
+        try:
+            rows = await self._table.query().select(["page_id"]).to_list()  # type: ignore[union-attr]
+            return {r["page_id"] for r in rows}
+        except Exception as exc:
+            logger.warning(
+                "Failed to read page IDs from LanceDB vector store at %s. "
+                "The vector store may be damaged. Repowise will regenerate "
+                "pages instead. Run 'repowise reindex' to rebuild the vector store. "
+                "Error: %s",
+                self._db_path,
+                exc,
+            )
+            return set()
 
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.

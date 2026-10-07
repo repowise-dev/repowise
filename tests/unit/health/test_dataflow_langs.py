@@ -1650,3 +1650,442 @@ def test_a_local_declared_and_read_on_one_line_in_the_span_is_not_a_parameter():
     assert extractions, "expected the second loop as an extraction"
     assert all("t" not in x.params for x in extractions)
     assert (("a", "n"), ("total",)) in [(x.params, x.returns) for x in extractions]
+
+
+# == Reads inside nested closures ===============================================
+
+
+def _covering(fn, lmap, first: int, last: int):
+    return [e for e in find_extractions(fn, lmap) if e.start_line <= first and e.end_line >= last]
+
+
+def test_go_closure_read_of_a_parameter_makes_it_a_param():
+    # ``ps`` is read only inside the func literal; the span still needs it.
+    src = """
+        package main
+
+        func load(m *Map, ps *Page) []int {
+            key := ps.Path()
+            if key == "/" {
+                key = ""
+            }
+            v, err := m.cache.GetOrCreate(key, func(string) ([]int, error) {
+                res := m.find(ps)
+                if len(res) > 2 {
+                    res = res[:2]
+                }
+                return res, nil
+            })
+            if err != nil {
+                panic(err)
+            }
+            m.count++
+            m.last = key
+            m.seen = true
+            return v
+        }
+        """
+    lmap = get_language_map("go")
+    spans = _covering(_first("go", src), lmap, 9, 18)
+    assert spans
+    assert all("ps" in e.params for e in spans)
+
+
+def test_ts_closure_read_after_the_span_makes_a_return():
+    # ``seen`` is read after the span only inside the arrow function.
+    src = """
+        function prune(messages: Msg[], limit: number): Msg[] {
+            const seen = new Set<string>()
+            for (const msg of messages) {
+                if (msg.id && msg.size < limit) {
+                    seen.add(msg.id)
+                }
+            }
+            log(messages.length)
+            log(limit)
+            log(seen.size)
+            return messages.filter((m) => seen.has(m.parent))
+        }
+        """
+    lmap = get_language_map("typescript")
+    spans = _covering(_first("typescript", src), lmap, 3, 8)
+    assert spans
+    assert all("seen" in e.returns for e in spans)
+
+
+def test_ts_closure_parameter_is_not_a_read_of_the_outer_name():
+    src = """
+        function scale(items: number[], x: number): number[] {
+            let out: number[] = []
+            if (x > 1) {
+                out = items.map((x) => x * 2)
+                out.push(0)
+            } else {
+                out = items.slice()
+            }
+            log(out.length)
+            log(items.length)
+            log(out.length)
+            return out
+        }
+        """
+    lmap = get_language_map("typescript")
+    spans = _covering(_first("typescript", src), lmap, 4, 9)
+    assert spans
+    assert all("x" in e.params for e in spans)  # the condition reads the outer x
+    fn = _first("typescript", src)
+    captured = {u.name for u in fn.def_use.captured}
+    assert "x" not in captured and "items" not in captured
+
+
+@pytest.mark.parametrize(
+    ("language", "src", "captured", "not_captured"),
+    [
+        (
+            "python",
+            """
+            def f(rows, k):
+                total = 0
+                def inner(v):
+                    return v + total + k
+                return list(map(lambda total: total * 2, rows)), inner
+            """,
+            {"total", "k"},
+            {"v", "inner"},
+        ),
+        (
+            "java",
+            """
+            class A {
+                int f(java.util.List<Integer> rows, int k) {
+                    int total = 1;
+                    rows.forEach(v -> System.out.println(v + total + k));
+                    return total;
+                }
+            }
+            """,
+            {"total", "k"},
+            {"v"},
+        ),
+        (
+            "rust",
+            """
+            fn f(rows: Vec<i32>, k: i32) -> i32 {
+                let total = 1;
+                let s: i32 = rows.iter().map(|v| v + total + k).sum();
+                s
+            }
+            """,
+            {"total", "k"},
+            {"v"},
+        ),
+        (
+            "typescript",
+            """
+            function f(rows: number[], k: number) {
+                const total = 1
+                return rows.map((v) => rows.filter((w) => w + v + total > k))
+            }
+            """,
+            {"total", "k", "rows"},
+            {"v", "w"},
+        ),
+    ],
+)
+def test_closure_reads_are_captured_per_language(language, src, captured, not_captured):
+    fn = _first(language, src)
+    names = {u.name for u in fn.def_use.captured}
+    assert captured <= names
+    assert not (not_captured & names)
+
+
+def test_a_closure_local_shadowing_an_outer_name_is_not_a_capture():
+    src = """
+        function f(items: number[], t: number): number[] {
+            let t2 = 0
+            if (t > 1) {
+                t2 = t * 3
+                log(t2)
+            }
+            log(t)
+            return items.map((v) => {
+                const t2 = v * 2
+                return t2 + t
+            })
+        }
+        """
+    fn = _first("typescript", src)
+    assert "t2" not in {u.name for u in fn.def_use.captured}
+
+
+# == Spans a helper cannot carry =================================================
+
+
+def test_python_span_holding_a_yield_is_not_offered():
+    src = """
+        def rows(items, limit):
+            seen = 0
+            for item in items:
+                if item > limit:
+                    seen += 1
+                    yield item
+                else:
+                    seen -= 1
+            print(seen)
+            print(limit)
+            return seen
+        """
+    lmap = get_language_map("python")
+    fn = _first("python", src)
+    assert all(not (e.start_line <= 7 <= e.end_line) for e in find_extractions(fn, lmap))
+
+
+def test_ts_span_holding_a_yield_is_not_offered():
+    src = """
+        function* chunks(items: string[], limit: number) {
+            let seen = 0
+            for (const item of items) {
+                if (item.length > limit) {
+                    seen += 1
+                    yield item
+                } else {
+                    seen -= 1
+                }
+            }
+            log(seen)
+            log(limit)
+            return seen
+        }
+        """
+    lmap = get_language_map("typescript")
+    fn = _first("typescript", src)
+    assert all(not (e.start_line <= 7 <= e.end_line) for e in find_extractions(fn, lmap))
+
+
+def test_rust_span_holding_an_exit_macro_is_not_offered():
+    src = """
+        fn paths(low: &mut Low, state: &State) -> anyhow::Result<Vec<String>> {
+            let mut paths = Vec::new();
+            for arg in low.positional.drain(..) {
+                if state.stdin_consumed && arg == "-" {
+                    anyhow::bail!("cannot read stdin twice");
+                }
+                paths.push(arg);
+            }
+            log::debug!("{}", paths.len());
+            log::debug!("{}", state.stdin_consumed);
+            Ok(paths)
+        }
+        """
+    lmap = get_language_map("rust")
+    fn = _first("rust", src)
+    assert all(not (e.start_line <= 6 <= e.end_line) for e in find_extractions(fn, lmap))
+
+
+# == May-def bookkeeping is not a read ===========================================
+
+
+def test_rust_if_let_binder_inside_the_span_is_not_a_param():
+    # Both ``if let`` arms bind their own ``var``; the first one's binding is
+    # out of scope by the time the span runs, so it cannot be passed in.
+    src = """
+        fn flag_doc(flag: &Flag, out: &mut String) {
+            if let Some(var) = flag.doc_variable() {
+                out.push_str(var);
+            }
+            let name = flag.name_long();
+            out.push_str(name);
+            if let Some(var) = flag.doc_variable() {
+                if var.len() > 3 {
+                    out.push_str(var);
+                }
+            }
+            out.push_str("\n");
+            let doc = flag.doc_long();
+            if doc.len() > 10 {
+                out.push_str(doc);
+            }
+            out.push_str("\n");
+            out.push_str("\n");
+        }
+        """
+    lmap = get_language_map("rust")
+    spans = [e for e in find_extractions(_first("rust", src), lmap) if e.start_line <= 8 <= e.end_line]
+    assert spans
+    assert all("var" not in e.params for e in spans)
+
+
+def test_rust_let_inside_a_match_arm_is_not_a_param():
+    src = """
+        fn analyse(kind: &Kind, limit: usize) -> usize {
+            match kind {
+                Kind::One(items) => {
+                    let mut total = items.len();
+                    total
+                }
+                Kind::Many(items) => {
+                    let mut total = 0;
+                    for item in items.iter() {
+                        if item.len() > limit {
+                            total += limit;
+                        } else {
+                            total += item.len();
+                        }
+                    }
+                    total
+                }
+            }
+        }
+        """
+    lmap = get_language_map("rust")
+    fn = _first("rust", src)
+    spans = [e for e in find_extractions(fn, lmap) if e.start_line == 9]
+    assert spans
+    assert all("total" not in e.params for e in spans)
+
+
+def test_rust_span_ending_on_a_consumed_tail_if_is_not_offered():
+    # The ``else`` block's last ``if`` is its value, read by the ``let``.
+    src = """
+        fn matcher(names: &[String], dir: &str, case: bool) -> usize {
+            let found = if names.is_empty() {
+                0
+            } else {
+                let wanted: Vec<&String> = names.iter().filter(|n| n.len() > 2).collect();
+                log(dir);
+                log(case);
+                if wanted.is_empty() {
+                    0
+                } else {
+                    let m = wanted.len();
+                    m + 1
+                }
+            };
+            found
+        }
+        """
+    lmap = get_language_map("rust")
+    fn = _first("rust", src)
+    assert all(e.end_line != 14 for e in find_extractions(fn, lmap))
+
+
+def test_rust_span_ending_on_an_if_in_a_loop_body_is_still_offered():
+    src = """
+        fn tally(items: &[usize], limit: usize, out: &mut Vec<usize>) -> usize {
+            let count = items.len();
+            for item in items {
+                let doubled = item * 2;
+                log(doubled);
+                log(limit);
+                if doubled > limit {
+                    out.push(limit);
+                } else {
+                    out.push(doubled);
+                }
+            }
+            count
+        }
+        """
+    lmap = get_language_map("rust")
+    fn = _first("rust", src)
+    assert any(e.end_line == 12 for e in find_extractions(fn, lmap))
+
+
+def test_rust_match_arm_binders_are_params_of_a_span_in_the_arm():
+    src = """
+        fn class_regex(re: &mut String, tokens: &[Token]) {
+            for tok in tokens.iter() {
+                match *tok {
+                    Token::Class { negated, ref ranges } => {
+                        re.push('[');
+                        if negated {
+                            re.push('^');
+                        }
+                        for r in ranges {
+                            if r.0 == r.1 {
+                                re.push(r.0);
+                            } else {
+                                re.push(r.1);
+                            }
+                        }
+                        re.push(']');
+                    }
+                    None => {}
+                    std::i32::MAX => {}
+                    consts::PI => {}
+                    y if y > 2 => {}
+                }
+            }
+        }
+        """
+    fn = _first("rust", src)
+    defs = {(d.var, d.line) for d in fn.def_use.definitions}
+    assert ("negated", 5) in defs and ("ranges", 5) in defs
+    bogus = {"None", "Token", "Class", "std", "i32", "MAX", "consts", "PI"}
+    assert not any(var in bogus for var, _ in defs)
+    spans = [e for e in find_extractions(fn, get_language_map("rust")) if e.start_line <= 7]
+    assert spans
+    assert all({"negated", "ranges"} <= set(e.params) for e in spans)
+
+
+# == A declaration the code after the span still needs ==========================
+
+
+def test_go_span_declaring_a_name_assigned_after_it_is_not_offered():
+    # ``var out []int`` moves with the span, but ``out = formats`` and the
+    # return after it still name it; liveness alone saw no OUT.
+    src = """
+        package main
+
+        func paths(formats []int, link bool) ([]int, map[int]int) {
+            targets := make(map[int]int)
+            for i, f := range formats {
+                if f > 2 {
+                    targets[f] = i
+                } else {
+                    targets[f] = -i
+                }
+            }
+            var out []int
+            if link {
+                out = formats
+            }
+            return out, targets
+        }
+        """
+    lmap = get_language_map("go")
+    spans = find_extractions(_first("go", src), lmap)
+    # Holding ``var out`` is fine only when the span returns ``out``.
+    assert all("out" in e.returns for e in spans if e.start_line <= 13 <= e.end_line)
+    assert any(e.end_line == 12 for e in spans)  # the loop alone is still offered
+
+
+def test_go_name_declared_afresh_after_the_span_does_not_refuse_it():
+    src = """
+        package main
+
+        func load(items []string) int {
+            total := 0
+            for _, it := range items {
+                n, err := parse(it)
+                if err == nil {
+                    total += n
+                }
+                log(it)
+                log(n)
+            }
+            for i := 0; i < total; i++ {
+                if i%2 == 0 {
+                    total--
+                }
+            }
+            m, err := finish(total)
+            if err != nil {
+                return 0
+            }
+            return m
+        }
+        """
+    lmap = get_language_map("go")
+    fn = _first("go", src)
+    assert any(e.start_line <= 7 and e.end_line >= 12 for e in find_extractions(fn, lmap))

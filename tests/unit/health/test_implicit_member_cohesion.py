@@ -418,3 +418,82 @@ public:
 };
 """
     assert _classes("cpp", source, "dllmain.cpp")["Module"].lcom4 == 1
+
+
+RUST = """
+struct Builder { a: u8, b: u8, c: u8, d: u8 }
+
+impl Builder {
+    pub fn new() -> Builder { Builder { a: 0, b: 0, c: 0, d: 0 } }
+    pub fn a(&mut self, v: u8) -> &mut Self { self.a = v; self }
+    pub fn b(&mut self, v: u8) -> &mut Self { self.b = v; self }
+    pub fn c(&mut self, v: u8) -> &mut Self { self.c = v; self }
+    pub fn d(&mut self, v: u8) -> &mut Self { self.d = v; self }
+    pub fn get_a(&self) -> u8 { self.a }
+}
+
+enum Kind { One, Two }
+
+impl Kind {
+    fn is_one(&self) -> bool { matches!(self, Kind::One) }
+    fn is_two(&self) -> bool { matches!(self, Kind::Two) }
+    fn name(&self) -> &str { match self { Kind::One => "one", Kind::Two => "two" } }
+    fn code(&self) -> u8 { match *self { Kind::One => 1, Kind::Two => 2 } }
+    fn default() -> Kind { Kind::One }
+}
+
+struct Split { a1: u8, a2: u8, b1: u8, b2: u8 }
+
+impl Split {
+    fn new() -> Split { Split { a1: 0, a2: 0, b1: 0, b2: 0 } }
+    fn set_a(&mut self, v: u8) { self.a1 = v; self.a2 = v; }
+    fn sum_a(&self) -> u8 { self.a1 + self.a2 }
+    fn set_b(&mut self, v: u8) { self.b1 = v; self.b2 = v; }
+    fn sum_b(&self) -> u8 { self.b1 + self.b2 }
+}
+"""
+
+
+def test_rust_builders_accessors_and_enums_are_not_low_cohesion():
+    classes = _classes("rust", RUST, "lib.rs")
+    assert classes["Builder"].lcom4 == 1
+    assert classes["Kind"].lcom4 == 1
+
+
+def test_rust_split_over_two_field_groups_stays_found():
+    split = _classes("rust", RUST, "lib.rs")["Split"]
+    assert split.lcom4 == 2
+    assert [set(g.fields) for g in split.components] == [{"a1", "a2"}, {"b1", "b2"}]
+
+
+def test_rust_calls_to_methods_outside_the_impl_are_not_fields():
+    source = """
+struct S { a: u8, b: u8 }
+impl S {
+    fn x1(&self) { self.helper(); self.a; }
+    fn x2(&self) { self.a; }
+    fn y1(&self) { self.clone(); self.b; }
+    fn y2(&self) { self.b; }
+    fn y3(&self) { self.b; }
+}
+"""
+    s = _classes("rust", source, "lib.rs")["S"]
+    assert s.lcom4 == 1
+
+
+def test_rust_constructor_like_method_is_an_ordinary_component():
+    # Rust has no constructor or override exemption: ``reset`` touching two
+    # fields is a responsibility like any other method.
+    source = """
+struct R { a1: u8, a2: u8, b1: u8, b2: u8 }
+impl R {
+    fn reset(&mut self) { self.a1 = 0; self.a2 = 0; }
+    fn sum_a(&self) -> u8 { self.a1 + self.a2 }
+    fn set_b(&mut self, v: u8) { self.b1 = v; self.b2 = v; }
+    fn sum_b(&self) -> u8 { self.b1 + self.b2 }
+    fn new() -> R { R { a1: 0, a2: 0, b1: 0, b2: 0 } }
+}
+"""
+    r = _classes("rust", source, "lib.rs")["R"]
+    assert r.lcom4 == 2
+    assert [set(g.methods) for g in r.components] == [{"reset", "sum_a"}, {"set_b", "sum_b"}]

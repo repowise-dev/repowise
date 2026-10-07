@@ -306,7 +306,12 @@ async def file_detail(
     )
     health = {
         "metric": _metric_to_dict(metric, _primary_and_magnitude(findings)) if metric else None,
-        "breakdown": _score_breakdown_from_findings(findings) if findings else None,
+        # None for a file with no score: rebuilt from findings it would read 10.0.
+        "breakdown": (
+            _score_breakdown_from_findings(findings)
+            if findings and not (metric is not None and metric.score is None)
+            else None
+        ),
         "findings": [_finding_dict(f, slim=slim) for f in findings],
         "trend": _file_trend_to_dict(file_trend(snapshots, file_path)),
         "signals": _file_signals_to_dict(file_signals(git_meta, degrees)),

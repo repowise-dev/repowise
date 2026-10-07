@@ -82,10 +82,14 @@ class RepoRegistry:
         workspace_root: Path,
         ws_config: Any,  # WorkspaceConfig
         embedder_factory: Callable[[], Any] | None = None,
+        on_vector_store_error: Callable[[str, BaseException], None] | None = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._ws_config = ws_config
         self._embedder_factory = embedder_factory
+        # Told when a repo's semantic index exists but cannot be opened, so
+        # the server can stop calling semantic search healthy.
+        self._on_vector_store_error = on_vector_store_error
         self._contexts: dict[str, RepoContext] = {}
         self._access_order: dict[str, float] = {}
         self._vs_tasks: dict[str, asyncio.Task[None]] = {}
@@ -273,12 +277,18 @@ class RepoRegistry:
         embedder: Any,
     ) -> None:
         """Background task: load LanceDB vector stores for a repo."""
+        lance_dir = resolve_store_dir(repo_path) / "lancedb"
+
+        def _report(exc: BaseException) -> None:
+            # No index on disk is a keyless repo, not a failure.
+            if lance_dir.exists() and self._on_vector_store_error is not None:
+                self._on_vector_store_error(ctx.alias, exc)
+
         try:
             try:
                 await asyncio.to_thread(__import__, "lancedb")
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-                lance_dir = resolve_store_dir(repo_path) / "lancedb"
                 if lance_dir.exists():
                     vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                     await vs._ensure_connected()
@@ -286,13 +296,14 @@ class RepoRegistry:
                     # Decisions live under the "decision:" page-id namespace.
                     ctx.vector_store = vs
                     ctx.decision_store = vs
-            except ImportError:
-                pass
-            except Exception:
+            except ImportError as exc:
+                _report(exc)
+            except Exception as exc:
                 _log.warning(
                     "LanceDB load failed for '%s' — using InMemory fallback",
                     ctx.alias,
                 )
+                _report(exc)
         finally:
             # Only signal ready if this context is still the active one.
             # If it was evicted before we finished loading, a fresh context

@@ -14,7 +14,12 @@ from typing import Any
 import networkx as nx
 import structlog
 
-from ..cohesion import SAME_PACKAGE_HINT, UNIT_FANOUT_LANGUAGES
+from ..cohesion import (
+    MODULE_DECLARATION_HINT,
+    SAME_PACKAGE_HINT,
+    UNIT_FANOUT_LANGUAGES,
+    withdraw_declaration_hint,
+)
 from ..languages.python_modules import dotted_module_for
 from ..models import ParsedFile
 from ..resolvers import ResolverContext, resolve_import
@@ -288,6 +293,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                 parent_name=sym.parent_name,
                 signature=sym.signature,
                 decorators=sym.decorators,
+                modifiers=sym.modifiers,
                 is_exported_symbol=sym.is_exported_symbol,
                 is_declaration=sym.is_declaration,
                 docstring=sym.docstring,
@@ -469,6 +475,8 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                         existing = self._graph[path][target].get("imported_names", [])
                         merged = list(set(existing + imp.imported_names))
                         self._graph[path][target]["imported_names"] = merged
+                        if not imp.is_module_declaration:
+                            withdraw_declaration_hint(self._graph[path][target])
                     else:
                         edge_attrs: dict[str, Any] = {
                             "edge_type": "imports",
@@ -487,6 +495,8 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                             and PurePosixPath(target).parent.as_posix() == _own_dir
                         ):
                             edge_attrs["hint_source"] = SAME_PACKAGE_HINT
+                        elif imp.is_module_declaration:
+                            edge_attrs["hint_source"] = MODULE_DECLARATION_HINT
                         self._graph.add_edge(path, target, **edge_attrs)
             import_targets[path] = file_imports
             lang_import_time[_lang] = lang_import_time.get(_lang, 0.0) + (_t.monotonic() - _t0)

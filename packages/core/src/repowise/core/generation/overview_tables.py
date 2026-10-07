@@ -5,7 +5,7 @@ resampled on every render: two calls with the same prompt, the same model and
 the same temperature produced pages that disagreed on their row count and on
 which paths they cited. Facts the run already holds — which packages exist,
 where they are, how big they are — are built here instead and embedded after
-the page comes back, the same way the architecture map already is.
+the page comes back, the same way the system map is.
 
 That makes them identical on the model-written page and on the structure-only
 page, stable across updates that changed no code, and assertable in a test.
@@ -159,10 +159,12 @@ def embed_capability_table(content: str, table: str | None) -> str:
 
     Same contract as :func:`embed_package_table`: an existing section of that
     name is replaced wholesale, so a reused or cached page picks up the current
-    selection instead of accumulating a second one.
+    selection instead of accumulating a second one. With no table the section
+    is removed: a page reused verbatim from an earlier run still carries the
+    rows that run selected, and the current selection has none.
     """
     if not table:
-        return content
+        return _CAPABILITY_SECTION_RE.sub("", content, count=1)
 
     section = f"{CAPABILITY_TABLE_HEADING}\n\n{table}\n\n"
     if _CAPABILITY_SECTION_RE.search(content):

@@ -65,6 +65,17 @@ def test_a_vendored_directory_counts_as_vendored() -> None:
     assert queue.totals.excluded["vendored"] == 1
 
 
+def test_a_build_file_counts_as_tooling_by_stored_origin_or_by_path() -> None:
+    stored = _queue([_finding("src/a.py")], [_metric("src/a.py", code_origin="build")])
+    assert stored.items == () and stored.totals.excluded["tooling"] == 1
+    # An index stored before build files were classed says production; the
+    # path still decides.
+    path = "ktor-server/build.gradle.kts"
+    old = _queue([_finding(path)], [_metric(path, code_origin="production")])
+    assert old.items == () and old.totals.excluded["tooling"] == 1
+    assert len(_queue([_finding("src/build_info.py")]).items) == 1
+
+
 def test_a_deprecated_function_is_no_item() -> None:
     queue = _queue([_finding(deprecated=True)])
     assert queue.items == () and queue.totals.excluded["deprecated"] == 1
@@ -239,6 +250,15 @@ def test_break_cycle_needs_the_import_line() -> None:
     assert lined.lead.action.steps[0].text == "Cut the import of b.py in a.py (line 7)"
 
 
+def test_an_idiomatic_cycle_is_never_a_cut_to_make() -> None:
+    edges = [{"from": "src/a.py", "to": "src/b.py", "line": 7}]
+    plan = {"cut_edges": edges, "idiom": "same_directory"}
+    assert _refactor_queue("break_cycle", plan).totals.excluded["no_concrete_step"] == 1
+    text = _step_text("break_cycle", plan)
+    assert text.startswith("Optional:") and "idiomatic" in text
+    assert "Cut the import" not in text
+
+
 def test_split_file_needs_named_groups() -> None:
     unnamed = {"groups": [{"symbols": ["a", "b"]}]}
     assert _refactor_queue("split_file", unnamed).totals.excluded["no_concrete_step"] == 1
@@ -293,7 +313,24 @@ def _value(**facets) -> str:
     row = _perf("perf3_v", "src/db.py::fetch")
     row["details"] = {**row["details"], "facets": facets}
     item = _perf_queue(row).lead
-    return next(f.value for f in item.why_ranked if f.factor == "value")
+    return next(f.value for f in item.why_ranked if f.factor in ("value", "value within later"))
+
+
+def test_only_a_loop_known_to_grow_leads() -> None:
+    from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL
+    from tests.unit.health.fix_first_rows import _perf
+
+    def lead(**facets):
+        row = _perf("perf3_t", "src/db.py::fetch")
+        row["details"] = {**row["details"], "facets": facets}
+        return _perf_queue(row).lead
+
+    unknown = lead(loop_magnitude="unknown", exposure="entry_reachable")
+    assert unknown.tier == "later"
+    assert ("tier", LOW_PRIORITY_LABEL["unmeasured_cost"]) in [
+        (f.factor, f.value) for f in unknown.why_ranked
+    ]
+    assert lead(loop_magnitude="grows_with_data").tier != "later"
 
 
 def test_an_unknown_loop_no_entry_reaches_drops_a_step() -> None:
@@ -316,7 +353,9 @@ def _ranked(item, factor: str) -> str:
 def test_a_duplicate_inside_lifts_a_complexity_unit_one_step() -> None:
     plain = _queue([_finding()]).lead
     lifted = _queue([_finding()], plans=[_helper()]).lead
-    assert int(_ranked(lifted, "value")) == int(_ranked(plain, "value")) + 1
+    # CCN 14 is near the bar, so both are later; the lift still orders them.
+    value = "value within later"
+    assert int(_ranked(lifted, value)) == int(_ranked(plain, value)) + 1
     assert _ranked(lifted, "duplicate inside") == "yes"
     assert "duplicated" in lifted.why and "duplicated" not in plain.why
 
@@ -503,3 +542,16 @@ def test_a_split_file_plan_and_a_complex_method_stay() -> None:
     named = {"groups": [{"name": "io", "symbols": ["read"]}]}
     assert len(_refactor_queue("split_file", named).items) == 1
     assert len(_queue([_finding()]).items) == 1
+
+
+def test_a_rust_panic_path_is_no_fix_first_candidate() -> None:
+    """An unwrap or panic is a crash path, not a failure the handler hides."""
+    rows = [
+        {**_finding(f"src/{kind}.rs"), "biomarker_type": "error_handling", "line_start": 9,
+         "details": {"kind": kind}}
+        for kind in ("unsafe_unwrap", "panic_macro")
+    ]
+    queue = _queue(rows)
+    assert queue.items == () and queue.totals.excluded["low_value_kind"] == 2
+    swallowed = {**rows[0], "file_path": "src/a.py", "details": {"kind": "swallowed_catch"}}
+    assert [i.target.file_path for i in _queue([swallowed]).items] == ["src/a.py"]

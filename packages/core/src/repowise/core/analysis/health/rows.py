@@ -71,4 +71,22 @@ def split_tests(rows: Iterable[Any]) -> tuple[list[Any], list[Any]]:
     return production, tests
 
 
-__all__ = ["detail_map", "field", "json_field", "split_tests"]
+def scored_rows(rows: Iterable[Any]) -> list[Any]:
+    """The per-file rows that carry a score.
+
+    A file whose language health has no dialect for is stored with no score
+    (``has_health_dialect``). It is a file nobody measured, so every average,
+    "worst file" and count of scored files leaves it out rather than reading
+    it as a perfect 10.0.
+    """
+    return [row for row in rows if field(row, "score", None) is not None]
+
+
+def split_unscored(rows: Iterable[Any]) -> tuple[list[Any], int]:
+    """``(scored rows, how many were left out)``, for a figure that says both."""
+    rows = list(rows)
+    scored = scored_rows(rows)
+    return scored, len(rows) - len(scored)
+
+
+__all__ = ["detail_map", "field", "json_field", "scored_rows", "split_tests", "split_unscored"]

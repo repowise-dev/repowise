@@ -7,6 +7,7 @@ LanceDB-specific tests are skipped if lancedb is not installed.
 
 from __future__ import annotations
 
+import logging
 import math
 
 import pytest
@@ -525,6 +526,50 @@ async def test_lancedb_embed_batch_isolates_failed_chunk(tmp_path):
     finally:
         await store.close()
 
+@pytest.mark.asyncio
+async def test_lancedb_list_page_ids_handles_corrupt_store(tmp_path, mock_embedder, caplog):
+    """A damaged LanceDB table must not crash resume generation."""
+    caplog.set_level(logging.WARNING, logger="repowise.core.persistence.vector_store.lancedb_store")
+    pytest.importorskip("lancedb")
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+
+    db_path = tmp_path / "lance"
+
+    store = LanceDBVectorStore(str(db_path), mock_embedder)
+
+    try:
+        await store.embed_and_upsert(
+            "p1",
+            "test content",
+            {"target_path": "a.py"},
+        )
+
+        # Healthy store still returns its page IDs.
+        assert await store.list_page_ids() == {"p1"}
+
+        # Simulate a corrupted LanceDB read.
+        class BrokenQuery:
+            def select(self, columns):
+                return self
+
+            async def to_list(self):
+                raise RuntimeError("simulated LanceDB corruption")
+
+        class BrokenTable:
+            def query(self):
+                return BrokenQuery()
+
+        store._table = BrokenTable()
+
+        # Corruption must degrade safely instead of crashing.
+        assert await store.list_page_ids() == set()
+
+        assert "vector store may be damaged" in caplog.text.lower()
+        assert "repowise reindex" in caplog.text.lower()
+
+    finally:
+        await store.close()
+
 
 @pytest.mark.asyncio
 async def test_lancedb_embed_batch_writes_in_few_versions(tmp_path):
@@ -587,3 +632,24 @@ async def test_lancedb_embed_batch_failed_write_reports_every_chunk(tmp_path, mo
         assert caught.value.successful_count == 0
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_lancedb_partial_install_fails_with_a_named_cause(tmp_path, monkeypatch, mock_embedder):
+    """A partial install imports fine and lacks the async API.
+
+    That used to raise a bare ``AttributeError`` from deep inside the first
+    write, which the embed step reported with no hint that the install was
+    the problem.
+    """
+    import sys
+    import types
+
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+
+    monkeypatch.setitem(sys.modules, "lancedb", types.ModuleType("lancedb"))
+    store = LanceDBVectorStore(str(tmp_path / "lance"), mock_embedder)
+
+    with pytest.raises(RuntimeError, match="connect_async") as excinfo:
+        await store._ensure_connected()
+    assert "pip install --force-reinstall lancedb" in str(excinfo.value)

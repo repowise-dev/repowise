@@ -35,8 +35,22 @@ from ....ingestion.external_systems.io_kind import classify_io_kind
 
 # Tokens that are syntax, not bindable import names.
 _IMPORT_KW: frozenset[str] = frozenset(
-    {"import", "from", "as", "require", "const", "let", "var", "default", "type", "typeof", "use"}
+    {
+        "import",
+        "from",
+        "as",
+        "require",
+        "const",
+        "let",
+        "var",
+        "default",
+        "type",
+        "typeof",
+        "use",
+        "static",
+    }
 )
+_RUST_LOCAL_ROOTS: frozenset[str] = frozenset({"crate", "self", "super"})
 
 
 class _NodeLike(Protocol):
@@ -51,6 +65,17 @@ class _NodeLike(Protocol):
 
 def _decode(node: _NodeLike) -> str:
     return (node.text or b"").decode("utf-8", "replace")
+
+
+def _rust_scoped_candidate_parts(seg: str) -> list[str]:
+    """Classifiable parts of a Rust-style ``::`` path segment."""
+    parts = [c for c in seg.split("::") if c]
+    if parts and parts[0] in _RUST_LOCAL_ROOTS:
+        # Rust local paths can contain names like ``request`` / ``http`` /
+        # ``fs`` without importing the cross-ecosystem I/O libraries those
+        # bare segments usually identify.
+        return []
+    return parts
 
 
 def _candidate_variants(tok: str) -> set[str]:
@@ -75,7 +100,7 @@ def _candidate_variants(tok: str) -> set[str]:
         # ``use sqlx::Pool`` resolves via ``sqlx`` and ``use std::fs`` via the
         # ``fs`` segment (already a filesystem name, cross-ecosystem). A no-op
         # for the dotted/slash ecosystems (no ``::`` to split).
-        colon_parts = [c for c in seg.split("::") if c]
+        colon_parts = _rust_scoped_candidate_parts(seg)
         out.update(colon_parts)
         for i in range(1, len(colon_parts) + 1):
             out.add("::".join(colon_parts[:i]))

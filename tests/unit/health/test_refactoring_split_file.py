@@ -25,8 +25,11 @@ from repowise.core.analysis.health.refactoring import (
 )
 from repowise.core.analysis.health.refactoring.split_file import (
     SplitFileDetector,
+    _CallSignals,
     _dominant_token,
+    _module_label,
     _shim_required,
+    _weighted_graph,
 )
 from repowise.core.ingestion.git_indexer.function_blame import BlameIndex
 
@@ -576,3 +579,74 @@ def test_overloads_are_listed_once_in_the_residual():
     out = _detect(g, _CPP, language="cpp")
     assert len(out) == 1
     assert out[0].plan["residual"] == {"symbols": ["Trim"]}
+
+
+def test_direct_call_edges_are_added_in_sorted_order():
+    # A set of pairs iterates in hash order, and the community partitioner reads
+    # edges in insertion order, so the order must not follow the hash seed.
+    signals = _CallSignals()
+    for pair in [("z", "a"), ("m", "a"), ("c", "a"), ("q", "a"), ("x", "a")]:
+        signals.add_local_call(*pair)
+    wg, _ = _weighted_graph(["a", "c", "m", "q", "x", "z"], set(), signals, {})
+    assert list(wg.adj["a"]) == ["c", "m", "q", "x", "z"]
+
+
+def test_a_two_area_community_label_never_names_a_group():
+    foreign_of = {"a": {"tpl, resources"}, "b": {"tpl, resources", "path/to/layout.go"}}
+    assert _module_label(foreign_of, ["a"], set()) == ""
+    assert _module_label(foreign_of, ["a", "b"], set()) == "layout"
+
+
+# --- a module label two groups share names neither (#2933) --------------------
+
+
+def _names(out: list) -> list[tuple[str | None, str | None]]:
+    return [(grp["name"], grp["suggested_file"]) for grp in out[0].plan["groups"]]
+
+
+@pytest.mark.parametrize("header", ["utils.h", "common.h", "types.h", "platform.h"])
+def test_a_module_every_group_calls_names_none_of_them(header):
+    out = _detect(_two_cpp_clusters(header), _CPP, language="cpp")
+    assert len(out) == 1
+    assert _names(out) == [(None, None), (None, None)]
+
+
+def test_groups_sharing_a_top_module_take_their_next_one():
+    g = _two_cpp_clusters("utils.h")
+    for i in range(3):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/registry.h", "open_key")
+    for i in range(4, 7):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/layout.h", "arrange")
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    by_first = {grp["symbols"][0]: grp for grp in out[0].plan["groups"]}
+    assert by_first["fn_0"]["suggested_file"] == "src/Workspaces/registry.cpp"
+    assert by_first["fn_4"]["suggested_file"] == "src/Workspaces/layout.cpp"
+
+
+def test_a_second_shared_module_is_dropped_too():
+    g = _two_cpp_clusters("utils.h")
+    # Both groups' runner-up is the same module as well.
+    for i in (0, 1, 2, 4, 5, 6):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/common.h", "helper")
+    for i in (0, 1):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/registry.h", "open_key")
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    by_first = {grp["symbols"][0]: grp for grp in out[0].plan["groups"]}
+    assert by_first["fn_0"]["suggested_file"] == "src/Workspaces/registry.cpp"
+    assert by_first["fn_4"]["suggested_file"] is None
+    assert not any("_2" in (grp["suggested_file"] or "") for grp in out[0].plan["groups"])
+
+
+def test_a_module_only_one_group_leans_on_still_names_it():
+    g = _two_cpp_clusters("pch.h")
+    for i in range(4):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/utils.h", "trim")
+    for i in range(4, 8):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/layout.h", "arrange")
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    by_first = {grp["symbols"][0]: grp for grp in out[0].plan["groups"]}
+    assert by_first["fn_0"]["suggested_file"] == "src/Workspaces/utils.cpp"
+    assert by_first["fn_4"]["suggested_file"] == "src/Workspaces/layout.cpp"

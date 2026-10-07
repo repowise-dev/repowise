@@ -32,6 +32,8 @@ class HealthFindingResponse(BaseModel):
     dimension: str = "defect"
     #: ``"unverified"`` for a provisional finding type, else ``None``.
     verification: str | None = None
+    #: Why the finding can wait, on a lower-priority finding; else ``None``.
+    lower_priority: str | None = None
 
 
 class HealthFindingWithSymbolResponse(HealthFindingResponse):

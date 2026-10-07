@@ -29,6 +29,9 @@ from repowise.server.mcp_server._budget import (
     EXPANDED_RESPONSE_CHARS,
 )
 
+# These tests read the accounting the lean envelope leaves out by default.
+pytestmark = pytest.mark.usefixtures("debug_meta")
+
 _NOW = datetime(2026, 8, 26, tzinfo=UTC)
 
 

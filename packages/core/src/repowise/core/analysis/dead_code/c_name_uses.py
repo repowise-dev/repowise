@@ -32,7 +32,7 @@ from pathlib import PurePosixPath
 
 from ...ingestion.languages.registry import REGISTRY
 from .constants import _NON_CODE_LANGUAGES, _PREPROCESSED_LANGUAGES
-from .models import DeadCodeFindingData, DeadCodeKind
+from .models import DeadCodeFindingData, drop_used
 from .name_occurrences import IDENTIFIER_RE, occurrence_files
 
 #: Kinds a C/C++ type declaration's finding can carry.
@@ -205,16 +205,6 @@ class _UseIndex:
         return self._lines[path]
 
 
-def _is_candidate(finding: DeadCodeFindingData) -> bool:
-    """A spanned C/C++ symbol finding."""
-    return (
-        finding.kind in (DeadCodeKind.UNUSED_EXPORT, DeadCodeKind.UNUSED_INTERNAL)
-        and bool(finding.symbol_name)
-        and finding.end_line is not None
-        and is_preprocessed(finding.file_path)
-    )
-
-
 def drop_preprocessed_named_elsewhere(
     findings: list[DeadCodeFindingData],
     source_map: Mapping[str, bytes],
@@ -227,16 +217,17 @@ def drop_preprocessed_named_elsewhere(
     *unread_tokens* are the identifiers of files ingestion could not read (a
     ``.def`` EXPORTS list), any of which is a use. Returns a new list.
     """
-    candidates = [f for f in findings if _is_candidate(f)]
+    candidates = [f for f in findings if f.is_spanned_symbol and is_preprocessed(f.file_path)]
     if not candidates or not source_map:
         return findings
     names = {id(f): declared_names(f, source_map.get(f.file_path, b"")) for f in candidates}
     wanted = {n.encode() for group in names.values() for n in group if n.isascii()}
     uses = _UseIndex(source_map, wanted, declarations)
-    dropped = {
-        id(f)
-        for f in candidates
-        if not unread_tokens.isdisjoint(names[id(f)])
-        or any(uses.written_outside_declarations(f, n) for n in names[id(f)])
-    }
-    return [f for f in findings if id(f) not in dropped]
+
+    def is_used(finding: DeadCodeFindingData) -> bool:
+        own = names[id(finding)]
+        if not unread_tokens.isdisjoint(own):
+            return True
+        return any(uses.written_outside_declarations(finding, n) for n in own)
+
+    return drop_used(findings, candidates, is_used)

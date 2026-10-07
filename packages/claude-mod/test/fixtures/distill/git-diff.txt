@@ -1,0 +1,8 @@
+diff: 18 files changed, +1280 -516
+
+diff --git a/src/requests/_types.py b/src/requests/_types.py
+new file mode 100644
+index 00000000..6c2f59d0
+--- /dev/null
+
+[repowise#8ba29e69b831: 3391 lines omitted (~29929 tokens); restore: repowise expand 8ba29e69b831]

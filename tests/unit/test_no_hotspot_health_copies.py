@@ -47,12 +47,10 @@ _PLUMBING: dict[str, str] = {
     "repowise/server/schemas/repository.py": "the response field",
     "repowise/server/schemas/code_health.py": "the trend response fields",
     "alembic/versions/0019_code_health.py": "the migration that adds the column",
-    # --- writers: hand ``compute_kpis`` output to the snapshot ---------------
-    "repowise/core/pipeline/persist.py": "persists the KPI dict from the health report",
-    "repowise/cli/commands/health_cmd/persist.py": "same, for `repowise health`",
-    "repowise/cli/commands/upgrade_flow.py": "same, for `repowise upgrade`",
     # --- trend surfaces: diff recorded snapshots, no current value -----------
-    "repowise/core/analysis/health/trends.py": "diffs snapshots; owns no current value",
+    "repowise/core/analysis/health/trends.py": (
+        "diffs snapshots and builds the snapshot writers' arguments; owns no current value"
+    ),
     "repowise/server/routers/code_health/trends_routes.py": "serves the snapshot series",
     "repowise/cli/commands/health_cmd/trends.py": "prints the snapshot series",
     "repowise/server/mcp_server/tool_health/blocks.py": "renders get_health's snapshot diff",

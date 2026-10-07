@@ -57,6 +57,26 @@ def test_java_fixture_counts():
 
 _JAVA_CASES = [
     (
+        "class A{void lock(){for(;;){ if(l.tryLock(1,T)) return; l.lock(); }}}",
+        [],
+        "the retry loop inside lock() is the acquisition itself",
+    ),
+    (
+        "class A{void m(java.util.List<String> ks){for(String k:ks){ l.lock(); }}}",
+        [("lock_in_loop", "")],
+        "a lock taken per item in an ordinary method still fires",
+    ),
+    (
+        "class A{void lockAll(java.util.List<Object> ks){for(Object k:ks){ locks.get(k).lock(); }}}",
+        [("lock_in_loop", "")],
+        "a lock() that iterates over items takes a lock per item",
+    ),
+    (
+        "class A{void lock(java.util.List<Object> ks){for(;;){ for(Object k:ks){ locks.get(k).lock(); } return; }}}",
+        [("lock_in_loop", "")],
+        "a per-item loop nested in the spin loop still locks per item",
+    ),
+    (
         "class A{void m(java.util.List<String> ids){"
         "for(String id:ids){ this.repo.findById(id); }}}",
         [("io_in_loop", "db")],
@@ -80,6 +100,70 @@ _JAVA_CASES = [
         "class A{void m(java.util.List<String> ids){for(String id:ids){ helper(id); }}}",
         [],
         "a plain helper call in a loop is not a sink",
+    ),
+    (
+        "class A{void m(java.util.List<String> ks, Settings settings){"
+        "for(String k:ks){ settings.getByPrefix(k); }}}",
+        [],
+        "a ...By[A-Z] name on a non-repository receiver is not a derived query",
+    ),
+    (
+        "class A{void m(java.util.List<byte[]> bs){"
+        "for(byte[] b:bs){ java.net.InetAddress.getByAddress(b); }}}",
+        [],
+        "a static factory named like a derived query is not db",
+    ),
+    (
+        "class A{void m(java.util.List<String> ids, UserRepository userRepository){"
+        "for(String id:ids){ userRepository.findByEmail(id); }}}",
+        [("io_in_loop", "db")],
+        "a derived query on a repository-named receiver is db without an import",
+    ),
+    (
+        "import org.springframework.data.jpa.repository.JpaRepository;\n"
+        "class A{void m(java.util.List<String> ids, Users users){"
+        "for(String id:ids){ users.findByEmail(id); }}}",
+        [("io_in_loop", "db")],
+        "a derived query in a file importing Spring Data is db",
+    ),
+    (
+        "import java.sql.JDBCType;\n"
+        "class A{void m(java.util.List<String> ks, java.util.Map<String,String> m){"
+        "for(String k:ks){ m.get(k); }}}",
+        [],
+        "a type-only java.sql import is not db evidence",
+    ),
+    (
+        "import static java.sql.Types.BIGINT;\n"
+        "class A{void m(java.util.List<String> ks, java.util.Map<String,String> m){"
+        "for(String k:ks){ m.get(k); }}}",
+        [],
+        "a static-imported java.sql constant is not db evidence",
+    ),
+    (
+        "import java.sql.Statement;\n"
+        "class A{void m(java.util.List<String> ks, java.util.Map<String,String> m){"
+        "for(String k:ks){ m.get(k); }}}",
+        [],
+        "JDBC evidence does not license get, which JDBC has no verb for",
+    ),
+    (
+        "import java.sql.Statement;\n"
+        "class A{void m(java.util.List<String> qs, Statement st){"
+        "for(String q:qs){ st.execute(q); }}}",
+        [("io_in_loop", "db")],
+        "JDBC evidence licenses execute",
+    ),
+    (
+        "class A{void m(java.util.List<Ctx> cs){for(Ctx c:cs){ executeQuery(c); }}}",
+        [],
+        "a bare executeQuery is the class's own method, not a JDBC statement",
+    ),
+    (
+        "class A{void m(java.util.List<java.lang.module.ModuleFinder> fs){"
+        "for(java.lang.module.ModuleFinder f:fs){ f.findAll(); }}}",
+        [],
+        "a shared repository verb on a non-repository receiver is not db",
     ),
 ]
 
@@ -198,6 +282,13 @@ _CSHARP_CASES = [
         # Awaited EF query in a loop: io_in_loop + the serial_await co-signal.
         [("io_in_loop", "db"), ("serial_await_in_loop", "db")],
         "EF *Async family is unambiguous db (no import gate)",
+    ),
+    (
+        "class A{ void M(System.Collections.Generic.List<int> ids){"
+        "foreach(var id in ids){ _ = SaveChangesAsync(); }}"
+        " System.Threading.Tasks.Task SaveChangesAsync() => null; }",
+        [],
+        "a bare SaveChangesAsync is the class's own method, not a DbContext call",
     ),
 ]
 
@@ -489,6 +580,67 @@ def test_python_string_concat_reset_per_iteration_not_flagged():
     assert ("string_concat_in_loop", "") in _hits("python", accum)
 
 
+def _ts_concat_lines(src: str) -> list[int]:
+    fc = walk_file("t.ts", "typescript", src.encode())
+    return [h.line for h in fc.perf_hits if h.kind == "string_concat_in_loop"]
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # Declared fresh each pass: bounded per iteration.
+        "function f(fs){ for (const f of fs){ let js = read(f);\n js += '\\n//map'; write(f, js) } }",
+        # Declared in the same branch that appends: fresh whenever the append runs.
+        "function f(fs){ for (const f of fs){ if (ok(f)) { let js = read(f); js += '//map'; write(js) } } }",
+        # Reset by a plain assignment inside the loop.
+        "function f(rs){ let v; for (const r of rs){ v = r.style; v += ';'; use(v) } }",
+        # Appended once, right before leaving the loop or the function.
+        "function f(s){ let m=''; for (const c of s){ if (c.stop) { m += ' [cut]'; break } } return m }",
+        "function f(xs){ let m=''; for (const x of xs){ if (x.bad) { m += 'bad'; return m } } }",
+        "function f(xs){ let m='e:'; for (const x of xs){ if (x.bad) { m += 'bad'; throw new Error(m) } } }",
+        # The break leaves the inner loop and the outer loop re-binds the name.
+        "function f(ys){ for (const y of ys){ let s=''; while (more()){ s += 'a'; break } use(s) } }",
+    ],
+)
+def test_ts_string_concat_bounded_per_iteration_not_flagged(src):
+    assert _ts_concat_lines(src) == []
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "function f(xs){ let s=''; for (const x of xs){ s += `${x}\\n` } return s }",
+        # A re-bind that only some passes run is no reset.
+        "function f(xs){ let s=''; for (const x of xs){ if (x.first) { s = 'head' } s += `${x}` } return s }",
+        "function f(xs){ let s=''; for (const x of xs){ for (const y of x){ s = y } s += 'a' } return s }",
+        # ``s = s + ...`` keeps the old value, so it is no reset.
+        "function f(xs){ let s=''; for (const x of xs){ s = s + 'a'; s += 'b' } return s }",
+        # A break that only leaves a switch, or only the inner of two loops.
+        "function f(xs){ let s=''; for (const x of xs){ switch (x.k) { case 1: s += 'a'; break } } return s }",
+        "function f(ys){ let s=''; for (const y of ys){ for (const x of y){ s += 'a'; break } } return s }",
+        # Declared in the outer loop, grown across the inner one.
+        "function f(ys){ for (const y of ys){ let s=''; for (const x of y){ s += 'a' } use(s) } }",
+        # A path to ``continue`` before the exit keeps the loop going.
+        "function f(xs){ let s=''; for (const x of xs){ s += 'a'; if (x) continue; break } return s }",
+        # A subscript target is never re-bound by a declaration.
+        "function f(xs, buf){ for (const x of xs){ buf[0] += ` ${x}` } }",
+    ],
+)
+def test_ts_string_concat_across_iterations_still_flagged(src):
+    assert len(_ts_concat_lines(src)) == 1
+
+
+def test_ts_string_concat_loop_local_and_accumulator_in_one_loop():
+    src = (
+        "function f(xs){ let out='';\n"
+        " for (const x of xs){ let v = x.name;\n"
+        " v += ';';\n"
+        " out += `${v}`; }\n"
+        " return out }"
+    )
+    assert _ts_concat_lines(src) == [4]
+
+
 def test_ts_nested_io_requires_collection_outer_loop():
     """A ``while`` cursor wrapping an inner ``for ... of`` is io_in_loop, not nested.
 
@@ -549,6 +701,54 @@ def test_go_goroutine_in_range_loop_but_not_accept_loop():
     assert ("goroutine_in_unbounded_loop", "") in _hits("go", spawn)
     assert not any(k == "goroutine_in_unbounded_loop" for k, _ in _hits("go", accept))
     assert not any(k == "goroutine_in_unbounded_loop" for k, _ in _hits("go", count))
+
+
+_GO_SEMAPHORE = (
+    "package p\nfunc f(items []int, n int, cfg Config) {{\n"
+    "\tsem := {make}\n"
+    "\tfor _, it := range items {{\n"
+    "{acquire}"
+    "\t\tgo func() {{ defer func(){{ <-sem }}(); _ = it }}()\n"
+    "\t}}\n}}\n"
+)
+_GO_ACQUIRE = "\t\tsem <- struct{}{}\n"
+
+
+def _go_semaphore_hits(make: str, acquire: str = _GO_ACQUIRE) -> list[tuple[str, str]]:
+    hits = _hits("go", _GO_SEMAPHORE.format(make=make, acquire=acquire))
+    return [hit for hit in hits if hit[0] == "goroutine_in_unbounded_loop"]
+
+
+@pytest.mark.parametrize(
+    "size",
+    ["4", "0x10", "1_000", "n", "nParallel", "cfg.Workers", "runtime.NumCPU()", "n * 2", "int64(n)"],
+)
+def test_go_semaphore_bounds_the_loop_whatever_sizes_it(size):
+    """A semaphore sized from a flag or a config value is the usual form; only
+    an integer literal used to count as a bound (#2966)."""
+    assert _go_semaphore_hits(f"make(chan struct{{}}, {size})") == []
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        "make(chan struct{})",
+        "make(chan struct{}, 0)",
+        "make(chan struct{}, 00)",
+        "make(chan struct{}, 0x0)",
+        "make(chan struct{}, 0b0)",
+        "make(chan struct{}, 0o0)",
+        "make(chan struct{}, 0_0)",
+    ],
+)
+def test_go_unbuffered_channel_is_not_a_semaphore(make):
+    assert _go_semaphore_hits(make) == [("goroutine_in_unbounded_loop", "")]
+
+
+def test_go_semaphore_never_acquired_does_not_bound_the_loop():
+    assert _go_semaphore_hits("make(chan struct{}, n)", acquire="") == [
+        ("goroutine_in_unbounded_loop", "")
+    ]
 
 
 def test_python_list_insert_zero_vs_variable_index():
@@ -1161,6 +1361,18 @@ _KOTLIN_CASES = [
         "a derived query on a repository instance still classifies",
     ),
     (
+        "fun m(ks: List<String>, settings: Settings) {\n"
+        "    for (k in ks) {\n        settings.getByPrefix(k)\n    }\n}\n",
+        [],
+        "a lower-case receiver alone does not make a ...By[A-Z] call a derived query",
+    ),
+    (
+        "fun m(texts: List<String>, re: Regex) {\n"
+        "    for (t in texts) {\n        re.findAll(t)\n    }\n}\n",
+        [],
+        "Regex.findAll is not a repository findAll",
+    ),
+    (
         "fun m(xs: List<String>) {\n"
         '    for (x in xs) {\n        val r = Regex("\\\\b$x\\\\b")\n    }\n}\n',
         [],
@@ -1231,6 +1443,17 @@ _KOTLIN_CASES = [
         "fun m(xs: List<String>) {\n    for (x in xs) {\n        lock.lock()\n    }\n}\n",
         [("lock_in_loop", "")],
         "a lock taken every iteration is a contention site",
+    ),
+    (
+        "class A {\n    fun lock() {\n        while (true) {\n"
+        "            if (mutex.tryLock()) return\n            mutex.lock()\n        }\n    }\n}\n",
+        [],
+        "the retry loop inside lock() is the acquisition, not a lock taken per item",
+    ),
+    (
+        "class A {\n    fun lock(ks: List<Any>) {\n        for (k in ks) {\n            locks[k].lock()\n        }\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "an iterating lock() is not a retry loop",
     ),
 ]
 
@@ -1382,6 +1605,173 @@ _CPP_CASES = [
         [],
         "the range-for header runs once",
     ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        int fd = socket(AF_INET, SOCK_STREAM, 0);\n"
+        "        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));\n"
+        "    }\n}\n",
+        [],
+        "creating and configuring a descriptor puts nothing on the wire",
+    ),
+    (
+        "void m(std::vector<Peer> v) {\n"
+        "    for (auto& p : v) {\n"
+        "        ::sendto(fd, buf, len, 0, p.addr, p.len);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a datagram per element is still a round-trip each",
+    ),
+    (
+        "void m(int fd) {\n"
+        "    while ((r = ::sendto(fd, buf, len, 0, a, l)) == -1 && errno == EINTR)\n"
+        "        ;\n}\n",
+        [],
+        "an EINTR retry repeats one call, it does not walk data",
+    ),
+    (
+        "void m(int fd) {\n"
+        "    while ((r = ::sendto(fd, buf, len, 0, a, l)) == -1 && A2_EINTR == SOCKET_ERRNO)\n"
+        "        ;\n}\n",
+        [],
+        "a project spelling of EINTR is the same retry",
+    ),
+    (
+        "void m(int fd) {\n"
+        "    while (more || errno == EINTR) {\n"
+        "        ::sendto(fd, buf, len, 0, a, l);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "an || condition can repeat for another reason, so it stays a loop",
+    ),
+    (
+        "void m(addrinfo* res) {\n"
+        "    for (addrinfo* rp = res; rp; rp = rp->ai_next) {\n"
+        "        ::sendto(fd, buf, len, 0, rp->ai_addr, rp->ai_addrlen);\n"
+        "    }\n}\n",
+        [],
+        "trying each address one name resolved to is not a data loop",
+    ),
+    (
+        "void m(Node* head) {\n"
+        "    for (Node* n = head; n; n = n->next) {\n"
+        "        ::sendto(fd, buf, len, 0, n->addr, n->len);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "any other linked list is data",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        struct addrinfo hints;\n"
+        "        hints.ai_flags = AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [],
+        "a numeric-only getaddrinfo parses an address, no lookup",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = AI_NUMERICHOST;\n"
+        "        if (getaddrinfo(h.c_str(), nullptr, &hints, &res) == 0) continue;\n"
+        "        hints.ai_flags = 0;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "the fallback lookup after the flag is cleared still resolves names",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a getaddrinfo with no numeric flag is a name lookup",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags |= AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [],
+        "ORing the numeric flag in is the same numeric-only parse",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = AI_NUMERICHOST;\n"
+        "        hints.ai_flags &= ~AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "masking the flag off makes it a lookup again",
+    ),
+    (
+        "void m(std::vector<std::string> v, int f) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = f & ~AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a negated flag is not the flag",
+    ),
+    (
+        "void m(std::vector<std::string> v, bool numeric) {\n"
+        "    for (auto& h : v) {\n"
+        "        if (numeric) hints.ai_flags = AI_NUMERICHOST;\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a flag set on one branch leaves the other a lookup",
+    ),
+    (
+        "void m(std::vector<std::string> v) {\n"
+        "    for (auto& h : v) {\n"
+        "        hints.ai_flags = AI_NUMERICHOST;\n"
+        "        memset(&hints, 0, sizeof(hints));\n"
+        "        getaddrinfo(h.c_str(), nullptr, &hints, &res);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a reset of the hints after the flag clears it",
+    ),
+    (
+        "void m(std::vector<Peer> v) {\n"
+        "    for (auto& p : v) {\n"
+        "        int fd = socket(AF_INET, SOCK_STREAM, 0);\n"
+        "        connect(fd, p.addr, p.len);\n"
+        "        send(fd, buf, len, 0);\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a socket that connects and sends is a connection per element",
+    ),
+    (
+        "void m(int fd, int n) {\n"
+        "    while (i < n && errno == EINTR) {\n"
+        "        ::sendto(fd, buf, len, 0, a, l);\n"
+        "        i++;\n"
+        "    }\n}\n",
+        [("io_in_loop", "network")],
+        "a counter beside EINTR can keep the loop going",
+    ),
+    (
+        "void m(int fd) {\n"
+        "    do {\n        n = ::recvfrom(fd, buf, len, 0, a, l);\n"
+        "    } while (n < 0 && errno == EINTR);\n}\n",
+        [],
+        "the do-while spelling of an EINTR retry",
+    ),
+    (
+        "void m(addrinfo* res) {\n"
+        "    addrinfo* rp = res;\n"
+        "    while (rp) {\n"
+        "        ::sendto(fd, buf, len, 0, rp->ai_addr, rp->ai_addrlen);\n"
+        "        rp = rp->ai_next;\n"
+        "    }\n}\n",
+        [],
+        "the while spelling of the address-candidate walk",
+    ),
 ]
 
 
@@ -1441,3 +1831,10 @@ def test_cpp_same_collection_nested_range_for_fact():
     fc = walk_file("t.cpp", "cpp", src.encode())
     assert any(f.nested_loop_line for f in fc.perf_fn_facts)
     assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)
+
+
+def test_python_acquire_spin_vs_per_item():
+    spin = "def acquire(self):\n    while True:\n        if self.flag.acquire(False):\n            return\n"
+    assert _hits("python", spin) == []
+    each = "def acquire(self, items):\n    for i in items:\n        self.locks[i].acquire()\n"
+    assert _hits("python", each) == [("lock_in_loop", "")]

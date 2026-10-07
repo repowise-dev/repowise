@@ -113,13 +113,19 @@ def is_constructor(fn_node: Node, name: str, lmap: LanguageNodeMap) -> bool:
     return name == _enclosing_type_name(fn_node)
 
 
+def is_trait_impl(node: Node, lmap: LanguageNodeMap) -> bool:
+    """Whether *node* implements a trait (Rust ``impl Trait for T``): its
+    members are the trait's, not its own."""
+    return node.type in lmap.trait_impl_kinds and node.child_by_field_name("trait") is not None
+
+
 def _in_trait_impl(fn_node: Node, lmap: LanguageNodeMap) -> bool:
     node = fn_node.parent
     while node is not None and node.type not in lmap.trait_impl_kinds:
         if node.type in lmap.function_kinds:
             return False
         node = node.parent
-    return node is not None and node.child_by_field_name("trait") is not None
+    return node is not None and is_trait_impl(node, lmap)
 
 
 def _is_published(node: Node, lmap: LanguageNodeMap) -> bool:

@@ -48,7 +48,7 @@ All of the following ship in `pip install repowise` today, free for internal use
   commits, contributor profiles, module health), Documentation (a wiki page per
   module and file, freshness scoring, hybrid search), Decision (architectural
   decision records linked to graph nodes, staleness tracking), and Code Health
-  (51 deterministic detectors, 1–10 score per file, coverage ingestion, trend
+  (53 deterministic detectors, 1–10 score per file, coverage ingestion, trend
   alerts). Full detail on each, and what every layer costs to build:
   **[INTELLIGENCE_LAYERS.md](../layers/INTELLIGENCE_LAYERS.md)**.
 - **Zero LLM calls in every analysis layer.** Graph, git, code health, change
@@ -160,7 +160,7 @@ the items that matter most to you can be prioritized.
 
 | Capability | Open Source (AGPL) | Commercial License |
 |------------|:------------------:|:------------------:|
-| Five intelligence layers | ✅ | ✅ |
+| Five foundational intelligence layers plus derived ones (change risk, tests, bug history, security, dead code) | ✅ | ✅ |
 | Ten task-shaped MCP tools (plus `list_repos`) | ✅ | ✅ |
 | Multi-repo workspaces | ✅ | ✅ |
 | Full-tier language support (incl. C# / .NET) | ✅ | ✅ |

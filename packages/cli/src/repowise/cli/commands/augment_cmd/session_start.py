@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from repowise.cli.helpers import as_commit_id
 from repowise.core.store_location import resolve_store_dir
 
 from ._shared import _find_repo_root, emitting_build
@@ -148,9 +149,11 @@ def _changed_file_count(repo_path: Path, indexed: str, live: str) -> int | None:
     """Files changed between the indexed commit and live HEAD, or None."""
     import subprocess
 
+    if as_commit_id(indexed) is None or as_commit_id(live) is None:
+        return None
     try:
         out = subprocess.run(
-            ["git", "diff", "--name-only", indexed, live],
+            ["git", "diff", "--name-only", "--end-of-options", indexed, live],
             cwd=str(repo_path),
             capture_output=True,
             text=True,

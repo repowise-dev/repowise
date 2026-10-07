@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
 from repowise.core.analysis.health.grading import (
     band_for,
 )
@@ -28,6 +29,12 @@ async def _build_code_health(session: Any, repository: Any) -> dict[str, Any]:
         if not metrics_rows:
             return {}
         health_summary = await _get_health_summary(session, repository.id, metrics=metrics_rows)
+        if health_summary["average_health"] is None:
+            # Every file is in a language health has no dialect for.
+            return {
+                "analysis_status": NO_DIALECT_STATUS,
+                "unanalysed_file_count": health_summary["unanalysed_file_count"],
+            }
         # Hotspot health from its one owner, over the rows already loaded.
         hotspot_paths = await get_hotspot_file_paths(session, repository.id)
         return {

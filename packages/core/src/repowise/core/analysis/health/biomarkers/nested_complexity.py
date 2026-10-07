@@ -6,6 +6,7 @@ strongly correlated with defect density in published studies.
 
 from __future__ import annotations
 
+from ..complexity.dispatch import judged_nesting
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -19,13 +20,14 @@ class NestedComplexityDetector:
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:
-            if fn.max_nesting < self._NESTING_THRESHOLD:
+            depth = judged_nesting(fn)
+            if depth < self._NESTING_THRESHOLD:
                 continue
             severity = (
                 Severity.CRITICAL
-                if fn.max_nesting >= 7
+                if depth >= 7
                 else Severity.HIGH
-                if fn.max_nesting >= 5
+                if depth >= 5
                 else Severity.MEDIUM
             )
             out.append(

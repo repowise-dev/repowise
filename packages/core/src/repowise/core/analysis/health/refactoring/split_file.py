@@ -56,6 +56,7 @@ from typing import Any
 
 from repowise.core.analysis.execution_graph import is_reliable_call_edge
 
+from ....code_origin import is_migration_path, is_vendored_or_generated_path
 from ....test_paths import is_test_related_path
 from ...dead_code.file_reachability import BARREL_FILENAMES
 from .models import RefactoringContext, RefactoringSuggestion
@@ -115,18 +116,11 @@ _HIGH_CONFIDENCE_MODULARITY = 0.45
 def _is_generated_path(path: str) -> bool:
     """Generated / vendored / append-only code: a migration or a barrel
     re-export file must stay self-contained, so it is never a split target."""
-    p = path.lower().replace("\\", "/")
-    base = p.rsplit("/", 1)[-1]
     return (
-        "/migrations/" in p
-        or "/alembic/versions/" in p
-        or "/node_modules/" in p
-        or "/vendor/" in p
-        or "/__generated__/" in p
-        or ".generated." in base
-        or base.endswith(".min.js")
+        is_vendored_or_generated_path(path)
+        or is_migration_path(path)
         # Barrel / package-init re-export files: nothing of substance to split.
-        or base in BARREL_FILENAMES
+        or path.replace("\\", "/").rsplit("/", 1)[-1].lower() in BARREL_FILENAMES
     )
 
 
@@ -249,19 +243,55 @@ def _label_identifier(label: str) -> str:
 _PRECOMPILED_HEADER_STEMS = frozenset({"pch", "stdafx", "precomp", "precompiled"})
 
 
-def _module_label(
-    foreign_of: dict[str, set[str]], members: list[str], self_segments: set[str]
+def _top_module(
+    foreign_of: dict[str, set[str]], members: list[str], excluded: frozenset[str] = frozenset()
 ) -> str:
-    """The group's most-called foreign module label as a file name, or ``""``."""
+    """The group's most-called foreign module label, or ``""`` when none is left."""
     labels = Counter(
         lab
         for m in members
         for lab in foreign_of.get(m, set())
-        if _label_identifier(lab).lower() not in _PRECOMPILED_HEADER_STEMS
+        # "tpl, resources" is a two-area community label, not a module name.
+        if "," not in lab
+        and lab not in excluded
+        and _label_identifier(lab).lower() not in _PRECOMPILED_HEADER_STEMS
     )
     if not labels:
         return ""
-    best = min(labels, key=lambda lab: (-labels[lab], lab))
+    return min(labels, key=lambda lab: (-labels[lab], lab))
+
+
+def _shared_top_modules(
+    foreign_of: dict[str, set[str]], groups: list[list[str]]
+) -> frozenset[str]:
+    """Module labels that would be the top pick of more than one group.
+
+    A module most of the file calls into (``utils.h``, ``common.h``) wins the
+    vote in every group, and a name two groups share tells them apart only by
+    the ``_2`` the filename de-duplication adds. Such a label is dropped for
+    all of them, and the next pick is checked the same way.
+    """
+    excluded: frozenset[str] = frozenset()
+    while True:
+        tops = Counter(
+            top for members in groups if (top := _top_module(foreign_of, members, excluded))
+        )
+        shared = {lab for lab, count in tops.items() if count > 1}
+        if not shared:
+            return excluded
+        excluded |= shared
+
+
+def _module_label(
+    foreign_of: dict[str, set[str]],
+    members: list[str],
+    self_segments: set[str],
+    excluded: frozenset[str] = frozenset(),
+) -> str:
+    """The group's most-called foreign module label as a file name, or ``""``."""
+    best = _top_module(foreign_of, members, excluded)
+    if not best:
+        return ""
     cleaned = _label_identifier(best)
     # Reject uninformative labels: too short, carrying a community-dedup
     # digit suffix, or naming the file's own namespace (tells you
@@ -550,7 +580,7 @@ def _weighted_graph(
 
     # Signals are added strongest first (see module docstring).
     edges = _EdgeWeights(spine)
-    for a, b in signals.local_pairs:
+    for a, b in sorted(signals.local_pairs):
         edges.add(a, b, _DIRECT_CALL_WEIGHT)
     cochange_edges = _add_cochange_edges(edges, commits_of)
     _add_shared_helper_edges(edges, signals.callers_of)
@@ -761,8 +791,13 @@ class SplitFileDetector(RefactoringDetector):
         groups: list[dict] = []
         self_segments = {seg.lower() for seg in ctx.file_path.replace("\\", "/").split("/")}
         self_segments.add(stem.lower())
+        # Only the groups that fall back to a module label take part in the vote.
+        shared = _shared_top_modules(
+            fg.signals.foreign_of,
+            [m for m in substantive if not self._name_token(fg, m, self_segments)],
+        )
         for members in substantive:
-            label = self._group_label(fg, members, self_segments)
+            label = self._group_label(fg, members, self_segments, shared)
             # No shared name token means no honest filename; the surfaces prompt for one.
             suggested = None
             if label:
@@ -777,17 +812,31 @@ class SplitFileDetector(RefactoringDetector):
             )
         return groups
 
-    def _group_label(self, fg: _FileGraph, members: list[str], self_segments: set[str]) -> str:
+    def _name_token(self, fg: _FileGraph, members: list[str], self_segments: set[str]) -> str:
+        """The plurality name token, when it is not part of the file's own path."""
+        token = _dominant_token([self._sym_name(fg.defined, m) for m in members])
+        return token if token and token not in self_segments else ""
+
+    def _group_label(
+        self,
+        fg: _FileGraph,
+        members: list[str],
+        self_segments: set[str],
+        shared_modules: frozenset[str] = frozenset(),
+    ) -> str:
         """Deterministic file name for a group: the plurality name token when it is
         not part of the file's own path, else a clean dominant foreign-module
-        label, else the token (possibly ``""``, meaning no name).
+        label that no other group shares, else the token (possibly ``""``,
+        meaning no name).
 
         Module labels often name the repo's own package with a size suffix, so
         the name vote leads."""
         token = _dominant_token([self._sym_name(fg.defined, m) for m in members])
         if token and token not in self_segments:
             return token
-        return _module_label(fg.signals.foreign_of, members, self_segments) or token
+        return (
+            _module_label(fg.signals.foreign_of, members, self_segments, shared_modules) or token
+        )
 
     @staticmethod
     def _unique_filename(stem: str, ext: str, used: set[str]) -> str:

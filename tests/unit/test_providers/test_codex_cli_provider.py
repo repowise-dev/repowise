@@ -523,3 +523,21 @@ async def test_generate_rejects_unsupported_reasoning_off(monkeypatch, tmp_path)
 
     with pytest.raises(ProviderError, match="model_reasoning_effort='none'"):
         await CodexCliProvider(repo_path=tmp_path).generate("sys", "user", reasoning="off")
+
+
+def test_model_catalog_probe_never_inherits_stdin(monkeypatch):
+    """Inside a stdio MCP server stdin is the JSON-RPC pipe."""
+    import subprocess
+
+    from repowise.core.providers.llm import codex_cli
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(_args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(_args, 1, "", "")
+
+    monkeypatch.setattr(codex_cli.subprocess, "run", fake_run)
+    codex_cli._load_codex_model_catalog.cache_clear()
+    assert codex_cli._load_codex_model_catalog("codex-stdin-probe") is None
+    assert seen["stdin"] is subprocess.DEVNULL

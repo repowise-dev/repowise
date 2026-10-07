@@ -83,13 +83,15 @@ def test_history_never_leads_and_rides_along_as_context() -> None:
 
 def test_text_quotes_the_stored_numbers() -> None:
     core = next(i for i in _build().items if i.kind == "refactor")
-    assert core.title == "Extract lines 20-35 of run into sum_rows (+1 more step)"
+    assert core.title == (
+        "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 into sum_rows"
+    )
     # The size is a fact; the why says why it matters here.
     assert core.why == (
         "run has many independent paths through it; 9 files import it, "
         "changed 12 times in 90 days."
     )
-    assert ("size", "CCN 14, 50 lines, nests 4 deep") in [(f.label, f.value) for f in core.facts]
+    assert ("size", "CCN 44, 50 lines, nests 4 deep") in [(f.label, f.value) for f in core.facts]
     assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
     assert core.action.steps[1].text == "Extract lines 40-41 of run into a helper"
     # The model's credit is the gain, with one decimal; the builder does not re-judge it.
@@ -143,12 +145,12 @@ def test_no_kind_takes_more_than_three_of_the_first_five() -> None:
         row["file_path"] = f"src/core{n}.py"
         row["details"]["steps"] = row["details"]["steps"][:1]
         refactors.append(row)
-    # Same value as the refactors (production, loop size unknown, reachable),
-    # lower tier.
+    # A loop that grows but no entry point reaches: worth doing, ranked below
+    # the refactors' value.
     perf = _perf("perf2_a", "s")
     perf["details"] = {
         **perf["details"],
-        "facets": {"loop_magnitude": "unknown", "exposure": "entry_reachable"},
+        "facets": {"loop_magnitude": "grows_with_data", "exposure": "not_entry_reachable"},
     }
     queue = _build(refactoring=refactors, performance=[perf], findings=[])
     # The fourth place goes to the perf fix; the fifth back to a refactor,
@@ -217,3 +219,31 @@ def test_every_open_refactoring_opportunity_carries_its_reason() -> None:
     }
     # Off the wire: the reasons are a read-model input, not part of the queue.
     assert "refactoring_reasons" not in queue.as_dict()
+
+
+def test_a_finding_item_takes_its_tests_from_the_validate_callback() -> None:
+    asked: list[tuple] = []
+
+    def validate(path, function, start, end):
+        asked.append((path, function, start, end))
+        return {
+            "basis": "inferred",
+            "via": "call-graph",
+            "total": 1,
+            "tests": ["tests/test_plain.py::test_walk"],
+            "commands": ["pytest tests/test_plain.py::test_walk"],
+        }
+
+    queue = build_fix_first(
+        metrics=METRICS,
+        findings=FINDINGS,
+        refactoring=REFACTORING,
+        performance=PERFORMANCE,
+        plans=PLANS,
+        validate=validate,
+    )
+    walk = next(i for i in queue.items if i.target.file_path == "src/plain.py")
+    assert asked == [("src/plain.py", "walk", 5, 40)]
+    assert walk.verify.basis == "inferred"
+    assert [t.path for t in walk.verify.tests] == ["tests/test_plain.py::test_walk"]
+    assert "call graph" in walk.verify.tests[0].reason

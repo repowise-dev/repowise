@@ -93,6 +93,15 @@ _LITERAL_KINDS = frozenset(
 _NOT_IMPORT_KINDS = frozenset({"call", "command", "function_call", "extends_statement"})
 
 
+# Statements that are not imports to the resolvers but tokenize the same in
+# every file, so they are kept out of the hash stream here and not added to the
+# shared language config. Java: every file of a package opens with the same
+# ``package a.b;`` tokens, which anchored a clone at line 2.
+_SKIPPED_WITH_IMPORTS: dict[str, frozenset[str]] = {
+    "java": frozenset({"package_declaration"}),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class Token:
     """One AST token with the source location of its origin node."""
@@ -106,13 +115,15 @@ class Token:
 
 
 def import_node_kinds(language: str) -> frozenset[str]:
-    """The language's import statement node kinds, minus ones that are real code."""
+    """The language's import statement node kinds, minus ones that are real
+    code, plus the statements skipped along with them."""
     from repowise.core.ingestion.language_configs import LANGUAGE_CONFIGS
 
     config = LANGUAGE_CONFIGS.get(language)
     if config is None:
         return frozenset()
-    return frozenset(config.import_node_types) - _NOT_IMPORT_KINDS
+    kinds = frozenset(config.import_node_types) - _NOT_IMPORT_KINDS
+    return kinds | _SKIPPED_WITH_IMPORTS.get(language, frozenset())
 
 
 _NEWLINE = re.compile(rb"\n")

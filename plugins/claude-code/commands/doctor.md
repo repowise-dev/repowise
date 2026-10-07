@@ -1,6 +1,6 @@
 ---
 description: Diagnose the Repowise setup — install, API keys, index/store drift — and optionally repair it.
-allowed-tools: Bash, Read
+allowed-tools: Bash(repowise doctor:*), Read
 ---
 
 # Repowise Doctor

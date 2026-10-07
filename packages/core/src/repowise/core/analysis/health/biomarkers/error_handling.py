@@ -33,6 +33,27 @@ _REASONS: dict[str, str] = {
     "go_swallow": "error value is checked then ignored, or discarded via the blank identifier",
 }
 
+# Rust invariant assertions (``complexity.rust_unwrap``): true, idiomatic, low
+# priority. They keep their kind (and so their id) but say what they are and
+# deduct nothing from the score.
+_IDIOM_REASONS: dict[str, str] = {
+    "lock_poison": (
+        "unwrapping a lock panics only if another thread panicked while holding it "
+        "(idiomatic poison propagation, low priority)"
+    ),
+    "thread_join": (
+        "unwrapping a thread join re-raises that thread's panic (idiomatic, low priority)"
+    ),
+    "invariant_expect": (
+        "expect panics with its stated message on failure, the usual form when "
+        "failure is a bug or makes start-up impossible (often idiomatic, low priority)"
+    ),
+    "unreachable": (
+        "unreachable! asserts this branch cannot run and panics only if it does "
+        "(often idiomatic, low priority)"
+    ),
+}
+
 
 class ErrorHandlingDetector:
     name = "error_handling"
@@ -41,6 +62,11 @@ class ErrorHandlingDetector:
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
         for hit in ctx.error_handling_hits:
+            idiom_reason = _IDIOM_REASONS.get(hit.idiom) if hit.idiom else None
+            details: dict[str, str | float] = {"kind": hit.kind}
+            if idiom_reason is not None:
+                # ``deduction`` in details is what a history refresh replays.
+                details.update(idiom=hit.idiom, deduction=0.0)
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
@@ -48,8 +74,9 @@ class ErrorHandlingDetector:
                     function_name=None,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={"kind": hit.kind},
-                    reason=_REASONS.get(hit.kind, hit.kind),
+                    details=details,
+                    reason=idiom_reason or _REASONS.get(hit.kind, hit.kind),
+                    deduction=0.0 if idiom_reason is not None else None,
                 )
             )
         return out

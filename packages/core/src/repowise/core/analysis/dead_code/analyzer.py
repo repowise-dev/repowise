@@ -11,7 +11,9 @@ this package.
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
+import os
 import re
 from collections.abc import Iterable, Iterator
 from collections.abc import Set as AbstractSet
@@ -22,8 +24,10 @@ from typing import Any
 
 import structlog
 
+from ...code_origin import is_build_file
 from ...entry_candidacy import is_reachability_root
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
+from ...ingestion.package_roots import package_manifest_names
 from ...ingestion.symbol_identity import base_symbol_id, overload_sets
 from .c_name_uses import (
     DEFINITION_HEADER_LINES,
@@ -37,9 +41,11 @@ from .constants import (
     _DELIBERATELY_UNUSED_ANNOTATIONS,
     _FRAMEWORK_DECORATOR_SUFFIXES,
     _FRAMEWORK_DECORATORS,
+    _FRAMEWORK_INNER_CLASS_NAMES,
     _NAMESPACE_IMPORT_LANGUAGES,
     _NEVER_PACKAGE_DIRS,
     _PREPROCESSED_LANGUAGES,
+    _PROJECT_FILE_SUFFIXES,
     _PURE_WRAPPER_DECORATOR_ATTRS,
     _PURE_WRAPPER_DECORATOR_MODULES,
     _RUN_NOT_IMPORTED_LANGUAGES,
@@ -47,28 +53,35 @@ from .constants import (
     never_flag_path,
 )
 from .contract_methods import is_com_method_implementation, is_contract_method
-from .csharp_reachability import build_csharp_named_files
+from .csharp_reachability import build_csharp_named_files, build_csharp_named_types
 from .dynamic_markers import (
     find_dynamic_edge_files,
     find_dynamic_import_files,
     read_source_text,
 )
-from .entry_shape import clamp_entry_shaped, drop_program_entries
+from .entry_shape import clamp_entry_shaped, drop_program_entries, is_program
 from .file_reachability import (
+    CSHARP_SUFFIX,
     PackageFileMap,
     ReachabilityRescues,
     build_package_file_map,
     is_file_reachable,
 )
+from .go_name_uses import drop_go_package_uses
+from .kotlin_multiplatform import settle_platform_declarations
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
+from .module_strings import drop_named_modules
 from .name_occurrences import (
     IDENTIFIER_RE,
     clamp_named_types,
     clamp_path_mentions,
     clamp_unverified_absence,
+    demote_used_in_own_file,
+    drop_bare_name_uses,
     drop_internals_used_in_own_file,
     drop_reference_assembly_api,
 )
+from .published_api import BuildFacts, demote_published_api
 from .risk_factors import (
     NO_GIT_SIGNAL_CONFIDENCE,
     RISK_CAP_CONFIDENCE,
@@ -208,7 +221,7 @@ def _is_framework_registered(decorators: list[str]) -> bool:
       ``register`` exactly or a ``register_`` stem so that a past participle
       guarding a handler (``@registered_only``) is not read as one.
     """
-    bases = [_decorator_base(d) for d in decorators]
+    bases = _decorator_bases(decorators)
     if any(b.startswith(_FRAMEWORK_DECORATORS) for b in bases):
         return True
     if any(b.endswith(_FRAMEWORK_DECORATOR_SUFFIXES) for b in bases):
@@ -219,6 +232,23 @@ def _is_framework_registered(decorators: list[str]) -> bool:
         segment == "register" or segment.startswith("register_")
         for segment in (b.rsplit(".", 1)[-1] for b in bases)
     )
+
+
+def _decorator_bases(decorators: Iterable[str]) -> list[str]:
+    """The base name of every annotation in *decorators*.
+
+    A Java or Kotlin modifiers blob carries all of a declaration's annotations
+    (``@Fork(1) @State(Scope.Thread) public``), so each blob is split on
+    ``@`` once its quoted arguments are blanked, the way
+    :func:`_is_symbol_deprecated` reads it. Reading only the blob's first
+    annotation missed every one after it.
+    """
+    return [
+        _decorator_base(token)
+        for blob in decorators
+        for token in _QUOTED_STR_RE.sub('""', str(blob)).split("@")
+        if token.strip()
+    ]
 
 
 def _is_receiver_registration(base: str) -> bool:
@@ -784,6 +814,39 @@ def _is_public_top_level(sym: dict, kinds: AbstractSet[str] | None) -> bool:
     return kinds is None or sym.get("kind") in kinds
 
 
+def _nested_class_used(node_data: dict, sym: dict) -> bool:
+    """Whether a nested class is one a framework reads or its module names.
+
+    ``ingestion/python_local_refs.py`` records a nested class its module reaches
+    (``Outer.Inner``, or ``Inner`` inside ``Outer``) under its ``Outer.Inner``
+    name, since a bare inner name like ``ErrorModel`` repeats across classes.
+    """
+    parent = sym.get("parent_name")
+    if not parent:
+        return False
+    name = sym.get("name", "")
+    if name in _FRAMEWORK_INNER_CLASS_NAMES.get(sym.get("language", ""), ()):
+        return True
+    return f"{parent}.{name}" in (node_data.get("local_refs") or ())
+
+
+def _csharp_exports(findings: list[DeadCodeFindingData]) -> list[DeadCodeFindingData]:
+    """The unused-export findings in ``.cs`` files."""
+    return [
+        f
+        for f in findings
+        if f.kind is DeadCodeKind.UNUSED_EXPORT and f.file_path.endswith(CSHARP_SUFFIX)
+    ]
+
+
+def _names_by_file(findings: list[DeadCodeFindingData]) -> dict[str, set[str]]:
+    """File -> the symbol names *findings* report there."""
+    out: dict[str, set[str]] = {}
+    for f in findings:
+        out.setdefault(f.file_path, set()).add(f.symbol_name or "")
+    return out
+
+
 def _symbol_span(data: dict) -> dict[str, int | None]:
     """``lines``/``start_line``/``end_line`` for a symbol finding.
 
@@ -946,22 +1009,30 @@ class DeadCodeAnalyzer:
             if on_step:
                 on_step("zombie_packages")
 
-        # First: a C/C++ name written outside its declaration is a use, which
-        # settles the finding before any clamp re-scores it.
+        # First: a C# type another file in its scope names is used, and a
+        # C/C++ name written outside its declaration is a use. Both settle the
+        # finding before any clamp re-scores it.
+        findings = self._drop_csharp_named_exports(findings)
         findings = drop_preprocessed_named_elsewhere(
             findings,
             self._source_map,
             self._preprocessed_declaration_sites(),
             self._unindexed_identifier_tokens(),
         )
+        # Same for Go, scoped to the package and to importers naming it.
+        findings = drop_go_package_uses(findings, self._source_map, self.graph)
         # Before the confidence filter, not after: a finding an unread importer
         # could explain must be able to fall *below* min_confidence and drop
         # out entirely, rather than being reported at a number it no longer
         # deserves.
         findings = self._clamp_for_unindexed_importers(findings)
+        # Before the name search: an ``expect``'s own ``actual`` files write its
+        # name, which that search would read as a use elsewhere.
+        findings = settle_platform_declarations(findings, self._source_map)
         # Same position and for the same reason. This one asks the wider
         # version of the same question â€” not "could an unread file explain
         # this" but "did we look anywhere except the import graph".
+        findings = drop_bare_name_uses(findings, self._source_map)
         findings = clamp_unverified_absence(findings, self._source_map)
         findings = drop_internals_used_in_own_file(findings, self._source_map)
         findings = clamp_path_mentions(findings, self._source_map)
@@ -969,8 +1040,15 @@ class DeadCodeAnalyzer:
         type_names = self._public_top_level_names(findings, kinds=_TYPE_DECLARATION_KINDS)
         findings = drop_reference_assembly_api(findings, self._source_map, type_names)
         findings = clamp_named_types(findings, self._source_map, type_names)
+        findings = drop_named_modules(findings, self._source_map, self._dynamic_import_files)
         findings = clamp_entry_shaped(
             findings, self._source_map, self._public_top_level_names(findings)
+        )
+
+        findings = demote_published_api(
+            findings,
+            self._published_api_languages(findings, type_names),
+            BuildFacts(repo_root=self._repo_root, dotnet_index=self._dotnet_index),
         )
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
@@ -980,6 +1058,51 @@ class DeadCodeAnalyzer:
         return DeadCodeReport.from_findings(
             findings, hidden_below_threshold=hidden_below_threshold
         )
+
+    def _drop_csharp_named_exports(
+        self, findings: list[DeadCodeFindingData]
+    ) -> list[DeadCodeFindingData]:
+        """Drop C# unused exports whose type a file that can see it names.
+
+        The symbol-level counterpart of the file rescue in
+        :func:`build_csharp_named_files`: a C# type is used from its own
+        namespace with no import, so "no importer" says nothing about it. A
+        project-scoped name is the same evidence the file pass drops on. One
+        its own file uses is capped below the floor instead (see
+        :func:`demote_used_in_own_file`). Returns a new list.
+        """
+        exports = _csharp_exports(findings)
+        if not exports:
+            return findings
+        named = build_csharp_named_types(
+            self.graph,
+            self._source_map,
+            _names_by_file(exports),
+            dotnet_index=self._dotnet_index,
+            repo_root=self._repo_root,
+        )
+        dropped = {id(f) for f in exports if (f.file_path, f.symbol_name) in named}
+        demote_used_in_own_file([f for f in exports if id(f) not in dropped], self._source_map)
+        return [f for f in findings if id(f) not in dropped]
+
+    def _published_api_languages(
+        self, findings: list[DeadCodeFindingData], type_names: dict[str, frozenset[str]]
+    ) -> dict[str, str]:
+        """Language of each file whose finding is about public API.
+
+        Every unused export is; an unreachable file only when it declares a
+        public type (*type_names*).
+        """
+        files = {
+            f.file_path
+            for f in findings
+            if f.kind is DeadCodeKind.UNUSED_EXPORT or type_names.get(f.file_path)
+        }
+        return {
+            path: self.graph.nodes[path].get("language", "")
+            for path in files
+            if self.graph.has_node(path)
+        }
 
     # ------------------------------------------------------------------
     # Detection methods
@@ -1477,6 +1600,9 @@ class DeadCodeAnalyzer:
         if self._name_matches_dynamic(sym_name, dynamic_patterns):
             return True
 
+        if _nested_class_used(node_data, sym):
+            return True
+
         # TS/JS: type names referenced in type positions of the same file.
         local_type_uses = node_data.get("local_type_uses")
         if local_type_uses and sym_name in local_type_uses:
@@ -1646,7 +1772,11 @@ class DeadCodeAnalyzer:
         }
 
     def _get_unsatisfied_prop_guard(
-        self, sym_id: str, sym_name: str, visited: set[str] | None = None
+        self,
+        sym_id: str,
+        sym_name: str,
+        visited: set[str] | None = None,
+        memo: dict[str, tuple[str, str] | None] | None = None,
     ) -> tuple[str, str] | None:
         """Check if a symbol is rendered behind a prop guard that is never supplied."""
         if not self.graph.has_node(sym_id):
@@ -1654,6 +1784,10 @@ class DeadCodeAnalyzer:
 
         if visited is None:
             visited = set()
+        if memo is None:
+            memo = {}
+        if sym_id in memo:
+            return memo[sym_id]
         if sym_id in visited:
             return None
         visited.add(sym_id)
@@ -1665,8 +1799,10 @@ class DeadCodeAnalyzer:
             if self.graph[pred][sym_id].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
         ]
         if not predecessors:
+            memo[sym_id] = None
             return None
 
+        resolved_guards: list[tuple[str, str]] = []
         for pred in predecessors:
             pred_file = pred.split("::")[0] if "::" in pred else pred
             if not pred_file.endswith((".tsx", ".jsx", ".ts", ".js")):
@@ -1702,14 +1838,28 @@ class DeadCodeAnalyzer:
                             all_missing = False
                             break
                     if all_missing:
-                        return (prop_name, parent_name)
+                        resolved_guards.append((prop_name, parent_name))
+                        continue
 
             pred_name = pred.split("::")[-1]
-            parent_guard = self._get_unsatisfied_prop_guard(pred, pred_name, visited)
-            if parent_guard is not None:
-                return parent_guard
+            parent_guard = self._get_unsatisfied_prop_guard(
+                pred, pred_name, set(visited), memo
+            )
+            if parent_guard is None:
+                memo[sym_id] = None
+                return None
+            resolved_guards.append(parent_guard)
 
-        return None
+        # One blocked route is insufficient: any unguarded or satisfied route
+        # keeps the symbol reachable. Report only when every predecessor path
+        # resolves to an unsatisfied guard.
+        result = (
+            resolved_guards[0]
+            if resolved_guards and len(resolved_guards) == len(predecessors)
+            else None
+        )
+        memo[sym_id] = result
+        return result
 
     def _file_line_count(self, file_path: str) -> int | None:
         """Physical line count of an indexed file, or ``None`` when unread.
@@ -2017,14 +2167,41 @@ class DeadCodeAnalyzer:
         # and any other dotfile directory at the repo root.
         if pkg in _NEVER_PACKAGE_DIRS or pkg.startswith("."):
             return False
+        # A folder is a package only when it declares itself one: a Next.js
+        # ``app/``, a ``benchmarks/`` folder or a Go ``cmd/`` has no manifest
+        # and nothing is meant to import it.
+        if not self._has_package_manifest(pkg, files):
+            return False
+        # Tests are run, never imported, and so is a package that ships a
+        # program (a CLI started by its shebang). One program file is enough,
+        # even a stray script: this errs toward not calling a package dead.
+        files = [f for f in files if not self.graph.nodes.get(f, {}).get("is_test")]
+        if any(is_program(f, self._source_map.get(f, b"")) for f in files):
+            return False
         # A real package contains at least one source file something could
         # import. Config and data (YAML, JSON, MD, TOML) is metadata, and a
-        # folder of Dockerfiles and shell scripts is run, never imported.
+        # folder of Dockerfiles, shell scripts and build files is run, never
+        # imported.
         return any(
             self.graph.nodes.get(f, {}).get("language", "unknown")
             not in _DEAD_CODE_EXEMPT_LANGUAGES | _RUN_NOT_IMPORTED_LANGUAGES
+            and not is_build_file(f)
             for f in files
         )
+
+    def _has_package_manifest(self, pkg: str, files: list[str]) -> bool:
+        """Whether *pkg* holds a package manifest of its own, on disk or indexed.
+
+        A top-level folder whose manifest sits at the repository root (a
+        Python package built by the root ``pyproject.toml``) is the repository
+        itself, not a package of it, so it is never a candidate.
+        """
+        names = {f.partition("/")[2] for f in files if f.count("/") == 1}
+        if self._repo_root is not None:
+            with contextlib.suppress(OSError):
+                names.update(os.listdir(Path(self._repo_root) / pkg))
+        manifests = package_manifest_names()
+        return any(n in manifests or n.endswith(_PROJECT_FILE_SUFFIXES) for n in names)
 
     def _has_cross_package_importer(self, pkg: str, files: list[str]) -> bool:
         """Whether anything outside *pkg* depends on a file inside it."""

@@ -92,7 +92,8 @@ def _parse_python(path: str, blob: bytes) -> ast.Module | None:
 
 def _program_reason(path: str, blob: bytes) -> str | None:
     """Why *blob* says it is a program: a shebang or a Python main guard."""
-    if blob.startswith(b"#!"):
+    # ``#![`` opens a Rust inner attribute (``#![doc = ...]``), not a shebang.
+    if blob.startswith(b"#!") and not blob.startswith(b"#!["):
         return "Starts with a shebang, so it is run directly rather than imported"
     tree = _parse_python(path, blob) if b"__main__" in blob else None
     if tree is not None and any(

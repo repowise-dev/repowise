@@ -43,7 +43,12 @@ def build_targeted(
         "metrics": pager.bound(metric_payload, "metrics"),
         "metrics_total": len(metric_payload),
         "findings": pager.bound(
-            [_serialize_finding(f, data.reference_repository) for f in data.findings.finding_rows],
+            [
+                _serialize_finding(
+                    f, data.reference_repository, data.findings.lower_priority.get(f.id)
+                )
+                for f in data.findings.finding_rows
+            ],
             "findings",
         ),
         "findings_total": findings_total,
@@ -59,6 +64,7 @@ def build_targeted(
         excluded_paths=pop.excluded_paths,
         unscored_paths=pop.unscored_paths,
         repo_root=repo_root,
+        unanalysed_paths=pop.unanalysed_paths,
     )
     if unresolved:
         result["unresolved"] = unresolved

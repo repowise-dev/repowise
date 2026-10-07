@@ -26,7 +26,12 @@ from typing import TYPE_CHECKING
 from ..perf.dialects import PERF_DIALECTS
 from ..perf.dialects.base import BasePerfDialect as BasePerfDialectClass
 from ..perf.loop_facts import LoopFacts
-from .ast_utils import _dart_signature_sibling, _find_function_entry_name, _find_name
+from .ast_utils import (
+    _dart_signature_sibling,
+    _find_function_entry_name,
+    _find_name,
+    is_function_node,
+)
 from .languages import LanguageNodeMap
 from .models import PerfFnFacts, PerfHit
 
@@ -227,18 +232,44 @@ def _enclosing_loop_iterables(
     return names
 
 
+def _is_lock_acquire_spin(
+    node: Node,
+    func: str | None,
+    dialect: BasePerfDialect,
+    loop_kinds: frozenset[str],
+    fn_kinds: frozenset[str],
+) -> bool:
+    """Is *node* inside the unbounded retry loop of a lock-acquiring function?
+
+    Only the nearest enclosing loop counts: a per-item loop nested in (or
+    instead of) the spin loop still takes a lock per iteration.
+    """
+    cur = node.parent
+    while cur is not None and cur.type not in fn_kinds:
+        if cur.type in loop_kinds and cur.is_named:
+            return dialect.is_lock_acquire_spin(func, cur)
+        cur = cur.parent
+    return False
+
+
 def _enclosing_loops(
     node: Node, dialect: BasePerfDialect, loop_kinds: frozenset[str], fn_kinds: frozenset[str]
 ) -> list[Node]:
     """The data-dependent loops around *node* in its function, innermost first;
-    walked up only for hits."""
+    walked up only for hits. A loop whose iterable holds *node* is not one."""
     loops: list[Node] = []
     cur = node.parent
     for _ in range(64):
         if cur is None or cur.type in fn_kinds:
             break
         if cur.type in loop_kinds and cur.is_named and not dialect.is_constant_loop(cur):
-            loops.append(cur)
+            iterable = dialect.iterable_node(cur)
+            # ``for row in result.all():`` runs ``.all()`` once per pass of the loop
+            # around it, so the for loop itself is not what repeats it.
+            if iterable is None or not (
+                iterable.start_byte <= node.start_byte and node.end_byte <= iterable.end_byte
+            ):
+                loops.append(cur)
         cur = cur.parent
     return loops
 
@@ -524,7 +555,7 @@ def _collect_perf_hits(
         next_loop_line = loop_line if (body_scope or not entering_fn) else 0
         next_func = func_name
         next_start = func_start
-        if t in fn_kinds:
+        if t in fn_kinds and is_function_node(node, lmap):
             next_func = _perf_func_name(node) or func_name
             next_start = node.start_point[0] + 1
         elif t in lambda_kinds and func_name is None:
@@ -640,8 +671,8 @@ def _collect_perf_hits(
                         # An inherently-blocking (non-awaited subprocess / fs /
                         # sync-network) sink outside any loop. Noisy everywhere,
                         # so record it as a fact; the engine emits
-                        # ``hot_path_sync_io`` only for a hot, request-reachable
-                        # function (centrality gate). ``db`` is excluded — see
+                        # ``hot_path_sync_io`` only for a hot, central function
+                        # (centrality gate). ``db`` is excluded — see
                         # ``_HOT_PATH_SINK_KINDS``; point-sized reads/writes are
                         # excluded per-dialect — see ``hot_path_excluded_methods``
                         # (outside a loop their cost is bounded, so they belong to
@@ -663,6 +694,10 @@ def _collect_perf_hits(
                         if do_loop_call_marker
                         else None
                     )
+                    if marker == "lock_in_loop" and _is_lock_acquire_spin(
+                        call_node, next_func, dialect, loop_kinds, fn_kinds
+                    ):
+                        marker = None
                     if marker is not None:
                         hits.append(
                             PerfHit(
@@ -724,6 +759,10 @@ def _collect_perf_hits(
                     )
                 elif do_loop_stmt_marker:
                     sm = dialect.loop_stmt_marker(node, list_names)
+                    if sm == "lock_in_loop" and _is_lock_acquire_spin(
+                        node, next_func, dialect, loop_kinds, fn_kinds
+                    ):
+                        sm = None
                     if sm is not None:
                         hits.append(
                             PerfHit(

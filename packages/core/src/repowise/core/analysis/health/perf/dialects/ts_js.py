@@ -68,6 +68,11 @@ TS_SINK_METHODS: frozenset[str] = (
 
 _TS_STRING_KINDS: frozenset[str] = frozenset({"string", "template_string"})
 _TS_AUG_ASSIGN_KINDS: frozenset[str] = frozenset({"augmented_assignment_expression"})
+# The walker's TS/JS loop kinds (``complexity.languages``), which cannot be
+# imported here without a cycle through the complexity package.
+_TS_LOOP_KINDS: frozenset[str] = frozenset(
+    {"for_statement", "for_in_statement", "for_of_statement", "while_statement", "do_statement"}
+)
 
 # A function/lambda scope: the boundary for the reaching-assignment walk and the
 # "not a loop exit" skip for break/return/throw inside a nested closure (a
@@ -200,6 +205,35 @@ class TsJsPerfDialect(TsJsMarkerHooks):
 
     string_literal_kinds = _TS_STRING_KINDS
     aug_assign_kinds = _TS_AUG_ASSIGN_KINDS
+    switch_kinds = frozenset({"switch_statement"})
+    # Node's ``child_process`` launchers return a ChildProcess at once and report
+    # through callbacks or events; only their ``*Sync`` forms wait for the child.
+    # They stay sinks for the loop markers (one process per item is still a
+    # cost) but are not blocking calls. Ceiling: shelljs's synchronous ``exec``
+    # is excluded with them, a recall loss only.
+    hot_path_excluded_methods = frozenset({"spawn", "exec", "execFile"})
+
+    def is_string_concat(self, node: Node) -> bool:
+        """``s += "x"`` that can grow ``s`` across loop iterations.
+
+        A ``let`` declared or freshly assigned inside the loop body is bounded
+        per pass, and an append right before ``break`` / ``return`` / ``throw``
+        runs once. A member or subscript target (``buf[0] += ...``) keeps the
+        flag: nothing here re-binds it.
+        """
+        if not super().is_string_concat(node):
+            return False
+        left = node.child_by_field_name("left")
+        if left is None or left.type != "identifier" or left.text is None:
+            return True
+        return self.accumulates_across_iterations(node, left.text, _TS_LOOP_KINDS)
+
+    def binds_name(self, node: Node, name: bytes) -> bool:
+        # ``s = s + part`` keeps accumulating; only a value not built from ``s`` resets it.
+        value = _assigned_value(node, name)
+        return value is not None and not any(
+            n.type == "identifier" and n.text == name for n in self._walk(value)
+        )
 
     # Only ``for ... of`` / ``for ... in`` multiply over a collection. C-style
     # ``for (;;)``, ``while`` and ``do`` are cursors (pagination / polling), so

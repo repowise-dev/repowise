@@ -203,6 +203,92 @@ def test_lock_fix_targets_the_single_lock_owner_not_the_shared_sink():
     assert plan.target_symbol == "lock.py::critical"
 
 
+def test_lock_fix_skips_a_test_owned_critical_section():
+    """A lock held in a test method names no production I/O to move."""
+    T = "server/src/test/java/org/elasticsearch/index/translog/TranslogTests.java"
+    P = "server/src/main/java/org/elasticsearch/index/translog/Translog.java"
+    rows = [
+        _finding(
+            T,
+            120,
+            marker="blocking_io_under_lock",
+            boundary="fs",
+            call_path=(
+                f"{T}::TranslogTests::testConcurrentWriteViewsAndSnapshot",
+                f"{P}::Translog::add",
+                f"{P}::Translog::flushBuffer",
+            ),
+        )
+    ]
+    link_performance_findings(rows)
+    opportunity = build_performance_opportunities(rows)[0]
+
+    assert opportunity.execution_context == "test"
+    assert opportunity.fix is not None
+    assert performance_fix_suggestions([opportunity]) == []
+
+
+def test_lock_fix_still_targets_a_production_owned_critical_section():
+    """Same shape, production lock owner: the plan is unaffected by the fix."""
+    P = "server/src/main/java/org/elasticsearch/index/translog/Translog.java"
+    rows = [
+        _finding(
+            P,
+            120,
+            marker="blocking_io_under_lock",
+            boundary="fs",
+            call_path=(
+                f"{P}::Translog::writeAndFlush",
+                f"{P}::Translog::add",
+                f"{P}::Translog::flushBuffer",
+            ),
+        )
+    ]
+    link_performance_findings(rows)
+    opportunity = build_performance_opportunities(rows)[0]
+
+    assert opportunity.execution_context == "production"
+    plan = performance_fix_suggestions([opportunity])[0]
+    assert plan.plan["strategy"] == "shrink_lock_scope"
+    assert plan.target_symbol == f"{P}::Translog::writeAndFlush"
+
+
+def test_skip_reads_the_opportunity_context_not_an_individual_evidence_path():
+    """Context is a grouping-key field, one value per opportunity, not per finding.
+
+    A lock owner's own file decides the group's ``execution_context`` (see
+    ``causal.causal_key``); the call path recorded as evidence is display data
+    and is not re-inspected here. This pins that the skip in
+    ``performance_fix_suggestions`` reads ``opportunity.execution_context`` as
+    a whole and does not walk evidence looking for a test-looking path node.
+    """
+    T = "server/src/test/java/org/elasticsearch/index/translog/TranslogTests.java"
+    P = "server/src/main/java/org/elasticsearch/index/translog/Translog.java"
+    rows = [
+        _finding(
+            P,
+            120,
+            marker="blocking_io_under_lock",
+            boundary="fs",
+            call_path=(
+                f"{T}::TranslogTests::testConcurrentWriteViewsAndSnapshot",
+                f"{P}::Translog::add",
+                f"{P}::Translog::flushBuffer",
+            ),
+        )
+    ]
+    link_performance_findings(rows)
+    opportunity = build_performance_opportunities(rows)[0]
+
+    # The finding's own file (a production file) decides the group's context,
+    # even though the recorded call path's first node names a test method.
+    assert opportunity.execution_context == "production"
+    assert opportunity.evidence[0]["path"][0].startswith(T)
+
+    plan = performance_fix_suggestions([opportunity])[0]
+    assert plan.plan["strategy"] == "shrink_lock_scope"
+
+
 def test_distinct_lock_owners_behind_one_helper_do_not_claim_one_lock_fix():
     """One shared helper, two critical sections: no single scope to shorten."""
     opportunity = build_performance_opportunities(

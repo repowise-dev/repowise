@@ -160,6 +160,17 @@ def test_a_routine_response_carries_the_digest(tmp_path: Path) -> None:
     assert "git_history_coverage" not in out["index_scope"]
 
 
+def test_a_complete_index_leaves_the_digest_off(tmp_path: Path) -> None:
+    """``complete`` restates the default, so only a gap rides on a response."""
+    whole = {
+        **_FULL_STATE,
+        "index_scope": {**_FULL_STATE["index_scope"], "file_pages": _WHOLE_PAGES},
+    }
+    out = _meta.build_meta(repository=_write_state(tmp_path, whole))
+
+    assert "index_scope" not in out
+
+
 def test_an_orientation_call_carries_the_whole_scope(tmp_path: Path) -> None:
     out = _meta.build_meta_with_full_scope(
         repository=_write_state(tmp_path, _FULL_STATE)

@@ -23,6 +23,7 @@ from repowise.core.analysis.health.biomarkers.string_concat_in_loop import (
     StringConcatInLoopDetector,
 )
 from repowise.core.analysis.health.complexity import PerfHit, walk_file
+from repowise.core.analysis.health.perf.io_boundaries import collect_io_names
 from repowise.core.analysis.health.scoring import score_file
 
 _FIXTURE_DIR = Path(__file__).resolve().parents[2] / "fixtures" / "lang_samples"
@@ -367,6 +368,27 @@ def test_a_use_block_naming_two_io_modules_takes_the_first(use_block, expected):
     assert set(fc.io_boundary_names.values()) == {expected}
 
 
+class _FakeImportNode:
+    def __init__(self, node_type: str, text: bytes, children: list[_FakeImportNode] | None = None):
+        self.type = node_type
+        self.text = text
+        self.children = children or []
+
+
+def test_rust_local_use_paths_are_not_io_boundaries():
+    root = _FakeImportNode(
+        "source_file",
+        b"",
+        [
+            _FakeImportNode("use_declaration", b"use crate::request::Foo;"),
+            _FakeImportNode("use_declaration", b"use super::http::fetch;"),
+            _FakeImportNode("use_declaration", b"use self::fs::helper;"),
+        ],
+    )
+
+    assert collect_io_names(root, "rust") == {}
+
+
 def test_typescript_fixture_counts():
     fc = _walk("typescript/perf_io_in_loop.ts", "typescript")
     counts = _kinds(fc.perf_hits)
@@ -411,6 +433,16 @@ def test_detectors_only_consume_their_own_kind():
     assert len(IoInLoopDetector().detect(ctx)) == 1
     assert len(StringConcatInLoopDetector().detect(ctx)) == 1
     assert len(BlockingSyncInAsyncDetector().detect(ctx)) == 1
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [("src/render.ts", 1), ("src/__tests__/render.spec.ts", 0), ("tests/test_render.py", 0)],
+)
+def test_string_concat_not_reported_in_test_files(path, expected):
+    ctx = _ctx([PerfHit("string_concat_in_loop", 2, "f", "")])
+    ctx.file_path = path
+    assert len(StringConcatInLoopDetector().detect(ctx)) == expected
 
 
 def test_no_perf_hits_yields_no_findings():
@@ -499,3 +531,60 @@ def test_a_hit_is_named_for_its_enclosing_function(source: str, expected: str | 
     if not hits:
         pytest.skip("typescript grammar unavailable")
     assert {h.function for h in hits} == {expected}
+
+
+_BATCHED_CLEAR = (
+    b"from sqlalchemy import select\n"
+    b"async def clear(session, repository_id, paths):\n"
+    b"    for i in range(0, len(paths), _BATCH_SIZE):\n"
+    b"        rows = await session.execute(\n"
+    b"            select(Row).where(Row.path.in_(paths[i : i + _BATCH_SIZE]))\n"
+    b"        )\n"
+    b"        for row in rows.scalars().all():\n"
+    b"            row.score = None\n"
+)
+
+_N_PLUS_ONE = (
+    b"from sqlalchemy import select\n"
+    b"async def clear(session, repository_id, paths):\n"
+    b"    for path in paths:\n"
+    b"        rows = await session.execute(select(Row).where(Row.path == path))\n"
+    b"        for row in rows.scalars().all():\n"
+    b"            row.score = None\n"
+)
+
+
+def _loop_hits(source: bytes):
+    fc = walk_file("f.py", "python", source)
+    return [h for h in fc.perf_hits if h.kind == "io_in_loop"]
+
+
+def test_reading_a_result_inside_a_chunked_loop_is_already_batched():
+    """The chunk loop steps by a batch size and queries ``.in_`` over one slice; the
+    inner ``for row in rows.scalars().all()`` runs once per chunk, not once per row."""
+    hits = _loop_hits(_BATCHED_CLEAR)
+    assert {h.line for h in hits} == {4, 7}
+    assert all(h.loop is not None and h.loop.chunked for h in hits)
+    findings = IoInLoopDetector().detect(_ctx(hits))
+    assert findings and all(f.details.get("chunked_iteration") for f in findings)
+
+
+def test_a_per_item_query_still_reports_as_not_batched():
+    hits = _loop_hits(_N_PLUS_ONE)
+    assert {h.line for h in hits} == {4, 5}
+    assert not any(h.loop is not None and h.loop.chunked for h in hits)
+    findings = IoInLoopDetector().detect(_ctx(hits))
+    assert findings and not any(f.details.get("chunked_iteration") for f in findings)
+
+
+def test_a_query_in_the_header_of_an_inner_loop_belongs_to_the_outer_loop():
+    source = (
+        b"from sqlalchemy import select\n"
+        b"async def f(session, users):\n"
+        b"    for u in users:\n"
+        b"        for r in (await session.execute(select(T).where(T.id == u.id))).scalars().all():\n"
+        b"            r.x = 1\n"
+    )
+    hits = _loop_hits(source)
+    assert hits and all(h.loop_line == 3 for h in hits)
+    assert not any(h.loop is not None and h.loop.chunked for h in hits)

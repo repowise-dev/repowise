@@ -226,6 +226,11 @@ class Symbol:
     # C# type declarations only: how many type parameters it declares, which is
     # what tells ``IFoo<T>`` from a same-named ``IFoo``. None elsewhere.
     type_parameter_count: int | None = None
+    # Keyword modifiers the declaration writes, lowercased (``override``,
+    # ``static``, ``abstract``...), for languages whose ``LanguageConfig``
+    # names its modifier nodes. Access keywords land here too; ``visibility``
+    # stays the field to read for those.
+    modifiers: tuple[str, ...] = ()
 
 
 @dataclass
@@ -255,6 +260,8 @@ class Import:
     resolved_file: str | None  # absolute path if successfully resolved
     bindings: list[NamedBinding] = field(default_factory=list)
     is_reexport: bool = False  # True for `pub use` (Rust) or re-export patterns
+    # Rust ``mod child;``: declares the child module, uses nothing from it.
+    is_module_declaration: bool = False
 
     @property
     def local_names(self) -> list[str]:

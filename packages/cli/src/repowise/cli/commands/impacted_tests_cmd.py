@@ -49,7 +49,7 @@ from repowise.cli.helpers import (
     repo_index_session,
     resolve_command_target,
     run_async,
-    silence_logs_for_machine_output,
+    silence_logs_for_machine_output_until_close,
 )
 from repowise.cli.output import emit_json
 from repowise.core.analysis.test_selection import RUNNERS
@@ -111,7 +111,7 @@ def impacted_tests_command(
 
     # json/list/args go to downstream tools; keep stdout clean of log noise.
     if fmt != "table":
-        silence_logs_for_machine_output()
+        silence_logs_for_machine_output_until_close()
 
     repo_path = _resolve_repo_path(repo, fmt)
     try:

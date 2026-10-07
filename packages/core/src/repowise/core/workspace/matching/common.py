@@ -52,6 +52,10 @@ class MatchState:
             if c.contract_type == contract_type and id(c) not in self.matched
         ]
 
+    def mark_served(self, consumer: Contract) -> None:
+        """Mark *consumer* as served internally so later matching passes skip it."""
+        self.matched.add(id(consumer))
+
     def add(
         self,
         consumer: Contract,

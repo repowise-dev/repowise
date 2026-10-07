@@ -479,3 +479,21 @@ async def test_available_model_options_fallback(monkeypatch, tmp_path):
     assert options[0].model == "opencode/default"
     assert options[0].recommended is True
     assert options[0].source == "fallback"
+
+
+def test_model_catalog_probe_never_inherits_stdin(monkeypatch):
+    """Inside a stdio MCP server stdin is the JSON-RPC pipe."""
+    import subprocess
+
+    from repowise.core.providers.llm import opencode
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(_args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(_args, 1, "", "")
+
+    monkeypatch.setattr(opencode.subprocess, "run", fake_run)
+    opencode._load_opencode_model_catalog.cache_clear()
+    assert opencode._load_opencode_model_catalog("opencode-stdin-probe") is None
+    assert seen["stdin"] is subprocess.DEVNULL

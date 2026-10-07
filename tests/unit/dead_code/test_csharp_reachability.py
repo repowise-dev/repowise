@@ -13,7 +13,10 @@ from pathlib import Path
 import networkx as nx
 
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer
-from repowise.core.analysis.dead_code.csharp_reachability import build_csharp_named_files
+from repowise.core.analysis.dead_code.csharp_reachability import (
+    build_csharp_named_files,
+    build_csharp_named_types,
+)
 from repowise.core.analysis.dead_code.file_reachability import (
     ReachabilityRescues,
     is_file_reachable,
@@ -301,3 +304,97 @@ def test_a_wrapped_extension_signature_is_still_an_extension(tmp_path: Path) -> 
         "App/Main.cs", "class Main { void F(Builder b) => b.AddFallback(); }\n", types=("Main",)
     )
     assert "App/FallbackExtensions.cs" in repo.named()
+
+
+# ---- the same question per type, for unused exports ----------------------
+
+
+def _named_types(repo: _Repo, wanted: dict[str, set[str]]) -> frozenset[tuple[str, str]]:
+    return build_csharp_named_types(
+        repo.graph,
+        repo.source_map,
+        wanted,
+        dotnet_index=build_index(repo.root),
+        repo_root=repo.root,
+    )
+
+
+def test_only_the_named_type_of_a_file_is_named(tmp_path: Path) -> None:
+    """Per type, not per file: naming ``Used`` says nothing about ``Unused``."""
+    repo = _Repo(tmp_path)
+    repo.project("App/App.csproj")
+    repo.file("App/Pair.cs", "class Used {}\nclass Unused {}\n", types=("Used", "Unused"))
+    repo.file("App/Main.cs", "class Main { object u = new Used(); }\n", types=("Main",))
+    assert _named_types(repo, {"App/Pair.cs": {"Used", "Unused"}}) == {("App/Pair.cs", "Used")}
+
+
+def test_a_type_is_not_named_from_a_project_that_cannot_see_it(tmp_path: Path) -> None:
+    repo = _two_projects(tmp_path, referenced=False)
+    repo.file("App/Main.cs", "class Main { object w = new Widget(); }\n", types=("Main",))
+    assert _named_types(repo, {"Lib/Widget.cs": {"Widget"}}) == frozenset()
+
+
+def test_an_extension_call_names_its_holder_type(tmp_path: Path) -> None:
+    repo = _Repo(tmp_path)
+    repo.project("App/App.csproj")
+    repo.file(
+        "App/SizeExtensions.cs",
+        "static class SizeExtensions { public static int Fit(this int v) => v; }\n",
+        types=("SizeExtensions",),
+    )
+    repo.graph.add_node(
+        "App/SizeExtensions.cs::SizeExtensions::Fit",
+        node_type="symbol",
+        name="Fit",
+        kind="method",
+        parent_name="SizeExtensions",
+        signature="Fit(this int v) -> int",
+    )
+    repo.graph.add_edge(
+        "App/SizeExtensions.cs", "App/SizeExtensions.cs::SizeExtensions::Fit", edge_type="defines"
+    )
+    repo.file("App/Main.cs", "class Main { int F(int s) => s.Fit(); }\n", types=("Main",))
+    wanted = {"App/SizeExtensions.cs": {"SizeExtensions"}}
+    assert _named_types(repo, wanted) == {("App/SizeExtensions.cs", "SizeExtensions")}
+
+
+def test_analyzer_drops_only_the_unnamed_export(tmp_path: Path) -> None:
+    """End to end: a type named by its project is no unused export; the other still is."""
+    repo = _Repo(tmp_path)
+    repo.project("App/App.csproj")
+    repo.file("App/Types.cs", "public class Used {}\npublic class Unused {}\n")
+    for name in ("Used", "Unused"):
+        repo._symbol("App/Types.cs", name, kind="class", visibility="public")
+    repo.file("App/Program.cs", "class Program { object u = new Used(); }\n", types=("Program",))
+    report = DeadCodeAnalyzer(
+        repo.graph,
+        source_map=repo.source_map,
+        repo_root=tmp_path,
+        dotnet_index=build_index(tmp_path),
+    ).analyze({"min_confidence": 0.0})
+    exports = {f.symbol_name for f in report.findings if f.kind.value == "unused_export"}
+    assert "Unused" in exports
+    assert "Used" not in exports
+
+
+def test_an_export_used_only_in_its_own_file_is_demoted_not_dropped(tmp_path: Path) -> None:
+    """A request type its endpoint takes is used; at most it need not be public."""
+    repo = _Repo(tmp_path)
+    repo.project("App/App.csproj")
+    repo.file(
+        "App/Create.cs",
+        "public class CreateRequest {}\npublic class Create { void F(CreateRequest r) {} }\n",
+    )
+    repo._symbol(
+        "App/Create.cs", "CreateRequest", kind="class", visibility="public",
+        start_line=1, end_line=1,
+    )
+    report = DeadCodeAnalyzer(
+        repo.graph,
+        source_map=repo.source_map,
+        repo_root=tmp_path,
+        dotnet_index=build_index(tmp_path),
+    ).analyze({"min_confidence": 0.0})
+    (finding,) = [f for f in report.findings if f.symbol_name == "CreateRequest"]
+    assert finding.confidence < 0.4
+    assert "Used in its own file at App/Create.cs:2" in finding.evidence[-1]

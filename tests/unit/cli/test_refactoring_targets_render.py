@@ -237,3 +237,11 @@ def test_an_advisory_finding_beside_a_real_one_keeps_the_real_lead(capsys):
     _render_refactoring_targets(metrics, findings, [], fmt="json")
     out = json.loads(capsys.readouterr().out)
     assert [t["primary_biomarker"] for t in out["targets"]] == ["complex_method"]
+
+
+def test_an_idiomatic_cycle_is_marked_optional_in_the_detail(capsys):
+    cycle = _break_cycle()
+    cycle.plan["idiom"] = "same_directory"
+    _render_refactoring_targets([], [], [cycle], fmt="md")
+    text = capsys.readouterr().out
+    assert "(same directory, idiomatic; optional)" in text

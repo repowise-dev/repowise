@@ -380,7 +380,7 @@ async def _enrich_health(results: list[dict], ctx: Any, repo_id: str) -> None:
         for r in results:
             path = r.get("target")
             m = metric_map.get(path)
-            if m is not None:
+            if m is not None and m.score is not None:
                 r["health_score"] = round(m.score, 2)
             c = coverage_map.get(path)
             if c is not None:

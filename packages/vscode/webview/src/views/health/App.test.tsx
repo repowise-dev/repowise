@@ -194,7 +194,8 @@ describe("Health dashboard", () => {
     );
 
     const figure = await screen.findByText("7.6");
-    const file = files.files.find((f) => f.file_path === "src/mid.py")!;
+    const found = files.files.find((f) => f.file_path === "src/mid.py")!;
+    const file = { ...found, score: found.score! };
 
     // The contradiction this replaced: the panel called 7.6 green while the
     // canvas beside it coloured the same node amber.

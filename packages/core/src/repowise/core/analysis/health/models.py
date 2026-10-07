@@ -161,9 +161,12 @@ class HealthFileMetricData:
     """Per-file aggregate. Persisted as a ``HealthFileMetric`` row."""
 
     file_path: str
-    score: float
-    max_ccn: int
-    max_nesting: int
+    # ``score``, ``max_ccn`` and ``max_nesting`` are ``None`` for a file whose
+    # language health has no dialect for: nothing walked it, so there is no
+    # measurement to store (``has_health_dialect``).
+    score: float | None
+    max_ccn: int | None
+    max_nesting: int | None
     nloc: int
     has_test_file: bool
     module: str | None = None
@@ -189,7 +192,7 @@ class HealthFileMetricData:
     # production reads a column instead of re-deriving the answer.
     is_test: bool = False
     # Where the file's code comes from: ``production``, ``test``, ``vendored``,
-    # ``docs_example``, ``generated`` or ``tooling``
+    # ``docs_example``, ``generated``, ``tooling`` or ``build``
     # (:func:`repowise.core.code_origin.code_origin`). ``None`` when unknown.
     code_origin: str | None = None
 

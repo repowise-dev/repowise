@@ -68,6 +68,15 @@ _TEST_DIR_TOKENS: frozenset[str] = frozenset(
 # far more often than it names a suite.
 _TEST_DIR_HEAD_WORDS: frozenset[str] = frozenset({"tests", "e2e"})
 
+# Two-word heads that name a suite of tests: a Gradle module of shared test
+# classes (``ktor-server-test-suites/jvm/src/``) or serde's ``test_suite/no_std/src/``.
+# Only as a build module, so a ``src`` root must sit below it: a product feature
+# folder (``src/features/test-suite/``) or a docs page set (``docs/test-suites/``)
+# stays as it is. ``suite`` alone is not one (``office-suite/``).
+_TEST_DIR_HEAD_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    {("test", "suite"), ("test", "suites")}
+)
+
 # The same head written in PascalCase or camelCase, one word with no separator:
 # ``UnitTests/``, ``UITests/``, ``FuzzTests/``, ``AdvancedPaste.UnitTests/``.
 # Plural only, for the reason above (``HitTest/`` is a UI feature), and matched
@@ -303,6 +312,7 @@ def _has_test_layout(segments: list[str], original: list[str]) -> bool:
     rules = _conventions()
     return (
         _in_test_project(segments)
+        or _in_test_suite_module(segments)
         or any(_contains_run(segments, needle) for needle in rules.dir_paths)
         or any(
             _has_wildcard_pair(segments, original, prefix_seg, camel_suffix)
@@ -318,6 +328,13 @@ def _in_test_project(segments: list[str]) -> bool:
         and segments[i + 2] == "src"
         and segments[i + 4] in _JVM_SOURCE_ROOTS
         for i, seg in enumerate(segments[:-4])
+    )
+
+
+def _in_test_suite_module(segments: list[str]) -> bool:
+    return any(
+        tuple(_words(seg)[-2:]) in _TEST_DIR_HEAD_PAIRS and "src" in segments[i + 1 :]
+        for i, seg in enumerate(segments)
     )
 
 

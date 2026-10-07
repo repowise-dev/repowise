@@ -425,7 +425,7 @@ def _limits() -> list[str]:
 def _is_test_perf(finding: HealthFindingData) -> bool:
     """A performance finding on test code.
 
-    The perf model reasons about request-reachable hot paths, which a test file
+    Performance findings are about code that serves requests, which a test file
     is not, so these are dropped from both sides rather than ranked. Other
     dimensions still report on tests; only their ordering is demoted.
     """

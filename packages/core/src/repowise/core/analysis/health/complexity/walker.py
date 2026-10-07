@@ -177,6 +177,7 @@ def walk_file(
         ) = _collect_assertion_facts(body, lmap, asserts)
         name = _find_function_entry_name(fn_node, lmap)
         typed, scalar = typed_param_counts(_parameter_list(fn_node), lmap)
+        dispatch = dispatch_points(body, lmap)
         fc = FunctionComplexity(
             name=name,
             start_line=fn_node.start_point[0] + 1,
@@ -200,7 +201,8 @@ def walk_file(
             is_test_case=is_test_case(fn_node, name, language),
             called_names=called,
             bare_called_names=bare_called,
-            dispatch_share=dispatch_share(dispatch_points(body, lmap), ccn),
+            dispatch_share=dispatch_share(dispatch.points, ccn),
+            dispatch_arm=dispatch.arm,
             deprecated=is_deprecated(fn_node, body, name, lmap, source),
             deepest_block=(deepest[0], deepest[1]) if deepest else None,
         )

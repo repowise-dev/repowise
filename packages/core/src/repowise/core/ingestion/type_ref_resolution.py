@@ -48,6 +48,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from .cohesion import OWN_TYPE_NAME_HINT, withdraw_declaration_hint
 from .models import ParsedFile
 
 if TYPE_CHECKING:
@@ -94,6 +95,68 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
         if name is not None:
             index.setdefault(src, set()).add(name)
     return index
+
+
+def _stamp_local_type_uses(graph: nx.DiGraph, from_path: str, names: set[str]) -> None:
+    """Record type names a file references from its own declarations.
+
+    No self-loop edge is emitted for them, so the dead-code analyzer reads this
+    node attribute instead to see a type used only inside its own file as live.
+    """
+    if not names or not graph.has_node(from_path):
+        return
+    existing = graph.nodes[from_path].get("local_type_uses")
+    if existing is None:
+        graph.nodes[from_path]["local_type_uses"] = set(names)
+    else:
+        existing.update(names)
+
+
+# Languages whose compilers bind a bare type name to a type the referencing
+# file declares (top-level or nested) before any same-package, same-namespace
+# or imported type of that name. A JVM policy class with its own nested
+# ``Node`` means that ``Node``, never a sibling's; a Kotlin ``expect class`` and
+# its platform ``actual`` each name their own declaration; a C# class naming
+# itself means itself, not a same-named class in another project. The
+# strategies below resolve such names to another file anyway, which minted
+# edges in both directions between files that never name each other.
+#
+# Those edges are only kept out of cycle detection (see :data:`OWN_TYPE_NAME_HINT`):
+# call resolution and dead code read them as scope, and dropping them moved
+# call edges onto worse candidates. Upgrade path: resolve own names to the file
+# itself in every strategy once call resolution no longer leans on them.
+_OWN_TYPE_FIRST_LANGUAGES: frozenset[str] = frozenset({"java", "kotlin", "csharp"})
+
+# Symbol kinds that declare a type name. Properties and fields are left out on
+# purpose: C#'s ``public Color Color { get; }`` names the type ``Color`` from
+# another file through a member of the same name.
+_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
+    {"class", "interface", "enum", "struct", "trait", "type_alias"}
+)
+
+
+def _mark_own_name_edges(parsed: ParsedFile, graph: nx.DiGraph) -> None:
+    """Stamp each ``type_use`` edge whose every type name *parsed* declares itself.
+
+    Such an edge carries no reference the file could not satisfy on its own,
+    so it cannot close a dependency cycle. An edge with one name the file does
+    not declare is real evidence and is left alone.
+    """
+    own = {s.name for s in parsed.symbols if s.name and s.kind in _TYPE_DECLARATION_KINDS}
+    src = parsed.file_info.path
+    if not own or not graph.has_node(src):
+        return
+    for _, _, data in graph.out_edges(src, data=True):
+        if _names_only_own_types(data, own):
+            data["hint_source"] = OWN_TYPE_NAME_HINT
+
+
+def _names_only_own_types(data: dict[str, Any], own: set[str]) -> bool:
+    """An unstamped ``type_use`` edge whose type names are all in *own*."""
+    if data.get("edge_type") != "type_use" or "hint_source" in data:
+        return False
+    names = data.get("type_uses")
+    return bool(names) and own.issuperset(names)
 
 
 # ---------------------------------------------------------------------------
@@ -364,12 +427,7 @@ def _resolve_go_type_refs(
         if name in defined_names.get(from_path, _EMPTY_NAMES):
             same_file_refs.add(name)
 
-    if same_file_refs and graph.has_node(from_path):
-        existing = graph.nodes[from_path].get("local_type_uses")
-        if existing is None:
-            graph.nodes[from_path]["local_type_uses"] = same_file_refs
-        else:
-            existing.update(same_file_refs)
+    _stamp_local_type_uses(graph, from_path, same_file_refs)
 
     return emitted
 
@@ -506,12 +564,7 @@ def _resolve_c_type_refs(
                                     type_name=name, origin=ref.origin)
         emitted += 1
 
-    if same_file_refs and graph.has_node(from_path):
-        existing = graph.nodes[from_path].get("local_type_uses")
-        if existing is None:
-            graph.nodes[from_path]["local_type_uses"] = same_file_refs
-        else:
-            existing.update(same_file_refs)
+    _stamp_local_type_uses(graph, from_path, same_file_refs)
 
     return emitted
 
@@ -636,12 +689,7 @@ def _resolve_ts_type_refs(
         )
         emitted += 1
 
-    if same_file_refs and graph.has_node(from_path):
-        existing = graph.nodes[from_path].get("local_type_uses")
-        if existing is None:
-            graph.nodes[from_path]["local_type_uses"] = same_file_refs
-        else:
-            existing.update(same_file_refs)
+    _stamp_local_type_uses(graph, from_path, same_file_refs)
 
     return emitted
 
@@ -802,6 +850,8 @@ def resolve_type_refs(
         if strategy is None:
             continue
         emitted = strategy(parsed, ctx, graph, defined_names)
+        if lang in _OWN_TYPE_FIRST_LANGUAGES:
+            _mark_own_name_edges(parsed, graph)
         if emitted:
             counts[lang] = counts.get(lang, 0) + emitted
     if counts:
@@ -860,6 +910,7 @@ def _add_or_merge_type_use_edge(
         # are genuinely import-linked however the earlier references were found.
         if widens_scope:
             data.pop("no_scope_widening", None)
+        withdraw_declaration_hint(data)
         return
     attrs: dict[str, Any] = {
         "edge_type": "type_use",

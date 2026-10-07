@@ -1857,7 +1857,7 @@ async def snapshot_health_from_store(session: Any, repo_id: str) -> None:
     from sqlalchemy import select
 
     from repowise.core.analysis.health.scoring import compute_kpis
-    from repowise.core.analysis.health.trends import snapshot_file_maps
+    from repowise.core.analysis.health.trends import snapshot_fields
     from repowise.core.persistence.crud import get_hotspot_file_paths, save_health_snapshot
     from repowise.core.persistence.models import HealthFileMetric, HealthFinding
 
@@ -1886,21 +1886,9 @@ async def snapshot_health_from_store(session: Any, repo_id: str) -> None:
             .all()
         )
         kpis = compute_kpis(metrics, await get_hotspot_file_paths(session, repo_id))
-        scores_map, deductions_map = snapshot_file_maps(metrics, findings)
-        await save_health_snapshot(
-            session,
-            repo_id,
-            hotspot_health=float(kpis.get("hotspot_health", 10.0)),
-            average_health=float(kpis.get("average_health", 10.0)),
-            worst_performer_path=kpis.get("worst_performer_path"),
-            worst_performer_score=kpis.get("worst_performer_score"),
-            per_file_scores=scores_map,
-            per_file_deductions=deductions_map,
-            structure_average=kpis.get("structure_average"),
-            history_average=kpis.get("history_average"),
-            production_average=kpis.get("production_average"),
-            maintainability_average=kpis.get("maintainability_average"),
-        )
+        fields = snapshot_fields(kpis, metrics, findings)
+        if fields is not None:
+            await save_health_snapshot(session, repo_id, **fields)
     except Exception as exc:
         logger.warning("health_snapshot_skipped", error=str(exc))
 

@@ -40,7 +40,12 @@ without that mapping count explicit receivers only; (2) flat
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+
+from tree_sitter import Node
+
+from ....ingestion.cpp_export_macros import misread_scope_keyword
 
 
 @dataclass(frozen=True)
@@ -111,6 +116,11 @@ class LanguageNodeMap:
     binding_kinds: frozenset[str] = frozenset()
     identifier_kinds: frozenset[str] = frozenset()
     nested_type_kinds: frozenset[str] = frozenset()
+    # Count only cohesion components that hold state (two or more fields), as
+    # implicit-receiver languages always do. For an explicit-receiver language
+    # whose methods routinely touch one field or none: Rust setters, getters
+    # and ``match self`` arms, and ``new()`` with no ``self`` at all.
+    cohesion_counts_state_only: bool = False
 
     # ------------------------------------------------------------------
     # Assertion detection (test-quality smells). Both fields default to
@@ -227,6 +237,18 @@ class LanguageNodeMap:
     break_kinds: frozenset[str] = frozenset()
     continue_kinds: frozenset[str] = frozenset()
     with_kinds: frozenset[str] = frozenset()
+    #   * ``yield_kinds`` -- a generator's ``yield``. Not a CFG jump (the
+    #     function resumes after it), but it hands a value to the caller, so a
+    #     helper lifted around it would yield into nothing: the slicer refuses
+    #     a span holding one.
+    #   * ``exit_macro_kinds`` / ``exit_macro_names`` -- macro invocation
+    #     node(s) and the macros among them whose expansion returns from the
+    #     function (Rust ``anyhow::bail!``), matched by the macro's last name
+    #     segment. The slicer treats them as jumps for the same reason. A user
+    #     macro of the same name that does not exit only hides a span.
+    yield_kinds: frozenset[str] = frozenset()
+    exit_macro_kinds: frozenset[str] = frozenset()
+    exit_macro_names: frozenset[str] = frozenset()
     #   * ``statement_wrapper_kinds`` -- statement node(s) that merely wrap the
     #     node the CFG builder should classify, as their last named child.
     #     Expression-oriented grammars need this: tree-sitter-rust parses every
@@ -238,6 +260,11 @@ class LanguageNodeMap:
     #     block's tail expression (the implicit value an extraction would
     #     silently drop), so only truly expression-oriented grammars may map it.
     statement_wrapper_kinds: frozenset[str] = frozenset()
+    #   * ``value_passthrough_kinds`` -- nodes a block's value flows through
+    #     unchanged on its way out (Rust ``if`` / ``else`` / ``match`` arms), so
+    #     the slicer can tell whether an unterminated tail statement's value is
+    #     consumed. Only meaningful with ``statement_wrapper_kinds``.
+    value_passthrough_kinds: frozenset[str] = frozenset()
 
     # -- Decorators / annotations (mock-saturation pass) ---------------------
     #   * ``decorator_kinds`` -- the node a single ``@thing`` is parsed as.
@@ -274,6 +301,16 @@ class LanguageNodeMap:
     public_api_modifiers: frozenset[str] = frozenset()
     public_api_type_kinds: frozenset[str] = frozenset()
     scalar_type_names: frozenset[str] = frozenset()
+
+    # -- Grammar misreads ----------------------------------------------------
+    #   * ``misread_scope`` -- truthy for a ``function_kinds`` node that is
+    #     really a namespace or type the grammar misread (C/C++: a macro line
+    #     before ``namespace x {``). Such a node is a container: its members
+    #     are walked, it is never scored. None means no such misread. Checked
+    #     where a scope could be taken for a function (function collection,
+    #     class bodies, perf naming); passes that only run inside a collected
+    #     function's body never meet one.
+    misread_scope: Callable[[Node], object] | None = None
 
 
 
@@ -325,6 +362,7 @@ _PY = LanguageNodeMap(
     break_kinds=frozenset({"break_statement"}),
     continue_kinds=frozenset({"continue_statement"}),
     with_kinds=frozenset({"with_statement"}),
+    yield_kinds=frozenset({"yield"}),
     decorator_kinds=frozenset({"decorator"}),
     decorated_definition_kinds=frozenset({"decorated_definition"}),
 )
@@ -356,7 +394,7 @@ _TS = LanguageNodeMap(
     try_kinds=frozenset({"try_statement"}),
     catch_kinds=frozenset({"catch_clause"}),
     switch_kinds=frozenset({"switch_statement"}),
-    case_kinds=frozenset({"switch_case"}),
+    case_kinds=frozenset({"switch_case", "switch_default"}),
     boolean_operator_kinds=frozenset(),
     boolean_operator_text_kinds=frozenset({"binary_expression"}),
     class_kinds=frozenset({"class_declaration", "class", "abstract_class_declaration"}),
@@ -382,6 +420,7 @@ _TS = LanguageNodeMap(
     raise_kinds=frozenset({"throw_statement"}),
     break_kinds=frozenset({"break_statement"}),
     continue_kinds=frozenset({"continue_statement"}),
+    yield_kinds=frozenset({"yield_expression"}),
 )
 
 _JS = _TS  # identical control-flow nodes; tree-sitter-javascript shares shape.
@@ -399,8 +438,10 @@ _GO = LanguageNodeMap(
     loop_kinds=frozenset({"for_statement"}),
     try_kinds=frozenset(),
     catch_kinds=frozenset(),
-    switch_kinds=frozenset({"expression_switch_statement", "type_switch_statement"}),
-    case_kinds=frozenset({"expression_case", "type_case", "default_case"}),
+    switch_kinds=frozenset(
+        {"expression_switch_statement", "type_switch_statement", "select_statement"}
+    ),
+    case_kinds=frozenset({"expression_case", "type_case", "default_case", "communication_case"}),
     boolean_operator_kinds=frozenset(),
     boolean_operator_text_kinds=frozenset({"binary_expression"}),
     # No class-level fields: Go methods attach to a type via an external
@@ -525,6 +566,8 @@ _RUST = LanguageNodeMap(
     class_kinds=frozenset({"impl_item"}),
     self_identifiers=frozenset({"self"}),
     member_access_kinds=frozenset({"field_expression"}),
+    # Builders, accessor types and enums are one field per method by design.
+    cohesion_counts_state_only=True,
     # ``assert!`` / ``assert_eq!`` / ``assert_ne!`` are macro invocations.
     assert_call_kinds=frozenset({"macro_invocation"}),
     # The perf pass: both ``foo()`` and method/scoped calls (``x.fetch_all()`` /
@@ -548,6 +591,8 @@ _RUST = LanguageNodeMap(
     # early exit the CFG treats as a terminator and the Extract Method slicer
     # treats as a jump, so no span containing one is ever offered.
     raise_kinds=frozenset({"try_expression"}),
+    exit_macro_kinds=frozenset({"macro_invocation"}),
+    exit_macro_names=frozenset({"bail", "ensure", "try"}),
     break_kinds=frozenset({"break_expression"}),
     continue_kinds=frozenset({"continue_expression"}),
     # Rust parses every statement-position control-flow expression inside an
@@ -555,6 +600,16 @@ _RUST = LanguageNodeMap(
     # node, and the slicer uses this as the expression-oriented marker for
     # tail-expression suppression.
     statement_wrapper_kinds=frozenset({"expression_statement"}),
+    value_passthrough_kinds=frozenset(
+        {
+            "if_expression",
+            "else_clause",
+            "match_expression",
+            "match_block",
+            "match_arm",
+            "unsafe_block",
+        }
+    ),
 )
 
 
@@ -644,6 +699,7 @@ _DART = LanguageNodeMap(
 )
 
 _CPP = LanguageNodeMap(
+    misread_scope=misread_scope_keyword,
     fixed_signature_markers=frozenset({"override", "final"}),
     scalar_type_names=_C_SCALARS
     | frozenset({"string", "wstring", "string_view", "wstring_view"}),
@@ -706,6 +762,7 @@ _CPP = LanguageNodeMap(
 )
 
 _C = LanguageNodeMap(
+    misread_scope=misread_scope_keyword,
     scalar_type_names=_C_SCALARS,
     function_kinds=frozenset({"function_definition"}),
     lambda_kinds=frozenset(),
@@ -1160,3 +1217,23 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
 def get_language_map(language: str) -> LanguageNodeMap | None:
     """Return the node-type map for *language* or None when unsupported."""
     return LANGUAGE_MAPS.get(language)
+
+
+# The status every surface reports for a file, or a repository, health could
+# not score because no dialect covers the language.
+NO_DIALECT_STATUS = "language_not_supported"
+
+# SQL has no node map: health walks it through sqlglot (``sql_complexity``).
+_WALKED_WITHOUT_A_MAP = frozenset({"sql"})
+
+
+def has_health_dialect(language: str | None) -> bool:
+    """Whether health measures code shape for *language* at all.
+
+    A file in a language without one is never walked, so a score for it would
+    be a mechanical 10.0 that means "nothing looked", not "this code is fine".
+    Every surface that stores, averages or prints a file score asks this one
+    question rather than keeping its own language list. Narrower than
+    ``scope.scores_language``, which decides whether a file gets a row at all.
+    """
+    return bool(language) and (language in LANGUAGE_MAPS or language in _WALKED_WITHOUT_A_MAP)

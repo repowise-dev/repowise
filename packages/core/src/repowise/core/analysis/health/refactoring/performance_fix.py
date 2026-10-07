@@ -120,6 +120,8 @@ def performance_fix_suggestions(
     floor = confidence_order.get((min_confidence or "").lower(), 0)
     out: list[RefactoringSuggestion] = []
     for opportunity in opportunities:
+        if opportunity.execution_context == "test":
+            continue
         fix = opportunity.fix
         confidence = "high" if fix and fix.safety == "proven" else "medium"
         if fix is None or not opportunity.evidence or confidence_order[confidence] < floor:

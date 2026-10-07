@@ -33,6 +33,12 @@ import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { formatNumber } from "../lib/format";
 import { healthBand, healthBandColor, scoreTextColor } from "./tokens";
 import { HealthDistributionBar } from "./health-distribution-bar";
+import { HEALTH_UNSUPPORTED_NOTICE } from "./map/lens";
+import { Info } from "lucide-react";
+
+/** The lede's two quiet toggles: "Breakdown" under the figure, "How it is scored" under the prose. */
+const DISCLOSURE =
+  "inline-flex cursor-pointer list-none items-center gap-1 rounded text-[11px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden";
 
 const HEALTH_HINT =
   "Fitted against real bug history to predict where defects appear. Built from " +
@@ -98,6 +104,27 @@ export interface CodeHealthLedeProps {
 }
 
 /** "3 months" / "1 month", from a day count. */
+function UnanalysedLede({ action }: { action?: React.ReactNode }) {
+  return (
+    <PageLede label="Code health" value="Not analysed" action={action}>
+      <p>{HEALTH_UNSUPPORTED_NOTICE}</p>
+    </PageLede>
+  );
+}
+
+/** The files a scored figure left out because health has no dialect for them. */
+function UnanalysedNote({ count }: { count: number }) {
+  if (count <= 0) return null;
+  const one = count === 1;
+  return (
+    <>
+      {" "}
+      {formatNumber(count)} more {one ? "file is" : "files are"} in a language health does not
+      analyse yet, so {one ? "it is" : "they are"} left out of this figure.
+    </>
+  );
+}
+
 function windowLabel(days: number): string {
   const months = Math.max(1, Math.round(days / 30));
   return months === 1 ? "month" : `${months} months`;
@@ -112,6 +139,9 @@ export function CodeHealthLede({
   variant = "lead",
 }: CodeHealthLedeProps) {
   const health = summary.average_health;
+  // No file scored: every file is in a language health has no dialect for.
+  // There is no figure to lead with, so the lede says that instead of a 10.
+  if (health == null) return <UnanalysedLede action={action} />;
   const maint = summary.maintainability_average;
   const perf = summary.performance_average;
   const perfFindings = summary.performance_findings ?? 0;
@@ -179,34 +209,51 @@ export function CodeHealthLede({
         layout="beside"
         // The two second reads that belong to this number: how the repo's code
         // volume splits across the bands, and how much of the deduction no
-        // refactor can reach. The average alone hides whether this is
-        // everything-mediocre or mostly-healthy-with-a-bad-corner, and it hides
-        // that a refactor may not move it at all.
+        // refactor can reach. Both sit behind "Breakdown" so the first read is
+        // the figure and its band; native <details>, so keyboard and screen
+        // readers get the toggle for free.
         figureFooter={
           <>
-            {distribution && <HealthDistributionBar distribution={distribution} height="sm" />}
-            {codeShape ? (
-              <p className="mt-3 text-[11px] leading-snug text-[var(--color-text-tertiary)]">
-                Change history excluded. This scores the code alone, and every
-                finding on this page counts toward it.
-                {unscored > 0 && (
-                  <>
-                    {" "}
-                    {formatNumber(unscored)} files are not scored here, having no
-                    recorded split yet.
-                  </>
-                )}
+            {codeShape && (
+              <p className="text-[11px] leading-snug text-[var(--color-text-tertiary)]">
+                Change history excluded.
               </p>
-            ) : (
-              historyShare != null && (
-                <p className="mt-3 text-[11px] leading-snug text-[var(--color-text-tertiary)]">
-                  <span className="tabular-nums text-[var(--color-text-secondary)]">
-                    {historyShare}%
-                  </span>{" "}
-                  of this comes from change history, not from the code. No edit to
-                  these files clears it.
-                </p>
-              )
+            )}
+            {(distribution || codeShape || historyShare != null) && (
+              <details className="mt-1.5">
+                <summary className={DISCLOSURE}>
+                  <Info aria-hidden className="h-3 w-3" />
+                  Breakdown
+                </summary>
+                <div className="mt-2.5 flex flex-col gap-3">
+                  {distribution && (
+                    <HealthDistributionBar distribution={distribution} height="sm" />
+                  )}
+                  {codeShape ? (
+                    <p className="text-[11px] leading-snug text-[var(--color-text-tertiary)]">
+                      This scores the code alone, and every finding on this page
+                      counts toward it.
+                      {unscored > 0 && (
+                        <>
+                          {" "}
+                          {formatNumber(unscored)} files are not scored here, having
+                          no recorded split yet.
+                        </>
+                      )}
+                    </p>
+                  ) : (
+                    historyShare != null && (
+                      <p className="text-[11px] leading-snug text-[var(--color-text-tertiary)]">
+                        <span className="tabular-nums text-[var(--color-text-secondary)]">
+                          {historyShare}%
+                        </span>{" "}
+                        of this comes from change history, not from the code. No
+                        edit to these files clears it.
+                      </p>
+                    )
+                  )}
+                </div>
+              </details>
             )}
           </>
         }
@@ -216,22 +263,18 @@ export function CodeHealthLede({
           <strong className="font-semibold text-[var(--color-text-primary)]">
             {formatNumber(summary.file_count)} files
           </strong>
-          , this codebase scores{" "}
-          <strong className="font-semibold text-[var(--color-text-primary)]">
-            {formatScore(health)} out of 10
-          </strong>{" "}
-          for code health, weighted by lines of code and built from complexity,
-          duplication, coverage
-          {codeShape ? "" : ", churn and ownership"}.
-          {healthChip ? <> That puts it in the {healthChip.label} band.</> : null}
-          {perf != null && (
+          , weighted by lines of code.
+          {hotspot != null && (
             <>
               {" "}
-              {/* Not "performance risk": this is a score on the same ladder
-                  as the health number, so a risk noun inverts it. "risk" belongs
-                  to the findings count in the ribbon. Matches HealthLede. */}
-              Static performance is scored separately at {formatScore(perf)} out of
-              10 and never blended into the health score.
+              The files you change most average{" "}
+              <strong
+                className="font-semibold"
+                style={{ color: healthBandColor(bandForScore(hotspot)) }}
+              >
+                {formatScore(hotspot)}
+              </strong>
+              , {describeGap(hotspot, health)}
             </>
           )}
         </p>
@@ -242,54 +285,61 @@ export function CodeHealthLede({
             <strong className="font-semibold text-[var(--color-text-primary)]">
               {accuracy.hits} of the {accuracy.k} files
             </strong>{" "}
-            it scores worst were touched by a fix in the last{" "}
-            {windowLabel(accuracy.window_days)}. That is{" "}
+            it scores worst had a fix in the last {windowLabel(accuracy.window_days)},{" "}
             {Math.round(accuracy.precision * 100)}% against a{" "}
-            {Math.round(accuracy.base_rate * 100)}% base rate across the repo
+            {Math.round(accuracy.base_rate * 100)}% base rate
             {accuracy.lift != null && (
               <>
                 , so{" "}
                 <strong className="font-semibold text-[var(--color-text-primary)]">
                   {accuracy.lift}× better
                 </strong>{" "}
-                than picking files at random
+                than picking at random
               </>
             )}
             .
           </p>
         )}
 
-        {hotspot != null && (
-          <p className="mt-2.5">
-            The files you change most average{" "}
-            <strong
-              className="font-semibold"
-              style={{ color: healthBandColor(bandForScore(hotspot)) }}
-            >
-              {formatScore(hotspot)}
-            </strong>
-            , {describeGap(hotspot, health)}
-          </p>
-        )}
-
-        {/* Tests are ranked apart from production files, so the weakest one
-            would otherwise never be named on this page. */}
-        {worstTestPath && worstTestScore != null && (
-          <p className="mt-2.5">
-            Test files are ranked apart. The lowest scoring is{" "}
-            <span className="break-all font-mono text-[12px] text-[var(--color-text-primary)]">
-              {worstTestPath}
-            </span>{" "}
-            at{" "}
-            <strong
-              className="font-semibold"
-              style={{ color: healthBandColor(bandForScore(worstTestScore)) }}
-            >
-              {formatScore(worstTestScore)}
-            </strong>
-            .
-          </p>
-        )}
+        {/* The rest qualifies the figure rather than stating it, so it waits
+            behind one toggle instead of filling the first screen. */}
+        <details className="mt-2.5 break-inside-avoid">
+          <summary className={DISCLOSURE}>How it is scored</summary>
+          <div className="mt-2 flex flex-col gap-2">
+            <p>
+              Built from complexity, duplication, coverage
+              {codeShape ? "" : ", churn and ownership"}.
+              <UnanalysedNote count={summary.unanalysed_file_count ?? 0} />
+            </p>
+            {perf != null && (
+              // Not "performance risk": this is a score on the same ladder as
+              // the health number, so a risk noun inverts it. "risk" belongs to
+              // the findings count in the ribbon. Matches HealthLede.
+              <p>
+                Static performance is scored separately at {formatScore(perf)} out
+                of 10 and never blended into the health score.
+              </p>
+            )}
+            {/* Tests are ranked apart from production files, so the weakest
+                one would otherwise never be named on this page. */}
+            {worstTestPath && worstTestScore != null && (
+              <p>
+                Test files are ranked apart. The lowest scoring is{" "}
+                <span className="break-all font-mono text-[12px] text-[var(--color-text-primary)]">
+                  {worstTestPath}
+                </span>{" "}
+                at{" "}
+                <strong
+                  className="font-semibold"
+                  style={{ color: healthBandColor(bandForScore(worstTestScore)) }}
+                >
+                  {formatScore(worstTestScore)}
+                </strong>
+                .
+              </p>
+            )}
+          </div>
+        </details>
       </PageLede>
 
       <StatRibbon stats={stats} />
@@ -299,7 +349,7 @@ export function CodeHealthLede({
   if (variant === "lead") return full;
 
   return (
-    <details className="group">
+    <details className="group/lede">
       <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
         <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           Code health
@@ -323,10 +373,10 @@ export function CodeHealthLede({
             {healthChip.label}
           </span>
         ) : null}
-        <span className="text-xs font-medium text-[var(--color-accent-primary)] group-open:hidden">
+        <span className="text-xs font-medium text-[var(--color-accent-primary)] group-open/lede:hidden">
           More
         </span>
-        <span className="hidden text-xs font-medium text-[var(--color-accent-primary)] group-open:inline">
+        <span className="hidden text-xs font-medium text-[var(--color-accent-primary)] group-open/lede:inline">
           Less
         </span>
       </summary>
@@ -346,6 +396,6 @@ function describeGap(hotspot: number, average: number): string {
   const gap = hotspot - average;
   if (Math.abs(gap) < 0.25) return "in line with the codebase overall.";
   return gap < 0
-    ? `${Math.abs(gap).toFixed(1)} below the codebase overall. The weak spot is the code in motion.`
-    : `${gap.toFixed(1)} above the codebase overall, so the busiest files are holding up.`;
+    ? `${Math.abs(gap).toFixed(1)} below the codebase overall.`
+    : `${gap.toFixed(1)} above the codebase overall.`;
 }

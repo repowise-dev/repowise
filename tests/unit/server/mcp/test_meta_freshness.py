@@ -246,7 +246,7 @@ def test_confident_answer_is_never_told_retrieval_found_nothing() -> None:
 
     assert answer_hint("high") is None
     assert answer_hint("medium") is None
-    assert "Read the listed fallback_targets" in (answer_hint("low") or "")
+    assert "candidate_files" in (answer_hint("low") or "")
 
 
 def test_no_answer_hint_names_an_external_tool() -> None:

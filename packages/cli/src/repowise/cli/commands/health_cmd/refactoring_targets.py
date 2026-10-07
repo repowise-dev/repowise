@@ -211,6 +211,16 @@ def _render_stored_refactoring_targets(
     return True
 
 
+def _rankable(findings: list, metrics: list) -> list:
+    """Findings on files that carry a score.
+
+    A file stored with no score (a language health has no dialect for) is not
+    ranked: a stand-in 10.0 would invent one. The API queue skips it too.
+    """
+    unscored = {m.file_path for m in metrics if m.score is None}
+    return [f for f in findings if f.file_path not in unscored]
+
+
 def _build_targets(
     metrics: list, findings: list, suggestions: list, *, limit: int
 ) -> list[dict]:
@@ -220,7 +230,7 @@ def _build_targets(
         sugg_by_file.setdefault(_suggestion_path(s), []).append(s)
 
     by_file: dict[str, list] = {}
-    for f in findings:
+    for f in _rankable(findings, metrics):
         by_file.setdefault(f.file_path, []).append(f)
 
     metric_by_path = {m.file_path: m for m in metrics}
@@ -618,7 +628,8 @@ def _plan_detail_console(p: dict) -> list[str]:
         cuts = pl.get("cut_edges", [])
         out.append(
             f"    [dim]import cycle of {ev.get('cycle_size')} files "
-            f"({ev.get('edge_count')} edges), cut {len(cuts)} edge(s)[/dim]"
+            f"({ev.get('edge_count')} edges), cut {len(cuts)} edge(s)"
+            f"{_idiom_note(pl)}[/dim]"
         )
         for e in cuts:
             out.append(f"    [dim]-[/dim] invert {e['from']} -> {e['to']}")
@@ -687,7 +698,10 @@ def _plan_detail_md(p: dict) -> list[str]:
         )
     elif kind == "break_cycle":
         cuts = pl.get("cut_edges", [])
-        out.append(f"    - import cycle of {ev.get('cycle_size')} files, cut {len(cuts)} edge(s):")
+        out.append(
+            f"    - import cycle of {ev.get('cycle_size')} files, cut {len(cuts)} edge(s)"
+            f"{_idiom_note(pl)}:"
+        )
         for e in cuts:
             out.append(f"      - invert {e['from']} -> {e['to']}")
     elif kind == "split_file":
@@ -703,6 +717,11 @@ def _plan_detail_md(p: dict) -> list[str]:
         if residual and residual.get("symbols"):
             out.append(f"      - core (shared): {', '.join(residual['symbols'])}")
     return out
+
+
+def _idiom_note(pl: dict) -> str:
+    """Marks a cycle the detector judged idiomatic, so its cut reads as optional."""
+    return " (same directory, idiomatic; optional)" if pl.get("idiom") else ""
 
 
 def _helper_site(pl: dict) -> str:

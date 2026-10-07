@@ -63,6 +63,7 @@ from repowise.server.routers import (
     overview,
     owners,
     pages,
+    platform,
     providers,
     refactoring,
     repos,
@@ -388,6 +389,7 @@ _ROUTERS = (
     external_systems,
     feedback,
     actions,
+    platform,
 )
 
 

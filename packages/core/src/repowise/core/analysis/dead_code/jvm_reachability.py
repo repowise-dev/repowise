@@ -76,6 +76,10 @@ _STEREOTYPE_ANNOTATIONS: frozenset[str] = frozenset({
     "Endpoint",
     "RestControllerEndpoint",
     "RegisterForReflection",
+    # JMH runs these by reflection; ``Benchmark`` sits on the methods.
+    "State",
+    "BenchmarkMode",
+    "Benchmark",
 })
 
 
@@ -127,10 +131,15 @@ def _file_defines_entry_class(graph: Any, file_node: str) -> bool:
         if edge.get("edge_type") != "defines":
             continue
         # Stereotype annotation on a class / record / object.
+        # One modifiers blob holds every annotation of the declaration.
         decorators = succ_data.get("decorators") or []
-        for dec in decorators:
-            if _annotation_base(dec) in _STEREOTYPE_ANNOTATIONS:
-                return True
+        if any(
+            _annotation_base(token) in _STEREOTYPE_ANNOTATIONS
+            for dec in decorators
+            for token in dec.split("@")
+            if token.strip()
+        ):
+            return True
         # ``main`` method — JAR / Kotlin file entry point.
         if (
             succ_data.get("kind") in ("method", "function")

@@ -105,3 +105,26 @@ async def test_embed_failure_handled_through_progress_warnings(
     )
     assert len(progress.warnings) == 1
     assert "Embedding failed for 3 page(s)" in progress.warnings[0]
+
+
+async def test_failed_embed_count_reaches_the_caller(
+    _stub_generator: _StubGenerator, tmp_path: pytest.TempPathFactory
+) -> None:
+    """The count, not the warning text, is what callers decide on."""
+    _stub_generator.embed_failed_pages = 3  # type: ignore[attr-defined]
+    stats: dict[str, int] = {}
+    await run_generation(
+        repo_path=tmp_path,
+        parsed_files=_parsed_files(1),
+        source_map={},
+        graph_builder=SimpleNamespace(),
+        repo_structure=SimpleNamespace(),
+        git_meta_map={},
+        llm_client=SimpleNamespace(),
+        embedder=None,
+        vector_store=None,
+        concurrency=1,
+        progress=_WarningRecorder(),
+        stats_out=stats,
+    )
+    assert stats == {"embed_failed_pages": 3}

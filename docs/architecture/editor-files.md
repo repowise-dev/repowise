@@ -32,9 +32,8 @@ By embedding codebase intelligence and MCP workflow guidance directly into
 `CLAUDE.md`, Claude Code treats it as project context and naturally reaches for
 Repowise tools without being prompted.
 
-The same principle applies to Cursor's `.cursor/rules` / `cursor.md`, GitHub
-Copilot's `.github/copilot-instructions.md`, and any other file an AI editor
-auto-loads at session start.
+The same principle applies to Codex's `AGENTS.md`, Cursor's rules, and any
+other file an AI editor auto-loads at session start.
 
 ---
 
@@ -544,8 +543,10 @@ from .cursor_md import CursorMdGenerator  # add this line
 
 ### Step 5 — Hook into init and update
 
-In `_maybe_generate_claude_md()` (or extract a more generic
-`_maybe_generate_editor_files()` helper):
+Add a sibling of `maybe_generate_claude_md()` in
+`packages/cli/src/repowise/cli/editor_integrations/claude.py` (Codex's
+`maybe_generate_agents_md()` in `codex.py` follows the same contract), or extract a
+generic helper both can share:
 
 ```python
 # After existing CLAUDE.md generation

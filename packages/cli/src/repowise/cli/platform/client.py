@@ -119,6 +119,38 @@ class PlatformClient:
             # Network, JSON — all advisory. The CLI works offline.
             return 0
 
+    def post_json(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        """POST ``payload`` as JSON and return ``(status_code, parsed_body)``.
+
+        For account actions whose refusals the user has to read (a plan
+        limit, a missing GitHub App install), so unlike :meth:`post` the
+        status and body come back instead of a bool. A body that is not a
+        JSON object reads as ``{}``; no answer at all is ``(0, {})``.
+        """
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        try:
+            import httpx
+
+            resp = httpx.post(
+                url,
+                json=payload,
+                headers=self._headers(),
+                timeout=timeout or self.timeout,
+            )
+        except Exception:
+            return 0, {}
+        try:
+            body = resp.json()
+        except Exception:
+            body = {}
+        return resp.status_code, body if isinstance(body, dict) else {}
+
     def post_form(
         self,
         path: str,

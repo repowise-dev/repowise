@@ -127,3 +127,89 @@ def test_a_truly_dead_file_through_the_analyzer_keeps_full_confidence():
     assert by_path["pkg/old.py"].confidence == 1.0
     assert by_path["pkg/listed.py"].confidence == RISK_CAP_CONFIDENCE
     assert by_path["pkg/listed.py"].safe_to_delete is False
+
+
+def _export(path: str, name: str) -> DeadCodeFindingData:
+    finding = _file(path)
+    finding.kind = DeadCodeKind.UNUSED_EXPORT
+    finding.symbol_name = name
+    return finding
+
+
+def test_a_relative_path_resolves_against_the_naming_files_directory():
+    config = 'export default { test: { setupFiles: ["./vitest.setup.ts"] } }\n'
+    assert _dropped("src/vitest.setup.ts", {"src/vitest.config.ts": config})
+
+
+def test_a_relative_path_from_a_doc_is_capped_not_dropped():
+    finding = _clamp("pkg/run.py", {"pkg/README.md": "Run `./run.py` by hand.\n"})
+    assert finding.confidence == RISK_CAP_CONFIDENCE
+
+
+def test_a_relative_path_never_reaches_a_sibling_directory():
+    config = 'export default { test: { setupFiles: ["./vitest.setup.ts"] } }\n'
+    finding = _clamp("web/vitest.setup.ts", {"src/vitest.config.ts": config})
+    assert finding.confidence == 1.0
+
+
+def test_the_changesets_changelog_module_and_its_exports_are_used():
+    config = '{"changelog": "./changelog-config.js", "commit": false}\n'
+    module = ".changeset/changelog-config.js"
+    source = {
+        ".changeset/config.json": config,
+        module: "const getReleaseLine = async () => ''\nconst fns = { getReleaseLine }\n"
+        "module.exports = fns\n",
+    }
+    findings = [_file(module), _export(module, "getReleaseLine")]
+    assert clamp_path_mentions(findings, {p: s.encode() for p, s in source.items()}) == []
+
+
+def test_a_setup_file_a_config_runs_keeps_its_unused_exports():
+    # vitest runs a setup file for its side effects; nothing reads its exports.
+    config = 'export default { test: { setupFiles: ["./vitest.setup.ts"] } }\n'
+    setup = "export function allowNetConnect() {}\nbeforeAll(() => {})\n"
+    source = {"src/vitest.config.ts": config, "src/vitest.setup.ts": setup}
+    finding = _export("src/vitest.setup.ts", "allowNetConnect")
+    assert clamp_path_mentions([finding], {p: s.encode() for p, s in source.items()}) == [finding]
+
+
+def test_an_export_a_manifest_lists_keeps_its_confidence():
+    # A coverage omit list in pyproject.toml names a file without loading it.
+    finding = _export("pkg/contrib/plugin.py", "setup")
+    source = {"pyproject.toml": b'omit = ["*pkg/contrib/plugin.py"]\n'}
+    assert clamp_path_mentions([finding], source) == [finding]
+
+
+def test_an_export_a_doc_names_by_path_keeps_its_confidence():
+    finding = _export("src/lib/api.ts", "helper")
+    source = {"docs/api.md": b"See src/lib/api.ts for the client.\n"}
+    assert clamp_path_mentions([finding], source) == [finding]
+    assert finding.confidence == 1.0
+
+
+def test_a_config_excluding_a_file_does_not_load_it():
+    config = "export default { test: { coverage: { exclude: ['src/legacy.ts'] } } }\n"
+    finding = _clamp("src/legacy.ts", {"vitest.config.ts": config})
+    assert finding.confidence == RISK_CAP_CONFIDENCE  # a mention, not a load
+
+
+def test_a_lint_config_ignoring_a_file_does_not_load_it():
+    config = "export default [{ ignores: ['src/old.ts'] }]\n"
+    assert not _dropped("src/old.ts", {"eslint.config.js": config})
+
+
+def test_a_config_comment_does_not_load_a_file():
+    config = "// removed ./src/gone.ts last release\nexport default { entry: ['src/index.ts'] }\n"
+    assert not _dropped("src/gone.ts", {"tsup.config.ts": config})
+    assert _dropped("src/index.ts", {"tsup.config.ts": config})
+
+
+def test_a_bundler_config_that_is_also_a_runner_still_needs_a_load_key(monkeypatch):
+    # A bundler config may count as a runner by name (a build file); a path it
+    # only mentions in a comment must still not be read as loaded.
+    from repowise.core.analysis.dead_code import name_occurrences
+
+    monkeypatch.setattr(name_occurrences, "is_runner_file", lambda path: True)
+    config = "// removed ./src/gone.ts last release\nexport default { entry: ['src/index.ts'] }\n"
+    assert not _dropped("src/gone.ts", {"tsup.config.ts": config})
+    assert _dropped("src/index.ts", {"tsup.config.ts": config})
