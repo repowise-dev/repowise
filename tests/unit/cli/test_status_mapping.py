@@ -16,6 +16,7 @@ path it named.
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from pathlib import Path
 
 from repowise.cli.commands import status_cmd
@@ -72,6 +73,14 @@ def _checkout(tmp_path: Path, files: int) -> Path:
     return repo
 
 
+def _git_checkout(tmp_path: Path, files: int) -> Path:
+    """The same checkout, as a git repository with everything staged."""
+    repo = _checkout(tmp_path, files)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    return repo
+
+
 def test_an_unindexed_directory_is_not_a_broken_mapping(tmp_path: Path) -> None:
     """The default this replaces was right, and stays: nothing to diverge from."""
     report = status_cmd._mapping_report(tmp_path)
@@ -117,6 +126,64 @@ def test_a_far_smaller_index_than_the_checkout_is_invalid(tmp_path: Path) -> Non
     assert report["indexed_files"] == 2
     assert report["working_tree_files"] == 40
     assert "resolve" in report["reason"]
+
+
+def test_a_far_smaller_index_than_a_git_checkout_is_invalid(tmp_path: Path) -> None:
+    """The reported case stays caught when the count comes from git's listing."""
+    repo = _git_checkout(tmp_path, 40)
+    _seed(repo, file_nodes=2)
+
+    report = status_cmd._mapping_report(repo)
+    assert report["mapping_valid"] is False
+    assert report["indexed_files"] == 2
+    assert report["working_tree_files"] == 40
+    assert "resolve" in report["reason"]
+
+
+def test_the_count_comes_from_git_without_walking_the_tree(tmp_path: Path, monkeypatch) -> None:
+    """A git checkout is counted from its listing, never by a walk.
+
+    The walk reads every file for its generated and size checks (Raghav
+    measured 35s on this repo), and it ran on every ``status`` call. The
+    listing is path-shape only, which is all the fourfold comparison needs.
+    The asset folder here is the discriminating half: a filter-free count
+    would read 52 against an index of 12 and report a healthy repo as broken.
+    """
+    from repowise.core.ingestion.traverser import FileTraverser
+
+    calls: list[int] = []
+
+    def _record_a_walk(_self):
+        calls.append(1)
+        return iter(())
+
+    repo = _git_checkout(tmp_path, 12)
+    _seed(repo, file_nodes=12)
+    assets = repo / "assets"
+    assets.mkdir()
+    for i in range(40):
+        (assets / f"icon_{i}.png").write_text("PNGDATA", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+
+    monkeypatch.setattr(FileTraverser, "traverse", _record_a_walk)
+
+    report = status_cmd._mapping_report(repo)
+    assert report["working_tree_files"] == 12
+    assert report["mapping_valid"] is True
+    assert calls == [], "the working tree was walked on a git checkout"
+
+
+def test_the_walk_answers_when_git_cannot_list_the_checkout(tmp_path: Path, monkeypatch) -> None:
+    """No listing (no git, or not a repository): the traverser still answers."""
+    import repowise.core.analysis.git_cli as git_cli
+
+    repo = _checkout(tmp_path, 7)
+    _seed(repo, file_nodes=7)
+    monkeypatch.setattr(git_cli, "_git", lambda *args, **kwargs: "")
+
+    report = status_cmd._mapping_report(repo)
+    assert report["working_tree_files"] == 7
+    assert report["mapping_valid"] is True
 
 
 def test_a_matching_index_is_valid(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import subprocess
 from datetime import UTC
 from pathlib import Path
 from typing import Any
@@ -107,6 +108,37 @@ def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
         return 0, 0
 
 
+def _working_tree_file_count(repo_path: Path) -> int:
+    """Documentable files in the checkout, without reading them.
+
+    The count exists to catch an index that resolves almost none of the
+    checkout (#1748's repro was 9 against 2,251), so only its order of
+    magnitude matters. ``is_candidate_source_path`` applies the same path-shape
+    filter the change sources use, and ``git ls-files`` lists the paths in one
+    call. The traverser is exact but reads every file for its generated and
+    size checks, which is tens of seconds on a large checkout, so it answers
+    only when git cannot list the directory.
+    """
+    try:
+        from repowise.core.analysis.git_cli import _git
+        from repowise.core.ingestion import is_candidate_source_path
+
+        listing = _git(
+            ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            str(repo_path),
+            check=False,
+        )
+        paths = [p for p in listing.split("\0") if p]
+        if paths:
+            return sum(1 for p in paths if is_candidate_source_path(p))
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    from repowise.core.ingestion.traverser import FileTraverser
+
+    return sum(1 for _ in FileTraverser(repo_path).traverse())
+
+
 def _mapping_report(repo_path: Path) -> dict[str, Any]:
     """Compare the index's file rows against the checkout they should describe.
 
@@ -121,7 +153,8 @@ def _mapping_report(repo_path: Path) -> dict[str, Any]:
 
     Keys, per the fields #1748 asks for:
       ``indexed_files``  file rows for this repository id
-      ``working_tree_files``  documentable files the traverser sees now
+      ``working_tree_files``  documentable files the checkout holds now
+      (from git's listing; the traverser answers when git cannot)
       ``mapping_valid``  False when the index cannot describe this checkout
       ``reason``  why, for the JSON consumer and the table's status column
     """
@@ -213,17 +246,16 @@ def _mapping_report(repo_path: Path) -> dict[str, Any]:
             "reason": f"index could not be read: {type(exc).__name__}",
         }
 
-    # The count that actually catches the reported failure. Counted through
-    # ``traverse()``, the path ingestion takes, so the two numbers describe the
-    # same file set: ``_walk()`` yields images, fonts and lockfiles that
-    # ``_build_file_info`` drops, and counting those reports a healthy index as
-    # broken whenever assets outnumber a quarter of the source tree.
+    # The count that actually catches the reported failure, from git's listing
+    # rather than a walk: the comparison below needs the right order of
+    # magnitude, and the full traversal reads every file for its generated and
+    # size checks, which is tens of seconds on a large checkout and ran on
+    # every ``status`` call. The paths only a content read can classify (a
+    # generated banner) or a ``.repowiseIgnore`` entry can drop sit far inside
+    # the fourfold margin.
     if report["mapping_valid"]:
         try:
-            from repowise.core.ingestion.traverser import FileTraverser
-
-            traverser = FileTraverser(repo_path)
-            report["working_tree_files"] = sum(1 for _ in traverser.traverse())
+            report["working_tree_files"] = _working_tree_file_count(repo_path)
         except Exception as exc:
             report["reason"] = f"working tree could not be walked: {type(exc).__name__}"
             return report
