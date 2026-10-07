@@ -62,7 +62,8 @@ CONTRACTS_FILENAME = "contracts.json"
 # base, and Prisma, TypeORM, Sequelize, Drizzle and Knex tables.
 # Version 13 adds Angular HttpClient calls, with bases folded from environment
 # files and class fields.
-CONTRACTS_VERSION = 13
+# Version 14 adds C# calls through subclasses of the configured typed base clients.
+CONTRACTS_VERSION = 14
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
 #: A queue is read by one consumer group; a topic, subject or channel fans
@@ -663,7 +664,7 @@ async def run_contract_extraction(
         # Run enabled extractors
         extractors = []
         if contract_config.detect_http:
-            extractors.append(HttpExtractor())
+            extractors.append(HttpExtractor(contract_config.api_client_bases))
             extractors.append(OpenApiExtractor())
         if contract_config.detect_grpc:
             extractors.append(GrpcExtractor())

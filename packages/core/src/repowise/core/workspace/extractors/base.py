@@ -23,6 +23,8 @@ from repowise.core.ingestion.languages.registry import REGISTRY
 if TYPE_CHECKING:
     from repowise.core.workspace.repo_index import RepoIndex
 
+    from .http.csharp_api_clients import ApiClientIndex
+
 # Path segments that mark a test/mock tree. A route handler or topic publisher
 # that exists only under one of these is a fixture, not a real service contract,
 # so it is excluded from contract extraction by default (configurable via the
@@ -118,6 +120,10 @@ class ScanContext:
 
     ``index`` is the repo's read-only symbol table, when the repo has one.
     Every dialect may ignore it and read ``content`` exactly as before.
+
+    ``api_clients`` is the repo-wide resolution of C# subclasses of the typed
+    root clients in ``contracts.api_client_bases`` to their base paths (see
+    :mod:`.http.csharp_api_clients`); None when none are configured or found.
     """
 
     repo_alias: str
@@ -126,6 +132,7 @@ class ScanContext:
     content: str
     mounts: Mapping[str, str] = field(default_factory=dict)
     index: RepoIndex | None = None
+    api_clients: ApiClientIndex | None = None
 
 
 # One scanned source file: ``(rel_path, suffix, content)``.

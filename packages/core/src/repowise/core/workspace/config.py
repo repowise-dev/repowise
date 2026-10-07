@@ -119,6 +119,9 @@ class ContractConfig:
     # Extra glob patterns (added to the built-in test/spec defaults) whose files
     # are skipped during contract extraction.
     exclude_globs: list[str] = field(default_factory=list)
+    # Fully qualified root classes of typed HTTP clients (``Acme.Http.ApiClient``)
+    # whose subclasses pass a base path to the root constructor. Empty by default.
+    api_client_bases: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -135,6 +138,8 @@ class ContractConfig:
             d["service_bases"] = dict(self.service_bases)
         if self.exclude_globs:
             d["exclude_globs"] = list(self.exclude_globs)
+        if self.api_client_bases:
+            d["api_client_bases"] = list(self.api_client_bases)
         return d
 
     @classmethod
@@ -150,6 +155,7 @@ class ContractConfig:
             manual_links=manual,
             service_bases={str(k): str(v) for k, v in data.get("service_bases", {}).items()},
             exclude_globs=[str(g) for g in data.get("exclude_globs", [])],
+            api_client_bases=[str(b) for b in data.get("api_client_bases", [])],
         )
 
 
@@ -240,6 +246,7 @@ class WorkspaceConfig:
             self.contracts.manual_links
             or self.contracts.service_bases
             or self.contracts.exclude_globs
+            or self.contracts.api_client_bases
             or not all(
                 [
                     self.contracts.detect_http,

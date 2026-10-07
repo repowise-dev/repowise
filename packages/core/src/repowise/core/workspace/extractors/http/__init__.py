@@ -19,6 +19,7 @@ from ..base import ScanContext, select_files
 from ..dialect import ContractDialect, union_extensions
 from ..langs import PYTHON
 from .aspnet import AspNetDialect
+from .csharp_api_clients import collect_api_clients
 from .csharp_http import CSharpHttpDialect
 from .django import DjangoDialect
 from .express import ExpressDialect
@@ -104,6 +105,10 @@ class HttpExtractor:
     provider_dialects: tuple[ContractDialect, ...] = PROVIDER_DIALECTS
     consumer_dialects: tuple[ContractDialect, ...] = CONSUMER_DIALECTS
 
+    def __init__(self, api_client_bases: Sequence[str] = ()) -> None:
+        """*api_client_bases* names the typed root clients (``Ns.ApiClient``) to resolve."""
+        self.api_client_bases = tuple(api_client_bases)
+
     @classmethod
     def source_extensions(cls) -> frozenset[str]:
         """Every extension this extractor's dialects claim."""
@@ -140,6 +145,7 @@ class HttpExtractor:
         """
         scanned = select_files(repo_path, self.source_extensions(), exclude, files)
         mounts = self._collect_mounts(scanned, repo_alias)
+        api_clients = collect_api_clients(scanned, self.api_client_bases)
 
         from ..from_index import (
             CONSUMER_INDEX_SUFFIXES,
@@ -150,7 +156,9 @@ class HttpExtractor:
 
         contracts: list[Contract] = []
         for rel_path, suffix, content in scanned:
-            ctx = ScanContext(repo_alias, rel_path, suffix, content, mounts, repo_index)
+            ctx = ScanContext(
+                repo_alias, rel_path, suffix, content, mounts, repo_index, api_clients
+            )
             # Python sits in both sets now, so one test covers the provider
             # pass (which reads the declarations above a span) and the consumer
             # pass (which reads the span itself).

@@ -26,6 +26,21 @@ class TestContractConfig:
         assert cfg.detect_socket is True
         assert cfg.detect_topics is True
 
+    def test_api_client_bases_default_to_empty_and_round_trip(self) -> None:
+        assert ContractConfig().api_client_bases == []
+        assert "api_client_bases" not in ContractConfig().to_dict()
+        cfg = ContractConfig(api_client_bases=["Acme.Http.ApiClient", "Acme.Other.BaseClient"])
+        loaded = ContractConfig.from_dict(cfg.to_dict())
+        assert loaded.api_client_bases == ["Acme.Http.ApiClient", "Acme.Other.BaseClient"]
+
+    def test_api_client_bases_change_the_fingerprinted_dict(self) -> None:
+        # contracts.py hashes ContractConfig.to_dict() into the extraction fingerprint.
+        assert ContractConfig(api_client_bases=["A.B"]).to_dict() != ContractConfig().to_dict()
+
+    def test_workspace_config_keeps_the_contracts_section_when_bases_are_set(self) -> None:
+        ws = WorkspaceConfig(contracts=ContractConfig(api_client_bases=["Acme.Http.ApiClient"]))
+        assert ws.to_dict()["contracts"]["api_client_bases"] == ["Acme.Http.ApiClient"]
+
     def test_round_trip(self) -> None:
         cfg = ContractConfig(
             detect_http=True,
