@@ -41,6 +41,7 @@ _DECISION_SOURCE_LABELS: tuple[tuple[str, str], ...] = (
     ("comment", "from comments"),
     ("session", "from agent sessions"),
     ("session_discovery", "from session discovery"),
+    ("conventions", "from code conventions"),
 )
 
 
@@ -480,11 +481,17 @@ async def _run_decision_extraction(
                 if bs.get(source)
             ]
             summary = ", ".join(found) if found else ""
-            progress.on_message(
-                "info",
-                f"→ {report.total_found} architectural decisions found"
-                + (f": {summary}" if summary else ""),
+            # The per-source counts are taken before the evidence gate and the
+            # total after it, so "5 found: 13 from git history, 3 from
+            # comments" did not add up. Say which number is which.
+            candidates = sum(bs.values())
+            headline = (
+                f"→ {report.total_found} architectural decisions kept from "
+                f"{candidates} candidates"
+                if candidates > report.total_found
+                else f"→ {report.total_found} architectural decisions found"
             )
+            progress.on_message("info", headline + (f": {summary}" if summary else ""))
             # And the sources that produced nothing. Hiding these was what made
             # a source failing outright indistinguishable from a source with
             # honestly nothing to find: every failure inside the extractor is

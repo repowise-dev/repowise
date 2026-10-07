@@ -245,3 +245,37 @@ async def test_discovery_candidates_are_reported_even_when_nothing_promotes(
     for level, text in progress.messages:
         if level == "info" and ("Nothing found" in text or "Not run" in text):
             assert "session discovery" not in text
+
+
+class _GatedExtractor(_StubExtractor):
+    """16 candidates across two sources, 5 survive the evidence gate."""
+
+    async def extract_all(self, on_step=None, enabled_sources=None):
+        return SimpleNamespace(
+            total_found=5,
+            decisions=[SimpleNamespace(source="git_archaeology")] * 5,
+            by_source={"git_archaeology": 13, "comment": 3},
+            failures={},
+        )
+
+
+async def test_the_headline_separates_kept_decisions_from_candidates(_patched, monkeypatch):
+    import repowise.core.analysis.decision_extractor as de
+
+    monkeypatch.setattr(de, "DecisionExtractor", _GatedExtractor)
+    progress = _RecordingProgress()
+
+    await _run_decision_extraction(
+        _patched,
+        llm_client=SimpleNamespace(),
+        graph_builder=SimpleNamespace(graph=lambda: None),
+        git_meta_map={},
+        parsed_files=[],
+        progress=progress,
+    )
+
+    assert (
+        "info",
+        "→ 5 architectural decisions kept from 16 candidates: "
+        "13 from git history, 3 from comments",
+    ) in progress.messages
