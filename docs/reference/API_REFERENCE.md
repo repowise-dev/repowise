@@ -180,7 +180,7 @@ probe endpoints are unprotected by design:
 | `GET /api/jobs/{job_id}/stream` | bearer, or the per-job `?token=` described in section 4; this one route cannot carry a router-level bearer dependency because an `EventSource` cannot set headers |
 | everything else under `/api` | bearer |
 
-Counting the published document: 172 operations, 168 of which declare the
+Counting the published document: 188 operations, 184 of which declare the
 `APIKeyHeader` security scheme and 4 of which do not, and those 4 are exactly
 the table's first three rows (the stream route declares the scheme even though
 it also accepts the token, which is a third reason this page exists).
@@ -475,7 +475,7 @@ Verified by reading the routes and, where noted, by request:
 
 ## 6. Orientation: which part of `/docs` to open
 
-Swagger groups operations by tag. There are 33 tags in the published document,
+Swagger groups operations by tag. There are 36 tags in the published document,
 one per router area; this table maps an area to the tag to open there.
 
 | Area | OpenAPI tag | Router |
@@ -495,12 +495,15 @@ one per router area; this table maps an area to the tag to open there.
 | Blast radius for a change | `blast-radius` | `routers/blast_radius.py` |
 | Architectural decisions, lanes, lineage, policy settings | `decisions` | `routers/decisions.py` |
 | Mined session episodes | `episodes` | `routers/episodes.py` |
+| Action prompts and recorded state | `actions` | `routers/actions.py` |
 | Security pattern scan | `security` | `routers/security.py` |
+| Documentation drift findings and per-file references | `doc-drift` | `routers/doc_drift.py` |
 | Cross-repo workspace intelligence | `workspace` | `routers/workspace.py` |
 | Codebase chat and conversations | `chat` | `routers/chat.py` |
 | Provider list, active selection, keys, validation | `providers` | `routers/providers.py` |
 | MCP tool surface per repo | `mcp` | `routers/mcp.py` |
 | Version freshness and changelog | `meta` | `routers/meta.py` |
+| Install identity and repowise.dev publishing | `platform` | `routers/platform.py` |
 | Cost totals and distill savings | `costs` | `routers/costs.py` |
 | Ownership rollups | `owners` | `routers/owners.py` |
 | Module health | `modules` | `routers/modules.py` |
@@ -529,7 +532,7 @@ Every claim above was checked against the code in
 `packages/server/src/repowise/server/` and, for the pipeline and provider
 behaviour, `packages/core/src/repowise/core/`. The counts and the
 "which operations declare auth" table come from generating the app's own
-OpenAPI document in this checkout (160 paths, 172 operations, 33 tags, 168
+OpenAPI document in this checkout (176 paths, 188 operations, 36 tags, 184
 operations declaring the security scheme). The runtime behaviours quoted as
 "verified by request" (auth outcomes and detail strings, error and 422 shapes,
 CORS headers, the 500 body, the SSE frame order and headers, the stream token's
