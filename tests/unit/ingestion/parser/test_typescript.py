@@ -897,3 +897,61 @@ var legacy = { run() { return 1; } };
 """
         ids = {s.id for s in self._parse(parser, src, "src/options.ts").symbols}
         assert {"src/options.ts::data", "src/options.ts::inc", "src/options.ts::run"} <= ids
+
+
+class TestFlowTypedJsFallback:
+    """Flow-typed .js files with generic annotations must fall back to TSX grammar (Issue #3059)."""
+
+    def test_flow_generic_annotations_in_js_recovers_all_symbols(self, parser: ASTParser) -> None:
+        src = b"""\
+// @flow
+function before(wip) {
+  return wip;
+}
+
+function updateHostRoot() {
+  if (nextCache !== prevState.cache) {
+    const overrideState: RootState = {};
+    const updateQueue: UpdateQueue<RootState> =
+    workInProgress.memoizedState = overrideState;
+    if (workInProgress.flags & ForceClientRender) {
+      while (node) {}
+    }
+    if (nextChildren === prevChildren) {}
+  }
+}
+
+function helperA(wip) {
+  if (wip.flags) {
+    return wip.child;
+  }
+  return null;
+}
+
+function helperB(wip) {
+  if (wip.flags) {
+    return wip.child;
+  }
+  return null;
+}
+"""
+        fi = _make_file_info("src/ReactFiberBeginWork.js", "javascript")
+        result = parser.parse_file(fi, src)
+
+        assert len(result.parse_errors) == 0
+        symbols_by_name = {s.name: s for s in result.symbols if s.kind == "function"}
+        assert {"before", "updateHostRoot", "helperA", "helperB"} <= set(symbols_by_name.keys())
+
+        # updateHostRoot span must not stretch to the end of the file.
+        host_root = symbols_by_name["updateHostRoot"]
+        assert host_root.start_line == 6
+        assert host_root.end_line == 16
+
+        helper_a = symbols_by_name["helperA"]
+        assert helper_a.start_line == 18
+        assert helper_a.end_line == 23
+
+        helper_b = symbols_by_name["helperB"]
+        assert helper_b.start_line == 25
+        assert helper_b.end_line == 30
+
