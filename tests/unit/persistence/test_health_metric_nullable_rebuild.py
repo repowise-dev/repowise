@@ -57,11 +57,11 @@ async def test_a_not_null_store_is_rebuilt_and_keeps_its_rows(async_engine, asyn
 
     assert not await _not_null(async_session, "score")
     assert not await _not_null(async_session, "max_ccn")
-    await save_health_metrics(async_session, repo.id, [_row("a.py", 7.5), _row("B.php", None)])
+    await save_health_metrics(async_session, repo.id, [_row("a.py", 7.5), _row("B.ex", None)])
     await async_session.commit()
     by_path = {m.file_path: m for m in await get_health_metrics(async_session, repo.id)}
     assert by_path["a.py"].score == 7.5 and by_path["a.py"].max_ccn == 4
-    assert by_path["B.php"].score is None and by_path["B.php"].max_ccn is None
+    assert by_path["B.ex"].score is None and by_path["B.ex"].max_ccn is None
     # Still one row per file: the unique constraint came back with the table.
     ddl_after = (
         await async_session.execute(
@@ -92,18 +92,18 @@ async def _with_languages(session, repo_id: str, languages: dict[str, str]) -> N
 
 
 async def test_an_update_clears_a_stored_ten_for_a_language_with_no_dialect(async_session):
-    """A store written before this kept 10.0 / CCN 1 for every PHP file."""
+    """A store written before this kept 10.0 / CCN 1 for every unanalysed file."""
     repo = await insert_repo(async_session)
     await save_health_metrics(
         async_session,
         repo.id,
-        [_row("Big.php", 10.0), _row("ok.py", 7.5), _row("orphan.py", 6.0)],
+        [_row("Big.ex", 10.0), _row("ok.py", 7.5), _row("orphan.py", 6.0)],
     )
     # ``orphan.py`` has no graph node: no language, so it is left alone.
-    await _with_languages(async_session, repo.id, {"Big.php": "php", "ok.py": "python"})
+    await _with_languages(async_session, repo.id, {"Big.ex": "elixir", "ok.py": "python"})
     assert await clear_unanalysed_scores(async_session, repo.id) == 1
     by_path = {m.file_path: m for m in await get_health_metrics(async_session, repo.id)}
-    assert by_path["Big.php"].score is None and by_path["Big.php"].max_ccn is None
+    assert by_path["Big.ex"].score is None and by_path["Big.ex"].max_ccn is None
     assert by_path["ok.py"].score == 7.5
     assert by_path["orphan.py"].score == 6.0
     assert await clear_unanalysed_scores(async_session, repo.id) == 0
@@ -115,7 +115,7 @@ async def test_the_badge_says_no_data_when_no_file_is_scored(async_session):
     repo = await insert_repo(async_session)
     # No rows at all is no data too: a repo of only data and config files has none.
     assert await _badge_average_health(async_session, repo.id) is None
-    await save_health_metrics(async_session, repo.id, [_row("Big.php", None)])
+    await save_health_metrics(async_session, repo.id, [_row("Big.ex", None)])
     assert await _badge_average_health(async_session, repo.id) is None
-    await save_health_metrics(async_session, repo.id, [_row("Big.php", None), _row("a.py", 8.0)])
+    await save_health_metrics(async_session, repo.id, [_row("Big.ex", None), _row("a.py", 8.0)])
     assert await _badge_average_health(async_session, repo.id) == 8.0
