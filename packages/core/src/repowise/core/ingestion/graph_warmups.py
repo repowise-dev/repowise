@@ -411,6 +411,7 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
     being anywhere a reader enters.
     """
     from .resolvers.ts_workspace import (
+        find_grafana_plugin_targets,
         find_mdx_import_targets,
         find_npm_script_entry_targets,
         find_vitest_include_targets,
@@ -435,6 +436,9 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
         entry_paths |= find_mdx_import_targets(ctx)
     with contextlib.suppress(Exception):
         entry_paths |= find_vitest_include_targets(ctx)
+    # Grafana plugin entry files (module.ts/js beside plugin.json or in src/).
+    with contextlib.suppress(Exception):
+        entry_paths |= find_grafana_plugin_targets(ctx)
     # ``package.json`` ``scripts.*`` references: benchmark / bench-runner /
     # rollup-input paths that ship as live code but are never imported
     # by the main entry graph.
