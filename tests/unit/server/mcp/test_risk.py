@@ -875,7 +875,9 @@ async def test_get_risk_reach_is_null_when_the_analyzer_gave_no_score(setup_mcp,
 
     monkeypatch.setattr(get_risk_module, "_pr_blast_radius", _unscored)
     result = await get_risk(
-        ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["scales"]
+        ["src/auth/service.py"],
+        changed_files=["src/auth/service.py"],
+        include=["blast", "scales"],
     )
 
     assert result["directive"]["reach"] is None
@@ -1111,7 +1113,10 @@ async def test_get_risk_serves_the_blast_radius_on_request(setup_mcp):
     assert isinstance(plain["directive"]["recommended_reviewers"], list)
 
     blast = await get_risk(files, changed_files=files, include=["blast"])
-    assert "structural_impact_score" in blast["pr_blast_radius"]
+    # The raw structural score also needs "scales"; the directive carries its band.
+    assert "structural_impact_score" not in blast["pr_blast_radius"]
+    scaled = await get_risk(files, changed_files=files, include=["blast", "scales"])
+    assert "structural_impact_score" in scaled["pr_blast_radius"]
     # Named once, in the directive.
     reviewers = plain["directive"]["recommended_reviewers"]
     assert blast["directive"]["recommended_reviewers"] == reviewers

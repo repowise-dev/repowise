@@ -370,8 +370,8 @@ async def get_risk(
     measured or inferred. To score a commit or ``base..head`` range instead,
     use ``get_change_risk``.
 
-    ``directive.reach`` (localized, moderate, broad) bands how far the import
-    graph reaches: uncalibrated, never a breakage probability.
+    ``directive.reach`` (localized, moderate, broad) bands import-graph reach:
+    uncalibrated, never a breakage probability.
     ``include=["blast"]`` adds ``pr_blast_radius``; its raw
     ``structural_impact_score`` appears only with ``include=["blast", "scales"]``.
 
