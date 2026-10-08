@@ -558,7 +558,7 @@ def test_other_providers_keep_their_defaults():
     )
 
 
-def test_the_env_override_also_sets_the_reasoning_budget(monkeypatch):
+def test_max_tokens_helper_applies_the_env_override_to_the_reasoning_default(monkeypatch):
     monkeypatch.setenv(_SYNTHESIS_MAX_TOKENS_ENV, "2000")
     assert _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT) == 2000
     monkeypatch.setenv(_SYNTHESIS_MAX_TOKENS_ENV, "junk")
@@ -587,3 +587,46 @@ async def test_the_reasoning_settings_reach_the_call():
 
     _, note = await synthesize(_BurnedBudget(duration=0, budget=30.0), "sys", "user")
     assert f"{_SYNTHESIS_REASONING_MAX_TOKENS}-token" in note
+
+
+async def test_synthesize_uses_the_resolved_reasoning_budget(monkeypatch):
+    """The env override lands in this module constant at import, so patching it
+    stands in for REPOWISE_SYNTHESIS_MAX_TOKENS on a reasoning model."""
+    monkeypatch.setattr(synthesis_module, "_SYNTHESIS_REASONING_MAX_TOKENS", 2000)
+
+    class _Reasoner(_SlowProvider):
+        provider_name = "openai"
+
+        def supported_reasoning_modes(self):
+            return ("auto", "low")
+
+    provider = _Reasoner(duration=0, budget=30.0)
+    await synthesize(provider, "sys", "user")
+    assert provider.calls[0]["max_tokens"] == 2000
+
+
+async def test_the_real_openai_provider_sends_low_effort_and_the_budget(monkeypatch):
+    """auto -> low must reach the Chat Completions request as reasoning_effort."""
+    provider = _openai("gpt-5.6-luna")
+    sent: dict = {}
+
+    async def _create(**kwargs):
+        sent.update(kwargs)
+        message = SimpleNamespace(content="answer", tool_calls=None)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message, finish_reason="stop")],
+            usage=SimpleNamespace(
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+                prompt_tokens_details=None,
+            ),
+            model="gpt-5.6-luna",
+        )
+
+    monkeypatch.setattr(provider._client.chat.completions, "create", _create)
+    answer, note = await synthesize(provider, "sys", "user")
+
+    assert note is None and answer == "answer"
+    assert sent["reasoning_effort"] == "low"
+    assert sent["max_completion_tokens"] == _SYNTHESIS_REASONING_MAX_TOKENS

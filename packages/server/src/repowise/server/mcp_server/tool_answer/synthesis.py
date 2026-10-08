@@ -79,7 +79,9 @@ def _resolve_reasoning_for_answer(repo_path: Path | None) -> ReasoningMode:
     return resolve_reasoning(config=config)
 
 
-def _synthesis_reasoning_and_budget(provider, reasoning: ReasoningMode) -> tuple[ReasoningMode, int]:
+def _synthesis_reasoning_and_budget(
+    provider, reasoning: ReasoningMode
+) -> tuple[ReasoningMode, int]:
     """The reasoning mode and token cap one synthesis call is sent with.
 
     An OpenAI reasoning model left on ``auto`` thinks at its default effort and
@@ -90,6 +92,7 @@ def _synthesis_reasoning_and_budget(provider, reasoning: ReasoningMode) -> tuple
     try:
         modes = provider.supported_reasoning_modes()
     except Exception:
+        # A provider that cannot report its modes must not fail the answer.
         modes = ()
     if getattr(provider, "provider_name", None) != "openai" or "low" not in modes:
         return reasoning, _SYNTHESIS_MAX_TOKENS
@@ -499,7 +502,9 @@ async def synthesize(
         # go unpriced.
         await _record_synthesis_cost(provider, response, session_factory, repo_id)
         text = (getattr(response, "content", None) or "").strip()
-        return (text, None) if text else ("", _empty_completion_note(provider, response, max_tokens))
+        if text:
+            return text, None
+        return "", _empty_completion_note(provider, response, max_tokens)
 
     _log.warning(
         "get_answer LLM call failed (provider=%s, model=%s, budget=%.1fs, timed_out=%s): %s",
