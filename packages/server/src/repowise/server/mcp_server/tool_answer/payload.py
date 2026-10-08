@@ -161,7 +161,7 @@ def _with_candidates(payload: dict, resolved_pool: list[dict]) -> dict:
         # Longer than ``candidates``: the projection serves these paths at
         # every confidence, while ``candidates`` waits for include=["evidence"].
         payload["candidate_files"] = _serialize_candidate_files(resolved_pool)
-        # Internal: the projection turns these into shortlist rows on low
+        # Internal: the projection adds these to slimmed best_guesses on low
         # answers and drops them everywhere else.
         payload["_candidate_file_facts"] = _serialize_candidate_file_facts(resolved_pool)
     return payload

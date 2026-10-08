@@ -229,9 +229,6 @@ def _render(projected: dict) -> None:
         if values:
             console.print(f"\n[bold]{label}[/bold]")
             for value in values:
-                # A low answer's candidate_files are rows, not bare paths.
-                if isinstance(value, dict):
-                    value = f"{value.get('path', '')}  [dim]{value.get('why', '')}[/dim]"
                 console.print(f"  {value}")
 
     quotes = projected.get("quotes") or []

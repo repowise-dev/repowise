@@ -1,4 +1,4 @@
-"""Low and degraded answers serve one ranked shortlist instead of excerpt-bearing guesses."""
+"""Low and degraded answers serve slim best_guesses rows instead of page excerpts."""
 
 from __future__ import annotations
 
@@ -33,17 +33,13 @@ def _raw(confidence: str, **extra) -> dict:
         "_candidate_file_facts": {
             p: {
                 "why": f"Implements function run_{i}.",
-                "score": 3.0 - i,
+                "score": 9.0,
                 "functions": [{"name": f"run_{i}", "line": 10 + i}],
             }
             for i, p in enumerate(_POOL)
         },
-        "next_action_hint": (
-            "Start from src/pkg/f0.py, it ranked highest, and best_guesses says why "
-            "each candidate is in the running."
-        ),
-        "note": "Each best_guess entry names why that file is in the running, and its "
-        "excerpt carries that page's actual content.",
+        "next_action_hint": "Start from src/pkg/f0.py, it ranked highest.",
+        "note": "Each best_guess entry names why that file is in the running.",
         "_meta": {"contract_version": 1},
     }
     raw.update(extra)
@@ -53,37 +49,41 @@ def _raw(confidence: str, **extra) -> dict:
 @pytest.mark.parametrize(
     ("confidence", "extra"), [("low", {}), ("medium", {"degraded": "no-llm-provider"})]
 )
-def test_low_and_degraded_serve_shortlist_rows_without_excerpts(confidence, extra):
+def test_low_and_degraded_slim_the_guesses(confidence, extra):
     out = project_answer_payload(_raw(confidence, **extra), question="where is run handled")
 
-    assert "best_guesses" not in out and "retrieval" not in out
     assert "excerpt" not in json.dumps(out)
-    rows = out["candidate_files"]
-    # The five uncited ranked paths plus every guess (f1 is cited, and still kept), in rank order.
-    assert [r["path"] for r in rows] == _POOL[:6]
-    assert rows[0] == {
-        "path": "src/pkg/f0.py",
-        "why": "Implements function run_0.",
+    assert [g["file"] for g in out["best_guesses"]] == _POOL[:3]
+    # Existing keys stay as they were; the facts only add what is missing.
+    assert out["best_guesses"][0] == {
+        "file": "src/pkg/f0.py",
+        "why_relevant": "guess src/pkg/f0.py",
         "score": 3.0,
         "functions": [{"name": "run_0", "line": 10}],
     }
-    assert "best_guess" not in out["note"] and "best_guesses" not in out["next_action_hint"]
-    assert out["next_action_hint"].startswith("Start from src/pkg/f0.py")
+    # candidate_files keeps its bare-path shape at every grade.
+    assert out["candidate_files"] == [p for p in _POOL if p != "src/pkg/f1.py"][:5]
     assert "_candidate_file_facts" not in out
 
 
-def test_shortlist_keeps_a_guess_the_pool_lacks_at_the_front():
-    raw = _raw("low", candidate_files=_POOL[1:])
+def test_a_guess_without_a_reason_takes_the_facts_reason():
+    raw = _raw("low")
+    raw["best_guesses"][0].pop("why_relevant")
     out = project_answer_payload(raw, question="q")
-    assert [r["path"] for r in out["candidate_files"]][:3] == _POOL[:3]
-    # No facts for f0: the guess row's own reason and score fill in.
-    assert out["candidate_files"][0] == {
-        "path": "src/pkg/f0.py", "why": "Implements function run_0.", "score": 3.0,
-        "functions": [{"name": "run_0", "line": 10}],
-    }
-    raw = _raw("low", candidate_files=_POOL[1:], _candidate_file_facts={})
+    assert out["best_guesses"][0]["why"] == "Implements function run_0."
+
+
+def test_the_abstain_prose_stops_pointing_at_an_excerpt():
+    raw = _raw(
+        "low",
+        note="Each best_guess entry names why that file is in the running, and its "
+        "excerpt carries that page's actual content.",
+        next_action_hint="Start from the excerpt of src/pkg/f0.py, it scored highest.",
+    )
     out = project_answer_payload(raw, question="q")
-    assert out["candidate_files"][0] == {"path": "src/pkg/f0.py", "why": "guess src/pkg/f0.py", "score": 3.0}
+    assert out["note"] == "Each best_guess entry names why that file is in the running."
+    assert "excerpt" not in out["next_action_hint"]
+    assert out["next_action_hint"].startswith("Read src/pkg/f0.py first")
 
 
 @pytest.mark.parametrize("confidence", ["high", "medium"])
@@ -94,18 +94,19 @@ def test_medium_and_high_bytes_do_not_change(confidence):
     without = project_answer_payload(raw, question="q")
 
     assert json.dumps(with_facts, sort_keys=True) == json.dumps(without, sort_keys=True)
-    assert all(isinstance(p, str) for p in with_facts["candidate_files"])
 
 
 def test_evidence_include_still_serves_guess_excerpts_on_low():
-    out = project_answer_payload(_raw("low"), question="q", include=["evidence"])
-    assert [g["file"] for g in out["best_guesses"]] == _POOL[:3]
+    raw = _raw("low")
+    without = copy.deepcopy(raw)
+    without.pop("_candidate_file_facts")
+    out = project_answer_payload(raw, question="q", include=["evidence"])
+
     assert all(g["excerpt"] == _EXCERPT for g in out["best_guesses"])
-    assert all(isinstance(p, str) for p in out["candidate_files"])
-    assert "_candidate_file_facts" not in out
+    assert out == project_answer_payload(without, question="q", include=["evidence"])
 
 
-def test_shortlist_is_much_smaller_than_the_guess_shape():
+def test_slim_low_answer_is_much_smaller():
     raw = _raw("low")
     compact = project_answer_payload(copy.deepcopy(raw), question="q")
     expanded = project_answer_payload(raw, question="q", include=["evidence"])
@@ -117,20 +118,20 @@ def test_file_sizes_are_stamped_live_and_a_large_top_file_cues_a_ranged_read(tmp
     (tmp_path / "src" / "big.py").write_bytes(b"x = 1\n" * 8000)
     (tmp_path / "src" / "small.py").write_bytes(b"a\nb")
     payload = {
-        "candidate_files": [{"path": "src/big.py"}, {"path": "src/small.py"}, {"path": "gone.py"}],
+        "best_guesses": [{"file": "src/big.py"}, {"file": "src/small.py"}, {"file": "gone.py"}],
         "next_action_hint": "Start from src/big.py.",
     }
 
     _add_file_sizes(payload, tmp_path)
 
-    big, small, gone = payload["candidate_files"]
+    big, small, gone = payload["best_guesses"]
     assert (big["lines"], big["size_bytes"]) == (8000, 48000)
     assert (small["lines"], small["size_bytes"]) == (2, 3)
-    assert gone == {"path": "gone.py"}
+    assert gone == {"file": "gone.py"}
     assert payload["next_action_hint"].startswith("Start from src/big.py. src/big.py is 46 KB")
     assert 'include=["skeleton"]' in payload["next_action_hint"]
 
-    payload = {"candidate_files": [{"path": "src/small.py"}], "next_action_hint": "h"}
+    payload = {"best_guesses": [{"file": "src/small.py"}], "next_action_hint": "h"}
     _add_file_sizes(payload, tmp_path)
     assert payload["next_action_hint"] == "h"
 
@@ -139,9 +140,9 @@ def test_file_sizes_refuse_paths_outside_the_repo(tmp_path):
     (tmp_path / "outside.py").write_text("secret\n")
     root = tmp_path / "repo"
     root.mkdir()
-    payload = {"candidate_files": [{"path": "../outside.py"}]}
+    payload = {"best_guesses": [{"file": "../outside.py"}]}
     _add_file_sizes(payload, root)
-    assert payload["candidate_files"] == [{"path": "../outside.py"}]
+    assert payload["best_guesses"] == [{"file": "../outside.py"}]
 
 
 def test_candidate_file_facts_come_from_the_resolved_hits():

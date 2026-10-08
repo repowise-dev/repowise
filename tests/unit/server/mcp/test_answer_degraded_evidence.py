@@ -17,7 +17,6 @@ resulting hint from advertising an id ``get_symbol`` cannot answer.
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -560,11 +559,11 @@ async def test_degraded_does_not_ship_the_excerpt_twice(tmp_path):
     external = project_answer_payload(
         payload, question="what is Blueprint", include=["evidence"]
     )
-    assert json.dumps(external).count("x" * 1500) == 1
-    # The default low shape serves the file as a shortlist row, with no excerpt.
+    assert external["best_guesses"][0]["excerpt"] == "x" * 1500
+    # The default low shape serves the guess without its excerpt.
     compact = project_answer_payload(payload, question="what is Blueprint")
-    assert "x" * 1500 not in json.dumps(compact)
-    assert "retrieval" not in compact and "best_guesses" not in compact
+    assert "excerpt" not in compact["best_guesses"][0]
+    assert "retrieval" not in compact
 
 
 async def test_degraded_keeps_the_guess_excerpt_when_nothing_duplicates_it(tmp_path):
