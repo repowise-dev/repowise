@@ -719,12 +719,28 @@ async def _lifespan(server: FastMCP):
 
 mcp = FastMCP(
     "repowise",
+    # Hosts that defer tool schemas show the model only tool names and this
+    # string, so it says when to call; tests pin the key lines and a length cap.
     instructions=(
-        "repowise is a codebase documentation engine. Use these tools to query "
-        "the wiki for architecture overviews, contextual docs on files/modules/"
-        "symbols, modification and change-risk assessment, architectural decision "
-        "rationale, semantic search, dead code, and code health. In workspace mode, "
-        "get_architecture and get_blast_radius are also available. If the tools "
+        "repowise indexes this repository's code graph, git history and "
+        "decisions. One call here often replaces several text searches and "
+        "file reads.\n"
+        "- Use search_codebase(query) to find an identifier or literal: it "
+        "returns `lines` (path, line, kind, text; definitions first) read from "
+        "live files, and `complete: true` means that is every match. Path-like "
+        "and concept queries rank files.\n"
+        '- Use get_context(targets=[symbol], include=["references"]) before a '
+        "rename or an update-all-callers change: it lists the definition, "
+        "imports and calls, and a `complete` list is the whole edit set.\n"
+        "- Use get_answer(question) for a how/where/why question: one cited "
+        "answer.\n"
+        "- Use get_risk before a non-trivial edit to a widely imported file, "
+        "get_change_risk before committing a multi-file change, and get_why "
+        "before changing an established pattern. Skip them for one-line fixes.\n"
+        "- Targets with uncommitted edits are flagged; the index is stale for "
+        "them until `repowise update --working-tree` runs.\n"
+        "In workspace mode, get_architecture and get_blast_radius are also "
+        "available. If the tools "
         "report that the repo has no index, tell the user to run "
         "'repowise init --yes' in the repo root; it needs no API key. Suggest it, "
         "do not run it yourself."
