@@ -261,32 +261,19 @@ async def test_api_status_error():
 # ---------------------------------------------------------------------------
 
 
-class _FakeStream:
-    """A finished stream: no events left, only the accumulated final message."""
-
-    def __init__(self, content: list) -> None:
-        self._final = MagicMock(content=content)
-
-    async def __aenter__(self) -> _FakeStream:
-        return self
-
-    async def __aexit__(self, *_exc: object) -> None:
-        return None
-
-    def __aiter__(self) -> _FakeStream:
-        return self
-
-    async def __anext__(self) -> None:
-        raise StopAsyncIteration
-
-    async def get_final_message(self) -> MagicMock:
-        return self._final
+def _finished_stream(content: list) -> MagicMock:
+    """A stream with no events left, only the accumulated final message."""
+    stream = MagicMock()
+    stream.__aenter__.return_value = stream
+    stream.__aiter__.return_value = []
+    stream.get_final_message = AsyncMock(return_value=MagicMock(content=content))
+    return stream
 
 
 async def _stream_events(content: list) -> list:
     provider = AnthropicProvider(api_key="sk-ant-test", model="claude-haiku-5-5")
     provider._client = MagicMock()
-    provider._client.messages.stream = MagicMock(return_value=_FakeStream(content))
+    provider._client.messages.stream = MagicMock(return_value=_finished_stream(content))
     return [e async for e in provider.stream_chat([], [], "sys")]
 
 
