@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os.path
 import re
-from collections.abc import Container
+from collections.abc import Container, Sequence
 from functools import cache
 
 from repowise.server.mcp_server._stack_trace import parse_trace
@@ -81,6 +81,40 @@ def _is_path(query: str) -> bool:
         return True
     _, ext = os.path.splitext(stripped)
     return ext in _code_exts()
+
+
+_TOKEN_EDGE_CHARS = "`'\"()[]{},;"
+_LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
+
+
+def path_tokens(query: str, paths: Sequence[str] = ()) -> list[str]:
+    """The words of ``query`` that read as paths. ``services/x.py register
+    hotkey`` -> ``[services/x.py]``.
+
+    A word with a code file extension counts. A ``/`` or ``\\`` word without
+    one counts only when it is a run of whole segments of one of ``paths``, so
+    ``and/or`` does not. URLs never count; a ``::member`` or ``:line`` suffix
+    is dropped.
+    """
+    out: list[str] = []
+    for raw in query.split():
+        if "://" in raw:
+            continue
+        token = raw.strip(_TOKEN_EDGE_CHARS).split("::", 1)[0].rstrip(".:")
+        token = _LINE_SUFFIX_RE.sub("", token)
+        if os.path.splitext(token)[1] in _code_exts() or (
+            ("/" in token or "\\" in token) and _names_indexed_segments(token, paths)
+        ):
+            out.append(token)
+    return out
+
+
+def _names_indexed_segments(token: str, paths: Sequence[str]) -> bool:
+    norm = token.lower().replace("\\", "/").removeprefix("./").strip("/")
+    if not norm:
+        return False
+    needle = f"/{norm}/"
+    return any(needle in f"/{path.lower()}/" for path in paths)
 
 
 def _qual_norm(name: str | None) -> str:

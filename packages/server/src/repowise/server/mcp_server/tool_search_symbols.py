@@ -19,6 +19,7 @@ graph node.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from typing import Any, NamedTuple
 
 from sqlalchemy import case, func, or_, select
@@ -26,6 +27,7 @@ from sqlalchemy import case, func, or_, select
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Page, WikiSymbol
 from repowise.core.test_paths import is_test_path, is_test_related_path
+from repowise.server.mcp_server._graph_files import per_index
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
     _get_exclude_spec,
@@ -39,7 +41,9 @@ from repowise.server.mcp_server._query_shape import (
     _qual_norm,
     defined_identifiers,
     is_issue_shaped,
+    path_tokens,
 )
+from repowise.server.mcp_server._retrieval_rank import path_word_counts
 from repowise.server.mcp_server._stack_trace import (
     frame_basenames,
     map_to_repo_paths,
@@ -416,23 +420,54 @@ def _path_score(target_path: str, qnorm: str) -> float:
     return score
 
 
+class PathIndex(NamedTuple):
+    paths: tuple[str, ...]  # every file page's path
+    word_counts: Counter[str]  # path word -> how many paths carry it
+
+
+async def file_path_index(session: Any, repo_id: str) -> PathIndex:
+    """The repo's file paths and their word counts, built once per index state."""
+
+    async def build() -> PathIndex:
+        res = await session.execute(
+            select(Page.target_path).where(
+                Page.repository_id == repo_id, Page.page_type == "file_page"
+            )
+        )
+        paths = tuple(p for (p,) in res.all() if p)
+        return PathIndex(paths, path_word_counts(list(paths)))
+
+    return await per_index(session, repo_id, "search_file_paths", build)
+
+
 async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
-    """Path search against one repo context. Returns ranked file result dicts."""
+    """Path search against one repo context. Returns ranked file result dicts.
+
+    Only the path-shaped words of ``query`` are matched (``path_tokens``), so
+    words around a path do not empty the result; the whole query is matched
+    when it carries none.
+    """
     # Path mode is substring matching, so boundary ``*?`` markers carry no
     # information and are stripped. Mid-string globs (``src/*/main.py``) are
     # left alone: a substring match cannot honour them, so stripping there
     # would change the query.
-    qnorm = query.strip().lower().replace("\\", "/").strip("*?")
-    if not qnorm:
-        return []
-
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
+        index = await file_path_index(session, repository.id)
+        tokens = path_tokens(query, index.paths) or [query]
+        qnorms = [q for q in (t.strip().lower().replace("\\", "/").strip("*?") for t in tokens) if q]
+        if not qnorms:
+            return []
         res = await session.execute(
             select(Page.id, Page.title, Page.target_path, Page.freshness_status).where(
                 Page.repository_id == repository.id,
                 Page.page_type == "file_page",
-                Page.target_path.ilike(f"%{escape_like(qnorm)}%", escape=LIKE_ESCAPE),
+                or_(
+                    *(
+                        Page.target_path.ilike(f"%{escape_like(q)}%", escape=LIKE_ESCAPE)
+                        for q in qnorms
+                    )
+                ),
             )
         )
         rows = res.all()
@@ -444,7 +479,9 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
             continue
         if is_excluded(target_path, spec):
             continue
-        scored.append((_path_score(target_path, qnorm), (page_id, title, target_path)))
+        scored.append(
+            (max(_path_score(target_path, q) for q in qnorms), (page_id, title, target_path))
+        )
 
     scored.sort(key=lambda pair: (-pair[0], pair[1][2]))
     return [

@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 import re
-from collections.abc import Container
+from collections.abc import Container, Sequence
 from typing import Any
 
 from sqlalchemy import select
@@ -59,11 +59,17 @@ from repowise.server.mcp_server._query_shape import (
     _qual_norm,
     _resolve_mode,
     _symbol_matches_name,
+    path_tokens,
 )
 from repowise.server.mcp_server._references import path_identity, symbol_identity
-from repowise.server.mcp_server._retrieval_rank import rerank_by_context_coverage
+from repowise.server.mcp_server._retrieval_rank import (
+    boost_named_paths,
+    rerank_by_context_coverage,
+)
 from repowise.server.mcp_server.tool_search_symbols import (
+    _MAX_CANDIDATES,
     IssueFiles,
+    file_path_index,
     indexed_names,
     issue_files,
     search_paths_single,
@@ -109,11 +115,14 @@ def _protect_named_symbols(candidates: list[str], symbols: list[dict]) -> list[d
     return protected + [item for item in symbols if not _symbol_matches_name(item, wanted)]
 
 
-def _protect_exact_paths(query: str, files: list[dict]) -> list[dict]:
+def _protect_exact_paths(
+    query: str, files: list[dict], paths: Sequence[str] = ()
+) -> list[dict]:
     """Stable-partition an exact path hit ahead of basename/fuzzy neighbours."""
-    qnorm = query.strip().lower().replace("\\", "/")
-    protected = [item for item in files if (item.get("file") or "").lower() == qnorm]
-    return protected + [item for item in files if (item.get("file") or "").lower() != qnorm]
+    tokens = path_tokens(query, paths) or [query]
+    wanted = {t.strip().lower().replace("\\", "/") for t in tokens}
+    protected = [item for item in files if (item.get("file") or "").lower() in wanted]
+    return protected + [item for item in files if (item.get("file") or "").lower() not in wanted]
 
 
 def _prose_dominates(query: str, identifiers: list[str]) -> bool:
@@ -775,9 +784,13 @@ async def _search_single_repo(
     if output:
         async with get_session(ctx.session_factory) as session:
             page_info, tombstoned, _ = await _load_page_info(session, output)
+            path_index = await file_path_index(session, (await _get_repo(session)).id)
         output = [item for item in output if item["page_id"] not in tombstoned]
         _attach_paths(output, page_info)
         output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
+        boost_named_paths(
+            output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
+        )
 
     _downweight_test_pages(output, query)
     _sort_demoting_noise(output, query)
@@ -959,6 +972,7 @@ async def _structured_search(
     # collapsing same-file rows frees, and never steer the exact-match signal.
     spare: list[dict] = []
     files: list[dict] = []
+    indexed_paths: list[str] = []
     concepts: list[dict] = []
 
     # A hybrid query is prose wrapped around an identifier ("where is X
@@ -977,8 +991,11 @@ async def _structured_search(
             symbol_query = " ".join(_idents)
 
     # Only the hybrid window collapses symbol rows, so only it over-fetches
-    # them; path hits are file pages, already one row per file.
+    # them; path hits are file pages, already one row per file. Symbol mode
+    # takes every candidate so ``fuzzy_omitted`` counts the names an exact hit hides.
     fetch = limit * _FILE_WINDOW_OVERFETCH if mode == "hybrid" else limit
+    if mode == "symbol":
+        fetch = _MAX_CANDIDATES
     for ctx in contexts:
         if mode in ("symbol", "hybrid"):
             s = await search_symbols_single(
@@ -989,6 +1006,9 @@ async def _structured_search(
             spare.extend(s[limit:])
         if mode == "path":
             f = await search_paths_single(ctx, query, limit)
+            async with get_session(ctx.session_factory) as session:
+                index = await file_path_index(session, (await _get_repo(session)).id)
+            indexed_paths.extend(index.paths)
             _tag_repo(f, ctx, multi)
             files.extend(f)
         if mode == "hybrid":
@@ -1007,7 +1027,7 @@ async def _structured_search(
     elif mode == "hybrid" and candidates:
         symbols = _protect_named_symbols(candidates, symbols)
     if mode == "path":
-        files = _protect_exact_paths(query, files)
+        files = _protect_exact_paths(query, files, indexed_paths)
 
     # Whether any returned symbol matches the query's identifier(s) exactly.
     # Computed once here so the hybrid interleave and the exact-match note below
@@ -1018,8 +1038,19 @@ async def _structured_search(
         symbols = [s for s in symbols if _has_exact_symbol(candidates, [s])]
         spare = [s for s in spare if _has_exact_symbol(candidates, [s])]
 
+    fuzzy_omitted = 0
     if mode == "symbol":
-        results = symbols[:limit]
+        # An exact hit is the answer; its fuzzy neighbours only cost bytes.
+        # Summed over repos when federated, and a floor past the candidate cap.
+        pool = symbols + spare
+        named = [s for s in pool if _has_exact_symbol(candidates, [s])] if exact else []
+        if named:
+            ident = (canonical_symbol[1] if canonical_symbol else query).strip().lower()
+            shown = {id(s) for s in named}
+            fuzzy_omitted = sum(
+                1 for s in pool if id(s) not in shown and ident in (s.get("name") or "").lower()
+            )
+        results = (named or symbols)[:limit]
     elif mode == "path":
         results = files[:limit]
     else:  # hybrid: interleave symbol matches and concept pages for new files
@@ -1053,6 +1084,8 @@ async def _structured_search(
         "mode": mode,
         "_meta": _build_meta(repository=repository, targets=_result_paths(results)),
     }
+    if fuzzy_omitted:
+        response["fuzzy_omitted"] = fuzzy_omitted
     # Symbols first, then everything else the window holds: in symbol and
     # hybrid modes the ranked pool leads with symbol hits, and those are the
     # entries most likely to collapse onto one another (several symbols of one
@@ -1091,6 +1124,11 @@ async def _structured_search(
                 "fuzzy neighbours ranked by token overlap — confirm a hit names "
                 "what you meant before relying on it. If you expected an exact "
                 "symbol, recheck spelling/casing. " + EXHAUSTIVE_SWEEP_HINT
+            )
+        elif fuzzy_omitted:
+            response["note"] = (
+                f"{fuzzy_omitted} other symbols contain this name; search a "
+                "longer or partial name to list them."
             )
     if grep_hint and not results:
         response["grep_hint"] = grep_hint
@@ -1211,6 +1249,7 @@ async def search_codebase(
     if output:
         async with get_session(ctx.session_factory) as session:
             page_info, tombstoned, git_map = await _load_page_info(session, output, with_git=True)
+            path_index = await file_path_index(session, repository.id)
         # Tombstoned pages document deleted/renamed files — never results.
         output = [item for item in output if item["page_id"] not in tombstoned]
 
@@ -1235,6 +1274,11 @@ async def search_codebase(
             query,
             score_key="relevance_score",
             floor=0.5,
+        )
+        # After the coverage rerank, whose window-relative weights cannot tell
+        # a word rare across the repo from one rare in these few hits.
+        boost_named_paths(
+            output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
         )
         _downweight_test_pages(output, query)
         _sort_demoting_noise(output, query)
