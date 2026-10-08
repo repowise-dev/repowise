@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from repowise.core.ingestion.git_indexer.function_blame import (
     BlameIndex,
+    _blame_ignore_revs_args,
     _parse_porcelain,
     build_blame_index,
     distinct_commits_in_range,
@@ -147,3 +148,71 @@ def test_build_blame_index_happy_path(tmp_path: Path):
         commit_count_total=50,
     )
     assert set(idx.lines.keys()) == {1, 2, 3, 4}
+
+
+def test_blame_ignore_revs_args_empty_when_file_absent(tmp_path: Path):
+    repo = SimpleNamespace(git=SimpleNamespace(config=lambda *a, **kw: ""))
+    assert _blame_ignore_revs_args(repo, tmp_path) == []
+
+
+def test_blame_ignore_revs_args_empty_without_repo_path():
+    repo = SimpleNamespace(git=SimpleNamespace(config=lambda *a, **kw: ""))
+    assert _blame_ignore_revs_args(repo, None) == []
+
+
+def test_blame_ignore_revs_args_added_when_file_present_and_unconfigured(tmp_path: Path):
+    (tmp_path / ".git-blame-ignore-revs").write_text("abc123\n", encoding="utf-8")
+
+    def _raise_unset(*_a, **_kw):
+        raise RuntimeError("key not found")
+
+    repo = SimpleNamespace(git=SimpleNamespace(config=_raise_unset))
+    args = _blame_ignore_revs_args(repo, tmp_path)
+    assert args == ["--ignore-revs-file", str(tmp_path / ".git-blame-ignore-revs")]
+
+
+def test_blame_ignore_revs_args_empty_when_already_configured(tmp_path: Path):
+    (tmp_path / ".git-blame-ignore-revs").write_text("abc123\n", encoding="utf-8")
+    repo = SimpleNamespace(git=SimpleNamespace(config=lambda *a, **kw: "some/other/path\n"))
+    assert _blame_ignore_revs_args(repo, tmp_path) == []
+
+
+def test_build_blame_index_passes_the_ignore_revs_flag(tmp_path: Path):
+    (tmp_path / "foo.py").write_text("def alpha():\n    pass\n", encoding="utf-8")
+    (tmp_path / ".git-blame-ignore-revs").write_text("abc123\n", encoding="utf-8")
+    calls: list[tuple] = []
+
+    def _blame(*a, **kw):
+        calls.append(a)
+        return _PORCELAIN
+
+    def _raise_unset(*_a, **_kw):
+        raise RuntimeError("key not found")
+
+    repo = SimpleNamespace(git=SimpleNamespace(blame=_blame, config=_raise_unset))
+    idx = build_blame_index(repo, "foo.py", repo_path=tmp_path, commit_count_total=50)
+    assert idx.lines
+    assert "--ignore-revs-file" in calls[0]
+
+
+def test_build_blame_index_retries_without_the_flag_on_a_malformed_ignore_revs_file(
+    tmp_path: Path,
+):
+    (tmp_path / "foo.py").write_text("def alpha():\n    pass\n", encoding="utf-8")
+    (tmp_path / ".git-blame-ignore-revs").write_text("not-a-valid-sha\n", encoding="utf-8")
+    calls: list[tuple] = []
+
+    def _blame(*a, **kw):
+        calls.append(a)
+        if "--ignore-revs-file" in a:
+            raise RuntimeError("fatal: could not resolve 'not-a-valid-sha'")
+        return _PORCELAIN
+
+    def _raise_unset(*_a, **_kw):
+        raise RuntimeError("key not found")
+
+    repo = SimpleNamespace(git=SimpleNamespace(blame=_blame, config=_raise_unset))
+    idx = build_blame_index(repo, "foo.py", repo_path=tmp_path, commit_count_total=50)
+    # Degrades to ordinary blame rather than losing the signal entirely.
+    assert idx.lines
+    assert len(calls) == 2
