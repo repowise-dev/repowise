@@ -145,6 +145,23 @@ def test_keyed_index_keeps_model_guidance(any_gen):
     assert 'Cite `confidence: "high"`' in result
 
 
+def test_keyed_header_separates_confidence_from_scope(any_gen):
+    # Regression for #3103: trim_blocks ate the newline after the confidence
+    # sentence, gluing it to the scope sentence ("Confidence: 100%.Scope:").
+    result = any_gen.render(_scoped(_KEYED_SCOPE))
+    assert "Confidence: 100%. Scope:" in result
+    assert ".Scope:" not in result
+
+
+def test_keyed_header_without_confidence_separates_commit_from_scope(any_gen):
+    import dataclasses
+
+    data = dataclasses.replace(_scoped(_KEYED_SCOPE), avg_confidence=0.0)
+    result = any_gen.render(data)
+    assert "(commit a1b2c3d). Scope:" in result
+    assert ")Scope:" not in result
+
+
 @pytest.mark.parametrize("scope", [_KEYLESS_SCOPE, _KEYED_SCOPE], ids=["keyless", "keyed"])
 @pytest.mark.parametrize("upgrade", ["pending", "complete"])
 def test_render_has_no_trailing_whitespace_or_double_blank_lines(any_gen, scope, upgrade):
