@@ -42,7 +42,7 @@ Or persist it in `.repowise/config.yaml`:
 
 ```yaml
 provider: claude_cli
-model: claude_cli/claude-haiku-4-5
+model: claude_cli/claude-haiku-5-5
 ```
 
 ## Two directions, one name
@@ -55,7 +55,7 @@ does not enable the other.
 
 ## Choosing a model
 
-`claude_cli/claude-haiku-4-5` is the default, matching the `anthropic` provider.
+`claude_cli/claude-haiku-5-5` is the default, matching the `anthropic` provider.
 
 ```bash
 repowise init --provider claude_cli --model claude_cli/claude-sonnet-4-6
@@ -69,7 +69,7 @@ repowise init --provider claude_cli --model claude-opus-4-6
 
 | Model | Notes |
 |---|---|
-| `claude-haiku-4-5` | Fastest, and ample for doc pages. Default. |
+| `claude-haiku-5-5` | Fastest, and ample for doc pages. Default. |
 | `claude-sonnet-4-6` | Better prose, slower. |
 | `claude-opus-4-6` | Highest quality, heaviest on subscription limits. |
 

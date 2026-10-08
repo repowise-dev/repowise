@@ -38,11 +38,11 @@ const FLAG_ONLY_PROVIDERS = ["mock"] as const;
 const MODEL_PLACEHOLDERS: Record<string, string> = {
   gemini: "gemini-3.5-flash-lite",
   openai: "gpt-5.6-luna",
-  anthropic: "claude-haiku-4-5",
+  anthropic: "claude-haiku-5-5",
   deepseek: "deepseek-v4-flash",
   kimi: "kimi-for-coding",
   edenai: "mistral/mistral-small-latest",
-  claude_cli: "claude_cli/claude-haiku-4-5",
+  claude_cli: "claude_cli/claude-haiku-5-5",
   opencode: "opencode/default",
   ollama: "qwen3.5:4b",
   litellm: "groq/llama-3.1-70b-versatile",

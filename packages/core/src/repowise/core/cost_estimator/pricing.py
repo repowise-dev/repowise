@@ -38,6 +38,7 @@ _COST_TABLE_EXACT: dict[str, tuple[float, float]] = {
     "claude-opus-4-6": (0.005, 0.025),  # $5 / $25 per MTok
     "claude-sonnet-4-6": (0.003, 0.015),  # $3 / $15 per MTok
     "claude-haiku-4-5": (0.001, 0.005),  # $1 / $5 per MTok
+    "claude-haiku-5-5": (0.0001, 0.0005),  # $0.10 / $0.50 per MTok, prompts <= 100K
     # DeepSeek V4 — https://api-docs.deepseek.com/quick_start/pricing
     "deepseek-v4-flash": (0.00027, 0.00110),  # $0.27 / $1.10 per MTok
     "deepseek-v4-pro": (0.00055, 0.00219),  # $0.55 / $2.19 per MTok

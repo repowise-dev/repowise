@@ -94,17 +94,17 @@ def claude_on_path(monkeypatch):
 def test_provider_name_and_default_model(claude_on_path):
     provider = ClaudeCliProvider()
     assert provider.provider_name == "claude_cli"
-    assert provider.model_name == "claude_cli/claude-haiku-4-5"
+    assert provider.model_name == "claude_cli/claude-haiku-5-5"
 
 
 @pytest.mark.parametrize(
     ("given", "expected"),
     [
-        (None, "claude-haiku-4-5"),
+        (None, "claude-haiku-5-5"),
         ("claude-sonnet-4-6", "claude-sonnet-4-6"),
         # A persisted label must round-trip rather than become "claude_cli/claude_cli/...".
         ("claude_cli/claude-sonnet-4-6", "claude-sonnet-4-6"),
-        ("claude_cli/default", "claude-haiku-4-5"),
+        ("claude_cli/default", "claude-haiku-5-5"),
     ],
 )
 def test_model_normalization_round_trips(given, expected):
@@ -144,7 +144,7 @@ def test_reasoning_modes_match_the_claude_cli_effort_flag(claude_on_path):
 def test_available_model_options_are_labelled(claude_on_path):
     options = ClaudeCliProvider().available_model_options()
     assert [o.model for o in options] == [
-        "claude_cli/claude-haiku-4-5",
+        "claude_cli/claude-haiku-5-5",
         "claude_cli/claude-sonnet-4-6",
         "claude_cli/claude-opus-4-6",
     ]
@@ -589,4 +589,4 @@ def test_resolves_through_the_registry(claude_on_path):
 
     provider = get_provider("claude_cli")
     assert provider.provider_name == "claude_cli"
-    assert provider.model_name == "claude_cli/claude-haiku-4-5"
+    assert provider.model_name == "claude_cli/claude-haiku-5-5"

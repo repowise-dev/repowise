@@ -53,7 +53,7 @@ log = structlog.get_logger(__name__)
 
 # Matches the anthropic provider's default, whose docstring calls haiku "ample
 # for doc pages". Overridable with --model / REPOWISE_MODEL.
-_DEFAULT_MODEL = "claude-haiku-4-5"
+_DEFAULT_MODEL = "claude-haiku-5-5"
 _LABEL_PREFIX = "claude_cli/"
 
 _MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/\-]*$")
@@ -223,9 +223,9 @@ class ClaudeCliProvider(BaseProvider):
     """LLM provider backed by ``claude -p`` (Claude Code headless mode).
 
     Args:
-        model: Claude model slug (e.g. ``claude-haiku-4-5``,
+        model: Claude model slug (e.g. ``claude-haiku-5-5``,
             ``claude-sonnet-4-6``). Persisted labels like
-            ``claude_cli/claude-haiku-4-5`` are accepted and normalized.
+            ``claude_cli/claude-haiku-5-5`` are accepted and normalized.
         rate_limiter: Accepted for interface consistency; the provider also
             bounds its own subprocess fan-out.
     """
@@ -269,8 +269,8 @@ class ClaudeCliProvider(BaseProvider):
         # curated list rather than discovery.
         return (
             ProviderModelOption(
-                model=_model_label("claude-haiku-4-5"),
-                label="claude-haiku-4-5",
+                model=_model_label("claude-haiku-5-5"),
+                label="claude-haiku-5-5",
                 reasoning_modes=_SUPPORTED_REASONING_MODES,
                 recommended=True,
                 source="fallback",

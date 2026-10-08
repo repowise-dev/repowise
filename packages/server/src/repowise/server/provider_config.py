@@ -51,8 +51,8 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
     {
         "id": "anthropic",
         "name": "Anthropic",
-        "default_model": "claude-haiku-4-5",
-        "models": ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"],
+        "default_model": "claude-haiku-5-5",
+        "models": ["claude-haiku-5-5", "claude-sonnet-4-6", "claude-opus-4-6"],
         "env_keys": ["ANTHROPIC_API_KEY"],
         "requires_key": True,
     },
@@ -133,9 +133,9 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
     {
         "id": "claude_cli",
         "name": "Claude Code (Local CLI)",
-        "default_model": "claude_cli/claude-haiku-4-5",
+        "default_model": "claude_cli/claude-haiku-5-5",
         "models": [
-            "claude_cli/claude-haiku-4-5",
+            "claude_cli/claude-haiku-5-5",
             "claude_cli/claude-sonnet-4-6",
             "claude_cli/claude-opus-4-6",
         ],

@@ -32,6 +32,8 @@ _PRICING: dict[str, dict[str, float]] = {
     "claude-sonnet-5": {"input": 3.0, "output": 15.0},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
     "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
+    # Prompts over 100K tokens bill at $0.50/$2.50; doc-page prompts stay under.
+    "claude-haiku-5-5": {"input": 0.1, "output": 0.5},
     "claude-3-5-sonnet-20241022": {"input": 3.0, "output": 15.0},
     # OpenAI — GPT-5 family (the models Codex sessions report). Rates per 1M
     # input/output; verify against current OpenAI pricing before relying on

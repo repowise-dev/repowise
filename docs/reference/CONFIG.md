@@ -695,12 +695,12 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 | Model | Notes |
 |-------|-------|
-| `claude-sonnet-4-6` | Default, best balance of quality and cost |
+| `claude-sonnet-4-6` | Best balance of quality and cost |
 | `claude-opus-4-6` | Highest quality, higher cost |
-| `claude-haiku-4-5-20251001` | Fastest, lowest cost |
+| `claude-haiku-5-5` | Default, fastest, lowest cost |
 
 ```bash
-repowise init --provider anthropic --model claude-haiku-4-5-20251001
+repowise init --provider anthropic --model claude-haiku-5-5
 ```
 
 ### OpenAI (GPT)

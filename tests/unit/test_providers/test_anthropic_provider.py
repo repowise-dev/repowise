@@ -28,7 +28,7 @@ def test_provider_name():
 
 def test_default_model():
     p = AnthropicProvider(api_key="sk-ant-test")
-    assert p.model_name == "claude-haiku-4-5"
+    assert p.model_name == "claude-haiku-5-5"
 
 
 def test_api_key_from_env(monkeypatch):
@@ -65,7 +65,7 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
                         "id": "claude-sonnet-4-6",
                         "display_name": "Claude Sonnet 4.6",
                     },
-                    {"id": "claude-haiku-4-5"},
+                    {"id": "claude-haiku-5-5"},
                 ]
             }
 
@@ -89,7 +89,7 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
     assert sonnet.reasoning_modes == ("auto",)
     assert sonnet.recommended is False
     # The default model is the one flagged as recommended.
-    haiku = next(option for option in options if option.model == "claude-haiku-4-5")
+    haiku = next(option for option in options if option.model == "claude-haiku-5-5")
     assert haiku.recommended is True
 
 
@@ -184,6 +184,19 @@ async def test_generate_sends_correct_params():
     assert kw["temperature"] == 0.1
     assert kw["system"] == "system msg"
     assert kw["messages"] == [{"role": "user", "content": "user msg"}]
+
+
+async def test_generate_omits_temperature_for_haiku_5_5():
+    """Haiku 5.5 returns a 400 for any non-default sampling parameter."""
+    provider = AnthropicProvider(api_key="sk-ant-test", model="claude-haiku-5-5")
+    create = AsyncMock(return_value=_make_mock_response())
+
+    with patch("anthropic.AsyncAnthropic") as mock_client:
+        mock_client.return_value.messages.create = create
+        provider._client = mock_client.return_value
+        await provider.generate("system msg", "user msg", temperature=0.1)
+
+    assert "temperature" not in create.call_args.kwargs
 
 
 async def test_generate_skips_thinking_block_before_text():
