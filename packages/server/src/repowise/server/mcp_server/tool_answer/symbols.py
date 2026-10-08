@@ -346,6 +346,42 @@ def lead_with_files(hits: list[dict], paths: list[str]) -> list[dict]:
     return led + [h for h in hits if id(h) not in led_ids]
 
 
+# A file defining a named identifier is a milder signal than a trace frame: it
+# joins just below the top three, and stays put when it already ranks there.
+_NAMED_FILE_SLOT = 3
+
+
+def place_named_files(hits: list[dict], paths: list[str]) -> list[dict]:
+    """``hits`` with each of ``paths`` outside the top three moved (or, when no
+    hit carries it, inserted as its file page) to just below them, in order,
+    scored level with the hit above."""
+    out = list(hits)
+    slot = _NAMED_FILE_SLOT
+    for path in paths:
+        idx = next((i for i, h in enumerate(out) if h.get("target_path") == path), None)
+        if idx is not None and idx < slot:
+            continue
+        hit = out.pop(idx) if idx is not None else _file_page_hit(path, 0.0)
+        pos = min(slot, len(out))
+        if pos:
+            hit["score"] = out[pos - 1].get("score", 0.0)
+        out.insert(pos, hit)
+        slot = pos + 1
+    return out
+
+
+def _file_page_hit(path: str, score: float) -> dict:
+    return {
+        "page_id": f"file_page:{path}",
+        "target_path": path,
+        "title": path,
+        "summary": "",
+        "snippet": "",
+        "page_type": "file_page",
+        "score": score,
+    }
+
+
 def _boost_or_insert_file_hit(
     hits: list[dict], by_path: dict, path: str, score: float
 ) -> dict:
@@ -356,15 +392,7 @@ def _boost_or_insert_file_hit(
     """
     target = by_path.get(path)
     if target is None:
-        target = {
-            "page_id": f"file_page:{path}",
-            "target_path": path,
-            "title": path,
-            "summary": "",
-            "snippet": "",
-            "page_type": "file_page",
-            "score": score,
-        }
+        target = _file_page_hit(path, score)
         hits.insert(0, target)
         by_path[path] = target
     else:

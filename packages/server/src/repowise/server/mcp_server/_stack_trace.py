@@ -115,10 +115,21 @@ def _innermost_first(lines: list[str]) -> list[Frame]:
     return frames
 
 
+# Input bounds: a pasted log can be huge, and only its head carries the trace.
+_MAX_CHARS = 20_000
+_MAX_LINE = 500
+_MAX_USER_FRAMES = 40
+_MAX_VENDORED_FRAMES = 20
+
+
 def parse_trace(text: str) -> list[Frame]:
     """Frames in ``text``, innermost first: the user's frames, then installed
-    dependencies'. Unique per ``(path, line, function)``; runtime frames dropped."""
-    lines = text.splitlines()
+    dependencies'. Unique per ``(path, line, function)``; runtime frames dropped.
+
+    Reads the first ``_MAX_CHARS`` only, blanks lines over ``_MAX_LINE`` before
+    any regex sees them, and keeps at most 40 user and 20 dependency frames.
+    """
+    lines = ["" if len(line) > _MAX_LINE else line for line in text[:_MAX_CHARS].splitlines()]
     user: list[Frame] = []
     vendored: list[Frame] = []
     seen: set[tuple[str, int, str | None]] = set()
@@ -132,7 +143,7 @@ def parse_trace(text: str) -> list[Frame]:
             continue
         seen.add(key)
         (vendored if is_vendored else user).append(Frame(path, frame.line, frame.function, is_vendored))
-    return user + vendored
+    return user[:_MAX_USER_FRAMES] + vendored[:_MAX_VENDORED_FRAMES]
 
 
 def frame_basenames(frames: Iterable[Frame]) -> set[str]:

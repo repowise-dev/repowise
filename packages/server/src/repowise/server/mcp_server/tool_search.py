@@ -63,6 +63,7 @@ from repowise.server.mcp_server._query_shape import (
 from repowise.server.mcp_server._references import path_identity, symbol_identity
 from repowise.server.mcp_server._retrieval_rank import rerank_by_context_coverage
 from repowise.server.mcp_server.tool_search_symbols import (
+    IssueFiles,
     indexed_names,
     issue_files,
     search_paths_single,
@@ -891,12 +892,15 @@ async def _contexts_for(repo: str | None) -> list:
     return [await _resolve_repo_context(repo)]
 
 
-def _lead_candidates(response: dict, named: list[str], limit: int) -> None:
-    """Put ``named`` (``issue_files``) at the head of ``candidates``, capped."""
-    if not named:
+def _lead_candidates(response: dict, issue: IssueFiles | None, limit: int) -> None:
+    """Trace files lead ``candidates``. A named identifier's defining file only
+    fills a free slot after the ranked ones: ranked above them, it displaces
+    better hits on ordinary questions. Capped at ``limit``."""
+    if issue is None or not (issue.traced or issue.named):
         return
     ranked = [c["path"] for c in response.get("candidates") or []]
-    response["candidates"] = [{"path": p} for p in dict.fromkeys(named + ranked)][:limit]
+    paths = list(dict.fromkeys(issue.traced + ranked + issue.named))
+    response["candidates"] = [{"path": p} for p in paths[:limit]]
 
 
 def _tag_repo(items: list[dict], ctx, multi: bool) -> None:
@@ -1165,16 +1169,18 @@ async def search_codebase(
     grep_hint = _grep_hint_for(query, names)
     resolved_mode = _resolve_mode(query, mode, names)
     # Single repo only: a federated list has no one tree to name files in.
-    named: list[str] = []
+    issue: IssueFiles | None = None
     if repo != "all":
-        with contextlib.suppress(Exception):
-            named = await issue_files(await _resolve_repo_context(repo), query, names)
+        try:
+            issue = await issue_files(await _resolve_repo_context(repo), query, names)
+        except Exception:
+            _log.warning("search_codebase: issue file lookup failed", exc_info=True)
 
     if resolved_mode in ("symbol", "path", "hybrid"):
         structured = await _structured_search(
             query, limit, page_type, kind, symbol_kind, repo, resolved_mode, grep_hint, names
         )
-        _lead_candidates(structured, named, limit)
+        _lead_candidates(structured, issue, limit)
         attach_ignored_arguments(structured, ignored)
         return structured
 
@@ -1261,7 +1267,7 @@ async def search_codebase(
     }
     if candidates := file_candidates(ranked, limit=limit):
         response["candidates"] = candidates
-    _lead_candidates(response, named, limit)
+    _lead_candidates(response, issue, limit)
     if grep_hint and not output:
         response["grep_hint"] = grep_hint
     attach_ignored_arguments(response, ignored)

@@ -215,7 +215,6 @@ NAMES = frozenset({"AuthService", "authservice", "login"})
 
 
 class TestIsIssueShaped:
-
     def test_trace(self) -> None:
         assert is_issue_shaped(RUST_OLD_PANIC, set())
 
@@ -225,5 +224,32 @@ class TestIsIssueShaped:
     def test_code_shaped_but_undefined(self) -> None:
         assert not is_issue_shaped("Why does TokenRefreshScheduler stall?", NAMES)
 
+    def test_capitalised_english_word_is_not_an_identifier(self) -> None:
+        names = NAMES | {"Config", "config"}
+        assert not is_issue_shaped("Why does `Config` reject a valid token?", names)
+
+    def test_shares_parsed_frames(self) -> None:
+        assert is_issue_shaped("no trace text here", set(), frames=[Frame("a.py", 1, None)])
+
     def test_plain_question(self) -> None:
         assert not is_issue_shaped("How are tokens refreshed?", NAMES)
+
+
+def test_input_is_bounded() -> None:
+    frame = '  File "/srv/app/x.py", line 1, in f\n'
+    assert parse_trace("x\n" * 15_000 + frame) == []  # past the first 20k chars
+    assert parse_trace(frame.rstrip("\n") + " " * 600) == []
+    many = "".join(f'  File "/srv/app/m{i}.py", line 1, in f\n' for i in range(100))
+    deps = "".join(f'  File "/v/site-packages/d/m{i}.py", line 1, in f\n' for i in range(50))
+    frames = parse_trace(many + deps)
+    assert sum(not f.vendored for f in frames) == 40
+    assert sum(f.vendored for f in frames) == 20
+    assert frames[0].path == "/srv/app/m99.py"  # innermost kept
+
+
+def test_generic_and_plain_words_are_not_looked_up() -> None:
+    from repowise.server.mcp_server.tool_search_symbols import _named_lookups
+
+    names = {"config", "Result", "result", "load_config", "AuthService", "authservice"}
+    text = "app.config is None in load_config; Result comes back empty from AuthService"
+    assert _named_lookups(text, names) == ["load_config", "AuthService"]
