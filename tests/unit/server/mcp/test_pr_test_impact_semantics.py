@@ -88,7 +88,9 @@ async def test_sealed_pr_payload_is_directive_first_typed_and_count_exact(setup_
     )
     await session.flush()
 
-    payload = await get_risk(["src/measured.py"], changed_files=changed, include=["graph"])
+    payload = await get_risk(
+        ["src/measured.py"], changed_files=changed, include=["graph", "tests"]
+    )
     external = json.loads(json.dumps(payload))
     directive = external["directive"]
     full = external["pr_blast_radius"]["test_impact"]

@@ -171,7 +171,6 @@ def _render_target_risk(projected: dict, requested: tuple[str, ...]) -> None:
         console.print(f"\n[bold]Directive[/bold] {escape(str(directive.get('summary', '')))}")
         for label, key in (
             ("May break", "may_break"),
-            ("Tests that may break", "may_break_tests"),
             ("Missing co-changes", "missing_cochanges"),
             ("Files without tests", "missing_tests"),
             ("Tests to run", "tests_to_run"),

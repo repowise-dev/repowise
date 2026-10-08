@@ -152,7 +152,7 @@ async def test_get_risk_stable_file(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_risk_pr_directive_splits_test_breakage(setup_mcp):
-    """PR mode splits test-file fallout out of may_break into may_break_tests (#672)."""
+    """PR mode keeps test files out of may_break; they join tests_to_run (#672)."""
     from repowise.server.mcp_server import get_risk
 
     # Pass changed_files to trigger PR mode + blast-radius directive.
@@ -161,14 +161,12 @@ async def test_get_risk_pr_directive_splits_test_breakage(setup_mcp):
 
     # middleware.py imports service.py → production breakage.
     assert "src/auth/middleware.py" in directive["may_break"]
-    assert "src/auth/middleware.py" not in directive["may_break_tests"]
+    assert "src/auth/middleware.py" not in directive["tests_to_run"]
 
     # test_service.py imports service.py but is is_test=True → segmented out.
-    assert "tests/test_service.py" in directive["may_break_tests"]
+    assert "tests/test_service.py" in directive["tests_to_run"]
     assert "tests/test_service.py" not in directive["may_break"]
-
-    # Summary reflects the test count.
-    assert "test(s) may break" in directive["summary"]
+    assert "may_break_tests" not in directive
 
     # The savings estimator reads these lists by name; a rename that misses it
     # undercounts silently rather than raising.
@@ -257,6 +255,12 @@ async def test_get_risk_pr_directive_surfaces_coverage_backed_tests_to_run(setup
     # The graph also reaches this file, and must not dilute a measured answer.
     assert directive["tests_to_run_basis"] == "measured"
     assert directive["tests_to_run_kind"] == "test_id"
+    assert "2 test(s) to run, measured." in directive["summary"]
+    directive = (
+        await get_risk(
+            ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["tests"]
+        )
+    )["directive"]
     assert "2 measured" in directive["summary"]
     assert {row["basis"] for row in directive["test_recommendations"]} == {
         "measured",
@@ -302,6 +306,7 @@ async def test_get_risk_tests_to_run_ranks_by_files_reached(setup_mcp, session):
     result = await get_risk(
         ["src/auth/service.py"],
         changed_files=["src/auth/service.py", "src/auth/token.py"],
+        include=["tests"],
     )
 
     assert result["directive"]["tests_to_run"] == [
@@ -350,24 +355,28 @@ async def test_get_risk_pr_directive_falls_back_to_the_graph_without_a_map(setup
     assert directive["tests_to_run"] == ["tests/test_service.py"]
     assert directive["tests_to_run_basis"] == "inferred"
     assert directive["tests_to_run_kind"] == "test_file"
-    assert "inferred, not coverage-proven" in directive["summary"]
+    assert "1 test(s) to run, inferred." in directive["summary"]
     assert "coverage-backed test(s) guard the change" not in directive["summary"]
 
 
 @pytest.mark.asyncio
-async def test_get_risk_pr_directive_names_no_tests_when_nothing_reaches(setup_mcp):
-    """Neither map nor graph -> an empty list and a ``none`` basis, not a guess."""
+async def test_get_risk_pr_directive_runs_tests_in_import_reach(setup_mcp):
+    """No map and no call-graph test -> the tests in reverse-import reach, inferred.
+
+    ``tests/test_service.py`` reaches ``models.py`` through ``service.py``. With
+    no coverage the gap list is withheld, not sent empty.
+    """
     from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/db/models.py"], changed_files=["src/db/models.py"])
     directive = result["directive"]
 
-    assert directive["tests_to_run"] == []
-    assert directive["tests_to_run_basis"] == "none"
-    assert directive["tests_to_run_kind"] is None
-    assert directive["missing_tests"] == []
-    assert directive["coverage_analysis"]["status"] == "unavailable"
-    assert "missing_tests is withheld" in directive["summary"]
+    assert directive["tests_to_run"] == ["tests/test_service.py"]
+    assert directive["tests_to_run_basis"] == "inferred"
+    assert directive["tests_to_run_kind"] == "test_file"
+    assert "missing_tests" not in directive
+    assert directive["coverage"]["status"] == "unavailable"
+    assert "test gaps are withheld" in directive["summary"]
 
 
 @pytest.mark.asyncio
@@ -491,6 +500,94 @@ def test_build_pr_directive_caps_tests_to_update_at_three():
     assert directive["tests_to_update_omitted"] == 2
 
 
+def _directive(blast, tests=(), **kwargs):
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server.tool_risk import directives
+
+    response: dict = {"targets": {}}
+    directives._build_pr_directive(
+        response, blast, ["src/core.py"], None, OmissionCollector("get_risk"), [],
+        set(tests), "repo", **kwargs,
+    )
+    return response["directive"]
+
+
+def test_pr_directive_folds_reached_tests_into_tests_to_run():
+    blast = {
+        "transitive_affected": [{"path": "tests/test_api.py"}, {"path": "src/api.py"}],
+        "guarding_tests": {"tests_to_run": ["tests/test_core.py"], "basis": "inferred"},
+    }
+    directive = _directive(blast, {"tests/test_api.py", "tests/test_core.py"})
+    assert directive["tests_to_run"] == ["tests/test_core.py", "tests/test_api.py"]
+    assert directive["tests_to_run_basis"] == "inferred"
+    assert directive["may_break"] == ["src/api.py"]
+    assert "may_break_tests" not in directive
+
+
+def test_pr_directive_keeps_a_measured_run_list_unmixed():
+    blast = {
+        "transitive_affected": [{"path": "tests/test_api.py"}],
+        "guarding_tests": {"tests_to_run": ["tests/test_core.py::test_a"], "basis": "measured"},
+    }
+    directive = _directive(blast, {"tests/test_api.py"})
+    assert directive["tests_to_run"] == ["tests/test_core.py::test_a"]
+    assert directive["tests_to_run_basis"] == "measured"
+
+
+def test_pr_directive_serves_test_recommendations_on_request():
+    row = {"test_id": "tests/test_core.py", "basis": "inferred", "evidence": []}
+    blast = {"test_impact": {"recommendations": [row]}}
+    assert not any(k.startswith("test_recommendations") for k in _directive(blast))
+    directive = _directive(blast, include_tests=True)
+    assert directive["test_recommendations"][0]["test_id"] == "tests/test_core.py"
+    assert directive["test_recommendations_total"] == 1
+
+
+def test_pr_directive_without_coverage_drops_the_empty_families():
+    directive = _directive({"test_impact": {"coverage": {"status": "unavailable"}}})
+    assert directive["coverage"] == {
+        "status": "unavailable",
+        "reason": "no_per_test_coverage_map",
+    }
+    assert directive["tests_to_run"] == []
+    assert directive["tests_to_run_basis"] == "none"
+    assert directive["tests_to_run_kind"] is None
+    gone = (
+        "missing_tests",
+        "coverage_analysis",
+        "test_analysis",
+        "test_inference_analysis",
+        "will_break_consumers",
+        "missing_cross_repo_cochanges",
+        "cross_repo_relationship_analysis",
+        "breaking_changes",
+        "conformance_violations",
+        "dependency_cycles",
+    )
+    assert not [k for k in directive if k.startswith(gone)]
+
+
+def test_pr_directive_with_coverage_keeps_the_full_blocks():
+    coverage = {"status": "available", "map_present": True, "freshness": {"status": "fresh"}}
+    blast = {"test_impact": {"coverage": coverage}, "test_gaps": ["src/core.py"]}
+    directive = _directive(blast)
+    assert "coverage" not in directive
+    assert directive["coverage_analysis"] == coverage
+    assert directive["missing_tests"] == ["src/core.py"]
+    assert {"test_analysis", "test_inference_analysis"} <= directive.keys()
+
+
+@pytest.mark.asyncio
+async def test_get_risk_include_tests_returns_the_typed_rows(setup_mcp):
+    from repowise.server.mcp_server import get_risk
+
+    files = ["src/auth/service.py"]
+    plain = (await get_risk(files, changed_files=files))["directive"]
+    typed = (await get_risk(files, changed_files=files, include=["tests"]))["directive"]
+    assert "test_recommendations" not in plain
+    assert typed["test_recommendations"]
+
+
 @pytest.mark.asyncio
 async def test_get_risk_pr_payload_serializes_directive_first(setup_mcp):
     """The exact external JSON order is actionable before any dossier."""
@@ -510,9 +607,11 @@ async def test_get_risk_pr_payload_serializes_directive_first(setup_mcp):
 async def test_get_risk_test_compatibility_projection_cannot_contradict_typed_rows(setup_mcp):
     from repowise.server.mcp_server import get_risk
 
-    directive = (await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"]))[
-        "directive"
-    ]
+    directive = (
+        await get_risk(
+            ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["tests"]
+        )
+    )["directive"]
     recommendations = directive["test_recommendations"]
 
     assert directive["tests_to_run"] == [row["test_id"] for row in recommendations]
@@ -667,7 +766,7 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
     result = await get_risk(["src/auth/service.py"], include=["graph", "nonsense"])
     assert "impact_surface" in result["targets"]["src/auth/service.py"]
     assert result["ignored_arguments"] == [
-        {"argument": "include", "values": ["nonsense"], "valid": ["churn", "graph", "scales"]}
+        {"argument": "include", "values": ["nonsense"], "valid": ["churn", "graph", "scales", "tests"]}
     ]
 
 
@@ -727,7 +826,9 @@ async def test_get_risk_directive_points_at_the_full_run_list_when_capped(setup_
     )
     await session.flush()
 
-    result = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
+    result = await get_risk(
+        ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["tests"]
+    )
     directive = result["directive"]
 
     assert len(directive["tests_to_run"]) == _TESTS_TO_RUN_LIMIT

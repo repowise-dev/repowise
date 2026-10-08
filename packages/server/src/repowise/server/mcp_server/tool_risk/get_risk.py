@@ -81,7 +81,10 @@ _TARGET_CARD_INCLUDES: dict[str, tuple[str, ...]] = {
 }
 _BLAST_INCLUDES: dict[str, tuple[str, ...]] = {"graph": ("direct_risks",)}
 #: Per-field units and calibration. Identical on every call, so it is opt-in.
-_INCLUDE_BLOCKS = frozenset(_TARGET_CARD_INCLUDES) | frozenset(_BLAST_INCLUDES) | {"scales"}
+#: ``tests`` adds the PR directive's typed ``test_recommendations`` rows.
+_INCLUDE_BLOCKS = (
+    frozenset(_TARGET_CARD_INCLUDES) | frozenset(_BLAST_INCLUDES) | {"scales", "tests"}
+)
 
 
 def _drop_opt_in_blocks(response: dict, include: set[str]) -> None:
@@ -308,6 +311,7 @@ async def _lead_with_pr_directive(
     exclude_spec: Any,
     collector: OmissionCollector,
     full_scale: bool,
+    include_tests: bool,
 ) -> dict:
     governance_risk = await _governance_directive(ctx, changed_files)
     _build_pr_directive(
@@ -320,6 +324,7 @@ async def _lead_with_pr_directive(
         evidence.test_paths,
         ctx.alias,
         full_scale=full_scale,
+        include_tests=include_tests,
     )
     # Insertion order is the serialized order, and PR mode leads with the directive.
     return {"directive": response.pop("directive"), **response}
@@ -359,9 +364,9 @@ async def get_risk(
     runtime breakage. The response also includes security
     findings. Pass changed_files for PR mode: the response leads with a
     directive block (may_break, missing_cochanges, missing_tests,
-    tests_to_run, tests_to_update) — read it first. Each test_recommendations row carries a
-    measured or inferred basis, and coverage availability is explicit. To
-    score a commit or ``base..head`` range instead, use ``get_change_risk``.
+    tests_to_run, tests_to_update) — read it first. ``tests_to_run_basis`` says
+    measured or inferred. To score a commit or ``base..head`` range instead,
+    use ``get_change_risk``.
 
     In PR mode ``structural_impact_score`` is an uncalibrated 0-10 structural
     heuristic, never a runtime-breakage probability; ``overall_risk_score`` is
@@ -376,8 +381,8 @@ async def get_risk(
         targets: file paths to assess; defaults to changed_files.
         repo: usually omitted.
         changed_files: PR-changed files for blast-radius mode.
-        include: opt-in blocks - "graph", "churn", "scales" (units and
-            calibration for every scalar; identical per call, so ask once).
+        include: opt-in blocks - "graph", "churn", "tests" (typed test
+            rows), "scales" (units and calibration; identical per call).
     """
     if repo == "all":
         return _unsupported_repo_all("get_risk")
@@ -413,6 +418,7 @@ async def get_risk(
             exclude_spec,
             collector,
             full_scale="scales" in include_set,
+            include_tests="tests" in include_set,
         )
     elif len(targets) > 1:
         # Ambient hotspots orient a multi-file request; beside one named file they are noise.

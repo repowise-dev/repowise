@@ -232,17 +232,19 @@ with a different subsystem's `test_engine.py` by basename alone.
 
 ## From an agent
 
-**`get_risk(changed_files=[...])`** leads with a `directive` whose
-`test_recommendations` names up to ten tests for the changed files. Each row
-keeps its `basis`:
+**`get_risk(changed_files=[...], include=["tests"])`** leads with a `directive`
+whose `test_recommendations` names up to ten tests for the changed files. Each
+row keeps its `basis`:
 
 | `basis` | Holds | Means |
 |---|---|---|
 | `measured` | A test node id | The per-test map shows the test covering a changed file |
 | `inferred` | A test file path | The graph shows the test reaching the change; a candidate, not proof |
 
-`tests_to_run` is the older flat id list, measured first. `coverage_analysis`
-says whether coverage is available, partial, degraded or stale.
+`tests_to_run`, sent without the include, is the flat list, measured first,
+with `tests_to_run_basis`. Without a coverage map the directive carries
+`coverage: {status, reason}`; with one, `coverage_analysis` says whether
+coverage is available, partial, degraded or stale.
 
 **`get_change_risk(revspec=...)`** returns `impacted_tests`, computed from the
 changed *lines*, so it is narrower:

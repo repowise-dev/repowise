@@ -140,14 +140,15 @@ files reach, and what is missing from it. The response opens with a
 | Field | Meaning |
 |---|---|
 | `may_break` | Production files in structural reverse-import reach of the diff. Candidates for review, not proven breakage |
-| `may_break_tests` | Test files reached the same way, listed separately |
 | `missing_cochanges` | Files that historically change with these but are not in the diff |
-| `missing_tests`, `test_recommendations`, `tests_to_run` | Test gaps and which tests to run; each recommendation says whether it is `measured` (coverage) or `inferred` (graph reach) |
+| `tests_to_run`, `tests_to_run_basis` | Which tests to run, `measured` (coverage) or `inferred` (graph reach). `include=["tests"]` adds the typed `test_recommendations` rows |
+| `missing_tests` | Changed files with a test gap; present only when coverage can back it |
+| `coverage` | `{status, reason}` when there is no per-test coverage map |
 | `tests_to_update` | Up to three test files the change will probably need edited, with why: `name_pair`, `imports` or `co_change`; empty when none qualify |
 | `next_calls` | What to call next |
 | `summary` | One sentence over all of the above |
 
-In a workspace the directive also carries cross-repo fields:
+In a workspace, or when non-empty, the directive also carries cross-repo fields:
 `will_break_consumers` (repos that structurally depend on this one; structural
 reach, not a runtime claim), `missing_cross_repo_cochanges`,
 `breaking_changes` (incompatible provider contract changes since the last

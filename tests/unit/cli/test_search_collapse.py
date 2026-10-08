@@ -171,7 +171,6 @@ PR_RISK_PAYLOAD = {
     "targets": RISK_PAYLOAD["targets"],
     "directive": {
         "may_break": ["packages/core/src/repowise/core/pipeline/orchestrator.py"],
-        "may_break_tests": ["tests/unit/persistence/test_models.py"],
         "missing_cochanges": ["packages/core/src/repowise/core/persistence/models.py"],
         "missing_tests": ["packages/core/src/repowise/core/pipeline/persist.py"],
         "tests_to_run": ["tests/unit/pipeline/test_persist.py::test_tombstone"],

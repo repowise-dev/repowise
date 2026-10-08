@@ -402,14 +402,13 @@ async def test_risk_real_adversarial_wire_recovers_each_directive_lane(
     monkeypatch.setattr(PRBlastRadiusAnalyzer, "analyze_files", sealed_analyze)
     changed = [f"src/gap_{i}.py" for i in range(6)]
     result = await tool_middleware(get_risk)(
-        ["src/auth/service.py"], changed_files=changed
+        ["src/auth/service.py"], changed_files=changed, include=["tests"]
     )
 
-    _assert_wire(result, "directive", DEFAULT_RESPONSE_CHARS)
+    _assert_wire(result, "directive", EXPANDED_RESPONSE_CHARS)
     directive = result["directive"]
     expected = {
         "may_break": 9,
-        "may_break_tests": 8,
         "missing_cochanges": 8,
         "missing_tests": 6,
         "tests_to_run": 14,
