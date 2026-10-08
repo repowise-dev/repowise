@@ -58,12 +58,12 @@ export function useZoomMap(
 }
 
 export function useGraph(repoId: string | null, limit?: number) {
-  const { data, error, isLoading } = useSWR<GraphExportResponse>(
+  const { data, error, isLoading, mutate } = useSWR<GraphExportResponse>(
     repoId ? `graph:${repoId}:${limit ?? "default"}` : null,
     () => getGraph(repoId!, limit),
     SWR_OPTS,
   );
-  return { graph: data, error, isLoading };
+  return { graph: data, error, isLoading, mutate };
 }
 
 /**
