@@ -25,6 +25,7 @@ Optional ``include`` parameter widens the response:
                             two appear only when non-empty, and are capped.
                             A dismissed record is in none of them.
   - include=["skeleton"]  → body-elided file rendering (signatures + top-PageRank bodies)
+  - include=["skeleton+"] → all non-function code kept, every function/method body elided
   - include=["health"]    → code-health scores and biomarkers for the target
   - include=["doc_drift"] → documents that name this file, and their drift
   - include=["symbols"]   → every symbol in a file card, not the ranked top 15
@@ -82,6 +83,7 @@ _INCLUDE_BLOCKS = frozenset(
         "community",
         "decisions",
         "skeleton",
+        "skeleton+",
         "health",
         "doc_drift",
         "symbols",
@@ -129,7 +131,7 @@ async def get_context(
     Args:
         targets: file paths, module paths, or "path::Symbol" ids.
         include: opt-in blocks: full_doc | ownership | last_change | callers
-            | callees | metrics | community | decisions | skeleton | health
+            | callees | metrics | community | decisions | skeleton | skeleton+ | health
             | doc_drift (documents naming this file) | symbols (all of a
             file's symbols; the default lists the top 15, classes and
             functions first).

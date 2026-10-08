@@ -19,6 +19,7 @@ _INCLUDE_BLOCKS = (
     "decisions",
     "health",
     "skeleton",
+    "skeleton+",
     "doc_drift",
     "symbols",
 )

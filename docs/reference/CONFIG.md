@@ -317,6 +317,7 @@ means every key below is off.
 ```yaml
 hooks:
   read_skeleton: false           # serve large indexed files as skeletons
+  read_skeleton_mode: smart      # smart, or plus to keep all non-function code
   read_reread: false             # serve unchanged re-reads as a pointer
   search_digest: false           # serve multi-file grep floods as a digest
   coverage_reingest: false       # re-ingest coverage after an agent's full test run
@@ -348,6 +349,10 @@ hooks:
   markers carrying 1-indexed ranges, so any elided span can be pulled back with
   a ranged Read — and reading the file a second time returns it whole.
   Savings land in `repowise saved` under the `read_skeleton` filter.
+- `read_skeleton_mode: plus` keeps every line outside a function or method
+  body (imports, constants, class fields, decorators, comments) and elides
+  only the bodies. Default `smart`. `REPOWISE_HOOK_READ_SKELETON_MODE=plus`
+  overrides the file for one session.
 - **Written by the rewrite-hook question in `repowise init`.** Saying yes there
   turns this on too; `--no-editor-setup` and `--no-distill-hook` turn it off
   with everything else. There is no separate prompt, because that question

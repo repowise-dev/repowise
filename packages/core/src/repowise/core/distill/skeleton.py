@@ -18,6 +18,11 @@ Two modes:
   per-symbol line budget proportional to importance, all under a total token
   budget. A hotspot file gets a larger budget — high-churn code is where
   body-level context pays off.
+- ``"plus"`` — every line outside a function or method body kept verbatim
+  (imports, constants, class fields, decorators, comments), every signature
+  kept, and each function/method body elided to one marker carrying its line
+  range. Classes are containers: their methods' bodies are elided, the rest
+  of the class stays.
 
 This module is pure: it sees source text and symbol records, never a
 database. Callers (MCP tools, hooks, tests) fetch the rows and pass them in.
@@ -78,6 +83,13 @@ _DECOR_RE = re.compile(r"^\s*(?:#|//)\s*[-=~*#_]{4,}\s*$")
 
 _DOCSTRING_DELIMS = ('"""', "'''")
 
+#: Symbol kinds whose body plus mode elides; every other kind is kept whole.
+_CALLABLE_KINDS = frozenset({"function", "method"})
+
+#: A body's last line that only closes it (``}``, ``});``, ``end``) stays in
+#: plus mode, so the elision sits inside a well-formed block.
+_CLOSER_RE = re.compile(r"\s*(?:[})\];,]+|end)\s*")
+
 
 @dataclass(frozen=True)
 class SkeletonSymbol:
@@ -101,7 +113,7 @@ class SkeletonResult:
     """Outcome of one skeletonization."""
 
     text: str
-    mode: str  # "smart" | "signatures" | "raw"
+    mode: str  # "smart" | "signatures" | "plus" | "raw"
     full_tokens: int
     skeleton_tokens: int
     symbol_count: int
@@ -141,6 +153,18 @@ def build_skeleton(
             full_tokens=full_tokens,
             skeleton_tokens=full_tokens,
             symbol_count=0,
+        )
+
+    if mode == "plus":
+        keep = [True] * total
+        _elide_callable_bodies(lines, usable, keep)
+        text = _render(lines, keep)
+        return SkeletonResult(
+            text=text,
+            mode="plus",
+            full_tokens=full_tokens,
+            skeleton_tokens=estimate_tokens(text),
+            symbol_count=len(usable),
         )
 
     keep = [False] * total
@@ -264,12 +288,33 @@ def _signature_end(lines: list[str], start: int, end: int) -> int:
             continue
         if stripped.endswith((":", "{", ";", "=>")):
             return i
+        if stripped.startswith(("@", "#[")):
+            continue  # annotation/attribute line a symbol's bounds may start on
         # Signature closed without a body opener — check for an Allman brace.
         j = i + 1
         if j <= end and lines[j].strip().startswith("{"):
             return j
         return i
     return start
+
+
+def _elide_callable_bodies(
+    lines: list[str], symbols: list[SkeletonSymbol], keep: list[bool]
+) -> None:
+    """Plus mode: unmark each outermost function/method body below its signature.
+
+    A callable nested in an elided body (a closure) is part of that body.
+    """
+    covered_until = -1
+    for sym in symbols:
+        start, end = sym.start_line - 1, sym.end_line - 1
+        if sym.kind not in _CALLABLE_KINDS or start <= covered_until:
+            continue
+        covered_until = end
+        body_start = _signature_end(lines, start, end) + 1
+        body_end = end - 1 if end >= body_start and _CLOSER_RE.fullmatch(lines[end]) else end
+        for i in range(body_start, body_end + 1):
+            keep[i] = False
 
 
 def _docstring_lines(lines: list[str], start: int, end: int) -> list[int]:

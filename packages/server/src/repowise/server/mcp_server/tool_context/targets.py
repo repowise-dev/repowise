@@ -695,7 +695,8 @@ async def _resolve_one_target(
                 "section": parent.section_number,
             }
 
-    want_skeleton = bool(include and "skeleton" in include)
+    skeleton_plus = bool(include and "skeleton+" in include)
+    want_skeleton = skeleton_plus or bool(include and "skeleton" in include)
     want_all_symbols = bool(include and "symbols" in include)
 
     # --- Docs ---
@@ -1294,7 +1295,13 @@ async def _resolve_one_target(
     # --- Skeleton (distill) — opt-in only, see the module note ---
     if want_skeleton:
         await _resolve_skeleton(
-            session, repository, target, target_type, result_data, repo_root=repo_root
+            session,
+            repository,
+            target,
+            target_type,
+            result_data,
+            repo_root=repo_root,
+            mode="plus" if skeleton_plus else "smart",
         )
 
     return result_data

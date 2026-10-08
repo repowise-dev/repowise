@@ -905,12 +905,15 @@ async def _resolve_skeleton(
     result_data: dict[str, Any],
     *,
     repo_root: Any = None,
+    mode: str = "smart",
 ) -> None:
     """Resolve ``include=["skeleton"]`` — a body-elided rendering of one file.
 
     Slices the on-disk source on the line bounds persisted at index time
     (zero parsing), keeping every signature and the bodies of the
-    highest-PageRank symbols under a token budget. File targets only —
+    highest-PageRank symbols under a token budget. ``include=["skeleton+"]``
+    passes ``mode="plus"``: all non-function code kept, every function and
+    method body elided. File targets only —
     a symbol's "skeleton" is just its signature, which the triage card
     already carries.
     """
@@ -991,7 +994,7 @@ async def _resolve_skeleton(
     result = build_skeleton(
         source,
         symbols,
-        mode="smart",
+        mode=mode,
         hotspot=bool(result_data.get("hotspot")),
     )
     result_data["skeleton"] = {

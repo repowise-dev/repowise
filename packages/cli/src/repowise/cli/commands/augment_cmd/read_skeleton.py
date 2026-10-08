@@ -64,6 +64,10 @@ _SAVINGS_FILTER = "read_skeleton"
 
 CONFIG_FLAG = "read_skeleton"
 
+#: ``hooks.read_skeleton_mode: plus`` serves the plus view (all non-function
+#: code kept, bodies elided); anything else, or absent, serves smart.
+MODE_KEY = "read_skeleton_mode"
+
 
 def enabled(repo_path: Path) -> bool:
     """True when this repo opted into read replacement. Fails closed.
@@ -75,6 +79,32 @@ def enabled(repo_path: Path) -> bool:
     from ._shared import hook_flag_enabled
 
     return hook_flag_enabled(repo_path, CONFIG_FLAG)
+
+
+def configured_mode(repo_path: Path) -> str:
+    """``"plus"`` when ``hooks.read_skeleton_mode`` says so, else ``"smart"``.
+
+    ``REPOWISE_HOOK_READ_SKELETON_MODE`` overrides the file for one session.
+    Any read or parse failure keeps the default.
+    """
+    import os
+
+    value = os.environ.get(f"REPOWISE_HOOK_{MODE_KEY.upper()}")
+    if value is None:
+        try:
+            text = (repo_path / ".repowise" / "config.yaml").read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            return "smart"
+        if MODE_KEY not in text:
+            return "smart"
+        try:
+            import yaml
+
+            hooks = (yaml.safe_load(text) or {}).get("hooks")
+            value = hooks.get(MODE_KEY) if isinstance(hooks, dict) else None
+        except Exception:
+            return "smart"
+    return "plus" if str(value).strip().lower() == "plus" else "smart"
 
 
 def is_unbounded_read(tool_input: dict) -> bool:
@@ -119,7 +149,7 @@ def skeleton_replacement(
     # each signature. Its body-budget machinery is inert here on purpose: no
     # PageRank is persisted on wiki_symbols, so every importance is 0.0 and no
     # body is ever kept. That is the intended output — a map, not an excerpt.
-    result = build_skeleton(source, symbols, mode="smart")
+    result = build_skeleton(source, symbols, mode=configured_mode(repo_path))
     if result.mode == "raw":  # no usable bounds — the index cannot help here
         return None
     if result.skeleton_tokens > result.full_tokens * min_ratio_gain:

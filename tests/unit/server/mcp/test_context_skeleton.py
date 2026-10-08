@@ -236,3 +236,25 @@ async def test_default_card_survives_a_missing_source_file(setup_mcp, tmp_path, 
     card = result["targets"]["src/auth/service.py"]
     assert "skeleton" not in card
     assert card["docs"]["symbols"]
+
+
+@pytest.mark.asyncio
+async def test_skeleton_plus_keeps_class_code_and_elides_method_bodies(
+    setup_mcp, tmp_path, monkeypatch
+):
+    from repowise.server.mcp_server import _state, get_context
+
+    _write_source(tmp_path)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+
+    result = await get_context(["src/auth/service.py"], include=["skeleton+"])
+    assert "ignored_arguments" not in result
+    sk = result["targets"]["src/auth/service.py"]["skeleton"]
+    assert sk["mode"] == "plus"
+    text = sk["text"]
+    # Class-level code outside the method stays, the method body does not.
+    assert "    setup_15 = 15" in text
+    assert "    tail_90 = 90" in text
+    assert "async def login" in text
+    assert "step_30" not in text
+    assert "        ... 20 lines (21-40)" in text
