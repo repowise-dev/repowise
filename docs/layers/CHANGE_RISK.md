@@ -143,6 +143,7 @@ files reach, and what is missing from it. The response opens with a
 | `may_break_tests` | Test files reached the same way, listed separately |
 | `missing_cochanges` | Files that historically change with these but are not in the diff |
 | `missing_tests`, `test_recommendations`, `tests_to_run` | Test gaps and which tests to run; each recommendation says whether it is `measured` (coverage) or `inferred` (graph reach) |
+| `tests_to_update` | Up to three test files the change will probably need edited, with why: `name_pair`, `imports` or `co_change` |
 | `next_calls` | What to call next |
 | `summary` | One sentence over all of the above |
 

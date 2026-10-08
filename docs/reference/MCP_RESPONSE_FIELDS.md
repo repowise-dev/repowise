@@ -224,6 +224,7 @@ Opt-in blocks: `graph` adds typed `dependents` (direct versus transitive), `cons
 | `missing_cochanges` | Historical co-change partners absent from the change |
 | `test_recommendations` | Typed rows, each with a `basis`: `measured` (the per-test coverage map found the test) or `inferred` (structural reach, not coverage proof) |
 | `tests_to_run`, `tests_to_run_basis` | The test ids or files to run, and whether the list is `measured`, `inferred` or `none`. An empty list with unavailable coverage never means no tests are needed |
+| `tests_to_update` | Up to three test files the change will probably need edited, each `{path, reason}` with `reason` `name_pair` (named for a changed file), `imports` (imports one directly) or `co_change` (changes with one in git history), in that order. Tests to edit, not to run: a file can appear in both lists. Absent when none qualify |
 | `missing_tests`, `files_without_measured_tests` | Changed files with no measured test |
 | `coverage_analysis`, `test_inference_analysis` | Whether each evidence source was available, stale, partial or degraded |
 | `structural_impact_score` | Uncalibrated 0 to 10 structural heuristic: `localized` below 4, `moderate` 4 to below 7, `broad` 7 and up. Not a breakage probability. `overall_risk_score` is a deprecated alias |

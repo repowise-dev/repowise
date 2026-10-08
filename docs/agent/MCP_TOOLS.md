@@ -230,7 +230,7 @@ What history says about touching a file: hotspot score, bug-fix record, owners, 
 | `include` | list[string] | none | `graph` (typed dependents, consumers, cross-repo links), `churn`, `scales` (units and calibration, identical per call) |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
-**Key return fields:** per file: `hotspot_score` (0 to 1), `health_score` (0 to 10), `dependents_count`, `co_change_partners`, owners, test gaps, `security_signals`. In PR mode, `directive` with `may_break`, `may_break_tests`, `missing_cochanges`, `test_recommendations` (each `measured` or `inferred`), `tests_to_run`, `tests_to_run_basis`, `next_calls`, and the 0 to 10 `structural_impact_score`. A target naming no indexed file returns `resolved: false` with a reason, never zeroed counts.
+**Key return fields:** per file: `hotspot_score` (0 to 1), `health_score` (0 to 10), `dependents_count`, `co_change_partners`, owners, test gaps, `security_signals`. In PR mode, `directive` with `may_break`, `may_break_tests`, `missing_cochanges`, `test_recommendations` (each `measured` or `inferred`), `tests_to_run`, `tests_to_run_basis`, `tests_to_update` (test files to edit, each with a `name_pair`, `imports` or `co_change` reason), `next_calls`, and the 0 to 10 `structural_impact_score`. A target naming no indexed file returns `resolved: false` with a reason, never zeroed counts.
 
 Dependent counts are a floor over the indexed graph, and structural reach is not proof of runtime breakage. `structural_impact_score` is an uncalibrated heuristic, not a probability.
 

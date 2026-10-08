@@ -371,6 +371,101 @@ async def test_get_risk_pr_directive_names_no_tests_when_nothing_reaches(setup_m
 
 
 @pytest.mark.asyncio
+async def test_get_risk_pr_directive_lists_tests_to_update(setup_mcp):
+    """The test named for the change leads the edit-list, beside the run-list."""
+    from repowise.server.mcp_server import get_risk
+
+    directive = (await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"]))[
+        "directive"
+    ]
+    assert directive["tests_to_update"] == [
+        {"path": "tests/test_service.py", "reason": "name_pair"}
+    ]
+    assert "tests/test_service.py" in directive["tests_to_run"]
+
+    untested = (await get_risk(["src/db/models.py"], changed_files=["src/db/models.py"]))[
+        "directive"
+    ]
+    assert "tests_to_update" not in untested
+
+
+def _update_list(changed, tests, blast):
+    from repowise.server.mcp_server.tool_risk.directives import _tests_to_update
+
+    return [(r["path"], r["reason"]) for r in _tests_to_update(changed, set(tests), blast, None)]
+
+
+def test_tests_to_update_name_pair():
+    assert _update_list(
+        ["src/Foo.java"], {"src/test/FooTest.java", "src/test/BarTest.java"}, {}
+    ) == [("src/test/FooTest.java", "name_pair")]
+
+
+def test_tests_to_update_imports_only_direct_importers():
+    blast = {
+        "transitive_affected": [
+            {"path": "tests/test_api.py", "direct": True},
+            {"path": "tests/test_far.py", "direct": False},
+            {"path": "src/api.py", "direct": True},
+        ]
+    }
+    assert _update_list(["src/core.py"], {"tests/test_api.py", "tests/test_far.py"}, blast) == [
+        ("tests/test_api.py", "imports")
+    ]
+
+
+def test_tests_to_update_co_change_skips_production_partners():
+    blast = {
+        "cochange_warnings": [
+            {"changed": "src/core.py", "missing_partner": "src/other.py"},
+            {"changed": "src/core.py", "missing_partner": "tests/test_misc.py"},
+        ]
+    }
+    assert _update_list(["src/core.py"], {"tests/test_misc.py"}, blast) == [
+        ("tests/test_misc.py", "co_change")
+    ]
+
+
+def test_tests_to_update_orders_by_rule_and_keeps_the_first_reason():
+    tests = {"tests/test_core.py", "tests/test_api.py", "tests/test_misc.py"}
+    blast = {
+        "transitive_affected": [
+            {"path": "tests/test_api.py", "direct": True},
+            {"path": "tests/test_core.py", "direct": True},
+        ],
+        "cochange_warnings": [
+            {"missing_partner": "tests/test_misc.py"},
+            {"missing_partner": "tests/test_api.py"},
+        ],
+    }
+    assert _update_list(["src/core.py"], tests, blast) == [
+        ("tests/test_core.py", "name_pair"),
+        ("tests/test_api.py", "imports"),
+        ("tests/test_misc.py", "co_change"),
+    ]
+
+
+def test_tests_to_update_leaves_out_tests_already_in_the_change():
+    assert _update_list(["src/core.py", "tests/test_core.py"], {"tests/test_core.py"}, {}) == []
+
+
+def test_build_pr_directive_caps_tests_to_update_at_three():
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server.tool_risk import directives
+
+    tests = {f"tests/test_m{i}.py" for i in range(5)}
+    blast = {"cochange_warnings": [{"missing_partner": t} for t in sorted(tests)]}
+    response: dict = {"targets": {}}
+    directives._build_pr_directive(
+        response, blast, ["src/core.py"], None, OmissionCollector("get_risk"), [], tests, "repo"
+    )
+    directive = response["directive"]
+    assert [r["path"] for r in directive["tests_to_update"]] == sorted(tests)[:3]
+    assert directive["tests_to_update_total"] == 5
+    assert directive["tests_to_update_omitted"] == 2
+
+
+@pytest.mark.asyncio
 async def test_get_risk_pr_payload_serializes_directive_first(setup_mcp):
     """The exact external JSON order is actionable before any dossier."""
     import json

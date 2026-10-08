@@ -359,7 +359,7 @@ async def get_risk(
     runtime breakage. The response also includes security
     findings. Pass changed_files for PR mode: the response leads with a
     directive block (may_break, missing_cochanges, missing_tests,
-    tests_to_run) — read it first. Each test_recommendations row carries a
+    tests_to_run, tests_to_update) — read it first. Each test_recommendations row carries a
     measured or inferred basis, and coverage availability is explicit. To
     score a commit or ``base..head`` range instead, use ``get_change_risk``.
 
