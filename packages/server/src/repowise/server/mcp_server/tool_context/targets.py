@@ -53,6 +53,7 @@ from repowise.server.mcp_server._helpers import (
     read_repo_file_text,
 )
 from repowise.server.mcp_server._index_state import index_state_key
+from repowise.server.mcp_server._meta import uncommitted_targets
 from repowise.server.mcp_server._references import path_identity, symbol_identity
 from repowise.server.mcp_server._symbol_lookup import resolve_symbol_rows, symbol_id_variants
 from repowise.server.mcp_server.tool_context.enrichment import (
@@ -1231,6 +1232,10 @@ async def _resolve_one_target(
             freshness["confidence_score"] = None
             freshness["freshness_status"] = None
             freshness["is_stale"] = None
+        if file_path_for_git and uncommitted_targets(
+            getattr(repository, "local_path", None), [file_path_for_git]
+        ):
+            freshness["working_tree"] = "modified"
         result_data["freshness"] = freshness
 
     # --- KG layer + tour context (Phase 9) ---

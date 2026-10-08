@@ -29,7 +29,8 @@ Routine responses carry a lean envelope. `get_overview`, called once per session
 | `indexed_commit` | When a repository is resolved | Short SHA the index was built from |
 | `live_head` | When `.git/HEAD` is readable | Short SHA of the current checkout; equal to `indexed_commit` when current |
 | `index_behind` | When the live-versus-indexed comparison ran | `true` if HEAD moved, `false` if it matches. Absent means the comparison could not run |
-| `stale_warning` | Only on a real signal | HEAD moved and the move changed files this response serves, or the index is very old and git is unreachable. Two commits with identical trees set `index_behind` with no warning |
+| `stale_warning` | Only on a real signal | HEAD moved and the move changed files this response serves, a file this response serves has uncommitted edits the index has not seen, or the index is very old and git is unreachable. Two commits with identical trees set `index_behind` with no warning |
+| `working_tree_dirty` | Only when above zero | How many served targets have uncommitted edits no `repowise update --working-tree` has indexed. Source reads are live; graph and index facts for those files predate the edit. A dirty tree elsewhere never sets it |
 | `index_scope` | When the index records it and its `status` is not `complete` (whole object on `get_overview`, or everywhere with `REPOWISE_MCP_INDEX_SCOPE=full`) | Compact description of how the index was built: run mode, provenance, git tier, whether it is whole |
 | `embedder_degraded` | When an embedder is resolved | `true` or `false` |
 | `embedder`, `embedder_warning` | Only when the embedder fell back to a mock or degraded mode, or the semantic index on disk could not be opened | Which embedder, and why |

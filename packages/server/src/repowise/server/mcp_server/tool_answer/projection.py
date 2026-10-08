@@ -545,6 +545,7 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
         "live_head",
         "index_behind",
         "stale_warning",
+        "working_tree_dirty",
         "scope_hint",
     ):
         meta.pop(key, None)
