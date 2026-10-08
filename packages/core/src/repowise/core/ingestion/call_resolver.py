@@ -296,6 +296,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # {representative: ((member id, (fewest, most) arguments), ...)}.
         self._overload_rep: dict[str, str] = {}
         self._overload_members: dict[str, tuple[tuple[str, tuple[int, int | None]], ...]] = {}
+        # Build variants (``f#cfg(unix)``, ``f#cfg(not(unix))``) are not chosen by
+        # arguments: a call means every one, so an edge fans out to each.
+        self._variant_siblings: dict[str, tuple[str, ...]] = {}
         self._symbols_by_id = {
             symbol.id: symbol for parsed in parsed_files.values() for symbol in parsed.symbols
         }
@@ -587,14 +590,17 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     def _index_overload_sets(self, parsed: ParsedFile) -> dict[str, str]:
         """Record *parsed*'s overload sets; ``{member id: representative}``.
 
-        Only parameter-count members are narrowed: a build-variant member
-        (``#cfg(...)``) is not chosen by its arguments.
+        Only parameter-count members are narrowed by arguments. A build-variant
+        member (``#cfg(...)``) is indexed under its first variant and fanned out
+        in ``resolve_file``, never narrowed.
         """
         members: dict[str, list[Symbol]] = defaultdict(list)
+        variants: dict[str, list[Symbol]] = defaultdict(list)
         for sym in parsed.symbols:
             base, payload = split_symbol_id(sym.id)
-            if payload is not None and payload.isdigit():
-                members[base].append(sym)
+            if payload is None:
+                continue
+            (members if payload.isdigit() else variants)[base].append(sym)
         representatives: dict[str, str] = {}
         for overloads in members.values():
             overloads.sort(key=lambda sym: sym.start_line)
@@ -607,6 +613,12 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                     ranges.setdefault(sym.id, admitted)
             self._overload_members[rep] = tuple(ranges.items())
         self._overload_rep.update(representatives)
+        for group in variants.values():
+            group.sort(key=lambda sym: sym.start_line)
+            ids = tuple(sym.id for sym in group)
+            for sym_id in ids:
+                representatives[sym_id] = ids[0]
+                self._variant_siblings[sym_id] = ids
         return representatives
 
     def _pair_overload_members(self) -> None:
@@ -848,7 +860,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 # tier that answered, so it is stamped once here.
                 if call.edge_type != "calls":
                     resolved = replace(resolved, edge_type=call.edge_type)
-                results.append(resolved)
+                for variant in self._variant_siblings.get(resolved.callee_id, (resolved.callee_id,)):
+                    if variant != resolved.caller_id:
+                        results.append(replace(resolved, callee_id=variant))
 
         return results
 
