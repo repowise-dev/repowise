@@ -332,6 +332,20 @@ async def _anchor_chosen_symbols(
         )
 
 
+def lead_with_files(hits: list[dict], paths: list[str]) -> list[dict]:
+    """``hits`` led by ``paths`` in their order, each scored above every other
+    hit; a path no hit carries is inserted as its file page."""
+    by_path = {h.get("target_path"): h for h in hits}
+    top = max((h.get("score", 0.0) for h in hits), default=0.0)
+    base = max(top + 2.0, _HIGH_CONFIDENCE_SCORE_FLOOR + 1.0)
+    led = [
+        _boost_or_insert_file_hit(hits, by_path, path, base + len(paths) - i)
+        for i, path in enumerate(paths)
+    ]
+    led_ids = {id(h) for h in led}
+    return led + [h for h in hits if id(h) not in led_ids]
+
+
 def _boost_or_insert_file_hit(
     hits: list[dict], by_path: dict, path: str, score: float
 ) -> dict:

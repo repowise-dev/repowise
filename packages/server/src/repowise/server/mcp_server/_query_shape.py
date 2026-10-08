@@ -12,6 +12,8 @@ import re
 from collections.abc import Container
 from functools import cache
 
+from repowise.server.mcp_server._stack_trace import parse_trace
+
 
 @cache
 def _code_exts() -> frozenset[str]:
@@ -188,6 +190,18 @@ def _embedded_identifiers(query: str, names: Container[str] | None = None) -> li
             and (not _one_hump(m.group()) or _in_code_context(query, m))
         )
     ]
+
+
+def defined_identifiers(query: str, names: Container[str]) -> list[str]:
+    """``_embedded_identifiers`` minus the code-shaped tokens no indexed symbol
+    carries: only names the index defines."""
+    return [t for t in _embedded_identifiers(query, names) if _names_symbol(t, names)]
+
+
+def is_issue_shaped(query: str, names: Container[str]) -> bool:
+    """Whether ``query`` pastes a stack trace or names an identifier the index
+    defines (``names`` as for ``_embedded_identifiers``)."""
+    return bool(parse_trace(query)) or bool(defined_identifiers(query, names))
 
 
 def _name_token_matches(query: str) -> list[re.Match[str]]:

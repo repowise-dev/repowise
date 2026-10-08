@@ -64,6 +64,7 @@ from repowise.server.mcp_server._references import path_identity, symbol_identit
 from repowise.server.mcp_server._retrieval_rank import rerank_by_context_coverage
 from repowise.server.mcp_server.tool_search_symbols import (
     indexed_names,
+    issue_files,
     search_paths_single,
     search_symbols_single,
 )
@@ -890,6 +891,14 @@ async def _contexts_for(repo: str | None) -> list:
     return [await _resolve_repo_context(repo)]
 
 
+def _lead_candidates(response: dict, named: list[str], limit: int) -> None:
+    """Put ``named`` (``issue_files``) at the head of ``candidates``, capped."""
+    if not named:
+        return
+    ranked = [c["path"] for c in response.get("candidates") or []]
+    response["candidates"] = [{"path": p} for p in dict.fromkeys(named + ranked)][:limit]
+
+
 def _tag_repo(items: list[dict], ctx, multi: bool) -> None:
     if multi:
         for item in items:
@@ -1155,11 +1164,17 @@ async def search_codebase(
     names = await indexed_names(await _contexts_for(repo), query)
     grep_hint = _grep_hint_for(query, names)
     resolved_mode = _resolve_mode(query, mode, names)
+    # Single repo only: a federated list has no one tree to name files in.
+    named: list[str] = []
+    if repo != "all":
+        with contextlib.suppress(Exception):
+            named = await issue_files(await _resolve_repo_context(repo), query, names)
 
     if resolved_mode in ("symbol", "path", "hybrid"):
         structured = await _structured_search(
             query, limit, page_type, kind, symbol_kind, repo, resolved_mode, grep_hint, names
         )
+        _lead_candidates(structured, named, limit)
         attach_ignored_arguments(structured, ignored)
         return structured
 
@@ -1246,6 +1261,7 @@ async def search_codebase(
     }
     if candidates := file_candidates(ranked, limit=limit):
         response["candidates"] = candidates
+    _lead_candidates(response, named, limit)
     if grep_hint and not output:
         response["grep_hint"] = grep_hint
     attach_ignored_arguments(response, ignored)
