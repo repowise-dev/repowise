@@ -78,7 +78,6 @@ def _walk(repo_path: str, upto_ref: str, depth: int) -> dict[str, list[float]]:
                 "--no-merges",
                 "--format=%x1e%P%x1f%ct%x1f%s",
                 "--name-only",
-                "--end-of-options",
                 upto_ref,
             ],
             cwd=repo_path,

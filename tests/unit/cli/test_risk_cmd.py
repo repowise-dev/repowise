@@ -127,7 +127,8 @@ def _ranked_repo(tmp_path: Path) -> Path:
     """Enough history to rank HEAD against: a seed and nine one-file commits."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    _git(["init", "-q", "-b", "main"], repo)
+    _git(["init", "-q"], repo)
+    _git(["checkout", "-B", "main"], repo)
     _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
     for index in range(9):
         _commit(repo, {f"src/f{index}.py": f"value = {index}\n"}, f"feat: add {index}")

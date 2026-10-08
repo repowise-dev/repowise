@@ -24,9 +24,13 @@ async def test_get_risk_single_target(setup_mcp):
     assert t["dependents_count"] >= 1  # middleware imports it
     assert len(t["co_change_partners"]) == 2
     assert t["primary_owner"] == "Alice"
-    assert t["owner_pct"] == 0.65
+    assert "owner_pct" not in t  # detailed owner metrics require include=["owners"]
     assert "risk_summary" in t
     assert "hotspot score" in t["risk_summary"]
+
+    # include=["owners"] opt-in adds owner_pct
+    owners_result = await get_risk(["src/auth/service.py"], include=["owners"])
+    assert owners_result["targets"]["src/auth/service.py"]["owner_pct"] == 0.65
 
     # Trend: 30d=3, 90d=8 → baseline_rate=0.083, recent=0.1 → stable
     assert t["trend"] in ("increasing", "stable", "decreasing")
@@ -817,7 +821,7 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
         {
             "argument": "include",
             "values": ["nonsense"],
-            "valid": ["blast", "churn", "graph", "scales", "tests"],
+            "valid": ["blast", "churn", "graph", "owners", "scales", "tests"],
         }
     ]
 
@@ -986,55 +990,27 @@ def _co_change_row(**partner):
     return rows[0]
 
 
-def test_co_change_direction_target_leads():
-    """The target seldom moves without the partner, so it is the antecedent."""
+def test_co_change_confidence_calculated():
+    """``conf_ab`` is the share of the target's commits that also touched partner."""
     row = _co_change_row(count=2.0, frequency=8, self_commits=10, partner_commits=20)
 
-    assert row["direction"] == "a_to_b"
     assert row["conf_ab"] == 0.8
-    assert row["conf_ba"] == 0.4
+    assert row["support"] == 8
+    assert row["has_import_link"] is False
 
 
-def test_co_change_direction_partner_leads():
-    """The mirror case: the partner is the side that cannot move alone."""
-    row = _co_change_row(count=2.0, frequency=8, self_commits=20, partner_commits=10)
-
-    assert row["direction"] == "b_to_a"
-    assert row["conf_ab"] == 0.4
-    assert row["conf_ba"] == 0.8
-
-
-def test_co_change_direction_tie_is_undirected():
-    """Equal confidences report a tie rather than breaking the lead arbitrarily."""
-    row = _co_change_row(count=2.0, frequency=5, self_commits=10, partner_commits=10)
-
-    assert row["direction"] == "undirected"
-    assert row["conf_ab"] == 0.5
-    assert row["conf_ba"] == 0.5
-
-
-def test_co_change_direction_without_commit_totals():
-    """An index written before the commit totals existed stays undirected.
-
-    ``self_commits``/``partner_commits`` are absent from such a record, so there
-    is no denominator to divide by; the confidences are omitted rather than
-    emitted as a guessed zero.
-    """
+def test_co_change_confidence_without_commit_totals():
+    """An index written before commit totals existed omits conf_ab."""
     row = _co_change_row(count=2.0, frequency=8)
 
-    assert row["direction"] == "undirected"
     assert "conf_ab" not in row
-    assert "conf_ba" not in row
+    assert row["support"] == 8
+    assert row["has_import_link"] is False
 
 
 @pytest.mark.asyncio
-async def test_get_risk_co_change_rows_carry_direction(setup_mcp):
-    """The field survives the whole pipeline, and says nothing it cannot back.
-
-    The seeded records carry no commit totals, so every row must come back
-    ``undirected`` with no confidence beside it -- a guessed ``0.0`` here would
-    read as "these files never change together", the opposite of unknown.
-    """
+async def test_get_risk_co_change_rows_are_lean(setup_mcp):
+    """The rows carry file_path, support, and has_import_link; conf_ab when known."""
     from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/auth/service.py"])
@@ -1042,9 +1018,11 @@ async def test_get_risk_co_change_rows_carry_direction(setup_mcp):
 
     assert partners
     for p in partners:
-        assert p["direction"] == "undirected"
-        assert "conf_ab" not in p
-        assert "conf_ba" not in p
+        assert "file_path" in p
+        assert "has_import_link" in p
+        assert "direction" not in p
+        assert "weight" not in p
+        assert "relationship_type" not in p
 
 
 @pytest.mark.asyncio

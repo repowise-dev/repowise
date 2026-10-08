@@ -210,12 +210,12 @@ Per file:
 | `hotspot_score` | 0 to 1 churn percentile |
 | `health_score` | 0 to 10 |
 | `dependents_count` | Direct directed structural dependents; a floor over the indexed graph |
-| `co_change_partners` | Historical correlation only. Each has a recency-decayed `weight`, a `direction` (`a_to_b`, `b_to_a` or `undirected`, where `a` is the assessed file), and `conf_ab` / `conf_ba`, the share of each file's commits that touched the other |
-| owners, reviewers | Primary and recent owners (`owner_pct`, `recent_owner_pct` are 0 to 1) and recommended reviewers |
+| `co_change_partners` | Historical correlation only. Each row carries `file_path`, `support` (count of shared commits, when known), `conf_ab` (share of target file's commits that touched partner, when known), and `has_import_link`. Sorted by recency-decayed weight |
+| owners, reviewers | Primary owner (`primary_owner`) and the owner clause in `risk_summary` are unconditional; detailed owner metrics (`owner_pct`, `owner_line_pct`, `recent_owner`, `recent_owner_pct`, `bus_factor`, `contributor_count`) are opt-in under `include=["owners"]`; recommended reviewers stay in PR mode |
 | test gaps, `security_signals` | Test coverage gaps and security findings for the file |
 | `resolved`, `unresolved_reason` | A target naming no indexed file: `unsupported_target_kind` (a `module:` id), `directory`, `not_indexed`, `no_such_path`. Counts are omitted, never zeroed |
 
-Opt-in blocks: `tests` adds the PR directive's typed `test_recommendations`, and `blast` adds `pr_blast_radius`, the PR dossier behind the directive (transitive files, co-change warnings, test gaps, the structural score; reviewers stay in the directive). `graph` adds typed `dependents` (direct versus transitive), `consumers` (typed contract consumers only), `cross_repo_links`, `impact_surface` and `direct_risks`, with `relationship_analysis` distinguishing an empty analysis from an unavailable or partial one. `churn` adds `change_magnitude`, `risk_type` and `change_pattern`. `scales` adds the unit, range and calibration of every scalar; it is identical on every call, so ask once. A multi-target call also carries `global_hotspots`.
+Opt-in blocks: `owners` adds `owner_pct`, `owner_line_pct`, `recent_owner`, `recent_owner_pct`, `bus_factor` and `contributor_count`. `tests` adds the PR directive's typed `test_recommendations`, and `blast` adds `pr_blast_radius`, the PR dossier behind the directive (transitive files, co-change warnings, test gaps, the structural score; reviewers stay in the directive). `graph` adds typed `dependents` (direct versus transitive), `consumers` (typed contract consumers only), `cross_repo_links`, `impact_surface` and `direct_risks`, with `relationship_analysis` distinguishing an empty analysis from an unavailable or partial one. `churn` adds `change_magnitude`, `risk_type` and `change_pattern`. `scales` adds the unit, range and calibration of every scalar; it is identical on every call, so ask once. A multi-target call also carries `global_hotspots`.
 
 **PR mode** (`changed_files` passed). The response starts with `directive`:
 
