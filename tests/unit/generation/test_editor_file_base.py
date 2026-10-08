@@ -128,6 +128,7 @@ def test_keyless_index_gets_keyless_steering(any_gen):
     assert _KEYLESS_BULLET in result
     # Template pages store confidence 1.0, so the figure would read as 100%.
     assert "Confidence:" not in result
+    assert "(commit a1b2c3d). Scope:" in result
     # `--full` needs a key; offering it to a keyless index is a dead end.
     assert "repowise update --full" not in result
     assert "[fts]` only has no semantic agreement" not in result
