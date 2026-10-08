@@ -147,7 +147,7 @@ Per target, under `targets`:
 |-------|---------|
 | title, summary, symbols | Docs summary and the symbols defined, with signatures and line numbers. Compact cards list the top 15 (types, then functions and methods, then the rest, by centrality) with `symbols_truncated` `{shown, total, hint}` and `symbols_total`; a budget trim below that keeps symbols by kind and name match, not centrality; `include=["symbols"]` lists all. A row without `symbol_id` is `path::name` |
 | `hotspot` | Churn flag |
-| `fix_history` | Only on files with counted bug fixes: count, age, `bug_magnet`. A cue to call `get_risk` |
+| `fix_history` | Only on files with counted bug fixes: count, age (measured to the indexed commit), `bug_magnet`. A cue to call `get_risk` |
 | `episodes` | Count of dated records bound to the target; `get_why` serves their bodies |
 | decisions | Titles by default. With `include=["decisions"]`, three lanes: `decisions` (accepted, governing), `candidates` (proposed, at most 3), `history` (accepted then withdrawn, at most 2) |
 | `file_preview` | For a file with no indexed symbols: `lines`, `chars`, and for a markdown or reST document `heading_count` with the first three `headings`; otherwise the first three non-empty lines as `head` |
@@ -206,6 +206,7 @@ Per file:
 
 | Field | Meaning |
 |-------|---------|
+| `defect_profile` | Only on files with counted bug fixes: `fix_count` (in 6-month window), `last_fix_days_ago` (measured to the indexed commit), `bug_magnet`, `top_symbols` |
 | `hotspot_score` | 0 to 1 churn percentile |
 | `health_score` | 0 to 10 |
 | `dependents_count` | Direct directed structural dependents; a floor over the indexed graph |

@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -381,6 +382,7 @@ async def _resolve_one_target(
     exclude_spec: Any = None,
     repo_root: Any = None,
     collector: OmissionCollector | None = None,
+    as_of_ts: datetime | None = None,
 ) -> dict:
     """Resolve a single target and return its full context."""
     repo_id = repository.id
@@ -610,6 +612,7 @@ async def _resolve_one_target(
                     exclude_spec=exclude_spec,
                     repo_root=repo_root,
                     collector=collector,
+                    as_of_ts=as_of_ts,
                 )
                 if "error" not in card:
                     card["target"] = target
@@ -1019,7 +1022,7 @@ async def _resolve_one_target(
         if triage_meta is not None:
             # Row exposes the selected columns as attributes, which is exactly
             # the shape fix_annotation reads off a full ORM row.
-            fixes = fix_annotation(triage_meta)
+            fixes = fix_annotation(triage_meta, now=as_of_ts)
             if fixes is not None:
                 result_data["fix_history"] = fixes
 

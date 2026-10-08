@@ -373,10 +373,10 @@ def _build_co_changes(
     return population, len(population)
 
 
-def fix_annotation(meta: Any) -> dict | None:
-    """Counted fixes, their age, and the magnet flag, or ``None`` for silence.
+def fix_annotation(meta: Any, now: datetime | None = None) -> dict | None:
+    """The shared count/age/magnet fix block used by context and risk.
 
-    The compact form every fix-history surface shares, so the recency contract
+    Centralized so the two tools agree on the wire format and the age contract
     is enforced once: the ``bug_magnet`` flag rides on the age and is never
     emitted alone. ``bug_magnet`` is a claim about RECENT fix pressure, so with
     no timestamp to anchor it the same word would describe a file fixed four
@@ -392,8 +392,13 @@ def fix_annotation(meta: Any) -> dict | None:
     last_fix_at = getattr(meta, "last_fix_at", None)
     if isinstance(last_fix_at, datetime):
         # Rows are stored naive-UTC; compare on the same footing.
+        ref = (
+            datetime.now(UTC)
+            if now is None
+            else (now if now.tzinfo else now.replace(tzinfo=UTC))
+        )
         moment = last_fix_at if last_fix_at.tzinfo else last_fix_at.replace(tzinfo=UTC)
-        out["last_fix_days_ago"] = max(0, (datetime.now(UTC) - moment).days)
+        out["last_fix_days_ago"] = max(0, (ref - moment).days)
         if getattr(meta, "bug_magnet", False):
             out["bug_magnet"] = True
     return out
@@ -412,11 +417,11 @@ def _fix_clause(profile: dict | None) -> str:
     magnet = " (bug magnet)" if profile.get("bug_magnet") else ""
     return (
         f"{n} bug fix{'es' if n != 1 else ''} in 6mo, "
-        f"last {profile['last_fix_days_ago']}d ago{magnet}, "
+        f"last {profile['last_fix_days_ago']}d before the indexed commit{magnet}, "
     )
 
 
-def _defect_profile(meta: Any) -> dict | None:
+def _defect_profile(meta: Any, now: datetime | None = None) -> dict | None:
     """What this file's counted bug fixes say about it, or ``None`` for silence.
 
     Built from the fix-event rollup already loaded on the ``GitMetadata`` row,
@@ -433,7 +438,7 @@ def _defect_profile(meta: Any) -> dict | None:
     string repeated once per target is exactly the per-file cost the lean-MCP
     work went to some trouble to remove.
     """
-    profile = fix_annotation(meta)
+    profile = fix_annotation(meta, now=now)
     if profile is None:
         return None
     profile["window"] = "6 months"
@@ -506,6 +511,7 @@ async def _assess_one_target(
     team_size: int | None = None,
     collector: OmissionCollector | None = None,
     include_graph: bool = False,
+    as_of_ts: datetime | None = None,
 ) -> dict:
     """Assess risk for a single target file.
 
@@ -737,7 +743,7 @@ async def _assess_one_target(
     if merge_commit_count > 0:
         result_data["merge_commit_count_90d"] = merge_commit_count
 
-    defect_profile = _defect_profile(meta)
+    defect_profile = _defect_profile(meta, now=as_of_ts)
     if defect_profile is not None:
         result_data["defect_profile"] = defect_profile
 

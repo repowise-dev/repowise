@@ -47,7 +47,10 @@ import asyncio
 import logging
 from typing import Any
 
+from sqlalchemy import func, select
+
 from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import GitMetadata
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
@@ -174,6 +177,13 @@ async def get_context(
     _t0 = _time.perf_counter()
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
+        as_of_ts = (
+            await session.execute(
+                select(func.max(GitMetadata.last_commit_at)).where(
+                    GitMetadata.repository_id == repository.id
+                )
+            )
+        ).scalar()
 
         # return_exceptions=True isolates a single target's failure: one
         # target raising (e.g. a malformed lookup) must not sink the whole
@@ -191,6 +201,7 @@ async def get_context(
                     exclude_spec=exclude_spec,
                     repo_root=ctx.path,
                     collector=collector,
+                    as_of_ts=as_of_ts,
                 )
                 for t in targets
             ],

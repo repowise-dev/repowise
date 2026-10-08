@@ -44,7 +44,7 @@ In the dashboard, look at the health drawer's **Bug history** section and the
 | Field | Meaning |
 |---|---|
 | `fix_count` | Counted bug-fix commits that touched the file in the last 180 days |
-| `last_fix_days_ago` / `last_fix_at` | Age of the most recent counted fix |
+| `last_fix_days_ago` / `last_fix_at` | Age of the most recent counted fix, measured to the indexed commit |
 | `bug_magnet` | The decayed fix mass is 3.0 or more. Present only when true |
 | `top_symbols` | Up to three functions or classes that absorbed the most fixes. Approximate |
 

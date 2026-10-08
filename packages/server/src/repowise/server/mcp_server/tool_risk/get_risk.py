@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from repowise.core.analysis.risk_semantics import file_risk_scales
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
@@ -187,21 +187,25 @@ async def _load_dependency_graph(session: Any, repo_id: str, roots: set[str]) ->
     return _DependencyGraph(node_meta, import_links, reverse_deps, dep_counts)
 
 
-def _hotspot_entry(meta: GitMetadata) -> dict:
+def _hotspot_entry(meta: GitMetadata, as_of_ts: Any = None) -> dict:
     entry = {
         "file_path": meta.file_path,
         "hotspot_score": meta.churn_percentile,
         "is_hotspot": True,
         "primary_owner": meta.primary_owner_name,
     }
-    fixes = fix_annotation(meta)
+    fixes = fix_annotation(meta, now=as_of_ts)
     if fixes is not None:
         entry.update(fixes)
     return entry
 
 
 async def _global_hotspots(
-    session: Any, repo_id: str, targets: list[str], exclude_spec: Any
+    session: Any,
+    repo_id: str,
+    targets: list[str],
+    exclude_spec: Any,
+    as_of_ts: Any = None,
 ) -> list[dict]:
     """Hotspots outside ``targets``, ranked on bug-fix history, then churn.
 
@@ -224,7 +228,11 @@ async def _global_hotspots(
     )
     all_hotspots = filter_rows_by_attr(list(res.scalars().all()), "file_path", exclude_spec)
     target_set = set(targets)
-    return [_hotspot_entry(h) for h in all_hotspots if h.file_path not in target_set]
+    return [
+        _hotspot_entry(h, as_of_ts=as_of_ts)
+        for h in all_hotspots
+        if h.file_path not in target_set
+    ]
 
 
 async def _pr_blast_radius(
@@ -254,6 +262,13 @@ async def _gather_evidence(
 
         # Repo-wide, so computed once for every target's bus-factor calibration.
         team_size = await _get_active_contributor_count(session, repo_id)
+        as_of_ts = (
+            await session.execute(
+                select(func.max(GitMetadata.last_commit_at)).where(
+                    GitMetadata.repository_id == repo_id
+                )
+            )
+        ).scalar()
 
         results = await asyncio.gather(
             *[
@@ -269,13 +284,16 @@ async def _gather_evidence(
                     team_size,
                     collector,
                     include_graph,
+                    as_of_ts=as_of_ts,
                 )
                 for t in targets
             ]
         )
         global_hotspots = []
         if len(targets) > 1 and not changed_files:
-            global_hotspots = await _global_hotspots(session, repo_id, targets, exclude_spec)
+            global_hotspots = await _global_hotspots(
+                session, repo_id, targets, exclude_spec, as_of_ts=as_of_ts
+            )
         pr_blast_radius = None
         # Only the PR directive reads this, and only for affected file paths.
         test_paths: set[str] = set()
