@@ -198,7 +198,7 @@ Returns verified, line-numbered source for one symbol, a live line range, or an 
 | `query` | string | none | Omission refs only: keep stored lines matching this regex or substring |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
-**Key return fields:** `source` (up to about 600 lines, each prefixed with its line number), start and end lines, `kind`, `truncated` with a continuation to pass back, `ambiguous` and `candidates` when several symbols match, `callee_bodies` (with `depth` above 1), `not_rendered` (bodies past the budget, each with a range read to fetch it), fallback lines from a live grep on a miss.
+**Key return fields:** `source` (up to about 600 lines, each prefixed with its line number), start and end lines, `kind`, `truncated` with a continuation to pass back, `ambiguous` and `candidates` when several symbols match, `callee_bodies` (with `depth` above 1), `not_rendered` (bodies past the budget, each with a range read to fetch it), fallback lines from a live grep on a miss. A class or other container too large to serve whole returns `outlined: true`, its header in `source` and `members` (each member's `symbol_id`, signature and lines, with `members_total` when the list is capped) in place of the body, and no `_meta.complete`.
 
 ```
 get_symbol(symbol_id="src/auth/service.py::login", depth=2)
