@@ -204,7 +204,8 @@ Hybrid search that routes by the shape of the query: identifiers search the symb
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `query` | string | required | Identifier, path or natural-language text |
+| `query` | string | `""` | Identifier, path or natural-language text. Required unless `pattern` is given |
+| `pattern` | string | none | Alias for `query`. When both are given, `query` is used and `pattern` is named in `ignored_arguments` |
 | `limit` | int | `5` | Max results. Outside `symbol` mode, at most this many distinct files: same-file hits share one row |
 | `mode` | string | `"auto"` | `auto`, `concept`, `symbol`, `path` or `hybrid`. An unknown mode runs as `auto` |
 | `kind` | string | none | `implementation`, `test`, `config` or `doc` |

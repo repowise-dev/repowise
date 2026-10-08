@@ -1153,13 +1153,14 @@ async def _structured_search(
     ),
 )
 async def search_codebase(
-    query: str,
+    query: str = "",
     limit: int = 5,
     page_type: str | None = None,
     kind: str | None = None,
     repo: str | None = None,
     mode: str = "auto",
     symbol_kind: str | None = None,
+    pattern: str | None = None,
 ) -> dict:
     """Find code by concept, symbol, or path — hybrid codebase search.
 
@@ -1187,10 +1188,24 @@ async def search_codebase(
         repo: alias, or "all" for workspace-wide.
         mode: auto | concept | symbol | path | hybrid.
         symbol_kind: filter symbol hits (function|class|method|...).
+        pattern: alias for query.
     """
+    ignored: list[dict[str, Any]] = []
+    # Hosts that defer tool schemas let a model guess grep's argument name.
+    if pattern is not None and not query.strip():
+        query = pattern
+    elif pattern is not None:
+        ignored.append(
+            {"argument": "pattern", "values": [pattern], "valid": [], "superseded_by": "query"}
+        )
+    if not query.strip():
+        return {
+            "results": [],
+            "error": "search_codebase requires `query` (or its alias `pattern`).",
+            "_meta": _build_meta(),
+        }
     # An unknown kind used to take the same ``return False`` as a kind that is
     # simply inapplicable, so a typo and a real empty result looked identical.
-    ignored: list[dict[str, Any]] = []
     kind = resolve_enum_argument(kind, _VALID_KINDS, argument="kind", ignored=ignored)
     # An unknown mode used to become ``auto`` with nothing said, so the caller
     # got a different search than it asked for. Modes have always been

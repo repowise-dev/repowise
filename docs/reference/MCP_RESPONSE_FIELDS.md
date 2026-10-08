@@ -96,7 +96,7 @@ The key is absent when every argument was understood. One entry per argument.
 |------|-------------------|-------|
 | `get_dead_code` | `kind`, `tier`, `min_confidence` | Top-level list, as above |
 | `get_context` | `include` | Top-level list |
-| `search_codebase` | `kind`, `mode` (an unknown `mode` runs as `auto`) | Top-level list |
+| `search_codebase` | `kind`, `mode` (an unknown `mode` runs as `auto`), `pattern` when `query` is also given (entry carries `"superseded_by": "query"`) | Top-level list |
 | `get_risk`, `get_change_risk` | `include` | Top-level list |
 | `get_answer` | `include` | `_meta.ignored_arguments`, a map: `{"include": [...]}` |
 | `get_health` | `refactoring_*` and `performance_*` filters, `scope`, `counts` | Top-level flat map of argument to dropped value, e.g. `{"counts": "code-shape"}` |
