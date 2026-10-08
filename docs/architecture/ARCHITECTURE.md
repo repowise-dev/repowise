@@ -83,9 +83,9 @@ package is and where its code lives. The detail is in this document and in
 │  jobs, symbols,      │   │  (Next.js)  (18 tools)   (CI/CD)        │
 │  versions)           │   │                                         │
 │                      │   │  repowise CLI                           │
-│  Vector (LanceDB /   │   │  (init, update, watch,                  │
-│  pgvector, semantic  │   │   search, export, serve, mcp)           │
-│  search, RAG ctx)    │   │                                         │
+│  Vector (LanceDB,    │   │  (init, update, watch,                  │
+│  semantic search,    │   │   search, export, serve, mcp)           │
+│  RAG ctx)            │   │                                         │
 │                      │   └─────────────────────────────────────────┘
 │  Graph (NetworkX,    │
 │  dep graph,          │
@@ -144,7 +144,7 @@ repowise/
 │   │   │   │   ├── crud.py             # async CRUD layer
 │   │   │   │   ├── database.py         # engine factory, session management
 │   │   │   │   ├── search.py           # SQLite FTS5 full-text search
-│   │   │   │   ├── vector_store.py     # VectorStore abstraction (LanceDB / pgvector)
+│   │   │   │   ├── vector_store.py     # VectorStore abstraction (LanceDB)
 │   │   │   │   └── embedder.py         # Embedder base class + MockEmbedder
 │   │   │   ├── providers/              # LLM provider abstraction
 │   │   │   │   ├── base.py             # BaseProvider, GeneratedResponse, ProviderError
@@ -239,26 +239,26 @@ Key tables:
 
 If you delete the SQL store, you lose everything and must re-run `repowise init`.
 
-### 3.2 Vector Store (LanceDB embedded / pgvector)
+### 3.2 Vector Store (LanceDB embedded)
 
 **Answers: what is semantically similar to this query.**
 
-repowise uses a `VectorStore` abstraction with two backends, selected automatically
-based on the configured SQL backend:
+repowise uses a `VectorStore` abstraction. Search and generation use LanceDB with
+every SQL backend, SQLite or PostgreSQL:
 
-**LanceDB (default: SQLite mode)**
+**LanceDB**
 LanceDB runs embedded as a library, no separate server process. Data is stored in
 `.repowise/lancedb/` using the Lance columnar format. This makes self-hosting trivial
 and keeps the Docker setup simple. LanceDB is significantly faster than ChromaDB on
 both write throughput (batch embedding) and ANN query latency, and it requires no
 C++ build tools to install.
 
-**pgvector (PostgreSQL mode)**
-When repowise is configured with a PostgreSQL database, the `wiki_pages` table gains
-an `embedding vector(N)` column via the `pgvector` PostgreSQL extension. Embeddings
-are stored directly in the same SQL database, no second storage system required.
-Vector similarity search uses `<=>` (cosine distance) with an HNSW index. This is
-the preferred backend for multi-worker production deployments.
+**pgvector (not used yet)**
+On PostgreSQL, the Alembic migration adds an `embedding vector(1536)` column to the
+`wiki_pages` table via the `pgvector` extension, and a `PgVectorStore` class exists,
+but no runtime path reads or writes that column yet: search still goes through
+LanceDB. Wiring pgvector in is tracked in
+[#3090](https://github.com/repowise-dev/repowise/issues/3090).
 
 Every generated wiki page is embedded and stored immediately after generation.
 The vector store is used in two distinct ways:
@@ -274,7 +274,7 @@ search page use the vector store to find the most semantically relevant pages fo
 natural language query. This is better than full-text search for questions like
 "how does authentication work?" or "where is rate limiting handled?".
 
-If you delete the vector store (LanceDB directory or pgvector embeddings), search
+If you delete the vector store (the LanceDB directory), search
 quality degrades and generation context becomes shallower; rebuild it by running
 `repowise reindex` which re-embeds all existing SQL pages into LanceDB using
 the configured embedder (Gemini or OpenAI). No LLM calls, only embedding API calls.
@@ -598,7 +598,7 @@ lower-priority items if the token budget is exceeded):
 5. **Import summaries**: for each file this file imports from: the summary of
    that file's already-generated wiki page (if available), or just its public
    API signatures (if not yet generated)
-6. **RAG context**: vector store similarity search (LanceDB or pgvector) using this file's top exported
+6. **RAG context**: vector store similarity search (LanceDB) using this file's top exported
    symbols as the query. Returns the top 3 most relevant already-generated pages.
    This propagates understanding upward: `AuthService`'s page will know what
    `UserRepository` actually does, not just that it imports from it.
@@ -1129,7 +1129,7 @@ Served on port `7337` alongside the web UI. All endpoints are prefixed with `/ap
 Key routers:
 - `/api/repos`: register repos, trigger sync, full-resync (now launches background pipeline jobs with concurrent-run prevention)
 - `/api/pages`: read pages, version history, force-regenerate single page
-- `/api/search`: semantic (LanceDB or pgvector) and full-text (SQLite FTS5 / PostgreSQL tsvector) search
+- `/api/search`: semantic (LanceDB) and full-text (SQLite FTS5 / PostgreSQL tsvector) search
 - `/api/jobs`: job status, SSE stream for live progress updates
 - `/api/symbols`: symbol lookup, dependency path queries
 - `/api/graph`: graph export in D3-compatible JSON format
@@ -1285,7 +1285,7 @@ JobSystem
        │                             ▼
        │                      WikiPage stored:
        │                        → SQL (content, metadata, confidence=1.0)
-       │                        → VectorStore (LanceDB or pgvector: embedding for RAG)
+       │                        → VectorStore (LanceDB: embedding for RAG)
        │                        → Graph (node.page_id linked)
        │
        ├── Level 2: file pages (parallel, RAG pool growing with each completed page)
@@ -1393,7 +1393,7 @@ Claude Code: "how does the auth module work?"
 MCP client calls repowise tool: search_codebase(query="auth module")
     │
     ▼
-VectorStore similarity search (LanceDB or pgvector) → top 5 page IDs
+VectorStore similarity search (LanceDB) → top 5 page IDs
     │
     ▼
 SQL: fetch page content for those IDs
@@ -1469,8 +1469,9 @@ in the existing `wiki_pages` table, queries are plain SQL with `<=>` cosine dist
 and backup/restore is a single `pg_dump`. The HNSW index (`CREATE INDEX ... USING hnsw`)
 gives query latency on par with LanceDB at typical repowise dataset sizes.
 
-The `VectorStore` abstraction in `packages/core/src/repowise/core/persistence/vector_store/`
-selects the backend at startup based on `DATABASE_URL`: SQLite → LanceDB, PostgreSQL → pgvector.
+That is the plan rather than current behaviour: today every SQL backend, PostgreSQL
+included, uses LanceDB for search, and the pgvector column is not read or written
+yet ([#3090](https://github.com/repowise-dev/repowise/issues/3090)).
 
 ### NetworkX + SQLite fallback, not Neo4j
 
@@ -1532,7 +1533,7 @@ humans decide before deleting anything.
 
 All database operations use async SQLAlchemy with `aiosqlite`. The event loop
 is never blocked. This matters during generation: the LLM call, the DB write,
-and the vector store embed (LanceDB or pgvector) can overlap with the next file's context assembly.
+and the vector store embed (LanceDB) can overlap with the next file's context assembly.
 
 ---
 
