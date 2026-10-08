@@ -156,7 +156,8 @@ def test_high_medium_and_low_are_intentionally_different_shapes():
 
     assert "retrieval" not in high and "best_guesses" not in high
     assert "retrieval" not in medium and len(medium["best_guesses"]) == 1
-    assert "best_guesses" in low and "retrieval" not in low
+    assert "best_guesses" not in low and "retrieval" not in low
+    assert low["candidate_files"] == [{"path": "src/auth/service.py", "why": "defines check"}]
     assert high["next_action_hint"] == "Use the answer and citations directly."
     assert medium["next_action_hint"] != high["next_action_hint"]
     assert low["next_action_hint"] != high["next_action_hint"]
@@ -333,9 +334,10 @@ async def test_no_llm_and_failed_legs_remain_compact_and_actionable(
     assert result["confidence"] != "high"
     assert result["answer"]
     assert result["next_action_hint"]
-    assert result.get("best_guesses") or result.get("symbol_bodies") or result.get("retrieval")
+    assert result.get("symbol_bodies") or result.get("retrieval") or result.get("candidate_files")
+    assert "best_guesses" not in result
     assert result["candidate_files"]
-    assert not set(result["candidate_files"]) & set(result.get("citations") or [])
+    assert all(isinstance(row, dict) and row["path"] for row in result["candidate_files"])
     assert len(json.dumps(result, separators=(",", ":"), default=str)) < 24_000
     if legs["vector"] == "error":
         assert result["_meta"]["retrieval_degraded"] == ["vector"]
@@ -384,7 +386,7 @@ async def test_real_embedding_failure_keeps_fts_evidence_in_final_projection(
     result = await tool_middleware(get_answer)("how does auth work if embeddings fail")
 
     assert result["answer"]
-    assert result.get("best_guesses") or result.get("retrieval")
+    assert result.get("candidate_files") or result.get("retrieval")
     assert "embed" in result["_meta"]["retrieval_degraded"]
     assert "vector" in result["_meta"]["retrieval_degraded"]
     assert len(json.dumps(result, separators=(",", ":"), default=str)) < 24_000
@@ -428,7 +430,7 @@ async def test_missing_generated_docs_can_fall_back_to_local_symbol_evidence(
     result = await tool_middleware(get_answer)("where is AuthService defined")
 
     assert result["answer"]
-    assert result["best_guesses"][0]["file"] == "src/auth/service.py"
+    assert result["candidate_files"][0]["path"] == "src/auth/service.py"
     assert result["next_action_hint"]
 
 
@@ -690,8 +692,6 @@ def _with_pool(confidence: str, **extra) -> dict:
     [
         ("high", {}, 3),
         ("medium", {}, 5),
-        ("low", {}, 5),
-        ("medium", {"degraded": "no-llm-provider"}, 5),
     ],
 )
 def test_candidate_files_serve_ranked_uncited_paths_at_every_confidence(
@@ -712,14 +712,22 @@ def test_candidate_files_cap_at_five_and_dedupe_only_against_citations():
     out = project_answer_payload(raw, question="how does auth work")
 
     # middleware.py is a fallback target and a retrieval row, not a citation.
-    assert out["candidate_files"] == ["src/auth/middleware.py", *_POOL[:4]]
+    # service.py is cited, but it was a best guess, so its row stays.
+    assert [row["path"] for row in out["candidate_files"]] == [
+        "src/auth/service.py", "src/auth/middleware.py", *_POOL[:4]
+    ]
 
 
 def test_candidate_files_absent_when_retrieval_resolved_no_file():
-    out = project_answer_payload(_raw("low"), question="how does auth work")
+    out = project_answer_payload(_raw("medium"), question="how does auth work")
     assert "candidate_files" not in out
 
+    raw = _raw("medium")
+    raw["candidate_files"] = ["src/auth/service.py"]
+    assert "candidate_files" not in project_answer_payload(raw, question="how does auth work")
+
     raw = _raw("low")
+    raw["best_guesses"] = []
     raw["candidate_files"] = ["src/auth/service.py"]
     assert "candidate_files" not in project_answer_payload(raw, question="how does auth work")
 

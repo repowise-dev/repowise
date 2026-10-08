@@ -272,7 +272,12 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # confined to them need no bump; a needless bump costs every keyed install a
 # round of provider spend.
 # 18: rows carry ``candidate_files``, the ranked paths-only list.
-_ANSWER_SCHEMA_VERSION = 18
+# 19: rows carry ``_candidate_file_facts``; low answers serve candidate_files rows.
+_ANSWER_SCHEMA_VERSION = 19
+
+# Above this a whole-file Read costs more than the answer, so the low-confidence
+# hint names a ranged Read or a skeleton instead.
+_LARGE_FILE_BYTES = 40_000
 
 # How many paths ``candidate_files`` serves: the knee of measured coverage
 # gained per extra file, past which each path mostly costs precision. A high

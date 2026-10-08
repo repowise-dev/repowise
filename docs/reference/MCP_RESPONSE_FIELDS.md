@@ -126,9 +126,9 @@ Every suggested follow-up (`get_health`'s `fix_first[].next_call`, the refactori
 | `retrieval_quality` | `high`, `partial` or `weak`: rates the evidence under the prose |
 | `symbol_bodies` | Live bodies of the symbols the answer names. Read these before calling `get_symbol` |
 | `retrieval` | Evidence rows (summary, snippet, key symbols). Shrinks as confidence rises |
-| `candidate_files` | Ranked file paths retrieval resolved, minus those already in `citations`: up to 3 at `high`, 5 at `medium`, `low` or `degraded`. Navigation, not evidence. Served at every confidence; absent when retrieval resolved no file |
+| `candidate_files` | Ranked file paths retrieval resolved, minus those already in `citations`: up to 3 at `high`, 5 at `medium`, `low` or `degraded`. Navigation, not evidence. Served at every confidence; absent when retrieval resolved no file. At `low` or `degraded` each entry is a `{path, why?, score?, lines?, size_bytes?, functions?}` row instead of a bare path, and the files `best_guesses` would have named stay in it even when cited. `functions` holds up to 3 `{name, line}` symbols relevant to the question; `lines` and `size_bytes` are read from the live file |
 | `candidates` | The top 5 of those files as `{path, lines?, defines?}` rows. Only with `include=["evidence"]` |
-| `best_guesses`, `fallback_targets` | On low confidence: where to look, each with a one-line reason |
+| `best_guesses`, `fallback_targets` | Where to look, each with a one-line reason. `best_guesses` carries page excerpts and is served at `medium`; at `low` its files move into `candidate_files` rows, and `include=["evidence"]` brings the excerpts back |
 | `episodes` | A dated fact recorded about this checkout that bears on the question; `still_true` says how current it is |
 | `degraded` | Synthesis could not run (no provider, or the call failed). The answer is assembled from retrieval and mined rationale with no LLM, and `confidence` is graded from the retrieval: `medium` unless `retrieval_quality` is `weak`, never `high` |
 

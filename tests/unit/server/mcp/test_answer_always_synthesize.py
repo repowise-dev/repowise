@@ -143,7 +143,7 @@ async def test_hedged_non_dominant_demotes_low_but_keeps_prose(setup_mcp, monkey
     result = await get_answer("how does the alpha module go function work")
     assert result["confidence"] == "low", "a hedge demotes to low"
     assert result["answer"], "the hedged prose is still served, not an empty answer"
-    assert result["best_guesses"], "ambiguous-retrieval evidence folded in"
+    assert result["candidate_files"], "ambiguous-retrieval shortlist folded in"
 
 
 @pytest.mark.asyncio
@@ -165,7 +165,7 @@ async def test_flag_off_restores_legacy_abstain(setup_mcp, monkeypatch):
     assert result["answer"], "flag off still leads with an actionable abstention"
     assert "synthesis skipped" in result["answer"]
     assert result["confidence"] == "low"
-    assert result["best_guesses"], "abstain path still hands back candidates"
+    assert result["candidate_files"], "abstain path still hands back candidates"
 
 
 @pytest.mark.asyncio

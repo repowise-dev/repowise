@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import copy
+import re
 from collections.abc import Callable
 from functools import wraps
+from pathlib import Path
 from typing import Any
 
 from repowise.server.mcp_server.tool_answer.config import (
     _CANDIDATE_FILES_HIGH,
     _CANDIDATE_FILES_MAX,
+    _GATED_RETURN_HITS,
+    _LARGE_FILE_BYTES,
 )
 
 _COLLECTIONS = (
@@ -255,6 +259,12 @@ def _rewrite_degraded_answer(payload: dict[str, Any]) -> None:
             f"Synthesis is unavailable ({reason}). Local retrieval points first to "
             f"{first}; best_guesses carries the evidence and ranking reason."
         )
+    elif payload.get("candidate_files") and isinstance(payload["candidate_files"][0], dict):
+        first = payload["candidate_files"][0]["path"]
+        payload["answer"] = (
+            f"Synthesis is unavailable ({reason}). Local retrieval points first to "
+            f"{first}; candidate_files carries the ranking reason for each file."
+        )
     elif payload.get("retrieval"):
         first = _path(payload["retrieval"][0])
         payload["answer"] = (
@@ -299,6 +309,72 @@ def _shape_candidate_files(payload: dict[str, Any], *, expanded: bool) -> None:
         payload["candidate_files"] = paths
 
 
+def _shortlist_rows(
+    payload: dict[str, Any], guesses: list[Any], facts: dict[str, Any]
+) -> None:
+    """Serve ``candidate_files`` as rows that replace the excerpt-bearing ``best_guesses``.
+
+    The served paths are exactly the union of what the two lists served before
+    (every guess file, cited or not, plus up to five uncited ranked paths), in
+    rank order, so no file is lost and none is reordered.
+    """
+    raw = payload.pop("candidate_files", None)
+    ranked = list(dict.fromkeys(row for row in raw or [] if isinstance(row, str)))
+    by_guess: dict[str, dict[str, Any]] = {}
+    for row in guesses:
+        path = _nav_path(row)
+        if path and isinstance(row, dict):
+            by_guess.setdefault(path, row)
+    pool = set(ranked)
+    # A guess outside the pool is a top hit, so it leads.
+    ranked = list(dict.fromkeys([*(p for p in by_guess if p not in pool), *ranked]))
+    cited = {path for path in map(_nav_path, payload.get("citations") or []) if path}
+    served: list[dict[str, Any]] = []
+    uncited = 0
+    for path in ranked:
+        # The same five uncited pool paths the bare list serves at this grade.
+        counted = path in pool and path not in cited
+        within = counted and uncited < _CANDIDATE_FILES_MAX
+        uncited += counted
+        if not within and path not in by_guess:
+            continue
+        known = facts.get(path) if isinstance(facts.get(path), dict) else {}
+        guess = by_guess.get(path, {})
+        row: dict[str, Any] = {"path": path}
+        why = known.get("why") or _text(guess, "why_relevant", "reason")
+        if why:
+            row["why"] = why
+        score = known.get("score", guess.get("score"))
+        if score is not None:
+            row["score"] = score
+        if known.get("functions"):
+            row["functions"] = known["functions"]
+        served.append(row)
+    if served:
+        payload["candidate_files"] = served
+
+
+_GUESS_NOTE = re.compile(
+    r"Each best_guess entry names why that file is in the running"
+    r"(?:, and its excerpt carries that page's actual content)?\."
+)
+
+
+def _retarget_guess_prose(payload: dict[str, Any]) -> None:
+    """Point prose written for ``best_guesses`` at the shortlist that replaced it."""
+    note = payload.get("note")
+    if isinstance(note, str):
+        note = _GUESS_NOTE.sub("Each candidate_files row names why that file is in the running.", note)
+        payload["note"] = note.replace("best_guesses", "candidate_files")
+    hint = payload.get("next_action_hint")
+    rows = payload.get("candidate_files") or []
+    if isinstance(hint, str) and ("best_guesses" in hint or "excerpt" in hint) and rows:
+        payload["next_action_hint"] = (
+            f"Start from {rows[0]['path']}: it ranked highest, and candidate_files "
+            "says why each file is in the running."
+        )
+
+
 def _default_shape(payload: dict[str, Any], question: str) -> None:
     confidence = _shape_confidence(payload)
     why = question.lstrip().lower().startswith("why")
@@ -336,13 +412,14 @@ def _default_shape(payload: dict[str, Any], question: str) -> None:
     _keep(payload, "symbol_bodies", 2)
     _keep(payload, "code_rationale", 2)
     _keep(payload, "quotes", 1)
-    if payload.get("best_guesses"):
+    # The guesses travel on as ``candidate_files`` rows (see _shortlist_rows).
+    guesses = payload.pop("best_guesses", None)
+    if guesses:
         payload.pop("retrieval", None)
-        _keep(payload, "best_guesses", 3)
     else:
         _keep(payload, "retrieval", 3)
     payload.pop("candidates", None)
-    if payload.get("best_guesses") or payload.get("retrieval") or payload.get("symbol_bodies"):
+    if guesses or payload.get("retrieval") or payload.get("symbol_bodies"):
         payload.pop("fallback_targets", None)
     if not str(payload.get("answer") or "").strip():
         payload["answer"] = str(payload.get("note") or "No grounded answer was found.")
@@ -400,9 +477,17 @@ def project_answer_payload(
     }
     _deduplicate(payload)
     expanded = "evidence" in set(include or [])
+    facts = payload.pop("_candidate_file_facts", None)
+    shortlist = not expanded and _shape_confidence(payload) == "low"
+    guesses = list(payload.get("best_guesses") or [])[:_GATED_RETURN_HITS]
     if not expanded:
         _default_shape(payload, question)
-    _shape_candidate_files(payload, expanded=expanded)
+    if shortlist:
+        _shortlist_rows(payload, guesses, facts if isinstance(facts, dict) else {})
+        if guesses:
+            _retarget_guess_prose(payload)
+    else:
+        _shape_candidate_files(payload, expanded=expanded)
     _rewrite_degraded_answer(payload)
     for key in _COLLECTIONS:
         if not payload.get(key):
@@ -491,6 +576,55 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
         meta["hint"] = hint
 
 
+def _file_size(root: Path, path: str) -> tuple[int, int] | None:
+    """``(lines, size_bytes)`` of a repo file on disk, or None when unreadable."""
+    try:
+        abs_path = (root / path).resolve()
+        # An index row is not a trust boundary; refuse anything outside the repo.
+        abs_path.relative_to(root.resolve())
+        data = abs_path.read_bytes()
+    except (OSError, ValueError):
+        return None
+    lines = data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+    return lines, len(data)
+
+
+def _add_file_sizes(payload: dict[str, Any], root: Path | None) -> None:
+    """Stamp live ``lines`` / ``size_bytes`` on shortlist rows and cue a ranged read.
+
+    Serve-time, not cached, so a dirty tree reports the bytes an agent would Read.
+    """
+    rows = payload.get("candidate_files")
+    if root is None or not rows or not isinstance(rows[0], dict):
+        return
+    for row in rows:
+        size = _file_size(root, row["path"])
+        if size is not None:
+            row["lines"], row["size_bytes"] = size
+    top = rows[0]
+    if top.get("size_bytes", 0) > _LARGE_FILE_BYTES:
+        cue = (
+            f"{top['path']} is {top['size_bytes'] // 1024} KB: Read a line range, or call "
+            f"get_context(targets=[\"{top['path']}\"], include=[\"skeleton\"]), "
+            "rather than the whole file."
+        )
+        hint = payload.get("next_action_hint")
+        payload["next_action_hint"] = f"{hint.rstrip()} {cue}" if isinstance(hint, str) else cue
+
+
+async def _refresh_file_sizes(payload: dict[str, Any], repo: str | None) -> None:
+    if repo == "all" or not payload.get("candidate_files"):
+        return
+    try:
+        from repowise.server.mcp_server._helpers import _resolve_repo_context
+        from repowise.server.mcp_server.tool_answer.evidence import _repo_root
+
+        root = _repo_root(await _resolve_repo_context(repo))
+    except Exception:
+        return
+    _add_file_sizes(payload, root)
+
+
 def _whole_bodies(payload: dict[str, Any]) -> int:
     """Count symbol bodies that survived the projection intact.
 
@@ -538,6 +672,7 @@ def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
             raw, question=question, scope=scope, repo=repo, include=include
         )
         await _refresh_freshness(payload, repo)
+        await _refresh_file_sizes(payload, repo)
         _stamp_completeness(payload)
         return payload
 

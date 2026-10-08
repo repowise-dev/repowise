@@ -333,8 +333,8 @@ async def get_answer(
     confidence=high is content-grounded (value + citation-source + frame
     gates): cite it directly, no verification Read needed. A "why" answer
     whose named mechanism is absent from the retrieved source is downgraded
-    to medium (the rationale may be conflated). Low confidence returns
-    best_guesses with one-line justifications instead of an empty answer.
+    to medium (the rationale may be conflated). Low confidence returns a
+    ranked candidate_files shortlist with one-line reasons instead of an empty answer.
     retrieval_quality separately rates the retrieval that fed synthesis; when
     it reads "weak" beside confidence=high, the note says what the confidence
     rests on instead of the ranking, and that is the claim to trust.

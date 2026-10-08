@@ -469,6 +469,7 @@ async def test_both_failure_modes_return_the_same_payload_shape(reason):
         "retrieval",
         "candidates",
         "candidate_files",
+        "_candidate_file_facts",
         "best_guesses",
         "next_action_hint",
         "note",

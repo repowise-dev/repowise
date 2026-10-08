@@ -46,6 +46,9 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
     _candidate_justification,
 )
 from repowise.server.mcp_server.tool_answer.retrieval import (
+    serialize_candidate_file_facts as _serialize_candidate_file_facts,
+)
+from repowise.server.mcp_server.tool_answer.retrieval import (
     serialize_candidate_files as _serialize_candidate_files,
 )
 from repowise.server.mcp_server.tool_answer.retrieval import (
@@ -158,6 +161,9 @@ def _with_candidates(payload: dict, resolved_pool: list[dict]) -> dict:
         # Longer than ``candidates``: the projection serves these paths at
         # every confidence, while ``candidates`` waits for include=["evidence"].
         payload["candidate_files"] = _serialize_candidate_files(resolved_pool)
+        # Internal: the projection turns these into shortlist rows on low
+        # answers and drops them everywhere else.
+        payload["_candidate_file_facts"] = _serialize_candidate_file_facts(resolved_pool)
     return payload
 
 
