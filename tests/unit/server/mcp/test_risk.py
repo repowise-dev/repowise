@@ -6,6 +6,7 @@ test data, mirroring the conftest pattern from the REST API tests.
 
 from __future__ import annotations
 
+import importlib
 import json
 
 import pytest
@@ -858,6 +859,27 @@ async def test_get_risk_reports_reach_not_the_uncalibrated_score(setup_mcp):
     assert scale["component_fields"]
     assert "overall_risk_score" not in blast
     assert "overall_risk_score_compatibility" not in blast
+
+
+@pytest.mark.asyncio
+async def test_get_risk_reach_is_null_when_the_analyzer_gave_no_score(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_risk
+    get_risk_module = importlib.import_module("repowise.server.mcp_server.tool_risk.get_risk")
+
+    real = get_risk_module._pr_blast_radius
+
+    async def _unscored(*args, **kwargs):
+        blast = await real(*args, **kwargs)
+        blast.pop("structural_impact_score", None)
+        return blast
+
+    monkeypatch.setattr(get_risk_module, "_pr_blast_radius", _unscored)
+    result = await get_risk(
+        ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["scales"]
+    )
+
+    assert result["directive"]["reach"] is None
+    assert "structural_impact_score" not in result["pr_blast_radius"]
 
 
 @pytest.mark.asyncio

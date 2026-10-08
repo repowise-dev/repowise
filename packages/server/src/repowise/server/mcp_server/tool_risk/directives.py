@@ -342,18 +342,14 @@ def _trim_blast_lists(
     # The structural score is uncalibrated and never sees the diff, so the MCP
     # reply carries only its band (``directive.reach``). The number and its
     # scale ride with ``include=["scales"]``; REST and the CLI keep the alias.
-    structural_score = trimmed_blast.pop("structural_impact_score", None)
-    for key in (
-        "structural_impact_band",
-        "structural_impact_scale",
-        "overall_risk_score",
-        "overall_risk_score_compatibility",
-    ):
+    structural_score = trimmed_blast.get("structural_impact_score")
+    contract = structural_impact_contract(float(structural_score or 0.0), full_scale=True)
+    for key in contract:
         trimmed_blast.pop(key, None)
     if structural_score is not None and full_scale:
-        contract = structural_impact_contract(float(structural_score), full_scale=True)
-        for key in ("structural_impact_score", "structural_impact_band", "structural_impact_scale"):
-            trimmed_blast[key] = contract[key]
+        trimmed_blast.update(
+            {k: v for k, v in contract.items() if k.startswith("structural_impact_")}
+        )
     for key, cap in (
         ("transitive_affected", 15),
         ("cochange_warnings", 10),

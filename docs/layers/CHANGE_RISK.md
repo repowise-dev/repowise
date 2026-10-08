@@ -145,7 +145,7 @@ files reach, and what is missing from it. The response opens with a
 | `missing_tests` | Changed files with a test gap; present only when coverage can back it |
 | `coverage` | `{status, reason}` when there is no per-test coverage map |
 | `tests_to_update` | Up to three test files the change will probably need edited, with why: `name_pair`, `imports` or `co_change`; empty when none qualify |
-| `reach` | `localized`, `moderate` or `broad`: the band of the structural heuristic below |
+| `reach` | `localized`, `moderate` or `broad`: the band of the structural heuristic below; `null` when no score was computed |
 | `next_calls` | What to call next |
 | `summary` | One sentence over all of the above |
 
