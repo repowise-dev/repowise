@@ -2014,3 +2014,169 @@ class TestSymbolModeExactOnly:
         assert res["results"]
         assert "fuzzy_omitted" not in res
         assert "exactly matches" in res["note"]
+
+
+class TestHitSymbols:
+    """File rows name the symbols inside them that the query's words match."""
+
+    @staticmethod
+    async def _seed_symbols(session, rid):
+        from repowise.core.persistence.models import WikiSymbol
+
+        wav = "services/wav_metadata.py"
+        rows = [
+            (wav, "write_bext_chunk", 42, "public", "def write_bext_chunk(f)", "function", None),
+            (wav, "_list_info_bytes", 88, "private", "def _list_info_bytes()", "function", None),
+            (wav, "read_header", 10, "public", "def read_header(f)", "function", None),
+            (wav, "bext_version", 3, "public", "bext_version = 2", "constant", None),
+            (wav, "stamp_list_info", 120, "public", "def stamp_list_info(self)", "method", "WavWriter"),
+            # No real line: never served.
+            (wav, "bext_info_list", 0, "public", "def bext_info_list()", "function", None),
+            ("services/mixer.py", "mix_tracks", 5, "public", "def mix_tracks()", "function", None),
+        ]
+        for i, (path, name, line, vis, sig, kind, parent) in enumerate(rows):
+            qualified = f"services.wav_metadata.{parent}.{name}" if parent else name
+            session.add(
+                WikiSymbol(
+                    id=f"hit-sym-{i}",
+                    repository_id=rid,
+                    file_path=path,
+                    symbol_id=f"{path}::{name}",
+                    name=name,
+                    qualified_name=qualified,
+                    parent_name=parent,
+                    kind=kind,
+                    signature=sig,
+                    start_line=line,
+                    end_line=line + 5,
+                    visibility=vis,
+                    language="python",
+                )
+            )
+        await session.commit()
+
+    @staticmethod
+    def _fake_vector():
+        import repowise.server.mcp_server as mcp_mod
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result(
+                    "file_page:services/wav_metadata.py",
+                    "WAV metadata",
+                    "file_page",
+                    "services/wav_metadata.py",
+                    0.8,
+                ),
+                _mk_result(
+                    "file_page:services/mixer.py", "Mixer", "file_page", "services/mixer.py", 0.6
+                ),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+
+    @pytest.mark.asyncio
+    async def test_a_prose_query_names_the_matching_symbol_and_line(
+        self, session, populated_db, setup_mcp
+    ):
+        from repowise.server.mcp_server import search_codebase
+
+        await self._seed_symbols(session, populated_db)
+        await _seed_page("file_page:services/wav_metadata.py", "services/wav_metadata.py")
+        await _seed_page("file_page:services/mixer.py", "services/mixer.py")
+        self._fake_vector()
+
+        res = await search_codebase("which function stamps bext and LIST info into wav files")
+        by_path = {r["path"]: r for r in res["results"]}
+        # Most query words first; a function outranks an equally matched constant.
+        assert by_path["services/wav_metadata.py"]["symbols"] == [
+            "WavWriter.stamp_list_info:120",
+            "_list_info_bytes:88",
+            "write_bext_chunk:42",
+        ]
+        # No symbol in the mixer shares a word with the query.
+        assert "symbols" not in by_path["services/mixer.py"]
+
+        hybrid = await search_codebase(
+            "where does wav_metadata stamp bext or mix tracks", mode="hybrid"
+        )
+        by_path = {r["path"]: r for r in hybrid["results"]}
+        # The hybrid page leg names symbols; the symbol row standing in for
+        # wav_metadata.py already names its own and gets no list.
+        assert by_path["services/mixer.py"]["symbols"] == ["mix_tracks:5"]
+        assert by_path["services/wav_metadata.py"]["type"] == "symbol"
+        assert "symbols" not in by_path["services/wav_metadata.py"]
+
+    @pytest.mark.asyncio
+    async def test_one_symbol_query_serves_every_file_row(
+        self, engine, session, populated_db, setup_mcp
+    ):
+        from sqlalchemy import event
+
+        from repowise.server.mcp_server import search_codebase
+
+        await self._seed_symbols(session, populated_db)
+        await _seed_page("file_page:services/wav_metadata.py", "services/wav_metadata.py")
+        await _seed_page("file_page:services/mixer.py", "services/mixer.py")
+        self._fake_vector()
+
+        statements: list[str] = []
+
+        def record(conn, cursor, statement, *args):
+            statements.append(statement)
+
+        event.listen(engine.sync_engine, "before_cursor_execute", record)
+        try:
+            res = await search_codebase("which function stamps bext and mix tracks", mode="concept")
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", record)
+
+        assert {r["path"] for r in res["results"] if r.get("symbols")} == {
+            "services/wav_metadata.py",
+            "services/mixer.py",
+        }
+        file_scoped = [s for s in statements if "wiki_symbols.file_path IN" in s]
+        assert len(file_scoped) == 1
+
+    def test_a_package_word_shared_by_most_hits_names_no_symbol(self):
+        from repowise.server.mcp_server._hit_symbols import _package_terms
+
+        paths = {"src/flask/app.py", "src/flask/cli.py", "src/flask/json/provider.py"}
+        # "flask" is every hit's package; "json" is one hit's topic.
+        assert _package_terms({"flask", "json", "route"}, paths) == {"flask"}
+        assert _package_terms({"flask"}, {"src/flask/app.py"}) == set()
+
+    @pytest.mark.asyncio
+    async def test_a_lone_symbol_row_gets_no_list(self, session, populated_db, setup_mcp):
+        from repowise.server.mcp_server._helpers import _resolve_repo_context
+        from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
+
+        await self._seed_symbols(session, populated_db)
+        symbol_row = {"type": "symbol", "name": "write_bext_chunk", "file": "services/wav_metadata.py"}
+        page_row = {"page_type": "file_page", "target_path": "services/wav_metadata.py"}
+        ctx = await _resolve_repo_context(None)
+        await attach_hit_symbols(ctx, "stamp bext", [symbol_row, page_row])
+        assert "symbols" not in symbol_row
+        assert page_row["symbols"][0] == "write_bext_chunk:42"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_leaves_the_response_intact(
+        self, session, populated_db, setup_mcp, monkeypatch
+    ):
+        from repowise.server.mcp_server import _hit_symbols, search_codebase
+
+        await self._seed_symbols(session, populated_db)
+        await _seed_page("file_page:services/wav_metadata.py", "services/wav_metadata.py")
+        await _seed_page("file_page:services/mixer.py", "services/mixer.py")
+        self._fake_vector()
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("symbol table unavailable")
+
+        monkeypatch.setattr(_hit_symbols, "_attach", boom)
+        res = await search_codebase("which function stamps bext into wav files", mode="concept")
+        assert [r["path"] for r in res["results"]] == [
+            "services/wav_metadata.py",
+            "services/mixer.py",
+        ]
+        assert not any("symbols" in r for r in res["results"])

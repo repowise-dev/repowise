@@ -37,6 +37,7 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
     vector_search_timeout_s,
 )
+from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
 from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import add_row_paths, file_candidates, hit_file_path
@@ -1015,6 +1016,7 @@ async def _structured_search(
             c = await _search_single_repo(ctx, query, limit, page_type, kind)
             for item in c:
                 item["type"] = "page"
+            await attach_hit_symbols(ctx, query, c)
             _tag_repo(c, ctx, multi)
             concepts.extend(c)
 
@@ -1174,7 +1176,8 @@ async def search_codebase(
     then file-backed pages only). Decision records rank below file pages
     unless the query is why-shaped.
 
-    Rows naming a file carry `path`; `candidates` lists up to `limit`
+    Rows naming a file carry `path`; concept pages add `symbols`
+    (name:line) the query matches. `candidates` lists up to `limit`
     distinct files to Read, best first.
 
     Args:
@@ -1297,6 +1300,7 @@ async def search_codebase(
     # below can reach past it. See its comment for why that matters.
     ranked = list(output)
     output = output[:limit]
+    await attach_hit_symbols(ctx, query, output)
 
     # Derive confidence_score from relative position in the result set.
     _assign_confidence(output, "relevance_score", "confidence_score")
