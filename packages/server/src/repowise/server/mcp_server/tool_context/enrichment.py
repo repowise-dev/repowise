@@ -913,9 +913,8 @@ async def _resolve_skeleton(
     (zero parsing), keeping every signature and the bodies of the
     highest-PageRank symbols under a token budget. ``include=["skeleton+"]``
     passes ``mode="plus"``: all non-function code kept, every function and
-    method body elided. File targets only:
-    a symbol's "skeleton" is just its signature, which the triage card
-    already carries.
+    method body elided. A ``file.py::Symbol`` target renders its file with
+    that symbol's whole body and every other symbol as its signature.
     """
     # A "file.py::Symbol" target still has a useful skeleton — the file that
     # defines the symbol. Strip the suffix and skeleton that file rather than
@@ -935,6 +934,7 @@ async def _resolve_skeleton(
 
     from repowise.core.distill.skeleton import SkeletonSymbol, build_skeleton
     from repowise.core.persistence.models import WikiSymbol
+    from repowise.server.mcp_server._symbol_lookup import symbol_id_variants
 
     repo_id = repository.id
     res = await session.execute(
@@ -976,6 +976,7 @@ async def _resolve_skeleton(
     # hydrator / incremental update, which hold a writable session on their path.
     from repowise.server.mcp_server._verify import check_symbol_bounds
 
+    focus_ids = set(symbol_id_variants(target)) if is_symbol_target else set()
     symbols = []
     for r in rows:
         check = check_symbol_bounds(r, source)
@@ -989,6 +990,7 @@ async def _resolve_skeleton(
                 end_line=check.end_line,
                 signature=r.signature,
                 importance=pagerank.get(r.name, 0.0),
+                focus=r.symbol_id in focus_ids,
             )
         )
     result = build_skeleton(
@@ -1009,22 +1011,31 @@ async def _resolve_skeleton(
         # a verified response never needs a follow-up Read.
         "verified": True,
     }
+    focused = any(sym.focus for sym in symbols)
     if is_symbol_target:
-        # The caller passed "file.py::Symbol"; tell them this is the whole
-        # file's skeleton, and how to get just the symbol's body.
+        name = target.split("::", 1)[1]
         result_data["skeleton"]["of_file"] = file_target
-        result_data["skeleton"]["symbol_hint"] = (
-            f"Skeleton of the file defining '{target.split('::', 1)[1]}'. For that "
-            f"symbol's full body call get_symbol('{target}')."
-        )
+        if focused:
+            result_data["skeleton"]["symbol_hint"] = (
+                f"Skeleton of the file defining '{name}': its full body, every "
+                "other symbol as its signature."
+            )
+        else:
+            # No row for the symbol passed the bounds check, so its body is not
+            # guaranteed here; get_symbol re-locates it.
+            result_data["skeleton"]["symbol_hint"] = (
+                f"Skeleton of the file defining '{name}'. For that "
+                f"symbol's full body call get_symbol('{target}')."
+            )
     if result.mode == "raw":
         result_data["skeleton"]["note"] = (
             "No usable symbol bounds for this file — returned source as-is."
         )
-    elif result.pct_of_full > 40.0:
+    elif result.pct_of_full > 40.0 and not focused:
         # Small files skeletonize poorly: when the skeleton is already a
         # large fraction of the source, tell the agent a Read costs little
-        # more and carries everything.
+        # more and carries everything. A focused skeleton is already the
+        # symbol plus a file map, so a Read is not the cheaper answer.
         result_data["skeleton"]["mostly_full"] = True
         result_data["skeleton"]["note"] = (
             f"Skeleton is {round(result.pct_of_full, 1)}% of the full file — "

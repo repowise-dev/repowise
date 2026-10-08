@@ -137,7 +137,12 @@ async def test_skeleton_for_symbol_target_renders_defining_file(
     assert "error" not in sk
     assert "class AuthService:" in sk["text"]  # whole file, not just the symbol
     assert sk["of_file"] == "src/auth/service.py"
-    assert "get_symbol" in sk["symbol_hint"]
+    # The target's body is whole; the enclosing class's other code is elided.
+    assert all(f"step_{n} = {n}" in sk["text"] for n in range(21, 41))
+    assert "tail_99 = 99" not in sk["text"]
+    assert sk["bodies_kept"] == ["login"]
+    assert "every other symbol as its signature" in sk["symbol_hint"]
+    assert "mostly_full" not in sk
 
 
 @pytest.mark.asyncio

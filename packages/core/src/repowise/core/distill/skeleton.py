@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from repowise.core.distill.budget import estimate_tokens
 
@@ -98,6 +98,9 @@ class SkeletonSymbol:
     ``importance`` is whatever ranking signal the caller has — symbol-node
     PageRank in the indexed case, 0.0 when the graph has nothing. The
     skeleton only compares importances relative to each other.
+
+    ``focus`` marks the symbol the caller asked about: its whole body is kept
+    and no other body is, so the file reads as signatures around one symbol.
     """
 
     name: str
@@ -106,6 +109,7 @@ class SkeletonSymbol:
     end_line: int  # 1-indexed, inclusive
     signature: str = ""
     importance: float = 0.0
+    focus: bool = False
 
 
 @dataclass(frozen=True)
@@ -155,9 +159,12 @@ def build_skeleton(
             symbol_count=0,
         )
 
+    focused = [sym for sym in usable if sym.focus]
+
     if mode == "plus":
         keep = [True] * total
         _elide_callable_bodies(lines, usable, keep)
+        _keep_focus(focused, keep)
         text = _render(lines, keep)
         return SkeletonResult(
             text=text,
@@ -165,6 +172,7 @@ def build_skeleton(
             full_tokens=full_tokens,
             skeleton_tokens=estimate_tokens(text),
             symbol_count=len(usable),
+            bodies_kept=tuple(sym.name for sym in focused),
         )
 
     keep = [False] * total
@@ -190,14 +198,20 @@ def build_skeleton(
     _keep_small_gaps(lines, usable, total, keep)
 
     bodies_kept: tuple[str, ...] = ()
-    if smart:
+    if focused:
+        bodies_kept = tuple(sym.name for sym in focused)
+    elif smart:
         budget = int(token_budget * (_HOTSPOT_BUDGET_FACTOR if hotspot else 1.0))
         bodies_kept = _keep_smart_bodies(lines, usable, sig_ends, keep, budget, query)
 
-    # Decorative banner comments add bytes, not structure.
+    # Decorative banner comments add bytes, not structure; a focused body
+    # stays whole.
+    in_focus = [False] * total
+    _keep_focus(focused, in_focus)
     for i in range(total):
-        if keep[i] and _DECOR_RE.match(lines[i]):
+        if keep[i] and not in_focus[i] and _DECOR_RE.match(lines[i]):
             keep[i] = False
+    _keep_focus(focused, keep)
 
     text = _render(lines, keep)
     return SkeletonResult(
@@ -225,17 +239,17 @@ def _sanitize(symbols: Sequence[SkeletonSymbol], total: int) -> list[SkeletonSym
             continue
         end = max(sym.start_line, min(sym.end_line, total))
         if end != sym.end_line:
-            sym = SkeletonSymbol(
-                name=sym.name,
-                kind=sym.kind,
-                start_line=sym.start_line,
-                end_line=end,
-                signature=sym.signature,
-                importance=sym.importance,
-            )
+            sym = replace(sym, end_line=end)
         out.append(sym)
     out.sort(key=lambda s: (s.start_line, -(s.end_line - s.start_line)))
     return out
+
+
+def _keep_focus(focused: list[SkeletonSymbol], keep: list[bool]) -> None:
+    """Mark every line of each focused symbol, signature through last line."""
+    for sym in focused:
+        for i in range(sym.start_line - 1, sym.end_line):
+            keep[i] = True
 
 
 def _keep_preamble(lines: list[str], first_start: int, keep: list[bool]) -> None:
