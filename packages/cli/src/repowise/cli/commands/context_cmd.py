@@ -14,6 +14,7 @@ _INCLUDE_BLOCKS = (
     "last_change",
     "callers",
     "callees",
+    "references",
     "metrics",
     "community",
     "decisions",
