@@ -149,7 +149,7 @@ Answers a how, where or why question in one call: it runs hybrid retrieval over 
 
 **Key return fields:** `answer`, `confidence` (`high` / `medium` / `low`, rates the prose), `retrieval_quality` (`high` / `partial` / `weak`, rates the evidence), `citations`, `symbol_bodies` (live bodies of symbols the answer names), `retrieval`, `best_guesses` and `fallback_targets` (on low confidence; a low `best_guesses` row carries `functions`, `lines` and `size_bytes` instead of a page excerpt), `candidate_files` (ranked file paths the citations do not already name: up to 3 at `high`, 5 otherwise), `episodes` (dated facts bearing on the question), `degraded` (synthesis could not run), `_meta.scope_hint` (areas the answer did not touch).
 
-A `high` answer can be cited directly. On `low`, read the rows the reply names, then `candidate_files`, before searching again. Without an LLM provider the tool still answers from retrieval, marked `degraded`.
+A `high` answer can be cited directly. On `low`, read the rows the reply names, then `candidate_files`, before searching again. Without an LLM provider the tool still answers from retrieval, marked `degraded`. When retrieval is also `weak`, the reply serves `best_guesses` and `candidate_files` with one guidance line in `answer`, and no `citations`.
 
 ```
 get_answer(question="How does the authentication flow work?")

@@ -325,3 +325,11 @@ def test_other_replies_keep_their_shape(extra, include):
     assert "note" in out
     assert out.get("citations")
     assert "reductions" not in out["_meta"]
+
+
+def test_the_ranked_list_puts_the_size_cue_in_its_answer_line(tmp_path):
+    (tmp_path / "big.py").write_bytes(b"x\n" * 30000)
+    payload = {"answer": "Ranked.", "best_guesses": [{"file": "big.py"}]}
+    _add_file_sizes(payload, tmp_path, ranked=True)
+    assert payload["answer"].startswith("Ranked. big.py is 58 KB")
+    assert "next_action_hint" not in payload

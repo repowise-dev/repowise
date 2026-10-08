@@ -481,6 +481,8 @@ def _record_reductions(
     expanded: bool, ranked: bool = False
 ) -> None:
     reduced = False
+    reason = "deduplicated" if expanded else "confidence_projection_and_deduplication"
+    # Ranked shape only: rows summed across every reduced collection.
     shown = hidden = 0
     for key in _COLLECTIONS:
         # By default ``candidate_files`` carries these paths, so counting the
@@ -491,7 +493,6 @@ def _record_reductions(
         emitted = len(payload.get(key) or []) if isinstance(payload.get(key), list) else 0
         if total <= emitted:
             continue
-        reason = "deduplicated" if expanded else "confidence_projection_and_deduplication"
         reduced = True
         if ranked:
             shown, hidden = shown + emitted, hidden + total
@@ -533,8 +534,8 @@ def project_answer_payload(
 def _project(
     raw: dict[str, Any], *, question: str, scope: str | None,
     repo: str | None, include: list[str] | None
-) -> tuple[dict[str, Any], bool]:
-    """The projection, and whether it slimmed ``best_guesses`` (decided once, here)."""
+) -> tuple[dict[str, Any], bool, bool]:
+    """The projection, whether it slimmed ``best_guesses``, and whether it is the ranked list."""
     payload = copy.deepcopy(raw)
     totals = {
         key: len(payload.get(key) or []) if isinstance(payload.get(key), list) else 0
@@ -562,7 +563,7 @@ def _project(
     unknown = sorted(set(include or []) - {"evidence"})
     if unknown:
         payload.setdefault("_meta", {})["ignored_arguments"] = {"include": unknown}
-    return payload, slimmed
+    return payload, slimmed, ranked
 
 
 def _served_paths(payload: dict[str, Any]) -> list[str]:
@@ -671,7 +672,7 @@ def _file_size(root: Path, path: str) -> tuple[int | None, int] | None:
     return lines + (1 if last and last != b"\n" else 0), size
 
 
-def _add_file_sizes(payload: dict[str, Any], root: Path | None) -> None:
+def _add_file_sizes(payload: dict[str, Any], root: Path | None, *, ranked: bool = False) -> None:
     """Stamp live ``lines`` / ``size_bytes`` on slimmed guesses and cue a ranged read.
 
     Serve-time, not cached, so a dirty tree reports the bytes an agent would Read.
@@ -694,15 +695,15 @@ def _add_file_sizes(payload: dict[str, Any], root: Path | None) -> None:
             f"get_context(targets=[\"{path}\"], include=[\"skeleton\"]), "
             "rather than the whole file."
         )
-        key = "next_action_hint"
-        if "answer" in payload and key not in payload:
-            # The keyless ranked list carries its one guidance line in ``answer``.
-            key = "answer"
+        # The keyless ranked list carries its one guidance line in ``answer``.
+        key = "answer" if ranked else "next_action_hint"
         hint = payload.get(key)
         payload[key] = f"{hint.rstrip()} {cue}" if isinstance(hint, str) else cue
 
 
-async def _refresh_file_sizes(payload: dict[str, Any], repo: str | None) -> None:
+async def _refresh_file_sizes(
+    payload: dict[str, Any], repo: str | None, *, ranked: bool = False
+) -> None:
     """Size the slimmed guesses. Best-effort: a sync stat and bounded read of <= 3 files."""
     if repo == "all":
         return
@@ -713,7 +714,7 @@ async def _refresh_file_sizes(payload: dict[str, Any], repo: str | None) -> None
         root = _repo_root(await _resolve_repo_context(repo))
     except Exception:
         return
-    _add_file_sizes(payload, root)
+    _add_file_sizes(payload, root, ranked=ranked)
 
 
 def _whole_bodies(payload: dict[str, Any]) -> int:
@@ -759,12 +760,12 @@ def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
         include: list[str] | None = None,
     ) -> dict[str, Any]:
         raw = await fn(question=question, scope=scope, repo=repo, include=include)
-        payload, slimmed = _project(
+        payload, slimmed, ranked = _project(
             raw, question=question, scope=scope, repo=repo, include=include
         )
         await _refresh_freshness(payload, repo)
         if slimmed:
-            await _refresh_file_sizes(payload, repo)
+            await _refresh_file_sizes(payload, repo, ranked=ranked)
         _stamp_completeness(payload)
         return payload
 
