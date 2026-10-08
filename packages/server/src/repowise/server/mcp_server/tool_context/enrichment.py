@@ -59,7 +59,11 @@ from repowise.core.persistence.models import (
     Repository,
 )
 from repowise.server.mcp_server._basis import call_resolution_basis
-from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
+from repowise.server.mcp_server._budget import (
+    DEFAULT_RESPONSE_CHARS,
+    OmissionCollector,
+    cap_collection,
+)
 from repowise.server.mcp_server._graph_files import keep_projected_edge, node_to_file
 from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
@@ -897,6 +901,10 @@ def _doc_reference_block(
     return block
 
 
+#: Same threshold get_symbol uses to outline a container instead of inlining it.
+_FOCUS_CONTAINER_MAX_CHARS = DEFAULT_RESPONSE_CHARS // 2
+
+
 async def _resolve_skeleton(
     session: AsyncSession,
     repository: Repository,
@@ -977,11 +985,18 @@ async def _resolve_skeleton(
     from repowise.server.mcp_server._verify import check_symbol_bounds
 
     focus_ids = set(symbol_id_variants(target)) if is_symbol_target else set()
+    source_lines = source.splitlines()
     symbols = []
     for r in rows:
         check = check_symbol_bounds(r, source)
         if check.approximate:
             continue
+        focus = r.symbol_id in focus_ids
+        if focus and r.kind not in ("function", "method"):
+            # Ceiling: a container body over the get_symbol outline threshold is
+            # not inlined; the ranked skeleton shows its methods as signatures.
+            span = source_lines[check.start_line - 1 : check.end_line]
+            focus = sum(len(ln) + 1 for ln in span) <= _FOCUS_CONTAINER_MAX_CHARS
         symbols.append(
             SkeletonSymbol(
                 name=r.name,
@@ -990,7 +1005,7 @@ async def _resolve_skeleton(
                 end_line=check.end_line,
                 signature=r.signature,
                 importance=pagerank.get(r.name, 0.0),
-                focus=r.symbol_id in focus_ids,
+                focus=focus,
             )
         )
     result = build_skeleton(
@@ -1021,8 +1036,8 @@ async def _resolve_skeleton(
                 "other symbol as its signature."
             )
         else:
-            # No row for the symbol passed the bounds check, so its body is not
-            # guaranteed here; get_symbol re-locates it.
+            # No row for the symbol passed the bounds check, or it is a container
+            # over the ceiling, so its body is not guaranteed here.
             result_data["skeleton"]["symbol_hint"] = (
                 f"Skeleton of the file defining '{name}'. For that "
                 f"symbol's full body call get_symbol('{target}')."
