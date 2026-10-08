@@ -178,5 +178,6 @@ class WorkspaceEditorFileData:
     package_deps: list[dict] = field(default_factory=list)  # package dep entries
     contract_links: list[dict] = field(default_factory=list)  # matched contract links
     contracts_by_type: dict[str, int] = field(default_factory=dict)  # {"http": 5, …}
-    # Rendered MCP tool table (single source: tool_table.py).
+    # Rendered MCP tool table (single source: tool_table.py). Always the keyed
+    # table: member repos can differ in keyless state, and one keyed repo needs it.
     tool_table_md: str = field(default_factory=lambda: _render_tool_table())

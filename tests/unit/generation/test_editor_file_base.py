@@ -145,6 +145,25 @@ def test_keyed_index_keeps_model_guidance(any_gen):
     assert 'Cite `confidence: "high"`' in result
 
 
+@pytest.mark.parametrize("scope", [_KEYLESS_SCOPE, _KEYED_SCOPE], ids=["keyless", "keyed"])
+@pytest.mark.parametrize("upgrade", ["pending", "complete"])
+def test_render_has_no_trailing_whitespace_or_double_blank_lines(any_gen, scope, upgrade):
+    result = any_gen.render(_scoped({**scope, "upgrade": {"status": upgrade}}))
+    assert not [line for line in result.splitlines() if line != line.rstrip()]
+    assert "\n\n\n" not in result
+
+
+def test_legacy_empty_scope_renders_keyed_text_and_no_scope_block(any_gen):
+    data = _scoped({})
+    assert data.keyless is False
+    result = any_gen.render(data)
+    assert "Scope:" not in result
+    assert _KEYLESS_BULLET not in result
+    assert "Confidence: 100%" in result
+    assert "[fts]` only has no semantic agreement" in result
+    assert 'Cite `confidence: "high"`' in result
+
+
 def test_stale_warning_guidance_points_at_served_files(any_gen):
     result = any_gen.render(_minimal_data())
     assert "When `_meta.stale_warning` is set, Read the files that response served." in result
