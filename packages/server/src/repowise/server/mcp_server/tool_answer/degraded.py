@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 
+from repowise.server.mcp_server._meta import _normalize_target_path
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server.tool_answer.bodies import (
@@ -106,17 +107,19 @@ async def _degraded_payload(
     code_rationale = _drop_already_surfaced(
         await _gather_code_rationale(ctx, hits, fallback_targets, question), symbol_bodies
     )
+    seen = {_normalize_target_path(path) for path in citations}
     rationale_paths = [
-        path for row in code_rationale if (path := row.get("path")) and path not in citations
+        path
+        for row in code_rationale
+        if (path := row.get("path")) and _normalize_target_path(path) not in seen
     ]
     if rationale_paths:
         # Rationale rows rank by comment score across files, so a comment-heavy
         # hub would outrank the file retrieval put first; cite the ranking ahead.
-        citations.extend(
-            path
-            for path in dict.fromkeys([*(g["file"] for g in best_guesses), *rationale_paths])
-            if path not in citations
-        )
+        for path in (*(g["file"] for g in best_guesses), *rationale_paths):
+            if (key := _normalize_target_path(path)) not in seen:
+                seen.add(key)
+                citations.append(path)
 
     payload: dict = {
         "answer": summary,

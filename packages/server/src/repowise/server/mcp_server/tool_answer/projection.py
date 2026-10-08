@@ -289,12 +289,20 @@ def _shape_candidate_files(payload: dict[str, Any], *, expanded: bool) -> None:
     if not isinstance(rows, list):
         return
     cited = {path for path in map(_nav_path, payload.get("citations") or []) if path}
+    spent = cited
+    if payload.get("degraded"):
+        # Keyless citations also name the ranked guesses; they keep their
+        # shortlist slots so citing them reorders the files served, not adds.
+        evidence = set(map(_nav_path, payload.get("symbol_bodies") or []))
+        evidence.update(map(_nav_path, payload.get("code_rationale") or []))
+        spent = cited - (set(map(_nav_path, payload.get("best_guesses") or [])) - evidence)
     paths = [
         path for path in dict.fromkeys(row for row in rows if isinstance(row, str))
-        if path not in cited
+        if path not in spent
     ]
     high = not expanded and _shape_confidence(payload) == "high"
     paths = paths[: _CANDIDATE_FILES_HIGH if high else _CANDIDATE_FILES_MAX]
+    paths = [path for path in paths if path not in cited]
     if paths:
         payload["candidate_files"] = paths
 
