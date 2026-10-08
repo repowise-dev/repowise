@@ -765,7 +765,9 @@ async def test_get_risk_gates_the_fields_an_agent_cannot_act_on(setup_mcp):
     """graph and churn blocks ship only when include asks for them."""
     from repowise.server.mcp_server import get_risk
 
-    default = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
+    default = await get_risk(
+        ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["blast"]
+    )
     card = default["targets"]["src/auth/service.py"]
     for key in ("impact_surface", "change_magnitude", "risk_type", "change_pattern"):
         assert key not in card
@@ -775,7 +777,9 @@ async def test_get_risk_gates_the_fields_an_agent_cannot_act_on(setup_mcp):
         assert key in card
 
     graph = await get_risk(
-        ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["graph"]
+        ["src/auth/service.py"],
+        changed_files=["src/auth/service.py"],
+        include=["graph", "blast"],
     )
     assert "impact_surface" in graph["targets"]["src/auth/service.py"]
     assert "direct_risks" in graph["pr_blast_radius"]
@@ -794,7 +798,11 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
     result = await get_risk(["src/auth/service.py"], include=["graph", "nonsense"])
     assert "impact_surface" in result["targets"]["src/auth/service.py"]
     assert result["ignored_arguments"] == [
-        {"argument": "include", "values": ["nonsense"], "valid": ["churn", "graph", "scales", "tests"]}
+        {
+            "argument": "include",
+            "values": ["nonsense"],
+            "valid": ["blast", "churn", "graph", "scales", "tests"],
+        }
     ]
 
 
@@ -803,7 +811,9 @@ async def test_get_risk_directive_does_not_copy_the_analyzer_score(setup_mcp):
     """The structural heuristic lives in blast detail, not the directive."""
     from repowise.server.mcp_server import get_risk
 
-    result = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
+    result = await get_risk(
+        ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["blast"]
+    )
 
     assert "overall_risk_score" not in result["directive"]
     blast = result["pr_blast_radius"]
@@ -822,7 +832,7 @@ async def test_get_risk_directive_does_not_copy_the_analyzer_score(setup_mcp):
     assert "risk_scales" not in result
 
     expanded = await get_risk(
-        ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["scales"]
+        ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["scales", "blast"]
     )
     assert expanded["risk_scales"][0]["field"] == "targets.*.hotspot_score"
     assert expanded["pr_blast_radius"]["structural_impact_scale"]["component_fields"]
@@ -855,7 +865,7 @@ async def test_get_risk_directive_points_at_the_full_run_list_when_capped(setup_
     await session.flush()
 
     result = await get_risk(
-        ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["tests"]
+        ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["tests", "blast"]
     )
     directive = result["directive"]
 
@@ -1045,3 +1055,30 @@ async def test_security_signals_are_ranked_high_first(setup_mcp, session):
 
     signals = await _get_security_signals(session, "repo1", "src/auth/service.py")
     assert [s["severity"] for s in signals] == ["high", "med", "low"]
+
+
+@pytest.mark.asyncio
+async def test_get_risk_serves_the_blast_radius_on_request(setup_mcp):
+    from repowise.server.mcp_server import get_risk
+
+    files = ["src/auth/service.py"]
+    plain = await get_risk(files, changed_files=files)
+    assert "pr_blast_radius" not in plain
+    assert isinstance(plain["directive"]["recommended_reviewers"], list)
+
+    blast = await get_risk(files, changed_files=files, include=["blast"])
+    assert "structural_impact_score" in blast["pr_blast_radius"]
+    assert (
+        blast["directive"]["recommended_reviewers"]
+        == blast["pr_blast_radius"]["recommended_reviewers"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_risk_pr_mode_puts_docs_and_config_cards_last(setup_mcp):
+    """The budget sheds cards from the tail, so a code card must not sit there."""
+    from repowise.server.mcp_server import get_risk
+
+    files = ["CHANGES.rst", "setup.cfg", "src/auth/service.py"]
+    result = await get_risk(files, changed_files=files)
+    assert next(iter(result["targets"])) == "src/auth/service.py"

@@ -402,7 +402,7 @@ async def test_risk_real_adversarial_wire_recovers_each_directive_lane(
     monkeypatch.setattr(PRBlastRadiusAnalyzer, "analyze_files", sealed_analyze)
     changed = [f"src/gap_{i}.py" for i in range(6)]
     result = await tool_middleware(get_risk)(
-        ["src/auth/service.py"], changed_files=changed, include=["tests"]
+        ["src/auth/service.py"], changed_files=changed, include=["tests", "blast"]
     )
 
     _assert_wire(result, "directive", EXPANDED_RESPONSE_CHARS)
@@ -422,10 +422,9 @@ async def test_risk_real_adversarial_wire_recovers_each_directive_lane(
         assert directive[f"{key}_emitted"] < total
         assert directive[f"{key}_reduced_reason"].startswith("construction_cap")
     assert result["truncated"] is True
+    # The blast block sheds first, so the directive lists keep their cap.
     assert "pr_blast_radius" not in result
-    assert directive["test_recommendations_reduced_reason"] == (
-        "construction_cap_and_response_budget"
-    )
+    assert directive["test_recommendations_reduced_reason"] == "construction_cap"
     assert directive["test_recommendations_omitted"] == (
         directive["test_recommendations_total"]
         - directive["test_recommendations_emitted"]

@@ -546,6 +546,7 @@ def _build_pr_directive(
     *,
     full_scale: bool = False,
     include_tests: bool = False,
+    include_blast: bool = False,
 ) -> None:
     """Assemble PR-mode output: trim co-change lists + blast radius, then build
     the directive block. Mutates *response* in place. Behavior preserved.
@@ -572,10 +573,16 @@ def _build_pr_directive(
         r["co_change_partners_emitted"] = emitted
         r["co_change_partners_truncated"] = emitted < total
 
+    # The blast block mostly repeats the directive, so it ships on request;
+    # unrequested, its trimmed rows are not omissions to recover.
     trimmed_blast = _trim_blast_lists(
-        pr_blast_radius, exclude_spec, collector, full_scale=full_scale
+        pr_blast_radius,
+        exclude_spec,
+        collector if include_blast else None,
+        full_scale=full_scale,
     )
-    response["pr_blast_radius"] = trimmed_blast
+    if include_blast:
+        response["pr_blast_radius"] = trimmed_blast
 
     # Directive: 3 short lists the agent can read in one glance. Each
     # entry is a file path (string), never a dossier. Designed to answer
@@ -820,6 +827,7 @@ def _build_pr_directive(
         "conformance_violations": conformance_violations,
         "dependency_cycles": dependency_cycles,
         "governance_risk": governance_risk,
+        "recommended_reviewers": trimmed_blast.get("recommended_reviewers") or [],
         "next_calls": [c.as_dict() for c in next_calls],
         "summary": (
             f"PR touches {len(changed_files)} file(s). "

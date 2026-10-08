@@ -214,7 +214,7 @@ Per file:
 | test gaps, `security_signals` | Test coverage gaps and security findings for the file |
 | `resolved`, `unresolved_reason` | A target naming no indexed file: `unsupported_target_kind` (a `module:` id), `directory`, `not_indexed`, `no_such_path`. Counts are omitted, never zeroed |
 
-Opt-in blocks: `tests` adds the PR directive's typed `test_recommendations`. `graph` adds typed `dependents` (direct versus transitive), `consumers` (typed contract consumers only), `cross_repo_links`, `impact_surface` and `direct_risks`, with `relationship_analysis` distinguishing an empty analysis from an unavailable or partial one. `churn` adds `change_magnitude`, `risk_type` and `change_pattern`. `scales` adds the unit, range and calibration of every scalar; it is identical on every call, so ask once. A multi-target call also carries `global_hotspots`.
+Opt-in blocks: `tests` adds the PR directive's typed `test_recommendations`, and `blast` adds `pr_blast_radius`, the PR dossier behind the directive (transitive files, co-change warnings, test gaps, reviewers, the structural score). `graph` adds typed `dependents` (direct versus transitive), `consumers` (typed contract consumers only), `cross_repo_links`, `impact_surface` and `direct_risks`, with `relationship_analysis` distinguishing an empty analysis from an unavailable or partial one. `churn` adds `change_magnitude`, `risk_type` and `change_pattern`. `scales` adds the unit, range and calibration of every scalar; it is identical on every call, so ask once. A multi-target call also carries `global_hotspots`.
 
 **PR mode** (`changed_files` passed). The response starts with `directive`:
 
@@ -227,7 +227,8 @@ Opt-in blocks: `tests` adds the PR directive's typed `test_recommendations`. `gr
 | `missing_tests`, `files_without_measured_tests` | Changed files with no measured test. `missing_tests` is absent when coverage is unavailable or stale, since an empty list would read as no gaps |
 | `coverage` | `{status, reason}` when there is no per-test coverage map. With a map, `coverage_analysis`, `test_analysis` and `test_inference_analysis` say whether each evidence source was available, stale, partial or degraded |
 | `test_recommendations` | With `include=["tests"]`: typed rows, each with a `basis`: `measured` (the per-test coverage map found the test) or `inferred` (structural reach, not coverage proof) |
-| `structural_impact_score` | Uncalibrated 0 to 10 structural heuristic: `localized` below 4, `moderate` 4 to below 7, `broad` 7 and up. Not a breakage probability. `overall_risk_score` is a deprecated alias |
+| `recommended_reviewers` | Up to five primary owners of the affected files |
+| `pr_blast_radius.structural_impact_score` | With `include=["blast"]`: uncalibrated 0 to 10 structural heuristic: `localized` below 4, `moderate` 4 to below 7, `broad` 7 and up. Not a breakage probability. `overall_risk_score` is a deprecated alias |
 | `next_calls` | `get_change_risk()` for the diff itself, then `get_context` on the first `may_break` files |
 
 In workspace mode the directive also carries `will_break_consumers` (services in other repos that structurally depend on this one; structural reach only despite the name), `missing_cross_repo_cochanges`, `breaking_changes` (provider incompatibilities since the last index, with impacted consumers; a consumer link does not prove field use), `conformance_violations` and `dependency_cycles`. They are dropped when no workspace is loaded.

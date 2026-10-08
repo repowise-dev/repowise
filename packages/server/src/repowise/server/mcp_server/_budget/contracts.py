@@ -114,6 +114,8 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         ),
         requested_projections=(
             (
+                # The cards are the changed files, so they outlive the blast
+                # block, which stays first to go even when asked for.
                 "changed_files",
                 (
                     "directive.test_recommendations[]",
@@ -121,8 +123,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
                     "directive.tests_to_update[]",
                     "directive.may_break[]",
                     "directive.next_calls[]",
-                    "pr_blast_radius",
-                    "pr_blast_radius.guarding_tests",
+                    "targets[]",
                 ),
             ),
             # targets is required, so it is always asked for. Without this the

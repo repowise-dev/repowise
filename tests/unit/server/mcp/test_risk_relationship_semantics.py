@@ -99,7 +99,9 @@ async def relationship_payload(setup_mcp, factory, tmp_path):
     try:
         yield {
             "normal": await get_risk([target], repo="alpha", include=["graph"]),
-            "pr": await get_risk([target], repo="alpha", changed_files=[target], include=["graph"]),
+            "pr": await get_risk(
+                [target], repo="alpha", changed_files=[target], include=["graph", "blast"]
+            ),
         }
     finally:
         _state._registry, _state._cross_repo_enricher = previous

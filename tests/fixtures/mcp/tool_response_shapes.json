@@ -1400,6 +1400,13 @@
           "tool": null
         }
       ],
+      "recommended_reviewers": [
+        {
+          "email": null,
+          "files": null,
+          "ownership_pct": null
+        }
+      ],
       "summary": null,
       "test_recommendations": [
         {
