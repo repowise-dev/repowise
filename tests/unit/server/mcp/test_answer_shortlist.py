@@ -247,3 +247,81 @@ async def test_candidate_file_facts_never_leak_through_the_tool_on_a_cache_hit(
     assert provider.calls == 1
     for reply in (fresh, cached):
         assert "_candidate_file_facts" not in json.dumps(reply, default=str)
+
+
+_COMMENT = "Why this module exists, at length. " * 20  # a long mined docstring
+
+
+def _keyless_weak(**extra) -> dict:
+    """A keyless reply on a weak retrieval, shaped like a live OpenWhisper one."""
+    raw = _raw("low", **{"degraded": "no-llm-provider", **extra})
+    raw["citations"] = _POOL[:3]
+    raw["note"] = "Synthesis is unavailable; local retrieval remains usable."
+    raw["fallback_targets"] = _POOL[:5]
+    raw["code_rationale"] = [
+        {"path": _POOL[0], "lines": [1, 12], "comment": f"guess {_POOL[0]}. {_COMMENT}"},
+        {"path": _POOL[1], "lines": [40, 46], "comment": f"High edge. {_COMMENT}"},
+        {"path": _POOL[1], "lines": [1, 9], "comment": f"guess {_POOL[1]}.. {_COMMENT}"},
+        {"path": _POOL[2], "lines": [5, 8], "comment": f"Low edge. {_COMMENT}"},
+    ]
+    raw["_meta"] = {"contract_version": 1, "hint": "No synthesis, and retrieval was weak."}
+    return raw
+
+
+def test_keyless_weak_reply_serves_the_ranked_list_and_one_guidance_line():
+    raw = _keyless_weak()
+    out = project_answer_payload(raw, question="which file registers the hotkey")
+    before = project_answer_payload(
+        _keyless_weak(degraded="synthesis-failed"), question="which file registers the hotkey"
+    )
+
+    assert set(out) == {
+        "answer", "confidence", "retrieval_quality", "degraded", "best_guesses",
+        "candidate_files", "code_rationale", "_meta",
+    }
+    assert "src/pkg/f0.py first" in out["answer"] and "search_codebase" in out["answer"]
+    assert "hint" not in out["_meta"]
+    # Ranking and the files served are untouched.
+    assert out["best_guesses"] == before["best_guesses"]
+    assert out["candidate_files"] == before["candidate_files"]
+    # Rows from the top guess, or opening with a guess's reason, restate best_guesses.
+    (row,) = out["code_rationale"]
+    assert (row["path"], row["lines"]) == (_POOL[1], [40, 46])
+    assert row["comment"].startswith("High edge.") and len(row["comment"]) <= 201
+    assert not any(key.endswith(("_total", "_emitted", "_reduced_reason")) for key in out)
+    (reduction,) = out["_meta"]["reductions"]
+    assert reduction["field"] == "evidence" and reduction["emitted"] < reduction["total"]
+    assert out["_meta"]["projection"]["recovery"]["arguments"] == {"include": ["evidence"]}
+
+
+def test_keyless_weak_reply_fits_its_size_ceiling():
+    # Served live, the envelope (_meta scope, freshness, completeness) adds about
+    # 750 chars; 1,300 here keeps the whole reply near 2 KB, down from about 4.6 KB.
+    out = project_answer_payload(_keyless_weak(), question="which file registers the hotkey")
+    assert len(json.dumps(out, separators=(",", ":"), ensure_ascii=False)) < 1_300
+
+
+def test_keyless_weak_drops_rationale_when_every_row_restates_the_list():
+    raw = _keyless_weak()
+    del raw["code_rationale"][1]
+    out = project_answer_payload(raw, question="q")
+    assert "code_rationale" not in out
+
+
+@pytest.mark.parametrize(
+    ("extra", "include"),
+    [
+        ({"degraded": "synthesis-failed"}, None),
+        ({"retrieval_quality": "partial", "confidence": "medium"}, None),
+        ({"symbol_bodies": [{"path": "src/pkg/f0.py", "name": "run_0", "lines": [10, 12],
+                             "source": "def run_0(): ...", "verified": True}]}, None),
+        ({}, ["evidence"]),
+    ],
+)
+def test_other_replies_keep_their_shape(extra, include):
+    raw = _keyless_weak()
+    raw.update(extra)
+    out = project_answer_payload(raw, question="q", include=include)
+    assert "note" in out
+    assert out.get("citations")
+    assert "reductions" not in out["_meta"]

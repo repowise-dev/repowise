@@ -414,11 +414,74 @@ def _default_shape(payload: dict[str, Any], question: str) -> None:
     )
 
 
+_RANKED_RATIONALE_CHARS = 200
+
+
+def _ranked_list_only(payload: dict[str, Any]) -> bool:
+    """Keyless, weak retrieval and no body: the ranked files are the whole product."""
+    return (
+        payload.get("degraded") == "no-llm-provider"
+        and payload.get("retrieval_quality") == "weak"
+        and payload.get("confidence") == "low"
+        and not payload.get("symbol_bodies")
+        and _first_guess(payload) is not None
+    )
+
+
+def _serve_ranked_list(payload: dict[str, Any]) -> None:
+    """Cut a keyless weak reply to best_guesses, candidate_files and one guidance line.
+
+    A rationale row from the top guess, or one opening with its file's
+    ``why_relevant``, adds nothing; one other row survives, shortened.
+    ``include=["evidence"]`` restores everything.
+    """
+    top = _nav_path(_first_guess(payload))
+    why = {
+        _nav_path(guess): " ".join(_text(guess, "why_relevant", "why").rstrip(".").split())
+        for guess in payload["best_guesses"]
+        if isinstance(guess, dict)
+    }
+
+    def _restates(row: dict[str, Any]) -> bool:
+        path = _nav_path(row)
+        if path == top:
+            return True
+        opening = why.get(path)
+        comment = " ".join(_text(row, "rationale", "comment", "quote", "source", "text").split())
+        return bool(opening) and comment.startswith(opening)
+
+    row = next(
+        (
+            row for row in payload.get("code_rationale") or []
+            if isinstance(row, dict) and not _restates(row)
+        ),
+        None,
+    )
+    payload.pop("code_rationale", None)
+    if row is not None:
+        comment = _text(row, "rationale", "comment", "quote", "source", "text")
+        if len(comment) > _RANKED_RATIONALE_CHARS:
+            comment = comment[:_RANKED_RATIONALE_CHARS].rstrip() + "…"
+        payload["code_rationale"] = [
+            {"path": _path(row), "lines": row.get("lines"), "comment": comment}
+        ]
+    # Every cited path is a guess or a rationale row, so citations would repeat them.
+    for key in ("citations", "note", "next_action_hint"):
+        payload.pop(key, None)
+    if isinstance(payload.get("_meta"), dict):
+        payload["_meta"].pop("hint", None)
+    payload["answer"] = (
+        f"No synthesis ({payload['degraded']}), weak retrieval: best_guesses ranks the "
+        f"likeliest files, {top} first. If none fits, refine with search_codebase."
+    )
+
+
 def _record_reductions(
     payload: dict[str, Any], totals: dict[str, int], *, scope: str | None, repo: str | None,
-    expanded: bool
+    expanded: bool, ranked: bool = False
 ) -> None:
     reduced = False
+    shown = hidden = 0
     for key in _COLLECTIONS:
         # By default ``candidate_files`` carries these paths, so counting the
         # hidden rows would only advertise what the reply already serves.
@@ -429,10 +492,19 @@ def _record_reductions(
         if total <= emitted:
             continue
         reason = "deduplicated" if expanded else "confidence_projection_and_deduplication"
+        reduced = True
+        if ranked:
+            shown, hidden = shown + emitted, hidden + total
+            continue
         payload[f"{key}_total"] = total
         payload[f"{key}_emitted"] = emitted
         payload[f"{key}_reduced_reason"] = reason
-        reduced = True
+    if ranked and reduced:
+        # One row instead of three sibling counts per collection: the ranked
+        # list is the product, and ``_meta.completeness`` still rolls this up.
+        payload.setdefault("_meta", {}).setdefault("reductions", []).append(
+            {"field": "evidence", "total": hidden, "emitted": shown, "reason": reason}
+        )
     if reduced and not expanded:
         projection = payload.setdefault("_meta", {}).setdefault("projection", {})
         # The caller already holds the question; restating a long one costs
@@ -478,10 +550,15 @@ def _project(
             slimmed = _slim_best_guesses(payload, facts if isinstance(facts, dict) else {})
     _shape_candidate_files(payload, expanded=expanded)
     _rewrite_degraded_answer(payload)
+    ranked = not expanded and _ranked_list_only(payload)
+    if ranked:
+        _serve_ranked_list(payload)
     for key in _COLLECTIONS:
         if not payload.get(key):
             payload.pop(key, None)
-    _record_reductions(payload, totals, scope=scope, repo=repo, expanded=expanded)
+    _record_reductions(
+        payload, totals, scope=scope, repo=repo, expanded=expanded, ranked=ranked
+    )
     unknown = sorted(set(include or []) - {"evidence"})
     if unknown:
         payload.setdefault("_meta", {})["ignored_arguments"] = {"include": unknown}
@@ -617,8 +694,12 @@ def _add_file_sizes(payload: dict[str, Any], root: Path | None) -> None:
             f"get_context(targets=[\"{path}\"], include=[\"skeleton\"]), "
             "rather than the whole file."
         )
-        hint = payload.get("next_action_hint")
-        payload["next_action_hint"] = f"{hint.rstrip()} {cue}" if isinstance(hint, str) else cue
+        key = "next_action_hint"
+        if "answer" in payload and key not in payload:
+            # The keyless ranked list carries its one guidance line in ``answer``.
+            key = "answer"
+        hint = payload.get(key)
+        payload[key] = f"{hint.rstrip()} {cue}" if isinstance(hint, str) else cue
 
 
 async def _refresh_file_sizes(payload: dict[str, Any], repo: str | None) -> None:
