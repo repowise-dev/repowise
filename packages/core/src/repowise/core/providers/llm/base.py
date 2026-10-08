@@ -640,15 +640,20 @@ class ChatStreamEvent:
     - ``tool_result``: tool execution result (from internal loops) in ``tool_call`` + ``tool_result_data``
     - ``usage``: token counts in ``input_tokens`` / ``output_tokens``
     - ``stop``: end of generation (may follow tool_start if stop_reason is tool_use)
+    - ``assistant_content``: the turn's provider-native blocks in ``content_blocks``,
+      after ``stop``. The caller stores them on the assistant message as
+      ``provider_content`` so the same provider can replay the turn verbatim
+      (Anthropic thinking blocks must accompany their tool results).
     """
 
-    type: str  # text_delta | tool_start | tool_result | usage | stop
+    type: str  # text_delta | tool_start | tool_result | usage | stop | assistant_content
     text: str | None = None
     tool_call: ChatToolCall | None = None
     tool_result_data: dict[str, Any] | None = None  # populated for tool_result events
     stop_reason: str | None = None  # end_turn | tool_use | max_tokens
     input_tokens: int = 0
     output_tokens: int = 0
+    content_blocks: list[dict[str, Any]] | None = None  # populated for assistant_content
 
 
 ToolExecutor = (

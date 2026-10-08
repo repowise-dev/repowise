@@ -286,6 +286,9 @@ class AnthropicProvider(SdkClientOwner, BaseProvider):
             async with self._client.messages.stream(**kwargs) as stream:
                 async for event in _iter_anthropic_stream_events(stream):
                     yield event
+                blocks = _thinking_turn_blocks(await stream.get_final_message())
+                if blocks:
+                    yield ChatStreamEvent(type="assistant_content", content_blocks=blocks)
 
 
 def _translate_anthropic_errors() -> AbstractContextManager[None]:
@@ -294,6 +297,19 @@ def _translate_anthropic_errors() -> AbstractContextManager[None]:
         rate_limit_error=_AnthropicRateLimitError,
         status_error=_AnthropicAPIStatusError,
     )
+
+
+def _thinking_turn_blocks(message: Any) -> list[dict[str, Any]] | None:
+    """The turn's content blocks as params, when it holds thinking to replay.
+
+    Models that think by default (Haiku 5.5 and later) lose their reasoning
+    mid tool loop unless the tool-calling turn is sent back unmodified, so
+    the whole turn is kept rather than rebuilt from its text and tool calls.
+    """
+    content = message.content
+    if not any(block.type in ("thinking", "redacted_thinking") for block in content):
+        return None
+    return [block.to_dict(exclude_none=True) for block in content]
 
 
 def _to_anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
@@ -432,6 +448,8 @@ def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
                     ],
                 }
             )
+        elif role == "assistant" and msg.get("provider_content"):
+            result.append({"role": "assistant", "content": msg["provider_content"]})
         elif role == "assistant":
             content_blocks: list[dict[str, Any]] = []
             # Text content

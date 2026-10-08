@@ -132,9 +132,20 @@ def _with_navigation_context(
     return contextualized
 
 
-def assistant_tool_call_message(text: str, tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
-    """The assistant turn that requested *tool_calls*, with its text when any."""
+def assistant_tool_call_message(
+    text: str,
+    tool_calls: list[dict[str, Any]],
+    provider_content: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """The assistant turn that requested *tool_calls*, with its text when any.
+
+    *provider_content* is the provider's own record of the turn, kept so it
+    can replay it verbatim on the next call of the same request. Stored
+    history never carries it, which the provider accepts.
+    """
     message: dict[str, Any] = {"role": "assistant"}
+    if provider_content:
+        message["provider_content"] = provider_content
     if text:
         message["content"] = text
     message["tool_calls"] = [

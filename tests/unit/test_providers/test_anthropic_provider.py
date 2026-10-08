@@ -11,9 +11,9 @@ import pytest
 
 pytest.importorskip("anthropic", reason="anthropic SDK not installed")
 
-from anthropic.types import TextBlock, ThinkingBlock
+from anthropic.types import TextBlock, ThinkingBlock, ToolUseBlock
 
-from repowise.core.providers.llm.anthropic import AnthropicProvider
+from repowise.core.providers.llm.anthropic import AnthropicProvider, _to_anthropic_messages
 from repowise.core.providers.llm.base import GeneratedResponse, ProviderError, RateLimitError
 
 # ---------------------------------------------------------------------------
@@ -254,3 +254,76 @@ async def test_api_status_error():
         provider._client = mock_client.return_value
         with pytest.raises(ProviderError):
             await provider.generate("sys", "user")
+
+
+# ---------------------------------------------------------------------------
+# Chat: thinking blocks survive the tool loop
+# ---------------------------------------------------------------------------
+
+
+class _FakeStream:
+    """A finished stream: no events left, only the accumulated final message."""
+
+    def __init__(self, content: list) -> None:
+        self._final = MagicMock(content=content)
+
+    async def __aenter__(self) -> _FakeStream:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    def __aiter__(self) -> _FakeStream:
+        return self
+
+    async def __anext__(self) -> None:
+        raise StopAsyncIteration
+
+    async def get_final_message(self) -> MagicMock:
+        return self._final
+
+
+async def _stream_events(content: list) -> list:
+    provider = AnthropicProvider(api_key="sk-ant-test", model="claude-haiku-5-5")
+    provider._client = MagicMock()
+    provider._client.messages.stream = MagicMock(return_value=_FakeStream(content))
+    return [e async for e in provider.stream_chat([], [], "sys")]
+
+
+async def test_stream_chat_emits_turn_content_when_it_thought():
+    events = await _stream_events(
+        [
+            ThinkingBlock(type="thinking", thinking="", signature="sig"),
+            ToolUseBlock(type="tool_use", id="t1", name="get_risk", input={"a": 1}),
+        ]
+    )
+
+    assert [e.type for e in events] == ["assistant_content"]
+    assert events[0].content_blocks == [
+        {"type": "thinking", "thinking": "", "signature": "sig"},
+        {"type": "tool_use", "id": "t1", "name": "get_risk", "input": {"a": 1}},
+    ]
+
+
+async def test_stream_chat_emits_nothing_extra_without_thinking():
+    events = await _stream_events([TextBlock(type="text", text="hi")])
+
+    assert events == []
+
+
+def test_assistant_provider_content_is_replayed_verbatim():
+    blocks = [
+        {"type": "thinking", "thinking": "", "signature": "sig"},
+        {"type": "text", "text": "Checking."},
+        {"type": "tool_use", "id": "t1", "name": "get_risk", "input": {"a": 1}},
+    ]
+    message = {
+        "role": "assistant",
+        "content": "Checking.",
+        "tool_calls": [
+            {"id": "t1", "type": "function", "function": {"name": "get_risk", "arguments": "{}"}}
+        ],
+        "provider_content": blocks,
+    }
+
+    assert _to_anthropic_messages([message]) == [{"role": "assistant", "content": blocks}]
