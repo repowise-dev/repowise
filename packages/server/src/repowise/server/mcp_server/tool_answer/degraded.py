@@ -106,11 +106,17 @@ async def _degraded_payload(
     code_rationale = _drop_already_surfaced(
         await _gather_code_rationale(ctx, hits, fallback_targets, question), symbol_bodies
     )
-    citations.extend(
-        path
-        for row in code_rationale
-        if (path := row.get("path")) and path not in citations
-    )
+    rationale_paths = [
+        path for row in code_rationale if (path := row.get("path")) and path not in citations
+    ]
+    if rationale_paths:
+        # Rationale rows rank by comment score across files, so a comment-heavy
+        # hub would outrank the file retrieval put first; cite the ranking ahead.
+        citations.extend(
+            path
+            for path in dict.fromkeys([*(g["file"] for g in best_guesses), *rationale_paths])
+            if path not in citations
+        )
 
     payload: dict = {
         "answer": summary,

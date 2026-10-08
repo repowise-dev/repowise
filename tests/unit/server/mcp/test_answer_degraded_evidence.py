@@ -545,6 +545,39 @@ async def test_degraded_mines_rationale_comments_from_the_candidates(tmp_path):
     assert "code_rationale" in payload["note"]
 
 
+async def test_degraded_cites_the_retrieval_top_file_before_a_rationale_hub(
+    tmp_path, monkeypatch
+):
+    """A comment-heavy hub wins the rationale sort by volume, not by rank.
+
+    The rationale rows come back hub first; citations must still lead with the
+    file retrieval ranked first, and keep the rationale paths after it.
+    """
+    import repowise.server.mcp_server.tool_answer.degraded as degraded_mod
+
+    async def _hub_first(ctx, hits, fallback_targets, question):
+        return [
+            {"path": "cmd/completions.go", "lines": [10, 12], "comment": "a", "matched_terms": []},
+            {"path": "cmd/command.go", "lines": [5, 6], "comment": "b", "matched_terms": []},
+        ]
+
+    monkeypatch.setattr(degraded_mod, "_gather_code_rationale", _hub_first)
+    hits = [
+        {"target_path": "cmd/powershell_completions.go", "title": "ps", "summary": "s", "score": 4.0},
+        {"target_path": "cmd/command.go", "title": "cmd", "summary": "s", "score": 2.0},
+    ]
+    payload = await _degraded(
+        SimpleNamespace(path=str(tmp_path), session_factory=None), hits, set()
+    )
+
+    assert payload["citations"] == [
+        "cmd/powershell_completions.go",
+        "cmd/command.go",
+        "cmd/completions.go",
+    ]
+    assert payload["code_rationale"][0]["path"] == "cmd/completions.go"
+
+
 async def test_degraded_does_not_ship_the_excerpt_twice(tmp_path):
     """`best_guesses[].excerpt` and `retrieval[].excerpt` are the same bytes.
 
