@@ -1125,34 +1125,30 @@ async def search_codebase(
 ) -> dict:
     """Find code by concept, symbol, or path — hybrid codebase search.
 
-    For QUESTIONS ("how does X work", "where is Y handled", "why is Z like
-    this"), call get_answer instead: it runs this same hybrid retrieval
-    internally and synthesizes a cited answer, so searching first is a wasted
-    round-trip. Use this tool for the raw ranked hits: enumerating matches,
-    resolving an identifier to a symbol_id, or scoping get_context.
+    For questions (how/where/why), call get_answer instead: it runs this
+    retrieval internally and returns a cited answer. Use this for raw
+    ranked hits: enumerating matches, resolving an identifier to a symbol_id,
+    or scoping get_context.
 
-    mode="auto" (default) routes the query: identifier-shaped queries search
-    the indexed symbols (returns symbol_id/path/line bounds — pipe into
-    get_symbol), path-shaped queries resolve files (pipe into get_context),
-    and conceptual queries run wiki-semantic search. Mixed queries run hybrid:
-    symbol hits first, then file-backed pages only. Decision records rank
-    below file pages unless the query is why-shaped.
+    mode="auto" routes by query shape: identifiers search symbols (symbol_id,
+    path, line bounds for get_symbol), paths resolve files (for get_context),
+    prose runs wiki-semantic search, and mixed queries run hybrid (symbol hits,
+    then file-backed pages only). Decision records rank below file pages
+    unless the query is why-shaped.
 
-    Rows naming a file carry `path`; `candidates` is up to `limit`
+    Rows naming a file carry `path`; `candidates` lists up to `limit`
     distinct files to Read, best first.
 
     Args:
         query: identifier, path, or natural language.
-        limit: max results (default 5); distinct files outside
-            mode="symbol" (same-file symbols in `symbols`).
-        page_type: restrict to one page type. Common: file_page (per-file
-            docs, always present) or module_page (subsystem/concept pages).
-            Any stored type filters (repo_overview, layer_page, scc_page,
-            api_contract, infra_page, symbol_spotlight).
+        limit: max results (default 5); distinct files outside mode="symbol"
+            (same-file symbols in `symbols`).
+        page_type: file_page (per-file docs) or module_page (subsystem
+            pages); any stored page type filters.
         kind: implementation | test | config | doc (concept/symbol modes).
         repo: alias, or "all" for workspace-wide.
         mode: auto | concept | symbol | path | hybrid.
-        symbol_kind: filter symbol hits by kind (function|class|method|...).
+        symbol_kind: filter symbol hits (function|class|method|...).
     """
     # An unknown kind used to take the same ``return False`` as a kind that is
     # simply inapplicable, so a typo and a real empty result looked identical.
