@@ -45,14 +45,17 @@ jobs:
       - name: Run provider tests (no API keys required)
         run: uv run pytest tests/providers/ -v --tb=short
 
+      # One worker per core. loadfile keeps each module on one worker, so a
+      # module-scoped fixture (an indexed sample repo, say) is built once, not
+      # once per worker that draws a test from it.
       - name: Run unit tests
         if: matrix.python-version != '3.12'
-        run: uv run pytest tests/unit/ -v --tb=short
+        run: uv run pytest tests/unit/ -n auto --dist loadfile -v --tb=short --durations=25
 
       # One leg measures coverage for the pull request bot's checks comment.
       - name: Run unit tests with coverage
         if: matrix.python-version == '3.12'
-        run: uv run --with pytest-cov pytest tests/unit/ -v --tb=short --cov=packages --cov-report=xml
+        run: uv run --with pytest-cov pytest tests/unit/ -n auto --dist loadfile -v --tb=short --durations=25 --cov=packages --cov-report=xml
 
       - name: Upload coverage to Repowise
         if: always() && matrix.python-version == '3.12'
