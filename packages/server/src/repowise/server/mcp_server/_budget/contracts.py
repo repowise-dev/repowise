@@ -375,6 +375,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "verified",
             "continuation",
             "continuation_reference",
+            "members",
             "error",
         ),
     ),

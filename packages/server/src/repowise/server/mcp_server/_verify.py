@@ -31,8 +31,10 @@ Verification is two-tier:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from repowise.core.persistence.models import WikiSymbol
 
@@ -104,12 +106,8 @@ def end_anchor_holds(lines: list[str], start_line: int, end_line: int) -> bool:
     return _line_indent(after) <= def_indent
 
 
-def relocate_symbol(row: WikiSymbol, source_text: str) -> tuple[int, int] | None:
-    """Re-parse the live file and find the symbol's current bounds.
-
-    Returns (start_line, end_line) or None when the symbol no longer
-    exists in the file (deleted/renamed) or the file cannot be parsed.
-    """
+def parse_live_symbols(row: WikiSymbol, source_text: str) -> list[Any] | None:
+    """Parse the live file that holds *row*; None when it cannot be parsed."""
     try:
         from repowise.core.ingestion.models import FileInfo
         from repowise.core.ingestion.parser import ASTParser
@@ -130,10 +128,27 @@ def relocate_symbol(row: WikiSymbol, source_text: str) -> tuple[int, int] | None
     except Exception as exc:
         _log.warning("re-parse failed for %s: %s", row.file_path, exc)
         return None
+    return list(parsed.symbols or [])
+
+
+def relocate_symbol(
+    row: WikiSymbol,
+    source_text: str,
+    parsed: Callable[[], list[Any] | None] | None = None,
+) -> tuple[int, int] | None:
+    """Re-parse the live file and find the symbol's current bounds.
+
+    Returns (start_line, end_line) or None when the symbol no longer
+    exists in the file (deleted/renamed) or the file cannot be parsed.
+    ``parsed`` lets a caller checking many rows of one file parse it once.
+    """
+    live = parsed() if parsed is not None else parse_live_symbols(row, source_text)
+    if live is None:
+        return None
 
     # An overload set is several rows under one id; the implementation (the
     # one non-declaration) goes first so a stub never answers for it.
-    symbols = sorted(parsed.symbols or [], key=lambda sym: sym.is_declaration)
+    symbols = sorted(live, key=lambda sym: sym.is_declaration)
     # Strongest match first: exact symbol_id, then (name, parent), then name.
     for sym in symbols:
         if sym.id == row.symbol_id:
@@ -147,7 +162,11 @@ def relocate_symbol(row: WikiSymbol, source_text: str) -> tuple[int, int] | None
     return None
 
 
-def check_symbol_bounds(row: WikiSymbol, source_text: str) -> BoundsCheck:
+def check_symbol_bounds(
+    row: WikiSymbol,
+    source_text: str,
+    parsed: Callable[[], list[Any] | None] | None = None,
+) -> BoundsCheck:
     """Verify (and if needed correct) a symbol's bounds against live source.
 
     Cheap gate (no re-parse) only when ALL hold: the name is long enough for
@@ -166,7 +185,7 @@ def check_symbol_bounds(row: WikiSymbol, source_text: str) -> BoundsCheck:
         end = min(max(row.end_line, row.start_line), len(lines))
         return BoundsCheck(start_line=row.start_line, end_line=end, verified=True)
 
-    located = relocate_symbol(row, source_text)
+    located = relocate_symbol(row, source_text, parsed)
     if located is not None:
         corrected = located != (row.start_line, row.end_line)
         if corrected:
