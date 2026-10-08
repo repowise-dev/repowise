@@ -1440,7 +1440,23 @@ def run_update(
     # idle-file health re-score gate.
     git_decay_map: dict[str, dict] = {}
     full_git_summaries: list[Any] = []
-    head_ts = _head_commit_ts(repo_path)
+    # No commit since the last sync: only uncommitted files changed, so the
+    # history-driven phases (commit capture, health, dead code, doc drift, the
+    # periodic re-score) have nothing new to read. The sync pointer stays put,
+    # so the next commit's update runs them over these same files.
+    working_tree_only = bool(
+        working_tree_diffs
+        and head
+        and head == base_ref
+        and not (
+            health_config_changed
+            or generation_config_changed
+            or renderer_changed
+            or analyzer_changed
+            or extraction_changed
+        )
+    )
+    head_ts = None if working_tree_only else _head_commit_ts(repo_path)
     parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map = (
         _rebuild_graph_and_git(
             repo_path,
@@ -1544,30 +1560,32 @@ def run_update(
     # as "no commits" without the stored rows. The stored function-mod p80
     # keeps the hotspot gate repo-wide instead of derived from the changed
     # subset (issue #1484).
-    with timed(timings, "analysis.stored_reads"):
-        stored_git_meta = _load_stored_git_meta(repo_path)
-        stored_performance_callers = _load_stored_performance_callers(repo_path, file_diffs)
-        repo_function_mod_p80 = _load_stored_function_mod_p80(repo_path)
-    partial_health_report, dead_code_report = _run_partial_analysis(
-        repo_path,
-        graph_builder,
-        git_meta_map,
-        parsed_files,
-        file_diffs,
-        source_map,
-        stored_git_meta=stored_git_meta,
-        stored_performance_callers=stored_performance_callers,
-        repo_function_mod_p80=repo_function_mod_p80,
-        timings=timings,
-    )
-    doc_drift_report = _run_doc_drift_partial(
-        graph_builder,
-        source_map,
-        repo_path=repo_path,
-        timings=timings,
-        base_ref=base_ref,
-        file_diffs=file_diffs,
-    )
+    partial_health_report = dead_code_report = doc_drift_report = None
+    if not working_tree_only:
+        with timed(timings, "analysis.stored_reads"):
+            stored_git_meta = _load_stored_git_meta(repo_path)
+            stored_performance_callers = _load_stored_performance_callers(repo_path, file_diffs)
+            repo_function_mod_p80 = _load_stored_function_mod_p80(repo_path)
+        partial_health_report, dead_code_report = _run_partial_analysis(
+            repo_path,
+            graph_builder,
+            git_meta_map,
+            parsed_files,
+            file_diffs,
+            source_map,
+            stored_git_meta=stored_git_meta,
+            stored_performance_callers=stored_performance_callers,
+            repo_function_mod_p80=repo_function_mod_p80,
+            timings=timings,
+        )
+        doc_drift_report = _run_doc_drift_partial(
+            graph_builder,
+            source_map,
+            repo_path=repo_path,
+            timings=timings,
+            base_ref=base_ref,
+            file_diffs=file_diffs,
+        )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before
     # the metadata reaches persistence / regeneration so the transient,
@@ -1575,21 +1593,29 @@ def run_update(
     from repowise.core.pipeline.phases.git import drop_transient_git_signals
 
     drop_transient_git_signals(list(git_meta_map.values()))
+    # With no new commit the stored git rows are already current, and an empty
+    # map is what keeps the persist from walking for new commits.
+    persisted_git_meta = {} if working_tree_only else git_meta_map
+    persisted_git_decay = {} if working_tree_only else git_decay_map
 
     # Refresh the knowledge graph (layers/tour/entry points) when the graph
     # shape changed — previously init-only, so update served a stale
     # orientation snapshot to CLAUDE.md/get_overview forever (#669). None
     # means fingerprint-unchanged: the persisted artifact is still current.
-    with timed(timings, "knowledge_graph"):
-        knowledge_graph_result = _refresh_knowledge_graph(
-            repo_path,
-            parsed_files,
-            graph_builder,
-            repo_structure,
-            git_meta_map,
-            dead_code_report,
-            (state.get("knowledge_graph") or {}).get("fingerprint"),
-        )
+    # Skipped before a commit: its curation reads the dead-code report, and
+    # the kept fingerprint lets the next commit's update rebuild it.
+    knowledge_graph_result = None
+    if not working_tree_only:
+        with timed(timings, "knowledge_graph"):
+            knowledge_graph_result = _refresh_knowledge_graph(
+                repo_path,
+                parsed_files,
+                graph_builder,
+                repo_structure,
+                git_meta_map,
+                dead_code_report,
+                (state.get("knowledge_graph") or {}).get("fingerprint"),
+            )
     if generation_config_changed and knowledge_graph_result is not None:
         # Repo-wide pages (especially onboarding's guided tour) read the
         # persisted KG context during generation. Publish the freshly rebuilt
@@ -1741,7 +1767,7 @@ def run_update(
             _persist_index_only_update(
                 repo_path,
                 graph_builder,
-                git_meta_map,
+                persisted_git_meta,
                 dead_code_report,
                 partial_health_report,
                 state,
@@ -1758,7 +1784,7 @@ def run_update(
                 # not the same as having no wiki.
                 template_wiki=docs_mode == "deterministic",
                 pages_rendered=len(det_pages),
-                git_decay_map=git_decay_map,
+                git_decay_map=persisted_git_decay,
                 exclude_patterns=exclude_patterns,
                 head_ts=head_ts,
                 force_full_rescore=health_config_changed,
@@ -2399,7 +2425,7 @@ def run_update(
                 repo_name=repo_name,
                 generated_pages=generated_pages,
                 file_diffs=file_diffs,
-                git_meta_map=git_meta_map,
+                git_meta_map=persisted_git_meta,
                 new_decision_markers=[*new_decision_markers, *session_decisions],
                 decision_vector_store=decision_vector_store,
                 provider=provider,
@@ -2411,7 +2437,7 @@ def run_update(
                 doc_drift_report=doc_drift_report,
                 decay_paths=affected.decay_only,
                 parsed_files=parsed_files,
-                git_decay_map=git_decay_map,
+                git_decay_map=persisted_git_decay,
                 full_git_summary=(full_git_summaries[0] if full_git_summaries else None),
                 reconcile_full_scope=traversal_config_changed,
                 reconcile_full_generation=generation_config_changed,
