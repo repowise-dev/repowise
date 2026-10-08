@@ -269,3 +269,38 @@ def test_git_failure_is_not_evaluated(tmp_path: Path, monkeypatch) -> None:
     out = _meta.freshness_from_repo(row, targets=["pricing.py"])
     assert "working_tree_dirty" not in out
     assert "stale_warning" not in out
+
+
+def test_an_untracked_directory_is_covered_only_file_by_file(tmp_path: Path) -> None:
+    import os
+
+    repo, _row = _state_repo(tmp_path)
+    (repo / "fresh").mkdir()
+    new = repo / "fresh" / "new.py"
+    new.write_text("def brand_new():\n    return 1\n")
+    old = new.stat().st_mtime - 10
+    os.utime(new, (old, old))
+    os.utime(repo / "fresh", (old, old))
+
+    # The directory alone in the record covers nothing inside it.
+    _record(repo, ["fresh"])
+    assert _meta.uncommitted_targets(str(repo), ["fresh/new.py"]) == ["fresh/new.py"]
+
+    _record(repo, ["fresh/new.py"])
+    assert _meta.uncommitted_targets(str(repo), ["fresh/new.py", "fresh"]) == []
+
+    # Editing a file inside leaves the directory's own mtime alone.
+    later = (repo / ".repowise" / "state.json").stat().st_mtime + 10
+    os.utime(new, (later, later))
+    os.utime(repo / "fresh", (old, old))
+    _meta._dirty_paths_cache.clear()
+    assert _meta.uncommitted_targets(str(repo), ["fresh/new.py"]) == ["fresh/new.py"]
+
+
+def test_target_case_is_folded_where_the_filesystem_folds_it(tmp_path: Path, monkeypatch) -> None:
+    repo, _row = _state_repo(tmp_path)
+    (repo / "pricing.py").write_text(_EDITS["pricing.py"])
+    monkeypatch.setattr(_meta.sys, "platform", "win32")
+    assert _meta.uncommitted_targets(str(repo), ["Pricing.py"]) == ["Pricing.py"]
+    monkeypatch.setattr(_meta.sys, "platform", "linux")
+    assert _meta.uncommitted_targets(str(repo), ["Pricing.py"]) == []

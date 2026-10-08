@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -283,12 +284,16 @@ _dirty_paths_cache: dict[str, tuple[float, frozenset[str] | None]] = {}
 _DIRTY_PATHS_TTL_S = 3.0
 _DIRTY_PATHS_FAILED_TTL_S = 60.0
 _DIRTY_PATHS_CACHE_MAX = 32
+# Runs inline on the event loop from build_meta, so the bound is tight; a slow
+# repo times out once and reads as "not evaluated" for the failed TTL.
+_DIRTY_PATHS_TIMEOUT_S = 0.5
 
 
 def _working_tree_dirty_paths(local_path: str) -> frozenset[str] | None:
     """Paths with staged, unstaged or untracked changes; ``None`` when unknown.
 
-    An untracked directory is reported once, with a trailing ``/``.
+    An untracked directory is reported once, with a trailing ``/``. Paths are
+    git-root relative; the ``.git`` gate below makes that root ``local_path``.
     """
     now = time.monotonic()
     hit = _dirty_paths_cache.get(local_path)
@@ -315,7 +320,7 @@ def _working_tree_dirty_paths(local_path: str) -> frozenset[str] | None:
                     "--untracked-files=normal",
                 ],
                 capture_output=True,
-                timeout=2,
+                timeout=_DIRTY_PATHS_TIMEOUT_S,
                 stdin=subprocess.DEVNULL,
             )
             if res.returncode == 0:
@@ -352,7 +357,12 @@ def _working_tree_record(local_path: str) -> tuple[frozenset[str], float] | None
         return None
     if not isinstance(paths, list):
         return None
-    return frozenset(p for p in paths if isinstance(p, str)), written
+    return frozenset(_fold(p) for p in paths if isinstance(p, str)), written
+
+
+def _fold(path: str) -> str:
+    # Case-insensitive filesystems: a target and git's spelling may differ in case.
+    return path.casefold() if sys.platform in ("win32", "darwin") else path
 
 
 def _indexed_from_working_tree(
@@ -362,9 +372,22 @@ def _indexed_from_working_tree(
     # run's. Ceiling: a later commit-anchored update rewrites state.json and
     # would cover a re-edit made in between; recording per-path stamps at
     # update time lifts it.
-    if record is None or path.rstrip("/") not in record[0]:
+    if record is None:
         return False
     target = Path(local_path) / path
+    if path.endswith("/"):
+        # An untracked directory: its own mtime misses edits to files inside,
+        # so it is covered only when every file under it is.
+        try:
+            files = [f for f in target.rglob("*") if f.is_file()]
+        except OSError:
+            return False
+        return bool(files) and all(
+            _indexed_from_working_tree(local_path, f.relative_to(local_path).as_posix(), record)
+            for f in files
+        )
+    if _fold(path) not in record[0]:
+        return False
     # A deleted file has no mtime; its directory's changes when it goes.
     probe = target if target.exists() else target.parent
     try:
@@ -384,17 +407,18 @@ def uncommitted_targets(local_path: str | None, targets: list[str] | None) -> li
     if not dirty:
         return []
     record = _working_tree_record(local_path)
+    folded = [(d, _fold(d)) for d in dirty]
     out: list[str] = []
     for raw in targets:
         path = _normalize_target_path(raw)
         if not path or path in out:
             continue
-        hits = [
-            d
-            for d in dirty
-            if d == path or d.startswith(path + "/") or (d.endswith("/") and path.startswith(d))
-        ]
-        if any(not _indexed_from_working_tree(local_path, d, record) for d in hits):
+        key = _fold(path)
+        if any(
+            (fd == key or fd.startswith(key + "/") or (fd.endswith("/") and key.startswith(fd)))
+            and not _indexed_from_working_tree(local_path, d, record)
+            for d, fd in folded
+        ):
             out.append(path)
     return out
 
