@@ -473,6 +473,7 @@ class _Authors:
             "name": name,
             "email": self.emails.get(name, ""),
             "commit_count": count,
+            "recent_commit_count": self.recent_counts.get(name, 0),
         }
         if name in self.last_ts:
             entry["last_commit_ts"] = self.last_ts[name]

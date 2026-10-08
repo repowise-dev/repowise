@@ -605,8 +605,8 @@
       {
         "name": "Bob Stone",
         "email": "4242+bob@users.noreply.github.com",
-        "score": 1.99,
-        "recent_commits": 8,
+        "score": 1.35,
+        "recent_commits": 0,
         "owned_paths": [
           "src/api.py"
         ],
@@ -621,8 +621,8 @@
       {
         "name": "Alice",
         "email": "alice@example.com",
-        "score": 1.4633,
-        "recent_commits": 15,
+        "score": 1.05,
+        "recent_commits": 0,
         "owned_paths": [
           "src/api.py",
           "src/core.py"
@@ -639,8 +639,8 @@
       {
         "name": "Bob Stone",
         "email": "bob@example.com",
-        "score": 0.7133,
-        "recent_commits": 5,
+        "score": 0.5,
+        "recent_commits": 0,
         "owned_paths": [
           "src/core.py"
         ],
@@ -655,8 +655,8 @@
       {
         "name": "Carol",
         "email": null,
-        "score": 0.14,
-        "recent_commits": 2,
+        "score": 0.1,
+        "recent_commits": 0,
         "owned_paths": [
           "src/core.py"
         ],
@@ -675,8 +675,8 @@
       {
         "name": "Alice",
         "email": "alice@example.com",
-        "score": 1.1633,
-        "recent_commits": 15,
+        "score": 0.75,
+        "recent_commits": 0,
         "owned_paths": [
           "lib/util.py"
         ],
