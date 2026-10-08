@@ -464,7 +464,7 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
         commit), so absence means "not evaluated", never "false". Emitting the
         false case matters downstream: a field that is only ever present as
         ``true`` makes every consumer-side rate read 100%.
-      * ``working_tree_dirty`` — count of served targets with uncommitted edits
+      * ``working_tree_dirty``: count of served targets with uncommitted edits
         no ``repowise update --working-tree`` has indexed; those also set
         ``stale_warning`` when nothing else has.
 
