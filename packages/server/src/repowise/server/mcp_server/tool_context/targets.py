@@ -54,7 +54,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._references import path_identity, symbol_identity
-from repowise.server.mcp_server._symbol_lookup import resolve_symbol_rows
+from repowise.server.mcp_server._symbol_lookup import resolve_symbol_rows, symbol_id_variants
 from repowise.server.mcp_server.tool_context.enrichment import (
     _DOC_DRIFT_PATH,
     _resolve_call_graph,
@@ -404,6 +404,9 @@ async def _resolve_one_target(
     # Set only when a symbol target resolved through the call graph rather than
     # the symbol index (index-only mode); carries the fields the node has.
     graph_symbol: GraphNode | None = None
+    # The resolved symbol's graph id. Graph queries key on it, never on the
+    # caller's spelling, so ``Class.method`` and ``Class::method`` agree.
+    symbol_node_id: str | None = None
 
     if page and page.repository_id == repo_id:
         target_type = "file"
@@ -490,6 +493,7 @@ async def _resolve_one_target(
             if sym_matches:
                 target_type = "symbol"
                 file_path_for_git = sym_matches[0].file_path
+                symbol_node_id = sym_matches[0].symbol_id
             else:
                 # 4. Try file page by target_path search
                 res = await session.execute(
@@ -507,18 +511,21 @@ async def _resolve_one_target(
     if target_type is None:
         # Fallback 1: index-only mode (no wiki pages). Return the graph node,
         # typed by what it is: a symbol node is a symbol target whose file is
-        # the node's file, not its id.
+        # the node's file, not its id. Every separator form is tried, as the
+        # symbol rung does; the verbatim id wins when several exist.
         res = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repo_id,
-                GraphNode.node_id == target,
+                GraphNode.node_id.in_(symbol_id_variants(target)),
             )
         )
-        gnode = res.scalar_one_or_none()
+        gnodes = list(res.scalars().all())
+        gnode = next((g for g in gnodes if g.node_id == target), gnodes[0] if gnodes else None)
         if gnode is not None and gnode.node_type == "symbol":
             target_type = "symbol"
             graph_symbol = gnode
             file_path_for_git = gnode.file_path
+            symbol_node_id = gnode.node_id
             page = None
         elif gnode is not None:
             target_type = "file"
@@ -1261,7 +1268,7 @@ async def _resolve_one_target(
         await _resolve_call_graph(
             session,
             repository,
-            target,
+            symbol_node_id or target,
             target_type,
             result_data,
             want_callers=want_callers,
@@ -1272,12 +1279,12 @@ async def _resolve_one_target(
 
     # --- Metrics (replaces get_graph_metrics) ---
     if include and "metrics" in include:
-        await _resolve_metrics(session, repository, target, result_data)
+        await _resolve_metrics(session, repository, symbol_node_id or target, result_data)
 
     # --- Community (replaces get_community) ---
     if include and "community" in include:
         await _resolve_community(
-            session, repository, target, result_data, exclude_spec=exclude_spec
+            session, repository, symbol_node_id or target, result_data, exclude_spec=exclude_spec
         )
 
     # --- Code health (Phase 2) ---

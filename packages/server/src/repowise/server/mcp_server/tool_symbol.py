@@ -110,6 +110,10 @@ _MAX_RANGE_LINES = 200
 # but the file exists on disk.
 _MAX_FALLBACK_MATCHES = 8
 
+# A matched line that declares the name rather than using it. Keyword-based, so
+# a definition without a keyword (``const f = () =>``) reads as a plain match.
+_DEF_KEYWORDS = r"(?:def|class|function|func|fn|struct|interface|enum|trait|type|module|sub)"
+
 # When a lookup is ambiguous (overloads, re-exports, conditional defs) every
 # candidate body is served in ONE response — a silently-picked wrong candidate
 # sends the agent into a read-spiral that costs far more than the extra bytes.
@@ -637,12 +641,16 @@ def _live_grep_fallback(repo_root: Path, file_path: str, name: str) -> list[dict
     bare = _bare_name(name)
     if not bare:
         return []
+    defines = re.compile(rf"\b{_DEF_KEYWORDS}\s+(?:\([^)]*\)\s*)?{re.escape(bare)}\b")
     lines = text.splitlines()
     matches: list[dict] = []
     for i, line in enumerate(lines, 1):
         if bare in line:
             lo, hi = max(1, i - 2), min(len(lines), i + 2)
-            matches.append({"line": i, "context": _number_lines("\n".join(lines[lo - 1 : hi]), lo)})
+            match = {"line": i, "context": _number_lines("\n".join(lines[lo - 1 : hi]), lo)}
+            if defines.search(line):
+                match["defines"] = True
+            matches.append(match)
             if len(matches) >= _MAX_FALLBACK_MATCHES:
                 break
     return matches
@@ -668,10 +676,12 @@ async def _symbol_suggestions(session, repo_id: str, symbol_id: str, exclude_spe
     the agent can pass straight back to get_symbol — a bare "not found" would
     otherwise send it to get_context or a whole-file Read.
     """
-    _, name = _parse_symbol_id(symbol_id)
+    qualified = "::" in symbol_id
+    # A bare name is matched whole: it has no path half to strip.
+    name = _parse_symbol_id(symbol_id)[1] if qualified else symbol_id.strip()
     if not name:
         return []
-    bare = _bare_name(name)
+    bare = _bare_name(name) if qualified else name
     res = await session.execute(
         select(WikiSymbol.symbol_id, WikiSymbol.file_path)
         .where(WikiSymbol.repository_id == repo_id, WikiSymbol.name == bare)
@@ -980,6 +990,12 @@ async def get_symbol(
 
     exclude_spec = _get_exclude_spec(ctx.path)
     rows = [r for r in rows if not is_excluded(r.file_path, exclude_spec)]
+    if not rows and "::" not in symbol_id:
+        # A bare name one symbol carries is that symbol; several stay suggestions.
+        async with get_session(ctx.session_factory) as session:
+            named = await _symbol_suggestions(session, repository.id, symbol_id, exclude_spec)
+            if len(named) == 1:
+                rows = await _resolve_symbol(session, repository.id, named[0])
     if not rows:
         # Dead-end recovery: constants/imports/aliases between indexed
         # symbols miss the index but live in the file — grep the live file
@@ -989,6 +1005,12 @@ async def get_symbol(
             if file_part and name_part and not is_excluded(file_part, exclude_spec):
                 matches = _live_grep_fallback(Path(str(ctx.path)), file_part, name_part)
                 if matches:
+                    likely = (
+                        "defined here, so likely added after the last index; "
+                        "run `repowise update` to index it"
+                        if any(m.get("defines") for m in matches)
+                        else "likely a constant, import, or alias"
+                    )
                     return {
                         "symbol_id": symbol_id,
                         "file": file_part,
@@ -997,9 +1019,8 @@ async def get_symbol(
                         "verified": True,
                         "note": (
                             "Not an indexed symbol, but the name matches these "
-                            "live-file lines (likely a constant, import, or "
-                            "alias). For surrounding source use a range read: "
-                            f'"{file_part}:<start>-<end>".'
+                            f"live-file lines ({likely}). For surrounding source "
+                            f'use a range read: "{file_part}:<start>-<end>".'
                         ),
                         "_meta": _build_meta(
                             timing_ms=(time.perf_counter() - t0) * 1000,
