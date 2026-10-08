@@ -110,9 +110,19 @@ _MAX_RANGE_LINES = 200
 # but the file exists on disk.
 _MAX_FALLBACK_MATCHES = 8
 
-# A matched line that declares the name rather than using it. Keyword-based, so
-# a definition without a keyword (``const f = () =>``) reads as a plain match.
-_DEF_KEYWORDS = r"(?:def|class|function|func|fn|struct|interface|enum|trait|type|module|sub)"
+# A matched line that declares the name rather than using it: a definition
+# keyword at line start, after decorators and modifiers. Keyword-based, so a
+# definition without one (``const f = () =>``) reads as a plain match.
+_DEF_KEYWORDS = r"(?:def|class|function\*?|func|fn|struct|interface|enum|trait|type|module|sub)"
+_DEF_MODIFIERS = (
+    r"(?:(?:export|default|pub(?:\([^)]*\))?|public|private|protected|internal|static"
+    r"|abstract|final|override|virtual|async|unsafe|extern|inline|open|sealed|partial|data)\s+)*"
+)
+_COMMENT_PREFIXES = ("#", "//", "/*", "*", "--", ";")
+
+# Rows read when matching a name across files. A scan that fills it is not
+# exhaustive, so its single survivor is never taken as the only match.
+_NAME_SCAN_CAP = 20
 
 # When a lookup is ambiguous (overloads, re-exports, conditional defs) every
 # candidate body is served in ONE response — a silently-picked wrong candidate
@@ -641,14 +651,16 @@ def _live_grep_fallback(repo_root: Path, file_path: str, name: str) -> list[dict
     bare = _bare_name(name)
     if not bare:
         return []
-    defines = re.compile(rf"\b{_DEF_KEYWORDS}\s+(?:\([^)]*\)\s*)?{re.escape(bare)}\b")
+    defines = re.compile(
+        rf"^\s*(?:@\S+\s+)*{_DEF_MODIFIERS}{_DEF_KEYWORDS}\s+(?:\([^)]*\)\s*)?{re.escape(bare)}\b"
+    )
     lines = text.splitlines()
     matches: list[dict] = []
     for i, line in enumerate(lines, 1):
         if bare in line:
             lo, hi = max(1, i - 2), min(len(lines), i + 2)
             match = {"line": i, "context": _number_lines("\n".join(lines[lo - 1 : hi]), lo)}
-            if defines.search(line):
+            if not line.lstrip().startswith(_COMMENT_PREFIXES) and defines.match(line):
                 match["defines"] = True
             matches.append(match)
             if len(matches) >= _MAX_FALLBACK_MATCHES:
@@ -668,6 +680,31 @@ _order_candidates = order_candidates
 _resolve_symbol = resolve_symbol_rows
 
 
+async def _symbols_named(
+    session, repo_id: str, symbol_id: str, exclude_spec
+) -> tuple[list[str], bool]:
+    """Non-excluded ids of symbols carrying the name in *symbol_id*.
+
+    The second value says whether the scan saw every row with that name, so a
+    caller can tell "exactly one" from "one survivor of a capped scan".
+    """
+    qualified = "::" in symbol_id
+    # A bare name is matched whole: it has no path half to strip.
+    name = _parse_symbol_id(symbol_id)[1] if qualified else symbol_id.strip()
+    if not name:
+        return [], True
+    bare = _bare_name(name) if qualified else name
+    res = await session.execute(
+        select(WikiSymbol.symbol_id, WikiSymbol.file_path)
+        .where(WikiSymbol.repository_id == repo_id, WikiSymbol.name == bare)
+        .order_by(WikiSymbol.symbol_id)
+        .limit(_NAME_SCAN_CAP)
+    )
+    rows = res.all()
+    ids = [sid for sid, fpath in rows if sid and not is_excluded(fpath, exclude_spec)]
+    return list(dict.fromkeys(ids)), len(rows) < _NAME_SCAN_CAP
+
+
 async def _symbol_suggestions(session, repo_id: str, symbol_id: str, exclude_spec) -> list[str]:
     """Concrete symbol_ids to retry when a lookup misses entirely.
 
@@ -676,26 +713,8 @@ async def _symbol_suggestions(session, repo_id: str, symbol_id: str, exclude_spe
     the agent can pass straight back to get_symbol — a bare "not found" would
     otherwise send it to get_context or a whole-file Read.
     """
-    qualified = "::" in symbol_id
-    # A bare name is matched whole: it has no path half to strip.
-    name = _parse_symbol_id(symbol_id)[1] if qualified else symbol_id.strip()
-    if not name:
-        return []
-    bare = _bare_name(name) if qualified else name
-    res = await session.execute(
-        select(WikiSymbol.symbol_id, WikiSymbol.file_path)
-        .where(WikiSymbol.repository_id == repo_id, WikiSymbol.name == bare)
-        .limit(20)
-    )
-    out: list[str] = []
-    seen: set[str] = set()
-    for sid, fpath in res.all():
-        if sid and sid not in seen and not is_excluded(fpath, exclude_spec):
-            seen.add(sid)
-            out.append(sid)
-            if len(out) >= 5:
-                break
-    return out
+    ids, _ = await _symbols_named(session, repo_id, symbol_id, exclude_spec)
+    return ids[:5]
 
 
 def _read_file_text(repo_path: Path, file_path: str) -> str | None:
@@ -993,8 +1012,10 @@ async def get_symbol(
     if not rows and "::" not in symbol_id:
         # A bare name one symbol carries is that symbol; several stay suggestions.
         async with get_session(ctx.session_factory) as session:
-            named = await _symbol_suggestions(session, repository.id, symbol_id, exclude_spec)
-            if len(named) == 1:
+            named, complete = await _symbols_named(
+                session, repository.id, symbol_id, exclude_spec
+            )
+            if complete and len(named) == 1:
                 rows = await _resolve_symbol(session, repository.id, named[0])
     if not rows:
         # Dead-end recovery: constants/imports/aliases between indexed

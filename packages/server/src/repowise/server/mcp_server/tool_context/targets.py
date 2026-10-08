@@ -512,15 +512,19 @@ async def _resolve_one_target(
         # Fallback 1: index-only mode (no wiki pages). Return the graph node,
         # typed by what it is: a symbol node is a symbol target whose file is
         # the node's file, not its id. Every separator form is tried, as the
-        # symbol rung does; the verbatim id wins when several exist.
+        # symbol rung does. Among several, the verbatim id wins, then a symbol
+        # node, then the id order, so the pick never depends on row order.
         res = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repo_id,
                 GraphNode.node_id.in_(symbol_id_variants(target)),
             )
         )
-        gnodes = list(res.scalars().all())
-        gnode = next((g for g in gnodes if g.node_id == target), gnodes[0] if gnodes else None)
+        gnode = min(
+            res.scalars().all(),
+            key=lambda g: (g.node_id != target, g.node_type != "symbol", g.node_id),
+            default=None,
+        )
         if gnode is not None and gnode.node_type == "symbol":
             target_type = "symbol"
             graph_symbol = gnode
