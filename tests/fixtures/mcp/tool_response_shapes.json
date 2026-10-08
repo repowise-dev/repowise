@@ -1542,16 +1542,6 @@
         "historical_meaning": null,
         "replacement": null
       },
-      "recommended_reviewers": [
-        {
-          "email": null,
-          "files": null,
-          "ownership_pct": null
-        }
-      ],
-      "recommended_reviewers_emitted": null,
-      "recommended_reviewers_total": null,
-      "recommended_reviewers_truncated": null,
       "structural_impact_band": null,
       "structural_impact_scale": {
         "authoritative_for_change_review": null,

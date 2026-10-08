@@ -929,6 +929,9 @@ def _build_pr_directive(
         ):
             directive.pop("cross_repo_relationship_analysis", None)
 
+    # The directive carries the reviewers, so the MCP blast copy would repeat
+    # them. The REST blast radius is built separately and keeps its field.
+    _drop_family(trimmed_blast, "recommended_reviewers")
     response["directive"] = directive
 
 

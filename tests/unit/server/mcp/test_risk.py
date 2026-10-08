@@ -1068,10 +1068,10 @@ async def test_get_risk_serves_the_blast_radius_on_request(setup_mcp):
 
     blast = await get_risk(files, changed_files=files, include=["blast"])
     assert "structural_impact_score" in blast["pr_blast_radius"]
-    assert (
-        blast["directive"]["recommended_reviewers"]
-        == blast["pr_blast_radius"]["recommended_reviewers"]
-    )
+    # Named once, in the directive.
+    reviewers = plain["directive"]["recommended_reviewers"]
+    assert blast["directive"]["recommended_reviewers"] == reviewers
+    assert not [k for k in blast["pr_blast_radius"] if k.startswith("recommended_reviewers")]
 
 
 @pytest.mark.asyncio

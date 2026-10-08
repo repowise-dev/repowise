@@ -197,12 +197,12 @@ PR_RISK_PAYLOAD = {
             {"file": "persist.py", "decision_id": "dr-7", "title": "persist tombstones",
              "status": "accepted", "reason": "stale_governance"}
         ],
+        "recommended_reviewers": [{"name": "Raghav Chamadiya", "commits": 40}],
         "overall_risk_score": 7.4,
         "summary": "PR touches 1 file(s). ~1 downstream file(s) may be affected.",
     },
     "pr_blast_radius": {
         "transitive_affected": ["packages/core/src/repowise/core/pipeline/orchestrator.py"],
-        "recommended_reviewers": [{"name": "Raghav Chamadiya", "commits": 40}],
         "test_gaps": ["packages/core/src/repowise/core/pipeline/persist.py"],
         "overall_risk_score": 7.4,
     },
@@ -775,13 +775,13 @@ def test_risk_target_error_exits_one(monkeypatch, repo):
     assert json.loads(result.output)["error"] == "no index yet"
 
 
-def test_risk_projection_keeps_the_reviewers_nothing_else_names():
-    """``pr_blast_radius`` is the only carrier of ``recommended_reviewers``,
-    and the tool has already capped its noisy lists before the CLI sees it."""
+def test_risk_projection_keeps_the_reviewers_and_the_blast_block():
+    """The directive carries the reviewers; the capped blast block rides whole."""
     out = project_risk(PR_RISK_PAYLOAD)
-    assert out["pr_blast_radius"]["recommended_reviewers"] == [
+    assert out["directive"]["recommended_reviewers"] == [
         {"name": "Raghav Chamadiya", "commits": 40}
     ]
+    assert out["pr_blast_radius"] == PR_RISK_PAYLOAD["pr_blast_radius"]
 
 
 def test_risk_table_renders_the_health_and_coverage_it_keeps(monkeypatch, repo):
