@@ -198,7 +198,12 @@ def test_a_stale_cache_is_rescanned(repo: Path, monkeypatch: pytest.MonkeyPatch)
         json.dumps({"version": 1, "resolved_at": "yesterday", "model": "m"}),
         json.dumps({"version": 1, "resolved_at": True, "model": "m"}),
         json.dumps({"version": 1, "resolved_at": 0}),  # epoch: older than any TTL
-        json.dumps({"version": 1, "resolved_at": time.time(), "model": "m" * 129}),
+        # A fixed id: the timestamp differs per process, and xdist workers
+        # must collect identical test ids.
+        pytest.param(
+            json.dumps({"version": 1, "resolved_at": time.time(), "model": "m" * 129}),
+            id="overlong-model",
+        ),
         json.dumps([1, 2, 3]),
     ],
 )
