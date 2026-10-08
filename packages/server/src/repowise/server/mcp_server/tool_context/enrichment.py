@@ -913,7 +913,7 @@ async def _resolve_skeleton(
     (zero parsing), keeping every signature and the bodies of the
     highest-PageRank symbols under a token budget. ``include=["skeleton+"]``
     passes ``mode="plus"``: all non-function code kept, every function and
-    method body elided. File targets only —
+    method body elided. File targets only:
     a symbol's "skeleton" is just its signature, which the triage card
     already carries.
     """

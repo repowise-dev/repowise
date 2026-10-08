@@ -258,3 +258,14 @@ async def test_skeleton_plus_keeps_class_code_and_elides_method_bodies(
     assert "async def login" in text
     assert "step_30" not in text
     assert "        ... 20 lines (21-40)" in text
+
+
+@pytest.mark.asyncio
+async def test_skeleton_and_skeleton_plus_together_render_plus(setup_mcp, tmp_path, monkeypatch):
+    from repowise.server.mcp_server import _state, get_context
+
+    _write_source(tmp_path)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+
+    result = await get_context(["src/auth/service.py"], include=["skeleton", "skeleton+"])
+    assert result["targets"]["src/auth/service.py"]["skeleton"]["mode"] == "plus"

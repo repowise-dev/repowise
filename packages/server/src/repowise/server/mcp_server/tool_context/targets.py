@@ -695,6 +695,7 @@ async def _resolve_one_target(
                 "section": parent.section_number,
             }
 
+    # Asking for both skeleton and skeleton+ renders one block, the plus view.
     skeleton_plus = bool(include and "skeleton+" in include)
     want_skeleton = skeleton_plus or bool(include and "skeleton" in include)
     want_all_symbols = bool(include and "symbols" in include)

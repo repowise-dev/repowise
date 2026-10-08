@@ -18,7 +18,7 @@ Two modes:
   per-symbol line budget proportional to importance, all under a total token
   budget. A hotspot file gets a larger budget — high-churn code is where
   body-level context pays off.
-- ``"plus"`` — every line outside a function or method body kept verbatim
+- ``"plus"``: every line outside a function or method body kept verbatim
   (imports, constants, class fields, decorators, comments), every signature
   kept, and each function/method body elided to one marker carrying its line
   range. Classes are containers: their methods' bodies are elided, the rest

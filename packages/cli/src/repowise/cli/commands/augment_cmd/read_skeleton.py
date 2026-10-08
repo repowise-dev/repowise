@@ -84,26 +84,27 @@ def enabled(repo_path: Path) -> bool:
 def configured_mode(repo_path: Path) -> str:
     """``"plus"`` when ``hooks.read_skeleton_mode`` says so, else ``"smart"``.
 
-    ``REPOWISE_HOOK_READ_SKELETON_MODE`` overrides the file for one session.
-    Any read or parse failure keeps the default.
+    A non-empty ``REPOWISE_HOOK_READ_SKELETON_MODE`` overrides the file for one
+    session. An unknown value, or any read or parse failure, keeps the default.
     """
     import os
 
-    value = os.environ.get(f"REPOWISE_HOOK_{MODE_KEY.upper()}")
-    if value is None:
+    value = (os.environ.get(f"REPOWISE_HOOK_{MODE_KEY.upper()}") or "").strip()
+    if not value:
         try:
             text = (repo_path / ".repowise" / "config.yaml").read_text(encoding="utf-8")
         except (OSError, ValueError):
             return "smart"
         if MODE_KEY not in text:
             return "smart"
-        try:
-            import yaml
+        import yaml
 
-            hooks = (yaml.safe_load(text) or {}).get("hooks")
-            value = hooks.get(MODE_KEY) if isinstance(hooks, dict) else None
-        except Exception:
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError:
             return "smart"
+        hooks = data.get("hooks") if isinstance(data, dict) else None
+        value = hooks.get(MODE_KEY) if isinstance(hooks, dict) else None
     return "plus" if str(value).strip().lower() == "plus" else "smart"
 
 

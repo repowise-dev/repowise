@@ -217,3 +217,35 @@ def test_an_unknown_mode_still_reports_signatures() -> None:
     source = "def f():\n    a = 1\n    b = 2\n    return a + b\n"
     sym = SkeletonSymbol(name="f", kind="function", start_line=1, end_line=4)
     assert build_skeleton(source, [sym], mode="bogus").mode == "signatures"
+
+
+def test_ts_arrow_consts_with_one_line_bodies(monkeypatch) -> None:
+    """A one-line body is marked as body but rendered verbatim: a marker is not shorter."""
+    import repowise.core.distill.skeleton as skeleton
+
+    source = (
+        "export const inc = (a: number): number => a + 1;\n"
+        "\n"
+        "export const twice = (a: number) => {\n"
+        "  return a * 2;\n"
+        "};\n"
+        "\n"
+        "export const LIMIT = 3;\n"
+    )
+    parsed = ASTParser().parse_file(_make_file_info("b.ts", "typescript"), source.encode())
+    symbols = [
+        SkeletonSymbol(name=s.name, kind=s.kind, start_line=s.start_line, end_line=s.end_line)
+        for s in parsed.symbols
+    ]
+    masks: list[list[bool]] = []
+    real_render = skeleton._render
+
+    def capture(lines, keep):
+        masks.append(list(keep))
+        return real_render(lines, keep)
+
+    monkeypatch.setattr(skeleton, "_render", capture)
+    result = build_skeleton(source, symbols, mode="plus")
+    assert result.mode == "plus"
+    assert result.text == source
+    assert masks == [[True, True, True, False, True, True, True]]

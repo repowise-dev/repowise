@@ -771,3 +771,23 @@ def test_the_mode_switch_serves_plus_and_defaults_to_smart(repo: Path, monkeypat
 
     monkeypatch.setenv("REPOWISE_HOOK_READ_SKELETON_MODE", "smart")
     assert configured_mode(repo) == "smart"
+
+
+def test_the_mode_env_override_ignores_blank_and_unknown_values(repo: Path, monkeypatch) -> None:
+    from repowise.cli.commands.augment_cmd.read_skeleton import configured_mode
+
+    (repo / ".repowise" / "config.yaml").write_text(
+        "hooks:\n  read_skeleton: true\n  read_skeleton_mode: plus\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("REPOWISE_HOOK_READ_SKELETON_MODE", "  ")
+    assert configured_mode(repo) == "plus"  # blank counts as unset
+    monkeypatch.setenv("REPOWISE_HOOK_READ_SKELETON_MODE", "everything")
+    assert configured_mode(repo) == "smart"
+
+    monkeypatch.delenv("REPOWISE_HOOK_READ_SKELETON_MODE")
+    (repo / ".repowise" / "config.yaml").write_text(
+        "hooks: [read_skeleton_mode: plus\n", encoding="utf-8"
+    )
+    assert configured_mode(repo) == "smart"
+    (repo / ".repowise" / "config.yaml").write_text("- read_skeleton_mode\n", encoding="utf-8")
+    assert configured_mode(repo) == "smart"
