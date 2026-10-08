@@ -115,14 +115,21 @@ _EDITED_B = "from a import alpha, gamma\n\n\ndef beta():\n    return alpha() + g
 
 
 async def _store_view(repo: Path) -> dict:
-    """Symbols, call edges and health rows of the two edited files."""
+    """Symbols, call edges, health, dead-code and git rows of the two edited files."""
     from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.database import resolve_db_url
-    from repowise.core.persistence.models import HealthFileMetric, WikiSymbol
+    from repowise.core.persistence.models import (
+        DeadCodeFinding,
+        GitMetadata,
+        HealthFileMetric,
+        WikiSymbol,
+    )
+
+    edited = ("a.py", "b.py")
 
     nodes, calls = await _symbols_and_call_edges(repo)
     # The update also writes editor files that a clone never has.
-    nodes = {n for n in nodes if n.startswith(("a.py", "b.py"))}
+    nodes = {n for n in nodes if n.startswith(edited)}
     engine = create_engine(resolve_db_url(repo))
     try:
         async with get_session(create_session_factory(engine)) as session:
@@ -133,11 +140,28 @@ async def _store_view(repo: Path) -> dict:
             health = {
                 m.file_path: (m.nloc, m.max_ccn, m.max_nesting, m.score)
                 for m in (await session.execute(select(HealthFileMetric))).scalars()
-                if m.file_path in ("a.py", "b.py")
+                if m.file_path in edited
+            }
+            dead = {
+                (d.file_path, d.kind, d.symbol_name, d.start_line)
+                for d in (await session.execute(select(DeadCodeFinding))).scalars()
+                if d.file_path in edited
+            }
+            git = {
+                g.file_path: (g.commit_count_total, g.last_commit_at, g.co_change_partners_json)
+                for g in (await session.execute(select(GitMetadata))).scalars()
+                if g.file_path in edited
             }
     finally:
         await engine.dispose()
-    return {"nodes": nodes, "calls": calls, "symbols": symbols, "health": health}
+    return {
+        "nodes": nodes,
+        "calls": calls,
+        "symbols": symbols,
+        "health": health,
+        "dead_code": dead,
+        "git": git,
+    }
 
 
 def _spy(monkeypatch, owner, name: str) -> list:
@@ -187,8 +211,8 @@ def test_working_tree_only_update_skips_history_phases_until_the_commit(
     assert result.exit_code == 0, result.output
 
     assert (analysis, drift, commits) == ([], [], [])
-    rows = _phase_rows(repo)
-    assert not {"persist.commits", "persist.health", "analysis.health", "rescore"} & rows
+    history_phases = {"persist.commits", "persist.health", "analysis.health", "rescore"}
+    assert not history_phases & _phase_rows(repo)
     view = asyncio.run(_store_view(repo))
     assert "a.py::gamma" in view["nodes"]
     assert ("b.py::beta", "a.py::gamma") in view["calls"]
@@ -201,7 +225,8 @@ def test_working_tree_only_update_skips_history_phases_until_the_commit(
     assert result.exit_code == 0, result.output
 
     assert analysis and drift and commits
-    assert {"persist.commits", "persist.health"} <= _phase_rows(repo)
+    # Each label is real: the commit's update records every one of them.
+    assert history_phases <= _phase_rows(repo)
     assert load_state(repo)["last_sync_commit"] == _git(repo, "rev-parse", "HEAD")
 
 
@@ -226,6 +251,7 @@ def test_working_tree_update_then_commit_converges_with_a_fresh_index(tmp_path: 
     _index_full(fresh)
 
     updated, expected = asyncio.run(_store_view(repo)), asyncio.run(_store_view(fresh))
+    assert expected["git"] and expected["dead_code"] and expected["health"]
     assert updated == expected
 
 

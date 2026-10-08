@@ -1466,7 +1466,7 @@ def run_update(
             git_tier=state.get("git_tier"),
             include_submodules=bool(state.get("include_submodules", False)),
             include_nested_repos=bool(state.get("include_nested_repos", False)),
-            idle_decay_sink=git_decay_map,
+            idle_decay_sink=None if working_tree_only else git_decay_map,
             force_full_git=git_config_changed,
             git_summary_sink=full_git_summaries,
             timings=timings,
@@ -1596,7 +1596,6 @@ def run_update(
     # With no new commit the stored git rows are already current, and an empty
     # map is what keeps the persist from walking for new commits.
     persisted_git_meta = {} if working_tree_only else git_meta_map
-    persisted_git_decay = {} if working_tree_only else git_decay_map
 
     # Refresh the knowledge graph (layers/tour/entry points) when the graph
     # shape changed — previously init-only, so update served a stale
@@ -1784,7 +1783,7 @@ def run_update(
                 # not the same as having no wiki.
                 template_wiki=docs_mode == "deterministic",
                 pages_rendered=len(det_pages),
-                git_decay_map=persisted_git_decay,
+                git_decay_map=git_decay_map,
                 exclude_patterns=exclude_patterns,
                 head_ts=head_ts,
                 force_full_rescore=health_config_changed,
@@ -1944,7 +1943,8 @@ def run_update(
 
         changed_paths = [fd.path for fd in file_diffs if fd.status in ("added", "modified")]
         # The rescan is the inline_marker source; it was running regardless of
-        # whether that source was switched off.
+        # whether that source was switched off. It also reads uncommitted
+        # files on purpose: a marker is source text, not history.
         if changed_paths and decision_policy.source_enabled("inline_marker"):
             extractor = DecisionExtractor(
                 repo_path=repo_path,
@@ -2437,7 +2437,7 @@ def run_update(
                 doc_drift_report=doc_drift_report,
                 decay_paths=affected.decay_only,
                 parsed_files=parsed_files,
-                git_decay_map=persisted_git_decay,
+                git_decay_map=git_decay_map,
                 full_git_summary=(full_git_summaries[0] if full_git_summaries else None),
                 reconcile_full_scope=traversal_config_changed,
                 reconcile_full_generation=generation_config_changed,
