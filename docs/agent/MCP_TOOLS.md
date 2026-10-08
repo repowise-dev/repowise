@@ -256,7 +256,7 @@ Reviews one commit, a `base..head` range, or uncommitted work by comparing the t
 
 **Key return fields:** `directive` (`status` of `review_required`, `review_recommended`, `clear_in_analyzed_scope` or `unknown`, with reasons and next actions), `health_delta` (introduced, worsened and resolved findings with `status` and `top_findings`), `impacted_tests`, `patch_coverage` (when coverage is stored), `fix_history`, `branch_overlap`, `independent_changes`, `diff_shape`, `risk_percentile`, `cross_repo` (workspace mode).
 
-Trust `health_delta.status`: `partial` means files were skipped and the change is not cleared. `diff_shape` describes size and spread, never danger. An empty diff returns `status: "nothing_to_score"`.
+`directive.status` is the verdict. `health_delta.status` `partial` means files that may hold code were skipped, so the change is not cleared; docs, config and data files never cause it. `review_priority`, `classification` and `diff_shape` describe diff size and spread, never danger. An empty diff returns `status: "nothing_to_score"`.
 
 ```
 get_change_risk()

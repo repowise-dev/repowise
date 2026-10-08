@@ -301,7 +301,7 @@ def test_test_file_findings_sort_below_source_findings(make_repo):
 # -- honesty ----------------------------------------------------------------
 
 
-def test_an_unsupported_file_is_skipped_and_never_looks_clean(make_repo):
+def test_a_docs_only_change_says_there_is_no_code_and_never_looks_clean(make_repo):
     repo = make_repo()
     repo.commit("seed", {"README.md": "# hi\n"})
     repo.commit("edit", {"README.md": "# hi there\n"})
@@ -310,8 +310,21 @@ def test_an_unsupported_file_is_skipped_and_never_looks_clean(make_repo):
 
     assert delta.findings == []
     assert delta.status == "unavailable"
-    assert delta.skipped == {"README.md": "not_health_analyzable"}
+    assert delta.skipped == {"README.md": "not_code"}
+    assert "no code to analyse" in delta.explanation
     assert not delta.is_clean
+
+
+def test_an_unsupported_code_file_is_skipped_and_never_looks_clean(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"lib.ex": "defmodule A do\nend\n"})
+    repo.commit("edit", {"lib.ex": "defmodule B do\nend\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "unavailable"
+    assert delta.skipped == {"lib.ex": "not_health_analyzable"}
+    assert "nothing was compared" in delta.explanation
 
 
 def test_a_partial_run_is_reported_as_partial(make_repo):
@@ -319,7 +332,7 @@ def test_a_partial_run_is_reported_as_partial(make_repo):
     repo.commit("seed", {"app.py": "x = 1\n"})
     repo.commit(
         "mixed",
-        {"app.py": python_complex("tangle", 16), "notes.md": "text\n"},
+        {"app.py": python_complex("tangle", 16), "lib.ex": "defmodule A do\nend\n"},
     )
 
     delta = compare(repo)
@@ -327,6 +340,19 @@ def test_a_partial_run_is_reported_as_partial(make_repo):
     assert delta.status == "partial"
     assert delta.skipped
     assert not delta.is_clean
+
+
+@pytest.mark.parametrize("path", ["CHANGES.rst", "package.json", "docs/guide.md", ".ci.yml"])
+def test_docs_and_config_beside_code_do_not_make_the_run_partial(make_repo, path):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", path: "a\n"})
+    repo.commit("edit", {"app.py": "x = 2\n", path: "b\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "available"
+    assert delta.skipped == {path: "not_code"}
+    assert delta.code_skipped == {}
 
 
 def test_a_generated_file_is_excluded_by_reason(make_repo):

@@ -129,6 +129,14 @@ _DIAGNOSTIC_FIELDS = (
     "fallback_band",
 )
 
+#: ``classification`` labels for the MCP surface. ``review_priority`` is a
+#: tercile of the diff-shape rank, so the label names size, not a verdict.
+_DIFF_SIZE_LABELS = {
+    "low": "Below-typical diff size",
+    "moderate": "Typical diff size",
+    "high": "Above-typical diff size",
+}
+
 
 @mcp.tool(
     surface_order=60,
@@ -153,15 +161,15 @@ async def get_change_risk(
     them, name their ``attribution`` basis, and sort change-written above
     pre-existing.
 
-    Trust ``health_delta.status``: ``partial`` means files were skipped and the
-    change is not cleared.
+    ``directive.status`` is the verdict; ``partial`` health means code files
+    were skipped. ``review_priority``, ``classification`` and ``diff_shape``
+    measure diff size only, not danger.
 
     ``impacted_tests`` keeps measured coverage and inferred candidates distinct.
     ``patch_coverage`` is the share of changed executable lines stored coverage
     ran; ``hints`` name tests to extend. ``fix_history`` is the changed files'
     bug-fix record, ``overlap`` the past fixes on these exact lines,
-    ``branch_overlap`` other branches editing them. ``diff_shape`` is one line
-    on size, not a danger verdict. An empty diff returns
+    ``branch_overlap`` other branches editing them. An empty diff returns
     ``status: "nothing_to_score"``.
 
     Args:
@@ -204,6 +212,8 @@ async def get_change_risk(
         if resolve_enum_argument(block, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
     }
     payload = change_risk_payload(result, scales="scales" in include_set)
+    if payload.get("review_priority") in _DIFF_SIZE_LABELS:
+        payload["classification"] = _DIFF_SIZE_LABELS[payload["review_priority"]]
     if "diagnostics" not in include_set:
         diagnostics = {f: payload.pop(f) for f in _DIAGNOSTIC_FIELDS if f in payload}
     else:

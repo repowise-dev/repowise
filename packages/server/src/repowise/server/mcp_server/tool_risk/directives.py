@@ -821,10 +821,11 @@ def _build_pr_directive(
         "dependency_cycles": dependency_cycles,
         "governance_risk": governance_risk,
         "next_calls": [c.as_dict() for c in next_calls],
+        # Totals, not the capped list lengths: "~5" of 24 understates the reach.
         "summary": (
             f"PR touches {len(changed_files)} file(s). "
-            f"~{len(may_break)} downstream file(s) may be affected, "
-            f"{len(missing_cochanges)} historical co-changer(s) missing, "
+            f"~{len(all_may_break)} downstream file(s) may be affected, "
+            f"{len(all_missing_cochanges)} historical co-changer(s) missing, "
             f"{missing_tests_summary}"
             f"{tests_to_run_suffix}{gov_suffix}{xr_suffix}{bc_suffix}{cf_suffix}"
         ),

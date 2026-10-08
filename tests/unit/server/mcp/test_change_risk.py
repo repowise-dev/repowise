@@ -105,6 +105,35 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_get_change_risk_labels_the_priority_tercile_as_diff_size(tmp_path, monkeypatch):
+    """The tercile ranks diff shape, so its label names size rather than a verdict."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"src/app.py": "value = 1\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "value = 2\n"}, "feat: app")
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    real_payload = module.change_risk_payload
+
+    def _ranked(result, **kwargs):
+        payload = real_payload(result, **kwargs)
+        payload.update(review_priority="high", classification="Elevated")
+        return payload
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    monkeypatch.setattr(module, "change_risk_payload", _ranked)
+    result = await module.get_change_risk("HEAD", baseline=0)
+
+    assert result["review_priority"] == "high"
+    assert result["classification"] == "Above-typical diff size"
+
+
+@pytest.mark.asyncio
 async def test_get_change_risk_bad_revspec_returns_error(tmp_path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

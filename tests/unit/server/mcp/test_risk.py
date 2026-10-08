@@ -176,6 +176,21 @@ async def test_get_risk_pr_directive_splits_test_breakage(setup_mcp):
 
 
 @pytest.mark.asyncio
+async def test_get_risk_pr_summary_counts_totals_not_capped_lists(setup_mcp, monkeypatch):
+    """The summary reports every affected file, not the length of the capped list."""
+    from repowise.server.mcp_server import get_risk
+    from repowise.server.mcp_server.tool_risk import directives
+
+    monkeypatch.setattr(directives, "_MAY_BREAK_LIMIT", 0)
+    result = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
+    directive = result["directive"]
+
+    assert directive["may_break"] == []
+    assert directive["may_break_total"] == 1
+    assert "~1 downstream file(s) may be affected" in directive["summary"]
+
+
+@pytest.mark.asyncio
 async def test_get_risk_pr_directive_names_its_next_calls(setup_mcp):
     """The diff first, then the callers of what may break; tests_to_run gets no call."""
     from repowise.server.mcp_server import get_risk

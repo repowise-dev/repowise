@@ -156,7 +156,7 @@ async def test_a_clean_change_says_analyzed_scope_not_safe(tool, make_repo):
 async def test_a_partial_comparison_never_reads_as_clear(tool, make_repo):
     repo = make_repo()
     repo.commit("seed", {"app.py": "x = 1\n"})
-    repo.commit("mixed", {"app.py": python_complex("tangle", 18), "notes.md": "text\n"})
+    repo.commit("mixed", {"app.py": python_complex("tangle", 18), "lib.ex": "defmodule A do\nend\n"})
     module = tool(repo)
 
     result = await module.get_change_risk("HEAD", baseline=0)
@@ -164,6 +164,19 @@ async def test_a_partial_comparison_never_reads_as_clear(tool, make_repo):
     assert result["health_delta"]["status"] == "partial"
     assert result["health_delta"]["skipped"]["total"] == 1
     assert any("not analysed" in reason for reason in result["directive"]["reasons"])
+
+
+async def test_a_docs_only_change_says_there_is_no_code_to_analyse(tool, make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", "CHANGES.rst": "a\n"})
+    repo.commit("docs", {"CHANGES.rst": "b\n"})
+    module = tool(repo)
+
+    result = await module.get_change_risk("HEAD", baseline=0)
+
+    assert result["directive"]["status"] == "clear_in_analyzed_scope"
+    assert "No code changed" in result["directive"]["headline"]
+    assert result["health_delta"]["skipped"]["by_reason"] == {"not_code": 1}
 
 
 async def test_performance_findings_do_not_by_themselves_demand_review(tool, make_repo):

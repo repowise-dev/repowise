@@ -119,6 +119,13 @@ def _plural(word: str, count: int) -> str:
 
 
 def _verdict(delta: ChangeHealthDelta) -> tuple[ReviewStatus, str, EvidenceState]:
+    if delta.status == "unavailable" and delta.skipped and not delta.code_skipped:
+        return (
+            "clear_in_analyzed_scope",
+            "No code changed: only documentation, configuration or data files, "
+            "so there was nothing to analyse.",
+            "available",
+        )
     if delta.status in _NOT_COMPARED:
         return "unknown", f"Change health could not be compared: {delta.explanation}", "unavailable"
     if delta.status in _UNTRUSTWORTHY:
@@ -168,9 +175,10 @@ def _reasons(delta: ChangeHealthDelta) -> tuple[str, ...]:
         f"{f.symbol or f.path} ({f.attribution_basis})"
         for f in delta.findings
     ]
-    if delta.skipped:
+    skipped = len(delta.code_skipped)
+    if skipped:
         reasons.append(
-            f"{len(delta.skipped)} changed {_plural('file', len(delta.skipped))} "
+            f"{skipped} changed {_plural('file', skipped)} "
             "were not analysed, so this is not a clean bill."
         )
     return tuple(reasons)
@@ -211,12 +219,12 @@ def _actions(delta: ChangeHealthDelta, tests: CoveringTestEvidence) -> tuple[Rev
             )
         )
         next_priority += 1
-    if delta.skipped:
+    if delta.code_skipped:
         actions.append(
             ReviewAction(
                 kind="review_skipped_files",
                 priority=next_priority,
-                targets=tuple(sorted(delta.skipped)),
+                targets=tuple(sorted(delta.code_skipped)),
                 explanation="Review the skipped files by hand; they were not compared.",
             )
         )

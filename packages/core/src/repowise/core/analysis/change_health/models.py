@@ -43,9 +43,13 @@ ATTRIBUTION_CONFIDENCE: dict[str, str] = {
 
 SEVERITY_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
+#: Documentation, configuration or data: skipped, but no code went unexamined.
+NOT_CODE = "not_code"
+
 #: Why a changed file produced no comparison. Kept per file so a partial run
 #: can never render as a clean one.
 SkipReason = Literal[
+    "not_code",
     "unsupported_language",
     "generated",
     "binary",
@@ -167,7 +171,7 @@ class ChangeHealthDelta:
     resolved_total: int = 0
     unchanged_total: int = 0
     uncertain_total: int = 0
-    #: ``{path: reason}``; a non-empty map means the run was partial.
+    #: ``{path: reason}``. Any reason but ``not_code`` means the run was partial.
     skipped: dict[str, str] = field(default_factory=dict)
     timing_ms: float = 0.0
     cache_hit: bool = False
@@ -180,6 +184,11 @@ class ChangeHealthDelta:
     @property
     def worsened_total(self) -> int:
         return sum(1 for f in self.findings if f.change_kind == "worsened")
+
+    @property
+    def code_skipped(self) -> dict[str, str]:
+        """Skipped files that may hold code, so their absence leaves a gap."""
+        return {p: r for p, r in self.skipped.items() if r != NOT_CODE}
 
     @property
     def is_clean(self) -> bool:

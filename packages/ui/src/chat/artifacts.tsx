@@ -391,7 +391,7 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
         {data.ref && <ContextItem label="Change" value={String(data.ref)} />}
         {pct !== null && <ContextItem label="Diff shape" value={`p${pct}`} />}
         {data.review_priority && (
-          <ContextItem label="Priority" value={String(data.review_priority)} />
+          <ContextItem label="Diff size" value={String(data.review_priority)} />
         )}
         {delta?.scope && (
           <ContextItem
