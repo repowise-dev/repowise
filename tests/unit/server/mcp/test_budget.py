@@ -597,8 +597,12 @@ def test_risk_trim_blast_lists_collects_drops(repo_root: Path):
     trimmed = _trim_blast_lists(blast, None, collector)
     assert len(trimmed["transitive_affected"]) == 15
     assert trimmed["transitive_affected_truncated_total"] == 20
-    assert trimmed["structural_impact_score"] == trimmed["overall_risk_score"] == 4.2
-    assert trimmed["overall_risk_score_compatibility"]["equivalent_value"] is True
+    # The raw structural score is a scales-only projection on the MCP surface.
+    assert "structural_impact_score" not in trimmed
+    assert "overall_risk_score" not in trimmed
+    scaled = _trim_blast_lists(blast, None, None, full_scale=True)
+    assert scaled["structural_impact_score"] == 4.2
+    assert "overall_risk_score_compatibility" not in scaled
 
     response: dict = {"_meta": {}}
     collector.attach(response)

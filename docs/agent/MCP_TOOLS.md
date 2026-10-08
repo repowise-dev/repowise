@@ -230,9 +230,9 @@ What history says about touching a file: hotspot score, bug-fix record, owners, 
 | `include` | list[string] | none | `graph` (typed dependents, consumers, cross-repo links), `churn`, `tests` (typed `test_recommendations` in PR mode), `blast` (`pr_blast_radius` in PR mode), `scales` (units and calibration, identical per call) |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
-**Key return fields:** per file: `hotspot_score` (0 to 1), `health_score` (0 to 10), `dependents_count`, `co_change_partners`, owners, test gaps, `security_signals`. In PR mode, `directive` with `may_break`, `missing_cochanges`, `tests_to_run`, `tests_to_run_basis` (`measured`, `inferred` or `none`), `tests_to_update` (test files to edit, each with a `name_pair`, `imports` or `co_change` reason), `coverage`, `recommended_reviewers` and `next_calls`. `include=["blast"]` adds `pr_blast_radius` with the 0 to 10 `structural_impact_score`. `missing_tests` appears only when coverage can back it. A target naming no indexed file returns `resolved: false` with a reason, never zeroed counts.
+**Key return fields:** per file: `hotspot_score` (0 to 1), `health_score` (0 to 10), `dependents_count`, `co_change_partners`, owners, test gaps, `security_signals`. In PR mode, `directive` with `may_break`, `missing_cochanges`, `tests_to_run`, `tests_to_run_basis` (`measured`, `inferred` or `none`), `tests_to_update` (test files to edit, each with a `name_pair`, `imports` or `co_change` reason), `coverage`, `recommended_reviewers`, `next_calls`, and `reach` (`localized`, `moderate` or `broad`). `include=["blast"]` adds `pr_blast_radius`; the raw 0 to 10 `structural_impact_score` and its scale appear there only with `include=["blast", "scales"]`. `missing_tests` appears only when coverage can back it. A target naming no indexed file returns `resolved: false` with a reason, never zeroed counts.
 
-Dependent counts are a floor over the indexed graph, and structural reach is not proof of runtime breakage. `structural_impact_score` is an uncalibrated heuristic, not a probability.
+Dependent counts are a floor over the indexed graph, and structural reach is not proof of runtime breakage. `reach` bands an uncalibrated heuristic that never sees the diff; it is not a probability.
 
 ```
 get_risk(targets=["src/auth/middleware.ts"])
@@ -250,7 +250,7 @@ Reviews one commit, a `base..head` range, or uncommitted work by comparing the t
 | `exclude_patterns` | list[string] | none | Gitignore-style paths to omit; combined with a root `.riskignore` |
 | `include_paths` | list[string] or string | all | Gitignore-style paths to keep, as a list or one comma-separated string |
 | `baseline` | int | `200` | Recent commits sampled for percentile ranking; `0` disables percentiles |
-| `include` | list[string] | none | `findings` (every finding), `diagnostics` (raw score mechanics), `scales` (units) |
+| `include` | list[string] | none | `findings` (every finding), `diagnostics` (raw score mechanics, plus the delta's analyzer, revisions and limits), `scales` (units) |
 | `finding_id` | string | none | Expand one `health_delta` finding |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 

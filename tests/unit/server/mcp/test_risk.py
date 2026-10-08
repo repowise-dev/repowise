@@ -822,35 +822,42 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
 
 
 @pytest.mark.asyncio
-async def test_get_risk_directive_does_not_copy_the_analyzer_score(setup_mcp):
-    """The structural heuristic lives in blast detail, not the directive."""
+async def test_get_risk_reports_reach_not_the_uncalibrated_score(setup_mcp):
+    """PR mode carries the structural band as ``reach``; the raw score is opt-in."""
+    from repowise.core.analysis.risk_semantics import structural_impact_band
     from repowise.server.mcp_server import get_risk
 
     result = await get_risk(
         ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["blast"]
     )
 
-    assert "overall_risk_score" not in result["directive"]
     blast = result["pr_blast_radius"]
-    assert blast["overall_risk_score"] == blast["structural_impact_score"]
-    assert blast["overall_risk_score_compatibility"] == {
-        "deprecated": True,
-        "replacement": "structural_impact_score",
-        "equivalent_value": True,
-        "historical_meaning": "uncalibrated 0-10 structural blast-radius heuristic",
-    }
-    scale = blast["structural_impact_scale"]
-    assert scale["calibration"]["status"] == "uncalibrated"
-    assert scale["runtime_breakage_probability"] is False
-    # Guard tier by default; the reference tier follows the caller's include.
-    assert "component_fields" not in scale
+    for key in (
+        "structural_impact_score",
+        "structural_impact_band",
+        "structural_impact_scale",
+        "overall_risk_score",
+        "overall_risk_score_compatibility",
+    ):
+        assert key not in blast
+        assert key not in result["directive"]
+    assert result["directive"]["reach"] in {"localized", "moderate", "broad"}
     assert "risk_scales" not in result
 
     expanded = await get_risk(
         ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["scales", "blast"]
     )
+    blast = expanded["pr_blast_radius"]
     assert expanded["risk_scales"][0]["field"] == "targets.*.hotspot_score"
-    assert expanded["pr_blast_radius"]["structural_impact_scale"]["component_fields"]
+    assert structural_impact_band(blast["structural_impact_score"]) == (
+        expanded["directive"]["reach"]
+    )
+    scale = blast["structural_impact_scale"]
+    assert scale["calibration"]["status"] == "uncalibrated"
+    assert scale["runtime_breakage_probability"] is False
+    assert scale["component_fields"]
+    assert "overall_risk_score" not in blast
+    assert "overall_risk_score_compatibility" not in blast
 
 
 @pytest.mark.asyncio

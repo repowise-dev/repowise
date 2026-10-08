@@ -129,6 +129,10 @@ _DIAGNOSTIC_FIELDS = (
     "fallback_band",
 )
 
+#: Comparison mechanics on ``health_delta``: the analyzer fingerprint, the two
+#: resolved revisions and the fixed limits text. Behind ``diagnostics`` too.
+_HEALTH_DIAGNOSTIC_FIELDS = ("analyzer", "base", "head", "limits")
+
 #: ``classification`` labels for the MCP surface. ``review_priority`` is a
 #: tercile of the diff-shape rank, so the label names size, not a verdict.
 _DIFF_SIZE_LABELS = {
@@ -181,7 +185,7 @@ async def get_change_risk(
         include_paths: Gitignore-style paths to keep, as a list or one
             comma-separated string, e.g. ``"src/api/,src/db/"``. Omit for all.
         baseline: Recent commits sampled for percentile ranking; 0 disables it.
-        include: ``"findings"``, ``"diagnostics"`` (raw score mechanics) or
+        include: ``"findings"``, ``"diagnostics"`` (raw mechanics) or
             ``"scales"`` (units).
         finding_id: Expand one ``health_delta`` finding by its id.
     """
@@ -296,7 +300,13 @@ async def get_change_risk(
     payload["diff_shape"] = _diff_shape_sentence(payload, diagnostics)
     if independent is not None:
         payload["independent_changes"] = independent
-    _attach_health(payload, delta, revspec, expand="findings" in include_set)
+    _attach_health(
+        payload,
+        delta,
+        revspec,
+        expand="findings" in include_set,
+        diagnostics="diagnostics" in include_set,
+    )
     # source: live_git marks that the *score* is computed from the working
     # checkout's git. The two blocks above are index-backed, so the freshness
     # fields do apply to them, scoped to the change's files. None (not []) when
@@ -435,9 +445,14 @@ async def _attach_health_references(ctx: Any, delta: Any) -> None:
         }
 
 
-def _attach_health(payload: dict, delta: Any, revspec: str | None, *, expand: bool) -> None:
+def _attach_health(
+    payload: dict, delta: Any, revspec: str | None, *, expand: bool, diagnostics: bool = False
+) -> None:
     """Put the directive first and the compact delta second."""
     block = _health_delta_block(delta, revspec=revspec)
+    if not diagnostics:
+        for key in _HEALTH_DIAGNOSTIC_FIELDS:
+            block.pop(key, None)
     if expand:
         from repowise.server.mcp_server._change_health import finding_row
 

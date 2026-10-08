@@ -145,6 +145,7 @@ files reach, and what is missing from it. The response opens with a
 | `missing_tests` | Changed files with a test gap; present only when coverage can back it |
 | `coverage` | `{status, reason}` when there is no per-test coverage map |
 | `tests_to_update` | Up to three test files the change will probably need edited, with why: `name_pair`, `imports` or `co_change`; empty when none qualify |
+| `reach` | `localized`, `moderate` or `broad`: the band of the structural heuristic below |
 | `next_calls` | What to call next |
 | `summary` | One sentence over all of the above |
 
@@ -160,8 +161,10 @@ The directive also names `recommended_reviewers`. With `include=["blast"]`,
 PR mode adds `pr_blast_radius`, whose `structural_impact_score` is a deterministic, uncalibrated
 0-10 heuristic over PageRank, churn and transitive dependents, banded
 `localized` (below 4), `moderate` (4 to below 7) and `broad` (7 and up). It is
-not a probability and does not decide review. `overall_risk_score` is an exact
-deprecated alias.
+not a probability and does not decide review. The MCP reply carries only its
+band, as `directive.reach`; `include=["scales"]` adds the score and its scale.
+The REST blast-radius response and the CLI keep the score with its exact
+deprecated alias `overall_risk_score`.
 
 ## Independent changes
 

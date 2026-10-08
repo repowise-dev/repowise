@@ -206,31 +206,13 @@
       "percentile": null
     },
     "health_delta": {
-      "analyzer": {
-        "analyzer_version": null,
-        "performance_model_version": null,
-        "rules_fingerprint": null
-      },
-      "base": {
-        "kind": null,
-        "ref": null,
-        "sha": null
-      },
       "basis": null,
       "by_dimension": {},
       "by_severity": {},
       "explanation": null,
       "findings_emitted": null,
       "findings_total": null,
-      "head": {
-        "kind": null,
-        "ref": null,
-        "sha": null
-      },
       "introduced": null,
-      "limits": [
-        null
-      ],
       "resolved": null,
       "scope": {
         "analyzed": null,
@@ -1400,6 +1382,7 @@
           "tool": null
         }
       ],
+      "reach": null,
       "recommended_reviewers": [
         {
           "email": null,
@@ -1535,34 +1518,6 @@
           }
         ]
       },
-      "overall_risk_score": null,
-      "overall_risk_score_compatibility": {
-        "deprecated": null,
-        "equivalent_value": null,
-        "historical_meaning": null,
-        "replacement": null
-      },
-      "structural_impact_band": null,
-      "structural_impact_scale": {
-        "authoritative_for_change_review": null,
-        "band_thresholds": {
-          "broad": null,
-          "moderate": null
-        },
-        "calibration": {
-          "status": null
-        },
-        "field": null,
-        "kind": null,
-        "measures": null,
-        "range": {
-          "maximum": null,
-          "minimum": null
-        },
-        "runtime_breakage_probability": null,
-        "unit": null
-      },
-      "structural_impact_score": null,
       "test_gaps": [
         null
       ],

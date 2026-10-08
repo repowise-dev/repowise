@@ -209,11 +209,17 @@ async def test_every_surfaced_finding_carries_an_attribution(tool, make_repo):
 async def test_the_delta_names_the_analyzer_and_the_two_sides(tool, make_repo):
     module = tool(seeded(make_repo))
 
-    delta = (await module.get_change_risk("HEAD", baseline=0))["health_delta"]
+    default = (await module.get_change_risk("HEAD", baseline=0))["health_delta"]
+    delta = (await module.get_change_risk("HEAD", baseline=0, include=["diagnostics"]))[
+        "health_delta"
+    ]
 
+    # Comparison mechanics are a projection: absent by default, exact on request.
+    assert not {"analyzer", "base", "head", "limits"} & set(default)
     assert delta["analyzer"]["analyzer_version"] > 0
     assert delta["base"]["sha"] and delta["head"]["sha"]
-    assert delta["basis"] == "both_sides_analyzed"
+    assert delta["limits"]
+    assert default["basis"] == delta["basis"] == "both_sides_analyzed"
 
 
 # -- caching and concurrency ------------------------------------------------

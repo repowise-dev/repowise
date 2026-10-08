@@ -150,7 +150,6 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "patch_coverage.files[]",
             "patch_coverage",
             "impacted_tests",
-            "health_delta.limits",
             "health_delta.skipped",
             "health_delta.top_findings[]",
         ),

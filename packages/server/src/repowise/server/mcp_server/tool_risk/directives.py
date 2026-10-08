@@ -7,7 +7,10 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.analysis.next_call import ActionCommand
-from repowise.core.analysis.risk_semantics import structural_impact_contract
+from repowise.core.analysis.risk_semantics import (
+    structural_impact_band,
+    structural_impact_contract,
+)
 from repowise.core.analysis.test_reachability import tests_matching_by_name
 from repowise.core.co_change import MIN_CO_CHANGE_SUPPORT
 from repowise.core.persistence.crud.authority import decision_currencies
@@ -336,13 +339,21 @@ def _trim_blast_lists(
     are filtered by policy, not budget).
     """
     trimmed_blast: dict[str, Any] = dict(pr_blast_radius)
-    # Re-derive so the scale tier follows the caller's include, not the
-    # analyzer's default. The legacy field stays an exact alias.
-    structural_score = trimmed_blast.get("structural_impact_score")
-    if structural_score is not None:
-        trimmed_blast.update(
-            structural_impact_contract(float(structural_score), full_scale=full_scale)
-        )
+    # The structural score is uncalibrated and never sees the diff, so the MCP
+    # reply carries only its band (``directive.reach``). The number and its
+    # scale ride with ``include=["scales"]``; REST and the CLI keep the alias.
+    structural_score = trimmed_blast.pop("structural_impact_score", None)
+    for key in (
+        "structural_impact_band",
+        "structural_impact_scale",
+        "overall_risk_score",
+        "overall_risk_score_compatibility",
+    ):
+        trimmed_blast.pop(key, None)
+    if structural_score is not None and full_scale:
+        contract = structural_impact_contract(float(structural_score), full_scale=True)
+        for key in ("structural_impact_score", "structural_impact_band", "structural_impact_scale"):
+            trimmed_blast[key] = contract[key]
     for key, cap in (
         ("transitive_affected", 15),
         ("cochange_warnings", 10),
@@ -758,9 +769,17 @@ def _build_pr_directive(
             )
         )
 
+    structural_score = pr_blast_radius.get("structural_impact_score")
     directive = {
         "may_break": may_break,
         "missing_cochanges": missing_cochanges,
+        # Band of the structural heuristic: how far the import graph reaches,
+        # not whether anything breaks.
+        "reach": (
+            structural_impact_band(float(structural_score))
+            if structural_score is not None
+            else None
+        ),
         "missing_tests": missing_tests,
         "missing_tests_semantics": "changed_file_test_gap_compatibility_projection",
         "missing_tests_total": missing_tests_total,

@@ -370,9 +370,10 @@ async def get_risk(
     measured or inferred. To score a commit or ``base..head`` range instead,
     use ``get_change_risk``.
 
-    ``include=["blast"]`` adds ``pr_blast_radius``, whose
-    ``structural_impact_score`` is an uncalibrated 0-10 heuristic, never a
-    runtime-breakage probability.
+    ``directive.reach`` (localized, moderate, broad) bands how far the import
+    graph reaches: uncalibrated, never a breakage probability.
+    ``include=["blast"]`` adds ``pr_blast_radius``; its raw
+    ``structural_impact_score`` appears only with ``include=["blast", "scales"]``.
 
     Default responses fit 24,000 serialized chars; nonempty ``include`` uses
     32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
@@ -384,7 +385,7 @@ async def get_risk(
         repo: usually omitted.
         changed_files: PR-changed files for blast-radius mode.
         include: opt-in blocks - "graph", "churn", "tests" (typed test
-            rows), "blast", "scales" (units and calibration; identical per call).
+            rows), "blast", "scales" (units and calibration).
     """
     if repo == "all":
         return _unsupported_repo_all("get_risk")
