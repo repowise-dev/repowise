@@ -43,6 +43,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.server.mcp_server._basis import call_resolution_basis
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
+from repowise.server.mcp_server._edit_sites import reference_edit_set
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
     _decision_body,
@@ -1287,6 +1288,28 @@ async def _resolve_one_target(
             exclude_spec=exclude_spec,
             collector=collector,
         )
+
+    # --- Reference edit set: every live site naming the symbol ---
+    if include and "references" in include:
+        ref_node = graph_symbol
+        if ref_node is None and target_type == "symbol" and symbol_node_id:
+            res = await session.execute(
+                select(GraphNode).where(
+                    GraphNode.repository_id == repo_id,
+                    GraphNode.node_id.in_(symbol_id_variants(symbol_node_id)),
+                    GraphNode.node_type == "symbol",
+                )
+            )
+            ref_node = min(
+                res.scalars().all(),
+                key=lambda g: (g.node_id != symbol_node_id, g.node_id),
+                default=None,
+            )
+        root = repo_root or getattr(repository, "local_path", None)
+        if ref_node is not None and root:
+            result_data["references"] = await reference_edit_set(session, repo_id, root, ref_node)
+        else:
+            result_data["references_note"] = "references require a symbol target in the graph"
 
     # --- Metrics (replaces get_graph_metrics) ---
     if include and "metrics" in include:

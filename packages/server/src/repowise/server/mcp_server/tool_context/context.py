@@ -14,6 +14,9 @@ Optional ``include`` parameter widens the response:
                             digest (questions, identifiers, git signals)
   - include=["callers"]   → who calls this symbol (symbol targets only)
   - include=["callees"]   → what this symbol calls (symbol targets only)
+  - include=["references"]→ every live edit site of a symbol (definition,
+                            imports, calls, other mentions) and whether
+                            the list is complete (symbol targets only)
   - include=["ownership"] → primary owner, bus factor, contributor count
   - include=["last_change"]→ last commit date and author
   - include=["metrics"]   → PageRank, betweenness, percentile ranks
@@ -77,6 +80,7 @@ _INCLUDE_BLOCKS = frozenset(
         "full_doc",
         "callers",
         "callees",
+        "references",
         "ownership",
         "last_change",
         "metrics",
@@ -122,6 +126,8 @@ async def get_context(
     Batch targets in one call. No source bytes by default: pass
     include=["skeleton"] for the whole file body-elided and line-verified in
     ONE call, or Read it. Do not call get_symbol per signature.
+    For a rename or update-all-callers task, include=["references"] is the
+    whole edit set when complete is true.
 
     Default responses fit 24,000 serialized chars; nonempty ``include`` uses
     32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
@@ -131,11 +137,9 @@ async def get_context(
     Args:
         targets: file paths, module paths, or "path::Symbol" ids.
         include: opt-in blocks: full_doc | ownership | last_change | callers
-            | callees | metrics | community | decisions | skeleton | skeleton+ | health
-            | doc_drift (documents naming this file) | symbols (all of a
-            file's symbols; the default lists the top 15, classes and
-            functions first).
-            An unrecognised key is named in ignored_arguments.
+            | callees | references | metrics | community | decisions | skeleton
+            | skeleton+ | health | doc_drift (docs naming this file)
+            | symbols (all of a file's symbols, not the top 15).
         compact: default True; False adds structure+imports+docstrings.
         repo: usually omitted.
     """
