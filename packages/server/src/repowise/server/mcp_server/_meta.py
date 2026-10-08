@@ -287,6 +287,7 @@ _DIRTY_PATHS_CACHE_MAX = 32
 # Runs inline on the event loop from build_meta, so the bound is tight; a slow
 # repo times out once and reads as "not evaluated" for the failed TTL.
 _DIRTY_PATHS_TIMEOUT_S = 0.5
+_UNTRACKED_DIR_FILE_CAP = 200
 
 
 def _working_tree_dirty_paths(local_path: str) -> frozenset[str] | None:
@@ -378,9 +379,20 @@ def _indexed_from_working_tree(
     if path.endswith("/"):
         # An untracked directory: its own mtime misses edits to files inside,
         # so it is covered only when every file under it is.
+        from itertools import islice
+
+        from repowise.core.fs_walk import iter_glob
+
         try:
-            files = [f for f in target.rglob("*") if f.is_file()]
+            files = [
+                f
+                for f in islice(iter_glob(target, "*"), _UNTRACKED_DIR_FILE_CAP + 1)
+                if f.is_file()
+            ]
         except OSError:
+            return False
+        if len(files) > _UNTRACKED_DIR_FILE_CAP:
+            # Too large to check inline; stays marked rather than guessed covered.
             return False
         return bool(files) and all(
             _indexed_from_working_tree(local_path, f.relative_to(local_path).as_posix(), record)
@@ -418,6 +430,39 @@ def uncommitted_targets(local_path: str | None, targets: list[str] | None) -> li
             (fd == key or fd.startswith(key + "/") or (fd.endswith("/") and key.startswith(fd)))
             and not _indexed_from_working_tree(local_path, d, record)
             for d, fd in folded
+        ):
+            out.append(path)
+    return out
+
+
+def reverted_targets(local_path: str | None, targets: list[str] | None) -> list[str]:
+    """Served targets indexed from working-tree edits that are no longer there.
+
+    A reverted edit leaves git status clean while the index still holds it.
+    Only meaningful while HEAD equals the indexed commit; the caller checks.
+    """
+    if not local_path or not targets:
+        return []
+    record = _working_tree_record(local_path)
+    if not record or not record[0]:
+        return []
+    dirty = _working_tree_dirty_paths(local_path)
+    if dirty is None:
+        return []
+    dirty_keys = {_fold(d) for d in dirty}
+
+    def _still_dirty(rec: str) -> bool:
+        return rec in dirty_keys or any(d.endswith("/") and rec.startswith(d) for d in dirty_keys)
+
+    out: list[str] = []
+    for raw in targets:
+        path = _normalize_target_path(raw)
+        if not path or path in out:
+            continue
+        key = _fold(path)
+        if any(
+            (rec == key or rec.startswith(key + "/")) and not _still_dirty(rec)
+            for rec in record[0]
         ):
             out.append(path)
     return out
@@ -466,7 +511,8 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
         ``true`` makes every consumer-side rate read 100%.
       * ``working_tree_dirty``: count of served targets with uncommitted edits
         no ``repowise update --working-tree`` has indexed; those also set
-        ``stale_warning`` when nothing else has.
+        ``stale_warning`` when nothing else has. A served file indexed from
+        uncommitted edits that were since reverted sets ``stale_warning`` alone.
 
     Defensive throughout: any missing piece is dropped rather than raised so
     an upstream change to the Repository model can never poison a tool result.
@@ -548,6 +594,11 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
                 "A file this response serves has uncommitted edits: source reads are live, "
                 "but graph and index facts for it predate the edit. "
                 "Run `repowise update --working-tree`.",
+            )
+        elif live_full and live_full == indexed_full and reverted_targets(local_path, targets):
+            out["stale_warning"] = (
+                "A file this response serves was indexed from uncommitted edits that are "
+                "no longer in the working tree. Run `repowise update --working-tree`."
             )
 
     return out

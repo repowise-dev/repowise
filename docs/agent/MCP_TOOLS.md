@@ -87,7 +87,7 @@ Every tool returns a JSON object with a `_meta` envelope. Most fields appear onl
 
 | Field | What to do with it |
 |-------|--------------------|
-| `stale_warning` | Present only when the index is behind in a way that changed served files, or a served file has uncommitted edits (`working_tree_dirty` counts them; run `repowise update --working-tree`). Run `repowise update` before trusting file-level detail. Its absence means current. |
+| `stale_warning` | Present only when the index is behind in a way that changed served files, or a served file has uncommitted edits or was indexed from edits since reverted (`working_tree_dirty` counts the edited ones; run `repowise update --working-tree`). Run `repowise update` before trusting file-level detail. Its absence means current. |
 | `indexed_commit`, `live_head`, `index_behind` | Which commit the answer describes and whether HEAD has moved since. |
 | `complete` | Symbol bodies or whole files served verified against the live file. Do not re-read them. |
 | `state` | `degraded`, `partial` or `truncated` when something fired, with reasons. A degraded empty result is a failed read, not an empty repository. |

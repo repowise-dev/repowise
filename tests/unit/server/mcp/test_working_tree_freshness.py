@@ -116,15 +116,23 @@ async def _serve(repo: Path) -> dict[tuple[str, str], dict]:
     return out
 
 
-def _silent_wrong(responses: dict[tuple[str, str], dict]) -> list[tuple[str, str]]:
+_TOOLS = ("get_context", "get_symbol", "search_codebase", "get_answer", "get_risk")
+
+
+def _silent_wrong(
+    responses: dict[tuple[str, str], dict], *, reverted: bool = False
+) -> list[tuple[str, str]]:
     """Unmarked responses that serve the target or an old fact but not the live code.
 
     A reply that names neither the file nor anything the edit removed (a
     retrieval miss) makes no claim about the target, so it is not counted.
+    ``reverted`` swaps the sides: the edits are what is gone.
     """
     wrong = []
     for case, case_file, _symbol, old, new in _CASES:
-        for tool in ("get_context", "get_symbol", "search_codebase", "get_answer", "get_risk"):
+        if reverted:
+            old, new = new, old
+        for tool in _TOOLS:
             response = responses[(case, tool)]
             body = _body(response)
             stale_fact = any(t in body for t in old)
@@ -138,7 +146,7 @@ def _silent_wrong(responses: dict[tuple[str, str], dict]) -> list[tuple[str, str
 def test_uncommitted_edits_are_marked_and_cleared_by_working_tree_update(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from repowise.cli.helpers import save_state
+    from repowise.cli.helpers import release_update_lock, save_state
 
     monkeypatch.setenv("REPOWISE_EMBEDDER", "mock")
     for name in ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL"):
@@ -160,11 +168,35 @@ def test_uncommitted_edits_are_marked_and_cleared_by_working_tree_update(
     result = CliRunner().invoke(cli, ["update", str(repo), "--no-workspace", "--working-tree"])
     assert result.exit_code == 0, result.output
 
-    # Covered now: no marker, and nothing the edits removed is served as current.
     after = asyncio.run(_serve(repo))
-    for case, _file, _symbol, old, _new in _CASES:
-        for tool in ("get_context", "get_symbol", "search_codebase", "get_answer", "get_risk"):
-            response = after[(case, tool)]
+    _assert_clear(after)
+    card = after[("rename", "get_context")]["targets"]["billing.py"]
+    assert "working_tree" not in card["freshness"]
+
+    # Revert without committing: git status is clean, but the index still
+    # holds the edits, so every served target is marked until the next update.
+    _git(repo, "checkout", "--", ".")
+    reverted = asyncio.run(_serve(repo))
+    assert _silent_wrong(reverted, reverted=True) == []
+    meta = reverted[("rename", "get_context")]["_meta"]
+    assert "no longer in the working tree" in meta["stale_warning"]
+    assert "working_tree_dirty" not in meta
+
+    # The update lock is released at process exit; this run shares the process.
+    release_update_lock(repo)
+    result = CliRunner().invoke(cli, ["update", str(repo), "--no-workspace", "--working-tree"])
+    assert result.exit_code == 0, result.output
+    recorded = json.loads((repo / ".repowise" / "state.json").read_text())["working_tree_paths"]
+    assert not set(recorded) & set(_EDITS)
+    _assert_clear(asyncio.run(_serve(repo)), reverted=True)
+
+
+def _assert_clear(responses: dict[tuple[str, str], dict], *, reverted: bool = False) -> None:
+    """Covered: no marker, and nothing that is gone is served as current."""
+    for case, _file, _symbol, old, new in _CASES:
+        gone = new if reverted else old
+        for tool in _TOOLS:
+            response = responses[(case, tool)]
             assert "working_tree_dirty" not in response["_meta"], (case, tool)
             assert not _marked(response), (case, tool, response["_meta"])
             # A not-found reply echoes the name it was asked for; that is the
@@ -172,9 +204,7 @@ def test_uncommitted_edits_are_marked_and_cleared_by_working_tree_update(
             if response.get("error") or response.get("results") == []:
                 continue
             body = _body(response)
-            assert not any(t in body for t in old), (case, tool, body[:1500])
-    card = after[("rename", "get_context")]["targets"]["billing.py"]
-    assert "working_tree" not in card["freshness"]
+            assert not any(t in body for t in gone), (case, tool, body[:1500])
 
 
 # The cases below need git only, no index: the freshness logic on its own.
@@ -304,3 +334,21 @@ def test_target_case_is_folded_where_the_filesystem_folds_it(tmp_path: Path, mon
     assert _meta.uncommitted_targets(str(repo), ["Pricing.py"]) == ["Pricing.py"]
     monkeypatch.setattr(_meta.sys, "platform", "linux")
     assert _meta.uncommitted_targets(str(repo), ["Pricing.py"]) == []
+
+
+def test_a_reverted_working_tree_edit_is_stale_until_head_moves(tmp_path: Path) -> None:
+    repo, row = _state_repo(tmp_path)
+    _record(repo, ["pricing.py"])
+
+    out = _meta.freshness_from_repo(row, targets=["pricing.py", "billing.py"])
+    assert "no longer in the working tree" in out["stale_warning"]
+    assert "working_tree_dirty" not in out
+    assert "stale_warning" not in _meta.freshness_from_repo(row, targets=["billing.py"])
+    assert "stale_warning" not in _meta.freshness_from_repo(row, targets=None)
+
+    # Still dirty means the dirty rule applies, not this one.
+    (repo / "pricing.py").write_text(_EDITS["pricing.py"])
+    _meta._dirty_paths_cache.clear()
+    assert "uncommitted edits:" in _meta.freshness_from_repo(row, targets=["pricing.py"])[
+        "stale_warning"
+    ]
