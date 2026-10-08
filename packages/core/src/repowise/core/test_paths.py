@@ -462,6 +462,14 @@ def is_test_to_production_pair(
 
 _PASCAL_UNIT_SUFFIXES = frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"})
 
+# JVM and .NET tests are a PascalCase class named for the class under test.
+_CLASS_TEST_SUFFIXES: dict[str, tuple[str, ...]] = {
+    ".java": ("Test", "Tests"),
+    ".cs": ("Test", "Tests"),
+    ".kt": ("Test", "Tests", "Spec"),
+    ".scala": ("Spec", "Suite", "Test"),
+}
+
 
 def paired_test_names(rel_path: str) -> frozenset[str]:
     """Filenames a test for *rel_path* would conventionally carry, any directory."""
@@ -486,4 +494,6 @@ def paired_test_names(rel_path: str) -> frozenset[str]:
         # Delphi pairs ``uFoo.pas`` with a ``TestFoo.dpr`` program; only a
         # lowercase ``u`` is the unit prefix (``Utils.pas`` keeps its U).
         names.add(f"Test{stem[1:] if stem[:1] == 'u' else stem}.dpr")
+    for suffix in _CLASS_TEST_SUFFIXES.get(p.suffix, ()):
+        names.add(f"{stem}{suffix}{p.suffix}")
     return frozenset(names)
