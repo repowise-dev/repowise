@@ -872,6 +872,23 @@ its measured width to that table.
 `reasoning` is forwarded as OpenAI `reasoning_effort` for OpenAI reasoning models
 routed through Eden (e.g. `openai/gpt-5*`); other models expose only `auto`.
 
+### Cheaper Inference
+
+[Cheaper Inference](https://cheaperinference.com) is an OpenAI-compatible
+gateway. One key reaches models from several labs, with bare model ids such as
+`gpt-5.4-mini`, `claude-sonnet-5`, `gemini-3.1-pro` and `deepseek-v4-flash`:
+
+```bash
+export CHEAPER_INFERENCE_API_KEY="..."
+repowise init --provider cheaperinference --model gpt-5.4-mini
+```
+
+Get a key at <https://cheaperinference.com/signup>. The model list is at
+<https://cheaperinference.com/markets>. `CHEAPER_INFERENCE_BASE_URL` overrides
+the default endpoint `https://api.cheaperinference.com/v1`.
+
+It is an LLM provider only. Pick another embedder for semantic search.
+
 ### Provider auto-detection
 
 If you don't pass `--provider`, repowise detects your provider by checking, in
@@ -879,7 +896,7 @@ order:
 
 1. `REPOWISE_PROVIDER` environment variable
 2. `provider` in `.repowise/config.yaml`
-3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY` → `EDENAI_API_KEY`
+3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY` → `EDENAI_API_KEY` → `CHEAPER_INFERENCE_API_KEY`
 
 ---
 

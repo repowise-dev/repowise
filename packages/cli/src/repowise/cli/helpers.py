@@ -1134,7 +1134,7 @@ def resolve_provider(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
         "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / "
         "OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY / DEEPSEEK_API_KEY / "
-        "KIMI_API_KEY / EDENAI_API_KEY / LITELLM_API_KEY. Use "
+        "KIMI_API_KEY / EDENAI_API_KEY / CHEAPER_INFERENCE_API_KEY / LITELLM_API_KEY. Use "
         "REPOWISE_PROVIDER=claude_cli to use an "
         "authenticated Claude Code subscription, REPOWISE_PROVIDER=codex_cli to use "
         "an authenticated Codex CLI subscription, or REPOWISE_PROVIDER=opencode "

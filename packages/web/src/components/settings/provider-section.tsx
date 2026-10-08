@@ -26,7 +26,7 @@ import {
  * drifted -- `codex_cli` and `openrouter` are in the server catalog and were
  * never added here, so neither could be picked from this page.
  */
-const FALLBACK_PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "edenai", "claude_cli", "opencode", "ollama", "litellm", "mock"] as const;
+const FALLBACK_PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "edenai", "cheaperinference", "claude_cli", "opencode", "ollama", "litellm", "mock"] as const;
 const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "edenai", "ollama"] as const;
 
 // Real, registerable providers the server catalog deliberately leaves out.
@@ -42,6 +42,7 @@ const MODEL_PLACEHOLDERS: Record<string, string> = {
   deepseek: "deepseek-v4-flash",
   kimi: "kimi-for-coding",
   edenai: "mistral/mistral-small-latest",
+  cheaperinference: "gpt-5.4-mini",
   claude_cli: "claude_cli/claude-haiku-4-5",
   opencode: "opencode/default",
   ollama: "qwen3.5:4b",
@@ -57,6 +58,10 @@ const PROVIDER_ENV_VARS: Record<string, { vars: string[]; installHint: string }>
   deepseek: { vars: ["DEEPSEEK_API_KEY"], installHint: "pip install openai" },
   kimi: { vars: ["KIMI_API_KEY"], installHint: "pip install openai" },
   edenai: { vars: ["EDENAI_API_KEY"], installHint: "pip install openai" },
+  cheaperinference: {
+    vars: ["CHEAPER_INFERENCE_API_KEY"],
+    installHint: "pip install openai",
+  },
   litellm: { vars: ["LITELLM_*"], installHint: "pip install litellm" },
   claude_cli: { vars: [], installHint: "https://claude.com/claude-code, then: claude login" },
   opencode: { vars: [], installHint: "curl -fsSL https://opencode.ai/install | bash" },
