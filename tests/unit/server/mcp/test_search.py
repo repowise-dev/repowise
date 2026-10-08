@@ -1797,8 +1797,10 @@ class TestPathlessPagesInCodeLocationModes:
             assert pathless["target_path"] == key
         assert file_page["path"] == "pkg/cmd/release/list.go"
         assert "target_path" not in file_page
-        # Not derivable without target_path, so the id stays for citations.
-        assert file_page["page_id"] == "file_page:pkg/cmd/release/list.go"
+        # page_type + path rebuild the id, so it is dropped; citations rebuild
+        # it from path the same way.
+        assert "page_id" not in file_page
+        assert f"{file_page['page_type']}:{file_page['path']}" == "file_page:pkg/cmd/release/list.go"
 
     @pytest.mark.asyncio
     async def test_federated_rows_carry_path(self, setup_mcp, monkeypatch):

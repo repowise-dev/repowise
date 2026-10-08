@@ -568,9 +568,15 @@ def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
 
     Consumers rebuild with the same expression; ``ui/src/chat/source-citations``
     does exactly that, and used to skip any row whose ``page_id`` was missing.
+
+    ``add_row_paths`` runs first and deletes ``target_path`` wherever it equals
+    the new ``path``, so the id's second half is ``target_path`` when present
+    and ``path`` otherwise. Without that fallback an ordinary file row rebuilt
+    as ``"file_page:"`` and kept its id.
     """
     for item in results:
-        derived = f"{item.get('page_type', '')}:{item.get('target_path', '')}"
+        target = item.get("target_path") or item.get("path", "")
+        derived = f"{item.get('page_type', '')}:{target}"
         if item.get("page_id") == derived:
             item.pop("page_id", None)
     return results

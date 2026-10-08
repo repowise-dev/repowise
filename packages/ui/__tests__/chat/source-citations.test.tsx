@@ -147,6 +147,19 @@ describe("extractSources", () => {
     expect(sources[0]?.confidence).toBeUndefined();
   });
 
+  it("rebuilds a search row's page id from path when page_id and target_path are gone", () => {
+    // search_codebase drops target_path where it equals path, and then drops
+    // page_id because page_type + path rebuild it.
+    const sources = extractSources(
+      [searchCall([{ page_type: "file_page", path: "src/auth.py", title: "auth.py" }])],
+      "repo1",
+    );
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.pageId).toBe("file_page:src/auth.py");
+    expect(sources[0]?.targetPath).toBe("src/auth.py");
+  });
+
   it("cites files from get_why health stale_decisions", () => {
     const sources = extractSources(
       [
