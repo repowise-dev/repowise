@@ -53,8 +53,12 @@ jobs:
         run: uv run pytest tests/unit/ -n auto --dist loadfile -v --tb=short --durations=25
 
       # One leg measures coverage for the pull request bot's checks comment.
+      # sysmon (Python 3.12+) measures lines with far less overhead than the
+      # tracer; it cannot record per-test contexts, which this report omits.
       - name: Run unit tests with coverage
         if: matrix.python-version == '3.12'
+        env:
+          COVERAGE_CORE: sysmon
         run: uv run --with pytest-cov pytest tests/unit/ -n auto --dist loadfile -v --tb=short --durations=25 --cov=packages --cov-report=xml
 
       - name: Upload coverage to Repowise
