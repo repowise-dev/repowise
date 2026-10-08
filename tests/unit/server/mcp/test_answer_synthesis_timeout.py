@@ -21,6 +21,8 @@ from repowise.server.mcp_server.tool_answer.config import (
     _SYNTHESIS_MAX_TOKENS,
     _SYNTHESIS_MAX_TOKENS_DEFAULT,
     _SYNTHESIS_MAX_TOKENS_ENV,
+    _SYNTHESIS_REASONING_MAX_TOKENS,
+    _SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT,
     _SYNTHESIS_TEMPERATURE,
     _synthesis_max_tokens,
 )
@@ -29,6 +31,7 @@ from repowise.server.mcp_server.tool_answer.synthesis import (
     _MAX_TIMEOUT_S,
     _TIMEOUT_ENV,
     _synthesis_failure_note,
+    _synthesis_reasoning_and_budget,
     _synthesis_timeout,
     synthesize,
 )
@@ -512,3 +515,75 @@ async def test_degraded_answer_does_not_promise_hits_it_does_not_have():
     assert answer
     assert "matched nothing" in answer
     assert "ranked hit" not in answer
+
+
+# --- reasoning effort and budget per model ---------------------------------
+#
+# gpt-5.6-luna on ``auto`` thinks at its default effort and returned empty
+# answers inside the 1024 cap. Synthesis asks it for ``low`` with headroom.
+
+
+def _openai(model: str):
+    return get_provider("openai", api_key="sk-test", model=model, with_rate_limiter=False)
+
+
+def test_auto_on_an_openai_reasoning_model_becomes_low_with_headroom():
+    mode, max_tokens = _synthesis_reasoning_and_budget(_openai("gpt-5.6-luna"), "auto")
+    assert mode == "low"
+    assert max_tokens == _SYNTHESIS_REASONING_MAX_TOKENS == _SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT
+
+
+@pytest.mark.parametrize("explicit", ["none", "medium", "high"])
+def test_an_explicit_reasoning_mode_is_kept(explicit):
+    mode, max_tokens = _synthesis_reasoning_and_budget(_openai("gpt-5.6-luna"), explicit)
+    assert mode == explicit
+    assert max_tokens == _SYNTHESIS_REASONING_MAX_TOKENS
+
+
+def test_a_non_reasoning_model_keeps_auto_and_the_cap():
+    assert _synthesis_reasoning_and_budget(_openai("gpt-4o"), "auto") == (
+        "auto",
+        _SYNTHESIS_MAX_TOKENS,
+    )
+
+
+def test_other_providers_keep_their_defaults():
+    anthropic = get_provider(
+        "anthropic", api_key="sk-test", model="claude-haiku-4-5", with_rate_limiter=False
+    )
+    assert _synthesis_reasoning_and_budget(anthropic, "auto") == ("auto", _SYNTHESIS_MAX_TOKENS)
+    assert _synthesis_reasoning_and_budget(_SlowProvider(0, 30.0), "auto") == (
+        "auto",
+        _SYNTHESIS_MAX_TOKENS,
+    )
+
+
+def test_the_env_override_also_sets_the_reasoning_budget(monkeypatch):
+    monkeypatch.setenv(_SYNTHESIS_MAX_TOKENS_ENV, "2000")
+    assert _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT) == 2000
+    monkeypatch.setenv(_SYNTHESIS_MAX_TOKENS_ENV, "junk")
+    assert (
+        _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT)
+        == _SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT
+    )
+
+
+async def test_the_reasoning_settings_reach_the_call():
+    class _Reasoner(_SlowProvider):
+        provider_name = "openai"
+
+        def supported_reasoning_modes(self):
+            return ("auto", "none", "low", "medium", "high", "xhigh")
+
+    class _BurnedBudget(_Reasoner):
+        async def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(content="", stop_reason="max_tokens")
+
+    provider = _Reasoner(duration=0, budget=30.0)
+    await synthesize(provider, "sys", "user")
+    assert provider.calls[0]["reasoning"] == "low"
+    assert provider.calls[0]["max_tokens"] == _SYNTHESIS_REASONING_MAX_TOKENS
+
+    _, note = await synthesize(_BurnedBudget(duration=0, budget=30.0), "sys", "user")
+    assert f"{_SYNTHESIS_REASONING_MAX_TOKENS}-token" in note

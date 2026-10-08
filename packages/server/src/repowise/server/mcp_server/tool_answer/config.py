@@ -313,14 +313,15 @@ _MAX_RICH_SIG_LINES = 4
 
 # Synthesis sampling. Answers target 150-400 words, so for a non-reasoning model
 # the token cap is headroom. A reasoning model spends the budget on hidden
-# thinking first and can come back empty with a ``length`` finish_reason, so the
-# env override lets such a model be given room. Low temperature: the answer
-# must track the excerpts, not embellish.
+# thinking first and can come back empty with a ``length`` finish_reason, so it
+# gets a larger default, and the env override sets both. Low temperature: the
+# answer must track the excerpts, not embellish.
 _SYNTHESIS_MAX_TOKENS_ENV = "REPOWISE_SYNTHESIS_MAX_TOKENS"
 _SYNTHESIS_MAX_TOKENS_DEFAULT = 1024
+_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT = 4096
 
 
-def _synthesis_max_tokens() -> int:
+def _synthesis_max_tokens(default: int = _SYNTHESIS_MAX_TOKENS_DEFAULT) -> int:
     """The synthesis token budget, from env or the hosted-model default.
 
     An unparseable or non-positive value warns and keeps the default instead
@@ -328,18 +329,19 @@ def _synthesis_max_tokens() -> int:
     """
     raw = os.environ.get(_SYNTHESIS_MAX_TOKENS_ENV, "").strip()
     if not raw:
-        return _SYNTHESIS_MAX_TOKENS_DEFAULT
+        return default
     try:
         value = int(raw)
     except ValueError:
         value = 0
     if value <= 0:
         _log.warning("Ignoring unusable %s=%r", _SYNTHESIS_MAX_TOKENS_ENV, raw)
-        return _SYNTHESIS_MAX_TOKENS_DEFAULT
+        return default
     return value
 
 
 _SYNTHESIS_MAX_TOKENS = _synthesis_max_tokens()
+_SYNTHESIS_REASONING_MAX_TOKENS = _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT)
 _SYNTHESIS_TEMPERATURE = 0.2
 
 _SYSTEM_PROMPT = (
