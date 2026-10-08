@@ -38,6 +38,7 @@ from repowise.server.mcp_server._helpers import (
     vector_search_timeout_s,
 )
 from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
+from repowise.server.mcp_server._line_hits import attach_line_hits
 from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import add_row_paths, file_candidates, hit_file_path
@@ -1179,7 +1180,9 @@ async def search_codebase(
 
     Rows naming a file carry `path`; concept pages add `symbols`
     (name:line) the query matches. `candidates` lists up to `limit`
-    distinct files to Read, best first.
+    distinct files to Read, best first. Identifier or literal queries also
+    return `lines` (path, line, kind, text; definitions first) read from live
+    files; when `complete` is true they are every match, so no grep is needed.
 
     Args:
         query: identifier, path, or natural language.
@@ -1233,6 +1236,7 @@ async def search_codebase(
             query, limit, page_type, kind, symbol_kind, repo, resolved_mode, grep_hint, names
         )
         _lead_candidates(structured, issue, limit)
+        await attach_line_hits(structured, query, resolved_mode, names, repo)
         attach_ignored_arguments(structured, ignored)
         return structured
 
@@ -1329,6 +1333,7 @@ async def search_codebase(
     _lead_candidates(response, issue, limit)
     if grep_hint and not output:
         response["grep_hint"] = grep_hint
+    await attach_line_hits(response, query, resolved_mode, names, repo)
     attach_ignored_arguments(response, ignored)
     # Last, so nothing above has to know the field is on its way out.
     add_row_paths(output)
