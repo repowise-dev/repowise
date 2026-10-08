@@ -195,7 +195,7 @@ Returns verified, line-numbered source for one symbol, a live line range, or an 
 | `reference` | object | none | A `continuation_reference` or `fetch_reference` this tool emitted; pass it unchanged |
 | `context_lines` | int | `0` | Extra lines before and after, 0 to 50 |
 | `depth` | int | `1` | 2 or 3 also returns the bodies it calls, transitively |
-| `query` | string | none | Omission refs only: keep stored lines matching this regex or substring |
+| `query` | string | none | Omission refs only: keep stored lines matching this regex or substring. With no `symbol_id` or `id`, it is read as `symbol_id` |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
 **Key return fields:** `source` (up to about 600 lines, each prefixed with its line number), start and end lines, `kind`, `truncated` with a continuation to pass back, `ambiguous` and `candidates` when several symbols match, `callee_bodies` (with `depth` above 1), `not_rendered` (bodies past the budget, each with a range read to fetch it), fallback lines from a live grep on a miss.

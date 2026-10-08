@@ -920,7 +920,8 @@ async def get_symbol(
             live range, or an omission ref.
         context_lines: extra lines before/after (0-50).
         repo: usually omitted.
-        query: omission refs only, regex/substring filter on lines.
+        query: omission refs only, regex/substring filter on lines. With
+            no id given, it is read as ``symbol_id``.
         id: accepted alias for ``symbol_id``.
         depth: 1 (default) is this symbol alone; 2-3 also returns the bodies
             it calls, transitively, in ``callee_bodies``.
@@ -949,10 +950,14 @@ async def get_symbol(
     # are given.
     if not symbol_id and id:
         symbol_id = id
+    elif not symbol_id and query and query.strip():
+        # Hosts that defer tool schemas let a model guess ``query`` for the id.
+        # The line filter needs an id to apply to, so alone it is the id.
+        symbol_id, query = query, None
     if not symbol_id or not symbol_id.strip():
         return {
             "symbol_id": symbol_id,
-            "error": "symbol_id is required",
+            "error": 'get_symbol requires `symbol_id`, e.g. "path/to/file.py::Name".',
             "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
         }
 
