@@ -43,7 +43,7 @@ ATTRIBUTION_CONFIDENCE: dict[str, str] = {
 
 SEVERITY_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
-#: Documentation, configuration or data: skipped, but no code went unexamined.
+#: Documentation or configuration: skipped, but no code went unexamined.
 NOT_CODE = "not_code"
 
 #: Why a changed file produced no comparison. Kept per file so a partial run

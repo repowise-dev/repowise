@@ -311,7 +311,7 @@ def test_a_docs_only_change_says_there_is_no_code_and_never_looks_clean(make_rep
     assert delta.findings == []
     assert delta.status == "unavailable"
     assert delta.skipped == {"README.md": "not_code"}
-    assert "no code to analyse" in delta.explanation
+    assert "health analysis does not cover them" in delta.explanation
     assert not delta.is_clean
 
 
@@ -340,6 +340,30 @@ def test_a_partial_run_is_reported_as_partial(make_repo):
     assert delta.status == "partial"
     assert delta.skipped
     assert not delta.is_clean
+
+
+@pytest.mark.parametrize("path", ["page.html", "api.proto", "q.graphql", "x.xaml"])
+def test_data_and_markup_with_logic_still_make_the_run_partial(make_repo, path):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", path: "a\n"})
+    repo.commit("edit", {"app.py": "x = 2\n", path: "b\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "partial"
+    assert delta.skipped[path] != "not_code"
+
+
+def test_docs_beside_an_unsupported_code_file_are_still_partial(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", "README.md": "a\n", "lib.ex": "defmodule A do\nend\n"})
+    repo.commit("edit", {"app.py": "x = 2\n", "README.md": "b\n", "lib.ex": "defmodule B do\nend\n"})
+
+    delta = compare(repo)
+
+    assert delta.status == "partial"
+    assert delta.code_skipped == {"lib.ex": "not_health_analyzable"}
+    assert delta.skipped["README.md"] == "not_code"
 
 
 @pytest.mark.parametrize("path", ["CHANGES.rst", "package.json", "docs/guide.md", ".ci.yml"])

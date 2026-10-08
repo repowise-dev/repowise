@@ -13,7 +13,6 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from ...ingestion.languages.registry import REGISTRY
 from ...support_paths import is_doc_or_config_path
 from ...test_paths import is_test_related_path
 from ..finding_registry import excluded_types
@@ -44,9 +43,9 @@ from .sources import (
 #: Changed files above this count are refused rather than analysed twice.
 MAX_CHANGED_FILES = 300
 
-#: Languages that hold data or markup rather than code. Infra languages
-#: (shell, Dockerfile, Terraform) stay out: they run, so skipping one leaves a gap.
-_DATA_LANGUAGES = REGISTRY.unparseable_data_languages() - REGISTRY.infra_languages()
+#: Documentation and configuration languages. Anything else with no health
+#: dialect (HTML, schemas, shell) may carry logic, so it stays a gap.
+_NOT_CODE_LANGUAGES = frozenset({"json", "yaml", "toml", "markdown"})
 
 #: Comparisons kept in the process cache.
 _CACHE_CAPACITY = 32
@@ -220,8 +219,8 @@ class ChangeHealthDeltaService:
                 explanation = "This change touches no files."
             elif all(r == NOT_CODE for r in skipped.values()):
                 explanation = (
-                    "Only documentation, configuration or data files changed; "
-                    "there is no code to analyse."
+                    "Only documentation or configuration files changed; "
+                    "health analysis does not cover them."
                 )
             else:
                 explanation = "No changed file is health-analyzable, so nothing was compared."
@@ -401,7 +400,7 @@ def _skip_reason(change: FileChange) -> str:
     if change.head_path is None:
         return "deleted"
     language = language_of(change.head_path)
-    if language in _DATA_LANGUAGES or is_doc_or_config_path(change.head_path):
+    if language in _NOT_CODE_LANGUAGES or is_doc_or_config_path(change.head_path):
         return NOT_CODE
     if language is None:
         return "unsupported_language"

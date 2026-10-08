@@ -122,8 +122,8 @@ def _verdict(delta: ChangeHealthDelta) -> tuple[ReviewStatus, str, EvidenceState
     if delta.status == "unavailable" and delta.skipped and not delta.code_skipped:
         return (
             "clear_in_analyzed_scope",
-            "No code changed: only documentation, configuration or data files, "
-            "so there was nothing to analyse.",
+            "No code changed: only documentation or configuration files; "
+            "health analysis does not cover them.",
             "available",
         )
     if delta.status in _NOT_COMPARED:

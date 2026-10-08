@@ -125,6 +125,7 @@ def test_a_docs_only_change_says_there_is_no_code_rather_than_unknown():
     directive = review_directive(delta)
     assert directive.status == "clear_in_analyzed_scope"
     assert "No code changed" in directive.headline
+    assert "does not cover them" in directive.headline
     assert not directive.actions
 
 
