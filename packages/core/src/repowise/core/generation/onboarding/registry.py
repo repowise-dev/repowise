@@ -22,6 +22,7 @@ from .slots import ONBOARDING_ORDER, PROMOTED_SLOTS
 # to indicate the gate failed and the slot should be skipped for this repo.
 BuildContext = Callable[[OnboardingSignals], object | None]
 EvidenceReferences = Callable[[object], Sequence[str]]
+GeneratedContentValidator = Callable[[object, str], bool]
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,9 @@ class SubkindSpec:
                        references; first occurrence sets priority and duplicates
                        are ignored. Missing files, symbols, or ranges become
                        observable evidence skips rather than generation errors.
+        validate_generated_content: Optional completeness check for model output.
+                       A false result uses the deterministic stub rather than
+                       persisting a structurally incomplete page.
         deterministic: The page is rendered from its context alone, with no
                        provider call, on every run. Set it when the page is
                        made of facts rather than of judgements: a model asked
@@ -60,6 +64,7 @@ class SubkindSpec:
     template: str
     build_context: BuildContext
     evidence_references: EvidenceReferences | None = None
+    validate_generated_content: GeneratedContentValidator | None = None
     deterministic: bool = False
     needs_module_corroboration: bool = False
 
