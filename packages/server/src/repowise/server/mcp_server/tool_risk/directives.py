@@ -9,6 +9,7 @@ from sqlalchemy import select
 from repowise.core.analysis.next_call import ActionCommand
 from repowise.core.analysis.risk_semantics import structural_impact_contract
 from repowise.core.analysis.test_reachability import tests_matching_by_name
+from repowise.core.co_change import MIN_CO_CHANGE_SUPPORT
 from repowise.core.persistence.crud.authority import decision_currencies
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.decision_graph import list_conflict_edges
@@ -509,7 +510,13 @@ def _tests_to_update(
         for e in pr_blast_radius.get("transitive_affected") or []
         if isinstance(e, dict) and e.get("direct")
     ]
-    ordered += [(_as_path(e), "co_change") for e in pr_blast_radius.get("cochange_warnings") or []]
+    # Indexing already drops pairs below the support floor; a row that still
+    # records less is weak history, not a reason to edit a test.
+    ordered += [
+        (_as_path(e), "co_change")
+        for e in pr_blast_radius.get("cochange_warnings") or []
+        if isinstance(e, dict) and e.get("support", MIN_CO_CHANGE_SUPPORT) >= MIN_CO_CHANGE_SUPPORT
+    ]
     rows: dict[str, str] = {}
     for path, reason in ordered:
         if path in eligible and path not in rows:
@@ -737,7 +744,7 @@ def _build_pr_directive(
         "tests_to_run_truncated": tests_capped,
         "tests_to_run_omitted": tests_to_run_total - len(tests_to_run),
         # Tests to edit, not to run; a file can sit in both lists.
-        **({"tests_to_update": all_tests_to_update} if all_tests_to_update else {}),
+        "tests_to_update": all_tests_to_update,
         "test_recommendations": test_recommendations,
         "test_recommendations_total": test_recommendations_total,
         "test_recommendations_emitted": len(test_recommendations),
@@ -783,6 +790,7 @@ def _build_pr_directive(
         ("missing_cochanges", all_missing_cochanges, 3),
         ("missing_tests", all_missing_tests if coverage_usable else [], 3),
         ("tests_to_run", all_tests_to_run, _TESTS_TO_RUN_LIMIT),
+        ("tests_to_update", all_tests_to_update, _TESTS_TO_UPDATE_LIMIT),
         ("test_recommendations", all_recommendations, _TESTS_TO_RUN_LIMIT),
         (
             "files_without_measured_tests",
@@ -800,15 +808,6 @@ def _build_pr_directive(
             collector,
             label=f"directive.{key} beyond cap={cap}",
             preserve_counts=(key in {"missing_tests", "tests_to_run", "test_recommendations"}),
-        )
-    if all_tests_to_update:
-        cap_collection(
-            directive,
-            "tests_to_update",
-            all_tests_to_update,
-            _TESTS_TO_UPDATE_LIMIT,
-            collector,
-            label=f"directive.tests_to_update beyond cap={_TESTS_TO_UPDATE_LIMIT}",
         )
 
     # Name the repository once instead of on every recommendation: both values

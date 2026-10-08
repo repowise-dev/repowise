@@ -1487,6 +1487,12 @@
       "tests_to_run_omitted": null,
       "tests_to_run_total": null,
       "tests_to_run_truncated": null,
+      "tests_to_update": [
+        {
+          "path": null,
+          "reason": null
+        }
+      ],
       "will_break_consumers": [],
       "will_break_consumers_deprecated": null,
       "will_break_consumers_emitted": null,

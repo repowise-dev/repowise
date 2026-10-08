@@ -100,6 +100,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "pr_blast_radius",
             "directive.test_recommendations[]",
             "directive.tests_to_run[]",
+            "directive.tests_to_update[]",
             "directive.may_break[]",
             "directive.next_calls[]",
             "targets[]",
@@ -117,6 +118,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
                 (
                     "directive.test_recommendations[]",
                     "directive.tests_to_run[]",
+                    "directive.tests_to_update[]",
                     "directive.may_break[]",
                     "directive.next_calls[]",
                     "pr_blast_radius",

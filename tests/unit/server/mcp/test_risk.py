@@ -386,13 +386,14 @@ async def test_get_risk_pr_directive_lists_tests_to_update(setup_mcp):
     untested = (await get_risk(["src/db/models.py"], changed_files=["src/db/models.py"]))[
         "directive"
     ]
-    assert "tests_to_update" not in untested
+    assert untested["tests_to_update"] == []
 
 
-def _update_list(changed, tests, blast):
+def _update_list(changed, tests, blast, exclude_spec=None):
     from repowise.server.mcp_server.tool_risk.directives import _tests_to_update
 
-    return [(r["path"], r["reason"]) for r in _tests_to_update(changed, set(tests), blast, None)]
+    rows = _tests_to_update(changed, set(tests), blast, exclude_spec)
+    return [(r["path"], r["reason"]) for r in rows]
 
 
 def test_tests_to_update_name_pair():
@@ -422,6 +423,31 @@ def test_tests_to_update_co_change_skips_production_partners():
         ]
     }
     assert _update_list(["src/core.py"], {"tests/test_misc.py"}, blast) == [
+        ("tests/test_misc.py", "co_change")
+    ]
+
+
+def test_tests_to_update_co_change_drops_weak_support():
+    blast = {
+        "cochange_warnings": [
+            {"missing_partner": "tests/test_once.py", "support": 1},
+            {"missing_partner": "tests/test_twice.py", "support": 2},
+        ]
+    }
+    tests = {"tests/test_once.py", "tests/test_twice.py"}
+    assert _update_list(["src/core.py"], tests, blast) == [("tests/test_twice.py", "co_change")]
+
+
+def test_tests_to_update_honours_exclude_spec():
+    import pathspec
+
+    spec = pathspec.PathSpec.from_lines("gitwildmatch", ["tests/legacy/"])
+    tests = {"tests/legacy/test_core.py", "tests/legacy/test_api.py", "tests/test_misc.py"}
+    blast = {
+        "transitive_affected": [{"path": "tests/legacy/test_api.py", "direct": True}],
+        "cochange_warnings": [{"missing_partner": "tests/test_misc.py"}],
+    }
+    assert _update_list(["src/core.py"], tests, blast, spec) == [
         ("tests/test_misc.py", "co_change")
     ]
 
