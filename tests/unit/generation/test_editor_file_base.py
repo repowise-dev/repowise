@@ -66,7 +66,7 @@ def test_render_contains_repo_name(gen):
     assert "test-repo" in result
 
 
-def test_render_contains_machine_readable_index_scope(gen):
+def test_render_contains_index_scope_line_without_the_json(gen):
     import dataclasses
 
     data = dataclasses.replace(
@@ -83,9 +83,71 @@ def test_render_contains_machine_readable_index_scope(gen):
     result = gen.render(data)
     assert "Scope: fast index · none content · essential Git" in result
     assert "5 eligible file pages omitted" in result
-    assert '"eligible": 5' in result
-    assert '"generated": 0' in result
+    # MCP serves the full scope in `_meta` and on get_overview; this file is
+    # read into every session, so it carries the one-line summary only.
+    assert '"eligible": 5' not in result
+    assert "Machine-readable scope" not in result
     assert "repowise update --full" in result
+
+
+_KEYLESS_SCOPE = {
+    "run_mode": "standard",
+    "content_provenance": "template",
+    "git_tier": "full",
+    "file_pages": {"eligible": 28, "generated": 25, "omitted": 3},
+    "upgrade": {"status": "pending"},
+    "provider": {"embedder": "mock", "model_cost_possible": False},
+    "search": {"full_text": "available", "semantic": "unavailable"},
+}
+_KEYED_SCOPE = {
+    **_KEYLESS_SCOPE,
+    "content_provenance": "model",
+    "upgrade": {"status": "resumable"},
+    "provider": {"embedder": "openai", "model_cost_possible": True},
+    "search": {"full_text": "available", "semantic": "available"},
+}
+_KEYLESS_BULLET = "**No model on this index.**"
+
+
+@pytest.fixture(params=["claude_md.j2", "agents_md.j2"])
+def any_gen(request):
+    class _Gen(_TestGenerator):
+        template_name = request.param
+
+    return _Gen()
+
+
+def _scoped(scope: dict) -> EditorFileData:
+    import dataclasses
+
+    return dataclasses.replace(_minimal_data(), avg_confidence=1.0, index_scope=scope)
+
+
+def test_keyless_index_gets_keyless_steering(any_gen):
+    result = any_gen.render(_scoped(_KEYLESS_SCOPE))
+    assert _KEYLESS_BULLET in result
+    # Template pages store confidence 1.0, so the figure would read as 100%.
+    assert "Confidence:" not in result
+    # `--full` needs a key; offering it to a keyless index is a dead end.
+    assert "repowise update --full" not in result
+    assert "[fts]` only has no semantic agreement" not in result
+    assert 'Cite `confidence: "high"`' not in result
+    assert "`degraded` means judge by `retrieval_quality`" in result
+
+
+def test_keyed_index_keeps_model_guidance(any_gen):
+    result = any_gen.render(_scoped(_KEYED_SCOPE))
+    assert _KEYLESS_BULLET not in result
+    assert "Confidence: 100%" in result
+    assert "repowise update --full" in result
+    assert "[fts]` only has no semantic agreement" in result
+    assert 'Cite `confidence: "high"`' in result
+
+
+def test_stale_warning_guidance_points_at_served_files(any_gen):
+    result = any_gen.render(_minimal_data())
+    assert "When `_meta.stale_warning` is set, Read the files that response served." in result
+    assert "`repowise update --working-tree`" in result
 
 
 def _health_block(
