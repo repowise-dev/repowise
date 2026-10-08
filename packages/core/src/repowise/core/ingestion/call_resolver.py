@@ -1254,8 +1254,10 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             return None
         return self._file_methods.get(file_path, {}).get((caller_class, call.target_name))
 
-    def _partial_fragment_member(self, file_path: str, caller_id: str, name: str) -> str | None:
-        """The caller's class member *name* declared in another fragment of it.
+    def _partial_fragment_member(
+        self, file_path: str, caller_id: str, call: CallSite
+    ) -> str | None:
+        """The caller's class member *call.target_name* declared in another fragment of it.
 
         Every fragment of a C#/VB.NET ``partial`` type is one class scope, so a
         member (nested types included) that any fragment declares is visible by
@@ -1268,6 +1270,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         caller_class = _extract_class_from_symbol_id(caller_id)
         if not caller_class:
             return None
+        name = call.target_name
         for fragment in self._partial_fragments.get((file_path, caller_class), ()):
             if fragment == file_path:
                 continue
@@ -1277,11 +1280,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 continue
             if self._symbols_by_id[sym_id].kind in _TYPE_KINDS:
                 return methods.get((name, name), sym_id)
-            # A call site does not record ``new``, so ``new FaultGenerator()``
-            # and a member method ``FaultGenerator()`` look alike. When the
-            # repo also declares a type of that name, the method is a guess.
-            if name in self._csharp_type_names:
-                return None
+            if call.is_construction:
+                # A construction site (new X()) should not bind to a sibling member method.
+                continue
             return sym_id
         return None
 
@@ -1310,7 +1311,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # overload in another fragment is no better evidence than that. Nor for a
         # member call on its bare fallback: its receiver is not the caller's class.
         if not call.receiver_name and target_name not in self._file_symbols.get(file_path, {}):
-            sym_id = self._partial_fragment_member(file_path, caller_id, target_name)
+            sym_id = self._partial_fragment_member(file_path, caller_id, call)
             if sym_id is not None:
                 return ResolvedCall(caller_id, sym_id, 0.95, call.line, "enclosing_class")
 
@@ -1372,12 +1373,34 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         callee_id = self._file_symbols.get(file_path, {}).get(call.target_name)
         if callee_id is None:
             return False, None
+        if call.is_construction:
+            sym = self._symbols_by_id.get(callee_id)
+            if sym is not None and sym.kind not in _TYPE_KINDS:
+                parsed = self._parsed_files.get(file_path)
+                type_sym = next(
+                    (
+                        s
+                        for s in (parsed.symbols if parsed else ())
+                        if s.name == call.target_name and s.kind in _TYPE_KINDS
+                    ),
+                    None,
+                )
+                if type_sym is not None:
+                    callee_id = type_sym.id
+                else:
+                    return False, None
         own = self._enclosing_class_method(file_path, call, caller_id)
-        if own is not None and own != callee_id and _rivals_a_class_method(callee_id):
-            if own == caller_id:
-                # Recursion the flat index handed to a stranger. No edge.
-                return True, None
-            return True, ResolvedCall(caller_id, own, 0.95, call.line, "enclosing_class")
+        if own is not None and own != callee_id:
+            callee_sym = self._symbols_by_id.get(callee_id)
+            if _rivals_a_class_method(callee_id) or (
+                not call.is_construction
+                and callee_sym is not None
+                and callee_sym.kind in _TYPE_KINDS
+            ):
+                if own == caller_id:
+                    # Recursion the flat index handed to a stranger. No edge.
+                    return True, None
+                return True, ResolvedCall(caller_id, own, 0.95, call.line, "enclosing_class")
         if callee_id != caller_id:  # no self-recursion edges for now
             return True, ResolvedCall(caller_id, callee_id, 0.95, call.line, "same_file")
         return False, None
@@ -1705,7 +1728,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             return None
         sym_id = self._file_methods.get(file_path, {}).get(
             (caller_class, call.target_name)
-        ) or self._partial_fragment_member(file_path, caller_id, call.target_name)
+        ) or self._partial_fragment_member(file_path, caller_id, call)
         if sym_id is None or sym_id == caller_id:
             return None
         return ResolvedCall(caller_id, sym_id, 0.95, call.line, "self_scope")

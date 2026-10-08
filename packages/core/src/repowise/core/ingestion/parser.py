@@ -1991,6 +1991,7 @@ class ASTParser:
                             else "calls"
                         ),
                         supplied_props=_jsx_supplied_props(site_node, src),
+                        is_construction=site_node.type in config.construction_call_node_types,
                     ),
                 )
             )

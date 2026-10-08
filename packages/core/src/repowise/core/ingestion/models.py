@@ -326,6 +326,10 @@ class CallSite:
     # ``obj.m()``, Ruby ``obj.m(x)``). Its bare-name reading is asked only
     # when no receiver strategy answers, never beside one.
     bare_name_fallback: bool = False
+    # True for object creation syntax (e.g. C# ``new Foo()``) to distinguish
+    # construction from ordinary method calls of the same name.
+    is_construction: bool = False
+
 
 
 # Raw extractor kinds, not the TS ``HeritageKind`` (a different payload);

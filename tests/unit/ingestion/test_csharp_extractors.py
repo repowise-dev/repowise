@@ -206,3 +206,32 @@ public class Helper {}
         result = parser.parse_file(_file(), src)
         plain = next(s for s in result.symbols if s.name == "Plain")
         assert plain.docstring is None
+
+
+# ---------------------------------------------------------------------------
+# Calls & Constructions
+# ---------------------------------------------------------------------------
+
+
+class TestCSharpCallExtraction:
+    def test_object_creation_is_construction(self, parser: ASTParser) -> None:
+        src = b"""\
+namespace App;
+public class Service {
+    public void Run() {
+        var x = new Helper();
+        Helper();
+    }
+    private void Helper() {}
+}
+"""
+        result = parser.parse_file(_file(), src)
+        calls_by_target = {c.target_name: c for c in result.calls}
+        assert "Helper" in calls_by_target
+        helper_calls = [c for c in result.calls if c.target_name == "Helper"]
+        assert len(helper_calls) == 2
+        construction_call = next(c for c in helper_calls if c.is_construction)
+        plain_call = next(c for c in helper_calls if not c.is_construction)
+        assert construction_call.is_construction is True
+        assert plain_call.is_construction is False
+
