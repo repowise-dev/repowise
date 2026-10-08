@@ -321,6 +321,17 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
     ),
 )
 @click.option(
+    "--working-tree",
+    "include_working_tree",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also index uncommitted work (staged, unstaged and untracked files) on "
+        "top of the commits since the last sync. In a workspace, a repo with "
+        "uncommitted changes counts as stale and is updated the same way."
+    ),
+)
+@click.option(
     "--docs/--no-docs",
     "docs_flag",
     default=None,
@@ -416,6 +427,7 @@ def update_command(
     no_cost_tracking: bool = False,
     verbose: bool = False,
     progress: str = "rich",
+    include_working_tree: bool = False,
 ) -> None:
     """Incrementally update wiki pages for files changed since last sync.
 
@@ -445,6 +457,7 @@ def update_command(
         no_cost_tracking=no_cost_tracking,
         verbose=verbose,
         progress=progress,
+        include_working_tree=include_working_tree,
     )
 
 
@@ -641,7 +654,8 @@ def run_update(
     a webhook, a manual sync — and indexing a half-finished edit under those is
     not what the user asked for. ``repowise watch`` sets it: watching for file
     saves and then only ever diffing commit-to-commit is what made the watcher
-    a no-op until you committed.
+    a no-op until you committed. ``repowise update --working-tree`` sets it on
+    request.
     """
     start = time.monotonic()
     # Per-stage wall clock for this run, written to ``state.json`` by every path
@@ -709,6 +723,7 @@ def run_update(
                 concurrency=concurrency,
                 no_cost_tracking=no_cost_tracking,
                 progress=progress,
+                include_working_tree=include_working_tree,
             )
         except Exception as exc:
             if emitter is not None:

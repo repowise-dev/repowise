@@ -269,6 +269,7 @@ See [WORKTREES.md](../scale/WORKTREES.md).
 | `--no-workspace` | Force single-repo mode (handy when running from a workspace root) |
 | `--repo` | Update a specific workspace repo by alias |
 | `--index-only` | Refresh the index only, skip doc regeneration for this run. In workspace mode, forces every stale repo to index-only. |
+| `--working-tree` | Also index uncommitted work (staged, unstaged and untracked files) on top of the commits since the last sync, so a rename you have not committed yet shows up in the graph. Off by default, so hooks and plain `update` stay anchored to commits. In workspace mode a repo with uncommitted changes counts as stale and is updated the same way. `repowise watch` always does this. |
 | `--docs` / `--no-docs` | Regenerate wiki pages for changed files, or skip doc regeneration entirely. Works in workspace mode too: `--docs` fans out to every stale repo's docs update (each needs an LLM provider/key configured, or pass `--provider`), and `--no-docs` forces index-only across the workspace. Without either flag each repo follows its own `docs_enabled`. |
 | `--full` | Upgrade a fast (`--mode fast`) index to a full one, see below. Single-repo only; errors in workspace mode. |
 | `--no-cost-tracking` | Don't record LLM spend for this run |
@@ -290,6 +291,7 @@ Over MCP, an ordinary tool response carries a **compact projection** of this obj
 repowise update                        # diff since last sync
 repowise update --dry-run              # preview
 repowise update --since v1.0.0         # diff from a tag
+repowise update --working-tree         # include uncommitted edits
 repowise update --reasoning off        # one-off supported-provider thinking-off run
 repowise update --workspace            # all workspace repos (docs where enabled, incl. first-time indexing)
 repowise update --workspace --docs     # force docs regeneration across every stale repo
