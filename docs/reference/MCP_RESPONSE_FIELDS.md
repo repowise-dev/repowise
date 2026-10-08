@@ -221,7 +221,7 @@ Opt-in blocks: `tests` adds the PR directive's typed `test_recommendations`. `gr
 |-------|---------|
 | `may_break` | Production files in reverse-import reach of the change: candidates for review, not proven breakage |
 | `missing_cochanges` | Historical co-change partners absent from the change |
-| `tests_to_run`, `tests_to_run_basis` | The test ids or files to run, and whether the list is `measured`, `inferred` or `none`. An unmeasured list also takes the test files in reverse-import reach. An empty list with unavailable coverage never means no tests are needed |
+| `tests_to_run`, `tests_to_run_basis` | The test ids or files to run, and whether the list is `measured`, `inferred` or `none`. When coverage exists the list is the measured one; test files in reverse-import reach that it lacks come back as `inferred` rows with `reason: structural_reach` under `include=["tests"]`. An unmeasured list takes those files directly, and a `none` list that gains any becomes `inferred`. An empty list with unavailable coverage never means no tests are needed |
 | `tests_to_update` | Up to three test files the change will probably need edited, each `{path, reason}` with `reason` `name_pair` (named for a changed file), `imports` (imports one directly) or `co_change` (changes with one in git history), in that order. Tests to edit, not to run: a file can appear in both lists. Empty when none qualify |
 | `missing_tests`, `files_without_measured_tests` | Changed files with no measured test. `missing_tests` is absent when coverage is unavailable or stale, since an empty list would read as no gaps |
 | `coverage` | `{status, reason}` when there is no per-test coverage map. With a map, `coverage_analysis`, `test_analysis` and `test_inference_analysis` say whether each evidence source was available, stale, partial or degraded |
@@ -229,7 +229,7 @@ Opt-in blocks: `tests` adds the PR directive's typed `test_recommendations`. `gr
 | `structural_impact_score` | Uncalibrated 0 to 10 structural heuristic: `localized` below 4, `moderate` 4 to below 7, `broad` 7 and up. Not a breakage probability. `overall_risk_score` is a deprecated alias |
 | `next_calls` | `get_change_risk()` for the diff itself, then `get_context` on the first `may_break` files |
 
-Only in workspace mode, or when non-empty, the directive also carries `will_break_consumers` (services in other repos that structurally depend on this one; structural reach only despite the name), `missing_cross_repo_cochanges`, `breaking_changes` (provider incompatibilities since the last index, with impacted consumers; a consumer link does not prove field use), `conformance_violations` and `dependency_cycles`.
+In workspace mode the directive also carries `will_break_consumers` (services in other repos that structurally depend on this one; structural reach only despite the name), `missing_cross_repo_cochanges`, `breaking_changes` (provider incompatibilities since the last index, with impacted consumers; a consumer link does not prove field use), `conformance_violations` and `dependency_cycles`. They are dropped when no workspace is loaded.
 
 Every float is rounded to 4 significant digits. Direct rows' `structural_score` values are in pagerank-weighted hotspot units and are not comparable to `get_change_risk` scores.
 

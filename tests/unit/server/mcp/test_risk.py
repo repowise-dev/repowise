@@ -532,6 +532,34 @@ def test_pr_directive_keeps_a_measured_run_list_unmixed():
     directive = _directive(blast, {"tests/test_api.py"})
     assert directive["tests_to_run"] == ["tests/test_core.py::test_a"]
     assert directive["tests_to_run_basis"] == "measured"
+    # The reached test is not dropped: it rides as a typed row on request.
+    typed = _directive(blast, {"tests/test_api.py"}, include_tests=True)
+    assert typed["tests_to_run"] == ["tests/test_core.py::test_a"]
+    assert typed["test_recommendations"] == [
+        {"test_id": "tests/test_api.py", "basis": "inferred", "reason": "structural_reach"}
+    ]
+
+
+def test_pr_directive_measured_rows_do_not_repeat_a_reached_test():
+    row = {"test_id": "tests/test_api.py::test_a", "basis": "measured", "evidence": []}
+    blast = {
+        "transitive_affected": [{"path": "tests/test_api.py"}],
+        "guarding_tests": {"tests_to_run": ["tests/test_api.py::test_a"], "basis": "measured"},
+        "test_impact": {"recommendations": [row]},
+    }
+    typed = _directive(blast, {"tests/test_api.py"}, include_tests=True)
+    assert [r["test_id"] for r in typed["test_recommendations"]] == ["tests/test_api.py::test_a"]
+
+
+def test_pr_directive_none_basis_with_reached_tests_becomes_inferred():
+    blast = {
+        "transitive_affected": [{"path": "tests/test_api.py"}],
+        "guarding_tests": {"tests_to_run": [], "basis": "none"},
+    }
+    directive = _directive(blast, {"tests/test_api.py"})
+    assert directive["tests_to_run"] == ["tests/test_api.py"]
+    assert directive["tests_to_run_basis"] == "inferred"
+    assert directive["tests_to_run_kind"] == "test_file"
 
 
 def test_pr_directive_serves_test_recommendations_on_request():

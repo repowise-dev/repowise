@@ -482,6 +482,17 @@ def _project_recommendation(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _unlisted_tests(paths: list[str], rows: list[dict[str, Any]]) -> list[str]:
+    """*paths* that no recommendation row names as its file or id."""
+    named = {
+        name.split("::", 1)[0]
+        for row in rows
+        for name in (row.get("test_id"), row.get("test_file"))
+        if isinstance(name, str)
+    }
+    return [path for path in paths if path not in named]
+
+
 def _tests_to_update(
     changed_files: list[str],
     test_paths: set[str],
@@ -593,9 +604,6 @@ def _build_pr_directive(
     # de-duplication, sorting, exclusions, and the directive cap.
     test_impact = pr_blast_radius.get("test_impact") or {}
     all_recommendations = list(test_impact.get("recommendations") or [])
-    test_recommendations = all_recommendations[:_TESTS_TO_RUN_LIMIT]
-    test_recommendations_total = len(all_recommendations)
-    recommendations_capped = test_recommendations_total > _TESTS_TO_RUN_LIMIT
 
     # Preserve the measured-first legacy projection and its existing scalar
     # domain. The additive typed rows above are the union of evidence kinds.
@@ -603,13 +611,21 @@ def _build_pr_directive(
     all_tests_to_run = list(guarding.get("tests_to_run") or [])
     tests_to_run_basis = guarding.get("basis") or "none"
     # Tests in reverse-import reach join an unmeasured list. A measured list
-    # names test ids, so files would mix two kinds of row.
+    # names test ids, so they ride as typed rows instead of mixing in files.
     if tests_to_run_basis != "measured":
         listed = set(all_tests_to_run)
         reached = [p for p in all_may_break_tests if p not in listed]
         if reached:
             all_tests_to_run += reached
             tests_to_run_basis = "inferred"
+    else:
+        all_recommendations += [
+            {"test_id": path, "basis": "inferred", "reason": "structural_reach"}
+            for path in _unlisted_tests(all_may_break_tests, all_recommendations)
+        ]
+    test_recommendations = all_recommendations[:_TESTS_TO_RUN_LIMIT]
+    test_recommendations_total = len(all_recommendations)
+    recommendations_capped = test_recommendations_total > _TESTS_TO_RUN_LIMIT
     tests_to_run = all_tests_to_run[:_TESTS_TO_RUN_LIMIT]
     tests_to_run_total = len(all_tests_to_run)
     tests_capped = tests_to_run_total > _TESTS_TO_RUN_LIMIT
@@ -619,7 +635,10 @@ def _build_pr_directive(
     if include_tests and all_recommendations:
         basis_totals = test_impact.get("recommendations_by_primary_basis") or {}
         measured_total = int(basis_totals.get("measured", 0))
-        inferred_total = int(basis_totals.get("inferred", 0))
+        # Plus the structural-reach rows added above, which the analyzer never counted.
+        inferred_total = int(basis_totals.get("inferred", 0)) + (
+            test_recommendations_total - len(test_impact.get("recommendations") or [])
+        )
         tests_to_run_suffix += (
             f" {test_recommendations_total} test recommendation(s): {measured_total} measured "
             f"and {inferred_total} inferred, not coverage-proven candidate(s); "

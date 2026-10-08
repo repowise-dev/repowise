@@ -241,8 +241,11 @@ row keeps its `basis`:
 | `measured` | A test node id | The per-test map shows the test covering a changed file |
 | `inferred` | A test file path | The graph shows the test reaching the change; a candidate, not proof |
 
-`tests_to_run`, sent without the include, is the flat list, measured first,
-with `tests_to_run_basis`. Without a coverage map the directive carries
+`tests_to_run`, sent without the include, is the flat list with
+`tests_to_run_basis`. When coverage exists it is the measured list; test files
+in reverse-import reach that it lacks appear only as `inferred` rows with
+`reason: structural_reach` under the include. Without coverage those files
+join the list itself as `inferred`. Without a coverage map the directive carries
 `coverage: {status, reason}`; with one, `coverage_analysis` says whether
 coverage is available, partial, degraded or stale.
 

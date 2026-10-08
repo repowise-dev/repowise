@@ -412,7 +412,8 @@ async def test_risk_real_adversarial_wire_recovers_each_directive_lane(
         "missing_cochanges": 8,
         "missing_tests": 6,
         "tests_to_run": 14,
-        "test_recommendations": 15,
+        # 15 analyzer rows plus the 8 reached tests the measured list lacks.
+        "test_recommendations": 23,
         "files_without_measured_tests": 12,
         "test_unknown_files": 12,
     }
