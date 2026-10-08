@@ -89,6 +89,8 @@ def resolve_embedder(embedder_flag: str | None, env: Mapping[str, str] | None = 
         return "ollama"
     if _get("EDENAI_API_KEY"):
         return "edenai"
+    if _get("VOYAGE_API_KEY"):
+        return "voyage"
     return global_config_embedder() or "mock"
 
 
