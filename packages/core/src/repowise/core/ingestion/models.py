@@ -223,6 +223,14 @@ class Symbol:
     # stubs and TypeScript overload signatures are declarations too: they share
     # the implementation's id, and the implementation is the symbol to serve.
     is_declaration: bool = False
+    # The bare name this symbol is a plain alias of (``s`` in ``s = widget``,
+    # or ``s`` and ``attributes`` in ``s = attributes = widget``), else None.
+    # Set only when an assignment's right-hand side is, at any depth of a
+    # chain, a bare identifier — never for a call, an attribute access, or any
+    # other expression. The call resolver redirects a call through the alias
+    # onto whatever ``alias_of`` resolves to in the same file, the same way it
+    # redirects a C/C++ declaration onto its definition (#2791).
+    alias_of: str | None = None
     # C# type declarations only: how many type parameters it declares, which is
     # what tells ``IFoo<T>`` from a same-named ``IFoo``. None elsewhere.
     type_parameter_count: int | None = None

@@ -775,6 +775,75 @@ def _module_binding_kind(def_node: Node, name: str, language: str, src: str) -> 
     return callable_kind or ("constant" if name.isupper() else "variable")
 
 
+def _python_name_alias_chain(def_node: Node, src: str) -> tuple[list[str], str | None]:
+    """Every bare-identifier target of a Python assignment, and its terminal name.
+
+    ``a = b = c`` nests in tree-sitter-python: the outer assignment's own
+    ``right`` field is itself an ``assignment`` node, not a sibling target, so
+    walking ``right`` is what reaches ``b`` at all -- the query that captures
+    ``@symbol.def`` only ever matches the outermost ``a``. The walk stops, and
+    returns ``(targets_so_far, None)``, the moment a target is not a bare
+    identifier (tuple unpacking, an attribute target) or the chain bottoms out
+    on anything but a bare identifier (a call, a literal, an attribute access)
+    -- those are not an alias of a name and must not be treated as one (#2791).
+
+    Returns ``([], None)`` for a plain, non-chained ``x = <non-name>``, since
+    there is nothing beyond the one target the caller already has.
+    """
+    targets: list[str] = []
+    node: Node | None = def_node
+    while node is not None and node.type == "assignment":
+        left = node.child_by_field_name("left")
+        if left is None or left.type != "identifier":
+            return [], None
+        targets.append(_node_text(left, src))
+        node = node.child_by_field_name("right")
+    if node is None or node.type != "identifier":
+        return [], None
+    return targets, _node_text(node, src)
+
+
+def _python_assignment_alias_symbols(
+    symbol: Symbol, def_node: Node, file_path: str, src: str
+) -> list[Symbol]:
+    """Mark *symbol* as an alias in place, and return the chain's other targets.
+
+    ``symbol`` is already built for the outermost target (``s`` in
+    ``s = attributes = widget``), the only one the query itself captures. This
+    walks the rest of the chain and:
+
+    - sets ``symbol.alias_of`` when the chain bottoms out on a bare name, so
+      the call resolver can redirect calls through ``s`` onto ``widget``;
+    - returns one freshly built ``Symbol`` per further target (``attributes``
+      here), none of which the query ever sees at all today, each carrying
+      the same ``alias_of``.
+
+    A target equal to the terminal name (``s = s``) is left as an ordinary,
+    non-aliased symbol -- there is no other definition to redirect onto.
+    Returns ``[]``, and leaves ``symbol`` untouched, for every shape outside
+    this issue's scope: no chain, a non-identifier target, or a right-hand
+    side that is not a bare name (#2791).
+    """
+    targets, terminal = _python_name_alias_chain(def_node, src)
+    if terminal is None or not targets:
+        return []
+    if targets[0] != terminal:
+        symbol.alias_of = terminal
+
+    extra: list[Symbol] = []
+    for target in targets[1:]:
+        extra.append(
+            replace(
+                symbol,
+                id=f"{file_path}::{target}",
+                name=target,
+                qualified_name=_build_qualified_name(file_path, None, target),
+                alias_of=terminal if target != terminal else None,
+            )
+        )
+    return extra
+
+
 def _attribute_decorators(def_node: Node, language: str, src: str) -> list[str]:
     """Attribute texts that act as decorators (Rust, C#, C/C++), brackets stripped.
 
@@ -1561,6 +1630,12 @@ class ASTParser:
             if language == "objectivec":
                 container = _objc_container_node(def_node, config.parent_class_types)
                 objc_container_kinds.append(container.type if container else None)
+            if language == "python" and def_node.type == "assignment":
+                for alias_symbol in _python_assignment_alias_symbols(
+                    symbol, def_node, file_info.path, src
+                ):
+                    symbols.append(alias_symbol)
+                    node_types.append(def_node.type)
 
         if language == "pascal":
             symbols = _dedupe_pascal_interface_symbols(symbols, node_types)
