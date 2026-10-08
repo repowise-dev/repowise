@@ -9,6 +9,7 @@ function cc(
   targetRepo: string,
   targetFile: string,
   strength = 0.5,
+  evidence: WorkspaceCoChangeEntry["evidence"] = null,
 ): WorkspaceCoChangeEntry {
   return {
     source_repo: sourceRepo,
@@ -18,6 +19,7 @@ function cc(
     strength,
     frequency: 3,
     last_date: "2026-06-01",
+    evidence,
   };
 }
 
@@ -62,5 +64,28 @@ describe("CoChangeTable", () => {
   it("shows the empty state when there are no co-changes", () => {
     render(<CoChangeTable coChanges={[]} />);
     expect(screen.getByText(/no cross-repo co-changes/i)).toBeInTheDocument();
+  });
+
+  it("collapses the evidence behind a disclosure that names the sample size", () => {
+    const row = cc("api", "api/a.py", "core", "core/b.py", 0.8, {
+      authors: ["ada@example.com"],
+      commit_pairs: [
+        { source_sha: "abc12345", target_sha: "def67890", date: "2026-06-01", gap_hours: 3.5 },
+      ],
+      max_gap_hours: 3.5,
+    });
+    render(<CoChangeTable coChanges={[row]} />);
+    const summary = screen.getByText("1 commit pair");
+    expect(summary).toBeInTheDocument();
+    // Collapsed: the author and the shas are in the DOM but not yet shown.
+    expect(screen.getByText("ada@example.com")).not.toBeVisible();
+    fireEvent.click(summary);
+    expect(screen.getByText("ada@example.com")).toBeVisible();
+    expect(screen.getByText("abc12345")).toBeVisible();
+  });
+
+  it("renders a dash for a pair with no evidence recorded", () => {
+    render(<CoChangeTable coChanges={[cc("api", "a.py", "core", "b.py")]} />);
+    expect(screen.getByText("—")).toBeInTheDocument();
   });
 });
