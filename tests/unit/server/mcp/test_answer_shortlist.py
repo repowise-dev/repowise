@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
+import os
 
 import pytest
 
+from repowise.server.mcp_server.tool_answer.payload import build_abstain_payload
 from repowise.server.mcp_server.tool_answer.projection import (
+    _EXCERPT_NOTE,
     _add_file_sizes,
+    _file_size,
     project_answer_payload,
 )
 from repowise.server.mcp_server.tool_answer.retrieval import serialize_candidate_file_facts
@@ -33,7 +38,6 @@ def _raw(confidence: str, **extra) -> dict:
         "_candidate_file_facts": {
             p: {
                 "why": f"Implements function run_{i}.",
-                "score": 9.0,
                 "functions": [{"name": f"run_{i}", "line": 10 + i}],
             }
             for i, p in enumerate(_POOL)
@@ -83,6 +87,22 @@ def test_the_abstain_prose_stops_pointing_at_an_excerpt():
     out = project_answer_payload(raw, question="q")
     assert out["note"] == "Each best_guess entry names why that file is in the running."
     assert "excerpt" not in out["next_action_hint"]
+    assert out["next_action_hint"].startswith("Read src/pkg/f0.py first")
+
+
+def test_the_retargeted_prose_still_matches_the_abstain_source():
+    """The rewrite keys on literal abstain wording; a reword there must fail here."""
+    source = inspect.getsource(build_abstain_payload)
+    clause = ", and its excerpt carries that page's actual content."
+    assert clause in source
+    assert _EXCERPT_NOTE.search(clause)
+    assert 'f"Start from the excerpt of ' in source
+
+
+def test_the_hint_names_the_first_guess_with_a_path():
+    raw = _raw("low", next_action_hint="Start from the excerpt of x, it scored highest.")
+    raw["best_guesses"].insert(0, {"why_relevant": "no file", "excerpt": "e"})
+    out = project_answer_payload(raw, question="q")
     assert out["next_action_hint"].startswith("Read src/pkg/f0.py first")
 
 
@@ -136,6 +156,23 @@ def test_file_sizes_are_stamped_live_and_a_large_top_file_cues_a_ranged_read(tmp
     assert payload["next_action_hint"] == "h"
 
 
+def test_the_size_cue_uses_the_first_guess_with_a_path(tmp_path):
+    (tmp_path / "big.py").write_bytes(b"x\n" * 30000)
+    payload = {"best_guesses": [{"why_relevant": "no file"}, {"file": "big.py"}]}
+    _add_file_sizes(payload, tmp_path)
+    assert payload["best_guesses"][0] == {"why_relevant": "no file"}
+    assert payload["next_action_hint"].startswith("big.py is 58 KB")
+
+
+def test_a_huge_file_reports_its_size_but_is_never_read_for_lines(tmp_path):
+    with (tmp_path / "huge.bin").open("wb") as handle:
+        handle.truncate(3_000_000)
+    assert _file_size(tmp_path, "huge.bin") == (None, 3_000_000)
+    assert _file_size(tmp_path, "missing.py") is None
+    (tmp_path / "dir").mkdir()
+    assert _file_size(tmp_path, "dir") is None
+
+
 def test_file_sizes_refuse_paths_outside_the_repo(tmp_path):
     (tmp_path / "outside.py").write_text("secret\n")
     root = tmp_path / "repo"
@@ -143,6 +180,17 @@ def test_file_sizes_refuse_paths_outside_the_repo(tmp_path):
     payload = {"best_guesses": [{"file": "../outside.py"}]}
     _add_file_sizes(payload, root)
     assert payload["best_guesses"] == [{"file": "../outside.py"}]
+
+
+def test_file_sizes_refuse_a_symlink_that_escapes_the_repo(tmp_path):
+    (tmp_path / "outside.py").write_text("secret\n")
+    root = tmp_path / "repo"
+    root.mkdir()
+    try:
+        os.symlink(tmp_path / "outside.py", root / "link.py")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available here")
+    assert _file_size(root, "link.py") is None
 
 
 def test_candidate_file_facts_come_from_the_resolved_hits():
@@ -156,14 +204,15 @@ def test_candidate_file_facts_come_from_the_resolved_hits():
         },
         {"target_path": "src/a.py", "page_type": "file_page", "score": 1.0},
         {"target_path": "src/b.py", "page_type": "file_page", "summary": "Routes requests. More."},
+        {"target_path": "src/c.py", "page_type": "file_page", "score": 0.5},
     ]
 
     facts = serialize_candidate_file_facts(hits)
 
+    # c.py has nothing to say, so it gets no entry.
     assert list(facts) == ["src/a.py", "src/b.py"]
     assert facts["src/a.py"] == {
         "why": "Implements function handle.",
-        "score": 2.346,
         "functions": [
             {"name": "handle", "line": 40},
             {"name": "Router", "line": 5},
@@ -171,3 +220,26 @@ def test_candidate_file_facts_come_from_the_resolved_hits():
         ],
     }
     assert facts["src/b.py"] == {"why": "Routes requests."}
+
+
+@pytest.mark.asyncio
+async def test_candidate_file_facts_never_leak_through_the_tool_on_a_cache_hit(
+    setup_mcp, monkeypatch
+):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer, tool_middleware
+
+    from .test_answer_projection import _patch_retrieval, _Provider
+
+    _patch_retrieval(monkeypatch, answer_mod)
+    provider = _Provider("Authentication is implemented in src/auth/service.py.")
+    monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", lambda _path: provider)
+    call = tool_middleware(get_answer)
+
+    fresh = await call("where is the leak-free authentication implemented")
+    cached = await call("where is the leak-free authentication implemented")
+
+    assert cached["_meta"]["cached"] is True
+    assert provider.calls == 1
+    for reply in (fresh, cached):
+        assert "_candidate_file_facts" not in json.dumps(reply, default=str)
