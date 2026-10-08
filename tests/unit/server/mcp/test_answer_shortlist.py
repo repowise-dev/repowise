@@ -65,8 +65,12 @@ def test_low_and_degraded_slim_the_guesses(confidence, extra):
         "score": 3.0,
         "functions": [{"name": "run_0", "line": 10}],
     }
-    # candidate_files keeps its bare-path shape at every grade.
-    assert out["candidate_files"] == [p for p in _POOL if p != "src/pkg/f1.py"][:5]
+    # candidate_files keeps its bare-path shape and rank order at every grade.
+    # How many it serves on a degraded answer is the citation-order tests' concern.
+    ranked = [p for p in _POOL if p != "src/pkg/f1.py"]
+    served = out["candidate_files"]
+    assert served and served == ranked[: len(served)]
+    assert len(served) == (5 if confidence == "low" else 4)
     assert "_candidate_file_facts" not in out
 
 
