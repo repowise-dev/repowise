@@ -228,24 +228,9 @@ class OpenCodeProvider(AgentCliProvider):
     """
 
     provider_name = "opencode"
-    executable_name = "opencode"
+    agent_slug = "opencode"
     command_label = "opencode run"
     concurrency_env = "REPOWISE_OPENCODE_CONCURRENCY"
-    not_found_message = (
-        "OpenCode CLI is not installed.\n\n"
-        "Installation:\n"
-        "  curl -fsSL https://opencode.ai/install | bash\n\n"
-        "After installing, run 'opencode' once to set up your model provider "
-        "and authenticate. No API keys are managed by repowise — opencode "
-        "handles all authentication.\n\n"
-        "To choose a model:\n"
-        "  opencode models                 # list available models\n"
-        "  repowise init --provider opencode --model opencode/deepseek/deepseek-v4-pro\n\n"
-        "More info: https://opencode.ai"
-    )
-    spawn_not_found_message = (
-        "OpenCode CLI not found. Install it with: curl -fsSL https://opencode.ai/install | bash"
-    )
     error_tail_chars = 1_000
 
     def exec_timeout_seconds(self) -> float:

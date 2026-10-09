@@ -252,7 +252,6 @@ _SPECS: tuple[ProviderSpec, ...] = (
         # stays out of every prompt (see claude_cli.py).
         local=True,
         zero_cost=True,
-        package="@anthropic-ai/claude-code",
         agent="claude_code",
         note="uses your Claude Code login",
     ),
@@ -267,7 +266,6 @@ _SPECS: tuple[ProviderSpec, ...] = (
         needs_repo_cwd=True,
         local=True,
         zero_cost=True,
-        package="@openai/codex",
         agent="codex",
         note="uses your Codex CLI login",
     ),
@@ -281,7 +279,6 @@ _SPECS: tuple[ProviderSpec, ...] = (
         needs_repo_cwd=True,
         local=True,
         zero_cost=True,
-        package="opencode",
         agent="opencode",
         note="uses your opencode CLI setup",
     ),

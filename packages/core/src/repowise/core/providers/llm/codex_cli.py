@@ -305,10 +305,9 @@ class CodexCliProvider(AgentCliProvider):
     """
 
     provider_name = "codex_cli"
-    executable_name = "codex"
+    agent_slug = "codex"
     command_label = "codex exec"
     concurrency_env = _CONCURRENCY_ENV
-    not_found_message = "Codex CLI not found. Install it with: npm install -g @openai/codex"
     # No validation: the codex catalog decides, and an unlisted slug is passed through.
     validates_model_name = False
 

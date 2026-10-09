@@ -273,7 +273,9 @@ def get_provider(
     try:
         module = importlib.import_module(spec.module_path)
     except ImportError as exc:
-        package = spec.package or name
+        if not spec.package:
+            raise
+        package = spec.package
         raise ImportError(
             f"Provider {name!r} requires the '{package}' package. "
             f"Install it with: pip install {package}"

@@ -139,13 +139,9 @@ class ClaudeCliProvider(AgentCliProvider):
     """
 
     provider_name = "claude_cli"
-    executable_name = "claude"
+    agent_slug = "claude_code"
     command_label = "claude -p"
     concurrency_env = "REPOWISE_CLAUDE_CLI_CONCURRENCY"
-    not_found_message = (
-        "Claude Code CLI not found. Install it from https://claude.com/claude-code, "
-        "then run 'claude login'."
-    )
     default_model = _DEFAULT_MODEL
     # Booked under the prefixed label, which prices a seat at $0.00 while
     # ``repowise costs`` still shows the run's token volume (#2267).

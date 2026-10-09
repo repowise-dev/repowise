@@ -39,6 +39,7 @@ from typing import Any, ClassVar
 
 import structlog
 
+from repowise.core.agents.identity import get_identity
 from repowise.core.providers.llm._concurrency import resolve_concurrency
 from repowise.core.providers.llm.base import (
     BaseProvider,
@@ -126,13 +127,14 @@ class AgentCliProvider(BaseProvider):
     """Base for providers backed by a local agent CLI. See the module docstring."""
 
     provider_name: ClassVar[str]  # type: ignore[misc]
+    # The agent this CLI belongs to; its identity supplies the executable and
+    # the not-found message, so install facts live in one place.
+    agent_slug: ClassVar[str]
     executable_name: ClassVar[str]
     # How errors name the invocation, e.g. ``codex exec``.
     command_label: ClassVar[str]
     concurrency_env: ClassVar[str]
     not_found_message: ClassVar[str]
-    # Raised when the executable vanishes between lookup and spawn.
-    spawn_not_found_message: ClassVar[str | None] = None
     # None: the CLI's own config picks the model.
     default_model: ClassVar[str | None] = None
     validates_model_name: ClassVar[bool] = True
@@ -145,6 +147,18 @@ class AgentCliProvider(BaseProvider):
     # (#1119). Stays under the exec timeout so the caller gives up first and
     # the error names the real cause.
     interactive_timeout_s: float = 180.0
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        agent = get_identity(cls.agent_slug)
+        if agent is None or not agent.executable:
+            raise TypeError(f"{cls.__name__}: no agent executable for {cls.agent_slug!r}")
+        cls.executable_name = agent.executable
+        label = agent.display_name.removesuffix(" CLI")
+        cls.not_found_message = (
+            f"{label} CLI not found. Install it with: {agent.install_hint}, "
+            f"then: {agent.login_hint}."
+        )
 
     def __init__(
         self,
@@ -281,8 +295,7 @@ class AgentCliProvider(BaseProvider):
                 env=self.subprocess_env(),
             )
         except FileNotFoundError as exc:
-            message = self.spawn_not_found_message or self.not_found_message
-            raise ProviderError(self.provider_name, message) from exc
+            raise ProviderError(self.provider_name, self.not_found_message) from exc
 
         timeout = self.exec_timeout_seconds()
         try:
