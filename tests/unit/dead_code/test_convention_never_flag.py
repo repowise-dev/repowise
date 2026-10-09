@@ -55,6 +55,21 @@ def test_js_tool_convention_files_are_never_flagged(path):
 @pytest.mark.parametrize(
     "path",
     [
+        # Astro endpoints: routed by their path under src/pages, never imported.
+        "src/pages/robots.txt.ts",
+        "apps/site/src/pages/api/products/[id].json.ts",
+        "src/pages/rss.xml.js",
+        "src/pages/feed.json.mjs",
+    ],
+)
+def test_astro_endpoints_are_never_flagged(path):
+    assert never_flag_match(path)
+    assert not _unreachable(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         # CPython imports these at startup when they are on sys.path.
         "sitecustomize.py",
         "src/sitecustomize.py",
@@ -78,6 +93,7 @@ def test_python_startup_hooks_are_never_flagged(path):
         "src/httpproxy.ts",
         "src/mysitecustomize.py",
         "src/sitecustomize_helpers.py",
+        "src/lib/pages/format.ts",  # a pages dir outside src/pages routes nothing
     ],
 )
 def test_near_misses_stay_flaggable(path):

@@ -9,6 +9,7 @@ Razor.
 """
 
 from ..spec import LanguageSpec
+from .typescript import SPEC as _TS
 
 SPEC = LanguageSpec(
     tag="astro",
@@ -18,38 +19,15 @@ SPEC = LanguageSpec(
     extensions=frozenset({".astro"}),
     shares_grammar_with="typescript",
     scm_file="typescript.scm",
-    heritage_node_types=frozenset(
-        {"class_declaration", "abstract_class_declaration", "interface_declaration"}
-    ),
+    heritage_node_types=_TS.heritage_node_types,
     manifest_files=("package.json", "astro.config.mjs", "astro.config.ts"),
     # Framework config, not a package declaration — package.json is the root.
     build_config_manifests=("astro.config.mjs", "astro.config.ts"),
-    lock_files=("package-lock.json", "yarn.lock", "pnpm-lock.yaml"),
+    lock_files=_TS.lock_files,
     blocked_dirs=("node_modules", ".astro", "dist"),
-    builtin_calls=frozenset(
-        {
-            "console",
-            "JSON",
-            "Math",
-            "Object",
-            "Array",
-            "String",
-            "Number",
-            "Boolean",
-            "Date",
-            "Promise",
-            "Set",
-            "Map",
-            "Error",
-            "fetch",
-            "setTimeout",
-            "clearTimeout",
-            "setInterval",
-            "clearInterval",
-            "parseInt",
-            "parseFloat",
-        }
-    ),
-    builtin_parents=frozenset({"Error", "Object"}),
+    # The frontmatter and scripts are TypeScript, filtered like a sibling .ts file.
+    builtin_calls=_TS.builtin_calls,
+    builtin_parents=_TS.builtin_parents,
+    builtin_types=_TS.builtin_types,
     color_hex="#BC52EE",
 )

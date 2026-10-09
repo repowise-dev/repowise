@@ -733,8 +733,8 @@ held-out sample and carries 0.7; SQLAlchemy, with under 30 held-out labels, stay
 0.4. `unbounded_read_reduced_in_memory` (Python) flags an unlimited query whose rows
 are deduplicated per key in code.
 
-**Dialects.** `perf/dialects/` registers 12 dialects over 18 language tags (TS/JS
-also serve Vue and Svelte script blocks; C# serves Razor). C shares the C++ grammar
+**Dialects.** `perf/dialects/` registers 12 dialects over 19 language tags (TS/JS
+also serve Vue, Svelte and Astro script blocks; C# serves Razor). C shares the C++ grammar
 but has no perf dialect. A language without one emits nothing.
 
 **Soundness.** Dynamic dispatch, monkeypatching and callbacks-as-values produce no

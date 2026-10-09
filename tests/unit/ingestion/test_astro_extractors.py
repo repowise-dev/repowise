@@ -8,7 +8,7 @@ import pytest
 
 from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE, FileInfo
 from repowise.core.ingestion.parser import ASTParser
-from repowise.core.ingestion.sfc_source import prepare_source
+from repowise.core.ingestion.sfc_source import prepare_source, scan
 
 _PAGE = b"""---
 import Header from '../components/Header.astro';
@@ -110,6 +110,75 @@ class TestProjection:
         assert b"function later() {}" in prepare_source("astro", src)
 
 
+_CARD = b"import Card from './Card.astro';"
+
+
+# Expected imports and tags are what Astro's compiler (@astrojs/compiler-rs
+# 0.4.1) reads from the same bytes; a dotted tag keeps its last segment.
+@pytest.mark.parametrize(
+    ("src", "imports", "tags"),
+    [
+        pytest.param(b"---\n" + _CARD + b"\n---\n<Card />", ["./Card.astro"], ["Card"], id="plain"),
+        pytest.param(
+            b"---\n" + _CARD + b"---\n<Card />", ["./Card.astro"], ["Card"], id="same-line"
+        ),
+        pytest.param(
+            b"---\n" + _CARD + b"\n  ---\n<Card />", ["./Card.astro"], ["Card"], id="indented"
+        ),
+        pytest.param(
+            b"\xef\xbb\xbf---\n" + _CARD + b"\n---\n<Card />", ["./Card.astro"], ["Card"], id="bom"
+        ),
+        pytest.param(
+            b"---\r\n"
+            + _CARD
+            + b"\r\n---\r\n<Card />\r\n<script>\r\nconst x = 1;\r\n</script>\r\n",
+            ["./Card.astro"],
+            ["Card"],
+            id="crlf",
+        ),
+        pytest.param(b"---\n---\n<Card />", [], ["Card"], id="empty"),
+        pytest.param(
+            b"---\n// ----------\n" + _CARD + b"\n---\n<Card />",
+            ["./Card.astro"],
+            ["Card"],
+            id="divider-comment",
+        ),
+        pytest.param(
+            b"---\n" + _CARD + b"\nconst p: Promise<Post[]> = f();\n---\n<Card />",
+            ["./Card.astro"],
+            ["Card"],
+            id="frontmatter-generic",
+        ),
+        pytest.param(
+            b'<Script src="x"><Card /></Script>', [], ["Script", "Card"], id="pascal-script"
+        ),
+        pytest.param(b"<script-loader><Card /></script-loader>", [], ["Card"], id="script-dash"),
+        pytest.param(
+            b'<script type="application/ld+json" set:html={JSON.stringify(xs.map((i) => ({ n: i })))} />'
+            b"\n<Card />",
+            [],
+            ["Card"],
+            id="arrow-in-attr",
+        ),
+        pytest.param(b"<!-- <Card /> -->{/* <Other /> */}<Real />", [], ["Real"], id="comments"),
+        pytest.param(b"<Icons.Star />", [], ["Star"], id="dotted"),
+    ],
+)
+def test_matches_the_astro_compiler(parser, src: bytes, imports: list, tags: list) -> None:
+    result = parser.parse_file(_file(size=len(src)), src)
+    assert [i.module_path for i in result.imports] == imports
+    assert [name for name, _line in scan("astro", src).component_tags] == tags
+    assert result.parse_errors == []
+    prepared = prepare_source("astro", src)
+    assert (len(prepared), prepared.count(b"\n")) == (len(src), src.count(b"\n"))
+
+
+def test_an_unterminated_script_runs_to_eof() -> None:
+    src = b"<script>\nconst a = 1;\n<Card />"
+    assert scan("astro", src).component_tags == ()
+    assert b"const a = 1;" in prepare_source("astro", src)
+
+
 class TestSymbols:
     def test_frontmatter_and_script_symbols_at_their_source_lines(self, parsed) -> None:
         lines = {s.name: s.start_line for s in parsed.symbols}
@@ -119,19 +188,25 @@ class TestSymbols:
         assert lines["toggleMenu"] == 20
 
     def test_the_file_itself_becomes_a_component_symbol(self, parsed) -> None:
-        page = [s for s in parsed.symbols if s.name == "index"]
+        # ``index`` defers to its directory, as for Vue.
+        page = [s for s in parsed.symbols if s.name == "Pages"]
         assert len(page) == 1
         assert page[0].kind == "class"
         assert page[0].start_line == 1
 
+    def test_a_kebab_file_is_named_as_its_tag(self, parser) -> None:
+        src = b"<button>Top</button>\n"
+        result = parser.parse_file(_file("src/components/back-to-top.astro", len(src)), src)
+        assert [s.name for s in result.symbols] == ["BackToTop"]
+
     def test_markup_produces_no_symbols(self, parsed) -> None:
         # Lines 13-18 are markup, 24-26 the <style> block.
-        others = [s for s in parsed.symbols if s.name != "index"]
+        others = [s for s in parsed.symbols if s.name != "Pages"]
         assert not [s for s in others if 13 <= s.start_line <= 18 or s.start_line >= 24]
         assert {s.name for s in others} == {"prerender", "getStaticPaths", "title", "toggleMenu"}
 
     def test_frontmatter_exports(self, parsed) -> None:
-        assert set(parsed.exports) == {"prerender", "getStaticPaths", "index"}
+        assert set(parsed.exports) == {"prerender", "getStaticPaths", "Pages"}
 
     def test_no_parse_errors_on_a_well_formed_page(self, parsed) -> None:
         assert parsed.parse_errors == []

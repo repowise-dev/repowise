@@ -381,7 +381,6 @@ _RAZOR_BLOCK_OPENERS = (b"code", b"functions", b"{")
 # Razor expression inside ``<!-- -->`` still runs, so only the tag pass skips
 # them.
 _RAZOR_COMMENT_CLOSE = b"*@"
-_HTML_COMMENT_OPEN = b"<!--"
 _HTML_COMMENT_CLOSE = b"-->"
 
 
@@ -556,39 +555,33 @@ def _razor_byte_scan(source: bytes, state: dict) -> None:
     # Skip any ``<`` inside a C# region or a Razor comment: ``List<Order>`` is
     # a generic type argument, ``a < b`` is a comparison, and a commented-out
     # tag renders nothing. HTML comments are jumped over for the same reason.
-    hidden = tuple(state["spans"]) + tuple(comments)
+    _byte_scan_tags(source, 0, [*state["spans"], *comments], _razor_component_name, state)
 
-    def _is_hidden(offset: int) -> bool:
-        return any(start <= offset < end for start, end in hidden)
 
-    pos = 0
-    while True:
-        lt = source.find(b"<", pos)
-        if lt < 0:
-            break
-        if _is_hidden(lt):
-            pos = lt + 1
+_MARKUP_TAG = re.compile(rb"<(?:!--|([\w.]+))")
+
+
+def _byte_scan_tags(
+    source: bytes,
+    pos: int,
+    hidden: list[tuple[int, int]],
+    name_of: Callable[[str], str | None],
+    state: dict,
+) -> None:
+    """Record ``(name, line)`` for each component tag from ``pos`` on, skipping ``hidden`` and HTML comments."""
+    while (tag := _MARKUP_TAG.search(source, pos)) is not None:
+        pos = tag.end()
+        if any(start <= tag.start() < end for start, end in hidden):
             continue
-        if source.startswith(_HTML_COMMENT_OPEN, lt):
-            close = source.find(_HTML_COMMENT_CLOSE, lt + len(_HTML_COMMENT_OPEN))
+        if tag.group(1) is None:
+            close = source.find(_HTML_COMMENT_CLOSE, pos)
             pos = len(source) if close < 0 else close + len(_HTML_COMMENT_CLOSE)
             continue
-        name_start = lt + 1
-        name_end = name_start
-        while name_end < len(source) and (
-            source[name_end : name_end + 1].isalnum()
-            or source[name_end : name_end + 1] in (b"_", b".")
-        ):
-            name_end += 1
-        if name_end > name_start:
-            # A namespace-qualified tag (``<Shared.Grid />``) instantiates the
-            # last dotted segment.
-            raw = source[name_start:name_end].decode("utf-8", errors="replace")
-            name = _razor_component_name(raw.rsplit(".", 1)[-1])
-            if name:
-                line = source.count(b"\n", 0, lt) + 1
-                state["tags"].append((name, line))
-        pos = lt + 1
+        # A namespace-qualified tag (``<Shared.Grid />``) instantiates the last
+        # dotted segment.
+        name = name_of(tag.group(1).decode("utf-8").rsplit(".", 1)[-1])
+        if name:
+            state["tags"].append((name, source.count(b"\n", 0, tag.start()) + 1))
 
 
 def _razor_component_name(name: str) -> str | None:
@@ -608,14 +601,25 @@ def _razor_component_name(name: str) -> str | None:
 # Astro
 # ---------------------------------------------------------------------------
 
-# The ``---`` fence must open the file; the body runs to the next ``---`` line.
+# The ``---`` fence opens the file (after an optional BOM). Astro also closes
+# on an indented ``---`` or one right after a ``;`` / ``}`` on the same line;
+# a ``// ---`` divider comment matches neither.
+# shortcut: a ``---`` line inside a template literal closes the block early
+# (Astro reads strings); fine until a real file does that.
 _ASTRO_FRONTMATTER = re.compile(
-    rb"\A\s*---[ \t]*\r?\n(.*?)^---[ \t]*\r?$", re.DOTALL | re.MULTILINE
+    rb"\A(?:\xef\xbb\xbf)?\s*---[ \t]*\r?\n(.*?)(?:^[ \t]*|(?<=[;}]))---[ \t]*\r?$",
+    re.DOTALL | re.MULTILINE,
 )
 # ``<!--`` and a markup ``{/* */}`` hide text that may mention ``<script>``; a
 # bare ``/*`` is not a comment in markup (``accept="audio/*"``). A ``<style>``
-# body is hidden whole, which covers its CSS comments.
-_ASTRO_OPENER = re.compile(rb"(<!--|\{/\*)|<(script|style)\b([^>]*)>", re.IGNORECASE)
+# body is hidden whole, which covers its CSS comments. Case-sensitive: Astro
+# reads ``<Script>`` as a component. Attribute values may hold ``>`` (``=>``).
+# shortcut: a ``{...}`` value nested 3+ braces deep is not read as an opener;
+# widen the brace group once a real file does that.
+_ASTRO_OPENER = re.compile(
+    rb"(<!--|\{/\*)|<(script|style)(?=[\s/>])"
+    rb"((?:\"[^\"]*\"|'[^']*'|\{(?:[^{}]|\{[^{}]*\})*\}|[^>\"'{])*)>"
+)
 _ASTRO_COMMENT_CLOSE = {b"<!--": _HTML_COMMENT_CLOSE, b"{/*": b"*/"}
 _ASTRO_CLOSE = {
     b"script": re.compile(rb"</script\s*>", re.IGNORECASE),
@@ -626,7 +630,6 @@ _ASTRO_SCRIPT_TYPE = re.compile(rb"""(?<![\w-])type\s*=\s*["']?([^"'\s>]+)""", r
 _ASTRO_JS_TYPES = frozenset(
     {b"module", b"text/javascript", b"application/javascript", b"text/typescript"}
 )
-_ASTRO_TAG = re.compile(rb"<([A-Z][\w.]*)")
 
 
 def _astro_byte_scan(source: bytes, state: dict) -> None:
@@ -647,12 +650,7 @@ def _astro_byte_scan(source: bytes, state: dict) -> None:
 
     # shortcut: a TS generic inside a markup {expr} (``Array<Foo>``) reads as a
     # <Foo> tag; fine until a false component edge shows up in a real repo.
-    for tag in _ASTRO_TAG.finditer(source, markup_start):
-        if any(start <= tag.start() < end for start, end in hidden):
-            continue
-        name = _astro_component_name(tag.group(1).decode("utf-8").rsplit(".", 1)[-1])
-        if name:
-            state["tags"].append((name, source.count(b"\n", 0, tag.start()) + 1))
+    _byte_scan_tags(source, markup_start, hidden, _astro_component_name, state)
 
 
 def _astro_record_scripts(source: bytes, pos: int, state: dict) -> list[tuple[int, int]]:
@@ -666,7 +664,7 @@ def _astro_record_scripts(source: bytes, pos: int, state: dict) -> list[tuple[in
             hidden.append((opener.start(), end))
             pos = end
             continue
-        tag, attrs = opener.group(2).lower(), opener.group(3)
+        tag, attrs = opener.group(2), opener.group(3)
         # shortcut: a <script src="./x.ts"> mints no import, so a file loaded
         # only that way reads as unreachable; emit an Import as
         # lightweight_imports/html.py does once a site needs it.
@@ -691,9 +689,7 @@ def _astro_is_js_script(tag: bytes, attrs: bytes) -> bool:
 
 def _astro_component_name(name: str) -> str | None:
     """``<Header />`` instantiates a component; ``<div>`` and ``<Fragment>`` do not."""
-    if not name[:1].isupper() or name == "Fragment":
-        return None
-    return name
+    return None if name == "Fragment" else _razor_component_name(name)
 
 
 # ---------------------------------------------------------------------------
@@ -734,10 +730,7 @@ _LOCATORS: dict[str, Locator] = {
     ),
     # No tree-sitter-astro on PyPI: the ``---`` frontmatter and ``<script>``
     # bodies are byte-scanned and project as TypeScript.
-    "astro": Locator(
-        component_name=_astro_component_name,
-        byte_scan=_astro_byte_scan,
-    ),
+    "astro": Locator(byte_scan=_astro_byte_scan),
 }
 
 

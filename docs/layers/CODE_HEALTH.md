@@ -241,8 +241,8 @@ repetition is real and nothing should change, such as deleting N files). The
 default queue holds production `plan_ready` and `advisory` opportunities, ranked by
 cost first; state only breaks ties. Everything left out is counted by reason.
 
-Performance analysis covers Python, TypeScript/JavaScript (including Vue and Svelte
-scripts), Java, Go, C# (including Razor), Rust, Kotlin, Scala, Ruby, C++, Dart and
+Performance analysis covers Python, TypeScript/JavaScript (including Vue, Svelte and
+Astro scripts), Java, Go, C# (including Razor), Rust, Kotlin, Scala, Ruby, C++, Dart and
 Pascal. A language without support emits no performance findings, never a guessed
 one. Dynamic dispatch, monkeypatching and callbacks passed as values leave no call
 edge, so those cases are missed.
