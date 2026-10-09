@@ -30,6 +30,42 @@ _READER_PROJECT_RE = re.compile(
     re.I,
 )
 
+def _is_tool_config_path(target: str) -> bool:
+    """Whether *target* is a well-known agent/editor config path.
+
+    Docs that reference these almost always tell the reader to create them in
+    their own repository (``.github/copilot-instructions.md``,
+    ``.vscode/settings.json``), not a file that exists in the scanned repo.
+    A non-existent path of this kind is a reader-project reference, not drift
+    about this repository (#3175). The set is deliberately small and explicit:
+    whole-directory exemptions only for ``.cursor/`` and ``.kiro/`` (which hold
+    nothing but tooling), plus the specific files the issue names.
+
+    A path in this set that DOES exist in the repo still resolves normally,
+    because the exact/relative checks above run first.
+    """
+    parts = target.split("/")
+    first = parts[0]
+    base = parts[-1]
+
+    if first in (".cursor", ".kiro"):
+        return True
+    if base in ("AGENTS.md", "CLAUDE.md"):
+        return True
+    if first == ".vscode" and base in ("mcp.json", "settings.json"):
+        return True
+    if first == ".github":
+        if base == "copilot-instructions.md":
+            return True
+        # `.github/instructions/<name>.instructions.md`
+        if (
+            len(parts) >= 3
+            and parts[1] == "instructions"
+            and base.endswith(".instructions.md")
+        ):
+            return True
+    return False
+
 # Setext headings. ``Title`` over ``=====`` or ``-----`` is a heading, and
 # GitHub gives it an anchor exactly as it does an ATX one; recognising only
 # ``#`` reports every inbound link to a setext heading as broken.
@@ -298,6 +334,14 @@ def _resolve_path(idx: RepoIndex, ref: DocReference, is_guide: bool) -> Resoluti
     # so such a path passes anchoring and falls through to a false MISSING.
     if _is_reader_project_reference(ref):
         return Resolution(ref, DriftVerdict.UNCHECKABLE, "reader-project")
+
+    # A well-known agent/editor config path is a reader-project reference, not a
+    # claim about this repository (see #3175). It is checked before anchoring
+    # because repositories almost always have `.github/` (and sometimes
+    # `.vscode/`), which would otherwise let the anchoring rule promote a
+    # non-existent `.github/copilot-instructions.md` to a false MISSING.
+    if _is_tool_config_path(target):
+        return Resolution(ref, DriftVerdict.UNCHECKABLE, "tool-config")
 
     # Anchoring. A reference is evidence about THIS repository only when it
     # carries a separator and its first segment names a directory the
