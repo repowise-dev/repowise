@@ -203,7 +203,8 @@ def _agent_cli_setup_lines(name: str) -> list[str]:
         else f"{agent.display_name} CLI not found on PATH."
     )
     lines = [
-        f"  [bold]{name}[/bold] uses the {agent.display_name} CLI's own login. No API key here.",
+        # The spec note, so an agent with no login (opencode) is not said to use one.
+        f"  [bold]{name}[/bold] {PROVIDER_SPECS[name].note}. No API key here.",
         f"  Install: [{BRAND}]{agent.install_hint}[/]",
         f"  Set up:  [{BRAND}]{agent.login_hint}[/]",
     ]

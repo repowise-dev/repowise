@@ -2,7 +2,7 @@
 
 Delegates generation to the authenticated local Claude Code CLI via ``claude -p``
 (headless / print mode). Intended for users whose Claude subscription (Pro, Max,
-Team or Enterprise seat) is already configured by ``claude login``; it needs no
+Team or Enterprise seat) is already configured by ``claude auth login``; it needs no
 ANTHROPIC_API_KEY. Shared subprocess handling lives in ``agent_cli``.
 
 Two deliberate differences from the other agent-CLI providers:

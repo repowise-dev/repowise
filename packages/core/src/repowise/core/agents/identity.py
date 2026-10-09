@@ -182,7 +182,7 @@ CLAUDE_CODE = AgentIdentity(
     #: Documented to exit 0 when signed in and 1 when not.
     login_check=("auth", "status"),
     install_hint="https://claude.com/claude-code",
-    login_hint="claude login",
+    login_hint="claude auth login",
     indexing_provider="claude_cli",
 )
 CODEX = AgentIdentity(

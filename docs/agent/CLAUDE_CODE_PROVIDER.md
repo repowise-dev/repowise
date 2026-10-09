@@ -34,7 +34,7 @@ model: claude_cli/claude-haiku-5-5
 
 ```bash
 # Install Claude Code, then authenticate once:
-claude login
+claude auth login
 ```
 
 Any plan that can run `claude -p` works — Pro, Max, Team or Enterprise. Repowise

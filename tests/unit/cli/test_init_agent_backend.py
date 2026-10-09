@@ -116,3 +116,18 @@ def test_opencode_reason_does_not_claim_a_login(monkeypatch: Any) -> None:
     assert chosen == "opencode"
     assert "uses your opencode CLI setup" in reason
     assert "login" not in reason
+
+
+def test_setup_text_for_a_missing_opencode_claims_no_login(monkeypatch: Any) -> None:
+    monkeypatch.setattr(ui, "_agent_cli_status", lambda _name: (False, False))
+    text = " ".join(ui._agent_cli_setup_lines("opencode"))
+    assert "uses your opencode CLI setup" in text
+    assert "login" not in text
+
+
+def test_setup_text_for_claude_names_the_auth_login(monkeypatch: Any) -> None:
+    monkeypatch.setattr(ui, "_agent_cli_status", lambda _name: (True, False))
+    text = " ".join(ui._agent_cli_setup_lines("claude_cli"))
+    assert "uses your Claude Code login" in text
+    assert "claude auth login" in text
+    assert "not logged in" in text
