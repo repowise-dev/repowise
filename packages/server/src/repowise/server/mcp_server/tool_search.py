@@ -554,7 +554,8 @@ def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
 
     A page id is ``compute_page_id(page_type, target_path)`` — literally
     ``f"{page_type}:{target_path}"`` (``core/generation/models.py``) — and both
-    halves ship in the same row. So the field is 229-369 characters per
+    halves ship in the same row: the target as ``target_path``, or as ``path``
+    once :func:`add_row_paths` has folded an identical ``target_path`` into it. So the field is 229-369 characters per
     response, 7.8-10.3% of the payload, restating two of its own siblings. It
     is ranking plumbing: every internal use above keys the fused dict on it,
     and none of that needs to reach the wire.
@@ -570,7 +571,8 @@ def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
     does exactly that, and used to skip any row whose ``page_id`` was missing.
     """
     for item in results:
-        derived = f"{item.get('page_type', '')}:{item.get('target_path', '')}"
+        target = item.get("target_path") or item.get("path") or ""
+        derived = f"{item.get('page_type', '')}:{target}"
         if item.get("page_id") == derived:
             item.pop("page_id", None)
     return results

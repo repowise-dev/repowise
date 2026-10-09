@@ -137,6 +137,16 @@ describe("extractSources", () => {
     }
   });
 
+  it("rebuilds a search row's page id from its path", () => {
+    const sources = extractSources(
+      [searchCall([{ page_type: "file_page", path: "src/a.py", title: "File: src/a.py" }])],
+      "repo1",
+    );
+
+    expect(sources[0]?.pageId).toBe("file_page:src/a.py");
+    expect(sources[0]?.targetPath).toBe("src/a.py");
+  });
+
   it("omits confidence when the server sends no confidence_score", () => {
     const sources = extractSources(
       [searchCall([{ page_id: "file_page:a.py", title: "a.py", relevance_score: 9.1 }])],

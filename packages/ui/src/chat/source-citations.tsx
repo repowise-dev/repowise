@@ -59,7 +59,8 @@ export function extractSources(
         // `const pageId = r.page_id` dropped the whole row — and its citation —
         // for any result without one. Same fallback the get_context branch uses.
         const pageType = r.page_type as string | undefined;
-        const targetPath = r.target_path as string | undefined;
+        // A file row ships its target as `path` alone once the two agree.
+        const targetPath = (r.target_path ?? r.path) as string | undefined;
         const pageId =
           (r.page_id as string | undefined) ??
           (pageType && targetPath ? `${pageType}:${targetPath}` : "");
@@ -70,7 +71,7 @@ export function extractSources(
           pageId,
           title: (r.title as string) ?? pageId,
           pageType: (r.page_type as string) ?? "file_page",
-          targetPath: (r.target_path as string) ?? "",
+          targetPath: targetPath ?? "",
           confidence: r.confidence_score as number | undefined,
           toolName: tc.name,
         });

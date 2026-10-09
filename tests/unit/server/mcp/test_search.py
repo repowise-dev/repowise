@@ -1869,8 +1869,8 @@ class TestPathlessPagesInCodeLocationModes:
             assert pathless["target_path"] == key
         assert file_page["path"] == "pkg/cmd/release/list.go"
         assert "target_path" not in file_page
-        # Not derivable without target_path, so the id stays for citations.
-        assert file_page["page_id"] == "file_page:pkg/cmd/release/list.go"
+        # page_type and path rebuild it, so the id does not ship.
+        assert "page_id" not in file_page
 
     @pytest.mark.asyncio
     async def test_federated_rows_carry_path(self, setup_mcp, monkeypatch):
@@ -1910,6 +1910,44 @@ class TestPathlessPagesInCodeLocationModes:
         assert "Any page here" not in res["note"]
         assert EXHAUSTIVE_SWEEP_HINT not in res["note"]
         assert EXHAUSTIVE_SWEEP_HINT in res["grep_hint"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("route", ["concept", "hybrid", "federated"])
+    async def test_rows_drop_only_page_ids_their_fields_spell(self, setup_mcp, monkeypatch, route):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase, tool_search
+
+        await self._seed()
+        spotlight = "symbol_spotlight:pkg/cmd/release/view.go::ViewRelease"
+        await _seed_page(spotlight, "pkg/cmd/release/view.go::ViewRelease", "symbol_spotlight")
+        pages = mcp_mod._vector_store.search
+
+        async def with_spotlight(query, limit=10):
+            hit = _mk_result(
+                spotlight,
+                "ViewRelease",
+                "symbol_spotlight",
+                "pkg/cmd/release/view.go::ViewRelease",
+                0.95,
+            )
+            return [hit, *await pages(query, limit)]
+
+        mcp_mod._vector_store.search = with_spotlight
+        kwargs = {"mode": "hybrid" if route == "hybrid" else "concept"}
+        if route == "federated":
+            ctx = await tool_search._resolve_repo_context(None)
+
+            async def one_context():
+                return [ctx]
+
+            monkeypatch.setattr(tool_search, "_resolve_all_contexts", one_context)
+            kwargs["repo"] = "all"
+        res = await search_codebase("listing releases in order", limit=5, **kwargs)
+        rows = [r for r in res["results"] if r.get("type") != "symbol"]
+        by_type = {r["page_type"]: r for r in rows}
+        assert "page_id" not in by_type["file_page"]
+        # The path names the file, not the symbol, so this id is not rebuildable.
+        assert by_type["symbol_spotlight"]["page_id"] == spotlight
 
     @pytest.mark.asyncio
     async def test_hybrid_keeps_them_when_pages_are_asked_for(self, setup_mcp):
