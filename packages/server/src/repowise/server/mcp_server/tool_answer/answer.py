@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json as _json  # noqa: F401  — re-exported: a test patches answer._json.dumps
 import logging
 import time
@@ -129,6 +130,7 @@ from repowise.server.mcp_server.tool_answer.callers import (
     caller_evidence,
     caller_lines,
     is_caller_question,
+    is_impact_question,
 )
 from repowise.server.mcp_server.tool_answer.confidence import (
     _agreement_dominant,
@@ -161,6 +163,11 @@ from repowise.server.mcp_server.tool_answer.evidence import (
     _first_resolvable_id,  # noqa: F401  — re-exported: imported from here by tests
     _is_readable_path,
     _repo_root,
+)
+from repowise.server.mcp_server.tool_answer.neighbors import (
+    attach_graph_neighbors,
+    lead_file,
+    neighbor_evidence,
 )
 from repowise.server.mcp_server.tool_answer.payload import (
     _apply_lean_high,  # noqa: F401  — backward-compatible helper re-export
@@ -212,6 +219,24 @@ if _MAX_CHARS_PER_HIT_EXCERPT < _GATED_EXCERPT_CHARS:
         f"while the fetch asks for {_GATED_EXCERPT_CHARS}. Raise "
         "_MAX_CHARS_PER_HIT_EXCERPT or lower _GATED_EXCERPT_CHARS."
     )
+
+
+async def _attach_neighbors(
+    payload: dict, *, wanted: bool, ctx, repo_id: str, hits: list[dict], exclude_spec
+) -> dict:
+    """``graph_neighbors`` for the file *payload* leads with; a failed lookup leaves it as is."""
+    if not wanted:
+        return payload
+    lead = lead_file(payload)
+    try:
+        async with get_session(ctx.session_factory) as session:
+            rows = await neighbor_evidence(
+                session, repo_id, lead, hits, exclude_spec, repo_root=_repo_root(ctx)
+            )
+    except Exception:
+        _log.warning("get_answer: graph neighbor lookup failed", exc_info=True)
+        return payload
+    return attach_graph_neighbors(payload, rows, lead)
 
 
 class _Retrieved(NamedTuple):
@@ -458,6 +483,17 @@ async def get_answer(
         except Exception:
             _log.warning("get_answer: graph caller lookup failed", exc_info=True)
 
+    # Impact questions the caller lookup left unanswered get the users of the
+    # file the answer leads with, once that file is known.
+    _neighbors = functools.partial(
+        _attach_neighbors,
+        wanted=not graph_callers.rows and is_impact_question(question, question_ids),
+        ctx=ctx,
+        repo_id=repo_id,
+        hits=hits,
+        exclude_spec=exclude_spec,
+    )
+
     # Computed once, above the early returns (they rate retrieval too). The leg
     # status is read, not inferred from the capped `hits`; see _agreement_dominant.
     agreement_dominant = (
@@ -501,7 +537,9 @@ async def get_answer(
         _retrieval_quality(hits, agreement_dominant),
     )
     if union_payload is not None:
-        return _with_candidates(attach_graph_callers(union_payload, graph_callers), resolved_pool)
+        return _with_candidates(
+            await _neighbors(attach_graph_callers(union_payload, graph_callers)), resolved_pool
+        )
 
     fallback_targets = [
         h["target_path"]
@@ -544,16 +582,18 @@ async def get_answer(
 
     if not always_synthesize and not dominant:
         return _with_candidates(
-            attach_graph_callers(
-                await build_abstain_payload(
-                    question=question,
-                    ctx=ctx,
-                    hits=hits,
-                    fallback_targets=fallback_targets,
-                    repository=repository,
-                    t0=t0,
-                ),
-                graph_callers,
+            await _neighbors(
+                attach_graph_callers(
+                    await build_abstain_payload(
+                        question=question,
+                        ctx=ctx,
+                        hits=hits,
+                        fallback_targets=fallback_targets,
+                        repository=repository,
+                        t0=t0,
+                    ),
+                    graph_callers,
+                )
             ),
             resolved_pool,
         )
@@ -598,6 +638,7 @@ async def get_answer(
             resolved_pool=resolved_pool,
             graph_callers=graph_callers,
         )
+        payload = await _neighbors(payload)
         degraded_legs = _degraded_legs(_retrieval_legs())
         if degraded_legs:
             payload.setdefault("_meta", {})["retrieval_degraded"] = degraded_legs
@@ -698,6 +739,7 @@ async def get_answer(
     )
 
     attach_graph_callers(payload, graph_callers)
+    await _neighbors(payload)
     if flow_paths:
         payload["flow_path"] = [" -> ".join(p) for p in flow_paths[:2]]
 

@@ -62,7 +62,7 @@ def _is_wrapper(node: GraphNode, target: GraphNode, callees: set[str]) -> bool:
     )
 
 
-def _imported_names(edge: GraphEdge) -> list[str]:
+def imported_names(edge: GraphEdge) -> list[str]:
     try:
         names = json.loads(edge.imported_names_json or "[]")
     except (TypeError, ValueError):
@@ -214,7 +214,7 @@ async def files_importing(
         importer = edge.source_node_id
         if importer in seen:
             continue
-        names = _imported_names(edge)
+        names = imported_names(edge)
         candidates = by_file[edge.target_node_id]
         node = next((n for n in candidates if n.name in names), None)
         named = node is not None

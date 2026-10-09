@@ -53,6 +53,27 @@ _NAMED_CALLER_QUESTION = re.compile(
     re.IGNORECASE,
 )
 
+#: Asks which file or function wires something up, or what must change, without
+#: necessarily naming a symbol: "which non-test file dynamically loads it".
+_IMPACT_SUBJECT = (
+    r"\b(?:which|what)(?:\s+[\w-]+){0,3}?\s+(?:files?|modules?|functions?|methods?|"
+    r"class(?:es)?|components?|services?|packages?|handlers?|callers?|scripts?|code)"
+    r"\s+(?:\w+ly\s+)?"
+)
+_IMPACT_QUESTION = re.compile(
+    _IMPACT_SUBJECT + r"(?:calls?|invokes?|triggers?|imports?|re-?exports?|"
+    r"registers?|references?|depends?\s+on|dispatch(?:es)?|wires?|fires?|"
+    r"subscribes?|persists?)\b"
+    r"|\bmust\s+change\b|\bwould\s+need\s+(?:updating|to\s+change)\b",
+    re.IGNORECASE,
+)
+#: "uses" and "loads" also describe style or speed ("which file uses tabs"), so
+#: they count only with a code name or a pronoun object.
+_WEAK_IMPACT_QUESTION = re.compile(
+    _IMPACT_SUBJECT + r"(?:uses?|loads?)\b(?P<pronoun>\s+(?:it|this|that|them)\b)?",
+    re.IGNORECASE,
+)
+
 _TARGET_KINDS = ("function", "method", "class")
 #: A name with more definitions than this is too generic to answer for.
 _MAX_DEFS_PER_NAME = 4
@@ -94,6 +115,14 @@ def is_caller_question(question: str, question_ids: set[str]) -> bool:
     if _CALLER_QUESTION.search(question):
         return True
     return bool(_named_ids(question_ids)) and bool(_NAMED_CALLER_QUESTION.search(question))
+
+
+def is_impact_question(question: str, question_ids: set[str]) -> bool:
+    """A caller question, or one asking which code wires, loads or must change for something."""
+    if is_caller_question(question, question_ids) or _IMPACT_QUESTION.search(question):
+        return True
+    weak = _WEAK_IMPACT_QUESTION.search(question)
+    return bool(weak) and bool(weak.group("pronoun") or _named_ids(question_ids))
 
 
 def _named_ids(question_ids: set[str]) -> list[str]:
@@ -173,7 +202,7 @@ async def _retrieved_targets(
     return sorted(res.scalars().all(), key=lambda n: (order.get(n.name, 99), n.node_id))
 
 
-def _row(
+def caller_row(
     caller: str,
     file: str,
     line: int | None,
@@ -263,7 +292,7 @@ async def caller_evidence(
             seen.add(e.source_node_id)
             src = nodes.get(e.source_node_id)
             rows.append(
-                _row(
+                caller_row(
                     e.source_node_id,
                     src.file_path if src else e.source_node_id.split("::")[0],
                     src.start_line if src else None,
@@ -280,7 +309,7 @@ async def caller_evidence(
             if caller in seen or (cross_file and h["file"] == target.file_path):
                 continue
             seen.add(caller)
-            row = _row(
+            row = caller_row(
                 caller,
                 h["file"],
                 h.get("line"),
@@ -340,7 +369,7 @@ async def _registering_files(
     # take the only slots.
     imported.sort(key=lambda t: is_test_path(t[0]))
     return [
-        _row(importer, importer, None, symbol_id, "imports")
+        caller_row(importer, importer, None, symbol_id, "imports")
         for importer, _conf, symbol_id, _named in imported[:_MAX_IMPORTER_ROWS]
     ]
 
@@ -358,33 +387,33 @@ def attach_graph_callers(payload: dict, evidence: CallerEvidence) -> dict:
     return payload
 
 
-def _short(symbol_id: str) -> str:
+def short_id(symbol_id: str) -> str:
     return symbol_id.split("::")[-1] if "::" in symbol_id else symbol_id
 
 
 def _phrase(row: dict) -> str:
     line = row.get("call_line") or row.get("line")
     where = f"{row['file']}:{line}" if line is not None else row["file"]
-    target = _short(row["target"])
+    target = short_id(row["target"])
     wrapper = row.get("via_wrapper")
     # A same-named caller or wrapper would read "X calls X"; the file tells them apart.
-    if target in (_short(row["caller"]), _short(wrapper or "")):
+    if target in (short_id(row["caller"]), short_id(wrapper or "")):
         target = f"{target} in {row['target'].split('::')[0]}"
     if row["edge_type"] == "imports":
         if wrapper and row.get("wholesale"):
             return (
                 f"{row['file']} loads {wrapper.split('::')[0]} wholesale, whose "
-                f"{_short(wrapper)} wraps {target}"
+                f"{short_id(wrapper)} wraps {target}"
             )
         if wrapper:
             return (
-                f"{row['file']} imports wrapper {_short(wrapper)} "
+                f"{row['file']} imports wrapper {short_id(wrapper)} "
                 f"({wrapper.split('::')[0]}), which calls {target}"
             )
         return f"{row['file']} imports {target}"
     if wrapper:
-        return f"{_short(row['caller'])} ({where}) calls {target} via wrapper {_short(wrapper)}"
-    return f"{_short(row['caller'])} ({where}) calls {target}"
+        return f"{short_id(row['caller'])} ({where}) calls {target} via wrapper {short_id(wrapper)}"
+    return f"{short_id(row['caller'])} ({where}) calls {target}"
 
 
 def caller_lines(rows: list[dict]) -> list[str]:
