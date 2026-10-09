@@ -221,41 +221,23 @@ repowise/
 
 ### Adding a new LLM provider
 
-1. **Create `packages/core/src/repowise/core/providers/llm/<name>.py`**
-   - Subclass `BaseProvider` and implement `generate()`, `provider_name`, `model_name`
-   - For local CLI providers, use `asyncio.create_subprocess_exec` (never `shell=True`), validate user-supplied model names against a safe character set, and resolve paths with `Path.resolve()`
-   - See `opencode.py` for a clean reference implementation
+1. Create `packages/core/src/repowise/core/providers/llm/<name>.py` with a
+   `BaseProvider` subclass. For an OpenAI-compatible API, subclass
+   `OpenAICompatibleProvider` from `openai_compat.py`, as `deepseek.py` does.
+2. Add one `ProviderSpec` to `_SPECS` in
+   `packages/core/src/repowise/core/providers/llm/specs.py`: key and base-URL env vars,
+   default model and model list, rate limit, package, picker rank and signup URL.
+   The registry tables, the server catalog, the init picker and the web UI all read
+   it, so there is no second list to edit.
+3. Add tests in `tests/unit/test_providers/`. If the spec has a `picker_rank`, add
+   the name to the frozen picker order in `tests/unit/cli/test_init_ux.py`.
 
-2. **Register** in `registry.py`: add to `_BUILTIN_PROVIDERS` and the `_missing` package map
-
-3. **Wire up configuration.** These live in three different packages, so the full
-   paths matter more than the filenames:
-   - `packages/core/src/repowise/core/rate_limiter.py`, add a `RateLimitConfig` to
-     `PROVIDER_DEFAULTS`
-   - `packages/server/src/repowise/server/provider_config.py`, add an entry to
-     `PROVIDER_CATALOG`
-   - `packages/cli/src/repowise/cli/ui/provider_selection.py`, add to
-     `_PROVIDER_DEFAULTS`, `_PROVIDER_ENV`, `_PROVIDER_SIGNUP`, and detection
-   - `packages/cli/src/repowise/cli/helpers.py`, add validation in
-     `validate_provider_config()`
-
-   Check `registry.py` first. Several things that used to be spread across these files
-   now live there in one place (`PROVIDER_API_KEY_ENVS`, `PROVIDER_BASE_URL_ENVS`,
-   `KEYLESS_PROVIDERS`, `REPO_PATH_PROVIDERS`, `PROVIDER_AUTODETECT_ORDER`), because
-   three copies of the same list drifted. Add to the consolidated one, not a fourth copy.
-
-4. **Update the web UI**: `packages/web/src/components/settings/provider-section.tsx`,
-   which holds `FALLBACK_PROVIDERS`, `MODEL_PLACEHOLDERS` and `PROVIDER_ENV_VARS`. The
-   live list comes from the server catalog at runtime; `FALLBACK_PROVIDERS` is only the
-   offline fallback, so keep it in step with `PROVIDER_CATALOG` above.
-
-5. **Add tests** in `tests/unit/test_providers/`: mock the subprocess, test success/error/timeout paths (see `test_codex_cli_provider.py` for the pattern)
-
-6. **Write docs**: `docs/agent/<NAME>.md` and `website/<name>.md`, following
-   `docs/agent/CODEX.md` and `docs/agent/OPENCODE.md`.
+An agent CLI used as a backend (`claude_cli`, `codex_cli`, `opencode`) follows the
+agent platform recipe instead.
 
 Adding a new language has a dedicated recipe, see
 [docs/architecture/language-support.md](../docs/architecture/language-support.md).
+Adding an agent integration or an agent CLI indexing backend has its own recipe, see [docs/architecture/agent-platform.md](../docs/architecture/agent-platform.md).
 
 ## Testing
 
