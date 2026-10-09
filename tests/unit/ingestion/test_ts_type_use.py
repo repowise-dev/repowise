@@ -167,6 +167,73 @@ _TYPE_ONLY_SOURCES = {
 
 
 class TestTsTypeUseEdges:
+    def test_generic_argument_resolves_ambient_type(self, tmp_path: Path) -> None:
+        graph = _build_graph(
+            tmp_path,
+            {
+                "ambient.d.ts": (
+                    "declare global { interface AmbientSettings { endpoint: string } }\n"
+                    "export {}\n"
+                ),
+                "consumer.ts": (
+                    "function read(): Partial<AmbientSettings> {\n"
+                    "  return decodeConfig<AmbientSettings>('payload')\n"
+                    "}\n"
+                ),
+            },
+        )
+        edge = graph.get_edge_data("consumer.ts", "ambient.d.ts", {})
+        assert edge["edge_type"] == "type_use"
+        assert "AmbientSettings" in edge["type_uses"]
+
+    def test_unique_global_declaration_emits_file_type_use(self, tmp_path: Path) -> None:
+        graph = _build_graph(
+            tmp_path,
+            {
+                "ambient.d.ts": "interface AmbientSettings { endpoint: string }\n",
+                "consumer.ts": (
+                    "export function readSettings(env: AmbientSettings): string { return env.endpoint }\n"
+                ),
+            },
+        )
+        edge = graph.get_edge_data("consumer.ts", "ambient.d.ts", {})
+        assert edge
+        assert edge["edge_type"] == "type_use"
+        assert "AmbientSettings" in edge["type_uses"]
+
+    def test_exported_module_declaration_is_not_treated_as_global(self, tmp_path: Path) -> None:
+        graph = _build_graph(
+            tmp_path,
+            {
+                "types.d.ts": "export interface AmbientSettings { endpoint: string }\n",
+                "consumer.ts": (
+                    "export function readSettings(env: AmbientSettings): string { return env.endpoint }\n"
+                ),
+            },
+        )
+        assert not graph.has_edge("consumer.ts", "types.d.ts")
+
+    def test_module_declaration_only_resolves_names_inside_declare_global(
+        self, tmp_path: Path
+    ) -> None:
+        graph = _build_graph(
+            tmp_path,
+            {
+                "types.d.ts": (
+                    "export {};\n"
+                    "declare global { interface AmbientSettings { endpoint: string } }\n"
+                    "export interface ModuleOnly { value: string }\n"
+                ),
+                "consumer.ts": (
+                    "export function readSettings(env: AmbientSettings): string { return env.endpoint }\n"
+                    "export function readModuleType(value: ModuleOnly): string { return value.value }\n"
+                ),
+            },
+        )
+        edge = graph.get_edge_data("consumer.ts", "types.d.ts", {})
+        assert edge and "AmbientSettings" in edge["type_uses"]
+        assert "ModuleOnly" not in edge["type_uses"]
+
     def test_type_only_import_produces_type_use_provenance(
         self, tmp_path: Path
     ) -> None:
