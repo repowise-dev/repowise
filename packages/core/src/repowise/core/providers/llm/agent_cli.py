@@ -34,6 +34,7 @@ import shutil
 from abc import abstractmethod
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
+from pathlib import Path
 from typing import Any, ClassVar
 
 import structlog
@@ -63,11 +64,6 @@ def tail(text: str, max_chars: int = 2_000) -> str:
     if len(text) <= max_chars:
         return text
     return text[-max_chars:]
-
-
-def stderr_tail(stderr: str) -> str:
-    """The stderr excerpt kept in a response's usage payload."""
-    return tail(stderr, 1_000)
 
 
 def iter_jsonl(stdout: str) -> Iterator[Any]:
@@ -150,7 +146,12 @@ class AgentCliProvider(BaseProvider):
     # the error names the real cause.
     interactive_timeout_s: float = 180.0
 
-    def __init__(self, model: str | None = None, rate_limiter: RateLimiter | None = None) -> None:
+    def __init__(
+        self,
+        model: str | None = None,
+        repo_path: str | Path | None = None,
+        rate_limiter: RateLimiter | None = None,
+    ) -> None:
         executable = self.resolve_executable()
         if not executable:
             raise ProviderError(self.provider_name, self.not_found_message)
@@ -158,6 +159,10 @@ class AgentCliProvider(BaseProvider):
         self._model = normalize_model(model, self.provider_name, self.default_model)
         if self._model is not None and self.validates_model_name:
             validate_model_name(self.provider_name, self._model)
+        # Where the CLI is pointed (``--cd`` / ``--dir``); claude_cli ignores it.
+        self._repo_path = (
+            Path(repo_path).resolve() if repo_path is not None else Path.cwd().resolve()
+        )
         self._rate_limiter = rate_limiter
         self._semaphore: asyncio.Semaphore | None = None
         self._semaphore_loop: asyncio.AbstractEventLoop | None = None

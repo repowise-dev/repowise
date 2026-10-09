@@ -11,7 +11,6 @@ import json
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from repowise.core.providers.llm._concurrency import resolve_concurrency
@@ -21,14 +20,13 @@ from repowise.core.providers.llm.agent_cli import (
     iter_jsonl,
     model_label,
     normalize_model,
-    stderr_tail,
+    tail,
 )
 from repowise.core.providers.llm.base import (
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
 )
-from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import REASONING_MODES, ReasoningMode, normalize_reasoning
 
 _DEFAULT_MODEL_LABEL = "codex_cli/default"
@@ -311,19 +309,8 @@ class CodexCliProvider(AgentCliProvider):
     command_label = "codex exec"
     concurrency_env = _CONCURRENCY_ENV
     not_found_message = "Codex CLI not found. Install it with: npm install -g @openai/codex"
-    # codex_cli has never validated model names; left as it was.
+    # No validation: the codex catalog decides, and an unlisted slug is passed through.
     validates_model_name = False
-
-    def __init__(
-        self,
-        model: str | None = None,
-        repo_path: str | Path | None = None,
-        rate_limiter: RateLimiter | None = None,
-    ) -> None:
-        super().__init__(model, rate_limiter)
-        self._repo_path = (
-            Path(repo_path).resolve() if repo_path is not None else Path.cwd().resolve()
-        )
 
     def exec_timeout_seconds(self) -> float:
         return _EXEC_TIMEOUT_SECONDS  # a module global, so tests can patch it
@@ -370,7 +357,7 @@ class CodexCliProvider(AgentCliProvider):
             **usage,
             "source": "codex_exec",
             "model": self.model_name,
-            "stderr": stderr_tail(stderr),
+            "stderr": tail(stderr, 1_000),
         }
         if not usage:
             usage_payload["estimated"] = True

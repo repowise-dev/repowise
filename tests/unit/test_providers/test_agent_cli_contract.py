@@ -10,7 +10,9 @@ import asyncio
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -26,28 +28,78 @@ from repowise.core.providers.llm.registry import _BUILTIN_PROVIDERS
 class Backend:
     cls: type[AgentCliProvider]
     model: str  # a native slug the CLI receives after ``--model``
-    success_stdout: Callable[[str], str]  # CLI output whose answer is the argument
+    # CLI output whose answer is the argument, with usage that parses to ``tokens``.
+    success_stdout: Callable[[str], str]
+    tokens: tuple[int, int, int]  # parsed (input, output, cached)
+    books_cost: bool
+    # Flag that points the CLI at the repo; None means a per-call scratch cwd.
+    repo_flag: str | None
+    env: dict[str, str] | None  # entries the subprocess env must carry
+
+
+def _jsonl(*events: dict[str, Any]) -> str:
+    return "".join(json.dumps(event) + "\n" for event in events)
 
 
 def _claude_stdout(text: str) -> str:
-    return json.dumps({"subtype": "success", "is_error": False, "result": text}) + "\n"
+    usage = {
+        "input_tokens": 100,
+        "output_tokens": 40,
+        "cache_read_input_tokens": 30,
+        "cache_creation_input_tokens": 10,
+    }
+    return _jsonl({"subtype": "success", "is_error": False, "result": text, "usage": usage})
 
 
 def _codex_stdout(text: str) -> str:
-    return (
-        json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": text}})
-        + "\n"
+    return _jsonl(
+        {"type": "item.completed", "item": {"type": "agent_message", "text": text}},
+        {
+            "type": "turn.completed",
+            "usage": {"input_tokens": 120, "cached_input_tokens": 30, "output_tokens": 40},
+        },
     )
 
 
 def _opencode_stdout(text: str) -> str:
-    return json.dumps({"type": "text", "part": {"text": text}}) + "\n"
+    return _jsonl(
+        {"type": "text", "part": {"text": text}},
+        {
+            "type": "step_finish",
+            "part": {"tokens": {"input": 80, "output": 10, "cache": {"read": 20, "write": 0}}},
+        },
+    )
 
 
 BACKENDS = [
-    Backend(ClaudeCliProvider, "claude-sonnet-4-6", _claude_stdout),
-    Backend(CodexCliProvider, "gpt-5.5", _codex_stdout),
-    Backend(OpenCodeProvider, "deepseek/deepseek-v4-pro", _opencode_stdout),
+    Backend(
+        ClaudeCliProvider,
+        "claude-sonnet-4-6",
+        _claude_stdout,
+        # Prompt total: uncached + cache read + cache write.
+        tokens=(140, 40, 30),
+        books_cost=True,
+        repo_flag=None,
+        env=None,
+    ),
+    Backend(
+        CodexCliProvider,
+        "gpt-5.5",
+        _codex_stdout,
+        tokens=(120, 40, 30),
+        books_cost=False,
+        repo_flag="--cd",
+        env=None,
+    ),
+    Backend(
+        OpenCodeProvider,
+        "deepseek/deepseek-v4-pro",
+        _opencode_stdout,
+        tokens=(80, 10, 20),
+        books_cost=False,
+        repo_flag="--dir",
+        env={"OPENCODE_DISABLE_PROJECT_CONFIG": "true"},
+    ),
 ]
 
 
@@ -140,6 +192,7 @@ async def test_command_stdin_and_output(backend, monkeypatch, tmp_path):
 
     assert isinstance(result, GeneratedResponse)
     assert result.content == "answer"
+    assert (result.input_tokens, result.output_tokens, result.cached_tokens) == backend.tokens
     args = calls[0]["args"]
     assert args[0].endswith(backend.cls.executable_name)
     assert args[args.index("--model") + 1] == backend.model
@@ -148,6 +201,57 @@ async def test_command_stdin_and_output(backend, monkeypatch, tmp_path):
     assert b"user context" in calls[0]["proc"].stdin_input
     assert not any("user context" in a for a in args)
     assert calls[0]["proc"]._transport.closed
+
+
+async def test_runs_against_the_repo_or_a_scratch_dir(backend, monkeypatch, tmp_path):
+    calls = _fake_exec(monkeypatch, lambda: FakeProcess(stdout=backend.success_stdout("ok")))
+
+    await _make(backend, tmp_path).generate("sys", "user")
+
+    args, cwd = calls[0]["args"], calls[0]["kwargs"]["cwd"]
+    if backend.repo_flag is None:
+        # A neutral per-call directory, removed afterwards.
+        assert cwd is not None and Path(cwd) != tmp_path.resolve()
+        assert not Path(cwd).exists()
+    else:
+        assert args[args.index(backend.repo_flag) + 1] == str(tmp_path.resolve())
+        assert cwd is None
+
+
+async def test_subprocess_env(backend, monkeypatch, tmp_path):
+    calls = _fake_exec(monkeypatch, lambda: FakeProcess(stdout=backend.success_stdout("ok")))
+
+    await _make(backend, tmp_path).generate("sys", "user")
+
+    env = calls[0]["kwargs"]["env"]
+    if backend.env is None:
+        assert env is None  # inherits the parent environment unchanged
+    else:
+        assert backend.env.items() <= env.items()
+    if backend.cls is OpenCodeProvider:
+        permissions = json.loads(env["OPENCODE_CONFIG_CONTENT"])["permission"]
+        assert permissions["edit"] == permissions["bash"] == "deny"
+
+
+async def test_cost_booking(backend, monkeypatch, tmp_path):
+    _fake_exec(monkeypatch, lambda: FakeProcess(stdout=backend.success_stdout("ok")))
+    tracker = MagicMock(operation="doc_generation")
+    tracker.record = AsyncMock(return_value=0.0)
+    provider = _make(backend, tmp_path)
+    provider._cost_tracker = tracker
+
+    await provider.generate("sys", "user")
+
+    if backend.books_cost:
+        tracker.record.assert_awaited_once_with(
+            model=provider.model_name,
+            input_tokens=backend.tokens[0],
+            output_tokens=backend.tokens[1],
+            operation="doc_generation",
+            file_path=None,
+        )
+    else:
+        tracker.record.assert_not_awaited()
 
 
 async def test_nonzero_exit_raises_with_stderr_tail(backend, monkeypatch, tmp_path):

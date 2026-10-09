@@ -35,7 +35,6 @@ from repowise.core.providers.llm.agent_cli import (
     AgentCliProvider,
     model_label,
     normalize_model,
-    stderr_tail,
     tail,
 )
 from repowise.core.providers.llm.base import (
@@ -158,7 +157,8 @@ class ClaudeCliProvider(AgentCliProvider):
         rate_limiter: RateLimiter | None = None,
         **_ignored: Any,
     ) -> None:
-        super().__init__(model, rate_limiter)
+        # Swallows api_key/base_url a config overlay may pass; claude_cli uses neither.
+        super().__init__(model, rate_limiter=rate_limiter)
 
     def exec_timeout_seconds(self) -> float:
         return _EXEC_TIMEOUT_SECONDS  # a module global, so tests can patch it
@@ -268,7 +268,7 @@ class ClaudeCliProvider(AgentCliProvider):
             # Auditing only: the cost table prices subscription usage at zero.
             "reported_cost_usd": payload.get("total_cost_usd"),
             "num_turns": payload.get("num_turns"),
-            "stderr": stderr_tail(stderr),
+            "stderr": tail(stderr, 1_000),
         }
         if not usage:
             usage_payload["estimated"] = True

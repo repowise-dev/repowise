@@ -18,7 +18,6 @@ import re
 import subprocess
 import uuid
 from functools import lru_cache, partial
-from pathlib import Path
 from typing import Any
 
 from repowise.core.providers.llm.agent_cli import (
@@ -27,7 +26,7 @@ from repowise.core.providers.llm.agent_cli import (
     iter_jsonl,
     model_label,
     normalize_model,
-    stderr_tail,
+    tail,
     validate_model_name,
 )
 from repowise.core.providers.llm.base import (
@@ -35,7 +34,6 @@ from repowise.core.providers.llm.base import (
     ProviderError,
     ProviderModelOption,
 )
-from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode
 
 _DEFAULT_MODEL_LABEL = "opencode/default"
@@ -250,17 +248,6 @@ class OpenCodeProvider(AgentCliProvider):
     )
     error_tail_chars = 1_000
 
-    def __init__(
-        self,
-        model: str | None = None,
-        repo_path: str | Path | None = None,
-        rate_limiter: RateLimiter | None = None,
-    ) -> None:
-        super().__init__(model, rate_limiter)
-        self._repo_path = (
-            Path(repo_path).resolve() if repo_path is not None else Path.cwd().resolve()
-        )
-
     def exec_timeout_seconds(self) -> float:
         return _EXEC_TIMEOUT_SECONDS  # a module global, so tests can patch it
 
@@ -307,7 +294,7 @@ class OpenCodeProvider(AgentCliProvider):
             **usage,
             "source": "opencode_run",
             "model": self.model_name,
-            "stderr": stderr_tail(stderr),
+            "stderr": tail(stderr, 1_000),
         }
         if not usage:
             usage_payload["estimated"] = True
