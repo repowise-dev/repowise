@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.cli.cost_estimator import PageTypePlan, _lookup_cost, estimate_cost
+from repowise.cli.cost_estimator import PageTypePlan, estimate_cost, lookup_cost
 from repowise.cli.cost_estimator.heuristics import heuristic_tokens
 
 # ---------------------------------------------------------------------------
@@ -19,8 +19,8 @@ from repowise.cli.cost_estimator.heuristics import heuristic_tokens
         ("gpt-5.4-nano", 0.0002, 0.00125),
         ("gpt-5.4-mini", 0.00075, 0.0045),
         ("gpt-5.4", 0.0025, 0.015),
-        # The default. An unpriced model reads as free here (_lookup_cost
-        # falls through to (0.0, 0.0)), so this row is the guard.
+        # The default. An unpriced model is estimated as free (lookup_cost
+        # returns None), so this row is the guard.
         ("gpt-5.6-luna", 0.0002, 0.0012),
         # Gemini
         ("gemini-3.1-flash-lite-preview", 0.00025, 0.0015),
@@ -39,7 +39,7 @@ from repowise.cli.cost_estimator.heuristics import heuristic_tokens
     ],
 )
 def test_lookup_cost(model, expected_input, expected_output):
-    inp, out = _lookup_cost(model)
+    inp, out = lookup_cost(model)
     assert inp == pytest.approx(expected_input, rel=1e-6)
     assert out == pytest.approx(expected_output, rel=1e-6)
 

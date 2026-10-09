@@ -70,6 +70,7 @@ def _embedder_catalog() -> list[dict[str, Any]]:
 
     A built-in embedder reads the same credentials as the LLM provider of the
     same name, so its env vars come from that spec; a custom one has none.
+    The default comes first so the picker opens on it; the rest stay sorted.
     """
     return [
         {
@@ -77,7 +78,7 @@ def _embedder_catalog() -> list[dict[str, Any]]:
             "env_vars": list(spec.required_envs) if (spec := PROVIDER_SPECS.get(name)) else [],
             "semantic": name not in KEYLESS_EMBEDDERS,
         }
-        for name in list_embedders()
+        for name in sorted(list_embedders(), key=lambda n: n != DEFAULT_EMBEDDER)
     ]
 
 
@@ -327,12 +328,18 @@ def list_provider_status(
         )
 
     # Deferred: the estimator package pulls in the generation pipeline.
-    from repowise.core.cost_estimator import _lookup_cost
+    from repowise.core.cost_estimator import lookup_cost
 
     model = active_model or (
         _CATALOG_BY_ID.get(active_id, {}).get("default_model") if active_id else None
     )
-    input_rate, output_rate = _lookup_cost(model) if model else (None, None)
+    rates = lookup_cost(model) if model else None
+    # An unpriced model on a local provider costs nothing; anywhere else it
+    # is unknown, and null rates make the dashboard show no estimate.
+    spec = PROVIDER_SPECS.get(active_id or "")
+    if rates is None and model and spec is not None and spec.local:
+        rates = (0.0, 0.0)
+    input_rate, output_rate = rates or (None, None)
     return {
         "active": {
             "provider": active_id,

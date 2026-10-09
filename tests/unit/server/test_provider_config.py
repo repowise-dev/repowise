@@ -327,6 +327,7 @@ def test_list_provider_status_carries_the_embedder_registry(clean_env, tmp_path,
     by_id = {e["id"]: e for e in status["embedders"]}
 
     assert set(by_id) == set(registry.list_embedders())
+    assert status["embedders"][0]["id"] == registry.DEFAULT_EMBEDDER
     assert by_id["gemini"]["env_vars"] == ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
     assert by_id["mock"] == {"id": "mock", "env_vars": [], "semantic": False}
     assert by_id["voyage"] == {"id": "voyage", "env_vars": [], "semantic": True}
@@ -334,14 +335,17 @@ def test_list_provider_status_carries_the_embedder_registry(clean_env, tmp_path,
 
 
 def test_list_provider_status_prices_the_active_model(clean_env, tmp_path):
-    from repowise.core.cost_estimator import _lookup_cost
+    from repowise.core.cost_estimator import lookup_cost
 
-    pc.set_active_provider("openai", "gpt-5.4-mini")
-    active = pc.list_provider_status()["active"]
+    def rates(provider, model):
+        pc.set_active_provider(provider, model)
+        active = pc.list_provider_status()["active"]
+        return active["input_cost_per_1k"], active["output_cost_per_1k"]
 
-    rates = (active["input_cost_per_1k"], active["output_cost_per_1k"])
-    assert rates == _lookup_cost("gpt-5.4-mini")
-    assert rates[0] > 0
+    assert rates("openai", "gpt-5.4-mini") == lookup_cost("gpt-5.4-mini")
+    # Unpriced is unknown, not free; a local model is free.
+    assert rates("openai", "gpt-4o") == (None, None)
+    assert rates("ollama", "qwen3.5:4b") == (0.0, 0.0)
 
 
 def test_list_provider_status_never_returns_key_material(clean_env, tmp_path):

@@ -576,12 +576,12 @@ def test_registered_as_keyless_provider():
 
 def test_subscription_usage_is_priced_at_zero():
     """A seat is not API spend; the bare `claude` prefixes would price it wrongly."""
-    from repowise.core.cost_estimator.pricing import _lookup_cost
+    from repowise.core.cost_estimator.pricing import lookup_cost
 
-    assert _lookup_cost("claude_cli/claude-haiku-4-5") == (0.0, 0.0)
-    assert _lookup_cost("claude_cli/claude-opus-4-6") == (0.0, 0.0)
+    assert lookup_cost("claude_cli/claude-haiku-4-5") == (0.0, 0.0)
+    assert lookup_cost("claude_cli/claude-opus-4-6") == (0.0, 0.0)
     # The keyed API path is unaffected.
-    assert _lookup_cost("claude-haiku-4-5") != (0.0, 0.0)
+    assert lookup_cost("claude-haiku-4-5") != (0.0, 0.0)
 
 
 def test_resolves_through_the_registry(claude_on_path):

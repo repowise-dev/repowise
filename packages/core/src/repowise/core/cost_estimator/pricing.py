@@ -53,7 +53,7 @@ _COST_TABLE_EXACT: dict[str, tuple[float, float]] = {
 
 # Prefix fallbacks for unknown variants. No `gpt-5.6` catch-all: the 5.6
 # variants are not one price tier, and an unpriced model reads as free here
-# (``_lookup_cost`` falls through to (0.0, 0.0)), so a guess would be worse
+# (the estimator prices a ``None`` from ``lookup_cost`` at zero), so a guess would be worse
 # than the miss it hides.
 _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
     "gpt-5.6-luna": (0.0002, 0.0012),
@@ -86,8 +86,12 @@ _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
 }
 
 
-def _lookup_cost(model_name: str) -> tuple[float, float]:
-    """Return ``(input_rate, output_rate)`` per 1K tokens for *model_name*."""
+def lookup_cost(model_name: str) -> tuple[float, float] | None:
+    """Return ``(input_rate, output_rate)`` per 1K tokens for *model_name*.
+
+    ``None`` when no entry matches: the model is unpriced, which is not the
+    same as free (the explicit zero rows above).
+    """
     lower = model_name.lower()
     # OpenRouter/LiteLLM slugs carry a routing prefix (`google/gemini-3.5-flash-lite`)
     # that hides the model from every entry below, which priced them at zero.
@@ -97,7 +101,7 @@ def _lookup_cost(model_name: str) -> tuple[float, float]:
     if lower in _COST_TABLE_EXACT:
         return _COST_TABLE_EXACT[lower]
     best_prefix = ""
-    best_rates = (0.0, 0.0)
+    best_rates: tuple[float, float] | None = None
     for prefix, rates in _COST_TABLE_PREFIX.items():
         if lower.startswith(prefix) and len(prefix) > len(best_prefix):
             best_prefix = prefix
