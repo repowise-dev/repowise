@@ -55,6 +55,11 @@ from repowise.server.mcp_server._symbol_lookup import symbol_id_variants
 _log = logging.getLogger("repowise.mcp.search")
 
 MAX_LINES = 50
+# A multi-word query's page rows already rank files, so its lines are a short
+# lead-in (production first) and lines_omitted_by_file names the top files only.
+MAX_LINES_MIXED = 15
+MAX_OMITTED_FILES = 5
+OVER_LINES_MIXED = f"over {MAX_LINES_MIXED} lines for a multi-word query; search one name for more"
 MAX_LINES_PER_FILE = 5
 MAX_SYMBOLS = 3
 MAX_SCAN_FILES = 20_000
@@ -66,6 +71,8 @@ _SNIFF_BYTES = 8192
 _MAX_STREAM_BYTES = 64_000_000
 OVER_LINES = f"over {MAX_LINES} lines"
 _KIND_ORDER = {"definition": 0, "import": 1, "call": 2, "reference": 3, "match": 4}
+# Under the short mixed-query cap, call sites say more than imports.
+_MIXED_KIND_ORDER = {"definition": 0, "call": 1, "import": 2, "reference": 3, "match": 3}
 _QUOTED = re.compile(r"""^(["'`])(.+)\1$""")
 _TOKEN = re.compile(r"^[A-Za-z0-9_$][\w$.]*$")
 _DECL_WORDS = r"def|class|function|const|let|var|fn|func|type|interface|struct|enum"
@@ -372,11 +379,15 @@ async def _attach(
         rows, reasons = await asyncio.to_thread(_scan_listed, root, *literal)
     else:
         return
+    mixed = not literal and len(query.split()) > 1
+    order = _MIXED_KIND_ORDER if mixed else _KIND_ORDER
+    # Production before test within each kind group: every kind for a mixed
+    # query, definitions against the rest otherwise.
     rows.sort(
         key=lambda r: (
-            r["kind"] != "definition",
+            order[r["kind"]] if mixed else r["kind"] != "definition",
             is_test_related_path(r["path"]),
-            _KIND_ORDER[r["kind"]],
+            order[r["kind"]],
             r["path"],
             r["line"],
         )
@@ -387,16 +398,22 @@ async def _attach(
             f"{len(rows) - len(kept)} references past {MAX_REFERENCES_PER_FILE} per file"
             " not shown: lines_omitted_by_file; the full list is under _meta.omitted"
         )
-    if len(kept) > MAX_LINES and OVER_LINES not in reasons:
-        reasons.append(OVER_LINES)
-    response["lines"] = kept[:MAX_LINES]
+    cap, over = (MAX_LINES_MIXED, OVER_LINES_MIXED) if mixed else (MAX_LINES, OVER_LINES)
+    if len(kept) > cap and over not in reasons:
+        reasons.append(over)
+    response["lines"] = kept[:cap]
     if len(response["lines"]) < len(rows):
         shown = {id(r) for r in response["lines"]}
         hidden = [r for r in rows if id(r) not in shown]
         collector = OmissionCollector("search_codebase", repo_root=ctx.path)
         collector.add(f"{query} :: lines not shown", hidden)
         collector.attach(response)
-        response["lines_omitted_by_file"] = dict(Counter(r["path"] for r in hidden))
+        by_file = Counter(r["path"] for r in hidden)
+        if mixed and len(by_file) > MAX_OMITTED_FILES:
+            response["lines_omitted_by_file"] = dict(by_file.most_common(MAX_OMITTED_FILES))
+            response["lines_omitted_by_file_total"] = len(by_file)
+        else:
+            response["lines_omitted_by_file"] = dict(by_file)
     response["complete"] = not reasons
     if reasons:
         response["reasons"] = reasons

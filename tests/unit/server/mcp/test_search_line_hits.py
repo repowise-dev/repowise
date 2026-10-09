@@ -433,3 +433,107 @@ async def test_call_sites_are_never_collapsed(tree, session, setup_mcp):
 def test_literal_rows_are_not_collapsed():
     rows = [{"path": "a.py", "line": n, "kind": "match", "text": "x"} for n in range(5)]
     assert _edit_sites._cap_references_per_file(rows) == rows
+
+
+async def _mocking_tests(tree, session, rid, target, name, ext, language, n=8):
+    """*n* test files that each import *name* and mock it six times."""
+    head = f"from pkg.catalog import {name}\n" if ext == "py" else f"import {{ {name} }} from '../web/a'\n"
+    for i in range(n):
+        rel = f"tests/test_user{i}.{ext}" if ext == "py" else f"tests/user{i}.test.{ext}"
+        (tree / "tests").mkdir(exist_ok=True)
+        (tree / rel).write_text(head + f"mock({name})\n" * 6, encoding="utf-8")
+        _importer(session, rid, rel, target, f'["{name}"]', language)
+    await session.commit()
+
+
+def _recording_collector(monkeypatch):
+    added: list = []
+
+    class Recording(_line_hits.OmissionCollector):
+        def add(self, label, rows, *a, **kw):
+            added.extend(rows)
+            return super().add(label, rows, *a, **kw)
+
+    monkeypatch.setattr(_line_hits, "OmissionCollector", Recording)
+    return added
+
+
+def _assert_mixed_bound(out, hidden, n_files):
+    cap, top = _line_hits.MAX_LINES_MIXED, _line_hits.MAX_OMITTED_FILES
+    assert len(out["lines"]) == cap
+    assert out["complete"] is False
+    assert _line_hits.OVER_LINES_MIXED in out["reasons"]
+    assert out["_meta"]["omitted"]["refs"]
+    by_file = out["lines_omitted_by_file"]
+    assert len(by_file) == top
+    ranks = [_line_hits._MIXED_KIND_ORDER[r["kind"]] for r in out["lines"]]
+    assert ranks == sorted(ranks)
+    assert out["lines_omitted_by_file_total"] == n_files
+    assert list(by_file.values()) == sorted(by_file.values(), reverse=True)
+    # Everything not shown is in the omission chunk, nothing twice.
+    shown = {(r["path"], r["line"]) for r in out["lines"]}
+    assert not shown & {(r["path"], r["line"]) for r in hidden}
+    assert all(by_file[p] == sum(r["path"] == p for r in hidden) for p in by_file)
+
+
+@pytest.mark.asyncio
+async def test_mixed_python_query_bounds_lines_and_omitted_files(tree, session, setup_mcp, monkeypatch):
+    await _mocking_tests(tree, session, setup_mcp, "pkg/catalog.py", "backend_of", "py", "python")
+    hidden = _recording_collector(monkeypatch)
+
+    out = await search_codebase("where backend_of is mocked", mode="hybrid")
+
+    # Calls before imports, production before test within each kind.
+    assert _rows(out)[:4] == [
+        ("pkg/catalog.py", 4, "definition"),
+        ("app/widget.py", 6, "call"),
+        ("app/widget.py", 1, "import"),
+        ("tests/test_user0.py", 1, "import"),
+    ]
+    _assert_mixed_bound(out, hidden, n_files=8)
+    assert len(out["lines"]) + len(hidden) == 3 + 8 * 7
+
+
+@pytest.mark.asyncio
+async def test_mixed_typescript_query_bounds_lines_and_omitted_files(
+    tree, session, setup_mcp, monkeypatch
+):
+    (tree / "web").mkdir()
+    (tree / "web" / "a.ts").write_text(
+        "export function pickModel(x: number): number { return x }\n", encoding="utf-8"
+    )
+    session.add(
+        GraphNode(
+            id="lh_ts_mixed",
+            repository_id=setup_mcp,
+            node_id="web/a.ts::pickModel",
+            node_type="symbol",
+            name="pickModel",
+            file_path="web/a.ts",
+            kind="function",
+            language="typescript",
+            start_line=1,
+            end_line=1,
+            created_at=_NOW,
+        )
+    )
+    await _mocking_tests(tree, session, setup_mcp, "web/a.ts", "pickModel", "ts", "typescript", n=7)
+    hidden = _recording_collector(monkeypatch)
+
+    out = await search_codebase("pickModel mock setup", mode="hybrid")
+
+    assert out["lines"][0]["path"] == "web/a.ts"
+    _assert_mixed_bound(out, hidden, n_files=7)
+
+
+@pytest.mark.asyncio
+async def test_single_name_keeps_the_full_cap_and_every_omitted_file(tree, session, setup_mcp):
+    await _mocking_tests(tree, session, setup_mcp, "pkg/catalog.py", "backend_of", "py", "python")
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    cap = _edit_sites.MAX_REFERENCES_PER_FILE
+    assert len(out["lines"]) == 3 + 8 * (1 + cap)
+    assert len(out["lines_omitted_by_file"]) == 8
+    assert "lines_omitted_by_file_total" not in out
+    assert not any(r == _line_hits.OVER_LINES_MIXED for r in out["reasons"])
