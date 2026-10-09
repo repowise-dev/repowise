@@ -35,12 +35,28 @@ export interface ProviderInfo {
   setup_hint?: string;
 }
 
+export interface EmbedderInfo {
+  id: string;
+  /** Env vars a user sets to make the embedder usable. */
+  env_vars?: string[];
+  /** `false` for the keyless embedder, whose vectors carry no signal. */
+  semantic?: boolean;
+}
+
 export interface ProvidersResponse {
   active: {
     provider: string | null;
     model: string | null;
+    /** USD per 1K tokens for `model`; null when no model resolves. */
+    input_cost_per_1k?: number | null;
+    output_cost_per_1k?: number | null;
+    /** The embedder this server runs with. */
+    embedder?: string | null;
   };
   providers: ProviderInfo[];
+  /** Registerable providers the catalog leaves out. */
+  flag_only_providers?: string[];
+  embedders?: EmbedderInfo[];
 }
 
 /** Result of a live provider smoke test. `ok: false` carries the reason in

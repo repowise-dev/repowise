@@ -204,7 +204,7 @@ def test_list_provider_status_surfaces_custom_model(clean_env, tmp_path):
 
     status = pc.list_provider_status(repo_id="r1", repo_path=str(repo))
 
-    assert status["active"] == {"provider": "openai", "model": "gemma4"}
+    assert (status["active"]["provider"], status["active"]["model"]) == ("openai", "gemma4")
     openai = next(p for p in status["providers"] if p["id"] == "openai")
     assert "gemma4" in openai["models"]  # custom model is selectable
     assert openai["configured"] is True  # key seen via repo .env
@@ -315,6 +315,33 @@ def test_list_provider_status_carries_setup_facts_from_the_specs(clean_env, tmp_
     assert by_id["codex_cli"]["requires_key"] is False
     assert "codex login" in by_id["codex_cli"]["setup_hint"]
     assert "mock" not in by_id
+    assert status["flag_only_providers"] == ["mock"]
+
+
+def test_list_provider_status_carries_the_embedder_registry(clean_env, tmp_path, monkeypatch):
+    from repowise.core.providers.embedding import registry
+
+    monkeypatch.setitem(registry._custom_embedders, "voyage", lambda **_kw: None)
+    clean_env["REPOWISE_EMBEDDER"] = "Gemini"
+    status = pc.list_provider_status()
+    by_id = {e["id"]: e for e in status["embedders"]}
+
+    assert set(by_id) == set(registry.list_embedders())
+    assert by_id["gemini"]["env_vars"] == ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+    assert by_id["mock"] == {"id": "mock", "env_vars": [], "semantic": False}
+    assert by_id["voyage"] == {"id": "voyage", "env_vars": [], "semantic": True}
+    assert status["active"]["embedder"] == "gemini"
+
+
+def test_list_provider_status_prices_the_active_model(clean_env, tmp_path):
+    from repowise.core.cost_estimator import _lookup_cost
+
+    pc.set_active_provider("openai", "gpt-5.4-mini")
+    active = pc.list_provider_status()["active"]
+
+    rates = (active["input_cost_per_1k"], active["output_cost_per_1k"])
+    assert rates == _lookup_cost("gpt-5.4-mini")
+    assert rates[0] > 0
 
 
 def test_list_provider_status_never_returns_key_material(clean_env, tmp_path):

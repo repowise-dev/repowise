@@ -33,6 +33,14 @@ _BUILTIN_EMBEDDERS: dict[str, tuple[str, str]] = {
     "mock": ("repowise.core.providers.embedding.base", "KeylessEmbedder"),
 }
 
+#: What ``REPOWISE_EMBEDDER`` means when unset.
+DEFAULT_EMBEDDER = "mock"
+
+#: Built-ins whose vectors carry no signal (see ``KeylessEmbedder``).
+KEYLESS_EMBEDDERS = frozenset(
+    name for name, (_module, cls) in _BUILTIN_EMBEDDERS.items() if cls == "KeylessEmbedder"
+)
+
 _custom_embedders: dict[str, Callable[..., Embedder]] = {}
 
 
