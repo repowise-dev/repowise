@@ -3398,3 +3398,110 @@ def test_vscode_instructions_round_trip_to_no_file(tmp_path: Path) -> None:
 
     assert not (repo / ".github").exists()
     assert not (repo / ".vscode").exists()
+
+
+# ---------------------------------------------------------------------------
+# GitHub Copilot CLI
+# ---------------------------------------------------------------------------
+
+
+def _copilot():
+    from repowise.cli.agent_targets.targets import copilot
+
+    return copilot
+
+
+def test_copilot_writes_the_mcp_config_json_shape(tmp_path: Path) -> None:
+    copilot = _copilot()
+    path = Path.home() / ".copilot" / "mcp-config.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"mcpServers": {"other": {"type": "stdio", "command": "x"}}}), encoding="utf-8"
+    )
+
+    result = copilot.TARGET.install(Scope.USER)
+
+    assert result.files[0].action is FileAction.UPDATED
+    servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+    assert servers["other"] == {"type": "stdio", "command": "x"}
+    entry = servers["repowise"]
+    assert entry["type"] == "stdio"
+    assert entry["args"] == ["mcp", "--transport", "stdio"]
+    assert entry["tools"] == ["*"]
+    assert copilot.TARGET.install(Scope.USER).files[0].action is FileAction.UNCHANGED
+
+
+def test_copilot_keeps_a_tools_list_the_user_narrowed(tmp_path: Path) -> None:
+    copilot = _copilot()
+    copilot.TARGET.install(Scope.USER)
+    path = copilot.mcp_config_path()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["mcpServers"]["repowise"]["tools"] = ["get_answer"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    copilot.TARGET.install(Scope.USER)
+
+    assert json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["repowise"]["tools"] == [
+        "get_answer"
+    ]
+
+
+def test_copilot_follows_copilot_home(tmp_path: Path, monkeypatch) -> None:
+    copilot = _copilot()
+    home = tmp_path / "copilot-home"
+    monkeypatch.setenv("COPILOT_HOME", f"  {home}  ")
+
+    copilot.TARGET.install(Scope.USER)
+
+    assert (home / "mcp-config.json").exists()
+    assert not (Path.home() / ".copilot").exists()
+    assert copilot.TARGET.detect()[0].config_path == home / "mcp-config.json"
+    assert copilot.TARGET.doctor().status.value == "ok"
+
+
+def test_copilot_ide_dir_alone_is_not_an_install(monkeypatch) -> None:
+    """The VS Code extension creates ``~/.copilot/ide``; the CLI writes more."""
+    monkeypatch.setattr("repowise.core.agents.identity.shutil.which", lambda _name: None)
+    copilot = _copilot()
+    (Path.home() / ".copilot" / "ide").mkdir(parents=True)
+
+    assert not copilot.TARGET.is_present()
+    (Path.home() / ".copilot" / "config.json").write_text("{}", encoding="utf-8")
+    assert copilot.TARGET.is_present()
+
+
+def test_copilot_user_scope_round_trips_to_nothing() -> None:
+    copilot = _copilot()
+    copilot.TARGET.install(Scope.USER)
+
+    result = copilot.TARGET.uninstall(Scope.USER)
+
+    assert result.files[0].action is FileAction.REMOVED
+    assert not (Path.home() / ".copilot").exists()
+
+
+def test_copilot_project_registration_requires_the_user_entry(tmp_path: Path) -> None:
+    """The repo block is shared with VS Code, so alone it says nothing about the CLI."""
+    copilot = _copilot()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    copilot.TARGET.install(Scope.PROJECT, repo_path=repo)
+    assert _copilot_instructions(repo).exists()
+    assert copilot.TARGET.detect(repo) == []
+
+    copilot.TARGET.install(Scope.USER)
+    assert {r.scope for r in copilot.TARGET.detect(repo)} == {Scope.USER, Scope.PROJECT}
+
+
+def test_copilot_doctor_calls_a_non_object_config_broken() -> None:
+    copilot = _copilot()
+    path = copilot.mcp_config_path()
+    path.parent.mkdir(parents=True)
+    path.write_text("[]", encoding="utf-8")
+
+    report = copilot.TARGET.doctor()
+
+    assert report.status.value == "broken"
+    assert copilot.TARGET.install(Scope.USER).files[0].action is FileAction.KEPT
+    assert path.read_text(encoding="utf-8") == "[]"

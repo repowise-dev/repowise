@@ -200,6 +200,13 @@ OPENCODE = AgentIdentity(
     indexing_provider="opencode",
 )
 HERMES = AgentIdentity(slug="hermes", display_name="Hermes", executable="hermes")
+COPILOT = AgentIdentity(
+    slug="copilot",
+    display_name="GitHub Copilot CLI",
+    executable="copilot",
+    install_hint="npm install -g @github/copilot",
+    login_hint="copilot login",
+)
 
 #: Registered identities, by slug. Order is not load-bearing here — the order
 #: agents are *presented* in belongs to the target registry, which is where a
