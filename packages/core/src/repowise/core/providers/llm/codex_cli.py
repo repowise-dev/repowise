@@ -7,22 +7,23 @@ configured by ``codex login`` and does not require an OpenAI API key.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json
-import shutil
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import structlog
-
 from repowise.core.providers.llm._concurrency import resolve_concurrency
+from repowise.core.providers.llm.agent_cli import (
+    EXEC_TIMEOUT_SECONDS,
+    AgentCliProvider,
+    iter_jsonl,
+    model_label,
+    normalize_model,
+    stderr_tail,
+)
 from repowise.core.providers.llm.base import (
-    BaseProvider,
-    CacheHint,
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
@@ -30,34 +31,10 @@ from repowise.core.providers.llm.base import (
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import REASONING_MODES, ReasoningMode, normalize_reasoning
 
-log = structlog.get_logger(__name__)
-
 _DEFAULT_MODEL_LABEL = "codex_cli/default"
-_EXEC_TIMEOUT_SECONDS = 600
+_EXEC_TIMEOUT_SECONDS = EXEC_TIMEOUT_SECONDS
 _CATALOG_TIMEOUT_SECONDS = 5
-
-# Subscription seats are rate limited per account and each call is a full CLI
-# process. Serializing turns a 104-page generate into about 95 minutes; too
-# much concurrency trips the account limit and fails the run. 4 matches the
-# ceiling init applies to the other CLI-backed providers.
-#
-# The env override is a true override, not a clamp: it can raise the fan-out
-# above 4 as well as lower it. Deliberate -- a higher-tier plan can take more
-# than a lower one, and only the operator knows which they have -- but it does
-# mean 4 is a default rather than an enforced cap.
 _CONCURRENCY_ENV = "REPOWISE_CODEX_CLI_CONCURRENCY"
-
-
-async def _close_subprocess_transport(proc: asyncio.subprocess.Process) -> None:
-    """Close asyncio's subprocess transport before the event loop shuts down."""
-
-    transport = getattr(proc, "_transport", None)
-    close = getattr(transport, "close", None)
-    if not callable(close):
-        return
-    with contextlib.suppress(Exception):
-        close()
-    await asyncio.sleep(0)
 
 
 @dataclass(frozen=True)
@@ -69,28 +46,13 @@ class CodexModelReasoning:
     supported_efforts: tuple[str, ...]
 
 
-def _resolve_codex_executable() -> str | None:
-    """Return the executable path used to launch Codex, or None if unavailable."""
-
-    return shutil.which("codex")
-
-
 def _normalize_model(model: str | None) -> str | None:
     """Return the native Codex model slug, or None to use CLI config."""
-    if not model:
-        return None
-    if model == _DEFAULT_MODEL_LABEL:
-        return None
-    if model.startswith("codex_cli/"):
-        suffix = model.removeprefix("codex_cli/")
-        return suffix or None
-    return model
+    return normalize_model(model, "codex_cli", None)
 
 
 def _model_label(model: str | None) -> str:
-    """Return the persisted attribution label for a Codex CLI model."""
-    native = _normalize_model(model)
-    return f"codex_cli/{native}" if native else _DEFAULT_MODEL_LABEL
+    return model_label(_normalize_model(model), "codex_cli")
 
 
 def _resolve_concurrency() -> int:
@@ -317,15 +279,7 @@ def _parse_jsonl(stdout: str) -> tuple[str, dict[str, Any]]:
     content_parts: list[str] = []
     usage: dict[str, Any] = {}
 
-    for raw_line in stdout.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
+    for event in iter_jsonl(stdout):
         if event.get("type") == "item.completed":
             item = event.get("item") or {}
             if item.get("type") == "agent_message":
@@ -340,24 +294,7 @@ def _parse_jsonl(stdout: str) -> tuple[str, dict[str, Any]]:
     return "\n".join(content_parts), usage
 
 
-def _tail(text: str, max_chars: int = 2_000) -> str:
-    text = text.strip()
-    if len(text) <= max_chars:
-        return text
-    return text[-max_chars:]
-
-
-def _error_message(stderr: str, stdout: str, returncode: int) -> str:
-    for candidate in (_tail(stderr), _tail(stdout)):
-        if not candidate:
-            continue
-        if candidate.lstrip().startswith(("{", "[")):
-            continue
-        return candidate
-    return f"codex exec exited with {returncode}"
-
-
-class CodexCliProvider(BaseProvider):
+class CodexCliProvider(AgentCliProvider):
     """LLM provider backed by ``codex exec``.
 
     Args:
@@ -369,12 +306,13 @@ class CodexCliProvider(BaseProvider):
             bounds its own subprocess fan-out.
     """
 
-    # A process spawn plus a full Codex agent turn. The floor is tens of
-    # seconds even for a short prompt, so an interactive caller has to budget
-    # in minutes or it cancels every call it ever makes (#1119). Stays under
-    # _EXEC_TIMEOUT_SECONDS so the caller gives up before the subprocess does
-    # and the error names the real cause.
-    interactive_timeout_s: float = 180.0
+    provider_name = "codex_cli"
+    executable_name = "codex"
+    command_label = "codex exec"
+    concurrency_env = _CONCURRENCY_ENV
+    not_found_message = "Codex CLI not found. Install it with: npm install -g @openai/codex"
+    # codex_cli has never validated model names; left as it was.
+    validates_model_name = False
 
     def __init__(
         self,
@@ -382,45 +320,23 @@ class CodexCliProvider(BaseProvider):
         repo_path: str | Path | None = None,
         rate_limiter: RateLimiter | None = None,
     ) -> None:
-        codex_cmd = _resolve_codex_executable()
-        if not codex_cmd:
-            raise ProviderError(
-                "codex_cli",
-                "Codex CLI not found. Install it with: npm install -g @openai/codex",
-            )
-        self._codex_cmd = codex_cmd
-        self._model = _normalize_model(model)
+        super().__init__(model, rate_limiter)
         self._repo_path = (
             Path(repo_path).resolve() if repo_path is not None else Path.cwd().resolve()
         )
-        self._rate_limiter = rate_limiter
-        self._subprocess_semaphore: asyncio.Semaphore | None = None
-        self._semaphore_loop: asyncio.AbstractEventLoop | None = None
 
-    @property
-    def provider_name(self) -> str:
-        return "codex_cli"
-
-    @property
-    def model_name(self) -> str:
-        return _model_label(self._model)
+    def exec_timeout_seconds(self) -> float:
+        return _EXEC_TIMEOUT_SECONDS  # a module global, so tests can patch it
 
     def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
-        return _codex_supported_reasoning_modes(self._codex_cmd, self.model_name)
+        return _codex_supported_reasoning_modes(self._executable, self.model_name)
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
-        return _codex_model_options(self._codex_cmd)
+        return _codex_model_options(self._executable)
 
-    def _get_semaphore(self) -> asyncio.Semaphore:
-        loop = asyncio.get_running_loop()
-        if self._semaphore_loop is not loop:
-            self._subprocess_semaphore = asyncio.Semaphore(_resolve_concurrency())
-            self._semaphore_loop = loop
-        return self._subprocess_semaphore  # type: ignore[return-value]
-
-    def _build_command(self, *, reasoning: ReasoningMode = "auto") -> list[str]:
+    def build_command(self, system_prompt: str, reasoning: ReasoningMode) -> list[str]:
         cmd = [
-            self._codex_cmd,
+            self._executable,
             "exec",
             "--ephemeral",
             "--sandbox",
@@ -428,9 +344,10 @@ class CodexCliProvider(BaseProvider):
             "--json",
             "--cd",
             str(self._repo_path),
+            "--config",
+            "project_doc_max_bytes=0",
         ]
-        cmd.extend(["--config", "project_doc_max_bytes=0"])
-        reasoning_config = _codex_reasoning_config(self._codex_cmd, self.model_name, reasoning)
+        reasoning_config = _codex_reasoning_config(self._executable, self.model_name, reasoning)
         if reasoning_config:
             cmd.extend(["--config", reasoning_config])
         if self._model:
@@ -438,71 +355,10 @@ class CodexCliProvider(BaseProvider):
         cmd.append("-")
         return cmd
 
-    async def generate(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        max_tokens: int = 4096,
-        temperature: float = 0.3,
-        request_id: str | None = None,
-        reasoning: ReasoningMode = "auto",
-        cache_hints: tuple[CacheHint, ...] = (),
-    ) -> GeneratedResponse:
-        if self._rate_limiter:
-            await self._rate_limiter.acquire(estimated_tokens=max_tokens)
+    def build_stdin(self, system_prompt: str, user_prompt: str) -> str:
+        return _combine_prompt(system_prompt, user_prompt)
 
-        # _build_command may shell out to `codex debug models` (cached) to validate
-        # the reasoning effort; run it off the event loop so a cold catalog load
-        # can't stall every concurrent generation coroutine.
-        cmd = await asyncio.to_thread(self._build_command, reasoning=reasoning)
-        prompt = _combine_prompt(system_prompt, user_prompt)
-        log.debug(
-            "codex_cli.generate.start",
-            model=self.model_name,
-            repo_path=str(self._repo_path),
-            request_id=request_id,
-        )
-
-        async with self._get_semaphore():
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-            except FileNotFoundError as exc:
-                raise ProviderError(
-                    "codex_cli",
-                    "Codex CLI not found. Install it with: npm install -g @openai/codex",
-                ) from exc
-
-            try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(prompt.encode("utf-8")),
-                    timeout=_EXEC_TIMEOUT_SECONDS,
-                )
-            except TimeoutError as exc:
-                proc.kill()
-                with contextlib.suppress(ProcessLookupError):
-                    await proc.wait()
-                raise ProviderError(
-                    "codex_cli",
-                    f"codex exec timed out after {_EXEC_TIMEOUT_SECONDS} seconds.",
-                ) from exc
-            finally:
-                await _close_subprocess_transport(proc)
-
-        stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-        stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-
-        if proc.returncode != 0:
-            raise ProviderError(
-                "codex_cli",
-                _error_message(stderr, stdout, proc.returncode),
-                status_code=proc.returncode,
-            )
-
+    def parse_output(self, stdout: str, stderr: str) -> GeneratedResponse:
         content, usage = _parse_jsonl(stdout)
         if not content:
             raise ProviderError(
@@ -510,31 +366,19 @@ class CodexCliProvider(BaseProvider):
                 "codex exec completed but no agent_message was found in JSONL output.",
             )
 
-        usage_missing = not usage
-        input_tokens = int(usage.get("input_tokens", 0) or 0)
-        output_tokens = int(usage.get("output_tokens", 0) or 0)
-        cached_tokens = int(usage.get("cached_input_tokens", 0) or 0)
-
-        log.debug(
-            "codex_cli.generate.done",
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cached_tokens=cached_tokens,
-            request_id=request_id,
-        )
         usage_payload = {
             **usage,
             "source": "codex_exec",
             "model": self.model_name,
-            "stderr": _tail(stderr, max_chars=1_000) if stderr.strip() else "",
+            "stderr": stderr_tail(stderr),
         }
-        if usage_missing:
+        if not usage:
             usage_payload["estimated"] = True
 
         return GeneratedResponse(
             content=content,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cached_tokens=cached_tokens,
+            input_tokens=int(usage.get("input_tokens", 0) or 0),
+            output_tokens=int(usage.get("output_tokens", 0) or 0),
+            cached_tokens=int(usage.get("cached_input_tokens", 0) or 0),
             usage=usage_payload,
         )

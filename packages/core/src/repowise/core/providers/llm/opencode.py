@@ -12,25 +12,25 @@ subprocess, and enforces a read-only permission profile via ``OPENCODE_CONFIG_CO
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import uuid
-from collections.abc import Iterator
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import Any
 
-import structlog
-
-from repowise.core.providers.llm._concurrency import resolve_concurrency
+from repowise.core.providers.llm.agent_cli import (
+    EXEC_TIMEOUT_SECONDS,
+    AgentCliProvider,
+    iter_jsonl,
+    model_label,
+    normalize_model,
+    stderr_tail,
+    validate_model_name,
+)
 from repowise.core.providers.llm.base import (
-    BaseProvider,
-    CacheHint,
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
@@ -38,16 +38,9 @@ from repowise.core.providers.llm.base import (
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode
 
-log = structlog.get_logger(__name__)
-
-_CONCURRENCY_ENV = "REPOWISE_OPENCODE_CONCURRENCY"
-
 _DEFAULT_MODEL_LABEL = "opencode/default"
-_EXEC_TIMEOUT_SECONDS = 600
+_EXEC_TIMEOUT_SECONDS = EXEC_TIMEOUT_SECONDS
 _CATALOG_TIMEOUT_SECONDS = 10
-_MAX_STDERR_CHARS = 1_000
-
-_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/\-]*$")
 
 _OPENCODE_READONLY_CONFIG = json.dumps(
     {
@@ -67,33 +60,11 @@ _OPENCODE_READONLY_CONFIG = json.dumps(
 )
 
 
-def _resolve_opencode_executable() -> str | None:
-    return shutil.which("opencode")
+_validate_model_name = partial(validate_model_name, "opencode")
 
 
-def _validate_model_name(model: str) -> None:
-    if not _MODEL_NAME_RE.match(model):
-        raise ProviderError(
-            "opencode",
-            f"Invalid model name {model!r}. Model names may only contain "
-            "alphanumeric characters, dots, hyphens, underscores, and forward slashes.",
-        )
-
-
-def _normalize_model(model: str | None) -> str | None:
-    if not model:
-        return None
-    if model == _DEFAULT_MODEL_LABEL:
-        return None
-    if model.startswith("opencode/"):
-        suffix = model.removeprefix("opencode/")
-        return suffix or None
-    return model
-
-
-def _model_label(model: str | None) -> str:
-    native = _normalize_model(model)
-    return f"opencode/{native}" if native else _DEFAULT_MODEL_LABEL
+def _model_label(model: str) -> str:
+    return model_label(normalize_model(model, "opencode", None), "opencode")
 
 
 def _combine_prompt(system_prompt: str, user_prompt: str) -> str:
@@ -110,7 +81,7 @@ def _parse_jsonl(stdout: str) -> tuple[str, dict[str, Any]]:
     content_parts: list[str] = []
     usage: dict[str, Any] = {}
 
-    for event in _iter_jsonl_events(stdout):
+    for event in iter_jsonl(stdout):
         event_type = event.get("type")
         part = event.get("part") or {}
         if event_type == "text":
@@ -123,18 +94,6 @@ def _parse_jsonl(stdout: str) -> tuple[str, dict[str, Any]]:
                 _add_token_counts(usage, tokens)
 
     return "\n".join(content_parts), usage
-
-
-def _iter_jsonl_events(stdout: str) -> Iterator[Any]:
-    """Decoded JSON lines, skipping blank and undecodable ones."""
-    for raw_line in stdout.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            yield json.loads(line)
-        except json.JSONDecodeError:
-            continue
 
 
 def _add_token_counts(usage: dict[str, Any], tokens: dict[str, Any]) -> None:
@@ -154,28 +113,6 @@ def _add_token_counts(usage: dict[str, Any], tokens: dict[str, Any]) -> None:
             usage[key] = existing
         elif isinstance(value, (int, float)):
             usage[key] = usage.get(key, 0) + int(value)
-
-
-def _tail(text: str, max_chars: int = _MAX_STDERR_CHARS) -> str:
-    text = text.strip()
-    if len(text) <= max_chars:
-        return text
-    return text[-max_chars:]
-
-
-def _error_message(stderr: str, stdout: str, returncode: int) -> str:
-    for candidate in (_tail(stderr), _tail(stdout)):
-        if not candidate:
-            continue
-        if candidate.lstrip().startswith(("{", "[")):
-            continue
-        return candidate
-
-    msg = _error_event_message(stdout)
-    if msg:
-        return msg
-
-    return f"opencode run exited with {returncode}"
 
 
 def _error_event_message(stdout: str) -> str | None:
@@ -277,7 +214,7 @@ def _opencode_model_options(
     return tuple(options)
 
 
-class OpenCodeProvider(BaseProvider):
+class OpenCodeProvider(AgentCliProvider):
     """LLM provider backed by ``opencode run``.
 
     Uses the local opencode CLI for generation. Does not require an API key —
@@ -288,14 +225,30 @@ class OpenCodeProvider(BaseProvider):
                    (e.g. ``deepseek/deepseek-v4-pro``). If omitted or
                    ``opencode/default``, opencode uses its configured default.
         repo_path: Working directory passed to opencode via ``--dir``.
-        rate_limiter: Serializes subprocess calls by default.
+        rate_limiter: Accepted for interface consistency; the provider also
+            bounds its own subprocess fan-out.
     """
 
-    # `opencode run` spawns a process and drives a whole agent turn, and the
-    # model behind it is whatever the user configured, local ones included.
-    # Minutes, not seconds. Stays under _EXEC_TIMEOUT_SECONDS so the caller
-    # gives up before the subprocess does and the error names the real cause.
-    interactive_timeout_s: float = 180.0
+    provider_name = "opencode"
+    executable_name = "opencode"
+    command_label = "opencode run"
+    concurrency_env = "REPOWISE_OPENCODE_CONCURRENCY"
+    not_found_message = (
+        "OpenCode CLI is not installed.\n\n"
+        "Installation:\n"
+        "  curl -fsSL https://opencode.ai/install | bash\n\n"
+        "After installing, run 'opencode' once to set up your model provider "
+        "and authenticate. No API keys are managed by repowise — opencode "
+        "handles all authentication.\n\n"
+        "To choose a model:\n"
+        "  opencode models                 # list available models\n"
+        "  repowise init --provider opencode --model opencode/deepseek/deepseek-v4-pro\n\n"
+        "More info: https://opencode.ai"
+    )
+    spawn_not_found_message = (
+        "OpenCode CLI not found. Install it with: curl -fsSL https://opencode.ai/install | bash"
+    )
+    error_tail_chars = 1_000
 
     def __init__(
         self,
@@ -303,59 +256,20 @@ class OpenCodeProvider(BaseProvider):
         repo_path: str | Path | None = None,
         rate_limiter: RateLimiter | None = None,
     ) -> None:
-        opencode_cmd = _resolve_opencode_executable()
-        if not opencode_cmd:
-            raise ProviderError(
-                "opencode",
-                "OpenCode CLI is not installed.\n\n"
-                "Installation:\n"
-                "  curl -fsSL https://opencode.ai/install | bash\n\n"
-                "After installing, run 'opencode' once to set up your model provider "
-                "and authenticate. No API keys are managed by repowise — opencode "
-                "handles all authentication.\n\n"
-                "To choose a model:\n"
-                "  opencode models                 # list available models\n"
-                "  repowise init --provider opencode --model opencode/deepseek/deepseek-v4-pro\n\n"
-                "More info: https://opencode.ai",
-            )
-        self._opencode_cmd = opencode_cmd
-        native = _normalize_model(model)
-        if native is not None:
-            _validate_model_name(native)
-        self._model = native
+        super().__init__(model, rate_limiter)
         self._repo_path = (
             Path(repo_path).resolve() if repo_path is not None else Path.cwd().resolve()
         )
-        self._rate_limiter = rate_limiter
-        self._subprocess_semaphore: asyncio.Semaphore | None = None
-        self._semaphore_loop: asyncio.AbstractEventLoop | None = None
 
-    @property
-    def provider_name(self) -> str:
-        return "opencode"
-
-    @property
-    def model_name(self) -> str:
-        return _model_label(self._model)
-
-    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
-        return ("auto",)
+    def exec_timeout_seconds(self) -> float:
+        return _EXEC_TIMEOUT_SECONDS  # a module global, so tests can patch it
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
-        return _opencode_model_options(self._opencode_cmd)
+        return _opencode_model_options(self._executable)
 
-    def _get_semaphore(self) -> asyncio.Semaphore:
-        loop = asyncio.get_running_loop()
-        if self._semaphore_loop is not loop:
-            self._subprocess_semaphore = asyncio.Semaphore(
-                resolve_concurrency(_CONCURRENCY_ENV, "opencode")
-            )
-            self._semaphore_loop = loop
-        return self._subprocess_semaphore  # type: ignore[return-value]
-
-    def _build_command(self) -> list[str]:
+    def build_command(self, system_prompt: str, reasoning: ReasoningMode) -> list[str]:
         cmd = [
-            self._opencode_cmd,
+            self._executable,
             "run",
             "--format",
             "json",
@@ -368,90 +282,20 @@ class OpenCodeProvider(BaseProvider):
             cmd.extend(["--model", self._model])
         return cmd
 
-    async def generate(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        max_tokens: int = 4096,
-        temperature: float = 0.3,
-        request_id: str | None = None,
-        reasoning: ReasoningMode = "auto",
-        cache_hints: tuple[CacheHint, ...] = (),
-    ) -> GeneratedResponse:
-        if self._rate_limiter:
-            await self._rate_limiter.acquire(estimated_tokens=max_tokens)
+    def build_stdin(self, system_prompt: str, user_prompt: str) -> str:
+        return _combine_prompt(system_prompt, user_prompt)
 
-        cmd = self._build_command()
-        prompt = _combine_prompt(system_prompt, user_prompt)
-        log.debug(
-            "opencode.generate.start",
-            model=self.model_name,
-            repo_path=str(self._repo_path),
-            request_id=request_id,
-        )
+    def subprocess_env(self) -> dict[str, str]:
+        return {
+            **os.environ,
+            "OPENCODE_CONFIG_CONTENT": _OPENCODE_READONLY_CONFIG,
+            "OPENCODE_DISABLE_PROJECT_CONFIG": "true",
+        }
 
-        returncode, stdout, stderr = await self._run(cmd, prompt)
-        if returncode != 0:
-            raise ProviderError(
-                "opencode",
-                _error_message(stderr, stdout, returncode),
-                status_code=returncode,
-            )
+    def stdout_error(self, stdout: str) -> str | None:
+        return _error_event_message(stdout)
 
-        response = self._response_from_output(stdout, stderr)
-        log.debug(
-            "opencode.generate.done",
-            input_tokens=response.input_tokens,
-            output_tokens=response.output_tokens,
-            cached_tokens=response.cached_tokens,
-            request_id=request_id,
-        )
-        return response
-
-    async def _run(self, cmd: list[str], prompt: str) -> tuple[int, str, str]:
-        """Run ``opencode run`` with *prompt* on stdin; returns (code, stdout, stderr)."""
-        async with self._get_semaphore():
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env={
-                        **os.environ,
-                        "OPENCODE_CONFIG_CONTENT": _OPENCODE_READONLY_CONFIG,
-                        "OPENCODE_DISABLE_PROJECT_CONFIG": "true",
-                    },
-                )
-            except FileNotFoundError as exc:
-                raise ProviderError(
-                    "opencode",
-                    "OpenCode CLI not found. Install it with: "
-                    "curl -fsSL https://opencode.ai/install | bash",
-                ) from exc
-
-            try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(prompt.encode("utf-8")),
-                    timeout=_EXEC_TIMEOUT_SECONDS,
-                )
-            except TimeoutError as exc:
-                proc.kill()
-                with contextlib.suppress(ProcessLookupError):
-                    await proc.wait()
-                raise ProviderError(
-                    "opencode",
-                    f"opencode run timed out after {_EXEC_TIMEOUT_SECONDS} seconds.",
-                ) from exc
-            finally:
-                await _close_subprocess_transport(proc)
-
-        stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-        stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-        return proc.returncode, stdout, stderr
-
-    def _response_from_output(self, stdout: str, stderr: str) -> GeneratedResponse:
-        """Build the response from a successful run's JSONL event stream."""
+    def parse_output(self, stdout: str, stderr: str) -> GeneratedResponse:
         content, usage = _parse_jsonl(stdout)
         if not content:
             raise ProviderError(
@@ -463,7 +307,7 @@ class OpenCodeProvider(BaseProvider):
             **usage,
             "source": "opencode_run",
             "model": self.model_name,
-            "stderr": _tail(stderr) if stderr.strip() else "",
+            "stderr": stderr_tail(stderr),
         }
         if not usage:
             usage_payload["estimated"] = True
@@ -475,12 +319,3 @@ class OpenCodeProvider(BaseProvider):
             cached_tokens=int((usage.get("cache") or {}).get("read", 0) or 0),
             usage=usage_payload,
         )
-
-async def _close_subprocess_transport(proc: asyncio.subprocess.Process) -> None:
-    transport = getattr(proc, "_transport", None)
-    close = getattr(transport, "close", None)
-    if not callable(close):
-        return
-    with contextlib.suppress(Exception):
-        close()
-    await asyncio.sleep(0)
