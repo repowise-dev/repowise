@@ -5,8 +5,9 @@ sets (definition, imports, calls, references) from :mod:`_edit_sites`. A
 single-token query naming no indexed symbol (a number, a quoted string, an
 unindexed name) is scanned for in every file git lists (tracked and
 untracked, ignore rules applied), so config and docs the indexer never parsed
-are read too. ``complete`` is true only when nothing was skipped or capped,
-so the lines are every match.
+are read too. git grep narrows that list to the files holding the token;
+without it the scan reads source files first. ``complete`` is true only when
+nothing was skipped or capped, so the lines are every match.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
 from repowise.core.repo_config import load_repo_config
+from repowise.core.support_paths import file_population
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._budget import OmissionCollector, register_post_enforce
 from repowise.server.mcp_server._edit_sites import (
@@ -66,6 +68,8 @@ MAX_SCAN_FILES = 20_000
 MAX_SCAN_BYTES = 32_000_000
 # Wall-clock ceiling on the literal scan; past it the lines are marked incomplete.
 MAX_SCAN_SECONDS = 0.5
+# Past this git grep is abandoned for the Python scan.
+_GIT_GREP_SECONDS = 5.0
 _SNIFF_BYTES = 8192
 # A binary past this is not streamed for the token; it is reported as skipped.
 _MAX_STREAM_BYTES = 64_000_000
@@ -159,27 +163,65 @@ def _is_utf8(data: bytes) -> bool:
     return True
 
 
-def _listed_files(root: Path) -> list[str]:
-    """Tracked and untracked files minus ignored ones, or a pruned walk without git."""
-    cmd = ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"]
+def _git_paths(
+    root: Path, args: list[str], timeout: float, ok: tuple[int, ...]
+) -> list[str] | None:
+    """The NUL-separated paths a git command prints outside pruned dirs, or ``None`` on failure."""
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=10, check=False
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        proc = None
-    if proc is not None and proc.returncode == 0:
-        listed = proc.stdout.decode("utf-8", errors="replace").split("\0")
-        return sorted(
-            {p for p in listed if p and not PRUNED_DIRS.intersection(p.split("/")[:-1])}
-        )
-    return sorted(
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if proc.returncode not in ok:
+        return None
+    listed = proc.stdout.decode("utf-8", errors="replace").split("\0")
+    return [
+        p for p in dict.fromkeys(listed) if p and not PRUNED_DIRS.intersection(p.split("/")[:-1])
+    ]
+
+
+def _listed_files(root: Path) -> list[str]:
+    """Tracked and untracked files minus ignored ones, or a pruned walk without git."""
+    args = ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]
+    listed = _git_paths(root, args, 10, (0,))
+    if listed is not None:
+        return listed
+    return [
         (Path(d) / f).relative_to(root).as_posix() for d, _, names in walk_repo(root) for f in names
-    )
+    ]
+
+
+def _files_holding(root: Path, needle: str) -> list[str] | None:
+    """The files :func:`_listed_files` would list whose bytes hold *needle*, via git grep.
+
+    ``None`` when git cannot answer in time, for a needle that is not one plain
+    argument, or for a non-ASCII one, whose misses in non-UTF-8 files only the
+    Python scan can report.
+    """
+    if not needle.isascii() or "\n" in needle or "\0" in needle or needle.startswith("-"):
+        return None
+    args = ["-c", "grep.fullName=false", "grep", "-l", "-z", "--untracked", "--no-color", "-F"]
+    args += ["-e", needle]
+    # Exit 1 is "no file matched".
+    return _git_paths(root, args, _GIT_GREP_SECONDS, (0, 1))
+
+
+def _scan_rank(rel: str) -> int:
+    """Production code first, then tests, examples, and docs or config."""
+    population = file_population(rel, is_test=is_test_related_path(rel))
+    return ("production", "test", "example", "doc").index(population)
 
 
 def _scan_listed(root: Path, needle: str, word: bool) -> tuple[list[dict[str, Any]], list[str]]:
-    files = _listed_files(root)
+    held = _files_holding(root, needle)
+    files = _listed_files(root) if held is None else held
+    # Ordered so a scan that stops on a budget has read source before docs.
+    files = sorted(files, key=lambda f: (_scan_rank(f), f))
     patterns = load_repo_config(root).get("exclude_patterns") or []
     reasons: list[str] = []
     if patterns:
@@ -231,7 +273,8 @@ def scan_literal(
                     continue
                 if scanned + size > MAX_SCAN_BYTES:
                     reasons.append(
-                        f"over {MAX_SCAN_BYTES // 1_000_000} MB: scanned {i} of {len(files)} files"
+                        f"over {MAX_SCAN_BYTES // 1_000_000} MB: scanned {i} of {len(files)}"
+                        " files, source first"
                     )
                     break
                 scanned += size

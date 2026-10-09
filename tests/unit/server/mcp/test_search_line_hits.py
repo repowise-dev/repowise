@@ -537,3 +537,109 @@ async def test_single_name_keeps_the_full_cap_and_every_omitted_file(tree, sessi
     assert len(out["lines_omitted_by_file"]) == 8
     assert "lines_omitted_by_file_total" not in out
     assert not any(r == _line_hits.OVER_LINES_MIXED for r in out["reasons"])
+
+
+_SCAN_TREE = {
+    "docs/guide.md": "Set `retryLimit` in the config.\n",
+    "docs/api/retry.md": "retryLimit: the number of retries\n",
+    "src/core/retry.ts": "export const retryLimit = 3;\nuse(retryLimit);\nuse($retryLimit);\n",
+    "src/net/client.py": "retryLimit = 5\nself.retryLimit_old = 1\nprint(retryLimit)\n",
+    "src/my dir/sub/limits.go": "var retryLimit = 4\nfunc f() { g(retryLimit) }\n",
+    "tests/test_retry.py": "assert retryLimit == 3\n",
+    "README.md": "retryLimit.\n",
+}
+
+
+@pytest.fixture
+def scan_repo(tmp_path):
+    for rel, text in _SCAN_TREE.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "docs", "src"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "seed"], check=True)
+    # tests/ and README.md stay untracked: git grep must still read them.
+    return tmp_path
+
+
+def _python_only(monkeypatch):
+    monkeypatch.setattr(_line_hits, "_files_holding", lambda _root, _needle: None)
+
+
+def test_git_grep_and_python_scan_serve_the_same_rows(scan_repo, monkeypatch):
+    held = _line_hits._files_holding(scan_repo, "retryLimit")
+    assert held is not None and "src/my dir/sub/limits.go" in held
+    assert "tests/test_retry.py" in held
+    via_git = _line_hits._scan_listed(scan_repo, "retryLimit", True)
+    _python_only(monkeypatch)
+    via_python = _line_hits._scan_listed(scan_repo, "retryLimit", True)
+
+    assert via_git == via_python
+    rows, reasons = via_git
+    assert reasons == []
+    found = {(r["path"], r["line"], r["kind"]) for r in rows}
+    # Word-bounded on both paths: $retryLimit and retryLimit_old are other names.
+    assert ("src/core/retry.ts", 3, "match") not in found
+    assert ("src/net/client.py", 2, "match") not in found
+    assert {
+        ("src/core/retry.ts", 1, "definition"),
+        ("src/core/retry.ts", 2, "match"),
+        ("src/net/client.py", 1, "definition"),
+        ("src/my dir/sub/limits.go", 1, "definition"),
+        ("tests/test_retry.py", 1, "match"),
+        ("docs/guide.md", 1, "match"),
+    } <= found
+
+
+def test_git_grep_paths_are_relative_to_a_nested_root(scan_repo, monkeypatch):
+    root = scan_repo / "src"
+    via_git = _line_hits._scan_listed(root, "retryLimit", True)
+    _python_only(monkeypatch)
+    assert via_git == _line_hits._scan_listed(root, "retryLimit", True)
+    assert {r["path"] for r in via_git[0]} == {
+        "core/retry.ts",
+        "net/client.py",
+        "my dir/sub/limits.go",
+    }
+
+
+def test_byte_budget_reads_source_before_tests_and_docs(scan_repo, monkeypatch):
+    _python_only(monkeypatch)
+    sizes = sorted((scan_repo / rel).stat().st_size for rel in _SCAN_TREE if rel.startswith("src/"))
+    monkeypatch.setattr(_line_hits, "MAX_SCAN_BYTES", sum(sizes))
+
+    rows, reasons = _line_hits._scan_listed(scan_repo, "retryLimit", True)
+
+    assert {r["path"].split("/")[0] for r in rows} == {"src"}
+    assert reasons == [f"over 0 MB: scanned 3 of {len(_SCAN_TREE)} files, source first"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [FileNotFoundError("git"), subprocess.TimeoutExpired("git", 5)],
+    ids=["git-missing", "timeout"],
+)
+def test_git_failure_falls_back_to_the_python_scan(scan_repo, monkeypatch, failure):
+    expected = _line_hits._scan_listed(scan_repo, "retryLimit", True)
+    real_run = subprocess.run
+
+    def broken(cmd, *args, **kwargs):
+        if "grep" in cmd or isinstance(failure, FileNotFoundError):
+            raise failure
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(_line_hits.subprocess, "run", broken)
+
+    assert _line_hits._files_holding(scan_repo, "retryLimit") is None
+    assert _line_hits._scan_listed(scan_repo, "retryLimit", True) == expected
+
+
+def test_token_nowhere_in_the_repo_is_complete_and_empty(scan_repo):
+    assert _line_hits._files_holding(scan_repo, "noSuchTokenAnywhere") == []
+    assert _line_hits._scan_listed(scan_repo, "noSuchTokenAnywhere", True) == ([], [])
+
+
+@pytest.mark.parametrize("needle", ["a\nb", "a\0b", "-e", "café"])
+def test_needles_git_cannot_take_as_one_argument_use_the_python_scan(scan_repo, needle):
+    assert _line_hits._files_holding(scan_repo, needle) is None
