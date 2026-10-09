@@ -1299,6 +1299,31 @@ def test_workspace_generation_rebinds_codex_provider_to_repo(
     assert calls == [("codex_cli", "codex_cli/gpt-5.5", tmp_path)]
 
 
+def test_workspace_generation_rebinds_opencode_provider_to_repo(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """opencode also runs in the repo's cwd, so a workspace must rebind it per repo."""
+
+    class FakeProvider:
+        provider_name = "opencode"
+        model_name = "opencode/default"
+
+    rebound = object()
+    calls: list[tuple[str, str, Path]] = []
+
+    def fake_resolve_provider(provider_name: str, model: str, repo_path: Path) -> object:
+        calls.append((provider_name, model, repo_path))
+        return rebound
+
+    monkeypatch.setattr(init_cmd.workspace, "resolve_provider", fake_resolve_provider)
+
+    result = init_cmd.workspace._workspace_generation_provider_for_repo(FakeProvider(), tmp_path)
+
+    assert result is rebound
+    assert calls == [("opencode", "opencode/default", tmp_path)]
+
+
 def test_init_command_uses_editor_option_abstraction() -> None:
     source = inspect.getsource(init_cmd.init_command.callback) + inspect.getsource(
         init_cmd._workspace_init
