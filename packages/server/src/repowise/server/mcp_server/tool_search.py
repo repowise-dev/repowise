@@ -16,6 +16,7 @@ from repowise.core.persistence.models import (
     GitMetadata,
     Page,
 )
+from repowise.core.persistence.search import strip_leading_headings
 from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -576,6 +577,13 @@ def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
     return results
 
 
+def _serve_snippets(results: list[dict]) -> None:
+    """Drop each snippet's leading page heading, after ranking has read it."""
+    for item in results:
+        if item.get("snippet"):
+            item["snippet"] = strip_leading_headings(item["snippet"])
+
+
 def _drop_internal_ranking_fields(results: list[dict]) -> None:
     """Keep calibration diagnostics internal to the ranking pipeline."""
     for item in results:
@@ -834,6 +842,7 @@ async def _federated_search(
     # Last, so nothing above has to know the field is on its way out.
     add_row_paths(output)
     _drop_derivable_page_ids(output)
+    _serve_snippets(output)
     return response
 
 
@@ -1139,6 +1148,7 @@ async def _structured_search(
     # first, so a page whose target_path is dropped keeps its page_id.
     add_row_paths(results)
     _drop_derivable_page_ids(results)
+    _serve_snippets(results)
     return response
 
 
@@ -1339,4 +1349,5 @@ async def search_codebase(
     # Last, so nothing above has to know the field is on its way out.
     add_row_paths(output)
     _drop_derivable_page_ids(output)
+    _serve_snippets(output)
     return response

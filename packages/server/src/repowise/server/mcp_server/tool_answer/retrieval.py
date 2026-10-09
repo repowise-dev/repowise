@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import Page
+from repowise.core.persistence.search import strip_leading_headings
 from repowise.server.mcp_server._page_paths import hit_file_path
 from repowise.server.mcp_server._query_terms import content_terms
 from repowise.server.mcp_server._retrieval_rank import rerank_by_context_coverage
@@ -183,6 +184,8 @@ def serialize_hits(
         for key in ("snippet", "excerpt"):
             if h.get(key) and (key != "excerpt" or serve_excerpt):
                 entry[key] = h[key]
+        if entry.get("snippet"):
+            entry["snippet"] = strip_leading_headings(entry["snippet"])
         if h.get("score") is not None:
             entry["score"] = round(h["score"], 3)
         expanded = "graph_expand" in (h.get("_sources") or ())

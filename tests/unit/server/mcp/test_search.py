@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import pytest
 
+from repowise.core.persistence.search import strip_leading_headings
+
 
 @pytest.mark.asyncio
 async def test_search_codebase(setup_mcp):
@@ -2252,3 +2254,69 @@ class TestHitSymbols:
             "services/mixer.py",
         ]
         assert not any("symbols" in r for r in res["results"])
+
+
+_SERVED_SNIPPETS = {
+    "src/session/cache.py": "# src/session/cache.py\n\n## Overview\n\nKeeps session rows warm.",
+    "pkg/store.go": "# pkg/store.go\r\n\r\nSession store backed by a map.",
+    "lib/layer.rb": "Cache layer with no heading. ## not a heading here",
+    "docs/only.md": "# docs/only.md\n\n## Overview\n",
+}
+
+
+class TestServedSnippet:
+    """A served snippet starts at the page text; ranking still reads the heading."""
+
+    async def _search(self, monkeypatch, strip):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.core.persistence.search import SearchResult
+        from repowise.server.mcp_server import search_codebase, tool_search
+
+        monkeypatch.setattr(tool_search, "strip_leading_headings", strip)
+
+        def hits(scale):
+            return [
+                SearchResult(
+                    page_id=f"file_page:{path}",
+                    title=path,
+                    page_type="file_page",
+                    target_path=path,
+                    score=scale * (4 - i),
+                    snippet=snippet,
+                    search_type="fulltext",
+                )
+                for i, (path, snippet) in enumerate(_SERVED_SNIPPETS.items())
+            ]
+
+        async def fake_vec(query, limit=10):
+            return hits(0.2)
+
+        async def fake_fts(query, limit=10):
+            return hits(1.0)
+
+        monkeypatch.setattr(mcp_mod._vector_store, "search", fake_vec)
+        monkeypatch.setattr(mcp_mod._fts, "search", fake_fts)
+        return await search_codebase("session cache layer", limit=10, mode="concept")
+
+    @pytest.mark.asyncio
+    async def test_rows_match_the_unstripped_search_except_the_snippet(
+        self, setup_mcp, monkeypatch
+    ):
+        for path in _SERVED_SNIPPETS:
+            await _seed_page(f"file_page:{path}", path)
+
+        raw = await self._search(monkeypatch, lambda text: text)
+        served = await self._search(monkeypatch, strip_leading_headings)
+
+        def without_snippet(rows):
+            return [{k: v for k, v in row.items() if k != "snippet"} for row in rows]
+
+        assert without_snippet(served["results"]) == without_snippet(raw["results"])
+        assert served.get("candidates") == raw.get("candidates")
+        snippets = {row["path"]: row["snippet"] for row in served["results"]}
+        assert snippets == {
+            "src/session/cache.py": "Keeps session rows warm.",
+            "pkg/store.go": "Session store backed by a map.",
+            "lib/layer.rb": "Cache layer with no heading. ## not a heading here",
+            "docs/only.md": "# docs/only.md\n\n## Overview\n",
+        }
