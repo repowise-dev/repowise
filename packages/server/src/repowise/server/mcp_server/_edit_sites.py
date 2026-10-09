@@ -103,6 +103,107 @@ def _read_lines(root: Path, rel: str) -> list[str] | None:
     return [line.removesuffix("\r") for line in text.removesuffix("\n").split("\n")]
 
 
+def first_call_line(lines_json: str | None) -> int | None:
+    """The earliest line in an edge's ``call_lines_json``, or None when it records none."""
+    try:
+        lines = [int(n) for n in json.loads(lines_json or "[]")]
+    except (TypeError, ValueError):
+        return None
+    return min((n for n in lines if n > 0), default=None)
+
+
+def _word(name: str) -> re.Pattern[str]:
+    """*name* as a whole identifier."""
+    return re.compile(rf"(?<![\w$]){re.escape(name)}(?![\w$])")
+
+
+def _renames(
+    lines: list[str], name: str, imports: set[int], python: bool
+) -> tuple[set[str], set[str]]:
+    """``(every name *name* is renamed to, those bound by an import)`` in this file."""
+    esc = re.escape(name)
+    word = _word(name)
+    as_rename = re.compile(rf"(?<![\w$.]){esc}\s+as\s+([\w$]+)")
+    # ``{ name: other } = require(...)`` or a destructured import; a ternary's
+    # ``name : other`` is excluded, anything else colon-shaped counts.
+    colon_rename = re.compile(rf"(?<![\w$.?]){esc}\s*:\s*([A-Za-z_$][\w$]*)")
+    ternary = re.compile(rf"\?[^:]*(?<![\w$]){esc}\s*:")
+    aliases: set[str] = set()
+    # Aliases bound by an import; a rename anywhere else is always a hole.
+    imported: set[str] = set()
+    for n, text in enumerate(lines, 1):
+        if not word.search(text):
+            continue
+        found = [m.group(1) for m in as_rename.finditer(text)] if n in imports else []
+        if not python and not ternary.search(text):
+            found += [m.group(1) for m in colon_rename.finditer(text)]
+        aliases.update(found)
+        if n in imports:
+            imported.update(found)
+    # ``name as default`` is a default export, not a rename.
+    aliases.discard("default")
+    return aliases, aliases & imported
+
+
+def _call_texts(
+    root: Path, wanted: dict[str, set[tuple[int, str]]]
+) -> dict[tuple[str, int, str], str]:
+    """``(file, line, name) -> text`` for each line that still names *name* or its import alias."""
+    out: dict[tuple[str, int, str], str] = {}
+    for rel, asks in wanted.items():
+        lines = _read_lines(root, rel)
+        if lines is None:
+            continue
+        imports: set[int] | None = None
+        for n, name in asks:
+            if not 0 < n <= len(lines):
+                continue
+            text = lines[n - 1]
+            if not _word(name).search(text):
+                if imports is None:
+                    imports = _import_lines(lines)
+                python = Path(rel).suffix in _PYTHON_EXTENSIONS
+                _, local = _renames(lines, name, imports, python)
+                if not any(_word(a).search(text) for a in local):
+                    continue
+            out[(rel, n, name)] = text.strip()[:MAX_TEXT_CHARS]
+    return out
+
+
+def _leaf(symbol_id: str) -> str:
+    return id_segment_name(symbol_id.split("::")[-1].split(".")[-1])
+
+
+async def attach_call_text(
+    repo_root: str | Path | None, rows: list[dict[str, Any]], callee_id: str | None = None
+) -> None:
+    """Add ``text``, the live source at ``call_line``, where that line still names the callee.
+
+    The callee is the row's ``via_wrapper``, else its ``target``, else
+    *callee_id*. A line that no longer names it (the file moved under the
+    index), or a file that cannot be read, loses ``call_line`` too, so no
+    stale line is served. One read per distinct file, off the event loop.
+    """
+    asks: dict[int, tuple[str, int, str]] = {}
+    for i, row in enumerate(rows):
+        callee = row.get("via_wrapper") or row.get("target") or callee_id
+        if row.get("call_line") and row.get("file") and callee:
+            asks[i] = (row["file"], row["call_line"], _leaf(callee))
+    if not asks:
+        return
+    texts: dict[tuple[str, int, str], str] = {}
+    if repo_root:
+        wanted: dict[str, set[tuple[int, str]]] = {}
+        for rel, n, name in asks.values():
+            wanted.setdefault(rel, set()).add((n, name))
+        texts = await asyncio.to_thread(_call_texts, Path(repo_root).resolve(), wanted)
+    for i, key in asks.items():
+        if text := texts.get(key):
+            rows[i]["text"] = text
+        else:
+            rows[i].pop("call_line", None)
+
+
 def _scan(
     root: Path,
     files: list[str],
@@ -112,13 +213,7 @@ def _scan(
 ) -> tuple[list[dict[str, Any]], list[str], int, set[str], bool, dict[str, set[str]]]:
     """``(sites, unreadable, stale call lines, files renaming it, default-exported,
     local import aliases per Python file)``."""
-    esc = re.escape(name)
-    word = re.compile(rf"(?<![\w$]){esc}(?![\w$])")
-    as_rename = re.compile(rf"(?<![\w$.]){esc}\s+as\s+([\w$]+)")
-    # ``{ name: other } = require(...)`` or a destructured import; a ternary's
-    # ``name : other`` is excluded, anything else colon-shaped counts.
-    colon_rename = re.compile(rf"(?<![\w$.?]){esc}\s*:\s*([A-Za-z_$][\w$]*)")
-    ternary = re.compile(rf"\?[^:]*(?<![\w$]){esc}\s*:")
+    word = _word(name)
     # Bound under any name by its importers, so no spelling can be scanned for.
     default_export = re.compile(r"\bexport\s+default\b|\bas\s+default\b")
     def_path, def_start, def_end = definition
@@ -135,22 +230,8 @@ def _scan(
             continue
         imports = _import_lines(lines)
         python = Path(rel).suffix in _PYTHON_EXTENSIONS
-        aliases: set[str] = set()
-        # Aliases bound by an import; a rename anywhere else is always a hole.
-        imported: set[str] = set()
-        for n, text in enumerate(lines, 1):
-            if not word.search(text):
-                continue
-            found = [m.group(1) for m in as_rename.finditer(text)] if n in imports else []
-            if not python and not ternary.search(text):
-                found += [m.group(1) for m in colon_rename.finditer(text)]
-            aliases.update(found)
-            if n in imports:
-                imported.update(found)
-        # ``name as default`` is the default-export case below, not a rename.
-        aliases.discard("default")
-        local = aliases & imported
-        if aliases - imported or _aliases_leave(rel, lines, local, imports):
+        aliases, local = _renames(lines, name, imports, python)
+        if aliases - local or _aliases_leave(rel, lines, local, imports):
             renamed.add(rel)
         elif python and local:
             python_aliases[rel] = local
@@ -159,7 +240,7 @@ def _scan(
             commonjs = any(_CJS_EXPORT.search(t) for t in lines)
             if commonjs or any(default_export.search(t) and word.search(t) for t in lines):
                 is_default = True
-        spellings = [word] + [re.compile(rf"(?<![\w$]){re.escape(a)}(?![\w$])") for a in aliases]
+        spellings = [word] + [_word(a) for a in aliases]
         graph_calls = call_lines.get(rel, set())
         def_seen = rel != def_path
         for n, text in enumerate(lines, 1):

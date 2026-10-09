@@ -1290,6 +1290,7 @@ async def _resolve_one_target(
             want_callees=want_callees,
             exclude_spec=exclude_spec,
             collector=collector,
+            repo_root=repo_root or getattr(repository, "local_path", None),
         )
 
     # --- Reference edit set: every live site naming the symbol ---

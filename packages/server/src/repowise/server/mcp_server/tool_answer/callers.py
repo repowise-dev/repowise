@@ -10,7 +10,7 @@ question is untouched.
 from __future__ import annotations
 
 import re
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
 from sqlalchemy import select
@@ -20,6 +20,7 @@ from repowise.core.persistence.crud import get_graph_nodes_by_ids
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.core.test_paths import is_test_path
 from repowise.server.mcp_server._budget import cap_collection
+from repowise.server.mcp_server._edit_sites import attach_call_text, first_call_line
 from repowise.server.mcp_server._helpers import filter_dicts_by_key
 from repowise.server.mcp_server._query_shape import _unmistakably_code
 from repowise.server.mcp_server._wrapper_callers import (
@@ -172,11 +173,20 @@ async def _retrieved_targets(
     return sorted(res.scalars().all(), key=lambda n: (order.get(n.name, 99), n.node_id))
 
 
-def _row(caller: str, file: str, line: int | None, target: str, edge_type: str) -> dict:
+def _row(
+    caller: str,
+    file: str,
+    line: int | None,
+    target: str,
+    edge_type: str,
+    call_line: int | None = None,
+) -> dict:
     row: dict[str, Any] = {"caller": caller, "file": file}
     # A module-level caller sits at line 0, which names no line to open.
     if line:
         row["line"] = line
+    if call_line:
+        row["call_line"] = call_line
     row["target"] = target
     row["edge_type"] = edge_type
     return row
@@ -212,6 +222,7 @@ async def caller_evidence(
     question_ids: set[str],
     hits: list[dict],
     exclude_spec: Any = None,
+    repo_root: str | Path | None = None,
 ) -> CallerEvidence:
     """Graph callers of the symbol a caller question asks about, production first.
 
@@ -220,7 +231,7 @@ async def caller_evidence(
     it. A forwarding wrapper's callers come one hop further (``via_wrapper``),
     and a production caller nothing in production calls is followed to the
     files importing it by name, which is how a handler or extension gets
-    registered.
+    registered. Served call rows carry ``call_line`` and its live ``text``.
     """
     if not is_caller_question(question, question_ids):
         return NO_EVIDENCE
@@ -258,6 +269,7 @@ async def caller_evidence(
                     src.start_line if src else None,
                     target.node_id,
                     "calls",
+                    first_call_line(e.call_lines_json),
                 )
             )
         hop = await forwarding_wrapper_callers(
@@ -269,7 +281,12 @@ async def caller_evidence(
                 continue
             seen.add(caller)
             row = _row(
-                caller, h["file"], h.get("line"), target.node_id, h.get("edge_type") or "imports"
+                caller,
+                h["file"],
+                h.get("line"),
+                target.node_id,
+                h.get("edge_type") or "imports",
+                h.get("call_line"),
             )
             if h.get("wholesale"):
                 row["wholesale"] = True
@@ -282,6 +299,10 @@ async def caller_evidence(
             row["test"] = True
     rows = filter_dicts_by_key(rows, "file", exclude_spec)
     rows.sort(key=lambda r: bool(r.get("test")))
+    await attach_call_text(repo_root, rows[:_MAX_ROWS])
+    # Unserved rows are never checked against the live file.
+    for row in rows[_MAX_ROWS:]:
+        row.pop("call_line", None)
     return CallerEvidence(rows, named=not cross_file)
 
 
@@ -342,7 +363,8 @@ def _short(symbol_id: str) -> str:
 
 
 def _phrase(row: dict) -> str:
-    where = f"{row['file']}:{row['line']}" if row.get("line") is not None else row["file"]
+    line = row.get("call_line") or row.get("line")
+    where = f"{row['file']}:{line}" if line is not None else row["file"]
     target = _short(row["target"])
     wrapper = row.get("via_wrapper")
     # A same-named caller or wrapper would read "X calls X"; the file tells them apart.

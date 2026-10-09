@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence.crud import get_graph_nodes_by_ids
 from repowise.core.persistence.models import GraphEdge, GraphNode
+from repowise.server.mcp_server._edit_sites import first_call_line
 
 #: Same floor as the direct caller rows, so a hop row is no weaker than they are.
 MIN_CALL_CONFIDENCE = 0.7
@@ -82,7 +83,8 @@ async def forwarding_wrapper_callers(
 
     ``caller_ids`` are the target's direct callers, best first; wrappers are
     expanded in that order. A row has the direct-caller shape plus
-    ``via_wrapper`` (the wrapper's symbol id). A wrapper no call edge reaches
+    ``via_wrapper`` (the wrapper's symbol id) and ``call_line`` when the edge
+    records one. A wrapper no call edge reaches
     falls back to the files importing it by name or wholesale, shaped like a
     file-level caller row (``imports: true``): a dynamic import consumed in a
     callback is the usual reason the call itself went unresolved.
@@ -159,6 +161,8 @@ async def forwarding_wrapper_callers(
         }
         if edge.resolution_origin:
             row["via"] = edge.resolution_origin
+        if call_line := first_call_line(edge.call_lines_json):
+            row["call_line"] = call_line
         row["via_wrapper"] = wrapper_id
         rows.append(row)
 

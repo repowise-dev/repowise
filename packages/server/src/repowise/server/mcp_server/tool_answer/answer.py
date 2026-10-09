@@ -447,7 +447,13 @@ async def get_answer(
         try:
             async with get_session(ctx.session_factory) as session:
                 graph_callers = await caller_evidence(
-                    session, repo_id, question, question_ids, hits, exclude_spec
+                    session,
+                    repo_id,
+                    question,
+                    question_ids,
+                    hits,
+                    exclude_spec,
+                    repo_root=_repo_root(ctx),
                 )
         except Exception:
             _log.warning("get_answer: graph caller lookup failed", exc_info=True)
