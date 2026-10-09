@@ -187,9 +187,12 @@ def remove_instructions(repo_path: Path, *, exclude: str) -> tuple[Path, FileAct
     if state is BlockState.PRESENT:
         owners = other_managers_of(path, exclude=exclude, scope=Scope.PROJECT, repo_path=repo_path)
         if owners:
+            from ..registry import all_targets
+
+            ids = ",".join(t.id for t in all_targets() if t.display_name in owners)
             return path, FileAction.KEPT, (
-                f"{' and '.join(owners)} still reads the same managed block; "
-                "remove that agent too if you want the block gone"
+                f"{' and '.join(owners)} still reads the same managed block; to remove "
+                f"it too, run 'repowise agents remove --target={ids}'"
             )
     if marker_block.remove(path, DISTILL_MARKER_START, DISTILL_MARKER_END):
         return path, FileAction.REMOVED, None

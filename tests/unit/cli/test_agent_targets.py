@@ -3472,15 +3472,42 @@ def test_copilot_follows_copilot_home(tmp_path: Path, monkeypatch) -> None:
     assert copilot.TARGET.doctor().status.value == "ok"
 
 
-def test_copilot_ide_dir_alone_is_not_an_install(monkeypatch) -> None:
-    """The VS Code extension creates ``~/.copilot/ide``; the CLI writes more."""
-    monkeypatch.setattr("repowise.core.agents.identity.shutil.which", lambda _name: None)
+def _which_copilot(monkeypatch, present: bool) -> None:
+    monkeypatch.setattr(
+        "repowise.core.agents.identity.shutil.which",
+        lambda name: "/bin/copilot" if present and name == "copilot" else None,
+    )
+
+
+def test_copilot_is_present_only_with_its_binary(monkeypatch) -> None:
+    """VS Code fills ``~/.copilot`` too (ide, skills, agents, hooks, mcp-config)."""
+    _which_copilot(monkeypatch, False)
     copilot = _copilot()
-    (Path.home() / ".copilot" / "ide").mkdir(parents=True)
+    for name in ("ide", "skills", "agents", "hooks"):
+        (Path.home() / ".copilot" / name).mkdir(parents=True)
+    (Path.home() / ".copilot" / "mcp-config.json").write_text("{}", encoding="utf-8")
 
     assert not copilot.TARGET.is_present()
-    (Path.home() / ".copilot" / "config.json").write_text("{}", encoding="utf-8")
+    _which_copilot(monkeypatch, True)
     assert copilot.TARGET.is_present()
+
+
+def test_copilot_home_expands_a_tilde(monkeypatch) -> None:
+    monkeypatch.setenv("COPILOT_HOME", "~/elsewhere")
+    assert _copilot().config_dir() == Path.home() / "elsewhere"
+
+
+def test_copilot_leaves_a_local_entry_carrying_a_url_alone() -> None:
+    copilot = _copilot()
+    path = copilot.mcp_config_path()
+    path.parent.mkdir(parents=True)
+    stored = {"mcpServers": {"repowise": {"type": "local", "url": "https://x"}}}
+    path.write_text(json.dumps(stored), encoding="utf-8")
+
+    result = copilot.TARGET.install(Scope.USER)
+
+    assert result.files[0].action is FileAction.KEPT
+    assert json.loads(path.read_text(encoding="utf-8")) == stored
 
 
 def test_copilot_user_scope_round_trips_to_nothing() -> None:
@@ -3493,18 +3520,33 @@ def test_copilot_user_scope_round_trips_to_nothing() -> None:
     assert not (Path.home() / ".copilot").exists()
 
 
-def test_copilot_project_registration_requires_the_user_entry(tmp_path: Path) -> None:
-    """The repo block is shared with VS Code, so alone it says nothing about the CLI."""
+def test_copilot_project_registration_comes_from_its_own_claim(tmp_path: Path) -> None:
+    """The shared block alone, as VS Code writes it, is not a Copilot registration."""
+    copilot = _copilot()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    get_target("vscode").install(Scope.PROJECT, repo_path=repo)
+    assert copilot.TARGET.detect(repo) == []
+
+    result = copilot.TARGET.install(Scope.PROJECT, repo_path=repo)
+    assert result.files[0].action is FileAction.UPDATED
+    assert {r.scope for r in copilot.TARGET.detect(repo)} == {Scope.PROJECT}
+    assert copilot.TARGET.install(Scope.PROJECT, repo_path=repo).files[0].action is (
+        FileAction.UNCHANGED
+    )
+
+
+def test_copilot_project_scope_round_trips_to_no_file(tmp_path: Path) -> None:
     copilot = _copilot()
     repo = tmp_path / "repo"
     repo.mkdir()
 
     copilot.TARGET.install(Scope.PROJECT, repo_path=repo)
-    assert _copilot_instructions(repo).exists()
-    assert copilot.TARGET.detect(repo) == []
+    result = copilot.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
 
-    copilot.TARGET.install(Scope.USER)
-    assert {r.scope for r in copilot.TARGET.detect(repo)} == {Scope.USER, Scope.PROJECT}
+    assert result.files[0].action is FileAction.REMOVED
+    assert not _copilot_instructions(repo).exists()
 
 
 def test_copilot_doctor_calls_a_non_object_config_broken() -> None:
@@ -3633,3 +3675,45 @@ def test_copilot_instructions_survive_removing_vscode_while_copilot_cli_reads_th
         vscode_target.uninstall(Scope.PROJECT, repo_path=repo)
         copilot_target.uninstall(Scope.PROJECT, repo_path=repo)
     assert not path.exists()
+
+
+def test_a_project_only_copilot_install_keeps_the_block_when_vscode_is_removed(
+    tmp_path: Path,
+) -> None:
+    """add copilot --scope=project, add vscode, remove vscode: the block stays."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    get_target("copilot").install(Scope.PROJECT, repo_path=repo)
+    get_target("vscode").install(Scope.PROJECT, repo_path=repo)
+
+    result = get_target("vscode").uninstall(Scope.PROJECT, repo_path=repo)
+
+    path = _copilot_instructions(repo)
+    assert {f.path: f.action for f in result.files}[path] is FileAction.KEPT
+    assert any("--target=copilot" in note for note in result.notes)
+    assert path.exists()
+
+
+def test_kiro_user_scope_follows_kiro_home(tmp_path: Path, monkeypatch) -> None:
+    kiro = _kiro()
+    monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kh"))
+
+    kiro.TARGET.install(Scope.USER)
+
+    assert (tmp_path / "kh" / "settings" / "mcp.json").exists()
+    assert not (Path.home() / ".kiro").exists()
+
+
+def test_removing_vscode_and_copilot_together_leaves_no_file(tmp_path: Path) -> None:
+    from repowise.cli.agent_targets.registry import removing
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    get_target("copilot").install(Scope.PROJECT, repo_path=repo)
+    get_target("vscode").install(Scope.PROJECT, repo_path=repo)
+
+    with removing(["vscode", "copilot"]):
+        get_target("vscode").uninstall(Scope.PROJECT, repo_path=repo)
+        get_target("copilot").uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert not _copilot_instructions(repo).exists()

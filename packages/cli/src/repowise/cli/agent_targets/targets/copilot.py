@@ -11,11 +11,14 @@ Host facts, each checked against the source named beside it:
   https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference
 * There is no project-local MCP file (github/copilot-cli#2528), so the one
   user entry names no repo and the server resolves the repo it is launched in.
+  Assumed, not documented: the CLI starts MCP servers in the session's cwd.
 * The CLI reads ``.github/copilot-instructions.md``, the file the ``vscode``
   target already manages, so project scope shares that block rather than
-  writing a second file (same reference page).
-* The VS Code extension creates ``~/.copilot/ide/``, so that directory alone is
-  not evidence the CLI is installed (codegraph ``copilot-cli.ts``).
+  writing a second file (same reference page), plus an empty marker pair that
+  records Copilot CLI as one of the block's owners.
+* VS Code also writes into ``~/.copilot`` (``ide/``, skills, agents, hooks), so
+  only the ``copilot`` binary counts as an install (codegraph ``copilot-cli.ts``,
+  codebase-memory-mcp ``cli.c``).
 """
 
 from __future__ import annotations
@@ -66,7 +69,7 @@ METHODS = (
 def config_dir() -> Path:
     """``$COPILOT_HOME`` when set and not blank, else ``~/.copilot``."""
     configured = (os.environ.get("COPILOT_HOME") or "").strip()
-    return Path(configured) if configured else Path.home() / ".copilot"
+    return Path(configured).expanduser() if configured else Path.home() / ".copilot"
 
 
 def mcp_config_path() -> Path:
@@ -100,8 +103,9 @@ def write_mcp_config() -> FileWrite:
         raise ValueError(f"{path.name} 'mcpServers' must be a JSON object")
     stored = servers.get(SERVER_NAME)
     if isinstance(stored, dict):
-        # Copilot accepts "local" as well as "stdio" for a launched command.
-        if stored.get("type") != "local" and is_remote_entry(stored, local_type="stdio"):
+        # Copilot accepts "local" as well as "stdio"; any ``url`` means not ours.
+        local_type = "local" if stored.get("type") == "local" else "stdio"
+        if "url" in stored or is_remote_entry(stored, local_type=local_type):
             raise RemoteServerEntryError(f"{path.name} 'repowise' is wired to a remote server")
         entry = {**stored, **server_entry()}
     else:
@@ -120,27 +124,26 @@ def _reads_repowise() -> bool:
     return isinstance(servers, dict) and SERVER_NAME in servers
 
 
-def _has_managed_block(repo_path: Path) -> bool:
+#: Empty marker pair beside the shared block. The block alone cannot say who
+#: asked for it, so this is Copilot's claim on it for ``other_managers_of``.
+OWNER_START = "<!-- REPOWISE_COPILOT_CLI:START -->"
+OWNER_END = "<!-- REPOWISE_COPILOT_CLI:END -->"
+
+
+def _owns_block(repo_path: Path) -> bool:
     from ..formats import marker_block
     from ..formats.marker_block import BlockState
-    from ..instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
 
     path = vscode.instructions_path(repo_path)
-    state = marker_block.inspect(path, DISTILL_MARKER_START, DISTILL_MARKER_END).state
-    return state is BlockState.PRESENT
+    return marker_block.inspect(path, OWNER_START, OWNER_END).state is BlockState.PRESENT
 
 
 def detect(repo_path: Path | None = None) -> list[Registration]:
-    """User registration from ``mcp-config.json``; project only alongside it.
-
-    The project block is shared with VS Code, so on its own it says nothing
-    about Copilot CLI. Requiring the user entry too is the Hermes rule, and it
-    is what ``registry.other_managers_of`` relies on.
-    """
-    if not _reads_repowise():
-        return []
-    found = [Registration(method="direct", scope=Scope.USER, config_path=mcp_config_path())]
-    if repo_path is not None and _has_managed_block(repo_path):
+    """User registration from ``mcp-config.json``; project from our owner marker."""
+    found = []
+    if _reads_repowise():
+        found.append(Registration(method="direct", scope=Scope.USER, config_path=mcp_config_path()))
+    if repo_path is not None and _owns_block(repo_path):
         found.append(
             Registration(
                 method="direct",
@@ -177,13 +180,8 @@ class CopilotTarget:
         return True
 
     def is_present(self, repo_path: Path | None = None) -> bool:
-        """``copilot`` on PATH, or a config dir holding more than ``ide/``."""
-        if IDENTITY.is_installed():
-            return True
-        try:
-            return any(entry.name != "ide" for entry in config_dir().iterdir())
-        except OSError:
-            return False
+        """The ``copilot`` binary on PATH; ``~/.copilot`` is shared with VS Code."""
+        return IDENTITY.is_installed()
 
     def detect(self, repo_path: Path | None = None) -> list[Registration]:
         return detect(repo_path)
@@ -206,8 +204,17 @@ class CopilotTarget:
                 result.record(path, FileAction.KEPT, f"could not be written ({exc})")
                 result.note(f"{path} could not be written ({exc}).")
                 return result
-            result.record(written.path, written.action)
-            if written.action is FileAction.KEPT:
+            action = written.action
+            if action is not FileAction.KEPT:
+                from ..formats import marker_block
+
+                claimed = marker_block.upsert(written.path, "", OWNER_START, OWNER_END)
+                if claimed is FileAction.KEPT:
+                    action = FileAction.KEPT
+                elif action is FileAction.UNCHANGED and claimed is not FileAction.UNCHANGED:
+                    action = FileAction.UPDATED
+            result.record(written.path, action)
+            if action is FileAction.KEPT:
                 result.note(
                     f"{written.path} left unchanged: its Repowise markers are unpaired or "
                     "duplicated, or the file could not be read. Fix it by hand and re-run."
@@ -238,10 +245,19 @@ class CopilotTarget:
         if scope is Scope.PROJECT:
             if repo_path is None:
                 raise ValueError("project-scope uninstall needs a repo_path")
+            from ..formats import marker_block
+
+            released = marker_block.remove(
+                vscode.instructions_path(repo_path), OWNER_START, OWNER_END
+            )
             path, action, reason = vscode.remove_instructions(repo_path, exclude=ID)
-            result.record(path, action, reason)
             if action is FileAction.KEPT:
                 result.note(f"{path} kept: {reason}.")
+                if released:
+                    action, reason = FileAction.REMOVED, None
+            elif released and action is FileAction.NOT_FOUND:
+                action = FileAction.REMOVED
+            result.record(path, action, reason)
             return result
 
         from .cursor import _remove_server_entry
