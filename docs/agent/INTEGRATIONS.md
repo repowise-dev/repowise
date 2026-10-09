@@ -35,12 +35,14 @@ example). It is separate from the tier: it says nothing about the session.
 | [Cursor](https://cursor.com/docs/context/mcp) | Good | Yes | No | No | No | Yes | No | No |
 | [OpenCode](https://opencode.ai/docs/mcp-servers/) | Good | Yes | No | No | No | Yes | No | Yes |
 | [Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | Good | Yes | No | No | No | Yes | No | No |
+| [GitHub Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) | Good | Yes | No | No | No | Yes | No | No |
+| [Kiro](https://kiro.dev/docs/mcp/configuration) | Good | Yes | No | No | No | Yes | No | No |
 
-Target ids for `--target=`: `claude-code`, `codex`, `vscode`, `cursor`, `opencode`, `hermes`.
+Target ids for `--target=`: `claude-code`, `codex`, `vscode`, `cursor`, `opencode`, `hermes`, `copilot`, `kiro`.
 
 ### What Good tier does not include
 
-VS Code, Cursor, OpenCode and Hermes sit at Good, and the honest version of that is worth stating
+VS Code, Cursor, OpenCode, Hermes, GitHub Copilot CLI and Kiro sit at Good, and the honest version of that is worth stating
 plainly. These agents get the MCP tools and the config repowise writes.
 They do **not** get hook-level interception: repowise never sees a tool
 call before it runs, never rewrites a noisy command, and never annotates
