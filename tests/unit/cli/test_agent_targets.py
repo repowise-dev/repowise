@@ -3505,3 +3505,92 @@ def test_copilot_doctor_calls_a_non_object_config_broken() -> None:
     assert report.status.value == "broken"
     assert copilot.TARGET.install(Scope.USER).files[0].action is FileAction.KEPT
     assert path.read_text(encoding="utf-8") == "[]"
+
+
+# ---------------------------------------------------------------------------
+# Kiro
+# ---------------------------------------------------------------------------
+
+
+def _kiro():
+    from repowise.cli.agent_targets.targets import kiro
+
+    return kiro
+
+
+@pytest.mark.parametrize("scope", [Scope.PROJECT, Scope.USER])
+def test_kiro_installs_mcp_and_steering_then_round_trips_to_nothing(
+    scope: Scope, tmp_path: Path
+) -> None:
+    kiro = _kiro()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    root = repo / ".kiro" if scope is Scope.PROJECT else Path.home() / ".kiro"
+
+    result = kiro.TARGET.install(scope, repo_path=repo)
+
+    assert {f.action for f in result.files} == {FileAction.CREATED}
+    entry = json.loads((root / "settings" / "mcp.json").read_text(encoding="utf-8"))[
+        "mcpServers"
+    ]["repowise"]
+    assert "type" not in entry
+    if scope is Scope.PROJECT:
+        assert entry["command"] == "repowise"
+        assert str(repo.resolve()).replace("\\", "/") in entry["args"]
+    else:
+        assert entry["args"] == ["mcp", "--transport", "stdio"]
+    steering = (root / "steering" / "repowise.md").read_text(encoding="utf-8")
+    assert steering.startswith(kiro.STEERING_HEADER)
+    assert not steering.startswith("---")
+    assert {r.scope for r in kiro.TARGET.detect(repo)} == {scope}
+    assert {f.action for f in kiro.TARGET.install(scope, repo_path=repo).files} == {
+        FileAction.UNCHANGED
+    }
+
+    removed = kiro.TARGET.uninstall(scope, repo_path=repo)
+
+    assert {f.action for f in removed.files} == {FileAction.REMOVED}
+    assert not root.exists()
+    assert kiro.TARGET.detect(repo) == []
+
+
+def test_kiro_keeps_a_sibling_server_and_a_steering_file_it_did_not_write(
+    tmp_path: Path,
+) -> None:
+    kiro = _kiro()
+    repo = tmp_path / "repo"
+    settings = repo / ".kiro" / "settings" / "mcp.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}), encoding="utf-8")
+    steering = repo / ".kiro" / "steering" / "repowise.md"
+    steering.parent.mkdir(parents=True)
+    steering.write_text("my own notes\n", encoding="utf-8")
+
+    result = kiro.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert {f.path: f.action for f in result.files}[steering] is FileAction.KEPT
+    assert steering.read_text(encoding="utf-8") == "my own notes\n"
+    kiro.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+    assert json.loads(settings.read_text(encoding="utf-8")) == {
+        "mcpServers": {"other": {"command": "x"}}
+    }
+    assert steering.read_text(encoding="utf-8") == "my own notes\n"
+
+
+def test_kiro_doctor_reports_each_user_state() -> None:
+    kiro = _kiro()
+    assert kiro.TARGET.doctor().status.value == "not-installed"
+
+    path = kiro.mcp_config_path(Scope.USER)
+    path.parent.mkdir(parents=True)
+    path.write_text("[]", encoding="utf-8")
+    assert kiro.TARGET.doctor().status.value == "broken"
+
+    path.unlink()
+    kiro.TARGET.install(Scope.USER)
+    assert kiro.TARGET.doctor().status.value == "ok"
+
+
+def test_kiro_install_notes_that_the_ide_ships_with_mcp_off(tmp_path: Path) -> None:
+    result = _kiro().TARGET.install(Scope.USER)
+    assert any("MCP disabled" in note for note in result.notes)

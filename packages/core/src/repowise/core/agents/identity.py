@@ -207,6 +207,9 @@ COPILOT = AgentIdentity(
     install_hint="npm install -g @github/copilot",
     login_hint="copilot login",
 )
+KIRO = AgentIdentity(
+    slug="kiro", display_name="Kiro", executable="kiro-cli", login_hint="kiro-cli login"
+)
 
 #: Registered identities, by slug. Order is not load-bearing here — the order
 #: agents are *presented* in belongs to the target registry, which is where a
