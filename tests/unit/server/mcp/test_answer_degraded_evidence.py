@@ -26,7 +26,10 @@ from repowise.server.mcp_server.tool_answer.answer import (
     _degraded_payload,
     _drop_duplicated_guess_excerpts,
 )
-from repowise.server.mcp_server.tool_answer.confidence import _degraded_confidence
+from repowise.server.mcp_server.tool_answer.confidence import (
+    _degraded_confidence,
+    lead_leaves_retrieval,
+)
 from repowise.server.mcp_server.tool_answer.projection import project_answer_payload
 
 
@@ -551,7 +554,7 @@ async def test_degraded_cites_the_retrieval_top_file_before_a_rationale_hub(
     """A comment-heavy hub wins the rationale sort by volume, not by rank.
 
     The rationale rows come back hub first; citations must still lead with the
-    file retrieval ranked first, and keep the rationale paths after it.
+    file retrieval ranked first, and the rows follow the retrieval ranking.
     """
     _rationale_rows(monkeypatch, "cmd/completions.go", "cmd/command.go")
     payload = await _degraded(
@@ -563,7 +566,10 @@ async def test_degraded_cites_the_retrieval_top_file_before_a_rationale_hub(
         "cmd/command.go",
         "cmd/completions.go",
     ]
-    assert payload["code_rationale"][0]["path"] == "cmd/completions.go"
+    assert [r["path"] for r in payload["code_rationale"]] == [
+        "cmd/command.go",
+        "cmd/completions.go",
+    ]
 
 
 def _rationale_rows(monkeypatch, *paths: str) -> None:
@@ -801,3 +807,188 @@ def test_the_hint_is_the_same_whatever_the_payload_graded():
 
     assert len(hints) == 1
     assert "Synthesis is what is missing here" in hints.pop()
+
+
+# --- the keyless answer leads with the top retrieval file -------------------
+#
+# "medium" tells the caller to start from the file `answer` names first. That
+# file is the top-ranked one, a rationale comment never promotes another file
+# over it, and a top file that hybrid retrieval does not back grades "low".
+
+
+def _ranked(*paths: str, ranks: tuple[int | None, ...] | None = None) -> list[dict]:
+    """Strong, dominant hits in this order, each stamped with its hybrid rank."""
+    hits = [
+        {"target_path": p, "title": p, "summary": "s", "score": 6.0 if i == 0 else 2.0}
+        for i, p in enumerate(paths)
+    ]
+    for h, rank in zip(hits, ranks if ranks is not None else range(len(hits)), strict=True):
+        if rank is not None:
+            h["_hybrid_rank"] = rank
+    return hits
+
+
+async def _keyless(tmp_path, hits, question_ids=frozenset()):
+    return await _degraded(
+        SimpleNamespace(path=str(tmp_path), session_factory=None), hits, set(question_ids)
+    )
+
+
+def _answer(payload: dict) -> str:
+    return project_answer_payload(payload, question="which file")["answer"]
+
+
+async def test_the_top_file_rationale_leads_over_a_higher_scoring_hub(tmp_path, monkeypatch):
+    """The miner puts the hub's comment first; the answer still names the top file."""
+    _rationale_rows(monkeypatch, "src/config/types.ts", "src/agents/poll-backoff.ts")
+    payload = await _keyless(tmp_path, _ranked("src/agents/poll-backoff.ts", "src/config/types.ts"))
+
+    assert [r["path"] for r in payload["code_rationale"]] == [
+        "src/agents/poll-backoff.ts",
+        "src/config/types.ts",
+    ]
+    assert "Source rationale in src/agents/poll-backoff.ts" in _answer(payload)
+    assert payload["confidence"] == "medium"
+
+
+async def test_without_a_top_file_rationale_the_answer_names_the_ranking(tmp_path, monkeypatch):
+    _rationale_rows(monkeypatch, "cmd/completions.go")
+    payload = await _keyless(tmp_path, _ranked("cmd/command.go", "cmd/completions.go"))
+
+    answer = _answer(payload)
+    assert "Local retrieval points first to cmd/command.go" in answer
+    assert "completions.go" not in answer
+    assert payload["confidence"] == "medium"
+
+
+async def test_other_rationale_rows_follow_in_hybrid_rank_order(tmp_path, monkeypatch):
+    """Not comment-score order; a hit hybrid retrieval never ranked goes last."""
+    _rationale_rows(monkeypatch, "pkg/d.py", "pkg/b.py", "pkg/c.py", "pkg/a.py")
+    hits = _ranked("pkg/a.py", "pkg/b.py", "pkg/c.py", "pkg/d.py", ranks=(0, 2, 1, None))
+    payload = await _keyless(tmp_path, hits)
+
+    assert [r["path"] for r in payload["code_rationale"]] == [
+        "pkg/a.py",
+        "pkg/c.py",
+        "pkg/b.py",
+        "pkg/d.py",
+    ]
+
+
+async def test_unranked_hits_order_rationale_by_hit_position(tmp_path, monkeypatch):
+    _rationale_rows(monkeypatch, "src/Z.java", "src/Y.java")
+    payload = await _keyless(tmp_path, _ranked("src/X.java", "src/Y.java", "src/Z.java", ranks=(None, None, None)))
+
+    assert [r["path"] for r in payload["code_rationale"]] == ["src/Y.java", "src/Z.java"]
+
+
+async def test_a_ranked_lead_inside_the_hybrid_top_stays_medium(tmp_path, monkeypatch):
+    _rationale_rows(monkeypatch)
+    hits = _ranked("src/main/java/App.java", "src/main/java/Util.java", ranks=(3, 0))
+    payload = await _keyless(tmp_path, hits)
+
+    assert payload["confidence"] == "medium"
+
+
+async def test_a_lead_reranked_up_from_below_the_hybrid_top_grades_low(tmp_path, monkeypatch):
+    _rationale_rows(monkeypatch)
+    hits = _ranked("src/main/java/App.java", "src/main/java/Util.java", ranks=(4, 0))
+    payload = await _keyless(tmp_path, hits)
+
+    assert payload["confidence"] == "low"
+
+
+async def test_an_injected_lead_hybrid_retrieval_never_ranked_grades_low(tmp_path, monkeypatch):
+    """Graph expansion and anchoring add hits with no hybrid rank at all."""
+    _rationale_rows(monkeypatch)
+    hits = _ranked("lib/faraday/adapter.rb", "lib/faraday/request.rb", ranks=(None, 0))
+    payload = await _keyless(tmp_path, hits)
+
+    assert payload["confidence"] == "low"
+
+
+async def test_a_body_lead_reads_the_same_hybrid_rank(tmp_path):
+    """A served body leads `answer`, so its file's rank is the one checked."""
+    inside = _hits(end_line=6)
+    inside[0]["_hybrid_rank"] = 1
+    outside = _hits(end_line=6)
+    outside[0]["_hybrid_rank"] = 7
+
+    ctx = _tree(tmp_path)
+    assert (await _degraded(ctx, inside, {"Flask"}))["confidence"] == "medium"
+    assert (await _degraded(ctx, outside, {"Flask"}))["confidence"] == "low"
+
+
+@pytest.mark.parametrize(
+    ("lead", "expected"),
+    [
+        ("src/a.py", False),
+        ("src/a.py::run", False),
+        (r"src\b.py", False),
+        ("src/c.py", True),
+        ("src/missing.py", True),
+    ],
+)
+def test_lead_leaves_retrieval_table(lead, expected):
+    hits = _ranked("src/a.py::run", "src/b.py", "src/c.py", ranks=(0, 2, 5))
+
+    assert lead_leaves_retrieval(hits, lead) is expected
+
+
+def test_unstamped_hits_have_no_hybrid_order_to_leave():
+    hits = _ranked("src/a.py", "src/b.py", ranks=(None, None))
+
+    assert lead_leaves_retrieval(hits, "src/b.py") is False
+
+
+def test_the_keyed_grade_does_not_read_the_hybrid_rank():
+    """Only the keyless grade changed; synthesis is graded on its own text."""
+    from repowise.server.mcp_server.tool_answer.confidence import _grade_answer
+
+    def grade(hits):
+        return _grade_answer(
+            question="how does polling back off",
+            question_ids=set(),
+            answer_text="It backs off exponentially.",
+            hits=hits,
+            citations=["src/poll.ts"],
+            symbol_bodies=[],
+            served_named_body=False,
+            dominance="gap",
+        ).confidence
+
+    far = _ranked("src/poll.ts", "src/other.ts", ranks=(9, 0))
+    assert grade(far) == grade(_ranked("src/poll.ts", "src/other.ts"))
+    assert _degraded_confidence("synthesis-failed", "high") == "low"
+
+
+def test_hybrid_rank_counts_files_and_symbol_pages_share_theirs():
+    from repowise.server.mcp_server._answer_pipeline import stamp_hybrid_rank
+
+    hits = [{"target_path": p} for p in ("a.go", "a.go::Run", "b.go", "a.go::Stop", "c.go")]
+    stamp_hybrid_rank(hits)
+
+    assert [h["_hybrid_rank"] for h in hits] == [0, 0, 1, 0, 2]
+
+
+async def test_an_unranked_duplicate_does_not_hide_its_files_rank(tmp_path, monkeypatch):
+    """An injected symbol page of a ranked file can precede that file's own hit."""
+    _rationale_rows(monkeypatch, "src/hub.ts", "src/other.ts", "src/poll.ts")
+    hits = [
+        {"target_path": "src/poll.ts::backoff", "title": "t", "summary": "s", "score": 6.0},
+        {"target_path": "src/hub.ts", "title": "t", "summary": "s", "score": 2.0},
+        {"target_path": "src/other.ts::Run", "title": "t", "summary": "s", "score": 1.5},
+        {"target_path": "src/other.ts", "title": "t", "summary": "s", "score": 1.0},
+        {"target_path": "src/poll.ts", "title": "t", "summary": "s", "score": 1.0},
+    ]
+    for h, rank in zip(hits, (None, 5, None, 1, 0), strict=True):
+        if rank is not None:
+            h["_hybrid_rank"] = rank
+    payload = await _keyless(tmp_path, hits)
+
+    assert payload["confidence"] == "medium"
+    assert [r["path"] for r in payload["code_rationale"]] == [
+        "src/poll.ts",
+        "src/other.ts",
+        "src/hub.ts",
+    ]

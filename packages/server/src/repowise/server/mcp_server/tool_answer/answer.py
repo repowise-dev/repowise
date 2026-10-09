@@ -94,6 +94,9 @@ from repowise.server.mcp_server._answer_pipeline import hydrate_hits as _hydrate
 from repowise.server.mcp_server._answer_pipeline import (
     retrieval_legs as _retrieval_legs,
 )
+from repowise.server.mcp_server._answer_pipeline import (
+    stamp_hybrid_rank as _stamp_hybrid_rank,
+)
 from repowise.server.mcp_server._entry_trace import (
     expand_via_entry_trace as _expand_via_entry_trace,
 )
@@ -233,6 +236,7 @@ async def _run_retrieval_pipeline(
     # Drop excluded files right after hydration (which attaches target_path) so
     # they never enter ranking, citations, or fallback_targets.
     hits = filter_dicts_by_key(hits, "target_path", exclude_spec)
+    _stamp_hybrid_rank(hits)
 
     question_ids = _extract_question_identifiers(question)
 

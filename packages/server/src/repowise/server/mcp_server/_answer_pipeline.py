@@ -389,6 +389,18 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
     return merged
 
 
+def stamp_hybrid_rank(hits: list[dict]) -> None:
+    """Record each hit's 0-based file rank in the fused order, before any rerank.
+
+    This is the order ``search_codebase`` serves; confidence reads it to tell
+    when the reranked lead left it. Symbol pages share their file's rank.
+    """
+    files: dict[str, int] = {}
+    for h in hits:
+        path = (h.get("target_path") or "").split("::", 1)[0]
+        h["_hybrid_rank"] = files.setdefault(path, len(files))
+
+
 async def _safe_fts_search(ctx: Any, question: str) -> list[Any]:
     """FTS search wrapped in timeout + suppression. Returns [] on any failure."""
     if ctx.fts is None:

@@ -234,6 +234,25 @@ def _deduplicate(payload: dict[str, Any]) -> None:
     payload["candidates"] = candidates
 
 
+def _same_file(a: str | None, b: str | None) -> bool:
+    return bool(a and b) and a.replace("\\", "/") == b.replace("\\", "/")
+
+
+def _lead_rationale(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """The rationale row ``answer`` may lead with: one from the top-ranked file.
+
+    A row from any other file would name a file retrieval did not put first.
+    """
+    rows = [row for row in payload.get("code_rationale") or [] if isinstance(row, dict)]
+    if not rows:
+        return None
+    guess = _first_guess(payload)
+    if guess is None:
+        return rows[0]
+    top = _nav_path(guess)
+    return next((row for row in rows if _same_file(_nav_path(row), top)), None)
+
+
 def _rewrite_degraded_answer(payload: dict[str, Any]) -> None:
     """Describe only evidence that survived the external projection."""
     reason = payload.get("degraded")
@@ -244,8 +263,7 @@ def _rewrite_degraded_answer(payload: dict[str, Any]) -> None:
             f"Synthesis is unavailable ({reason}), but symbol_bodies contains live source "
             "for the named code. Use that evidence directly."
         )
-    elif payload.get("code_rationale"):
-        row = payload["code_rationale"][0]
+    elif (row := _lead_rationale(payload)) is not None:
         conclusion = _text(row, "rationale", "comment", "quote", "source", "text")
         path = _path(row) or "the top source match"
         payload["answer"] = (

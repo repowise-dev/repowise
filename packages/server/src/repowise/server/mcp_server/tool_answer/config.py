@@ -125,6 +125,12 @@ _SYMBOL_AGREEMENT_TOP_RANK_MAX = 0
 # The runner-up must trail by at least this many ranks in at least one source.
 _AGREEMENT_RANK_GAP = 1
 
+# A keyless answer whose lead file sits below this many files of the unreranked
+# hybrid retrieval grades "low". On 225 keyless questions over 11 repos, leads
+# in the top 4 were right 38-60% of the time per rank, leads below it 17%, under
+# the 27% the "low" tier already scored.
+_LEAD_HYBRID_TOP_K = 4
+
 # Phrases that mean the LLM declined to answer despite dominant retrieval.
 # A match downgrades confidence to "low" and drops the retrieval payload, since
 # a consumer told to read the source gains nothing from it in the cache.
