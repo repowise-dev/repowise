@@ -237,7 +237,8 @@ agent platform recipe instead.
 
 Adding a new language has a dedicated recipe, see
 [docs/architecture/language-support.md](../docs/architecture/language-support.md).
-Adding an agent integration or an agent CLI indexing backend has its own recipe, see [docs/architecture/agent-platform.md](../docs/architecture/agent-platform.md).
+Adding an agent integration or an agent CLI indexing backend has its own recipe, see
+[docs/architecture/agent-platform.md](../docs/architecture/agent-platform.md).
 
 ## Testing
 

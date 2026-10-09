@@ -62,7 +62,7 @@ the server entry and paste it into whatever config that host reads:
 repowise agents print-config claude-code   # prints, writes nothing
 ```
 
-Ask for the target id whose host is closest to yours rather than editing a
+Ask for the target id whose host is closest to yours instead of editing a
 snippet by hand. The shapes genuinely differ, and not only in their wrapper:
 hosts disagree about the top-level key, about whether each entry carries a
 `type` field, about whether the invocation is one array or a command plus a

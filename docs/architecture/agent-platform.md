@@ -14,7 +14,7 @@ An agent can touch repowise in two independent ways:
   wiki, using the user's existing login, with no API key.
 
 An agent can have either, both or neither. GitHub Copilot CLI, for example, is
-an integration target today and has no indexing backend yet.
+an integration target with a registered identity and no indexing backend.
 
 **Contents**
 
@@ -111,7 +111,8 @@ class CopilotCliProvider(AgentCliProvider):
 
 The base derives `executable_name` and the not-found message from the identity
 named by `agent_slug`, so the class fails at import if that identity has no
-`executable`. The prompt goes on stdin; never put it in argv.
+`executable`. Never shell out yourself or use `shell=True`: the base spawns the
+process without a shell, passes the prompt on stdin and validates model names.
 
 Required:
 
@@ -179,19 +180,26 @@ ProviderSpec(
 | `local` | init warns that concurrency above 4 may time out; the server prices unknown local models at zero |
 | `zero_cost` | `ZERO_COST_MODEL_PREFIXES`: the cost estimator and cost tracker price `<name>/...` models at zero |
 | `agent` | the agent slug; links the spec to the identity and supplies `setup_hint` from its install and login hints |
-| `picker_rank` | the row in the `repowise init` picker and inclusion in `/api/providers`; `None` makes it flag-only. Pick a slot beside the other agent CLIs and renumber the specs after it |
+| `picker_rank` | the row in the `repowise init` picker and inclusion in `/api/providers`; `None` makes it flag-only |
 | `note` | the dim note beside the row in the picker, and the reason line when the picker defaults to it |
 
 Agent CLIs keep `rate_limit=None`, `api_key_envs=()` and `autodetect_rank=None`.
 
+Ranks must stay unique. Today opencode is 8, ollama 9, openrouter 10 and
+litellm 11. Giving `copilot_cli` rank 9 puts it right after opencode, so
+change ollama to 10, openrouter to 11 and litellm to 12.
+
 ### Step 3: link the identity
 
-In `core/agents/identity.py`, set `indexing_provider="copilot_cli"` on the
-agent's record. The record also needs `executable`, `install_hint` and
-`login_hint` (the CLI prints them when the executable is missing). Add
-`login_check` if the CLI has a cheap, side-effect-free command that exits 0
-only when signed in; the init picker uses it to decide whether the backend is
-ready.
+`COPILOT` already exists in `core/agents/identity.py` with `executable`,
+`install_hint` and `login_hint`. The only edit is `indexing_provider="copilot_cli"`
+on that record. Add `login_check` only if the CLI has a status command, verified
+against its docs, that exits 0 only when signed in; the init picker uses it to
+decide whether the backend is ready.
+
+For an agent with no identity yet, add one as in
+[Recipe B step 1](#step-1-the-identity), with `executable`, `install_hint` and
+`login_hint` set: the CLI prints them when the executable is missing.
 
 ### Step 4: the contract test
 
@@ -227,11 +235,16 @@ modelled on `test_opencode_provider.py`.
 
 ### Step 5: update the frozen lists
 
-Two tests freeze the picker on purpose, so a new row is a deliberate edit:
+Two tests in `tests/unit/cli/test_init_ux.py` freeze the picker on purpose, so
+a new row is a deliberate edit:
 
-- `test_picker_rows_keep_their_order` in `tests/unit/cli/test_init_ux.py`
-- `test_the_keyless_providers_get_setup_help_instead_of_a_key_prompt` in the
-  same file
+- `test_picker_rows_keep_their_order`: put `"copilot_cli"` after `"opencode"` in
+  the expected `_PROVIDER_CHOICES` tuple.
+- `test_the_keyless_providers_get_setup_help_instead_of_a_key_prompt`: add
+  `"copilot_cli"` to the expected set of `_LOCAL_PROVIDER_SETUP` keys.
+
+Provider-name literals are fine in tests: the provider-name guard scans
+`packages/*/src` only.
 
 Then regenerate the matrix, whose `Indexing` column now reads `Yes` for the
 agent:
@@ -239,6 +252,12 @@ agent:
 ```bash
 python scripts/gen_agent_matrix.py
 ```
+
+### Step 6: user docs (optional)
+
+A user page at `docs/agent/<NAME>.md` is optional. If you add one, follow
+`docs/agent/OPENCODE.md`, and put paths to files in a user's repo behind
+`<!-- repowise-drift-ignore -->`.
 
 ### What you get without further edits
 
@@ -283,8 +302,9 @@ not documented, say so there.
 
 ### Step 1: the identity
 
-Add an `AgentIdentity` in `core/agents/identity.py` and append it to the
-`for _shipped in (...)` tuple at the bottom of the file. The `--target` id is
+Add an `AgentIdentity` constant (for example `MYAGENT`) in
+`core/agents/identity.py` and append it to the `for _shipped in (...)` tuple at
+the bottom of the file. The `--target` id is
 derived: `kiro` for slug `kiro`, `claude-code` for `claude_code`. Leave
 `hook_adapter` and `session_adapter` unset until Recipe C.
 
@@ -293,16 +313,28 @@ derived: `kiro` for slug `kiro`, `claude-code` for `claude_code`. Leave
 Write `packages/cli/src/repowise/cli/agent_targets/targets/<id>.py` exporting
 `TARGET`, an object that satisfies the `AgentTarget` protocol in `types.py`.
 `targets/vscode.py` is the smallest complete example. The usual top of the
-module:
+module, where `MYAGENT` is the identity constant you added in step 1:
 
 ```python
 from repowise.core.agents import identity
 
-IDENTITY = identity.KIRO
+from ..types import (
+    Capability,
+    DoctorReport,
+    DoctorStatus,
+    FileAction,
+    FileWrite,
+    InstallMethod,
+    Registration,
+    Scope,
+    WriteResult,
+)
+
+IDENTITY = identity.MYAGENT
 ID = IDENTITY.cli_target_id
 DISPLAY_NAME = IDENTITY.display_name
 DOCS_URL = "https://..."
-PROJECT_FILE_ID = "kiro_mcp"   # key under editor_files in .repowise/config.yaml
+PROJECT_FILE_ID = "myagent_mcp"   # key under editor_files in .repowise/config.yaml
 
 METHODS = (
     InstallMethod(
@@ -314,8 +346,11 @@ METHODS = (
 )
 ```
 
-and on the class, `hook_adapter = IDENTITY.hook_adapter` and
-`session_adapter = IDENTITY.session_adapter`.
+The class carries the attributes `AgentTarget` requires: `id = ID`,
+`display_name = DISPLAY_NAME`, `docs_url = DOCS_URL`, `methods = METHODS`,
+`project_file_id = PROJECT_FILE_ID`, `hook_adapter = IDENTITY.hook_adapter` and
+`session_adapter = IDENTITY.session_adapter`. The module ends with
+`TARGET = MyAgentTarget()`.
 
 Every protocol method must be safe when nothing was ever installed:
 `supports_scope`, `is_present` (a PATH or directory probe, never a
@@ -343,10 +378,11 @@ ids go at the end. Append the same id to the frozen list in
 `test_registry_exposes_the_shipped_targets` in
 `tests/unit/cli/test_agent_targets.py`.
 
-`repowise init` writes project files for Claude Code, Codex and VS Code
-through `cli/editor_integrations/`. Other targets are wired with
-`repowise agents add --target=<id>`, so add a row to the host table in
-`docs/start/QUICKSTART.md`.
+The `repowise init` checklist only offers targets that have an
+`InstallLifecycle` writer in `get_default_editor_integrations`
+(`cli/editor_integrations/defaults.py`): Claude Code, Codex and VS Code. Any
+other target is wired with `repowise agents add --target=<id>`, so add a row to
+the host table in `docs/start/QUICKSTART.md`.
 
 ### Step 4: the README badge and the matrix
 
