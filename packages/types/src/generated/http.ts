@@ -2624,6 +2624,9 @@ export interface ProviderEntry {
   models?: string[];
   default_model?: string | null;
   configured?: boolean;
+  requires_key?: boolean;
+  env_vars?: string[];
+  setup_hint?: string;
 }
 
 export interface ProviderStatusResponse {

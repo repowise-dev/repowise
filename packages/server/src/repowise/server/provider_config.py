@@ -47,6 +47,9 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "models": list(spec.models),
         "env_keys": list(spec.api_key_envs),
         "requires_key": bool(spec.api_key_envs),
+        # What a user sets to make it usable, and how to install it.
+        "env_vars": list(spec.required_envs),
+        "setup_hint": spec.setup_hint,
     }
     for spec in PROVIDER_SPECS.values()
     if spec.selectable
@@ -294,6 +297,9 @@ def list_provider_status(
                 "models": models,
                 "default_model": p["default_model"],
                 "configured": configured,
+                "requires_key": p["requires_key"],
+                "env_vars": p["env_vars"],
+                "setup_hint": p["setup_hint"],
             }
         )
 

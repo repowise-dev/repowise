@@ -42,6 +42,12 @@ class ProviderEntry(BaseModel):
     default_model: str | None = None
     #: Has a key, or needs none.
     configured: bool = False
+    #: Takes an API key; ``False`` hides the key field.
+    requires_key: bool = True
+    #: Env vars a user sets to make the provider usable.
+    env_vars: list[str] = []
+    #: One line on how to install or set it up.
+    setup_hint: str = ""
 
 
 class ActiveProviderSelection(BaseModel):

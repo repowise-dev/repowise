@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { config } from "@/lib/config";
 import { getProviders } from "@/lib/api/providers";
+import type { ProviderInfo } from "@/lib/api/types";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Input } from "@repowise-dev/ui/ui/input";
 import {
@@ -21,13 +22,6 @@ import {
 } from "@repowise-dev/ui/settings";
 import { useTranslations } from "next-intl";
 
-/**
- * Fallback only, for a cold load and for an API that never answers. The server
- * owns the catalog; this is not a second source of truth. It had already
- * drifted -- `codex_cli` and `openrouter` are in the server catalog and were
- * never added here, so neither could be picked from this page.
- */
-const FALLBACK_PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "edenai", "claude_cli", "opencode", "ollama", "litellm", "mock"] as const;
 const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "edenai", "ollama"] as const;
 
 // Real, registerable providers the server catalog deliberately leaves out.
@@ -35,39 +29,6 @@ const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "edenai", "ollama"]
 // this page has always offered; it is flag-only, so it is absent from
 // PROVIDER_CATALOG and would otherwise vanish the moment the catalog loads.
 const FLAG_ONLY_PROVIDERS = ["mock"] as const;
-
-const MODEL_PLACEHOLDERS: Record<string, string> = {
-  gemini: "gemini-3.5-flash-lite",
-  openai: "gpt-5.6-luna",
-  anthropic: "claude-haiku-5-5",
-  deepseek: "deepseek-v4-flash",
-  kimi: "kimi-for-coding",
-  edenai: "mistral/mistral-small-latest",
-  claude_cli: "claude_cli/claude-haiku-5-5",
-  opencode: "opencode/default",
-  ollama: "qwen3.5:4b",
-  litellm: "groq/llama-3.1-70b-versatile",
-  mock: "mock",
-};
-
-const PROVIDER_ENV_VARS: Record<string, { vars: string[]; installHint: string }> = {
-  gemini: { vars: ["GEMINI_API_KEY"], installHint: "pip install google-genai" },
-  openai: { vars: ["OPENAI_API_KEY"], installHint: "pip install openai" },
-  anthropic: { vars: ["ANTHROPIC_API_KEY"], installHint: "pip install anthropic" },
-  ollama: { vars: ["OLLAMA_BASE_URL"], installHint: "https://ollama.ai" },
-  deepseek: { vars: ["DEEPSEEK_API_KEY"], installHint: "pip install openai" },
-  kimi: { vars: ["KIMI_API_KEY"], installHint: "pip install openai" },
-  edenai: { vars: ["EDENAI_API_KEY"], installHint: "pip install openai" },
-  litellm: { vars: ["LITELLM_*"], installHint: "pip install litellm" },
-  claude_cli: { vars: [], installHint: "https://claude.com/claude-code, then: claude login" },
-  opencode: { vars: [], installHint: "curl -fsSL https://opencode.ai/install | bash" },
-  codex_cli: {
-    vars: [],
-    installHint: "npm install -g @openai/codex, then: codex login",
-  },
-  openrouter: { vars: ["OPENROUTER_API_KEY"], installHint: "pip install openai" },
-  mock: { vars: [], installHint: "No key needed" },
-};
 
 const EMBEDDER_ENV_VARS: Record<string, string[]> = {
   gemini: ["GEMINI_API_KEY"],
@@ -94,8 +55,10 @@ export function ProviderSection() {
   const [model, setModel] = useState("");
   const [embedder, setEmbedder] = useState("mock");
   const [serverProvider, setServerProvider] = useState<string | null>(null);
-  const [providers, setProviders] = useState<readonly string[]>(FALLBACK_PROVIDERS);
-  const [catalogModels, setCatalogModels] = useState<Record<string, string>>({});
+  // The server owns the catalog (it is derived from the provider specs), so
+  // this page keeps no copy of its own; until it loads, only the saved
+  // provider and the flag-only ones are offered.
+  const [catalog, setCatalog] = useState<ProviderInfo[]>([]);
   const [saveState, setSaveState] = useState<SaveState>("idle");
 
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -109,20 +72,7 @@ export function ProviderSection() {
       .then(({ active, providers: catalog }) => {
         if (cancelled) return;
         setServerProvider(active.provider);
-        // Same response already carries the catalog the server resolves
-        // against, so the picker can render it instead of a second copy
-        // compiled into this file. That copy is how `codex_cli` and
-        // `openrouter` came to be selectable everywhere except here.
-        const entries = catalog ?? [];
-        const ids = entries.map((entry) => entry.id).filter(Boolean);
-        if (ids.length) setProviders(ids);
-        setCatalogModels(
-          Object.fromEntries(
-            entries.flatMap((entry) =>
-              entry.default_model ? [[entry.id, entry.default_model]] : [],
-            ),
-          ),
-        );
+        setCatalog((catalog ?? []).filter((entry) => entry.id));
       })
       .catch((error: unknown) => {
         console.warn("[settings] Could not load the active server provider", error);
@@ -166,9 +116,11 @@ export function ProviderSection() {
   // verbatim silently takes options away: the flag-only providers never
   // appear in it, and a saved provider the server has since stopped
   // advertising would leave a blank trigger with nothing to recover with.
-  const providerOptions = [...new Set([...providers, ...FLAG_ONLY_PROVIDERS, provider])];
+  const providerOptions = [
+    ...new Set([...catalog.map((entry) => entry.id), ...FLAG_ONLY_PROVIDERS, provider]),
+  ];
 
-  const providerInfo = PROVIDER_ENV_VARS[provider];
+  const providerInfo = catalog.find((entry) => entry.id === provider);
   const embedderVars = EMBEDDER_ENV_VARS[embedder] ?? [];
 
   return (
@@ -184,7 +136,7 @@ export function ProviderSection() {
       <SettingsRows>
         <SettingsRow
           label={t("provider.providerLabel")}
-          hint={providerInfo?.installHint}
+          hint={providerInfo?.setup_hint || undefined}
         >
           <div className="space-y-2">
             <Select value={provider} onValueChange={handleProviderChange}>
@@ -202,7 +154,7 @@ export function ProviderSection() {
                 ))}
               </SelectContent>
             </Select>
-            {providerInfo && <EnvVarLine vars={providerInfo.vars} />}
+            {providerInfo && <EnvVarLine vars={providerInfo.env_vars ?? []} />}
           </div>
         </SettingsRow>
 
@@ -213,10 +165,7 @@ export function ProviderSection() {
         >
           <Input
             id="model"
-            // Catalog first: it is what the server will actually default to.
-            // The local table is the cold-load stand-in, and a stale entry in
-            // it winning would reintroduce the drift this catalog read fixes.
-            placeholder={catalogModels[provider] ?? MODEL_PLACEHOLDERS[provider] ?? "model name"}
+            placeholder={providerInfo?.default_model || "model name"}
             value={model}
             onChange={(e) => setModel(e.target.value)}
             onBlur={handleModelBlur}

@@ -145,9 +145,9 @@ describe("ProviderSection provider catalog", () => {
     );
   });
 
-  it("lets the server's default model beat a stale built-in placeholder", async () => {
-    // The local table is a hardcoded guess that has already drifted once. When
-    // the server reports a different default, the server is right.
+  it("takes the model placeholder from the server catalog", async () => {
+    // The page keeps no table of its own; the catalog is derived from the
+    // provider specs, so the server's default is the one to show.
     mocks.getProviders.mockResolvedValue({
       active: { provider: "gemini", model: null },
       providers: [{ id: "gemini", name: "Google Gemini", default_model: "gemini-4-pro" }],
@@ -159,7 +159,7 @@ describe("ProviderSection provider catalog", () => {
     await waitFor(() => expect(model.placeholder).toBe("gemini-4-pro"));
   });
 
-  it("falls back to the built-in placeholder when the catalog has no default", async () => {
+  it("falls back to a generic placeholder when the catalog has no default", async () => {
     mocks.getProviders.mockResolvedValue({
       active: { provider: "gemini", model: null },
       providers: [{ id: "gemini", name: "Google Gemini", default_model: null }],
@@ -168,8 +168,26 @@ describe("ProviderSection provider catalog", () => {
     render(<ProviderSection />);
 
     await waitFor(() => expect(mocks.getProviders).toHaveBeenCalledOnce());
-    expect(screen.getByLabelText<HTMLInputElement>("Model").placeholder).toBe(
-      "gemini-3.5-flash-lite",
-    );
+    expect(screen.getByLabelText<HTMLInputElement>("Model").placeholder).toBe("model name");
+  });
+
+  it("shows the env vars and setup hint the catalog carries", async () => {
+    mocks.getProviders.mockResolvedValue({
+      active: { provider: "gemini", model: null },
+      providers: [
+        {
+          id: "gemini",
+          name: "Google Gemini",
+          default_model: "gemini-3.5-flash-lite",
+          env_vars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+          setup_hint: "pip install google-genai",
+        },
+      ],
+    });
+
+    render(<ProviderSection />);
+
+    expect(await screen.findByText("pip install google-genai")).toBeTruthy();
+    expect(screen.getByText(/GEMINI_API_KEY/)).toBeTruthy();
   });
 });

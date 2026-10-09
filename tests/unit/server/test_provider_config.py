@@ -303,6 +303,20 @@ def test_config_path_defaults_to_home(monkeypatch, tmp_path):
     assert pc._config_path() == tmp_path / ".repowise" / "provider_config.json"
 
 
+def test_list_provider_status_carries_setup_facts_from_the_specs(clean_env, tmp_path):
+    """The settings UIs render these instead of keeping provider tables."""
+    status = pc.list_provider_status()
+    by_id = {p["id"]: p for p in status["providers"]}
+
+    assert by_id["gemini"]["requires_key"] is True
+    assert by_id["gemini"]["env_vars"] == ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+    assert by_id["ollama"]["requires_key"] is False
+    assert by_id["ollama"]["env_vars"] == ["OLLAMA_BASE_URL"]
+    assert by_id["codex_cli"]["requires_key"] is False
+    assert "codex login" in by_id["codex_cli"]["setup_hint"]
+    assert "mock" not in by_id
+
+
 def test_list_provider_status_never_returns_key_material(clean_env, tmp_path):
     repo = _make_repo(
         tmp_path / "repo",
@@ -315,6 +329,15 @@ def test_list_provider_status_never_returns_key_material(clean_env, tmp_path):
     serialized = repr(status)
     assert "super-secret-key" not in serialized
     for provider in status["providers"]:
-        assert set(provider) == {"id", "name", "models", "default_model", "configured"}
+        assert set(provider) == {
+            "id",
+            "name",
+            "models",
+            "default_model",
+            "configured",
+            "requires_key",
+            "env_vars",
+            "setup_hint",
+        }
         assert "key" not in provider
         assert "api_key" not in provider

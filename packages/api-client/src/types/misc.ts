@@ -27,6 +27,12 @@ export interface ProviderInfo {
   models: string[];
   default_model: string;
   configured: boolean;
+  /** `false` for providers that authenticate without an API key. */
+  requires_key?: boolean;
+  /** Env vars a user sets to make the provider usable. */
+  env_vars?: string[];
+  /** One line on how to install or set it up. */
+  setup_hint?: string;
 }
 
 export interface ProvidersResponse {
