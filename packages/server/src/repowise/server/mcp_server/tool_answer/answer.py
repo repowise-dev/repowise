@@ -123,6 +123,13 @@ from repowise.server.mcp_server.tool_answer.cache import (
     _serve_cached_answer,
     _write_answer_cache,
 )
+from repowise.server.mcp_server.tool_answer.callers import (
+    NO_EVIDENCE,
+    attach_graph_callers,
+    caller_evidence,
+    caller_lines,
+    is_caller_question,
+)
 from repowise.server.mcp_server.tool_answer.confidence import (
     _agreement_dominant,
     _grade_answer,
@@ -433,6 +440,18 @@ async def get_answer(
     homonyms = retrieved.homonyms
     flow_paths = retrieved.flow_paths
 
+    # Caller questions get the graph's callers as evidence; every other
+    # question skips this without a query.
+    graph_callers = NO_EVIDENCE
+    if is_caller_question(question, question_ids):
+        try:
+            async with get_session(ctx.session_factory) as session:
+                graph_callers = await caller_evidence(
+                    session, repo_id, question, question_ids, hits, exclude_spec
+                )
+        except Exception:
+            _log.warning("get_answer: graph caller lookup failed", exc_info=True)
+
     # Computed once, above the early returns (they rate retrieval too). The leg
     # status is read, not inferred from the capped `hits`; see _agreement_dominant.
     agreement_dominant = (
@@ -476,7 +495,7 @@ async def get_answer(
         _retrieval_quality(hits, agreement_dominant),
     )
     if union_payload is not None:
-        return _with_candidates(union_payload, resolved_pool)
+        return _with_candidates(attach_graph_callers(union_payload, graph_callers), resolved_pool)
 
     fallback_targets = [
         h["target_path"]
@@ -519,13 +538,16 @@ async def get_answer(
 
     if not always_synthesize and not dominant:
         return _with_candidates(
-            await build_abstain_payload(
-                question=question,
-                ctx=ctx,
-                hits=hits,
-                fallback_targets=fallback_targets,
-                repository=repository,
-                t0=t0,
+            attach_graph_callers(
+                await build_abstain_payload(
+                    question=question,
+                    ctx=ctx,
+                    hits=hits,
+                    fallback_targets=fallback_targets,
+                    repository=repository,
+                    t0=t0,
+                ),
+                graph_callers,
             ),
             resolved_pool,
         )
@@ -568,6 +590,7 @@ async def get_answer(
             exclude_spec=exclude_spec,
             agreement_dominant=agreement_dominant,
             resolved_pool=resolved_pool,
+            graph_callers=graph_callers,
         )
         degraded_legs = _degraded_legs(_retrieval_legs())
         if degraded_legs:
@@ -597,6 +620,11 @@ async def get_answer(
     prelude = ""
     with contextlib.suppress(Exception):
         prelude = await _build_structured_prelude(hits, decisions, ctx, repo_id)
+    if graph_callers.rows:
+        graph_block = "Callers from the call graph:\n" + "\n".join(
+            f"- {line}" for line in caller_lines(graph_callers.rows)
+        )
+        prelude = f"{prelude}\n\n{graph_block}" if prelude else graph_block
 
     user_prompt = _USER_TEMPLATE.format(
         question=question.strip(),
@@ -663,6 +691,7 @@ async def get_answer(
         exclude_spec=exclude_spec,
     )
 
+    attach_graph_callers(payload, graph_callers)
     if flow_paths:
         payload["flow_path"] = [" -> ".join(p) for p in flow_paths[:2]]
 

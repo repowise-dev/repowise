@@ -279,7 +279,8 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # round of provider spend.
 # 18: rows carry ``candidate_files``, the ranked paths-only list.
 # 19: rows carry ``_candidate_file_facts``; low answers serve slim best_guesses rows.
-_ANSWER_SCHEMA_VERSION = 19
+# 20: caller questions carry ``graph_callers`` and synthesise with them.
+_ANSWER_SCHEMA_VERSION = 20
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.

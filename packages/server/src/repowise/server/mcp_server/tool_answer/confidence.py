@@ -528,7 +528,11 @@ def lead_leaves_retrieval(hits: list[dict], lead: str | None) -> bool:
 
 
 def _degraded_confidence(
-    reason: str, retrieval_quality: str, *, lead_outside_top: bool = False
+    reason: str,
+    retrieval_quality: str,
+    *,
+    lead_outside_top: bool = False,
+    graph_answered: bool = False,
 ) -> str:
     """Grade a synthesis-less payload on what a caller can act on, not on prose.
 
@@ -546,7 +550,12 @@ def _degraded_confidence(
     A strong retrieval still grades "low" when the answer leads with a file it
     does not back (:func:`lead_leaves_retrieval`): "medium" tells the caller to
     start from that lead.
+
+    ``graph_answered`` (a caller question the call graph answered) grades
+    "medium" on its own: the answer then leads with graph edges, not retrieval.
     """
+    if reason == "no-llm-provider" and graph_answered:
+        return "medium"
     if reason != "no-llm-provider" or lead_outside_top:
         return "low"
     return "low" if retrieval_quality == "weak" else "medium"

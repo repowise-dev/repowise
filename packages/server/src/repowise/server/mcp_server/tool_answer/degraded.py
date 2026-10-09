@@ -16,6 +16,11 @@ from repowise.server.mcp_server.tool_answer.bodies import (
     _build_symbol_bodies,
     _gather_body_candidates,
 )
+from repowise.server.mcp_server.tool_answer.callers import (
+    NO_EVIDENCE,
+    CallerEvidence,
+    attach_graph_callers,
+)
 from repowise.server.mcp_server.tool_answer.confidence import (
     _degraded_confidence,
     _retrieval_quality,
@@ -105,6 +110,7 @@ async def _degraded_payload(
     exclude_spec=None,
     agreement_dominant: bool = False,
     resolved_pool: list[dict] | None = None,
+    graph_callers: CallerEvidence = NO_EVIDENCE,
 ) -> dict:
     """Shape a synthesis-less get_answer response.
 
@@ -153,7 +159,10 @@ async def _degraded_payload(
     else:
         lead = code_rationale[0].get("path") if code_rationale else None
     confidence = _degraded_confidence(
-        reason, retrieval_quality, lead_outside_top=lead_leaves_retrieval(hits, lead)
+        reason,
+        retrieval_quality,
+        lead_outside_top=lead_leaves_retrieval(hits, lead),
+        graph_answered=graph_callers.graph_answered,
     )
 
     payload: dict = {
@@ -168,6 +177,7 @@ async def _degraded_payload(
     }
     if best_guesses:
         payload["best_guesses"] = best_guesses
+    attach_graph_callers(payload, graph_callers)
     if code_rationale:
         payload["code_rationale"] = code_rationale
         payload["note"] += (

@@ -291,6 +291,17 @@ def _rewrite_degraded_answer(payload: dict[str, Any]) -> None:
         )
 
 
+def _lead_with_graph_callers(payload: dict[str, Any]) -> None:
+    """Open an answer no model wrote with the callers the graph found.
+
+    Synthesised prose already had them as evidence; the keyless and union
+    replies are assembled text, so the graph's answer has to be stated.
+    """
+    sentence = payload.pop("_graph_callers_answer", None)
+    if sentence and (payload.get("degraded") or payload.get("grounding") == "exact_symbol"):
+        payload["answer"] = f"{sentence} {payload.get('answer') or ''}".rstrip()
+
+
 def _keep(payload: dict[str, Any], key: str, limit: int | None) -> None:
     rows = payload.get(key)
     if not isinstance(rows, list):
@@ -673,6 +684,7 @@ def _project(
     ranked = not expanded and _ranked_list_only(payload)
     if ranked:
         _serve_ranked_list(payload)
+    _lead_with_graph_callers(payload)
     for key in _COLLECTIONS:
         if not payload.get(key):
             payload.pop(key, None)
