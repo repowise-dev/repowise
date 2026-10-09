@@ -47,7 +47,16 @@ def test_registry_exposes_the_shipped_targets() -> None:
     Order is load-bearing: it is the order agents appear in prompts, in
     ``--target=all`` and in listings, and new ids append rather than sort in.
     """
-    assert ALL_IDS == ["claude-code", "codex", "vscode", "cursor", "opencode", "hermes"]
+    assert ALL_IDS == [
+        "claude-code",
+        "codex",
+        "vscode",
+        "cursor",
+        "opencode",
+        "hermes",
+        "copilot",
+        "kiro",
+    ]
 
 
 @pytest.mark.parametrize("target_id", ALL_IDS)
@@ -126,6 +135,8 @@ def test_tiers_are_derived_from_the_adapters_a_target_names() -> None:
     assert tier_of("cursor") is Tier.GOOD
     assert tier_of("opencode") is Tier.GOOD
     assert tier_of("hermes") is Tier.GOOD
+    assert tier_of("copilot") is Tier.GOOD
+    assert tier_of("kiro") is Tier.GOOD
 
 
 def test_a_target_cannot_reach_full_without_a_session_adapter() -> None:
@@ -1074,6 +1085,8 @@ def test_every_target_doctor_survives_a_non_utf8_config(tmp_path: Path, monkeypa
         Path(".claude") / "settings.json",
         Path(".codex") / "hooks.json",
         Path(".config") / "opencode" / "opencode.jsonc",
+        Path(".copilot") / "mcp-config.json",
+        Path(".kiro") / "settings" / "mcp.json",
     ):
         target_file = home / relative
         target_file.parent.mkdir(parents=True, exist_ok=True)
@@ -3594,3 +3607,29 @@ def test_kiro_doctor_reports_each_user_state() -> None:
 def test_kiro_install_notes_that_the_ide_ships_with_mcp_off(tmp_path: Path) -> None:
     result = _kiro().TARGET.install(Scope.USER)
     assert any("MCP disabled" in note for note in result.notes)
+
+
+def test_copilot_instructions_survive_removing_vscode_while_copilot_cli_reads_them(
+    tmp_path: Path,
+) -> None:
+    from repowise.cli.agent_targets.registry import removing
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    vscode_target, copilot_target = get_target("vscode"), get_target("copilot")
+    vscode_target.install(Scope.PROJECT, repo_path=repo)
+    copilot_target.install(Scope.USER)
+    copilot_target.install(Scope.PROJECT, repo_path=repo)
+    path = _copilot_instructions(repo)
+
+    result = vscode_target.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert {f.path: f.action for f in result.files}[path] is FileAction.KEPT
+    assert any("GitHub Copilot CLI" in note for note in result.notes)
+    assert path.exists()
+
+    vscode_target.install(Scope.PROJECT, repo_path=repo)
+    with removing(["vscode", "copilot"]):
+        vscode_target.uninstall(Scope.PROJECT, repo_path=repo)
+        copilot_target.uninstall(Scope.PROJECT, repo_path=repo)
+    assert not path.exists()

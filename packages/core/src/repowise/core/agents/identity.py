@@ -342,6 +342,6 @@ def resolve_client_identity(client_name: str | None) -> str:
 
 #: The agents shipped with repowise, registered through the same seam a
 #: third-party package would use, so the alias-disjointness check covers them too.
-for _shipped in (CLAUDE_CODE, CODEX, VSCODE, CURSOR, OPENCODE, HERMES):
+for _shipped in (CLAUDE_CODE, CODEX, VSCODE, CURSOR, OPENCODE, HERMES, COPILOT, KIRO):
     register_identity(_shipped)
 del _shipped

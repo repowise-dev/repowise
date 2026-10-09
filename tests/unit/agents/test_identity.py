@@ -125,7 +125,7 @@ def test_the_published_target_ids_are_exactly_what_users_already_type() -> None:
 
     ``--target=`` ids are in the README, in INTEGRATIONS.md and in people's
     shell history. Deriving them from the slug is an implementation choice; that
-    the derivation still produces these six strings is the constraint, and
+    the derivation still produces these strings is the constraint, and
     restating the formula here would assert nothing.
     """
     assert [agent.cli_target_id for agent in SHIPPED] == [
@@ -135,6 +135,8 @@ def test_the_published_target_ids_are_exactly_what_users_already_type() -> None:
         "cursor",
         "opencode",
         "hermes",
+        "copilot",
+        "kiro",
     ]
 
 
@@ -188,6 +190,8 @@ def test_registering_a_colliding_alias_is_refused() -> None:
         ("Cursor", "cursor"),
         ("OpenCode", "opencode"),
         ("Hermes", "hermes"),
+        ("GitHub Copilot CLI", "copilot"),
+        ("Kiro", "kiro"),
     ],
 )
 def test_announced_names_resolve_through_punctuation_and_case(
@@ -252,8 +256,8 @@ def test_the_unknown_sentinel_is_labelled_rather_than_echoed() -> None:
     assert identity.get_identity(UNKNOWN_AGENT) is None
 
 
-def test_the_shipped_registry_is_the_six_integrated_agents() -> None:
-    """Frozen, so a seventh is a deliberate edit rather than a side effect."""
+def test_the_shipped_registry_is_the_integrated_agents() -> None:
+    """Frozen, so a new agent is a deliberate edit rather than a side effect."""
     assert [agent.slug for agent in identity.all_identities()] == [
         "claude_code",
         "codex",
@@ -261,6 +265,8 @@ def test_the_shipped_registry_is_the_six_integrated_agents() -> None:
         "cursor",
         "opencode",
         "hermes",
+        "copilot",
+        "kiro",
     ]
 
 
