@@ -23,9 +23,11 @@ log = structlog.get_logger(__name__)
 _MIN_REFERENCE_CONFIDENCE = 0.85
 
 #: Symbol kinds a resolved reference may land on, by how the name was spelled.
-#: See ``_add_reference_edges`` for why a bare name is restricted to functions.
-_BARE_REFERENCE_KINDS = frozenset({"function"})
-_QUALIFIED_REFERENCE_KINDS = frozenset({"function", "method"})
+#: See ``_add_reference_edges`` for why a bare name never reaches a method. A
+#: class is admitted: handing one over (``[FooService]``, ``isinstance(x, Foo)``)
+#: is a use, and no grammar lets a bare class name stand for a local.
+_BARE_REFERENCE_KINDS = frozenset({"function", "class"})
+_QUALIFIED_REFERENCE_KINDS = frozenset({"function", "method", "class"})
 
 #: Languages that share the MSBuild project graph, so the namespace and
 #: partial-class passes below serve both. Call resolution and receiver typing
@@ -717,7 +719,7 @@ class ResolveMixin:
 
         **What may be named depends on how it was written, not on the
         language.** A receiver-less name produces an edge only to a free
-        function: a bare identifier cannot name a member in the languages that
+        function or a class: a bare identifier cannot name a member in the languages that
         spell a reference that way, so a plain name resolving to a method is a
         collision rather than a reference, and C++ names its getters exactly
         like the locals that feed them. Measured on leveldb, admitting methods

@@ -151,8 +151,29 @@ _TS_JS_LANGUAGES = ("typescript", "javascript", "svelte", "vue")
 
 # Languages whose query defines the ``@reference.*`` captures. Every other
 # language would only scan the whole match list to find nothing, so the check
-# is here rather than inside ``_extract_references``.
-_REFERENCE_LANGUAGES = ("cpp", "c", "go", "rust", "kotlin")
+# is here rather than inside ``_extract_references``. The SFC tags reuse the
+# TS captures but stay out: resolution has no local-shadow scan for them.
+_REFERENCE_LANGUAGES = ("cpp", "c", "go", "rust", "kotlin", "typescript", "javascript", "python")
+
+# Languages where a bare name resolves only through the file's own symbols or
+# a name it imports, so any other bare name cannot pass the reference floor.
+_NAMED_BINDING_LANGUAGES = frozenset({"typescript", "javascript", "python"})
+
+
+def _bare_reference_names(
+    language: str, symbols: list[Symbol], imports: list[Import]
+) -> frozenset[str] | None:
+    """Names a receiver-less reference in this file could resolve to, or None for any.
+
+    Most bare identifiers in a value position are locals; dropping them here
+    skips their per-site work. A wildcard import keeps every name.
+    """
+    if language not in _NAMED_BINDING_LANGUAGES:
+        return None
+    imported = {name for imp in imports for name in imp.local_names}
+    if "*" in imported:
+        return None
+    return frozenset(imported.union(s.name for s in symbols))
 
 
 def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
@@ -1448,7 +1469,7 @@ class ASTParser:
         # every non-SFC language.
         calls.extend(component_call_sites(lang, original_source, symbols))
         references = (
-            self._extract_references(matches, file_info, src, symbols)
+            self._extract_references(matches, file_info, src, symbols, imports)
             if lang in _REFERENCE_LANGUAGES
             else []
         )
@@ -2008,6 +2029,7 @@ class ASTParser:
         file_info: FileInfo,
         src: str,
         symbols: list[Symbol],
+        imports: list[Import],
     ) -> list[CallSite]:
         """Extract sites that name a function without calling it.
 
@@ -2017,6 +2039,8 @@ class ASTParser:
         initialiser, and a ``::`` callable reference. Each leaves the named
         function with no inbound edge, which read as a ``safe_to_delete``
         unused export and took out whole handler and interop layers (#1602).
+        TS/JS and Python capture any value position: an argument, a list or
+        object entry, a return, an assignment and a default export.
 
         ``@reference.receiver`` is optional; capturing it is what lets
         ``_add_reference_edges`` restrict a bare name to free functions and
@@ -2051,6 +2075,7 @@ class ASTParser:
             key=lambda t: (t[0], -t[1]),
         )
         callable_ids = {s.id for s in symbols if s.kind in ("function", "method")}
+        bindable = _bare_reference_names(file_info.language, symbols, imports)
 
         references: list[CallSite] = []
         seen: set[tuple[int, str, str | None]] = set()
@@ -2080,6 +2105,8 @@ class ASTParser:
             for name_node, is_table in candidates:
                 name = _node_text(name_node, src).strip()
                 if not name or name in builtins:
+                    continue
+                if bindable is not None and receiver is None and name not in bindable:
                     continue
                 line = name_node.start_point[0] + 1
                 enclosing = _find_enclosing_symbol(line, symbol_ranges)
