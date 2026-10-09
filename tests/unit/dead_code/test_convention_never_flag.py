@@ -9,6 +9,7 @@ from __future__ import annotations
 import networkx as nx
 import pytest
 
+from repowise.core.analysis.dead_code.analyzer import DeadCodeAnalyzer
 from repowise.core.analysis.dead_code.constants import (
     is_runner_file,
     never_flag_match,
@@ -50,6 +51,40 @@ def _unreachable(path: str) -> bool:
 def test_js_tool_convention_files_are_never_flagged(path):
     assert never_flag_match(path)
     assert not _unreachable(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".storybook/main.ts",
+        ".storybook/preview.js",
+        ".storybook/manager.tsx",
+        "packages/ui/.storybook/main.js",
+        "packages/ui/.storybook/preview.ts",
+        "packages/ui/.storybook/manager.jsx",
+    ],
+)
+def test_storybook_config_entrypoints_are_never_flagged(path):
+    assert never_flag_match(path)
+    assert not _unreachable(path)
+    analyzer = DeadCodeAnalyzer(nx.DiGraph(), {})
+    assert analyzer._should_never_flag(path, set())
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/main.ts",
+        "src/preview.ts",
+        "src/manager.js",
+        "storybook/preview.ts",
+        "packages/ui/.storybookish/preview.ts",
+        "packages/ui/.storybook/preview.py",
+    ],
+)
+def test_storybook_config_near_misses_stay_flaggable(path):
+    assert not never_flag_match(path)
+    assert _unreachable(path)
 
 
 @pytest.mark.parametrize(
