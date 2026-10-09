@@ -570,7 +570,7 @@ def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
     does exactly that, and used to skip any row whose ``page_id`` was missing.
     """
     for item in results:
-        derived = f"{item.get('page_type', '')}:{item.get('target_path', '')}"
+        derived = f"{item.get('page_type', '')}:{item.get('target_path') or item.get('path', '')}"
         if item.get("page_id") == derived:
             item.pop("page_id", None)
     return results

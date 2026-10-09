@@ -42,6 +42,18 @@ def test_page_id_dropped_when_page_type_and_target_path_rebuild_it():
     # Lossless: the consumer rebuilds it from what is still there.
     assert f"{results[0]['page_type']}:{results[0]['target_path']}" == "file_page:rich/ansi.py"
 
+def test_page_id_dropped_when_path_rebuilds_it_without_target_path():
+    results = [
+        {
+            "page_id": "file_page:rich/ansi.py",
+            "page_type": "file_page",
+            "path": "rich/ansi.py",
+            "title": "ansi",
+        }
+    ]
+    _drop_derivable_page_ids(results)
+    assert "page_id" not in results[0]
+    assert f"{results[0]['page_type']}:{results[0]['path']}" == "file_page:rich/ansi.py"
 
 def test_page_id_kept_when_it_cannot_be_rebuilt():
     """The other direction, and it is a real case, not a hypothetical.
@@ -67,7 +79,6 @@ def test_symbol_qualified_page_ids_still_rebuild():
     ]
     _drop_derivable_page_ids(results)
     assert "page_id" not in results[0]
-
 
 # ---------------------------------------------------------------------------
 # get_answer.best_guesses[].excerpt — the same slab retrieval[] already carries
