@@ -24,8 +24,10 @@ from repowise.core.test_paths import is_test_path, is_test_related_path
 from repowise.server.mcp_server._answer_pipeline import (
     _RRF_K,
     _RRF_SCORE_SCALE,
+    _SYMBOL_LEG_MAX_PAGES,
     _SYMBOL_LEG_RRF_K,
     _safe_symbol_search,
+    _SymbolLegResult,
 )
 from repowise.server.mcp_server._budget import (
     OmissionCollector,
@@ -48,11 +50,13 @@ from repowise.server.mcp_server._line_hits import attach_line_hits
 from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import (
+    PAGELESS_FILE,
     add_row_paths,
     file_candidates,
     file_path_of,
     hit_file_path,
 )
+from repowise.server.mcp_server._prose_symbols import filename_backed_pages
 from repowise.server.mcp_server._query_shape import (
     _DECISION_DOWNWEIGHT,
     _MIN_RELEVANCE_SCORE,
@@ -268,15 +272,19 @@ def _is_test_query(query: str) -> bool:
     return bool(_TEST_QUERY_RE.search(query))
 
 
+# Rows that are one whole file, with or without a page behind them.
+_FILE_ROW_TYPES = ("file_page", PAGELESS_FILE)
+
+
 def _is_test_page(item: dict) -> bool:
-    """True when a hit is a file_page documenting a test file.
+    """True when a hit is a whole-file row for a test file.
 
     Tests only, deliberately not test support: a ``conftest.py`` or a fixture
     module is often exactly what the person searching wanted, so it keeps its
     rank. The ``kind`` filter counts both (see :func:`_classify_hit_kind`) —
     asking for tests and asking to rank tests lower are different questions.
     """
-    return item.get("page_type") == "file_page" and is_test_path(item.get("target_path") or "")
+    return item.get("page_type") in _FILE_ROW_TYPES and is_test_path(item.get("target_path") or "")
 
 
 def _downweight_test_pages(output: list[dict], query: str) -> None:
@@ -481,7 +489,7 @@ def _classify_hit_kind(target_path: str, page_type: str) -> str:
     tp = (target_path or "").lower()
     if page_type in ("module_page", "symbol_spotlight") or tp.endswith(".md"):
         return "doc"
-    if not tp or page_type not in ("file_page",):
+    if not tp or page_type not in _FILE_ROW_TYPES:
         return "doc"
     if any(tok in tp for tok in _CONFIG_PATH_TOKENS):
         return "config"
@@ -528,7 +536,7 @@ def _attach_paths(output: list[dict], page_info: dict) -> None:
     takes gold containment from 19 to 39 of 50 instances.
     """
     for item in output:
-        item["target_path"] = page_info.get(item["page_id"], "")
+        item["target_path"] = page_info.get(item["page_id"], item.get("target_path", ""))
         if "::" in item["target_path"]:
             item["symbol_id"] = symbol_identity(item["target_path"])
             item["target_path"] = path_identity(item["target_path"].split("::", 1)[0])
@@ -563,7 +571,8 @@ def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
     for item in results:
         target = item.get("target_path") or item.get("path", "")
         derived = f"{item.get('page_type', '')}:{target}"
-        if item.get("page_id") == derived:
+        # A row for a file with no page has an id that names no page.
+        if item.get("page_id") == derived or item.get("page_type") == PAGELESS_FILE:
             item.pop("page_id", None)
     return results
 
@@ -693,6 +702,26 @@ async def _safe_vector(ctx, query: str, limit: int) -> list:
     return []
 
 
+_FILENAME_LEG_RRF_K = _SYMBOL_LEG_RRF_K
+
+
+async def _safe_filename_search(ctx, query: str) -> list[tuple[_SymbolLegResult, bool]]:
+    """Files whose file name the query spells, each with whether it spells all of
+    the name. Bounded and failure-swallowing."""
+    with contextlib.suppress(Exception):
+        pages = await asyncio.wait_for(
+            filename_backed_pages(ctx, query, max_files=_SYMBOL_LEG_MAX_PAGES), timeout=5.0
+        )
+        return [
+            (
+                _SymbolLegResult(p["page_id"], p["title"], p["summary"][:200], p["page_type"], []),
+                p["full_cover"],
+            )
+            for p in pages
+        ]
+    return []
+
+
 def _symbol_leg_target(fused: dict[str, dict], page_id: str) -> str:
     """The fused page a symbol-leg file page credits: the best page of its file.
 
@@ -712,7 +741,7 @@ def _symbol_leg_target(fused: dict[str, dict], page_id: str) -> str:
 
 def _fused_entry(r) -> dict:
     """Seed a fused-result dict from a retriever hit (RRF score added by caller)."""
-    return {
+    entry = {
         "page_id": r.page_id,
         "title": r.title,
         "page_type": r.page_type,
@@ -720,6 +749,10 @@ def _fused_entry(r) -> dict:
         "_rrf": 0.0,
         "_sources": set(),
     }
+    if r.page_type == PAGELESS_FILE:
+        # No page row to load it from later.
+        entry["target_path"] = r.page_id.partition(":")[2]
+    return entry
 
 
 async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | None) -> list[dict]:
@@ -728,8 +761,10 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
     The retrievers run in parallel; a hit's score is the sum of
     ``1/(rank + k)`` over the retrievers that surfaced it, scaled into the
     BM25 range the downstream relevance gates were tuned against. Each hit
-    carries a ``sources`` list (``"fts"``, ``"vector"``, ``"symbol"``): a page
-    found by several retrievers is a stronger match than one found by one mode.
+    carries a ``sources`` list (``"fts"``, ``"vector"``, ``"symbol"``,
+    ``"filename"``): a page found by several retrievers is a stronger match
+    than one found by one mode. The symbol and filename legs also name files
+    that have no page, as ``page_type: "file"`` rows.
 
     This mirrors get_answer's ``hybrid_retrieve`` so the two entry points rank
     the same corpus identically. The prior path ran vector search and fell
@@ -743,10 +778,11 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
     (for RRF) is the hit's place in the retriever's own list, unchanged by the
     floor.
     """
-    fts_results, vec_results, sym_results = await asyncio.gather(
+    fts_results, vec_results, sym_results, name_results = await asyncio.gather(
         _safe_fts(ctx, query, fetch_limit),
         _safe_vector(ctx, query, fetch_limit),
-        _safe_symbol_search(ctx, query),
+        _safe_symbol_search(ctx, query, pageless=True),
+        _safe_filename_search(ctx, query),
     )
 
     fused: dict[str, dict] = {}
@@ -762,12 +798,22 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
         entry = fused.setdefault(r.page_id, _fused_entry(r))
         entry["_rrf"] += 1.0 / (rank + _RRF_K)
         entry["_sources"].add("fts")
-    # File pages whose symbol names the query's words spell. Weighted below the
-    # page legs, as in get_answer; it has no raw score to floor.
+    # Files whose symbol names the query's words spell, paged or not. Weighted
+    # below the page legs, as in get_answer; it has no raw score to floor.
     for rank, r in enumerate(sym_results):
         entry = fused.setdefault(_symbol_leg_target(fused, r.page_id), _fused_entry(r))
         entry["_rrf"] += 1.0 / (rank + _SYMBOL_LEG_RRF_K)
         entry["_sources"].add("symbol")
+    # Files whose file name the query's words spell, weighted as a name match.
+    # It adds files the other legs missed and never reorders a page they found.
+    # A name of three or more words the query spells in full weighs like a page hit.
+    for rank, (r, full) in enumerate(name_results):
+        target = _symbol_leg_target(fused, r.page_id)
+        if target in fused and r.page_type != PAGELESS_FILE:
+            continue
+        entry = fused.setdefault(target, _fused_entry(r))
+        entry["_rrf"] += 1.0 / (rank + (_RRF_K if full else _FILENAME_LEG_RRF_K))
+        entry["_sources"].add("filename")
 
     output: list[dict] = []
     for entry in fused.values():
@@ -778,6 +824,28 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
         output.append(entry)
     output.sort(key=lambda item: item["relevance_score"], reverse=True)
     return output
+
+
+def _rerank_pages_first(output: list[dict], query: str) -> list[dict]:
+    """Coverage rerank whose window weights come from the pages alone.
+
+    The weights are relative to the window, so rows for files without a page
+    would reorder the pages among themselves. They are scored against a copy
+    of the pages instead, and only take their own place among them.
+    """
+    pages = [item for item in output if item.get("page_type") != PAGELESS_FILE]
+    pageless = [item for item in output if item.get("page_type") == PAGELESS_FILE]
+    if pageless:
+        rerank_by_context_coverage(
+            [dict(item) for item in pages] + pageless,
+            query,
+            score_key="relevance_score",
+            floor=0.5,
+        )
+    pages = rerank_by_context_coverage(pages, query, score_key="relevance_score", floor=0.5)
+    if not pageless:
+        return pages
+    return sorted(pages + pageless, key=lambda item: item.get("relevance_score", 0.0), reverse=True)
 
 
 async def _search_single_repo(
@@ -1317,12 +1385,7 @@ async def search_codebase(
         # Re-sort by adjusted relevance with retrieval noise (decisions on
         # non-why queries, test pages on non-test queries) hard-demoted, then
         # collapse near-duplicate decisions to one.
-        output = rerank_by_context_coverage(
-            output,
-            query,
-            score_key="relevance_score",
-            floor=0.5,
-        )
+        output = _rerank_pages_first(output, query)
         # After the coverage rerank, whose window-relative weights cannot tell
         # a word rare across the repo from one rare in these few hits.
         boost_named_paths(

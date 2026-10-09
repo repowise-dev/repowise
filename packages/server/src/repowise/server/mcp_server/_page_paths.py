@@ -16,6 +16,10 @@ it.
 
 from __future__ import annotations
 
+# A search row for an indexed file that has no wiki page: its ``target_path``
+# is the file, and there is no page behind its id to read.
+PAGELESS_FILE = "file"
+
 # Page types whose ``target_path`` is a real repository-relative file path.
 #
 # ``symbol_spotlight`` is included because its target_path is ``file.py::Sym``:
@@ -28,6 +32,7 @@ from __future__ import annotations
 FILE_BACKED_PAGE_TYPES: frozenset[str] = frozenset(
     {
         "file_page",
+        PAGELESS_FILE,
         "symbol_spotlight",
         "api_contract",
         "infra_page",

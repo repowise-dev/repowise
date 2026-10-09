@@ -528,7 +528,9 @@ class _SymbolLegResult:
         self.symbol_names = symbol_names
 
 
-async def _safe_symbol_search(ctx: Any, question: str) -> list[_SymbolLegResult]:
+async def _safe_symbol_search(
+    ctx: Any, question: str, *, pageless: bool = False
+) -> list[_SymbolLegResult]:
     """File pages whose symbols the question's words name. [] on any failure.
 
     Ungated: it runs on every question, not only on ones that happen to carry
@@ -539,7 +541,8 @@ async def _safe_symbol_search(ctx: Any, question: str) -> list[_SymbolLegResult]
 
     Best-effort with a timeout, like the other two legs: a slow or missing
     symbol index degrades ``get_answer`` to its previous behaviour rather than
-    failing the call.
+    failing the call. ``pageless`` keeps files that have no page, as pageless
+    rows, for a caller that can serve them.
     """
     try:
         pages = await asyncio.wait_for(
@@ -548,6 +551,7 @@ async def _safe_symbol_search(ctx: Any, question: str) -> list[_SymbolLegResult]
                 question,
                 max_files=_SYMBOL_LEG_MAX_PAGES,
                 symbol_limit=_SYMBOL_LEG_FETCH_LIMIT,
+                pageless=pageless,
             ),
             timeout=5.0,
         )
