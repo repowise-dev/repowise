@@ -903,11 +903,22 @@ class TestEverySnippetIsMasked:
     def test_a_repeated_value_masks_in_linear_time(self) -> None:
         import time
 
-        line = " ".join(f'password = "{self.PW}";' for _ in range(5000))
-        started = time.perf_counter()
-        (hit,) = scan_source("a.py", line + "\n")
-        assert time.perf_counter() - started < 1.0
-        _assert_no_raw(hit["snippet"], self.PW)
+        sources = [
+            " ".join(f'password = "{self.PW}";' for _ in range(count)) + "\n"
+            for count in (2500, 10000)
+        ]
+        timings: list[list[float]] = [[], []]
+        # Alternate sizes and take the best of three runs to reduce scheduling noise.
+        for _ in range(3):
+            for source, samples in zip(sources, timings, strict=True):
+                started = time.perf_counter()
+                (hit,) = scan_source("a.py", source)
+                samples.append(time.perf_counter() - started)
+                _assert_no_raw(hit["snippet"], self.PW)
+
+        small, large = (min(samples) for samples in timings)
+        # A 4x input should take about 4x as long, not the 16x of quadratic work.
+        assert large < 8 * small, f"4x input took {large / small:.2f}x as long"
 
     def test_long_github_pat_straddling_the_cut_is_masked(self) -> None:
         pat = "github_pat_" + "".join(chr(ord("A") + (i * 7) % 26) for i in range(82))
