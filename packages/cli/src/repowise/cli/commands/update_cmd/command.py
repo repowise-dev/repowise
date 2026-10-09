@@ -61,6 +61,8 @@ from .persistence import (
     _run_full_health_rescore,
     heal_commit_offsets,
     health_analyzer_changed,
+    health_dependency_changed,
+    health_dependency_fingerprint,
     parser_changed,
     stamp_head_commit,
 )
@@ -2463,8 +2465,12 @@ def run_update(
     # config edit invalidates every persisted score, and the partial health
     # update only reaches the changed files. Reusing this hook is what makes
     # falling through cost nothing extra — the graph is already built.
+    dependency_fingerprint = health_dependency_fingerprint(graph_builder.graph())
+    dependency_changed = health_dependency_changed(
+        state, graph_builder.graph(), dependency_fingerprint
+    )
     rescored = False
-    if health_config_changed or extraction_changed or full_rescore_due(state, head_ts):
+    if health_config_changed or extraction_changed or dependency_changed or full_rescore_due(state, head_ts):
         with timed(timings, "rescore"):
             rescored = run_decay_health_rescore(
                 repo_path, graph_builder, parsed_files, exclude_patterns
@@ -2477,6 +2483,8 @@ def run_update(
         if head_ts is not None:
             state["last_full_rescore_at"] = head_ts
         state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+    if rescored or not dependency_changed:
+        state["health_dependency_fingerprint"] = dependency_fingerprint
     if health_config_changed and not rescored:
         raise RuntimeError(
             "Configuration-triggered health re-score failed; the previous "
