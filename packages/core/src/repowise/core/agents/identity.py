@@ -197,7 +197,12 @@ CODEX = AgentIdentity(
     indexing_provider="codex_cli",
 )
 VSCODE = AgentIdentity(slug="vscode", display_name="VS Code", executable="code")
-CURSOR = AgentIdentity(slug="cursor", display_name="Cursor", executable="cursor")
+CURSOR = AgentIdentity(
+    slug="cursor",
+    display_name="Cursor",
+    hook_adapter="cursor",
+    executable="cursor",
+)
 OPENCODE = AgentIdentity(
     slug="opencode",
     display_name="OpenCode",

@@ -15,7 +15,7 @@ only by wiring instructions or skills beside MCP, so no document can claim
 a depth the integration does not have.
 
 - **Full.** MCP tools, a managed instructions file, skills, slash commands, hook-level interception of tool calls, and transcript mining after the fact. Every surface repowise has.
-- **Good.** MCP tools plus a managed instructions file or skills, so the agent is told when to reach for them. **No hook-level interception and no transcript mining.** The agent can ask repowise questions; repowise cannot see or annotate what the agent does in between.
+- **Good.** MCP tools plus a managed instructions file or skills, so the agent is told when to reach for them. **No transcript mining, and hooks only where the matrix says so.** The agent can ask repowise questions; repowise sees little or nothing of what it does in between.
 - **Basic.** repowise writes the MCP server config and nothing else. The tools are there; no instructions file or skill tells the agent when to use them.
 - **Paste-config.** `repowise agents print-config <id>` emits the MCP server snippet and we write nothing. Zero code and zero maintenance per host.
 
@@ -32,7 +32,7 @@ example). It is separate from the tier: it says nothing about the session.
 | [Claude Code](https://docs.claude.com/en/docs/claude-code) | Full | Yes | Yes | Plugin | Plugin | Yes | Yes | Yes |
 | [Codex CLI](https://developers.openai.com/codex/cli) | Full | Yes | Yes | Plugin | Yes | Yes | Yes | Yes |
 | [VS Code](https://code.visualstudio.com/docs/copilot/chat/mcp-servers) | Good | Yes | No | No | No | Yes | No | No |
-| [Cursor](https://cursor.com/docs/context/mcp) | Good | Yes | No | No | No | Yes | No | No |
+| [Cursor](https://cursor.com/docs/context/mcp) | Good | Yes | Yes | No | No | Yes | No | No |
 | [OpenCode](https://opencode.ai/docs/mcp-servers/) | Good | Yes | No | No | No | Yes | No | Yes |
 | [Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | Good | Yes | No | No | No | Yes | No | No |
 | [GitHub Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) | Good | Yes | No | No | No | Yes | No | No |
@@ -48,6 +48,9 @@ They do **not** get hook-level interception: repowise never sees a tool
 call before it runs, never rewrites a noisy command, and never annotates
 a result afterwards. Nor is there transcript mining, so nothing learns
 from the session after it ends.
+
+The one exception is hooks: Cursor runs the distill command-rewrite hook,
+so noisy commands are rewritten there. Transcript mining is still absent.
 
 That is a real integration and it is most of the value. It is not the
 same product Full-tier agents get, and breadth that overclaims depth is

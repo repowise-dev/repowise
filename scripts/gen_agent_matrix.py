@@ -74,9 +74,9 @@ TIER_BLURBS: dict[str, tuple[str, str]] = {
     "good": (
         "Good",
         "MCP tools plus a managed instructions file or skills, so the agent is "
-        "told when to reach for them. **No hook-level interception and no "
-        "transcript mining.** The agent can ask repowise questions; repowise "
-        "cannot see or annotate what the agent does in between.",
+        "told when to reach for them. **No transcript mining, and hooks only "
+        "where the matrix says so.** The agent can ask repowise questions; "
+        "repowise sees little or nothing of what it does in between.",
     ),
     "basic": (
         "Basic",
@@ -292,6 +292,7 @@ def render() -> str:
     counts = tool_counts()
     ids = ", ".join(f"`{row['id']}`" for row in rows)
     good = [row["display_name"] for row in rows if row["tier"] == "good"]
+    hooked = [row["display_name"] for row in rows if row["tier"] == "good" and row["hook_adapter"]]
     basic = [row["display_name"] for row in rows if row["tier"] == "basic"]
 
     parts = [
@@ -339,6 +340,15 @@ def render() -> str:
             "a result afterwards. Nor is there transcript mining, so nothing learns",
             "from the session after it ends.",
             "",
+        ]
+        if hooked:
+            parts += [
+                f"The one exception is hooks: {_join_names(hooked)} "
+                f"{'runs' if len(hooked) == 1 else 'run'} the distill command-rewrite hook,",
+                "so noisy commands are rewritten there. Transcript mining is still absent.",
+                "",
+            ]
+        parts += [
             "That is a real integration and it is most of the value. It is not the",
             "same product Full-tier agents get, and breadth that overclaims depth is",
             "worse than narrower breadth.",

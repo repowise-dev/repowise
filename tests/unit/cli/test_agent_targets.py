@@ -25,6 +25,7 @@ from repowise.cli.agent_targets.registry import (
 )
 from repowise.cli.agent_targets.types import (
     AgentTarget,
+    DoctorStatus,
     FileAction,
     Scope,
     Tier,
@@ -278,10 +279,37 @@ def test_vscode_declines_user_scope() -> None:
     assert not get_target("vscode").supports_scope(Scope.USER)
 
 
-def test_cursor_declines_user_scope() -> None:
-    """One global entry can only name one repo, so this target does not write one."""
-    assert get_target("cursor").supports_scope(Scope.PROJECT)
-    assert not get_target("cursor").supports_scope(Scope.USER)
+def test_cursor_user_scope_writes_only_the_rewrite_hook(
+    _isolated_home: Path, cursor_hooks_json: Path
+) -> None:
+    """User scope is the hook in ``~/.cursor/hooks.json``; never a global MCP entry."""
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    target = get_target("cursor")
+    hooks = cursor_hooks_json
+    assert target.doctor().status is DoctorStatus.NOT_INSTALLED
+
+    first = target.install(Scope.USER)
+    assert [(f.path, f.action) for f in first.files] == [(hooks, FileAction.CREATED)]
+    assert not (_isolated_home / ".cursor" / "mcp.json").exists()
+    assert target.install(Scope.USER).files[0].action is FileAction.UNCHANGED
+    assert [r.scope for r in cursor_target.detect(None)] == [Scope.USER]
+    assert target.doctor().status is DoctorStatus.OK
+
+    removed = target.uninstall(Scope.USER)
+    assert [(f.path, f.action) for f in removed.files] == [(hooks, FileAction.REMOVED)]
+    assert cursor_target.detect(None) == []
+    assert target.uninstall(Scope.USER).files[0].action is FileAction.NOT_FOUND
+
+
+def test_cursor_user_scope_keeps_a_hooks_file_it_cannot_parse(cursor_hooks_json: Path) -> None:
+    target = get_target("cursor")
+    hooks = cursor_hooks_json
+    hooks.write_text('{"hooks": {"preToolUse": [{"command": "repowise-rewrite"', encoding="utf-8")
+
+    assert target.install(Scope.USER).files[0].action is FileAction.KEPT
+    assert target.uninstall(Scope.USER).files[0].action is FileAction.KEPT
+    assert target.doctor().status is DoctorStatus.BROKEN
 
 
 def test_cursor_writes_its_own_config_key_not_vs_codes() -> None:

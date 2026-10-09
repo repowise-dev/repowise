@@ -28,6 +28,7 @@ from repowise.cli.agent_adapters.base import AgentAdapter, RewriteRequest, Rewri
 _REGISTRY: dict[str, str] = {
     "claude-code": "repowise.cli.agent_adapters.claude_code:ClaudeCodeAdapter",
     "codex": "repowise.cli.agent_adapters.codex:CodexAdapter",
+    "cursor": "repowise.cli.agent_adapters.cursor:CursorAdapter",
 }
 
 #: What an unmarked payload is. Claude Code's hook config passes no marker,
