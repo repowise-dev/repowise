@@ -638,13 +638,25 @@ def _astro_byte_scan(source: bytes, state: dict) -> None:
     HTML or ``{/* */}`` comment or a ``<style>`` body is skipped. PascalCase
     tags in the markup mint component call edges, as for Svelte.
     """
-    pos = 0
+    markup_start = 0
     frontmatter = _ASTRO_FRONTMATTER.match(source)
     if frontmatter:
         state["spans"].append(frontmatter.span(1))
-        pos = frontmatter.end()
-    markup_start = pos
+        markup_start = frontmatter.end()
+    hidden = _astro_record_scripts(source, markup_start, state)
 
+    # shortcut: a TS generic inside a markup {expr} (``Array<Foo>``) reads as a
+    # <Foo> tag; fine until a false component edge shows up in a real repo.
+    for tag in _ASTRO_TAG.finditer(source, markup_start):
+        if any(start <= tag.start() < end for start, end in hidden):
+            continue
+        name = _astro_component_name(tag.group(1).decode("utf-8").rsplit(".", 1)[-1])
+        if name:
+            state["tags"].append((name, source.count(b"\n", 0, tag.start()) + 1))
+
+
+def _astro_record_scripts(source: bytes, pos: int, state: dict) -> list[tuple[int, int]]:
+    """Record JS ``<script>`` bodies from ``pos`` on; return the comment, script and style ranges."""
     hidden: list[tuple[int, int]] = []
     while (opener := _ASTRO_OPENER.search(source, pos)) is not None:
         if opener.group(1) is not None:
@@ -663,22 +675,18 @@ def _astro_byte_scan(source: bytes, state: dict) -> None:
             continue
         close_match = _ASTRO_CLOSE[tag].search(source, opener.end())
         end = close_match.start() if close_match else len(source)
-        script_type = _ASTRO_SCRIPT_TYPE.search(attrs)
-        if tag == b"script" and (
-            script_type is None or script_type.group(1).lower() in _ASTRO_JS_TYPES
-        ):
+        if _astro_is_js_script(tag, attrs):
             state["spans"].append((opener.end(), end))
         hidden.append((opener.start(), end))
         pos = close_match.end() if close_match else end
+    return hidden
 
-    # shortcut: a TS generic inside a markup {expr} (``Array<Foo>``) reads as a
-    # <Foo> tag; fine until a false component edge shows up in a real repo.
-    for tag in _ASTRO_TAG.finditer(source, markup_start):
-        if any(start <= tag.start() < end for start, end in hidden):
-            continue
-        name = _astro_component_name(tag.group(1).decode("utf-8").rsplit(".", 1)[-1])
-        if name:
-            state["tags"].append((name, source.count(b"\n", 0, tag.start()) + 1))
+
+def _astro_is_js_script(tag: bytes, attrs: bytes) -> bool:
+    if tag != b"script":
+        return False
+    script_type = _ASTRO_SCRIPT_TYPE.search(attrs)
+    return script_type is None or script_type.group(1).lower() in _ASTRO_JS_TYPES
 
 
 def _astro_component_name(name: str) -> str | None:
