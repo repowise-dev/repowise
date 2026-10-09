@@ -59,6 +59,7 @@ export function ProviderSection() {
   // this page keeps no copy of its own; until it loads, only the saved
   // provider and the flag-only ones are offered.
   const [catalog, setCatalog] = useState<ProviderInfo[]>([]);
+  const [catalogFailed, setCatalogFailed] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
 
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -76,6 +77,7 @@ export function ProviderSection() {
       })
       .catch((error: unknown) => {
         console.warn("[settings] Could not load the active server provider", error);
+        if (!cancelled) setCatalogFailed(true);
       });
     return () => {
       cancelled = true;
@@ -155,6 +157,11 @@ export function ProviderSection() {
               </SelectContent>
             </Select>
             {providerInfo && <EnvVarLine vars={providerInfo.env_vars ?? []} />}
+            {catalogFailed && (
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                {t("provider.catalogUnavailable")}
+              </p>
+            )}
           </div>
         </SettingsRow>
 

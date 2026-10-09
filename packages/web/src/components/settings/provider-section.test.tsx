@@ -63,6 +63,7 @@ describe("ProviderSection server provider", () => {
     expect(
       screen.getByText("Used when you trigger init or sync from this dashboard."),
     ).toBeTruthy();
+    expect(await screen.findByText(/Could not load the provider list/)).toBeTruthy();
   });
 });
 
