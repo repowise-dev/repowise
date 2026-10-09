@@ -40,20 +40,23 @@ prose-to-symbol search useless.
 
 from __future__ import annotations
 
-from typing import Any
+from collections import Counter
+from collections.abc import Iterable
+from typing import Any, NamedTuple
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Page, WikiSymbol
 from repowise.core.test_paths import is_test_path, is_test_related_path
+from repowise.server.mcp_server._graph_files import per_index
 from repowise.server.mcp_server._helpers import (
-    LIKE_ESCAPE,
     _get_exclude_spec,
     _get_repo,
-    escape_like,
     is_excluded,
 )
+from repowise.server.mcp_server._hit_symbols import _stem
+from repowise.server.mcp_server._query_terms import STOPWORDS
 from repowise.server.mcp_server._query_terms import content_terms as content_terms
 from repowise.server.mcp_server.tool_search_symbols import (
     _symbol_kind_for_request_kind,
@@ -86,31 +89,106 @@ _LEAF_NAME_BONUS = 15.0
 # the question; the bare member name alone is deliberately insufficient.
 _GENERIC_MEMBER_NAMES = frozenset({"get", "run", "main"})
 
+# A name built out of the question's words: at least this many of them, making
+# up at least this share of the name's own words. Two common words meeting in
+# one short name is rare even when each word alone is everywhere.
+_NAME_COVER_MIN_WORDS = 2
+_NAME_COVER_MIN_SHARE = 2 / 3
 
-async def _candidates_for_term(session, repo_id: str, term: str) -> tuple[list[WikiSymbol], bool]:
+
+class _SymbolTextIndex(NamedTuple):
+    """One repo's symbols as plain text, by position, for in-process matching."""
+
+    symbol_ids: tuple[str, ...]
+    names: tuple[str, ...]
+    # Lowercased name, qualified name and path, space-joined (no term has a
+    # space, so none can match across two fields).
+    haystacks: tuple[str, ...]
+    postings: dict[str, tuple[int, ...]]  # name word -> positions whose name has it
+
+
+async def _symbol_text_index(session, repo_id: str) -> _SymbolTextIndex:
+    """Built once per index state; every question after that matches in memory.
+
+    Scanning the symbol table per term with ``LIKE`` cost hundreds of
+    milliseconds a term on a large repo, which made this leg the slowest part
+    of a search. The table only changes with the index.
+    """
+
+    async def build() -> _SymbolTextIndex:
+        res = await session.execute(
+            select(
+                WikiSymbol.symbol_id,
+                WikiSymbol.name,
+                WikiSymbol.qualified_name,
+                WikiSymbol.file_path,
+            ).where(WikiSymbol.repository_id == repo_id)
+        )
+        rows = res.all()
+        postings: dict[str, list[int]] = {}
+        for i, row in enumerate(rows):
+            for word in _name_words(row[1]):
+                postings.setdefault(word, []).append(i)
+        return _SymbolTextIndex(
+            tuple(row[0] for row in rows),
+            tuple(row[1] or "" for row in rows),
+            tuple(f"{row[1] or ''} {row[2] or ''} {row[3] or ''}".lower() for row in rows),
+            {word: tuple(pos) for word, pos in postings.items()},
+        )
+
+    return await per_index(session, repo_id, "prose_symbol_text", build)
+
+
+def _candidates_for_term(index: _SymbolTextIndex, term: str) -> tuple[list[int], bool]:
     """Up to :data:`_PER_TERM_CANDIDATES` symbols whose identity mentions *term*.
 
-    Returns ``(rows, saturated)``. Shorter names first: a term is a larger
+    Returns ``(positions, saturated)``. Shorter names first: a term is a larger
     share of a short name, so ``persist`` identifies ``persist_pages`` far
     more strongly than it identifies ``_persist_symbols_for_changed_files``,
     and the window should not be spent on the latter.
     """
-    esc = escape_like(term)
-    stmt = (
-        select(WikiSymbol)
-        .where(
-            WikiSymbol.repository_id == repo_id,
-            or_(
-                WikiSymbol.name.ilike(f"%{esc}%", escape=LIKE_ESCAPE),
-                WikiSymbol.qualified_name.ilike(f"%{esc}%", escape=LIKE_ESCAPE),
-                WikiSymbol.file_path.ilike(f"%{esc}%", escape=LIKE_ESCAPE),
-            ),
-        )
-        .order_by(func.length(WikiSymbol.name))
-        .limit(_PER_TERM_CANDIDATES)
+    needle = term.lower()
+    hits = [i for i, text in enumerate(index.haystacks) if needle in text]
+    hits.sort(key=lambda i: len(index.names[i]))
+    window = hits[:_PER_TERM_CANDIDATES]
+    return window, len(window) >= _PER_TERM_CANDIDATES
+
+
+def _name_cover_candidates(index: _SymbolTextIndex, terms: list[str]) -> list[int]:
+    """Symbols whose name the query's words mostly spell (see :func:`_name_covered`).
+
+    The per-term windows rank by name length, so a long name that combines two
+    saturated words (``dynamic`` + ``import``) falls outside both of them. This
+    asks for the combination directly, from the inverted name words.
+    """
+    stems = {_stem(t) for t in terms}
+    if len(stems) < _NAME_COVER_MIN_WORDS:
+        return []
+    hits: Counter[int] = Counter()
+    for stem in stems:
+        hits.update(index.postings.get(stem, ()))
+    covered = [
+        i
+        for i, n in hits.items()
+        if n >= _NAME_COVER_MIN_WORDS
+        and n >= _NAME_COVER_MIN_SHARE * len(_name_words(index.names[i]))
+    ]
+    covered.sort(key=lambda i: (-hits[i], len(index.names[i]), index.symbol_ids[i]))
+    return covered[:_PER_TERM_CANDIDATES]
+
+
+def _name_words(name: str | None) -> set[str]:
+    """The stemmed non-stopword words of a symbol's own name."""
+    return {_stem(t) for t in _tokens(name) if t not in STOPWORDS}
+
+
+def _name_covered(row: WikiSymbol, terms: Iterable[str]) -> bool:
+    """Whether the question's words make up most of *row*'s name."""
+    words = _name_words(row.name)
+    hit = words & {_stem(t) for t in terms}
+    return (
+        len(hit) >= _NAME_COVER_MIN_WORDS and len(hit) >= _NAME_COVER_MIN_SHARE * len(words)
     )
-    rows = list((await session.execute(stmt)).scalars().all())
-    return rows, len(rows) >= _PER_TERM_CANDIDATES
 
 
 def _score(
@@ -158,6 +236,8 @@ def _corroborated(row: WikiSymbol, covered: dict[str, float], saturated: set[str
         return False
     name = (row.name or "").lower()
     informative = {term for term in covered if term not in saturated}
+    if _name_covered(row, set(covered)):
+        return True
     if name in _GENERIC_MEMBER_NAMES:
         return any(term != name for term in informative)
     if name in informative:
@@ -187,18 +267,26 @@ async def search_symbols_by_terms(
 
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-        by_id: dict[str, WikiSymbol] = {}
+        index = await _symbol_text_index(session, repository.id)
         matched: dict[str, set[str]] = {}
         saturated: set[str] = set()
         for term in terms:
-            rows, is_saturated = await _candidates_for_term(session, repository.id, term)
+            window, is_saturated = _candidates_for_term(index, term)
             if is_saturated:
                 saturated.add(term)
-            for row in rows:
-                by_id[row.symbol_id] = row
-                matched.setdefault(row.symbol_id, set()).add(term)
-        if not by_id:
+            for i in window:
+                matched.setdefault(index.symbol_ids[i], set()).add(term)
+        for i in _name_cover_candidates(index, terms):
+            matched.setdefault(index.symbol_ids[i], set())
+        if not matched:
             return []
+        res = await session.execute(
+            select(WikiSymbol).where(
+                WikiSymbol.repository_id == repository.id,
+                WikiSymbol.symbol_id.in_(list(matched)),
+            )
+        )
+        by_id = {row.symbol_id: row for row in res.scalars().all()}
 
         gres = await session.execute(
             select(GraphNode).where(
@@ -232,6 +320,11 @@ async def search_symbols_by_terms(
             for t in matched.get(symbol_id, ())
             if _covers(t, stoks)
         }
+        # Words that together spell most of the name are one signal, not
+        # several common words, so they count in full.
+        if _name_covered(row, terms):
+            words = _name_words(row.name)
+            covered.update({t: 1.0 for t in terms if _stem(t) in words})
         if not _corroborated(row, covered, saturated):
             continue
         scored.append((_score(row, gnode, covered), row))

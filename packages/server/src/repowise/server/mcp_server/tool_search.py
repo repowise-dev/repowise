@@ -20,7 +20,12 @@ from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.core.test_paths import is_test_path, is_test_related_path
-from repowise.server.mcp_server._answer_pipeline import _RRF_K, _RRF_SCORE_SCALE
+from repowise.server.mcp_server._answer_pipeline import (
+    _RRF_K,
+    _RRF_SCORE_SCALE,
+    _SYMBOL_LEG_RRF_K,
+    _safe_symbol_search,
+)
 from repowise.server.mcp_server._budget import (
     OmissionCollector,
     register_post_enforce,
@@ -41,8 +46,12 @@ from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
 from repowise.server.mcp_server._line_hits import attach_line_hits
 from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._page_paths import add_row_paths, file_candidates, hit_file_path
-from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
+from repowise.server.mcp_server._page_paths import (
+    add_row_paths,
+    file_candidates,
+    file_path_of,
+    hit_file_path,
+)
 from repowise.server.mcp_server._query_shape import (
     _DECISION_DOWNWEIGHT,
     _MIN_RELEVANCE_SCORE,
@@ -407,47 +416,23 @@ def _symbol_tail_reserve(limit: int) -> int:
     return limit // _SYMBOL_TAIL_DIVISOR
 
 
-async def _append_symbol_backed(
-    ctx, query: str, output: list[dict], limit: int, kind: str | None
-) -> list[dict]:
-    """Give the weakest tail slots to files the symbol index reached.
+def _reserve_symbol_tail(output: list[dict], limit: int, kind: str | None) -> list[dict]:
+    """Give the weakest window slots to symbol-leg files ranked past ``limit``.
 
-    Concept hits keep the head. Symbol-backed files not already in the window
-    take up to :func:`_symbol_tail_reserve` slots, and the concept hits they
-    displaced fall in behind them (nothing is dropped before the caller's
-    ``limit`` cut). Returns ``output`` unchanged when the symbol leg is empty
-    or every file it named is already present.
+    Concept hits keep the head. Files the symbol leg reached that fusion left
+    outside the window take up to :func:`_symbol_tail_reserve` slots, and the
+    concept hits they displaced fall in behind them (nothing is dropped).
     """
     reserve = _symbol_tail_reserve(limit)
     if reserve <= 0 or kind in ("config", "doc"):
         # config/doc windows are asking for pages with no symbols in them.
         return output
-    pages = await symbol_backed_pages(ctx, query, max_files=reserve * 2)
-    if not pages:
-        return output
-
-    present = {item.get("target_path") for item in output}
-    extra = [p for p in pages if p["target_path"] not in present][:reserve]
+    extra = [item for item in output[limit:] if "symbol" in item.get("sources", ())][:reserve]
     if not extra:
         return output
-    # Score them just under the last concept hit so the ordering the caller
-    # sees stays monotone; they are additions to the window, not a re-ranking
-    # of it.
-    floor = min((item.get("relevance_score") or 0.0) for item in output) if output else 0.0
-    additions = [
-        {
-            "page_id": p["page_id"],
-            "title": p["title"],
-            "page_type": p["page_type"],
-            "target_path": p["target_path"],
-            "snippet": (p.get("summary") or "")[:200],
-            "relevance_score": round(max(floor - 0.001 * (i + 1), 0.0), 4),
-            "sources": ["symbol"],
-        }
-        for i, p in enumerate(extra)
-    ]
-    head = output[: max(0, limit - len(additions))]
-    return head + additions + output[len(head) :]
+    head = output[: limit - len(extra)]
+    taken = {id(item) for item in head + extra}
+    return head + extra + [item for item in output if id(item) not in taken]
 
 
 # Path-prefix heuristics for the ``kind`` filter. We classify a hit's
@@ -694,6 +679,23 @@ async def _safe_vector(ctx, query: str, limit: int) -> list:
     return []
 
 
+def _symbol_leg_target(fused: dict[str, dict], page_id: str) -> str:
+    """The fused page a symbol-leg file page credits: the best page of its file.
+
+    The leg names files, while the page legs may have reached the same file
+    through a symbol page. Crediting only the file page id would leave that
+    hit unlifted and add a weak twin that collapsing then drops.
+    """
+    path = page_id.partition(":")[2]
+    best = None
+    for pid, entry in fused.items():
+        if file_path_of(entry["page_type"], pid.partition(":")[2]) != path:
+            continue
+        if best is None or entry["_rrf"] > fused[best]["_rrf"]:
+            best = pid
+    return best or page_id
+
+
 def _fused_entry(r) -> dict:
     """Seed a fused-result dict from a retriever hit (RRF score added by caller)."""
     return {
@@ -707,13 +709,13 @@ def _fused_entry(r) -> dict:
 
 
 async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | None) -> list[dict]:
-    """Retrieve by fusing FTS and vector search via Reciprocal Rank Fusion.
+    """Retrieve by fusing FTS, vector and symbol search via Reciprocal Rank Fusion.
 
-    Both retrievers run in parallel; a hit's score is the sum of
+    The retrievers run in parallel; a hit's score is the sum of
     ``1/(rank + k)`` over the retrievers that surfaced it, scaled into the
     BM25 range the downstream relevance gates were tuned against. Each hit
-    carries a ``sources`` list (``"fts"``, ``"vector"``, or both) — a page
-    found by both retrievers is a stronger match than one found by one mode.
+    carries a ``sources`` list (``"fts"``, ``"vector"``, ``"symbol"``): a page
+    found by several retrievers is a stronger match than one found by one mode.
 
     This mirrors get_answer's ``hybrid_retrieve`` so the two entry points rank
     the same corpus identically. The prior path ran vector search and fell
@@ -727,9 +729,10 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
     (for RRF) is the hit's place in the retriever's own list, unchanged by the
     floor.
     """
-    fts_results, vec_results = await asyncio.gather(
+    fts_results, vec_results, sym_results = await asyncio.gather(
         _safe_fts(ctx, query, fetch_limit),
         _safe_vector(ctx, query, fetch_limit),
+        _safe_symbol_search(ctx, query),
     )
 
     fused: dict[str, dict] = {}
@@ -745,6 +748,12 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
         entry = fused.setdefault(r.page_id, _fused_entry(r))
         entry["_rrf"] += 1.0 / (rank + _RRF_K)
         entry["_sources"].add("fts")
+    # File pages whose symbol names the query's words spell. Weighted below the
+    # page legs, as in get_answer; it has no raw score to floor.
+    for rank, r in enumerate(sym_results):
+        entry = fused.setdefault(_symbol_leg_target(fused, r.page_id), _fused_entry(r))
+        entry["_rrf"] += 1.0 / (rank + _SYMBOL_LEG_RRF_K)
+        entry["_sources"].add("symbol")
 
     output: list[dict] = []
     for entry in fused.values():
@@ -1313,8 +1322,7 @@ async def search_codebase(
     # Files the page retrievers structurally cannot see (a private helper, a
     # local name, anything a file page's public-symbol table omits) get the
     # weakest tail slots. No-op when the symbol leg names nothing new.
-    with contextlib.suppress(Exception):
-        output = await _append_symbol_backed(ctx, query, output, limit, kind)
+    output = _reserve_symbol_tail(output, limit, kind)
     _drop_internal_ranking_fields(output)
     # The full ranked pool, kept before the caller's cut so ``candidates``
     # below can reach past it. See its comment for why that matters.

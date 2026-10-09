@@ -545,7 +545,9 @@ class TestNoiseDemotion:
             ]
 
         mcp_mod._vector_store.search = fake_search
-        result = await search_codebase("how is the auth service tested")
+        # Not "auth service": that spells ``AuthService``, whose file the
+        # symbol leg would rightly lift on its own.
+        result = await search_codebase("how is the auth flow tested")
         assert result["results"][0]["path"] == "tests/unit/test_service.py"
 
 
