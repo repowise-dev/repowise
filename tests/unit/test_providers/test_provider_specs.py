@@ -70,26 +70,43 @@ def test_agent_clis_get_no_rate_limiter(spec, monkeypatch):
 
 # --- no provider-name branches outside the registries ----------------------
 
-#: Names the AST check looks for: every provider name an embedder does not
-#: share. ``ollama``, ``openai`` and the rest are also embedder names, and a
-#: literal cannot say which registry it means.
-_CHECKED = frozenset(PROVIDER_SPECS) - frozenset(_BUILTIN_EMBEDDERS)
+#: Every provider name but ``mock``, which is also the default embedder and the
+#: ordinary test-double word that health and dead-code analysis match on.
+_CHECKED = frozenset(PROVIDER_SPECS) - {"mock"}
 
-#: Paths (relative to ``packages/``) allowed to spell a provider name.
-_ALLOWED = (
-    # The registry itself.
-    "core/src/repowise/core/providers/llm/specs.py",
-    # The other half of the agent <-> provider link.
-    "core/src/repowise/core/agents/identity.py",
-    # Target ids: ``opencode`` is a ``--target`` as well as a provider.
-    "cli/src/repowise/cli/agent_targets/",
+_EMBEDDERS = frozenset(_BUILTIN_EMBEDDERS)
+
+#: Path (relative to ``packages/``) -> names it may spell, and why.
+_ALLOWED: dict[str, frozenset[str]] = {
+    # ``opencode`` is a ``--target`` id as well as a provider.
+    "cli/src/repowise/cli/agent_targets/registry.py": frozenset({"opencode"}),
     # Commit-trailer patterns naming the agent that wrote a commit.
-    "core/src/repowise/core/ingestion/git_indexer/agent_provenance.py",
-    # Keyed by model family (``deepseek-v4``, ``kimi-k2``), not by provider.
-    "core/src/repowise/core/cost_estimator/pricing.py",
+    "core/src/repowise/core/ingestion/git_indexer/agent_provenance.py": frozenset(
+        {"gemini", "opencode"}
+    ),
+    # Price keys are model families (``deepseek-v4``, ``kimi-k2``, ``gemini``).
+    "core/src/repowise/core/cost_estimator/pricing.py": frozenset({"deepseek", "gemini", "kimi"}),
     # Third-party SDK names found in a scanned repo's imports.
-    "core/src/repowise/core/ingestion/external_systems/classifier.py",
-)
+    "core/src/repowise/core/ingestion/external_systems/classifier.py": frozenset(
+        {"anthropic", "openai"}
+    ),
+    # Behaviour only the OpenAI adapter has: the custom-gateway row and base-url
+    # prompt, and its reasoning budget. Ollama's readiness is a TCP probe.
+    "cli/src/repowise/cli/helpers.py": frozenset({"openai"}),
+    "cli/src/repowise/cli/ui/provider_selection.py": frozenset({"openai", "ollama"}),
+    "server/src/repowise/server/mcp_server/tool_answer/synthesis.py": frozenset({"openai"}),
+    # Embedder surfaces: these literals name embedders, which share spellings.
+    "core/src/repowise/core/providers/embedding/registry.py": _EMBEDDERS,
+    "cli/src/repowise/cli/commands/init_cmd/command.py": _EMBEDDERS,
+    "cli/src/repowise/cli/commands/reindex_cmd.py": _EMBEDDERS,
+    "cli/src/repowise/cli/commands/serve_cmd.py": _EMBEDDERS,
+    "cli/src/repowise/cli/commands/update_cmd/deterministic.py": _EMBEDDERS,
+    "cli/src/repowise/cli/providers/embedders.py": _EMBEDDERS,
+    "cli/src/repowise/cli/providers/keys.py": _EMBEDDERS,
+    "cli/src/repowise/cli/ui/mode_selection.py": _EMBEDDERS,
+    "server/src/repowise/server/app.py": _EMBEDDERS,
+    "server/src/repowise/server/mcp_server/_server.py": _EMBEDDERS,
+}
 
 
 def _is_allowed(path: Path, name: str) -> bool:
@@ -97,13 +114,14 @@ def _is_allowed(path: Path, name: str) -> bool:
     # A provider's own module tags its errors and reports its own name.
     if rel.startswith("core/src/repowise/core/providers/llm/") and path.stem == name:
         return True
-    return rel.startswith(_ALLOWED)
+    return name in _ALLOWED.get(rel, frozenset())
 
 
 def _name_literals(tree: ast.AST):
-    """Provider-name literals used as a comparison operand, a collection
-    element or a dict key. A bare argument (``get_provider("x")``) is a use,
-    not a branch or a table, and is not flagged."""
+    """Provider-name literals used as a comparison operand, a ``case`` value, a
+    collection element, a dict key or a ``.get()`` key. A bare argument
+    (``get_provider("x")``) is a use, not a branch or a table, and is not
+    flagged."""
 
     def names(node):
         if isinstance(node, ast.Constant) and node.value in _CHECKED:
@@ -116,12 +134,21 @@ def _name_literals(tree: ast.AST):
         if isinstance(node, ast.Compare):
             for operand in (node.left, *node.comparators):
                 yield from names(operand)
+        elif isinstance(node, ast.MatchValue):
+            yield from names(node.value)
         elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
             yield from names(node)
         elif isinstance(node, ast.Dict):
             for key in node.keys:
                 if key is not None:
                     yield from names(key)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and node.args
+        ):
+            yield from names(node.args[0])
 
 
 def _sources():
@@ -143,7 +170,30 @@ def test_no_module_branches_on_a_provider_name():
     )
 
 
+def test_the_allowlist_has_no_stale_entries():
+    """An entry that no longer matches anything would quietly widen later."""
+    for rel, names in _ALLOWED.items():
+        path = _PACKAGES / rel
+        assert path.is_file(), f"{rel} is gone"
+        found = {node.value for node in _name_literals(ast.parse(path.read_text(encoding="utf-8")))}
+        assert found & names, f"{rel} no longer spells any of {sorted(names)}"
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        'x == "codex_cli"',
+        'x in ("claude_cli", "y")',
+        '{"opencode": 1}',
+        'd.get("litellm")',
+        'match x:\n    case "kimi":\n        pass',
+    ],
+)
+def test_the_guard_sees_each_branch_shape(snippet):
+    assert list(_name_literals(ast.parse(snippet)))
+
+
 def test_the_guard_is_looking_at_real_sources():
     """A glob that matched nothing, or a name set that emptied, passes vacuously."""
     assert len(_sources()) > 500
-    assert {"claude_cli", "codex_cli", "opencode", "litellm"} <= _CHECKED
+    assert {"claude_cli", "codex_cli", "opencode", "litellm", "openai"} <= _CHECKED

@@ -1320,46 +1320,22 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
             warnings.append(f"Unknown provider '{provider_name}' - cannot validate configuration")
             return warnings
 
+        # Any one of a provider's env vars satisfies it (GEMINI_API_KEY or
+        # GOOGLE_API_KEY), the same rule resolution applies.
         env_vars = provider_env_vars[provider_name]
-        missing_vars = []
-
-        if provider_name == "gemini":
-            # Special case: either GEMINI_API_KEY or GOOGLE_API_KEY
-            if not (_is_env_var_set("GEMINI_API_KEY") or _is_env_var_set("GOOGLE_API_KEY")):
-                missing_vars = env_vars
-        else:
-            for var in env_vars:
-                if not _is_env_var_set(var):
-                    missing_vars.append(var)
-
-        if missing_vars:
-            warnings.append(
-                f"Provider '{provider_name}' requires environment variables: {', '.join(missing_vars)}"
-            )
+        if not any(_is_env_var_set(var) for var in env_vars):
+            warnings.append(f"Provider '{provider_name}' requires {' or '.join(env_vars)}")
     else:
         # Check all providers - warn about any that could be configured but are missing keys
         for name, env_vars in provider_env_vars.items():
-            if name == "gemini":
-                if os.environ.get("REPOWISE_PROVIDER") == "gemini" and not (
-                    _is_env_var_set("GEMINI_API_KEY") or _is_env_var_set("GOOGLE_API_KEY")
-                ):
-                    # Only warn if it looks like they might be trying to use gemini
-                    warnings.append(
-                        "Provider 'gemini' requires GEMINI_API_KEY or GOOGLE_API_KEY environment variable"
-                    )
+            if any(_is_env_var_set(var) for var in env_vars):
                 continue
-
-            missing = [var for var in env_vars if not _is_env_var_set(var)]
-            if missing:
-                # Only warn if this provider is explicitly requested OR
-                # if the env var exists but is invalid (empty)
-                env_var_exists = any(_is_env_var_exists(var) for var in env_vars)
-                explicitly_requested = os.environ.get("REPOWISE_PROVIDER") == name
-
-                if explicitly_requested or env_var_exists:
-                    warnings.append(
-                        f"Provider '{name}' requires environment variables: {', '.join(missing)}"
-                    )
+            # Only warn if this provider is explicitly requested OR
+            # if the env var exists but is invalid (empty)
+            env_var_exists = any(_is_env_var_exists(var) for var in env_vars)
+            explicitly_requested = os.environ.get("REPOWISE_PROVIDER") == name
+            if explicitly_requested or env_var_exists:
+                warnings.append(f"Provider '{name}' requires {' or '.join(env_vars)}")
 
     return warnings
 
