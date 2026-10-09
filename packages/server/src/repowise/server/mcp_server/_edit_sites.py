@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections import Counter
 from itertools import islice
 from pathlib import Path
 from typing import Any
@@ -24,11 +25,16 @@ from repowise.core.fs_walk import PRUNED_DIRS, iter_glob
 from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.ingestion.symbol_identity import id_segment_name
 from repowise.core.persistence.models import GraphEdge, GraphNode
+from repowise.core.test_paths import is_test_related_path
+from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._helpers import read_repo_file_text
 from repowise.server.mcp_server._meta import _working_tree_dirty_paths, uncommitted_targets
 
 MAX_SITES = 200
 MAX_TEXT_CHARS = 160
+# Plain mentions kept per file when a collector can hold the rest: a mock-heavy
+# test can name a symbol hundreds of times and bury its real callers.
+MAX_REFERENCES_PER_FILE = 3
 # Ceiling on files read per call; past it the set is reported incomplete
 # rather than read without bound.
 MAX_FILES = 300
@@ -151,6 +157,19 @@ def _scan(
     return sites, unreadable, stale, renamed, is_default
 
 
+def _cap_references_per_file(sites: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*sites* with plain references past the per-file cap dropped; other kinds always stay."""
+    seen: Counter[str] = Counter()
+    kept: list[dict[str, Any]] = []
+    for site in sites:
+        if site["kind"] == "reference":
+            seen[site["path"]] += 1
+            if seen[site["path"]] > MAX_REFERENCES_PER_FILE:
+                continue
+        kept.append(site)
+    return kept
+
+
 def _unseen_dirty_files(root: Path, local_path: str) -> list[str] | None:
     """Uncommitted files the index has not seen; ``None`` when git cannot say."""
     dirty = _working_tree_dirty_paths(local_path)
@@ -169,13 +188,19 @@ def _unseen_dirty_files(root: Path, local_path: str) -> list[str] | None:
 
 
 async def reference_edit_set(
-    session: AsyncSession, repo_id: str, repo_root: str | Path, node: GraphNode
+    session: AsyncSession,
+    repo_id: str,
+    repo_root: str | Path,
+    node: GraphNode,
+    collector: OmissionCollector | None = None,
 ) -> dict[str, Any]:
     """Every live site naming *node*, classified, with a completeness verdict.
 
     Returns ``{"sites": [{"path", "line", "kind", "text"}], "complete": bool}``
     plus ``reasons`` when incomplete and ``sites_omitted`` past the cap. Kinds:
-    definition | import | call | reference.
+    definition | import | call | reference. With a *collector*, plain
+    references past ``MAX_REFERENCES_PER_FILE`` in one file move to it and
+    ``sites_omitted_by_file`` counts every row not shown.
     """
     root = Path(repo_root).resolve()
     name = _bare_name(node)
@@ -294,8 +319,6 @@ async def reference_edit_set(
         reasons.append(f"renamed on import or export: {', '.join(sorted(renamed_in)[:3])}")
     if is_default:
         reasons.append("default export: importers may rename it")
-    if len(sites) > MAX_SITES:
-        reasons.append(f"over {MAX_SITES} sites")
     if node.kind in _MEMBER_KINDS or node.node_id.count("::") > 1:
         reasons.append("member: calls through untyped receivers are not scanned")
     touched = sorted({s["path"] for s in sites if s["path"] in unindexed_set})
@@ -304,10 +327,41 @@ async def reference_edit_set(
     if not any(s["kind"] == "definition" for s in sites) and def_file not in unreadable:
         reasons.append("definition not found at its indexed line")
 
-    sites.sort(key=lambda s: (s["kind"] != "definition", s["path"], s["line"]))
-    out: dict[str, Any] = {"sites": sites[:MAX_SITES], "complete": not reasons}
-    if len(sites) > MAX_SITES:
-        out["sites_omitted"] = len(sites) - MAX_SITES
+    sites.sort(
+        key=lambda s: (
+            s["kind"] != "definition",
+            is_test_related_path(s["path"]),
+            s["path"],
+            s["line"],
+        )
+    )
+    kept = _cap_references_per_file(sites) if collector is not None else sites
+    if len(kept) > MAX_SITES:
+        reasons.append(f"over {MAX_SITES} sites")
+    if len(kept) < len(sites):
+        reasons.append(
+            f"{len(sites) - len(kept)} references past {MAX_REFERENCES_PER_FILE} per file"
+            " not shown: sites_omitted_by_file; the full list is under _meta.omitted"
+        )
+    out: dict[str, Any] = {"sites": kept[:MAX_SITES], "complete": not reasons}
+    if collector is None:
+        if len(sites) > MAX_SITES:
+            out["sites_omitted"] = len(sites) - MAX_SITES
+    elif len(out["sites"]) < len(sites):
+        shown = {id(s) for s in out["sites"]}
+        cap_collection(
+            out,
+            "sites",
+            sites,
+            MAX_SITES,
+            collector,
+            emitted=out["sites"],
+            label=f"{node.node_id} :: references.sites not shown",
+            reason="per_file_reference_cap" if len(kept) < len(sites) else "construction_cap",
+        )
+        out["sites_omitted_by_file"] = dict(
+            Counter(s["path"] for s in sites if id(s) not in shown)
+        )
     if reasons:
         out["reasons"] = reasons
     return out

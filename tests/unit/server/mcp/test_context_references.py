@@ -378,3 +378,123 @@ async def test_get_context_serves_references_for_a_symbol(setup_mcp, session, tm
 
     assert t["references"]["complete"] is True
     assert (_USER, 9, "call") in _sites(t["references"])
+
+
+def _collector(tmp_path):
+    from repowise.server.mcp_server._budget import OmissionCollector
+
+    return OmissionCollector("get_context", store_path=tmp_path / "omissions.db")
+
+
+@pytest.mark.asyncio
+async def test_small_list_is_unchanged_by_the_per_file_cap(session, repo_id, tmp_path):
+    node = await _seed(session, repo_id, tmp_path)
+
+    bare = await reference_edit_set(session, repo_id, tmp_path, node)
+    capped = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
+
+    assert json.dumps(capped) == json.dumps(bare)
+
+
+@pytest.mark.asyncio
+async def test_mock_heavy_python_test_collapses_and_sorts_after_callers(
+    session, repo_id, tmp_path
+):
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("tests/test_catalog.py", _DEF, "imports", {"imported_names_json": '["backend_of"]'})],
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_catalog.py").write_text(
+        "from pkg.catalog import backend_of\n"
+        + "".join(f"mock.patch('pkg.catalog.backend_of', side_effect={i})\n" for i in range(20)),
+        encoding="utf-8",
+    )
+    collector = _collector(tmp_path)
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node, collector)
+
+    test_rows = [s for s in _sites(out) if s[0] == "tests/test_catalog.py"]
+    assert test_rows == [
+        ("tests/test_catalog.py", 1, "import"),
+        ("tests/test_catalog.py", 2, "reference"),
+        ("tests/test_catalog.py", 3, "reference"),
+        ("tests/test_catalog.py", 4, "reference"),
+    ]
+    assert _sites(out)[-len(test_rows) :] == test_rows  # production files first
+    assert (_USER, 9, "call") in _sites(out)
+    assert out["sites_omitted"] == 17
+    assert out["sites_omitted_by_file"] == {"tests/test_catalog.py": 17}
+    assert out["sites_reduced_reason"] == "per_file_reference_cap"
+    assert out["complete"] is False
+    assert any("sites_omitted_by_file" in r for r in out["reasons"])
+    response: dict = {}
+    collector.attach(response)
+    assert response["_meta"]["omitted"]["refs"]
+
+
+@pytest.mark.asyncio
+async def test_mock_heavy_typescript_test_keeps_the_real_caller(session, repo_id, tmp_path):
+    spec = "import { pick } from './a'\n" + "vi.mocked(pick).mockReturnValue(1)\n" * 30
+    node = await _seed_js(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "web/a.ts": "export function pick(x: number): number { return x }\n",
+            "web/a.test.ts": spec,
+            "web/b.ts": "import { pick } from './a'\nexport const run = () => [pick]\n",
+        },
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
+
+    paths = [p for p, _n, _k in _sites(out)]
+    assert paths.index("web/b.ts") < paths.index("web/a.test.ts")
+    assert ("web/b.ts", 2, "reference") in _sites(out)
+    assert paths.count("web/a.test.ts") == 1 + _edit_sites.MAX_REFERENCES_PER_FILE
+    assert out["sites_omitted_by_file"] == {"web/a.test.ts": 30 - _edit_sites.MAX_REFERENCES_PER_FILE}
+    assert out["complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_call_sites_are_never_collapsed(session, repo_id, tmp_path):
+    extra = []
+    for i in range(8):
+        rel = f"svc/user{i}.py"
+        (tmp_path / "svc").mkdir(exist_ok=True)
+        (tmp_path / rel).write_text(
+            "from pkg.catalog import backend_of\n" + "backend_of(1)\n" * 6, encoding="utf-8"
+        )
+        extra.append((rel, _DEF, "imports", {"imported_names_json": '["backend_of"]'}))
+        extra.append(
+            (f"{rel}::run", _SYM, "calls", {"call_lines_json": json.dumps(list(range(2, 8)))})
+        )
+    node = await _seed(session, repo_id, tmp_path, extra=extra)
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
+
+    calls = [s for s in _sites(out) if s[2] == "call" and s[0].startswith("svc/user")]
+    assert len(calls) == 8 * 6
+    assert out["complete"] is True
+    assert "sites_omitted_by_file" not in out
+
+
+@pytest.mark.asyncio
+async def test_get_context_collapses_a_flood_into_recoverable_counts(setup_mcp, session, tmp_path):
+    from repowise.server.mcp_server import get_context
+
+    await _seed(session, setup_mcp, tmp_path)
+    await session.commit()
+    with (tmp_path / _USER).open("a", encoding="utf-8") as fh:
+        fh.write("spies = [\n" + "    backend_of,\n" * 40 + "]\n")
+
+    resp = await get_context([_SYM], include=["references"])
+    refs = resp["targets"][_SYM]["references"]
+
+    assert refs["sites_omitted_by_file"] == {_USER: 40 + 1 - _edit_sites.MAX_REFERENCES_PER_FILE}
+    assert (_USER, 9, "call") in _sites(refs)
+    assert refs["complete"] is False
+    assert resp["_meta"]["omitted"]["refs"]

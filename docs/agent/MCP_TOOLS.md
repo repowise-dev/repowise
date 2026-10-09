@@ -178,6 +178,7 @@ A file's compact symbol list holds its top 15 symbols: types (classes, interface
 - more than 200 sites, a stale call line, an unreadable file, or an uncommitted edit outside the scanned files
 - a rename on import, export or destructure, a default export, or a CommonJS export
 - a dynamic use the graph recorded; access built from strings is otherwise not seen
+- more than 3 plain `reference` sites in one file: the rest are counted in `sites_omitted_by_file`, recoverable from `_meta.omitted`
 
 ```
 get_context(targets=["src/auth/middleware.ts", "src/api/routes.ts"], include=["callers"])

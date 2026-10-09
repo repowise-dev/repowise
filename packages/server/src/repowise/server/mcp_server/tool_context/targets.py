@@ -1310,7 +1310,9 @@ async def _resolve_one_target(
             )
         root = repo_root or getattr(repository, "local_path", None)
         if ref_node is not None and root:
-            result_data["references"] = await reference_edit_set(session, repo_id, root, ref_node)
+            result_data["references"] = await reference_edit_set(
+                session, repo_id, root, ref_node, collector
+            )
         else:
             result_data["references_note"] = "references require a symbol target in the graph"
 
