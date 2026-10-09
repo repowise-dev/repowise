@@ -17,6 +17,7 @@ from repowise.core.persistence import (
     init_db,
 )
 from repowise.core.persistence.crud import get_repository_by_path
+from repowise.core.store_location import resolve_store_dir
 
 
 def set_editor_file_enabled(repo_path: Path, key: str, enabled: bool) -> None:
@@ -28,7 +29,7 @@ def set_editor_file_enabled(repo_path: Path, key: str, enabled: bool) -> None:
     editor_files[key] = enabled
     cfg["editor_files"] = editor_files
 
-    cfg_path = repo_path / ".repowise" / "config.yaml"
+    cfg_path = resolve_store_dir(repo_path) / "config.yaml"
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     cfg_path.write_text(
         yaml.dump(cfg, default_flow_style=False, sort_keys=False),

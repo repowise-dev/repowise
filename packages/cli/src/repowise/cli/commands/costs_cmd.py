@@ -16,6 +16,7 @@ from repowise.cli.helpers import (
     run_async,
 )
 from repowise.cli.output import emit_json, format_option, notice_console
+from repowise.core.store_location import resolve_store_dir
 
 
 def _parse_date(value: str | None) -> datetime | None:
@@ -134,7 +135,7 @@ def costs_command(
 
     # Filter to repos that have a .repowise/ — otherwise the cost query
     # would just return an empty result and confuse the user.
-    valid_paths = [p for p in repo_paths if (p / ".repowise").is_dir()]
+    valid_paths = [p for p in repo_paths if resolve_store_dir(p).is_dir()]
     if not valid_paths:
         notices.print(
             "[yellow]No indexed .repowise/ directory found. Run 'repowise init' first.[/yellow]"

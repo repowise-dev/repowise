@@ -26,6 +26,7 @@ from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
 from repowise.core.providers.embedding.base import KeylessEmbedder, is_semantic_embedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
+from repowise.core.store_location import resolve_store_dir
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._transport import (
     CLIENT_CLOSED,
@@ -434,9 +435,7 @@ async def _load_vector_stores(repo_path: str | None) -> None:
         embedder = _query_embedder()
         vector_store: Any = InMemoryVectorStore(embedder=embedder)
 
-        from pathlib import Path
-
-        lance_dir = Path(repo_path) / ".repowise" / "lancedb" if repo_path else None
+        lance_dir = resolve_store_dir(repo_path) / "lancedb" if repo_path else None
         try:
             # Step 1 — import lancedb in a thread to keep event loop free.
             await _asyncio.to_thread(__import__, "lancedb")

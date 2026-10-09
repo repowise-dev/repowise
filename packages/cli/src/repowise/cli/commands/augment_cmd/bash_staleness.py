@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from repowise.core.docs_mode import resolve_docs_mode
+from repowise.core.store_location import resolve_store_dir
 
 from ._shared import _find_repo_root
 
@@ -57,7 +58,7 @@ def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | 
     if repo_path is None:
         return None
 
-    state_path = repo_path / ".repowise" / "state.json"
+    state_path = resolve_store_dir(repo_path) / "state.json"
     if not state_path.exists():
         return None
 

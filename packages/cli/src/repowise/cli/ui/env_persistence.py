@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from repowise.core.store_location import resolve_store_dir
+
 
 def load_dotenv(repo_path: Path) -> None:
     """Load ``<repo>/.repowise/.env`` into ``os.environ`` (without overwriting).
@@ -12,7 +14,7 @@ def load_dotenv(repo_path: Path) -> None:
     Supports ``export KEY=value``, quoted values (``KEY="value"``, ``KEY='value'``),
     and inline comments (``KEY=value  # comment``).
     """
-    env_file = repo_path / ".repowise" / ".env"
+    env_file = resolve_store_dir(repo_path) / ".env"
     if not env_file.exists():
         return
     for line in env_file.read_text(encoding="utf-8").splitlines():

@@ -6,12 +6,13 @@ import json
 from pathlib import Path
 
 from repowise.core.fsutils import atomic_write_text
+from repowise.core.store_location import resolve_store_dir
 
 _KINDS = ("fts", "vectors")
 
 
 def _path(repo_path: Path) -> Path:
-    return repo_path / ".repowise" / "cleanup-debt.json"
+    return resolve_store_dir(repo_path) / "cleanup-debt.json"
 
 
 def load_cleanup_debt(repo_path: Path) -> dict[str, set[str]]:

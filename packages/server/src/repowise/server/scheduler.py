@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from repowise.core.store_location import resolve_store_dir
+
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -28,9 +30,8 @@ def _inspect_repository(repo_path: str) -> tuple[str | None, str] | None:
     """
     import json
     import subprocess
-    from pathlib import Path
 
-    state_path = Path(repo_path) / ".repowise" / "state.json"
+    state_path = resolve_store_dir(repo_path) / "state.json"
     stored_commit = None
     if state_path.is_file():
         try:

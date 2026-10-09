@@ -18,6 +18,7 @@ from typing import Any
 import structlog
 
 from repowise.core.pipeline.progress import ProgressCallback, emit_warning
+from repowise.core.store_location import resolve_store_dir
 
 from ._common import _phase_done
 
@@ -347,7 +348,7 @@ def _split_cached(
     hits: dict[int, Any] = {}
     misses: list[tuple[int, tuple, str]] = []
     try:
-        cache = ParseCache(repo_path / ".repowise")
+        cache = ParseCache(resolve_store_dir(repo_path))
         cache.load()
     except Exception as exc:
         logger.debug("parse_cache_init_failed", error=str(exc))
@@ -515,7 +516,7 @@ async def _run_ingestion(
     graph_builder = GraphBuilder(
         repo_path=repo_path,
         exclude_patterns=exclude_patterns,
-        centrality_cache_dir=repo_path / ".repowise",
+        centrality_cache_dir=resolve_store_dir(repo_path),
         head_commit=get_head_commit(repo_path),
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,

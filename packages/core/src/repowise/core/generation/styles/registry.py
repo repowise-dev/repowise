@@ -17,6 +17,8 @@ from pathlib import Path
 
 import structlog
 
+from repowise.core.store_location import resolve_store_dir
+
 from . import directives as d
 from .spec import StyleSpec
 
@@ -68,7 +70,7 @@ def _styles_root(repo_path: Path | str | None) -> Path | None:
     """Return the ``.repowise/styles`` directory for a repo, or None."""
     if repo_path is None:
         return None
-    return Path(repo_path) / ".repowise" / _STYLES_DIRNAME
+    return resolve_store_dir(repo_path) / _STYLES_DIRNAME
 
 
 def _clip(value: object) -> str:
