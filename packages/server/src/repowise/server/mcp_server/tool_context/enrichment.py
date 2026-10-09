@@ -72,6 +72,7 @@ from repowise.server.mcp_server._helpers import (
     is_missing_table,
 )
 from repowise.server.mcp_server._index_state import index_state_key
+from repowise.server.mcp_server._wrapper_callers import forwarding_wrapper_callers
 from repowise.server.schemas.intelligence import SYMBOL_RELATION_GROUP_OF
 
 #: Where a resolved target path waits between its card being built and the
@@ -369,6 +370,19 @@ async def _resolve_call_graph(
                         "repowise omission reference; grep remains useful when graph "
                         "coverage itself may be incomplete."
                     )
+                elif direction == "in":
+                    # Appended after the direct rows and only under the cap, so
+                    # the callers_* counts keep meaning direct callers.
+                    hop = await forwarding_wrapper_callers(
+                        session,
+                        repo_id,
+                        node,
+                        [r["symbol_id"] for r in visible],
+                        known_nodes=node_map,
+                    )
+                    hop = filter_dicts_by_key(hop, "file", exclude_spec)
+                    if hop:
+                        result_data[key] = visible + hop
                 continue
 
             if not total:
