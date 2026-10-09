@@ -85,7 +85,7 @@ async def _merged_repo_excludes(
                 if row and row[0]:
                     settings_json = row[0]
             except Exception:
-                pass
+                _log.debug("Could not read repo settings from local wiki.db", exc_info=True)
     else:
         from ..persistence import (
             create_engine,
@@ -107,7 +107,7 @@ async def _merged_repo_excludes(
             finally:
                 await engine.dispose()
         except Exception:
-            pass
+            _log.warning("Could not read repo settings from the shared database; saved exclude patterns not applied", exc_info=True)
 
     if settings_json:
         try:
@@ -117,7 +117,7 @@ async def _merged_repo_excludes(
                     if isinstance(value, str) and value not in patterns:
                         patterns.append(value)
         except Exception:
-            pass
+            _log.warning("Could not parse settings_json; saved exclude patterns not applied", exc_info=True)
 
     for pattern in extra_exclude_patterns or []:
         if pattern not in patterns:
