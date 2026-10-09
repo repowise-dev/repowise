@@ -31,7 +31,7 @@ example). It is separate from the tier: it says nothing about the session.
 |---|---|---|---|---|---|---|---|---|
 | [Claude Code](https://docs.claude.com/en/docs/claude-code) | Full | Yes | Yes | Plugin | Plugin | Yes | Yes | Yes |
 | [Codex CLI](https://developers.openai.com/codex/cli) | Full | Yes | Yes | Plugin | Yes | Yes | Yes | Yes |
-| [VS Code](https://code.visualstudio.com/docs/copilot/chat/mcp-servers) | Basic | Yes | No | No | No | No | No | No |
+| [VS Code](https://code.visualstudio.com/docs/copilot/chat/mcp-servers) | Good | Yes | No | No | No | Yes | No | No |
 | [Cursor](https://cursor.com/docs/context/mcp) | Good | Yes | No | No | No | Yes | No | No |
 | [OpenCode](https://opencode.ai/docs/mcp-servers/) | Good | Yes | No | No | No | Yes | No | Yes |
 | [Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | Good | Yes | No | No | No | Yes | No | No |
@@ -40,7 +40,7 @@ Target ids for `--target=`: `claude-code`, `codex`, `vscode`, `cursor`, `opencod
 
 ### What Good tier does not include
 
-Cursor, OpenCode and Hermes sit at Good, and the honest version of that is worth stating
+VS Code, Cursor, OpenCode and Hermes sit at Good, and the honest version of that is worth stating
 plainly. These agents get the MCP tools and the config repowise writes.
 They do **not** get hook-level interception: repowise never sees a tool
 call before it runs, never rewrites a noisy command, and never annotates
@@ -50,12 +50,6 @@ from the session after it ends.
 That is a real integration and it is most of the value. It is not the
 same product Full-tier agents get, and breadth that overclaims depth is
 worse than narrower breadth.
-
-### Basic tier
-
-VS Code sits at Basic. repowise writes
-no instructions file or skills there, so the MCP tools are reachable but
-nothing tells the agent when to use them.
 
 ## Paste-config
 

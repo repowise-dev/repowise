@@ -104,12 +104,15 @@ dark.
 One install registers the Repowise MCP server with VS Code, so agent-mode
 assistants query the index through purpose-built tools instead of guessing from
 open files. For editors that read a config file, run **Repowise: Configure MCP
-for this Workspace** to write `.vscode/mcp.json`.
+for this Workspace** to write `.vscode/mcp.json`. `repowise init` and
+`repowise agents add --target=vscode` also add a managed section to
+`.github/copilot-instructions.md`, which Copilot Chat reads on every request.
+Your own text in that file is kept; `repowise agents remove` takes out only the
+managed section.
 
-VS Code sits at the **Basic** support tier, and the honest version of that is
+VS Code sits at the **Good** support tier, and the honest version of that is
 worth knowing before you compare it to the Claude Code or Codex setup. You get
-the MCP tools and the config to reach them, but no managed instructions file or
-skills telling the agent when to use them. You do not get hook-level
+the MCP tools, the config to reach them and the managed instructions. You do not get hook-level
 interception: repowise never sees a tool call before it runs, never rewrites a
 noisy command, and never annotates a result afterwards, and there is no
 transcript mining after the session. What the extension itself surfaces in the

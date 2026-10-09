@@ -122,7 +122,7 @@ def test_tiers_are_derived_from_the_adapters_a_target_names() -> None:
     """Full requires both deep surfaces; VS Code has neither, so it cannot claim it."""
     assert tier_of("claude-code") is Tier.FULL
     assert tier_of("codex") is Tier.FULL
-    assert tier_of("vscode") is Tier.BASIC
+    assert tier_of("vscode") is Tier.GOOD
     assert tier_of("cursor") is Tier.GOOD
     assert tier_of("opencode") is Tier.GOOD
     assert tier_of("hermes") is Tier.GOOD
@@ -692,7 +692,7 @@ def test_vscode_install_survives_a_vscode_path_that_is_a_file(tmp_path: Path) ->
     result = vscode_target.TARGET.install(Scope.PROJECT, repo_path=repo)
 
     assert (repo / ".vscode").is_file()
-    assert all(f.action is FileAction.KEPT for f in result.files)
+    assert all(f.action is FileAction.KEPT for f in result.files if f.path.parent.name == ".vscode")
     assert result.notes
 
 
@@ -3354,3 +3354,47 @@ def test_yaml_merge_keeps_an_inline_list_inline_and_still_findable() -> None:
         added, "platform_toolsets", "cli", ["hermes-cli", "othersrv"]
     )
     assert restored == text
+
+
+# ---------------------------------------------------------------------------
+# GitHub Copilot instructions (.github/copilot-instructions.md)
+# ---------------------------------------------------------------------------
+
+
+def _copilot_instructions(repo: Path) -> Path:
+    return repo / ".github" / "copilot-instructions.md"
+
+
+def test_vscode_instructions_coexist_with_the_users_own_text(tmp_path: Path) -> None:
+    """Install appends our block; uninstall gives back the user's bytes exactly."""
+    from repowise.cli.agent_targets.instructions import DISTILL_MARKER_START
+
+    repo = tmp_path / "repo"
+    path = _copilot_instructions(repo)
+    path.parent.mkdir(parents=True)
+    original = "# Team rules\n\nUse tabs.\n"
+    path.write_text(original, encoding="utf-8", newline="\n")
+    target = get_target("vscode")
+
+    target.install(Scope.PROJECT, repo_path=repo)
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith(original.rstrip())
+    assert DISTILL_MARKER_START in text
+    assert target.install(Scope.PROJECT, repo_path=repo).files[-1].action is FileAction.UNCHANGED
+
+    result = target.uninstall(Scope.PROJECT, repo_path=repo)
+    assert {f.path: f.action for f in result.files}[path] is FileAction.REMOVED
+    assert path.read_bytes() == original.encode("utf-8")
+
+
+def test_vscode_instructions_round_trip_to_no_file(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = get_target("vscode")
+
+    target.install(Scope.PROJECT, repo_path=repo)
+    assert _copilot_instructions(repo).exists()
+    target.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert not (repo / ".github").exists()
+    assert not (repo / ".vscode").exists()

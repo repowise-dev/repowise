@@ -82,7 +82,7 @@ def test_bare_agents_lists_every_registered_target_as_json(repo: Path) -> None:
         # The keys the table renders, so a dropped one is a broken table.
         assert set(row) >= {"id", "tier", "present", "registrations", "method"}
     assert payload["agents"][0]["tier"] == "full"
-    assert payload["agents"][2]["tier"] == "basic"
+    assert payload["agents"][2]["tier"] == "good"
 
 
 def test_list_reports_registrations_as_a_list_not_a_boolean(repo: Path) -> None:
