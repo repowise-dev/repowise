@@ -190,6 +190,16 @@ def test_the_readme_agent_headline_counts_the_registry() -> None:
     )
 
 
+def test_the_indexing_column_matches_the_identities() -> None:
+    """Indexing is derived from ``indexing_provider``, never declared per row."""
+    from repowise.core.agents.identity import identity_for_target_id
+
+    for row in GEN.agent_rows():
+        identity = identity_for_target_id(row["id"])
+        expected = "Yes" if identity and identity.indexing_provider else "No"
+        assert GEN._cell(row, "indexing_provider") == expected, row["id"]
+
+
 def test_the_hooks_column_cannot_lie() -> None:
     """A target's declared HOOKS capability agrees with its hook adapter.
 

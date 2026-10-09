@@ -122,7 +122,7 @@ def test_tiers_are_derived_from_the_adapters_a_target_names() -> None:
     """Full requires both deep surfaces; VS Code has neither, so it cannot claim it."""
     assert tier_of("claude-code") is Tier.FULL
     assert tier_of("codex") is Tier.FULL
-    assert tier_of("vscode") is Tier.GOOD
+    assert tier_of("vscode") is Tier.BASIC
     assert tier_of("cursor") is Tier.GOOD
     assert tier_of("opencode") is Tier.GOOD
     assert tier_of("hermes") is Tier.GOOD
@@ -145,6 +145,35 @@ def test_a_target_cannot_reach_full_without_a_session_adapter() -> None:
         methods = get_target("claude-code").methods
 
     assert derive_tier(_HooksOnly()) is Tier.GOOD
+
+
+@pytest.mark.parametrize(
+    ("provides", "tier"),
+    [
+        ({"mcp"}, Tier.BASIC),
+        ({"mcp", "instructions"}, Tier.GOOD),
+        ({"mcp", "skills"}, Tier.GOOD),
+    ],
+)
+def test_good_needs_instructions_or_skills_beside_mcp(provides: set[str], tier: Tier) -> None:
+    """MCP alone is Basic; the capability set decides, not having methods at all."""
+    from repowise.cli.agent_targets.types import Capability, InstallMethod
+
+    class _Wired:
+        id = "wired"
+        display_name = "Wired"
+        docs_url = None
+        hook_adapter = None
+        session_adapter = None
+        methods = (
+            InstallMethod(
+                id="direct",
+                provides=frozenset(Capability(c) for c in provides),
+                managed_by="repowise",
+            ),
+        )
+
+    assert derive_tier(_Wired()) is tier
 
 
 def test_a_target_that_writes_nothing_is_paste_config() -> None:

@@ -5,8 +5,8 @@ same reason ``test_agent_targets.py`` is: the property under test is that the
 seam holds for *every* registered target, and a per-agent test file would
 quietly not have that property for the next one added.
 
-``INTEGRATIONS.md`` promises adding an agent costs one descriptor file and one
-registry line. The tests at the bottom are what stops savings attribution from
+``INTEGRATIONS.md`` promises adding an agent costs one identity record, one
+descriptor file and one registry line. The tests at the bottom are what stops savings attribution from
 silently not being included in that promise.
 """
 

@@ -1,10 +1,10 @@
 """VS Code as an agent target.
 
-Good tier, and the descriptor makes that structural rather than editorial: it
-names neither a hook adapter nor a transcript adapter, so :func:`derive_tier`
-cannot place it at Full however many files it writes. VS Code gets the MCP
-server and an extension recommendation; it has no hook protocol for repowise to
-intercept tool calls through, and no transcript format to mine.
+Basic tier, and the descriptor makes that structural rather than editorial: it
+names neither a hook adapter nor a transcript adapter, and wires MCP without
+instructions or skills, so :func:`derive_tier` places it at Basic. VS Code gets
+the MCP server and an extension recommendation; it has no hook protocol for
+repowise to intercept tool calls through, and no transcript format to mine.
 
 The distinguishing quirk is that both files it writes may legally contain
 comments — VS Code accepts JSONC throughout ``.vscode/``. So this target is the
