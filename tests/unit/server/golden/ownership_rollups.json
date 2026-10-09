@@ -128,7 +128,7 @@
           "churn_percentile": 95.0,
           "bus_factor": 1,
           "is_hotspot": true,
-          "last_commit_at": "2026-08-01T12:00:00",
+          "last_commit_at": "2026-08-01T12:00:00Z",
           "primary_owner_commit_pct": 0.7
         },
         {
@@ -146,7 +146,7 @@
           "churn_percentile": 60.0,
           "bus_factor": 1,
           "is_hotspot": true,
-          "last_commit_at": "2026-07-01T00:00:00",
+          "last_commit_at": "2026-07-01T00:00:00Z",
           "primary_owner_commit_pct": 0.9
         }
       ],
@@ -216,7 +216,7 @@
           "churn_percentile": 60.0,
           "bus_factor": 1,
           "is_hotspot": true,
-          "last_commit_at": "2026-07-01T00:00:00",
+          "last_commit_at": "2026-07-01T00:00:00Z",
           "primary_owner_commit_pct": 0.9
         },
         {
@@ -225,7 +225,7 @@
           "churn_percentile": 95.0,
           "bus_factor": 1,
           "is_hotspot": true,
-          "last_commit_at": "2026-08-01T12:00:00",
+          "last_commit_at": "2026-08-01T12:00:00Z",
           "primary_owner_commit_pct": 0.7
         },
         {
@@ -295,7 +295,7 @@
           "churn_percentile": 10.0,
           "bus_factor": 1,
           "is_hotspot": false,
-          "last_commit_at": "2020-03-03T00:00:00",
+          "last_commit_at": "2020-03-03T00:00:00Z",
           "primary_owner_commit_pct": 1.0
         },
         {
@@ -304,7 +304,7 @@
           "churn_percentile": 95.0,
           "bus_factor": 1,
           "is_hotspot": true,
-          "last_commit_at": "2026-08-01T12:00:00",
+          "last_commit_at": "2026-08-01T12:00:00Z",
           "primary_owner_commit_pct": 0.7
         }
       ],
