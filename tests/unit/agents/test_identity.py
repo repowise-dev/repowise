@@ -288,15 +288,17 @@ def test_login_runs_the_declared_check_and_reads_the_exit_code(monkeypatch) -> N
     monkeypatch.setattr(shutil, "which", lambda name: name)
     calls: list[list[str]] = []
 
-    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(args)
+        assert kwargs["stdin"] is subprocess.DEVNULL
         return subprocess.CompletedProcess(args, 1, stdout="Logged in", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     assert not identity.CODEX.is_logged_in()
-    assert calls == [["codex", "login", "status"]]
+    assert not identity.CLAUDE_CODE.is_logged_in()
+    assert calls == [["codex", "login", "status"], ["claude", "auth", "status"]]
     # No cheap login query: installed is the most this can say.
-    assert identity.CLAUDE_CODE.is_logged_in()
+    assert identity.OPENCODE.is_logged_in()
 
 
 def test_identity_for_provider_follows_the_indexing_link() -> None:

@@ -90,3 +90,29 @@ def test_explicit_provider_skips_the_picker(provider_name: str) -> None:
     assert not _interactive_gate(
         isatty=True, provider_name=provider_name, index_only=False, yes=False, resume=False
     )
+
+
+def test_signed_out_claude_is_not_the_default(monkeypatch: Any) -> None:
+    import shutil
+    import subprocess
+
+    monkeypatch.setattr(shutil, "which", lambda name: name if name == "claude" else None)
+    monkeypatch.setattr(
+        subprocess, "run", lambda args, **_k: subprocess.CompletedProcess(args, 1, "", "")
+    )
+    monkeypatch.setattr(ui, "_detect_ollama_status", lambda: False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    detected = ui._detect_provider_status()
+    assert "claude_cli" not in detected
+    chosen, out = _default_pick(monkeypatch, detected, ("claude_cli",))
+    assert chosen != "claude_cli"
+    assert "Default:" not in out
+
+
+def test_opencode_reason_does_not_claim_a_login(monkeypatch: Any) -> None:
+    chosen, out = _default_pick(monkeypatch, {"opencode": "agent CLI"}, ("opencode",))
+    reason = out.split("mock is")[1]
+    assert chosen == "opencode"
+    assert "uses your opencode CLI setup" in reason
+    assert "login" not in reason

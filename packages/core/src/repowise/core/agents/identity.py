@@ -158,8 +158,13 @@ class AgentIdentity:
         if not self.login_check:
             return True
         try:
+            # DEVNULL: an inherited Windows console stdin can block until the timeout.
             result = subprocess.run(
-                [command, *self.login_check], capture_output=True, text=True, timeout=10
+                [command, *self.login_check],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
         except (OSError, subprocess.TimeoutExpired):
             return False
@@ -174,6 +179,8 @@ CLAUDE_CODE = AgentIdentity(
     hook_adapter="claude-code",
     session_adapter="claude_code",
     executable="claude",
+    #: Documented to exit 0 when signed in and 1 when not.
+    login_check=("auth", "status"),
     install_hint="https://claude.com/claude-code",
     login_hint="claude login",
     indexing_provider="claude_cli",
