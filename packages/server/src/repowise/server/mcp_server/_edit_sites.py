@@ -84,7 +84,11 @@ def _read_lines(root: Path, rel: str) -> list[str] | None:
     except OSError:
         return None
     text = read_repo_file_text(root, rel)
-    return None if text is None else text.splitlines()
+    if text is None:
+        return None
+    # Only a newline ends a line: splitlines() also splits on form feeds and
+    # other separators, which would shift every line number after them.
+    return [line.removesuffix("\r") for line in text.removesuffix("\n").split("\n")]
 
 
 def _scan(

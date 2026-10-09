@@ -223,7 +223,7 @@ Hybrid search that routes by the shape of the query: identifiers search the symb
 
 **Key return fields:** `results` (every row that names a file carries it in `path`, and a row naming no file has no `path`; symbol hits carry `symbol_id`, line bounds and `signature`, plus `symbols` (`name:line` of up to five other matches in that file, then `+N more`) when several matched; concept hits carry `relevance_score`, `snippet` and `sources`; `file` on symbol and file hits is a deprecated alias of `path`, removed in the next minor release, and a page keeps `target_path` only where it differs from `path`), `candidates` (up to `limit` distinct openable file paths, best first). If your next move is a Read, read `candidates`: some `results` are pages that are not files.
 
-**Page rows** also carry `symbols`: up to three `name:line` entries (`Owner.member` for members) in that file whose names match the query's words.
+**Page rows** also carry `symbols`: up to three `name:line` entries (`Owner.member` for members) in that file whose names match the query's words. The first three page rows whose file has a matching line also carry `matched_lines`: a sample of up to three `{line, text}` source lines read from the live file that share the most query words, code lines before comments and imports. Unlike `lines`, it is never every match.
 
 An identifier or literal query also returns `lines` (`{path, line, kind, text}`, definitions first, at most 50): the `get_context` `references` of one to three exact symbols, else a live scan for the token (kind `definition` or `match`). `complete` is true only when they are every match (see `references` above); otherwise `reasons` says why.
 

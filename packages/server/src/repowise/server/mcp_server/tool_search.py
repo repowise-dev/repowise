@@ -1179,7 +1179,8 @@ async def search_codebase(
     unless the query is why-shaped.
 
     Rows naming a file carry `path`; concept pages add `symbols`
-    (name:line) the query matches. `candidates` lists up to `limit`
+    (name:line) the query matches; the top 3 add `matched_lines`
+    (line, text), sample lines sharing its words. `candidates` lists up to `limit`
     distinct files to Read, best first. Identifier or literal queries also
     return `lines` (path, line, kind, text; definitions first) read from live
     files; when `complete` is true they are every match, so no grep is needed.

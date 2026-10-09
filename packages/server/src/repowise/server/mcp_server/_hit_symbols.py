@@ -4,17 +4,23 @@ A search row names a file; the caller usually wants the function in it next.
 Each file-backed page row gets ``symbols``: up to :data:`_MAX_HIT_SYMBOLS`
 entries of ``name:line``, the same shape a collapsed symbol row already carries
 for its same-file neighbours. A member is named ``Owner.member`` so a bare
-``run:40`` is never ambiguous.
+``run:40`` is never ambiguous. The first :data:`_MAX_LINE_FILES` rows whose live
+file has a line sharing query words also get ``matched_lines``: a sample of the
+best such lines, not every match.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
+from pathlib import Path
 
 from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import WikiSymbol
+from repowise.server.mcp_server._edit_sites import MAX_TEXT_CHARS, _import_lines, _read_lines
 from repowise.server.mcp_server._helpers import _get_repo
 from repowise.server.mcp_server._page_paths import hit_file_path
 from repowise.server.mcp_server._query_terms import content_terms
@@ -23,6 +29,12 @@ from repowise.server.mcp_server.tool_search_symbols import _tokens
 _log = logging.getLogger("repowise.mcp.search")
 
 _MAX_HIT_SYMBOLS = 3
+# Only the top files are read: past them an agent opens the file anyway.
+_MAX_LINE_FILES = 3
+_MAX_HIT_LINES = 3
+# Files tried for lines, so unreadable or unmatched ones cannot make it unbounded.
+_MAX_LINE_READS = 2 * _MAX_LINE_FILES
+_COMMENT_ONLY = re.compile(r"^\s*(?:#|//|/\*|\*|--|<!--)")
 
 # Values rank after the callables and types a navigation question is after.
 _VALUE_KINDS = frozenset({"constant", "variable", "property"})
@@ -73,12 +85,51 @@ def _label(row) -> str:
     return row.name
 
 
-async def attach_hit_symbols(ctx, query: str, rows: list[dict]) -> None:
-    """Add ``symbols`` to each file-backed page row, in place; one query for all rows.
+def best_lines(
+    lines: list[str], terms: set[str], spans: list[tuple[int, int]]
+) -> list[dict]:
+    """``{line, text}`` for the lines sharing the most of *terms*, best first.
 
-    Symbol rows are left alone (they already name their symbol), and a row whose
-    file has no symbol sharing a query word gets no field. A failure here only
-    costs the field, never the search.
+    A line inside a symbol whose name matches wins a tie; comment-only and
+    import lines are served only when no other line matches. With two or more
+    terms a line must match two, so one common word does not decide alone.
+    """
+    need = min(2, len(terms))
+    imports = _import_lines(lines)
+    scored = []
+    for n, text in enumerate(lines, 1):
+        hits = len(terms & _stems(text))
+        if hits < need:
+            continue
+        weak = n in imports or bool(_COMMENT_ONLY.match(text))
+        inside = any(start <= n <= end for start, end in spans)
+        scored.append((weak, -hits, not inside, n, text))
+    if any(not s[0] for s in scored):
+        scored = [s for s in scored if not s[0]]
+    best = sorted(scored)[:_MAX_HIT_LINES]
+    return [{"line": n, "text": text.strip()[:MAX_TEXT_CHARS]} for *_, n, text in best]
+
+
+def _sample_lines(
+    root: Path, wanted: list[tuple[str, list[tuple[int, int]]]], terms: set[str]
+) -> dict[str, list[dict]]:
+    """Best lines for the first files in *wanted* that yield any, read in order."""
+    found: dict[str, list[dict]] = {}
+    for path, spans in wanted[:_MAX_LINE_READS]:
+        lines = _read_lines(root, path)
+        if lines and (best := best_lines(lines, terms, spans)):
+            found[path] = best
+            if len(found) >= _MAX_LINE_FILES:
+                break
+    return found
+
+
+async def attach_hit_symbols(ctx, query: str, rows: list[dict]) -> None:
+    """Add ``symbols`` (and ``matched_lines`` to top rows) to file-backed page rows, in place.
+
+    One symbol query serves all rows. Symbol rows are left alone (they already
+    name their symbol), and a row with nothing sharing a query word gets no
+    field. A failure here only costs the fields, never the search.
     """
     try:
         await _attach(ctx, query, rows)
@@ -106,6 +157,7 @@ async def _attach(ctx, query: str, rows: list[dict]) -> None:
                 WikiSymbol.parent_name,
                 WikiSymbol.kind,
                 WikiSymbol.start_line,
+                WikiSymbol.end_line,
                 WikiSymbol.signature,
                 WikiSymbol.docstring,
                 WikiSymbol.visibility,
@@ -119,8 +171,20 @@ async def _attach(ctx, query: str, rows: list[dict]) -> None:
     for row in result.all():
         key = _rank_key(row, terms)
         if key is not None:
-            by_file.setdefault(row.file_path, []).append((key, _label(row), row.start_line))
+            span = (row.start_line, max(row.end_line or 0, row.start_line))
+            by_file.setdefault(row.file_path, []).append((key, _label(row), span))
+    wanted: dict[str, list[tuple[int, int]]] = {}
     for hit in rows:
-        ranked = sorted(by_file.get(targets.get(id(hit), ""), ()), key=lambda r: r[0])
+        path = targets.get(id(hit), "")
+        ranked = sorted(by_file.get(path, ()), key=lambda r: r[0])
         if ranked:
-            hit["symbols"] = [f"{name}:{line}" for _, name, line in ranked[:_MAX_HIT_SYMBOLS]]
+            hit["symbols"] = [f"{name}:{span[0]}" for _, name, span in ranked[:_MAX_HIT_SYMBOLS]]
+        if path and "matched_lines" not in hit:
+            wanted.setdefault(path, [span for *_, span in ranked])
+    if not wanted:
+        return
+    root = Path(repo.local_path or ctx.path)
+    sampled = await asyncio.to_thread(_sample_lines, root, list(wanted.items()), terms)
+    for hit in rows:
+        if found := sampled.get(targets.get(id(hit), "")):
+            hit["matched_lines"] = found
