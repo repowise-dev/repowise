@@ -88,6 +88,13 @@ export default async function OverviewPage({ params }: Props) {
     });
   }
 
+  // Priced by the server; no rates means the dialog shows no estimate.
+  const active = providers?.active;
+  const costPer1k =
+    active?.input_cost_per_1k != null && active.output_cost_per_1k != null
+      ? { input: active.input_cost_per_1k, output: active.output_cost_per_1k }
+      : null;
+
   const header = (
     <RepoIdentityHeader
       name={repo.name}
@@ -103,6 +110,7 @@ export default async function OverviewPage({ params }: Props) {
             repoName={repo.name}
             pageCount={sync.page_count || stats.file_count}
             modelName={providers?.active.model ?? sync.last_sync_model ?? ""}
+            costPer1k={costPer1k}
             lastSyncAt={sync.last_sync_at}
             lastResyncAt={sync.last_resync_at}
           />

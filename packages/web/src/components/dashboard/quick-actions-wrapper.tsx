@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import {
   QuickActions as QuickActionsShell,
   DEFAULT_QUICK_ACTIONS,
+  type CostPer1k,
   type QuickActionKey,
 } from "@repowise-dev/ui/dashboard/quick-actions";
 import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
@@ -20,6 +21,7 @@ interface Props {
   repoName?: string;
   pageCount?: number;
   modelName?: string;
+  costPer1k?: CostPer1k | null;
   lastSyncAt?: string | null;
   lastResyncAt?: string | null;
   /** Button arrangement — see `QuickActionsProps.variant`. Overview passes
@@ -37,6 +39,7 @@ export function QuickActionsWrapper({
   repoName,
   pageCount = 0,
   modelName = "",
+  costPer1k,
   lastSyncAt,
   lastResyncAt,
   variant,
@@ -165,6 +168,7 @@ export function QuickActionsWrapper({
       lastResyncAt={lastResyncAt}
       pageCount={pageCount}
       modelName={modelName}
+      costPer1k={costPer1k}
       activeJobSlot={activeSlot}
       variant={variant}
     />

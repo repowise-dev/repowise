@@ -10,9 +10,8 @@ over-estimate on a re-run: safe direction, wrong number.
 
 The token count is not the missing piece: ``cached_tokens`` already flows
 provider -> ``GeneratedPage`` -> the ``pages`` table, and the run report
-prints it. What is missing is a third rate (here, in
-``generation/cost_tracker.py``, and in the TS mirror at
-``packages/ui/src/dashboard/quick-actions.tsx``), plus splitting the
+prints it. What is missing is a third rate (here and in
+``generation/cost_tracker.py``), plus splitting the
 cached count out of ``input_tokens`` in the cost arithmetic. Worth doing
 when we report cost per re-index, where the discount is the whole story;
 not worth it to move a one-off init estimate by ~10%.
