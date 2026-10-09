@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import time
+from collections import Counter
 from collections.abc import Container
 from pathlib import Path
 from typing import Any
@@ -28,10 +29,13 @@ from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
 from repowise.core.repo_config import load_repo_config
-from repowise.server.mcp_server._budget import register_post_enforce
+from repowise.core.test_paths import is_test_related_path
+from repowise.server.mcp_server._budget import OmissionCollector, register_post_enforce
 from repowise.server.mcp_server._edit_sites import (
     _MAX_FILE_BYTES,
+    MAX_REFERENCES_PER_FILE,
     MAX_TEXT_CHARS,
+    _cap_references_per_file,
     reference_edit_set,
 )
 from repowise.server.mcp_server._helpers import (
@@ -368,10 +372,31 @@ async def _attach(
         rows, reasons = await asyncio.to_thread(_scan_listed, root, *literal)
     else:
         return
-    rows.sort(key=lambda r: (_KIND_ORDER[r["kind"]], r["path"], r["line"]))
-    if len(rows) > MAX_LINES and OVER_LINES not in reasons:
+    rows.sort(
+        key=lambda r: (
+            r["kind"] != "definition",
+            is_test_related_path(r["path"]),
+            _KIND_ORDER[r["kind"]],
+            r["path"],
+            r["line"],
+        )
+    )
+    kept = _cap_references_per_file(rows)
+    if len(kept) < len(rows):
+        reasons.append(
+            f"{len(rows) - len(kept)} references past {MAX_REFERENCES_PER_FILE} per file"
+            " not shown: lines_omitted_by_file; the full list is under _meta.omitted"
+        )
+    if len(kept) > MAX_LINES and OVER_LINES not in reasons:
         reasons.append(OVER_LINES)
-    response["lines"] = rows[:MAX_LINES]
+    response["lines"] = kept[:MAX_LINES]
+    if len(response["lines"]) < len(rows):
+        shown = {id(r) for r in response["lines"]}
+        hidden = [r for r in rows if id(r) not in shown]
+        collector = OmissionCollector("search_codebase", repo_root=ctx.path)
+        collector.add(f"{query} :: lines not shown", hidden)
+        collector.attach(response)
+        response["lines_omitted_by_file"] = dict(Counter(r["path"] for r in hidden))
     response["complete"] = not reasons
     if reasons:
         response["reasons"] = reasons

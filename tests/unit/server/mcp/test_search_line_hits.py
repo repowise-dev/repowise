@@ -303,3 +303,133 @@ def test_definition_patterns():
     assert value.search('  "port": 47821,')
     assert value.search("const PORT: number = 47821;")
     assert value.search("connect(port=47821)") is None
+
+
+def _importer(session, rid: str, rel: str, target: str, names: str, language: str) -> None:
+    session.add_all(
+        [
+            GraphNode(
+                id=f"lh_file_{rel}",
+                repository_id=rid,
+                node_id=rel,
+                node_type="file",
+                language=language,
+                created_at=_NOW,
+            ),
+            GraphEdge(
+                id=f"lh_imp_{rel}",
+                repository_id=rid,
+                source_node_id=rel,
+                target_node_id=target,
+                edge_type="imports",
+                imported_names_json=names,
+                confidence=1.0,
+                created_at=_NOW,
+            ),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_mock_heavy_python_test_collapses_into_recoverable_counts(tree, session, setup_mcp):
+    (tree / "tests").mkdir()
+    (tree / "tests" / "test_widget.py").write_text(
+        "from pkg.catalog import backend_of\n"
+        + "".join(f"mock.patch('pkg.catalog.backend_of', side_effect={i})\n" for i in range(20)),
+        encoding="utf-8",
+    )
+    _importer(session, setup_mcp, "tests/test_widget.py", "pkg/catalog.py", '["backend_of"]', "python")
+    await session.commit()
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    cap = _edit_sites.MAX_REFERENCES_PER_FILE
+    assert _rows(out) == [
+        ("pkg/catalog.py", 4, "definition"),
+        ("app/widget.py", 1, "import"),
+        ("app/widget.py", 6, "call"),
+        ("tests/test_widget.py", 1, "import"),
+        *(("tests/test_widget.py", n, "reference") for n in range(2, 2 + cap)),
+    ]
+    assert out["lines_omitted_by_file"] == {"tests/test_widget.py": 20 - cap}
+    assert out["complete"] is False
+    assert any("lines_omitted_by_file" in r for r in out["reasons"])
+    assert out["_meta"]["omitted"]["refs"]
+
+
+@pytest.mark.asyncio
+async def test_mock_heavy_typescript_test_sorts_after_the_real_user(tree, session, setup_mcp):
+    files = {
+        "web/a.ts": "export function pick(x: number): number { return x }\n",
+        "web/a.test.ts": "import { pick } from './a'\n" + "vi.mocked(pick).mockReturnValue(1)\n" * 30,
+        "web/b.ts": "import { pick } from './a'\nexport const run = () => [pick]\n",
+    }
+    for rel, text in files.items():
+        (tree / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tree / rel).write_text(text, encoding="utf-8")
+    session.add(
+        GraphNode(
+            id="lh_ts_sym",
+            repository_id=setup_mcp,
+            node_id="web/a.ts::pick",
+            node_type="symbol",
+            name="pick",
+            file_path="web/a.ts",
+            kind="function",
+            language="typescript",
+            start_line=1,
+            end_line=1,
+            created_at=_NOW,
+        )
+    )
+    for rel in ("web/a.test.ts", "web/b.ts"):
+        _importer(session, setup_mcp, rel, "web/a.ts", '["pick"]', "typescript")
+    await session.commit()
+
+    out = await search_codebase("pick", mode="symbol")
+
+    paths = [p for p, _n, _k in _rows(out)]
+    assert ("web/b.ts", 2, "reference") in _rows(out)
+    assert paths.index("web/b.ts") < paths.index("web/a.test.ts")
+    assert paths.count("web/a.test.ts") == 1 + _edit_sites.MAX_REFERENCES_PER_FILE
+    assert out["lines_omitted_by_file"] == {
+        "web/a.test.ts": 30 - _edit_sites.MAX_REFERENCES_PER_FILE
+    }
+    assert out["complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_call_sites_are_never_collapsed(tree, session, setup_mcp):
+    for i in range(4):
+        rel = f"svc/user{i}.py"
+        (tree / "svc").mkdir(exist_ok=True)
+        (tree / rel).write_text(
+            "from pkg.catalog import backend_of\n" + "backend_of(1)\n" * 6, encoding="utf-8"
+        )
+        _importer(session, setup_mcp, rel, "pkg/catalog.py", '["backend_of"]', "python")
+        session.add(
+            GraphEdge(
+                id=f"lh_call_{i}",
+                repository_id=setup_mcp,
+                source_node_id=f"{rel}::run",
+                target_node_id="pkg/catalog.py::backend_of",
+                edge_type="calls",
+                call_lines_json="[2, 3, 4, 5, 6, 7]",
+                confidence=0.95,
+                created_at=_NOW,
+            )
+        )
+    await session.commit()
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    calls = [r for r in _rows(out) if r[2] == "call" and r[0].startswith("svc/")]
+    assert len(calls) == 4 * 6
+    assert out["complete"] is True
+    assert "lines_omitted_by_file" not in out
+    assert "omitted" not in out["_meta"]
+
+
+def test_literal_rows_are_not_collapsed():
+    rows = [{"path": "a.py", "line": n, "kind": "match", "text": "x"} for n in range(5)]
+    assert _edit_sites._cap_references_per_file(rows) == rows

@@ -225,7 +225,7 @@ Hybrid search that routes by the shape of the query: identifiers search the symb
 
 **Page rows** also carry `symbols`: up to three `name:line` entries (`Owner.member` for members) in that file whose names match the query's words.
 
-An identifier or literal query also returns `lines` (`{path, line, kind, text}`, definitions first, at most 50): the `get_context` `references` of one to three exact symbols, else a live scan for the token (kind `definition` or `match`). `complete` is true only when they are every match (see `references` above); otherwise `reasons` says why.
+An identifier or literal query also returns `lines` (`{path, line, kind, text}`, definitions first, at most 50): the `get_context` `references` of one to three exact symbols, else a live scan for the token (kind `definition` or `match`). `complete` is true only when they are every match (see `references` above); otherwise `reasons` says why. Past 3 plain `reference` lines in one file, and past 50 lines, rows are counted in `lines_omitted_by_file` and recoverable from `_meta.omitted`; test files sort after production files.
 
 ```
 search_codebase(query="GitIndexer index_repo")
