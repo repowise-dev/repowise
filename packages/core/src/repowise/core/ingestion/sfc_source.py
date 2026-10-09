@@ -1,8 +1,9 @@
 """Single-file-component source preparation.
 
-A ``.svelte``, ``.vue`` or ``.razor`` file is more than one language in one
-file: ``<script>`` blocks hold TS/JS, the markup is a framework-flavoured
-HTML, and ``@code`` / ``@{ }`` regions hold C#. The markup grammars parse
+A ``.svelte``, ``.vue``, ``.razor`` or ``.astro`` file is more than one
+language in one file: ``<script>`` blocks (and Astro's ``---`` frontmatter)
+hold TS/JS, the markup is a framework-flavoured HTML, and ``@code`` /
+``@{ }`` regions hold C#. The markup grammars parse
 the file but hand each ``<script>`` body back as one opaque ``raw_text``
 node, so a ``.scm`` query run against them captures no symbol, no import and
 no call.
@@ -47,6 +48,7 @@ a :class:`Locator`, no-op unless the language matches.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from functools import lru_cache
 from typing import TYPE_CHECKING, NamedTuple
@@ -603,6 +605,90 @@ def _razor_component_name(name: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Astro
+# ---------------------------------------------------------------------------
+
+# The ``---`` fence must open the file; the body runs to the next ``---`` line.
+_ASTRO_FRONTMATTER = re.compile(
+    rb"\A\s*---[ \t]*\r?\n(.*?)^---[ \t]*\r?$", re.DOTALL | re.MULTILINE
+)
+# ``<!--`` and a markup ``{/* */}`` hide text that may mention ``<script>``; a
+# bare ``/*`` is not a comment in markup (``accept="audio/*"``). A ``<style>``
+# body is hidden whole, which covers its CSS comments.
+_ASTRO_OPENER = re.compile(rb"(<!--|\{/\*)|<(script|style)\b([^>]*)>", re.IGNORECASE)
+_ASTRO_COMMENT_CLOSE = {b"<!--": _HTML_COMMENT_CLOSE, b"{/*": b"*/"}
+_ASTRO_CLOSE = {
+    b"script": re.compile(rb"</script\s*>", re.IGNORECASE),
+    b"style": re.compile(rb"</style\s*>", re.IGNORECASE),
+}
+_ASTRO_SCRIPT_TYPE = re.compile(rb"""(?<![\w-])type\s*=\s*["']?([^"'\s>]+)""", re.IGNORECASE)
+# A ``<script>`` with any other ``type`` (``application/ld+json``) holds data.
+_ASTRO_JS_TYPES = frozenset(
+    {b"module", b"text/javascript", b"application/javascript", b"text/typescript"}
+)
+_ASTRO_TAG = re.compile(rb"<([A-Z][\w.]*)")
+
+
+def _astro_byte_scan(source: bytes, state: dict) -> None:
+    """Locate the frontmatter, ``<script>`` bodies and component tags of ``.astro`` bytes.
+
+    The leading ``---`` frontmatter and every JS ``<script>`` body (plain,
+    ``is:inline``, ``type="module"``, ``define:vars``) project as TypeScript.
+    Markup ``{expr}`` and ``<style>`` are blanked, and a ``<script>`` inside an
+    HTML or ``{/* */}`` comment or a ``<style>`` body is skipped. PascalCase
+    tags in the markup mint component call edges, as for Svelte.
+    """
+    pos = 0
+    frontmatter = _ASTRO_FRONTMATTER.match(source)
+    if frontmatter:
+        state["spans"].append(frontmatter.span(1))
+        pos = frontmatter.end()
+    markup_start = pos
+
+    hidden: list[tuple[int, int]] = []
+    while (opener := _ASTRO_OPENER.search(source, pos)) is not None:
+        if opener.group(1) is not None:
+            close_bytes = _ASTRO_COMMENT_CLOSE[opener.group(1)]
+            close = source.find(close_bytes, opener.end())
+            end = len(source) if close < 0 else close + len(close_bytes)
+            hidden.append((opener.start(), end))
+            pos = end
+            continue
+        tag, attrs = opener.group(2).lower(), opener.group(3)
+        # shortcut: a <script src="./x.ts"> mints no import, so a file loaded
+        # only that way reads as unreachable; emit an Import as
+        # lightweight_imports/html.py does once a site needs it.
+        if attrs.rstrip().endswith(b"/"):  # <script src="..." /> or <style />
+            pos = opener.end()
+            continue
+        close_match = _ASTRO_CLOSE[tag].search(source, opener.end())
+        end = close_match.start() if close_match else len(source)
+        script_type = _ASTRO_SCRIPT_TYPE.search(attrs)
+        if tag == b"script" and (
+            script_type is None or script_type.group(1).lower() in _ASTRO_JS_TYPES
+        ):
+            state["spans"].append((opener.end(), end))
+        hidden.append((opener.start(), end))
+        pos = close_match.end() if close_match else end
+
+    # shortcut: a TS generic inside a markup {expr} (``Array<Foo>``) reads as a
+    # <Foo> tag; fine until a false component edge shows up in a real repo.
+    for tag in _ASTRO_TAG.finditer(source, markup_start):
+        if any(start <= tag.start() < end for start, end in hidden):
+            continue
+        name = _astro_component_name(tag.group(1).decode("utf-8").rsplit(".", 1)[-1])
+        if name:
+            state["tags"].append((name, source.count(b"\n", 0, tag.start()) + 1))
+
+
+def _astro_component_name(name: str) -> str | None:
+    """``<Header />`` instantiates a component; ``<div>`` and ``<Fragment>`` do not."""
+    if not name[:1].isupper() or name == "Fragment":
+        return None
+    return name
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -637,6 +723,12 @@ _LOCATORS: dict[str, Locator] = {
     "razor": Locator(
         component_name=_razor_component_name,
         byte_scan=_razor_byte_scan,
+    ),
+    # No tree-sitter-astro on PyPI: the ``---`` frontmatter and ``<script>``
+    # bodies are byte-scanned and project as TypeScript.
+    "astro": Locator(
+        component_name=_astro_component_name,
+        byte_scan=_astro_byte_scan,
     ),
 }
 

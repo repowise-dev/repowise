@@ -156,6 +156,9 @@ class TestParityGoldens:
 # ---------------------------------------------------------------------------
 
 _FULL = {
+    # astro projects its frontmatter and <script> bodies to TypeScript
+    # through the same SFC pass as svelte, so its imports are ordinary ESM.
+    "astro",
     "c",
     "cpp",
     "csharp",

@@ -377,7 +377,7 @@ _TS_JS_IMPORTABLE_KINDS: frozenset[str] = frozenset({"constant", "variable"})
 
 # Single-file-component languages: the whole file is one component, so their
 # exports behave unlike an ordinary module's â€” see _non_importable_kinds.
-_SFC_LANGUAGES: frozenset[str] = frozenset({"svelte", "vue"})
+_SFC_LANGUAGES: frozenset[str] = frozenset({"svelte", "vue", "astro"})
 
 # Every kind an SFC component prop can take, plus "class" for the synthetic
 # component symbol itself â€” see _non_importable_kinds.

@@ -39,6 +39,7 @@ _REGISTER: tuple[tuple[str, BaseDefUseDialect], ...] = (
     # SFC <script> blocks are TS/JS and reach the pass as a TS buffer.
     ("svelte", _ts_js.DIALECT),
     ("vue", _ts_js.DIALECT),
+    ("astro", _ts_js.DIALECT),
     ("javascript", _ts_js.DIALECT),
     ("jsx", _ts_js.DIALECT),
     ("java", _java.DIALECT),

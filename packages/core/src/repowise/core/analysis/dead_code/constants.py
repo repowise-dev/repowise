@@ -657,6 +657,9 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/+layout.server.ts",
     "*/+server.ts",
     "*/+error.svelte",
+    # Astro file-based routes: every page under src/pages is a route.
+    "src/pages/*.astro",
+    "*/src/pages/*.astro",
     # ESM declaration outputs in dist trees.
     "*/dist/*.d.ts",
     # ---- JVM (Java + Kotlin) conventions ---------------------------------

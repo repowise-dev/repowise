@@ -13,7 +13,7 @@ that produced it and the confidence that strategy earns.
 <p>
   <img src="https://img.shields.io/badge/17-edge_types-3178C6?style=flat-square&labelColor=0A0A0A" alt="17 edge types" />
   <img src="https://img.shields.io/badge/39-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="39 resolution origins" />
-  <img src="https://img.shields.io/badge/26-full--AST_languages-F59520?style=flat-square&labelColor=0A0A0A" alt="26 full-AST languages" />
+  <img src="https://img.shields.io/badge/27-full--AST_languages-F59520?style=flat-square&labelColor=0A0A0A" alt="27 full-AST languages" />
   <img src="https://img.shields.io/badge/0-LLM_calls-1E293B?style=flat-square&labelColor=0A0A0A" alt="zero LLM calls" />
 </p>
 
@@ -414,7 +414,7 @@ which is why the graph is reproducible and why indexing needs no API key.
   overload set, so a call to the right method can land on the wrong overload.
   On C#, plan against the compiler figure (0.73 to 0.92), not the hand-graded
   30 of 30.
-- **Precision is published for ten languages, not all 26.** Go, TypeScript,
+- **Precision is published for ten languages, not all 27.** Go, TypeScript,
   Java, C#, C, C++, Rust and Python have a compiler or analyser answer key.
   Kotlin and Swift have the hand-graded sample only, at 30 rows each. The other
   full-AST languages have no published precision figure.

@@ -121,7 +121,7 @@ def normalize_return_type(raw: str, language: str) -> str | None:
     """
 
     value = raw.strip()
-    if language in ("typescript", "javascript", "svelte", "vue"):
+    if language in ("typescript", "javascript", "svelte", "vue", "astro"):
         value = _NULLISH_UNION.sub("", value).strip()
     if language == "csharp":
         value = value.removeprefix("global::").rstrip("?").strip()

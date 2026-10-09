@@ -42,18 +42,24 @@ def _vue_name(path: PurePosixPath) -> str:
     return vue_component_name_from_stem(path.stem, path.parent.name)
 
 
-def _razor_name(path: PurePosixPath) -> str:
-    # Razor components are PascalCase by convention and the file *is* the
-    # component, so the stem is the name; no kebab- or sigil-normalisation
-    # needed (unlike SvelteKit's ``+page`` or Vue's ``back-to-top``).
+def _stem_name(path: PurePosixPath) -> str:
+    # Razor and Astro components are PascalCase by convention and the file
+    # *is* the component, so the stem is the name; no kebab- or
+    # sigil-normalisation needed (unlike SvelteKit's ``+page`` or Vue's
+    # ``back-to-top``).
     return path.stem
 
 
-_NAMERS = {"svelte": _svelte_name, "vue": _vue_name, "razor": _razor_name}
+_NAMERS = {
+    "svelte": _svelte_name,
+    "vue": _vue_name,
+    "razor": _stem_name,
+    "astro": _stem_name,
+}
 
 
 def sfc_component_symbols(root: Node, src: str, file_info: FileInfo) -> list[Symbol]:
-    """Return the single component symbol for a ``.svelte`` / ``.vue`` / ``.razor`` file."""
+    """Return the single component symbol for a ``.svelte`` / ``.vue`` / ``.razor`` / ``.astro`` file."""
     path = PurePosixPath(file_info.path)
     if not path.stem:
         return []

@@ -34,7 +34,7 @@ For a map of every layer and how they feed each other, read
 | [agent/DISTILL.md](agent/DISTILL.md) | Compress noisy command output before your agent reads it |
 | [agent/LENS.md](agent/LENS.md) | Lens in the Claude Code plugin: the spinner, change review, Flow and the `/lens` map shown while Claude works |
 | [layers/GRAPH.md](layers/GRAPH.md) | The dependency graph, and how much to trust each edge |
-| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 26 parsed to a full AST, 40 on the support ladder |
+| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 27 parsed to a full AST, 41 on the support ladder |
 
 ### Find what to fix first
 
