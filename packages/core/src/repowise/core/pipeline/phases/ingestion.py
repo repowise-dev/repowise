@@ -208,13 +208,20 @@ def _emit_traversal_summary(
                 "minified": "looks minified",
                 "unreadable": "could not be read",
             }.get(skipped_source.reason, f"over the {ceiling_kb:,} KB limit")
+            # A size skip is already reported on its own channel
+            # (``stats.skipped_source_files``) and by ``repowise doctor``; it is
+            # a notice, not a degradation. Emitting it as ``warning`` made it
+            # land in ``state["degraded"]`` and get served to agents on every
+            # MCP reply (#3185).
             progress.on_message(
-                "warning",
+                "notice",
                 f"  Not indexed: {skipped_source.path} "
                 f"({skipped_source.size_kb:,} KB, {detail})",
             )
         if getattr(stats, "skipped_source_files_truncated", False):
-            progress.on_message("warning", "  ...and more source files skipped on size")
+            # Same notice-vs-degradation distinction as the per-file line above
+            # (#3185): a truncated size-skip summary is not an analysis failure.
+            progress.on_message("notice", "  ...and more source files skipped on size")
 
     if stats.lang_counts:
         ranked = sorted(stats.lang_counts.items(), key=lambda item: -item[1])
@@ -633,12 +640,14 @@ async def _run_ingestion(
     # opaque "graph 0/1" spinner.
     if progress and len(file_infos) >= _SLOW_GRAPH_BUILD_FILES:
         # Reassurance before the longest silent stretch of the run, so it is
-        # warning-weight rather than another dim stat — which is also why it is
-        # gated: on a small repo the build is over in under a second, and a
-        # yellow "this may take several minutes" there is a false alarm made
-        # louder.
+        # surfaced rather than lost in another dim stat — which is also why it
+        # is gated: on a small repo the build is over in under a second, and a
+        # "this may take several minutes" there is a false alarm made louder.
+        # It is a notice, not a degradation: persisting it as ``warning`` put
+        # it in ``state["degraded"]`` and served it to agents on every MCP
+        # reply (#3185).
         progress.on_message(
-            "warning",
+            "notice",
             "Graph build can take several minutes on a first run. Safe to Ctrl-C — "
             "re-run 'repowise init --resume' to continue where it stopped.",
         )
