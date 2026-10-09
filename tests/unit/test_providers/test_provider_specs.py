@@ -10,6 +10,7 @@ replaced drifted.
 from __future__ import annotations
 
 import ast
+import re
 import types
 from pathlib import Path
 
@@ -197,3 +198,49 @@ def test_the_guard_is_looking_at_real_sources():
     """A glob that matched nothing, or a name set that emptied, passes vacuously."""
     assert len(_sources()) > 500
     assert {"claude_cli", "codex_cli", "opencode", "litellm", "openai"} <= _CHECKED
+
+
+# --- no provider or embedder lists in the web UI ----------------------------
+
+#: A quoted provider/embedder name, or one used as an object key. The UI reads
+#: these from ``/api/providers``; ``mock`` is checked here, unlike above.
+_UI_NAME = re.compile(
+    r"""["'](?P<q>{names})["']|^\s*(?P<k>{names})\s*:""".format(
+        names="|".join(sorted(frozenset(PROVIDER_SPECS) | _EMBEDDERS, key=len, reverse=True))
+    ),
+    re.MULTILINE,
+)
+
+
+def _ui_sources():
+    return sorted(
+        p
+        for pkg in ("ui", "web", "api-client")
+        for p in (_PACKAGES / pkg / "src").rglob("*.ts*")
+        if p.suffix in {".ts", ".tsx"}
+        and ".test." not in p.name
+        and "__tests__" not in p.parts
+        and "generated" not in p.parts
+    )
+
+
+def test_no_ui_source_spells_a_provider_name():
+    offenders = [
+        f"{path.relative_to(_PACKAGES).as_posix()}:"
+        f"{text.count(chr(10), 0, m.start()) + 1} {m.group('q') or m.group('k')!r}"
+        for path in _ui_sources()
+        for text in [path.read_text(encoding="utf-8")]
+        for m in _UI_NAME.finditer(text)
+    ]
+    assert not offenders, f"provider names spelled in UI source; read /api/providers: {offenders}"
+
+
+@pytest.mark.parametrize(
+    "snippet", ['x === "mock"', "['gemini', 'openai']", "  ollama: [],", 'useState("litellm")']
+)
+def test_the_ui_guard_sees_each_shape(snippet):
+    assert _UI_NAME.search(snippet)
+
+
+def test_the_ui_guard_is_looking_at_real_sources():
+    assert len(_ui_sources()) > 200
