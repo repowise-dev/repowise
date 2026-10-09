@@ -61,6 +61,7 @@ from .extractors.bindings.python import expand_bare_relative_imports
 from .extractors.bindings.ts_js import (
     declarator_binds_callable,
     declarator_value_is_module_ref,
+    dynamic_import_bindings,
 )
 from .extractors.synthetic_symbols import extract_synthetic_symbols
 from .extractors.visibility import (
@@ -1029,7 +1030,8 @@ def _statement_imports(
         return macro_mod_imports(module_node, raw) if "mod" in raw else []
     if language in _TS_JS_LANGUAGES and _is_dynamic_esm_import(stmt_node):
         # ``import('./mod')`` binds a module namespace at runtime, so it is a
-        # wildcard, which keeps the target's exports live.
+        # wildcard, which keeps the target's exports live. The names it is
+        # destructured into still bind, for call resolution.
         return [
             Import(
                 raw_statement=raw,
@@ -1037,7 +1039,7 @@ def _statement_imports(
                 imported_names=["*"],
                 is_relative=module_text.startswith("."),
                 resolved_file=None,
-                bindings=[],
+                bindings=dynamic_import_bindings(stmt_node, src),
                 is_reexport=False,
             )
         ]
@@ -1868,6 +1870,10 @@ class ASTParser:
                 mod_path_attr = _rust_mod_path_attribute(stmt_node, src)
                 if mod_path_attr is not None:
                     dedup_key = f"{raw}|path={mod_path_attr}"
+            # Two ``import('./m')`` calls share their text but not the names
+            # each one binds.
+            if language in _TS_JS_LANGUAGES and _is_dynamic_esm_import(stmt_node):
+                dedup_key = f"{raw}|at={stmt_node.start_byte}"
             if dedup_key in seen_raws:
                 continue
             seen_raws.add(dedup_key)
