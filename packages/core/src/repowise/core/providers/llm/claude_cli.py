@@ -97,11 +97,21 @@ def _payload_failure(payload: dict[str, Any]) -> tuple[str, int | None]:
     return f"claude -p reported failure ({detail}).", status_code
 
 
+def _last_result_event(events: list[Any]) -> dict[str, Any] | None:
+    """Return the final ``"type": "result"`` object from a verbose event array."""
+    for event in reversed(events):
+        if isinstance(event, dict) and event.get("type") == "result":
+            return event
+    return None
+
+
 def _parse_result(stdout: str) -> dict[str, Any]:
     """Parse ``--output-format json`` output, tolerating leading noise.
 
-    The CLI emits a single JSON object, but warnings can precede it on stdout,
-    so fall back to a line scan before giving up.
+    The CLI emits a single JSON object, but with ``--verbose`` it instead
+    emits an array of stream events (``system``/``assistant``/``result``...);
+    warnings can also precede either shape on stdout, so fall back to a line
+    scan before giving up.
     """
     text = stdout.strip()
     if not text:
@@ -111,6 +121,10 @@ def _parse_result(stdout: str) -> dict[str, Any]:
         parsed = json.loads(text)
         if isinstance(parsed, dict):
             return parsed
+        if isinstance(parsed, list):
+            result = _last_result_event(parsed)
+            if result is not None:
+                return result
 
     for raw_line in reversed(text.splitlines()):
         line = raw_line.strip()
