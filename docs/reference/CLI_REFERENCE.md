@@ -1737,6 +1737,8 @@ Add a new repo to an existing workspace and index it.
 
 This defaults to `--index --docs` when a provider is configured, the added repo is indexed and gets LLM doc generation in one step, with a cost-gate prompt before any tokens are spent. Pass `--no-docs` to skip generation, or `--no-index` to only register the entry. The provider, model, embedder, and exclude patterns are inherited from the primary repo's `.repowise/config.yaml` unless overridden.
 
+Indexing records the checkout's `origin` remote as the repository URL when that remote is configured. Later index and update runs leave a stored URL in place unless a caller passes a replacement. `PATCH /api/repos/{repo_id}` can repair a missing URL without re-indexing.
+
 | Flag | Description |
 |------|-------------|
 | `--alias` | Short name for the repo (defaults to directory name) |

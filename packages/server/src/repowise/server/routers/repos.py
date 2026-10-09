@@ -121,7 +121,8 @@ async def create_repo(
         repo = await crud.get_repository(repo_session, repo_id)
         if repo is not None:
             repo.name = body.name
-            repo.url = body.url
+            if body.url is not None:
+                repo.url = body.url
             repo.default_branch = body.default_branch
             if body.settings is not None:
                 import json as _json

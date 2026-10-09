@@ -15,7 +15,9 @@ from repowise.core.index_scope import load_index_scope
 class RepoCreate(BaseModel):
     name: str
     local_path: str
-    url: str = ""
+    # None means "do not touch an existing URL"; a new row still records
+    # origin when the checkout has one. Pass "" to clear stored metadata.
+    url: str | None = None
     default_branch: str = "main"
     settings: dict | None = None
     # Enqueue the first full index immediately after registration. On by
