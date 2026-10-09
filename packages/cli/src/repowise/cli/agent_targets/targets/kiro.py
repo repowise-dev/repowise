@@ -15,12 +15,17 @@ Host facts, each checked against the source named beside it:
   https://kiro.dev/docs/steering
 * Kiro IDE ships with MCP turned off; the CLI reads the same file ungated
   (codegraph ``kiro.ts``). Install says so.
+* ``$KIRO_HOME`` overrides ``~/.kiro`` (codebase-memory-mcp ``cli.c``; Kiro's
+  docs are silent), so the user scope honours it.
+* Assumed, not documented: Kiro launches a user-scope server in the workspace
+  directory, which is how the path-less user entry finds its repo.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -70,7 +75,8 @@ def steering_text() -> str:
 
 def config_dir(scope: Scope, repo_path: Path | None = None) -> Path:
     if scope is Scope.USER:
-        return Path.home() / ".kiro"
+        configured = (os.environ.get("KIRO_HOME") or "").strip()
+        return Path(configured).expanduser() if configured else Path.home() / ".kiro"
     if repo_path is None:
         raise ValueError("project scope needs a repo_path")
     return repo_path / ".kiro"
@@ -207,10 +213,10 @@ class KiroTarget:
         return True
 
     def is_present(self, repo_path: Path | None = None) -> bool:
-        """``kiro-cli`` or the IDE's ``kiro`` on PATH, or a ``~/.kiro`` dir."""
+        """``kiro-cli`` or the IDE's ``kiro`` on PATH, or a Kiro home dir."""
         if IDENTITY.is_installed() or shutil.which("kiro"):
             return True
-        return (Path.home() / ".kiro").is_dir()
+        return config_dir(Scope.USER).is_dir()
 
     def detect(self, repo_path: Path | None = None) -> list[Registration]:
         return detect(repo_path)
