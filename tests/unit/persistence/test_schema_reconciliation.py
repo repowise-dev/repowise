@@ -574,3 +574,31 @@ async def test_adding_owner_line_pct_with_nothing_to_move_succeeds(tmp_path: Pat
         await engine.dispose()
 
     assert "primary_owner_line_pct" in _table_columns(db_path, "git_metadata")
+
+
+def test_postgres_reconcile_ignores_pgvector_type_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    import warnings
+    from types import SimpleNamespace
+
+    from sqlalchemy.exc import SAWarning
+
+    from repowise.core.persistence import database as db_module
+
+    table = Base.metadata.tables["wiki_pages"]
+
+    class Inspector:
+        def get_table_names(self) -> list[str]:
+            return ["wiki_pages"]
+
+        def get_columns(self, _name: str) -> list[dict[str, Any]]:
+            warnings.warn("Did not recognize type 'vector' of column 'embedding'", SAWarning, stacklevel=2)
+            return [{"name": c.name, "type": c.type, "nullable": c.nullable} for c in table.columns]
+
+        def get_indexes(self, _name: str) -> list[dict[str, Any]]:
+            return [{"name": i.name} for i in table.indexes]
+
+    monkeypatch.setattr(db_module, "inspect", lambda _conn: Inspector())
+    connection = SimpleNamespace(dialect=postgresql.dialect(), execute=lambda _stmt: None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        db_module._reconcile_schema(connection)
