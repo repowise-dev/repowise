@@ -14,6 +14,8 @@ from repowise.server.mcp_server.tool_answer.config import (
     _CANDIDATE_FILES_MAX,
     _LARGE_FILE_BYTES,
 )
+from repowise.server.mcp_server.tool_answer.symbols import attach_truncation_contract
+from repowise.server.mcp_server.tool_answer.withheld import _parse_continuation
 
 _COLLECTIONS = (
     "citations",
@@ -476,11 +478,106 @@ def _serve_ranked_list(payload: dict[str, Any]) -> None:
     )
 
 
+# Keyless replies serve source in place of prose. Past this many chars across
+# symbol_bodies, a body keeps its leading lines and a continuation to Read.
+_KEYLESS_BODY_CHARS = 2_000
+_KEYLESS_BODY_REASON = "keyless_body_budget"
+_BODY_NOTE_TAIL = "answer from that rather than re-reading the file."
+_CUT_BODY_NOTE_TAIL = "answer from that, and Read a body's continuation where it was cut."
+
+
+def _cut_body(entry: dict[str, Any], chars: int, root: Path | None) -> int:
+    """Cut one body to whole lines within *chars* (at least its first line).
+
+    Re-derives the truncation contract over everything now unserved and records
+    the line counts beside it. Returns the chars still served.
+    """
+    # Not splitlines(): a form feed or U+2028 inside a line would shift the range.
+    lines = entry["source"].split("\n")
+    kept, used = 0, 0
+    for line in lines:
+        cost = len(line) + (1 if kept else 0)
+        if kept and used + cost > chars:
+            break
+        kept, used = kept + 1, used + cost
+    start, end = entry["lines"]
+    span = _parse_continuation(entry.get("continuation"))
+    indexed_end = span[2] if span else end
+    new_end = start + kept - 1
+    entry["source"] = "\n".join(lines[:kept])
+    entry["lines"] = [start, new_end]
+    for key in ("truncated", "continuation"):
+        entry.pop(key, None)
+    prior_withheld = entry.pop("withheld_symbols", None)
+    attach_truncation_contract(entry, indexed_end=indexed_end, end_served=new_end, repo_root=root)
+    # Without a readable root the prior list is still true: it covers a suffix of the new range.
+    if prior_withheld and "withheld_symbols" not in entry:
+        entry["withheld_symbols"] = prior_withheld
+    # Not the *_total/*_emitted stem: completeness sums those as rows.
+    entry["source_lines"] = len(lines)
+    entry["source_lines_served"] = kept
+    entry["source_lines_cut_reason"] = _KEYLESS_BODY_REASON
+    return used
+
+
+def _point_guidance_at_cuts(payload: dict[str, Any], cuts: list[tuple[dict, str, str]]) -> None:
+    """Keep the note and hint true for bodies this projection cut.
+
+    ``cuts`` holds ``(body, served-through phrase, continuation)`` from before the cut.
+    """
+    note = payload.get("note")
+    if isinstance(note, str):
+        payload["note"] = note.replace(_BODY_NOTE_TAIL, _CUT_BODY_NOTE_TAIL)
+    hint = payload.get("next_action_hint")
+    if not isinstance(hint, str):
+        return
+    for row, served, continuation in cuts:
+        hint = hint.replace(served, f"{row['name']} was served through line {row['lines'][1]};")
+        if continuation and row.get("continuation"):
+            hint = hint.replace(f"'{continuation}'", f"'{row['continuation']}'")
+    payload["next_action_hint"] = hint
+
+
+def _budget_keyless_bodies(payload: dict[str, Any], root: Path | None) -> bool:
+    """Bound a keyless reply's symbol_bodies to :data:`_KEYLESS_BODY_CHARS`.
+
+    The top-ranked file's body goes first and keeps the most; the rest shrink
+    to their signature line. Returns whether any body was cut.
+    """
+    if payload.get("degraded") != "no-llm-provider":
+        return False
+    bodies = payload.get("symbol_bodies")
+    if not isinstance(bodies, list) or not all(
+        isinstance(row, dict) and isinstance(row.get("source"), str)
+        and isinstance(row.get("lines"), list) and len(row["lines"]) == 2
+        for row in bodies
+    ):
+        return False
+    if sum(len(row["source"]) for row in bodies) <= _KEYLESS_BODY_CHARS:
+        return False
+    guess = _first_guess(payload)
+    citations = payload.get("citations") or []
+    top = _nav_path(guess) if guess else (_nav_path(citations[0]) if citations else None)
+    bodies.sort(key=lambda row: _nav_path(row) != top)
+    budget = _KEYLESS_BODY_CHARS
+    cuts: list[tuple[dict, str, str]] = []
+    for row in bodies:
+        if len(row["source"]) <= budget:
+            budget -= len(row["source"])
+            continue
+        served = f"{row.get('name')} was served through line {row['lines'][1]};"
+        continuation = row.get("continuation") or ""
+        budget = max(0, budget - _cut_body(row, budget, root))
+        cuts.append((row, served, continuation))
+    _point_guidance_at_cuts(payload, cuts)
+    return True
+
+
 def _record_reductions(
     payload: dict[str, Any], totals: dict[str, int], *, scope: str | None, repo: str | None,
-    expanded: bool, ranked: bool = False
+    expanded: bool, ranked: bool = False, bodies_cut: bool = False
 ) -> None:
-    reduced = False
+    reduced = bodies_cut
     reason = "deduplicated" if expanded else "confidence_projection_and_deduplication"
     # Ranked shape only: rows summed across every reduced collection.
     shown = hidden = 0
@@ -525,15 +622,18 @@ def _record_reductions(
 
 def project_answer_payload(
     raw: dict[str, Any], *, question: str, scope: str | None = None,
-    repo: str | None = None, include: list[str] | None = None
+    repo: str | None = None, include: list[str] | None = None,
+    repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Return the cache-independent, confidence-specific external response."""
-    return _project(raw, question=question, scope=scope, repo=repo, include=include)[0]
+    return _project(
+        raw, question=question, scope=scope, repo=repo, include=include, repo_root=repo_root
+    )[0]
 
 
 def _project(
     raw: dict[str, Any], *, question: str, scope: str | None,
-    repo: str | None, include: list[str] | None
+    repo: str | None, include: list[str] | None, repo_root: Path | None = None
 ) -> tuple[dict[str, Any], bool, bool]:
     """The projection, whether it slimmed ``best_guesses``, and whether it is the ranked list."""
     payload = copy.deepcopy(raw)
@@ -549,6 +649,7 @@ def _project(
         _default_shape(payload, question)
         if _shape_confidence(payload) == "low":
             slimmed = _slim_best_guesses(payload, facts if isinstance(facts, dict) else {})
+    bodies_cut = not expanded and _budget_keyless_bodies(payload, repo_root)
     _shape_candidate_files(payload, expanded=expanded)
     _rewrite_degraded_answer(payload)
     ranked = not expanded and _ranked_list_only(payload)
@@ -558,7 +659,8 @@ def _project(
         if not payload.get(key):
             payload.pop(key, None)
     _record_reductions(
-        payload, totals, scope=scope, repo=repo, expanded=expanded, ranked=ranked
+        payload, totals, scope=scope, repo=repo, expanded=expanded, ranked=ranked,
+        bodies_cut=bodies_cut,
     )
     unknown = sorted(set(include or []) - {"evidence"})
     if unknown:
@@ -701,20 +803,24 @@ def _add_file_sizes(payload: dict[str, Any], root: Path | None, *, ranked: bool 
         payload[key] = f"{hint.rstrip()} {cue}" if isinstance(hint, str) else cue
 
 
-async def _refresh_file_sizes(
-    payload: dict[str, Any], repo: str | None, *, ranked: bool = False
-) -> None:
-    """Size the slimmed guesses. Best-effort: a sync stat and bounded read of <= 3 files."""
+async def _resolve_root(repo: str | None) -> Path | None:
+    """The checkout root for serve-time reads, or None. Best-effort."""
     if repo == "all":
-        return
+        return None
     try:
         from repowise.server.mcp_server._helpers import _resolve_repo_context
         from repowise.server.mcp_server.tool_answer.evidence import _repo_root
 
-        root = _repo_root(await _resolve_repo_context(repo))
+        return _repo_root(await _resolve_repo_context(repo))
     except Exception:
-        return
-    _add_file_sizes(payload, root, ranked=ranked)
+        return None
+
+
+async def _refresh_file_sizes(
+    payload: dict[str, Any], repo: str | None, *, ranked: bool = False
+) -> None:
+    """Size the slimmed guesses. Best-effort: a sync stat and bounded read of <= 3 files."""
+    _add_file_sizes(payload, await _resolve_root(repo), ranked=ranked)
 
 
 def _whole_bodies(payload: dict[str, Any]) -> int:
@@ -760,8 +866,14 @@ def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
         include: list[str] | None = None,
     ) -> dict[str, Any]:
         raw = await fn(question=question, scope=scope, repo=repo, include=include)
+        # Only a keyless reply with bodies reads source at projection time.
+        root = (
+            await _resolve_root(repo)
+            if raw.get("degraded") == "no-llm-provider" and raw.get("symbol_bodies")
+            else None
+        )
         payload, slimmed, ranked = _project(
-            raw, question=question, scope=scope, repo=repo, include=include
+            raw, question=question, scope=scope, repo=repo, include=include, repo_root=root
         )
         await _refresh_freshness(payload, repo)
         if slimmed:
