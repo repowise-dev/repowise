@@ -159,10 +159,10 @@ _PATH_NAME_LIFT_CAP = 1.0
 _MIN_INDEXED_PATHS = 30
 
 
-def path_words(path: str) -> set[str]:
+def path_words(path: str, *, min_len: int = 3) -> set[str]:
     """``services/_hotkey_pynput.py`` -> ``{services, hotkey, pynput}``; the
     extension is not a word."""
-    return {w for w in _identifier_words(os.path.splitext(path)[0]) if len(w) >= 3}
+    return {w for w in _identifier_words(os.path.splitext(path)[0]) if len(w) >= min_len}
 
 
 def path_word_counts(paths: list[str]) -> Counter[str]:

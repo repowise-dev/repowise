@@ -167,6 +167,78 @@ async def test_path_search_preserves_non_trailing_glob_behavior(setup_mcp, query
     assert [item["file"] for item in result] == expected
 
 
+_WORD_PATHS = [
+    "src/agents/command-poll-backoff.ts",
+    "lib/poll_backoff.py",
+    "web/pollBackoff.js",
+    "Services/PollBackoff.cs",
+    "net/poll.backoff.go",
+    "poll/backoff/index.ts",
+    "src/agents/poll.ts",
+    "src/agents/backoff-retry.ts",
+]
+
+
+async def _path_search(query, paths=_WORD_PATHS, limit=10):
+    import types
+
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server.tool_search_symbols import search_paths_single
+
+    for path in paths:
+        await _seed_page(f"file_page:{path}", path)
+    ctx = types.SimpleNamespace(session_factory=mcp_mod._session_factory, path="/tmp/test-repo")
+    return [item["file"] for item in await search_paths_single(ctx, query, limit=limit)]
+
+
+@pytest.mark.asyncio
+async def test_path_words_match_every_naming_shape(setup_mcp):
+    """Spaced words match kebab, snake, camel, Pascal and dotted filenames,
+    filename hits above a path whose directories carry the words."""
+    files = await _path_search("poll backoff")
+    assert set(files[:5]) == {
+        "lib/poll_backoff.py",
+        "web/pollBackoff.js",
+        "net/poll.backoff.go",
+        "Services/PollBackoff.cs",
+        "src/agents/command-poll-backoff.ts",
+    }
+    assert files[5:] == ["poll/backoff/index.ts"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("poll backof", "lib/poll_backoff.py"),  # the last word may be a prefix
+        ("Poll Backoff", "lib/poll_backoff.py"),
+        ("pollBackoff", "lib/poll_backoff.py"),
+    ],
+)
+async def test_path_words_prefix_case_and_compound_queries(setup_mcp, query, expected):
+    files = await _path_search(query)
+    assert expected in files
+    assert "src/agents/poll.ts" not in files
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["poll jitter", "pol backoff", "agents retry backoff poll"])
+async def test_path_words_all_must_match(setup_mcp, query):
+    assert await _path_search(query) == []
+
+
+@pytest.mark.asyncio
+async def test_substring_hits_rank_above_word_hits(setup_mcp):
+    files = await _path_search("pollBackoff")
+    assert files[:2] == ["web/pollBackoff.js", "Services/PollBackoff.cs"]
+    assert "lib/poll_backoff.py" in files[2:]
+
+
+@pytest.mark.asyncio
+async def test_exact_path_query_is_unchanged(setup_mcp):
+    assert await _path_search("src/agents/poll.ts") == ["src/agents/poll.ts"]
+
+
 class TestDecisionDownweight:
     """Decision records must not crowd file pages out of the top ranks."""
 

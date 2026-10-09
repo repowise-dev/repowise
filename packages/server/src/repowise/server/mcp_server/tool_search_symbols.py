@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Sequence
 from typing import Any, NamedTuple
 
 from sqlalchemy import case, func, or_, select
@@ -43,7 +44,11 @@ from repowise.server.mcp_server._query_shape import (
     is_issue_shaped,
     path_tokens,
 )
-from repowise.server.mcp_server._retrieval_rank import path_word_counts
+from repowise.server.mcp_server._retrieval_rank import (
+    _identifier_words,
+    path_word_counts,
+    path_words,
+)
 from repowise.server.mcp_server._stack_trace import (
     frame_basenames,
     map_to_repo_paths,
@@ -420,6 +425,39 @@ def _path_score(target_path: str, qnorm: str) -> float:
     return score
 
 
+def _word_path_score(path: str, words: list[str]) -> float | None:
+    """Score ``path`` when every query word names one of its words (the last
+    may be a prefix), else ``None``. Below any substring hit: filename words
+    count above directory words, shorter paths first."""
+    low = path.lower()
+    if not all(w in low for w in words):
+        return None
+    every = path_words(path, min_len=1)
+    base = path_words(path.rsplit("/", 1)[-1], min_len=1)
+
+    def names(i: int, pool: set[str]) -> bool:
+        w = words[i]
+        return w in pool or (i == len(words) - 1 and any(p.startswith(w) for p in pool))
+
+    if not all(names(i, every) for i in range(len(words))):
+        return None
+    in_base = sum(names(i, base) for i in range(len(words)))
+    return 5.0 + 5.0 * in_base / len(words) - len(low) * 0.001
+
+
+def _word_path_hits(query: str, paths: Sequence[str]) -> dict[str, float]:
+    """Paths a spaced or compound query names word by word (``poll backoff``
+    -> ``command-poll-backoff.ts``), best ``_MAX_CANDIDATES`` by score. Glob
+    queries are left to substring matching."""
+    if "*" in query or "?" in query:
+        return {}
+    words = _identifier_words(query)
+    if not words:
+        return {}
+    scored = {p: s for p in paths if (s := _word_path_score(p, words)) is not None}
+    return dict(sorted(scored.items(), key=lambda kv: (-kv[1], kv[0]))[:_MAX_CANDIDATES])
+
+
 class PathIndex(NamedTuple):
     paths: tuple[str, ...]  # every file page's path
     word_counts: Counter[str]  # path word -> how many paths carry it
@@ -445,7 +483,7 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
 
     Only the path-shaped words of ``query`` are matched (``path_tokens``), so
     words around a path do not empty the result; the whole query is matched
-    when it carries none.
+    when it carries none, as a substring and then word by word.
     """
     # Path mode is substring matching, so boundary ``*?`` markers carry no
     # information and are stripped. Mid-string globs (``src/*/main.py``) are
@@ -454,10 +492,16 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         index = await file_path_index(session, repository.id)
-        tokens = path_tokens(query, index.paths) or [query]
-        qnorms = [q for q in (t.strip().lower().replace("\\", "/").strip("*?") for t in tokens) if q]
+        tokens = path_tokens(query, index.paths)
+        qnorms = [
+            q
+            for q in (t.strip().lower().replace("\\", "/").strip("*?") for t in tokens or [query])
+            if q
+        ]
         if not qnorms:
             return []
+        # A query carrying no path also matches paths by their words.
+        word_hits = {} if tokens else _word_path_hits(query, index.paths)
         res = await session.execute(
             select(Page.id, Page.title, Page.target_path, Page.freshness_status).where(
                 Page.repository_id == repository.id,
@@ -466,7 +510,8 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
                     *(
                         Page.target_path.ilike(f"%{escape_like(q)}%", escape=LIKE_ESCAPE)
                         for q in qnorms
-                    )
+                    ),
+                    Page.target_path.in_(list(word_hits)),
                 ),
             )
         )
@@ -479,9 +524,9 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
             continue
         if is_excluded(target_path, spec):
             continue
-        scored.append(
-            (max(_path_score(target_path, q) for q in qnorms), (page_id, title, target_path))
-        )
+        substring = max(_path_score(target_path, q) for q in qnorms)
+        score = max(substring, word_hits.get(target_path, substring))
+        scored.append((score, (page_id, title, target_path)))
 
     scored.sort(key=lambda pair: (-pair[0], pair[1][2]))
     return [
