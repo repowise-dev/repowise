@@ -368,6 +368,21 @@ _OWN_NAME_VALUE = re.compile(r"[A-Za-z_-]+")
 _KEY_NAME_VALUE = re.compile(r"[a-z]+(?:[_-][a-z]+)+|[a-z_]*_[a-z_]*")
 
 
+def _is_own_name_value(value: str, name: str) -> bool:
+    """Whether a letter-only constant holds its own name or a suffix of it."""
+    if not _OWN_NAME_VALUE.fullmatch(value):
+        return False
+    normalized_name = re.sub(r"[_-]", "", name).lower()
+    normalized_value = re.sub(r"[_-]", "", value).lower()
+    return bool(normalized_name) and normalized_name.endswith(normalized_value)
+
+
+def _assignment_name(prefix: str) -> str:
+    """Name assigned to the literal immediately following *prefix*."""
+    assignment = re.search(r"([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*['\"]?$", prefix)
+    return assignment.group(1) if assignment else ""
+
+
 def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
     """True when *val*, captured by a *kind* pattern, looks like a real credential."""
     if not _is_valid_credential_value(val):
@@ -377,13 +392,7 @@ def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
     value = val.strip()
     if kind == "hardcoded_secret" and _KEY_NAME_VALUE.fullmatch(value):
         return False
-    normalized_name = re.sub(r"[_-]", "", name).lower()
-    normalized_value = re.sub(r"[_-]", "", value).lower()
-    if (
-        _OWN_NAME_VALUE.fullmatch(value)
-        and normalized_name
-        and (normalized_name == normalized_value or normalized_name.endswith(normalized_value))
-    ):
+    if _is_own_name_value(value, name):
         return False
     # A leading ``--`` is a CSS custom property or a CLI flag, not a key.
     return not (
@@ -811,10 +820,7 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 value_span = _value_span(kind, match, line) if match.groups() else (0, 0)
                 value = line[slice(*value_span)] if match.groups() else ""
                 if kind in SECRET_KINDS:
-                    assignment = re.search(
-                        r"([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*['\"]?$", line[: value_span[0]]
-                    )
-                    name = assignment.group(1) if assignment else ""
+                    name = _assignment_name(line[: value_span[0]])
                     if not _is_secret_value(kind, value, name):
                         continue
                     if is_low_sev_file:
