@@ -262,3 +262,43 @@ def test_the_shipped_registry_is_the_six_integrated_agents() -> None:
         "opencode",
         "hermes",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Install and login facts
+# ---------------------------------------------------------------------------
+
+
+def test_install_check_asks_path_for_the_declared_executable(monkeypatch) -> None:
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/bin/{name}" if name == "codex" else None)
+    assert identity.CODEX.is_installed()
+    assert not identity.OPENCODE.is_installed()
+
+
+def test_an_agent_without_an_executable_is_never_installed() -> None:
+    assert not AgentIdentity(slug="zed", display_name="Zed").is_installed()
+
+
+def test_login_runs_the_declared_check_and_reads_the_exit_code(monkeypatch) -> None:
+    import shutil
+    import subprocess
+
+    monkeypatch.setattr(shutil, "which", lambda name: name)
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 1, stdout="Logged in", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert not identity.CODEX.is_logged_in()
+    assert calls == [["codex", "login", "status"]]
+    # No cheap login query: installed is the most this can say.
+    assert identity.CLAUDE_CODE.is_logged_in()
+
+
+def test_identity_for_provider_follows_the_indexing_link() -> None:
+    assert identity.identity_for_provider("codex_cli") is identity.CODEX
+    assert identity.identity_for_provider("anthropic") is None

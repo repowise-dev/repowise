@@ -286,11 +286,9 @@ class VSCodeTarget:
         never installed, because the file is committed and read by whoever
         opens the repo next.
         """
-        import shutil
-
         if repo_path is not None and (repo_path / ".vscode").is_dir():
             return True
-        if shutil.which("code") is not None:
+        if IDENTITY.is_installed():
             return True
         home = Path.home()
         return any((home / candidate).is_dir() for candidate in (".vscode", ".vscode-server"))

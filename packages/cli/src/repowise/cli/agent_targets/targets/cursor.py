@@ -380,11 +380,9 @@ class CursorTarget:
         workspace carrying one is worth configuring even from a machine where
         the editor was never installed.
         """
-        import shutil
-
         if repo_path is not None and (repo_path / ".cursor").is_dir():
             return True
-        if shutil.which("cursor") is not None:
+        if IDENTITY.is_installed():
             return True
         return (Path.home() / ".cursor").is_dir()
 

@@ -998,9 +998,7 @@ class CodexTarget:
         answer: the setup path warns when it writes config for a CLI that is
         installed and signed out.
         """
-        import shutil
-
-        return shutil.which("codex") is not None or (Path.home() / ".codex").is_dir()
+        return IDENTITY.is_installed() or (Path.home() / ".codex").is_dir()
 
     def detect(self, repo_path: Path | None = None) -> list[Registration]:
         return detect(repo_path)
