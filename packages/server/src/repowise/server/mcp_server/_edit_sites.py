@@ -52,25 +52,37 @@ _IMPORT_START = re.compile(
     r"^\s*(?:from\s+\S+\s+import\b|import\b|export\s.*\bfrom\b|export\s*\{|using\b|use\b"
     r"|#\s*include\b|(?:const|let|var)\s.*\brequire\s*\()"
 )
+# A statement that can hand a local name to other files: export lists, default
+# exports, CommonJS export assignments and Python ``__all__``.
+_EXPORT_START = re.compile(
+    r"^\s*(?:export\s*(?:\{|\*|default\b)|(?:module\.)?exports\b|__all__\b)"
+)
+_CJS_EXPORT = re.compile(r"\bmodule\.exports\b|(?<![\w$.])exports\.")
+_EXPORT_LINE = re.compile(r"^\s*export\b")
+_CALL_AFTER = re.compile(r"\s*(?:\?\.)?\(")
+# Uses of a name that cannot hand its binding on: a call, a member access,
+# ``new name`` and a JSX tag.
+_LOCAL_USE_AFTER = re.compile(r"\s*(?:\(|\?\.|\.(?!\.))")
+_LOCAL_USE_BEFORE = re.compile(r"(?:\bnew\s+|</?)$")
 
 
 def _bare_name(node: GraphNode) -> str:
     return id_segment_name((node.name or node.node_id).split("::")[-1].split(".")[-1])
 
 
-def _import_lines(lines: list[str]) -> set[int]:
-    """1-based line numbers that belong to an import statement."""
+def _import_lines(lines: list[str], start: re.Pattern[str] = _IMPORT_START) -> set[int]:
+    """1-based line numbers that belong to a statement opening with *start*."""
     out: set[int] = set()
     i = 0
     while i < len(lines):
-        if not _IMPORT_START.match(lines[i]):
+        if not start.match(lines[i]):
             i += 1
             continue
         depth = 0
         while i < len(lines):
             text = lines[i]
             out.add(i + 1)
-            depth += text.count("(") + text.count("{") - text.count(")") - text.count("}")
+            depth += sum(text.count(c) for c in "({[") - sum(text.count(c) for c in ")}]")
             i += 1
             if depth <= 0 and not text.rstrip().endswith("\\"):
                 break
@@ -93,8 +105,9 @@ def _scan(
     name: str,
     definition: tuple[str, int, int],
     call_lines: dict[str, set[int]],
-) -> tuple[list[dict[str, Any]], list[str], int, set[str], bool]:
-    """``(sites, unreadable, stale call lines, files renaming it, default-exported)``."""
+) -> tuple[list[dict[str, Any]], list[str], int, set[str], bool, dict[str, set[str]]]:
+    """``(sites, unreadable, stale call lines, files renaming it, default-exported,
+    local import aliases per Python file)``."""
     esc = re.escape(name)
     word = re.compile(rf"(?<![\w$]){esc}(?![\w$])")
     as_rename = re.compile(rf"(?<![\w$.]){esc}\s+as\s+([\w$]+)")
@@ -104,12 +117,12 @@ def _scan(
     ternary = re.compile(rf"\?[^:]*(?<![\w$]){esc}\s*:")
     # Bound under any name by its importers, so no spelling can be scanned for.
     default_export = re.compile(r"\bexport\s+default\b|\bas\s+default\b")
-    cjs_export = re.compile(r"\bmodule\.exports\b|(?<![\w$.])exports\.")
     def_path, def_start, def_end = definition
     sites: list[dict[str, Any]] = []
     unreadable: list[str] = []
     stale = 0
     renamed: set[str] = set()
+    python_aliases: dict[str, set[str]] = {}
     is_default = False
     for rel in files:
         lines = _read_lines(root, rel)
@@ -119,20 +132,27 @@ def _scan(
         imports = _import_lines(lines)
         python = Path(rel).suffix in _PYTHON_EXTENSIONS
         aliases: set[str] = set()
+        # Aliases bound by an import; a rename anywhere else is always a hole.
+        imported: set[str] = set()
         for n, text in enumerate(lines, 1):
             if not word.search(text):
                 continue
-            if n in imports:
-                aliases.update(m.group(1) for m in as_rename.finditer(text))
+            found = [m.group(1) for m in as_rename.finditer(text)] if n in imports else []
             if not python and not ternary.search(text):
-                aliases.update(m.group(1) for m in colon_rename.finditer(text))
+                found += [m.group(1) for m in colon_rename.finditer(text)]
+            aliases.update(found)
+            if n in imports:
+                imported.update(found)
         # ``name as default`` is the default-export case below, not a rename.
         aliases.discard("default")
-        if aliases:
+        local = aliases & imported
+        if aliases - imported or _aliases_leave(rel, lines, local, imports):
             renamed.add(rel)
+        elif python and local:
+            python_aliases[rel] = local
         if rel == def_path and not python:
             # A CommonJS module's exports can rename on any line, so any use counts.
-            commonjs = any(cjs_export.search(t) for t in lines)
+            commonjs = any(_CJS_EXPORT.search(t) for t in lines)
             if commonjs or any(default_export.search(t) and word.search(t) for t in lines):
                 is_default = True
         spellings = [word] + [re.compile(rf"(?<![\w$]){re.escape(a)}(?![\w$])") for a in aliases]
@@ -154,7 +174,39 @@ def _scan(
             else:
                 kind = "reference"
             sites.append({"path": rel, "line": n, "kind": kind, "text": text.strip()[:MAX_TEXT_CHARS]})
-    return sites, unreadable, stale, renamed, is_default
+    return sites, unreadable, stale, renamed, is_default, python_aliases
+
+
+def _aliases_leave(rel: str, lines: list[str], aliases: set[str], imports: set[int]) -> bool:
+    """True unless every use of an import alias in *rel* is one that cannot hand it on.
+
+    Only a call, ``new``, a JSX tag or a member access counts as local; any
+    value use (argument, assignment, export, ``extends``) may pass the binding
+    to another file. A plain Python module's alias is also checked against its
+    importers by the caller.
+    """
+    if not aliases:
+        return False
+    if Path(rel).name == "__init__.py":
+        return True
+    exports = _import_lines(lines, _EXPORT_START)
+    alt = "|".join(re.escape(a) for a in sorted(aliases))
+    spelled = re.compile(rf"(?<![\w$])(?:{alt})(?![\w$])")
+    for n, text in enumerate(lines, 1):
+        if n in imports and n not in exports:
+            continue
+        # On an export line only a call stays local: ``b.bind(null)`` hands on a copy.
+        handed = n in exports or _EXPORT_LINE.match(text) or _CJS_EXPORT.search(text)
+        for m in spelled.finditer(text):
+            if handed:
+                if not _CALL_AFTER.match(text, m.end()):
+                    return True
+            elif not (
+                _LOCAL_USE_AFTER.match(text, m.end())
+                or _LOCAL_USE_BEFORE.search(text, 0, m.start())
+            ):
+                return True
+    return False
 
 
 def _cap_references_per_file(sites: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -292,9 +344,23 @@ async def reference_edit_set(
         ordered = ordered[:MAX_FILES]
         unindexed = unindexed[: max(0, MAX_FILES - len(ordered))]
     definition = (def_file, node.start_line or 0, node.end_line or node.start_line or 0)
-    sites, unreadable, stale, renamed_in, is_default = await asyncio.to_thread(
+    sites, unreadable, stale, renamed_in, is_default, python_aliases = await asyncio.to_thread(
         _scan, root, ordered + unindexed, name, definition, call_lines
     )
+    if python_aliases:
+        # Any module-level Python name is importable, so an alias another file
+        # imports (or may, by unknown names or ``*``) leaves its file.
+        rows = await session.execute(
+            select(GraphEdge.target_node_id, GraphEdge.imported_names_json).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.edge_type == "imports",
+                GraphEdge.target_node_id.in_(list(python_aliases)),
+            )
+        )
+        for tgt, names_json in rows.all():
+            names = _names(names_json)
+            if not names or "*" in names or python_aliases[tgt] & set(names):
+                renamed_in.add(tgt)
 
     unindexed_set = set(unindexed)
     if unreadable:
