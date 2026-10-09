@@ -105,7 +105,7 @@ One install registers the Repowise MCP server with VS Code, so agent-mode
 assistants query the index through purpose-built tools instead of guessing from
 open files. For editors that read a config file, run **Repowise: Configure MCP
 for this Workspace** to write `.vscode/mcp.json`. `repowise init` and
-`repowise agents add --target=vscode` also add a managed section to
+`repowise agents add --target=vscode` also add a managed section to <!-- repowise-drift-ignore -->
 `.github/copilot-instructions.md`, which Copilot Chat reads on every request.
 Your own text in that file is kept; `repowise agents remove` takes out only the
 managed section.
