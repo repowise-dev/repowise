@@ -511,7 +511,7 @@
       "embedderLabel": "Embedder",
       "embedderHint": "What semantic search is built from. The mock embedder disables it.",
       "embedderAria": "Embedder",
-      "embedderOffNote": "Semantic search is off. Set <code>REPOWISE_EMBEDDER=gemini</code> or <code>REPOWISE_EMBEDDER=openai</code> on the server for real retrieval.",
+      "embedderOffNote": "Semantic search is off. Pick another embedder above and set <code>REPOWISE_EMBEDDER</code> on the server for real retrieval.",
       "embedderOnNote": "Set <code>{env}</code> on the server.",
       "catalogUnavailable": "Could not load the provider list from the server, so only the saved provider is shown."
     }

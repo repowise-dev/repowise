@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(),
   getProvider: vi.fn(() => "gemini"),
+  getEmbedder: vi.fn(() => "mock"),
 }));
 
 vi.mock("@/lib/api/providers", () => ({ getProviders: mocks.getProviders }));
@@ -14,7 +15,7 @@ vi.mock("@/lib/config", () => ({
   config: {
     getProvider: mocks.getProvider,
     getModel: () => "",
-    getEmbedder: () => "mock",
+    getEmbedder: mocks.getEmbedder,
     setProvider: vi.fn(),
     setModel: vi.fn(),
     setEmbedder: vi.fn(),
@@ -98,6 +99,7 @@ describe("ProviderSection provider catalog", () => {
         { id: "gemini", name: "Google Gemini", default_model: "gemini-3.5-flash-lite" },
         { id: "codex_cli", name: "Codex CLI", default_model: "codex_cli/gpt-5.6-luna" },
       ],
+      flag_only_providers: ["mock"],
     });
 
     render(<ProviderSection />);
@@ -190,5 +192,58 @@ describe("ProviderSection provider catalog", () => {
 
     expect(await screen.findByText("pip install google-genai")).toBeTruthy();
     expect(screen.getByText(/GEMINI_API_KEY/)).toBeTruthy();
+  });
+});
+
+describe("ProviderSection server defaults", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Element.prototype.hasPointerCapture = vi.fn(() => false);
+    Element.prototype.releasePointerCapture = vi.fn();
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  it("shows the server's provider and embedder when nothing is saved", async () => {
+    mocks.getProvider.mockReturnValue("");
+    mocks.getEmbedder.mockReturnValue("");
+    mocks.getProviders.mockResolvedValue({
+      active: { provider: "openai", model: null, embedder: "gemini" },
+      providers: [{ id: "openai", name: "OpenAI", default_model: "gpt-5.6-luna" }],
+      embedders: [
+        { id: "gemini", env_vars: ["GEMINI_API_KEY"], semantic: true },
+        { id: "mock", env_vars: [], semantic: false },
+      ],
+    });
+
+    render(<ProviderSection />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: "Provider" }).textContent).toContain("openai"),
+    );
+    expect(screen.getByRole("combobox", { name: "Embedder" }).textContent).toContain("gemini");
+    expect(screen.getByText(/GEMINI_API_KEY/)).toBeTruthy();
+  });
+
+  it("offers the server's embedders and says when one carries no signal", async () => {
+    mocks.getProvider.mockReturnValue("openai");
+    mocks.getEmbedder.mockReturnValue("mock");
+    mocks.getProviders.mockResolvedValue({
+      active: { provider: "openai", model: null, embedder: "mock" },
+      providers: [],
+      embedders: [
+        { id: "voyage", env_vars: [], semantic: true },
+        { id: "mock", env_vars: [], semantic: false },
+      ],
+    });
+
+    render(<ProviderSection />);
+
+    expect(await screen.findByText(/Semantic search is off/)).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Embedder" }), {
+      key: "Enter",
+      code: "Enter",
+    });
+    await waitFor(() => expect(screen.queryAllByRole("option").length).toBeGreaterThan(0));
+    expect(screen.queryAllByRole("option").map((o) => o.textContent)).toEqual(["voyage", "mock"]);
   });
 });

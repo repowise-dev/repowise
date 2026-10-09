@@ -511,7 +511,7 @@
       "embedderLabel": "嵌入模型",
       "embedderHint": "语义搜索基于它构建。mock 嵌入模型会禁用语义搜索。",
       "embedderAria": "嵌入模型",
-      "embedderOffNote": "语义搜索已关闭。请在服务端设置 <code>REPOWISE_EMBEDDER=gemini</code> 或 <code>REPOWISE_EMBEDDER=openai</code> 以启用真实检索。",
+      "embedderOffNote": "语义搜索已关闭。请在上方选择其他嵌入模型，并在服务端设置 <code>REPOWISE_EMBEDDER</code> 以启用真实检索。",
       "embedderOnNote": "请在服务端设置 <code>{env}</code>。",
       "catalogUnavailable": "无法从服务器加载提供商列表，因此只显示已保存的提供商。"
     }

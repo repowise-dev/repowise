@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { config } from "@/lib/config";
 import { getProviders } from "@/lib/api/providers";
-import type { ProviderInfo } from "@/lib/api/types";
+import type { EmbedderInfo, ProviderInfo } from "@/lib/api/types";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Input } from "@repowise-dev/ui/ui/input";
 import {
@@ -22,23 +22,6 @@ import {
 } from "@repowise-dev/ui/settings";
 import { useTranslations } from "next-intl";
 
-const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "edenai", "ollama"] as const;
-
-// Real, registerable providers the server catalog deliberately leaves out.
-// `mock` is a keyless test provider (`KEYLESS_PROVIDERS` in the registry) that
-// this page has always offered; it is flag-only, so it is absent from
-// PROVIDER_CATALOG and would otherwise vanish the moment the catalog loads.
-const FLAG_ONLY_PROVIDERS = ["mock"] as const;
-
-const EMBEDDER_ENV_VARS: Record<string, string[]> = {
-  gemini: ["GEMINI_API_KEY"],
-  openai: ["OPENAI_API_KEY"],
-  openrouter: ["OPENROUTER_API_KEY"],
-  edenai: ["EDENAI_API_KEY"],
-  ollama: ["OLLAMA_BASE_URL"],
-  mock: [],
-};
-
 /**
  * Model and embedder defaults for init/sync triggered from the UI.
  *
@@ -51,14 +34,17 @@ const EMBEDDER_ENV_VARS: Record<string, string[]> = {
  */
 export function ProviderSection() {
   const t = useTranslations("settings");
-  const [provider, setProvider] = useState("gemini");
+  // "" until a saved choice or the server's active one is known.
+  const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
-  const [embedder, setEmbedder] = useState("mock");
+  const [embedder, setEmbedder] = useState("");
   const [serverProvider, setServerProvider] = useState<string | null>(null);
-  // The server owns the catalog (it is derived from the provider specs), so
-  // this page keeps no copy of its own; until it loads, only the saved
-  // provider and the flag-only ones are offered.
+  // The server owns the provider and embedder lists (derived from the core
+  // registries), so this page keeps no copy; until they load, only the saved
+  // choices are offered.
   const [catalog, setCatalog] = useState<ProviderInfo[]>([]);
+  const [flagOnly, setFlagOnly] = useState<string[]>([]);
+  const [embedders, setEmbedders] = useState<EmbedderInfo[]>([]);
   const [catalogFailed, setCatalogFailed] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
 
@@ -70,10 +56,15 @@ export function ProviderSection() {
     setEmbedder(config.getEmbedder());
     let cancelled = false;
     void getProviders()
-      .then(({ active, providers: catalog }) => {
+      .then(({ active, providers: catalog, flag_only_providers, embedders: embedderList }) => {
         if (cancelled) return;
         setServerProvider(active.provider);
         setCatalog((catalog ?? []).filter((entry) => entry.id));
+        setFlagOnly(flag_only_providers ?? []);
+        setEmbedders(embedderList ?? []);
+        // Nothing saved: show what the server itself runs with.
+        setProvider((saved) => saved || active.provider || "");
+        setEmbedder((saved) => saved || active.embedder || "");
       })
       .catch((error: unknown) => {
         console.warn("[settings] Could not load the active server provider", error);
@@ -119,11 +110,14 @@ export function ProviderSection() {
   // appear in it, and a saved provider the server has since stopped
   // advertising would leave a blank trigger with nothing to recover with.
   const providerOptions = [
-    ...new Set([...catalog.map((entry) => entry.id), ...FLAG_ONLY_PROVIDERS, provider]),
-  ];
+    ...new Set([...catalog.map((entry) => entry.id), ...flagOnly, provider]),
+  ].filter(Boolean);
+  const embedderOptions = [
+    ...new Set([...embedders.map((entry) => entry.id), embedder]),
+  ].filter(Boolean);
 
   const providerInfo = catalog.find((entry) => entry.id === provider);
-  const embedderVars = EMBEDDER_ENV_VARS[embedder] ?? [];
+  const embedderInfo = embedders.find((entry) => entry.id === embedder);
 
   return (
     <OverviewSection
@@ -193,29 +187,29 @@ export function ProviderSection() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {EMBEDDERS.map((e) => (
+                {embedderOptions.map((e) => (
                   <SelectItem key={e} value={e}>
                     {e}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            {embedder === "mock" ? (
+            {embedderInfo?.semantic === false ? (
               <EnvVarLine
                 vars={[]}
                 note={t.rich("provider.embedderOffNote", {
                   code: (chunks) => <code className="font-mono text-[var(--color-text-secondary)]">{chunks}</code>,
                 })}
               />
-            ) : (
+            ) : embedderInfo ? (
               <EnvVarLine
-                vars={embedderVars}
+                vars={embedderInfo.env_vars ?? []}
                 note={t.rich("provider.embedderOnNote", {
                   code: (chunks) => <code className="font-mono text-[var(--color-text-secondary)]">{chunks}</code>,
                   env: `REPOWISE_EMBEDDER=${embedder}`,
                 })}
               />
-            )}
+            ) : null}
           </div>
         </SettingsRow>
       </SettingsRows>
