@@ -28,7 +28,7 @@ from repowise.cli.ui.openai_compatible import (
 from repowise.cli.ui.openai_compatible import (
     prompt_setup as _prompt_openai_compatible_setup_values,
 )
-from repowise.core.agents.identity import identity_for_provider
+from repowise.core.agents.identity import get_identity, identity_for_provider
 from repowise.core.providers.llm.base import ProviderModelOption
 from repowise.core.providers.llm.specs import PROVIDER_SPECS, ProviderSpec
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
@@ -87,6 +87,31 @@ def _agent_cli_status(name: str) -> tuple[bool, bool]:
     if agent is None or not agent.is_installed():
         return False, False
     return True, agent.is_logged_in()
+
+
+def agent_providers_set_up(repo_path: Path | None) -> tuple[str, ...]:
+    """Agent-CLI providers whose agent is set up as a target here, in picker order.
+
+    The picker defaults to the first of these whose CLI is ready. Empty when
+    config.yaml already names a provider, so a re-init keeps today's default.
+    """
+    from repowise.cli.agent_targets.registry import get_target
+    from repowise.cli.helpers import load_config
+
+    if repo_path is not None and load_config(repo_path).get("provider"):
+        return ()
+    names: list[str] = []
+    for name, spec in _PICKER_SPECS.items():
+        agent = get_identity(spec.agent) if spec.agent else None
+        target = get_target(agent.cli_target_id) if agent else None
+        if target is None:
+            continue
+        try:
+            if target.is_present(repo_path) or target.detect(repo_path):
+                names.append(name)
+        except Exception:
+            continue
+    return tuple(names)
 
 
 def ollama_base_url() -> str:
@@ -233,10 +258,12 @@ def _interactive_provider_name(
     *,
     repo_path: Path | None = None,
     save_key: bool = True,
+    prefer: tuple[str, ...] = (),
 ) -> str:
     """Show provider table, handle selection + inline key entry + save.
 
-    Returns the chosen provider name.
+    The first ready provider in *prefer* (see :func:`agent_providers_set_up`)
+    becomes the default. Returns the chosen provider name.
     """
     providers = list(_PROVIDER_CHOICES)  # gemini first
     detected = _detect_provider_status()
@@ -285,6 +312,17 @@ def _interactive_provider_name(
         if prov in detected:
             default_idx = str(idx)
             break
+    # The CLI of the agent set up here outranks a key: it is the user's own login.
+    recommended = next((name for name in prefer if name in detected), None)
+    if recommended is not None:
+        default_idx = str(providers.index(recommended) + 1)
+        agent = identity_for_provider(recommended)
+        assert agent is not None, recommended
+        console.print(
+            f"  [dim]Default: {recommended}. {agent.display_name} is set up here, "
+            f"so indexing {_PICKER_SPECS[recommended].note}.[/dim]"
+        )
+        console.print()
 
     chosen_idx = Prompt.ask(
         "  Select provider",
@@ -319,6 +357,7 @@ def _interactive_provider_name(
                 model_flag,
                 repo_path=repo_path,
                 save_key=save_key,
+                prefer=prefer,
             )
         env_var = _PROVIDER_ENV[chosen]
         signup_url = _PICKER_SPECS[chosen].signup_url
@@ -341,6 +380,7 @@ def _interactive_provider_name(
                 model_flag,
                 repo_path=repo_path,
                 save_key=save_key,
+                prefer=prefer,
             )
 
     if chosen == "openai" and repo_path is not None:
@@ -590,6 +630,7 @@ def interactive_provider_config_select(
     *,
     repo_path: Path | None = None,
     save_key: bool = True,
+    prefer: tuple[str, ...] = (),
 ) -> ProviderSelection:
     """Show provider/model/reasoning selection for interactive init.
 
@@ -601,6 +642,7 @@ def interactive_provider_config_select(
         model_flag,
         repo_path=repo_path,
         save_key=save_key,
+        prefer=prefer,
     )
     if chosen == _OPENAI_COMPATIBLE_CHOICE:
         return _interactive_openai_compatible_select(

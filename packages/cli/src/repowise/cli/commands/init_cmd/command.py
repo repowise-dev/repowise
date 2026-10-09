@@ -61,6 +61,7 @@ from repowise.cli.ui import (
     WARN,
     MaybeCountColumn,
     RichProgressCallback,
+    agent_providers_set_up,
     interactive_advanced_config,
     interactive_customize_offer,
     interactive_fast_mode_offer,
@@ -1180,6 +1181,7 @@ def init_command(
                 reasoning,
                 repo_path=repo_path,
                 save_key=save_key,
+                prefer=agent_providers_set_up(repo_path),
             )
             provider_name = selection.provider_name
             model = selection.model
