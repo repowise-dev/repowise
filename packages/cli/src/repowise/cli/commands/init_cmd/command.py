@@ -415,8 +415,10 @@ def _run_generation_phase(
         console.print(f"  Languages: {', '.join(lang_parts)}")
 
     # Warn when a local provider runs with default concurrency
-    local_providers = ("ollama", "codex_cli", "claude_cli", "opencode")
-    if provider.provider_name in local_providers and concurrency > 4:
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    spec = PROVIDER_SPECS.get(provider.provider_name)
+    if spec is not None and spec.local and concurrency > 4:
         warn(
             f"  {provider.provider_name} is a local provider "
             f"running with concurrency={concurrency}. "

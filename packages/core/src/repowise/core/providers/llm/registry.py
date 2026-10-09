@@ -4,19 +4,7 @@ Provides a single entry point for instantiating any LLM provider by name.
 Supports built-in providers and runtime registration of custom providers,
 enabling community-contributed providers without forking repowise.
 
-Built-in providers:
-    - anthropic   → AnthropicProvider
-    - openai      → OpenAIProvider
-    - openrouter  → OpenRouterProvider
-    - deepseek    → DeepSeekProvider
-    - kimi        → KimiProvider
-    - edenai      → EdenAIProvider
-    - ollama      → OllamaProvider
-    - litellm     → LiteLLMProvider
-    - codex_cli   → CodexCliProvider
-    - claude_cli  → ClaudeCliProvider
-    - opencode    → OpenCodeProvider
-    - mock        → MockProvider (testing only)
+Built-in providers are declared once, in :mod:`repowise.core.providers.llm.specs`.
 
 Custom provider registration:
     from repowise.core.providers import register_provider
@@ -38,94 +26,56 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.providers.llm.base import BaseProvider
-from repowise.core.rate_limiter import PROVIDER_DEFAULTS, RateLimitConfig, RateLimiter
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
+from repowise.core.rate_limiter import RateLimitConfig, RateLimiter
 
 logger = logging.getLogger(__name__)
 
-# Map of provider name → (module_path, class_name)
-# Providers are imported lazily to avoid requiring all dependencies at import time.
-# This means `pip install repowise-core` without anthropic installed still works —
-# you just can't use the anthropic provider.
+# Every table below is derived from the provider specs (see specs.py), so a
+# provider is declared once. The names stay importable because the CLI, the
+# MCP server and drift tests read them.
 _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
-    "anthropic": ("repowise.core.providers.llm.anthropic", "AnthropicProvider"),
-    "openai": ("repowise.core.providers.llm.openai", "OpenAIProvider"),
-    "openrouter": ("repowise.core.providers.llm.openrouter", "OpenRouterProvider"),
-    "gemini": ("repowise.core.providers.llm.gemini", "GeminiProvider"),
-    "ollama": ("repowise.core.providers.llm.ollama", "OllamaProvider"),
-    "litellm": ("repowise.core.providers.llm.litellm", "LiteLLMProvider"),
-    "deepseek": ("repowise.core.providers.llm.deepseek", "DeepSeekProvider"),
-    "kimi": ("repowise.core.providers.llm.kimi", "KimiProvider"),
-    "edenai": ("repowise.core.providers.llm.edenai", "EdenAIProvider"),
-    "codex_cli": ("repowise.core.providers.llm.codex_cli", "CodexCliProvider"),
-    "claude_cli": ("repowise.core.providers.llm.claude_cli", "ClaudeCliProvider"),
-    "opencode": ("repowise.core.providers.llm.opencode", "OpenCodeProvider"),
-    "mock": ("repowise.core.providers.llm.mock", "MockProvider"),
+    name: (spec.module_path, spec.class_name) for name, spec in PROVIDER_SPECS.items()
 }
 
-# Which env var carries a provider's API key. One entry per built-in provider
-# that authenticates with a key; keyless providers are absent by construction.
-# The three resolution paths (the CLI's resolve_provider, its
-# validate_provider_config, and the MCP server's get_answer) read this instead
-# of each keeping the copy they used to, which is how the MCP one drifted into
-# #1119. Other modules still carry their own provider->env lists for display
-# and env forwarding; the ones that must agree with resolution are held to this
-# table by drift tests rather than by anybody remembering.
+# Which env var carries a provider's API key; keyless providers are absent.
+# Resolution (the CLI's resolve_provider and validate_provider_config, the MCP
+# server's get_answer) reads this rather than a private copy; the copies are
+# what drifted into #1119.
 PROVIDER_API_KEY_ENVS: dict[str, tuple[str, ...]] = {
-    "anthropic": ("ANTHROPIC_API_KEY",),
-    "openai": ("OPENAI_API_KEY",),
-    "openrouter": ("OPENROUTER_API_KEY",),
-    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),  # either one
-    "deepseek": ("DEEPSEEK_API_KEY",),
-    "kimi": ("KIMI_API_KEY",),
-    "edenai": ("EDENAI_API_KEY",),
-    "litellm": ("LITELLM_API_KEY",),
+    name: spec.api_key_envs for name, spec in PROVIDER_SPECS.items() if spec.api_key_envs
 }
 
-# Which env var points a provider at a non-default endpoint. Proxies and
-# self-hosted deployments of the OpenAI-compatible providers live here too.
+# Which env var points a provider at a non-default endpoint.
 PROVIDER_BASE_URL_ENVS: dict[str, tuple[str, ...]] = {
-    "anthropic": ("ANTHROPIC_BASE_URL",),
-    "openai": ("OPENAI_BASE_URL",),
-    "gemini": ("GEMINI_BASE_URL",),
-    "deepseek": ("DEEPSEEK_BASE_URL",),
-    "kimi": ("KIMI_BASE_URL",),
-    "edenai": ("EDENAI_BASE_URL",),
-    "ollama": ("OLLAMA_BASE_URL",),
-    "litellm": ("LITELLM_BASE_URL", "LITELLM_API_BASE"),
+    name: spec.base_url_envs for name, spec in PROVIDER_SPECS.items() if spec.base_url_envs
 }
 
-# Providers that can run with no API key at all: they authenticate out of band
-# (an already-logged-in coding-agent CLI) or need no auth (a local model, a
-# proxy the user secured elsewhere). Resolution must never reject one of these
-# for a "missing" key, and must never fall through to a different provider
-# because it could not find one.
-KEYLESS_PROVIDERS = frozenset({"codex_cli", "claude_cli", "opencode", "ollama", "litellm", "mock"})
+# Providers that can run with no API key. Resolution must never reject one for
+# a "missing" key, nor fall through to a different provider for want of one.
+KEYLESS_PROVIDERS = frozenset(name for name, spec in PROVIDER_SPECS.items() if spec.keyless)
 
-# Providers that shell out to a CLI and therefore need to be told which repo
-# they are reasoning about: they pass it as the subprocess working directory.
-# Omitting it silently runs the CLI against whatever cwd the host process had,
-# which for an MCP server launched by an editor is not the user's repo.
-REPO_PATH_PROVIDERS = frozenset({"codex_cli", "opencode"})
-
-# Order to try providers in when nothing was configured and we are guessing
-# from whatever credentials the environment happens to carry. This is the CLI's
-# long-standing order, adopted verbatim as the shared one: the MCP server used
-# to auto-detect in a slightly different order (and skipped openrouter
-# entirely), so the same repo could resolve to different models depending on
-# which entry point asked.
-PROVIDER_AUTODETECT_ORDER: tuple[str, ...] = (
-    "anthropic",
-    "openai",
-    "openrouter",
-    "ollama",
-    "gemini",
-    "deepseek",
-    "kimi",
-    # A provider adding itself appends: autodetect order is de facto precedence,
-    # and an unrelated EDENAI_API_KEY in the environment must not silently take
-    # over from a provider the user was already resolving to.
-    "edenai",
+# Providers that shell out with the repo as their working directory. Omitting
+# the path runs the CLI in whatever cwd the host process had, which for an MCP
+# server launched by an editor is not the user's repo.
+REPO_PATH_PROVIDERS = frozenset(
+    name for name, spec in PROVIDER_SPECS.items() if spec.needs_repo_cwd
 )
+
+# Order to try providers in when nothing was configured. Shared by the CLI and
+# the MCP server so one repo resolves to the same model from either entry point.
+PROVIDER_AUTODETECT_ORDER: tuple[str, ...] = tuple(
+    spec.name
+    for spec in sorted(
+        (s for s in PROVIDER_SPECS.values() if s.autodetect_rank is not None),
+        key=lambda s: s.autodetect_rank,
+    )
+)
+
+# Default rate limit per provider. Absent means no limiter is attached.
+PROVIDER_DEFAULTS: dict[str, RateLimitConfig] = {
+    name: spec.rate_limit for name, spec in PROVIDER_SPECS.items() if spec.rate_limit
+}
 
 # An env var set to "" or whitespace means "not set". CI systems and agent
 # harnesses declare empty vars routinely (REPOWISE_PROVIDER: "" in a workflow
@@ -183,11 +133,8 @@ def provider_required_envs(name: str) -> tuple[str, ...]:
     needs no key but does need somewhere to send the request. Empty for
     providers that are self-sufficient (the agent CLIs, mock).
     """
-    if name in PROVIDER_API_KEY_ENVS:
-        return PROVIDER_API_KEY_ENVS[name]
-    if name == "ollama":
-        return PROVIDER_BASE_URL_ENVS["ollama"]
-    return ()
+    spec = PROVIDER_SPECS.get(name)
+    return spec.required_envs if spec else ()
 
 
 def provider_credentials_present(name: str, getenv: EnvLookup = os.environ.get) -> bool:
@@ -314,42 +261,25 @@ def get_provider(
     if name in _custom_providers:
         return _custom_providers[name](**kwargs)
 
-    if name not in _BUILTIN_PROVIDERS:
+    if name not in PROVIDER_SPECS:
         available = sorted(set(_BUILTIN_PROVIDERS) | set(_custom_providers))
         raise ValueError(f"Unknown provider: {name!r}. Available providers: {available}")
 
-    # Attach rate limiter (skip for mock — tests should run without limits)
-    if with_rate_limiter and name not in ("mock", "codex_cli", "opencode"):
-        config = rate_limit_config or PROVIDER_DEFAULTS.get(name)
-        if config and "rate_limiter" not in kwargs:
-            kwargs["rate_limiter"] = RateLimiter(config)
+    spec = PROVIDER_SPECS[name]
+    # A spec without a rate limit (mock, the agent CLIs) never gets one.
+    if with_rate_limiter and spec.rate_limit is not None and "rate_limiter" not in kwargs:
+        kwargs["rate_limiter"] = RateLimiter(rate_limit_config or spec.rate_limit)
 
-    module_path, class_name = _BUILTIN_PROVIDERS[name]
     try:
-        module = importlib.import_module(module_path)
+        module = importlib.import_module(spec.module_path)
     except ImportError as exc:
-        # Give a helpful error message naming the missing package
-        _missing = {
-            "anthropic": "anthropic",
-            "openai": "openai",
-            "gemini": "google-genai",
-            "ollama": "openai",  # ollama uses the openai package
-            "openrouter": "openai",  # openrouter uses the openai package
-            "deepseek": "openai",  # deepseek uses the openai package
-            "kimi": "openai",  # kimi uses the openai package
-            "edenai": "openai",  # edenai uses the openai package
-            "litellm": "litellm",
-            "codex_cli": "@openai/codex",
-            "claude_cli": "@anthropic-ai/claude-code",
-            "opencode": "opencode",
-        }
-        package = _missing.get(name, name)
+        package = spec.package or name
         raise ImportError(
             f"Provider {name!r} requires the '{package}' package. "
             f"Install it with: pip install {package}"
         ) from exc
 
-    cls: type[BaseProvider] = getattr(module, class_name)
+    cls: type[BaseProvider] = getattr(module, spec.class_name)
     return cls(**kwargs)
 
 

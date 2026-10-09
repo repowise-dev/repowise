@@ -1035,14 +1035,6 @@ def config_fingerprint(repo_path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _is_codex_cli_available() -> bool:
-    """Check if the Codex CLI binary is available."""
-
-    import shutil
-
-    return shutil.which("codex") is not None
-
-
 def resolve_provider(
     provider_name: str | None,
     model: str | None,
@@ -1300,48 +1292,26 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
 
     # Required environment variables per provider, read from the registry that
     # also drives resolution, so a provider added there is validated here without
-    # a second edit. The agent-CLI providers are absent by design: they need no
-    # env var, so they are handled by the binary checks below instead.
-    from repowise.core.providers.llm.registry import (
-        PROVIDER_API_KEY_ENVS,
-        provider_required_envs,
-    )
+    # a second edit. The agent-CLI providers need no env var; the check for them
+    # is whether their CLI is installed.
+    from repowise.core.agents.identity import identity_for_provider
+    from repowise.core.providers.llm.registry import provider_required_envs
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
 
     provider_env_vars = {
-        name: list(provider_required_envs(name)) for name in (*PROVIDER_API_KEY_ENVS, "ollama")
+        name: list(provider_required_envs(name))
+        for name in PROVIDER_SPECS
+        if provider_required_envs(name)
     }
 
     if provider_name:
-        if provider_name == "codex_cli":
-            if not _is_codex_cli_available():
+        agent = identity_for_provider(provider_name)
+        if agent is not None:
+            if not agent.is_installed():
                 warnings.append(
-                    "Provider 'codex_cli' requires the Codex CLI. "
-                    "Install it with: npm install -g @openai/codex"
-                )
-            return warnings
-
-        if provider_name == "claude_cli":
-            import shutil
-
-            if not shutil.which("claude"):
-                warnings.append(
-                    "Provider 'claude_cli' requires the Claude Code CLI.\n"
-                    "  Install:  https://claude.com/claude-code\n"
-                    "  Setup:    run 'claude login' once to authenticate"
-                )
-            return warnings
-
-        if provider_name == "opencode":
-            import shutil
-
-            if not shutil.which("opencode"):
-                warnings.append(
-                    "Provider 'opencode' requires the opencode CLI.\n"
-                    "  Install:  curl -fsSL https://opencode.ai/install | bash\n"
-                    "  Setup:    run 'opencode' once to configure your provider\n"
-                    "  Models:   opencode models (list available models)\n"
-                    "  More:     https://opencode.ai\n"
-                    "  Usage:    repowise init --provider opencode --model opencode/openai/gpt-5"
+                    f"Provider '{provider_name}' requires the {agent.display_name} CLI.\n"
+                    f"  Install:  {agent.install_hint}\n"
+                    f"  Setup:    {agent.login_hint}"
                 )
             return warnings
 

@@ -14,6 +14,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.providers.llm.specs import ZERO_COST_MODEL_PREFIXES
+
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -105,7 +107,7 @@ def is_local_model(model: str) -> bool:
     return (
         model == "mock"
         or model.startswith(_LOCAL_MODEL_PREFIXES)
-        or model.startswith(("codex_cli/", "claude_cli/", "opencode/"))
+        or model.startswith(ZERO_COST_MODEL_PREFIXES)
         # Bare Ollama tags carry no prefix — the default is plain `qwen3.5:4b`.
         # The trailing tag must not be a bare number: Bedrock addresses hosted
         # Anthropic models as `anthropic.claude-sonnet-4-5-20250929-v1:0`, and
