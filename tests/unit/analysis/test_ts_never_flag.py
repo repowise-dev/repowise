@@ -44,6 +44,18 @@ class TestStoriesAndBench:
         assert _matches("packages/ui/src/Card.stories.ts")
         assert _matches("apps/web/Foo.stories.mdx")
 
+    def test_storybook_config_files_are_entry_points(self):
+        # Storybook loads main/preview/manager by path from .storybook/.
+        for name in ("main", "preview", "manager"):
+            for ext in (".ts", ".tsx", ".js", ".jsx", ".mdx"):
+                assert _matches(f".storybook/{name}{ext}")
+                assert _matches(f"packages/ui/.storybook/{name}{ext}")
+        # Same filenames outside .storybook/ are ordinary source.
+        assert not _matches("src/preview.ts")
+        assert not _matches("src/main.ts")
+        assert not _matches("packages/ui/src/manager.js")
+        assert not _matches("preview.tsx")
+
     def test_bench_files(self):
         assert _matches("packages/zod/bench/arr.bench.ts")
         assert _matches("bench/parse.bench.js")
