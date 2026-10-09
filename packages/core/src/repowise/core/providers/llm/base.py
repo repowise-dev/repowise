@@ -13,8 +13,11 @@ Adding a new provider:
 
 from __future__ import annotations
 
+import contextlib
+import json
+import weakref
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -46,6 +49,7 @@ _FIXED_TEMPERATURE_PREFIXES = (
     "claude-opus-4-8",
     "claude-opus-5",
     "claude-sonnet-5",
+    "claude-haiku-5",
     "claude-fable-5",
     "claude-mythos-5",
 )
@@ -244,6 +248,21 @@ class BaseProvider(ABC):
     # a longer wait on calls that were going to fail regardless.
     interactive_timeout_s: float = 60.0
 
+    def __new__(cls, *args: Any, **kwargs: Any) -> BaseProvider:
+        # Every provider is known to ``close_provider_clients``, so one that
+        # gains a client later is closed without having to remember to register.
+        provider = super().__new__(cls)
+        _LIVE_PROVIDERS.add(provider)
+        return provider
+
+    async def aclose(self) -> None:  # noqa: B027 - an optional hook, not an abstract one
+        """Release what this provider holds on the running event loop.
+
+        A no-op for a provider with nothing loop-bound. One that owns a client
+        closes or drops it and stays usable: the next call builds a new one
+        (see ``SdkClientOwner``).
+        """
+
     @abstractmethod
     async def generate(
         self,
@@ -327,6 +346,52 @@ class BaseProvider(ABC):
         )
 
 
+# Every live provider. Weak, so a dropped provider is not kept alive to be closed.
+_LIVE_PROVIDERS: weakref.WeakSet[BaseProvider] = weakref.WeakSet()
+
+
+class SdkClientOwner:
+    """Mixin for a provider whose ``_client`` is an ``AsyncAnthropic`` / ``AsyncOpenAI``.
+
+    The SDK client pools connections on the event loop that opened them. The
+    CLI runs one provider through several ``asyncio.run`` calls, and a
+    connection left pooled when its loop closes can no longer be closed: the
+    SDK's ``__del__`` then schedules ``aclose()`` on whichever loop is running
+    and Python prints ``Task exception was never retrieved ... Event loop is
+    closed`` (issue #2946). Closing once after the last step is too late for
+    the same reason, so ``aclose`` runs at the end of every loop
+    (``close_provider_clients``) and leaves a fresh client for the next one.
+    """
+
+    _client: Any
+    _client_factory: Callable[[], Any]
+    _owned_client: Any
+
+    def _open_client(self, factory: Callable[[], Any]) -> None:
+        self._client_factory = factory
+        self._client = self._owned_client = factory()
+
+    async def aclose(self) -> None:
+        owned = self._owned_client
+        fresh = self._client_factory()
+        # A client somebody put there in our place (a test double) is theirs.
+        if self._client is owned:
+            self._client = fresh
+        self._owned_client = fresh
+        await owned.close()
+
+
+async def close_provider_clients() -> None:
+    """Have every live provider release what it holds on the running event loop.
+
+    Called as an ``asyncio.run`` ends. A cleanup step must not turn a finished
+    command into a failed one, so a client that will not close is skipped.
+    """
+    for provider in list(_LIVE_PROVIDERS):
+        with contextlib.suppress(Exception):
+            await provider.aclose()
+
+
 class ProviderError(Exception):
     """Raised when a provider returns an unrecoverable error.
 
@@ -388,6 +453,68 @@ def parse_retry_after(headers: Any) -> float | None:
         return seconds if 0 < seconds <= 600 else None
     except Exception:
         return None
+
+
+def rate_limit_error_from(provider: str, exc: BaseException) -> RateLimitError:
+    """Wrap an SDK 429 exception, keeping the ``retry-after`` it carried."""
+    return RateLimitError(
+        provider,
+        str(exc),
+        status_code=429,
+        retry_after=parse_retry_after(getattr(getattr(exc, "response", None), "headers", None)),
+    )
+
+
+@contextlib.contextmanager
+def translate_sdk_errors(
+    provider: str,
+    *,
+    rate_limit_error: type[BaseException],
+    status_error: type[BaseException],
+    api_error: type[BaseException] | None = None,
+) -> Iterator[None]:
+    """Re-raise a vendor SDK's errors as repowise provider errors.
+
+    429s become ``RateLimitError`` with ``retry-after``; status errors keep
+    their code; *api_error*, when given, wraps status-less errors too.
+    """
+    # An empty tuple makes the last ``except`` match nothing.
+    wrapped_api_errors = (api_error,) if api_error is not None else ()
+    try:
+        yield
+    except rate_limit_error as exc:
+        raise rate_limit_error_from(provider, exc) from exc
+    except status_error as exc:
+        raise ProviderError(provider, str(exc), status_code=exc.status_code) from exc  # type: ignore[attr-defined]
+    except wrapped_api_errors as exc:
+        raise ProviderError(
+            provider, str(exc), status_code=getattr(exc, "status_code", None)
+        ) from exc
+
+
+async def record_generation_cost(
+    tracker: Any,
+    *,
+    model: str,
+    result: GeneratedResponse,
+    operation: str | None = None,
+) -> None:
+    """Record one generation's token spend on *tracker*, if one is attached.
+
+    Awaited inline: a detached task can outlive the event loop. Failures are
+    suppressed so cost bookkeeping never fails a generation. *operation*
+    defaults to the tracker's current one.
+    """
+    if tracker is None:
+        return
+    with contextlib.suppress(Exception):
+        await tracker.record(
+            model=model,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            operation=tracker.operation if operation is None else operation,
+            file_path=None,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +622,14 @@ class ChatToolCall:
     arguments: dict[str, Any]
 
 
+def parse_tool_arguments(raw: str) -> dict[str, Any]:
+    """Decode a tool call's JSON arguments; empty or malformed JSON reads as ``{}``."""
+    try:
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
 @dataclass
 class ChatStreamEvent:
     """A single event yielded by stream_chat().
@@ -505,15 +640,20 @@ class ChatStreamEvent:
     - ``tool_result``: tool execution result (from internal loops) in ``tool_call`` + ``tool_result_data``
     - ``usage``: token counts in ``input_tokens`` / ``output_tokens``
     - ``stop``: end of generation (may follow tool_start if stop_reason is tool_use)
+    - ``assistant_content``: the turn's provider-native blocks in ``content_blocks``,
+      after ``stop``. The caller stores them on the assistant message as
+      ``provider_content`` so the same provider can replay the turn verbatim
+      (Anthropic thinking blocks must accompany their tool results).
     """
 
-    type: str  # text_delta | tool_start | tool_result | usage | stop
+    type: str  # text_delta | tool_start | tool_result | usage | stop | assistant_content
     text: str | None = None
     tool_call: ChatToolCall | None = None
     tool_result_data: dict[str, Any] | None = None  # populated for tool_result events
     stop_reason: str | None = None  # end_turn | tool_use | max_tokens
     input_tokens: int = 0
     output_tokens: int = 0
+    content_blocks: list[dict[str, Any]] | None = None  # populated for assistant_content
 
 
 ToolExecutor = (

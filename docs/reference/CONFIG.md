@@ -14,7 +14,9 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 [The `hooks:` block](#the-hooks-block) ·
 [The `mcp:` block](#the-mcp-block) ·
 [The `decisions:` block](#the-decisions-block) ·
-[The `refactoring:` block](#the-refactoring-block)
+[The `security:` block](#the-security-block) ·
+[The `refactoring:` block](#the-refactoring-block) ·
+[The `assertions:` block](#the-assertions-block)
 
 **Code health rules**
 [The `health-rules.json` file](#the-health-rulesjson-file)
@@ -88,8 +90,9 @@ flags like `--commit-limit`, `--follow-renames`, or `--wiki-style`.
 
 > **Limited schema validation.** `config.yaml` is loaded as a plain YAML dict.
 > Unknown or misspelled keys are silently ignored, they won't error and won't
-> take effect. `max_tokens` must be a positive integer when documentation is
-> generated. The `distill:` block is validated only when you run
+> take effect, except in the `security:` block, where they stop
+> `repowise security check`. `max_tokens` must be a positive integer when
+> documentation is generated. The `distill:` block is validated only when you run
 > `repowise doctor`. If a setting doesn't seem to be taking effect, check
 > spelling and indentation first.
 
@@ -126,6 +129,9 @@ mcp:                                 # see "The mcp: block" below
 
 refactoring:                         # see "The refactoring: block" below
   enabled: true
+
+assertions:                          # see "The assertions: block" below
+  extra_names: []
 ```
 
 You can edit this file directly. Changes take effect on the next `init`,
@@ -311,9 +317,15 @@ means every key below is off.
 ```yaml
 hooks:
   read_skeleton: false           # serve large indexed files as skeletons
+  read_skeleton_mode: smart      # smart, or plus to keep all non-function code
   read_reread: false             # serve unchanged re-reads as a pointer
   search_digest: false           # serve multi-file grep floods as a digest
+  coverage_reingest: false       # re-ingest coverage after an agent's full test run
 ```
+
+- `coverage_reingest` re-ingests coverage after an agent's full test run, at
+  a process start per shell command (`REPOWISE_HOOK_COVERAGE_REINGEST=1` for
+  one session). Details: [test intelligence](../layers/TEST_INTELLIGENCE.md).
 
 - `read_reread` lets the PostToolUse Read hook answer a *repeat* Read with a
   short notice instead of the content, when the same range was already served
@@ -337,6 +349,10 @@ hooks:
   markers carrying 1-indexed ranges, so any elided span can be pulled back with
   a ranged Read — and reading the file a second time returns it whole.
   Savings land in `repowise saved` under the `read_skeleton` filter.
+- `read_skeleton_mode: plus` keeps every line outside a function or method
+  body (imports, constants, class fields, decorators, comments) and elides
+  only the bodies. Default `smart`. `REPOWISE_HOOK_READ_SKELETON_MODE=plus`
+  overrides the file for one session.
 - **Written by the rewrite-hook question in `repowise init`.** Saying yes there
   turns this on too; `--no-editor-setup` and `--no-distill-hook` turn it off
   with everything else. There is no separate prompt, because that question
@@ -356,7 +372,7 @@ hooks:
 ### The `mcp:` block
 
 Controls which tools the MCP server advertises. The default surface is curated
-(11 tools in single-repo mode, plus 2 workspace-only tools in workspace mode);
+(10 tools in single-repo mode, plus `list_repos` in workspace mode; seven more are opt-in);
 this block lets you opt extra tools in or trim the set down. The `repowise mcp
 --tools` / `--all` flags override it for a single launch.
 
@@ -374,48 +390,197 @@ mcp:
   `get_symbol`, `search_codebase`, `get_risk`, `get_why` (plus `list_repos` in workspace
   mode), small enough that Claude Code can keep every schema always loaded.
 - Opt-in tools are `get_dependency_path`, `get_execution_flows`,
-  `generate_refactoring_code`, and `get_conformance` (the last only usable in
-  workspace mode).
-- Workspace-only tools (`get_blast_radius`, `get_architecture`) are added
-  automatically in workspace mode and ignored if named in single-repo mode. See
+  `generate_refactoring_code`, and `set_finding_status`, plus the workspace-only
+  `get_blast_radius`, `get_conformance` and `get_architecture`. None is on by
+  default. The workspace-only three are ignored if named in single-repo mode. See
   [MCP_TOOLS.md](../agent/MCP_TOOLS.md#configuring-the-tool-surface).
 
 ### The `decisions:` block
 
-Controls decision extraction. Each key under `sources:` names an index-time
-capture source; set it to `false` to skip that source on the next
-`init` / `update`. Unknown keys are ignored, and sources you don't mention
-stay enabled.
+Controls decision capture: whether it runs at all, which sources it uses, and
+whether any of them may call a model. One resolved policy backs the CLI, the
+API, and the index pipeline, so all three agree about what will run.
 
 ```yaml
 decisions:
-  session_mining: true      # mine agent-session transcripts (see below)
+  enabled: true             # master switch for automatic capture
+  llm: true                 # master switch for decision-extraction model calls
+  preset: balanced          # default | off | local_only | balanced | full
   sources:
-    comment: false          # LLM comment archaeology (top central files)
-    # inline_marker: false  # WHY:/DECISION: markers
-    # git_archaeology: false
-      # adr: false
-    # changelog: false
-    # pr: false
+    inline_marker: true     # WHY:/DECISION: markers
+    git_archaeology: true   # commit messages
+    adr: true               # ADR files
+    pr: true                # PR / squash-merge bodies
+    comment: false          # comment archaeology on top central files
+    session:                # off by default; long form runs the deterministic
+      enabled: true         #   parse and skips the model stage
+      llm: false
+    session_discovery: true # one broad model pass over new transcript prose
+    conventions: false      # import patterns the graph proves, no model
+  discovery:                # budget for that one pass, per update
+    max_sessions: 12        # 1-24
+    max_input_tokens: 30000 # 2000-60000
+  harnesses:                # whose transcripts the session lane reads
+    - claude_code           # the default; add codex to read that store too
+  agent_acceptance: false   # may an agent grant a decision authority?
+  capture_prompt: false     # ask the agent to record what it just committed
 ```
 
-`session_mining` (default on) lets `repowise update` mine coding-agent
-session transcripts (Claude Code's `~/.claude/projects/`) for durable
-decisions: user corrections, explicit choices with a stated reason, and
-failed approaches replaced by working ones. Candidates pass deterministic
-gates first, then one batched LLM structuring call per update, and every
-produced field must quote the transcript verbatim or it is dropped. A
-decision observed in two or more sessions is promoted as `active` with
-`source: session`; a direct user correction promotes after one. Everything
-stays local: transcripts are read from your machine, staging lives in
-`.repowise/sessions/sessions.db`, and only the distilled decision text about
-the codebase is stored. Set `session_mining: false` to turn the whole
-pipeline off.
+`agent_acceptance` is the one key here that is not about capture. Off, an agent
+can propose candidates and withdraw authority but never grant it; on, it may
+accept, and the acceptance is recorded as an agent's — with the session that
+signed it — on every surface, never as yours. It ships off and no preset turns
+it on.
+
+`capture_prompt` is the other. On, a successful `git commit` whose message
+carries two or more decision signals prompts the agent, once per session, to
+run `repowise decision add` — never for a commit a record already cites, and
+never as anything but a proposal. An agent cannot decline a hook, so this also
+ships off and no preset turns it on:
+`repowise decision config capture-prompt --on`.
+
+That command also installs what it needs. The shared PostToolUse matcher
+deliberately excludes the shell tools — measured at 51% of hook invocations
+for 0.7% of emissions — so switching the prompt on adds a separate
+`Bash|PowerShell` PostToolUse entry, and switching it off removes it. The
+entry is per install rather than per repository: other repositories on the
+machine pay a process start on shell calls and emit nothing unless they
+switch it on too, and switching it off here turns it off for all of them.
+
+Every key is optional. **A config with no `decisions:` block behaves exactly as
+it did before these switches existed**: every source that shipped on is on,
+model stages on. That resolved policy is named `default`. A source added after
+those switches existed (`session_discovery` and `conventions`) stays off until you
+ask for it, so upgrading never starts a model call nobody enabled. `session` is
+the one default that has moved: it now ships **off**, because what it captured
+read as working agreements from a transcript rather than decisions the codebase
+had taken. `repowise decision source set session --on` turns it back on, and
+`local_only` still carries it. The same
+holds for a config that names a preset *and* lists its sources: that list is
+what the preset covered when it was written, so a source added to that preset
+later does not join it retroactively. Re-apply the preset to pick it up.
+
+A source is a bare boolean or a `{enabled, llm}` mapping. The long form only
+matters for a source with both a deterministic and a model stage
+(`inline_marker`, `adr`, `session`): it keeps the deterministic parse and skips
+the model call. A source that is model-only (`git_archaeology`, `pr`,
+`comment`, `session_discovery`) is skipped entirely when its model stage is
+off, because running it would produce a zero indistinguishable from an empty
+repository.
+
+Unknown keys are reported as warnings rather than discarded, so a typo'd source
+name shows up instead of silently reading as a working switch. Retired names
+(`code_comment`, `changelog`, `readme_mining`) are among them: an old config
+still loads, it just says which key it ignored.
+
+**Presets** are conveniences that write the same keys:
+
+| Preset | Effect |
+|--------|--------|
+| `default` | What a config with no `decisions:` block resolves to. Every long-standing source on; session mining and broad discovery off. |
+| `off` | No automatic capture. Stored decisions and manual entry keep working. |
+| `local_only` | Deterministic capture only, session mining included — it is the only lane that produces without a key. Zero decision-extraction model calls. |
+| `balanced` | The high-signal sources plus session mining and broad session discovery, which is fed by it; comment archaeology off. |
+| `full` | Every source, every model stage. |
+
+Editing any individual key after applying a preset drops the `preset` line and
+the resolved policy reads as `custom`.
+
+`llm: false` is a complete mode, not a degraded one: transcripts are still
+read, markers and ADRs are still parsed, episodes are still recorded, manual
+decisions still work, and already-accepted decisions keep governing. It is the
+one switch that proves no decision extraction reaches a model.
+
+Set these from the CLI rather than by hand if you prefer:
+
+```bash
+repowise decision config show          # the resolved policy, per source
+repowise decision config preset local_only
+repowise decision source set comment --off
+repowise decision source set adr --no-llm     # keep the parse, skip the model
+repowise decision source set session_discovery --on
+repowise decision config discovery --max-sessions 6 --max-input-tokens 12000
+repowise decision llm --off
+```
+
+Every mutating command takes `--dry-run` to print the change without writing,
+and `--format json` for scripts. Writes are atomic and preserve every unrelated
+key in `config.yaml`.
+
+The legacy `decisions.session_mining: true|false` key is still honoured and
+resolves to the `session` source, in both directions: since that source now
+ships off, a config that says `true` still switches it on. An explicit
+`sources.session` may narrow that, never widen it. The first write through the
+CLI or the API replaces the legacy key with `sources.session`.
+
+### `.repowise/decisions.yaml`
+
+Everything else under `.repowise/` is a local index you can delete and rebuild.
+This one file is not: it holds the decisions you accepted, and it is meant to be
+committed. `repowise decision export` writes it and un-ignores it in your
+`.gitignore` if a `.repowise/` rule was hiding it; `repowise decision import`
+reconciles the store to it, with the file as the authority. Its format carries
+its own `version`, and a file written by a newer repowise is refused rather than
+downgraded. See [DECISIONS.md](../layers/DECISIONS.md) for the round trip.
+
+`session` mining is **off by default**. Switched on, it lets `repowise update`
+read coding-agent session transcripts
+(Claude Code's `~/.claude/projects/`) for durable decisions: user corrections,
+explicit choices with a stated reason, and failed approaches replaced by working
+ones. Candidates pass deterministic gates first, then one batched LLM
+structuring call per update, and every produced field must quote the transcript
+verbatim or it is dropped. **Mined decisions are stored as candidates**, however
+many sessions they recur across; accepting one with `repowise decision confirm`
+is what makes it govern. Everything stays local: transcripts are read from your
+machine, staging lives in `.repowise/sessions/sessions.db`, and only the
+distilled decision text about the codebase is stored.
+
+`session_discovery` is the broad lane beside those gates. Once per update it
+sends the user and assistant prose that update newly read, bounded by
+`discovery.max_sessions` and `discovery.max_input_tokens`, to the model in a
+single call, and asks for durable decisions the gates never surfaced. It reuses
+the transcript read the `session` source already performs, so enabling it does
+not read your transcripts twice.
+
+Every candidate it returns must cite the span ids it rests on, and each cited
+quote is verified against that span's exact text before anything is stored.
+A candidate that cites a span that was not sent, quotes something no span
+says, or names a file the cited turns never touched is rejected and counted,
+never stored. Scope comes from the files those turns' tools touched; the model
+may select among them and may not add one. Everything it produces is a
+candidate: like the deterministic lane it is written `proposed`, and only
+`repowise decision confirm` makes a decision govern.
+
+Prose that does not fit one update's budget is not dropped. It stays queued in
+`.repowise/sessions/sessions.db`, the next update sends it oldest-first, and a
+queued span is never aged out before it is read. A provider failure leaves the
+same prose queued and retries it on the next two updates before retiring it, so
+an outage costs a round rather than the input. Switching the source off leaves
+what is already queued in place; new prose is only captured while the source is
+on, so there is no backfill of what was read while it was off. Discovery reads
+what the `session` source read, so it needs that source on too.
 
 Dismissals are sticky: `repowise decision dismiss` keeps the record as a
 `dismissed` tombstone, so reindexing never re-proposes the same decision, and
 a confirmed (`active`) decision is never walked back to `proposed` by a
 re-extraction.
+
+### The `security:` block
+
+Secret shapes of your own for `repowise security check`.
+
+```yaml
+security:
+  patterns:
+    - name: internal_token        # 1 to 40 of a-z, 0-9, _ and -, unique
+      regex: 'itk_[A-Za-z0-9]{32}'
+      severity: high              # low, med or high; high when omitted
+```
+
+- Each is the secret kind `custom:<name>` (SARIF rule `custom/<name>`): changed lines only, every commit of the change scanned, a match masked to its first four characters and `****` in every format. It keeps its severity under test, fixture and example paths.
+- A finding is keyed on file, kind and masked line, so two matches with the same visible prefix on one line share a baseline entry.
+- Exit 2 (`config_invalid`, every problem listed) on an unknown key, a missing name or regex, a duplicate or badly shaped name, a bad severity, or a regex that does not compile, can match zero characters, or nests repetition like `(a+)+` or `(a|aa)+` (best effort).
+- At most 50 patterns of 500 characters. Lines over 4096 characters are not matched and are counted (`long_lines_skipped` in JSON); a slow regex that passes the checks stays slow.
 
 ### The `refactoring:` block
 
@@ -450,6 +615,35 @@ refactoring:
 - Per-path disables reuse the `.repowise/health-rules.json` glob mechanism (the
   same one markers use).
 - Full reference: [REFACTORING.md](../layers/REFACTORING.md).
+
+### The `assertions:` block
+
+Names your own assertion helpers, for the test-quality markers that divide by a
+test's assertion count.
+
+```yaml
+assertions:
+  extra_names: [ensureInvariant, mustMatch]   # exact callee names, not prefixes
+```
+
+Repowise recognises the xUnit and BDD families out of the box (`assert*`,
+`expect*`) plus a per-language vocabulary for the idioms those miss, such as
+Go's `t.Fatalf` and testify's `require`. A house helper that follows neither
+convention is invisible to it, and a test built entirely of those helpers reads
+as having no assertions at all. This block is the escape hatch, the same one
+SonarQube, Qodana and ESLint's `expect-expect` rule each provide.
+
+- **Names are exact and case-insensitive, never prefixes.** `ensureInvariant`
+  matches `ensureInvariant(...)` and not `ensureConnectionPool(...)`. Prefix
+  matching was measured against three real test corpora and matched production
+  functions under test far more often than assertions.
+- A name matches whether it is the call itself or the receiver of one, so both
+  `ensureInvariant(x)` and `ensureInvariant(x).isTrue()` count.
+- **Nothing here can change a health score.** These names reach only the
+  advisory assertion total; the calibrated `large_assertion_block` and
+  `duplicated_assertion_block` markers read a separate count that takes no
+  configuration. Adding a wrong name costs you signal, never a wrong score.
+- Changing the list re-walks the affected files on the next `init` / `update`.
 
 ---
 
@@ -506,12 +700,12 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 | Model | Notes |
 |-------|-------|
-| `claude-sonnet-4-6` | Default, best balance of quality and cost |
+| `claude-sonnet-4-6` | Best balance of quality and cost |
 | `claude-opus-4-6` | Highest quality, higher cost |
-| `claude-haiku-4-5-20251001` | Fastest, lowest cost |
+| `claude-haiku-5-5` | Default, fastest, lowest cost |
 
 ```bash
-repowise init --provider anthropic --model claude-haiku-4-5-20251001
+repowise init --provider anthropic --model claude-haiku-5-5
 ```
 
 ### OpenAI (GPT)
@@ -527,6 +721,42 @@ For an OpenAI-compatible Qwen3 endpoint served by vLLM or SGLang:
 export OPENAI_BASE_URL="http://localhost:8000/v1"
 repowise init --provider openai --model qwen3 --reasoning off
 ```
+
+The same adapter works with local gateways such as 9router and with any
+OpenAI-compatible custom provider. Set the gateway's API key under
+`OPENAI_API_KEY`, point `OPENAI_BASE_URL` at its `/v1` endpoint, and use the
+model id returned by that endpoint's `/models` response:
+
+```bash
+export OPENAI_API_KEY="your-9router-dashboard-key"
+export OPENAI_BASE_URL="http://localhost:20128/v1"
+repowise init --provider openai --model ag/gemini-3.7-flash-medium
+```
+
+Repowise discovers namespaced model ids from compatible gateways as-is, so
+the model does not need to start with `gpt-`. For another local provider,
+replace the key, URL, and model with that provider's values.
+
+In an interactive `repowise init`, choose **OpenAI-compatible (Custom / local
+gateway)**. Repowise then validates the endpoint, collects the key without
+echoing it, verifies the gateway through `/models`, and lets you search the
+discovered models or enter an exact model id. If `/models` is unavailable, you
+can retry the endpoint/key, continue with a manual model id, or return to the
+provider menu:
+
+```text
+Base URL [http://localhost:20128/v1]:
+API key (hidden): <paste the gateway key>
+✓ Connected — discovered 47 model(s).
+Select model: ag/gemini-3.7-flash-medium
+```
+
+The endpoint is placed in the repo's gitignored `.repowise/.env`; the key is
+saved there only after confirmation, and `--no-save-key` always keeps it
+process-local. The selected runtime provider (`openai`) and exact model id are
+written to `config.yaml`. Choose the separate **openai** row for the official
+OpenAI endpoint. Scripted runs (`--yes`, CI, or non-TTY) remain non-interactive
+and should continue to use environment variables and `--provider openai`.
 
 ### OpenRouter
 
@@ -581,6 +811,12 @@ thinking or instant mode.
 export OLLAMA_BASE_URL="http://localhost:11434"
 repowise init --provider ollama --model llama3.2
 ```
+
+Repowise sizes the model's context window (`num_ctx`) to each prompt, so pages
+are not cut to Ollama's small default window. Set `REPOWISE_OLLAMA_NUM_CTX` to
+pin it instead, for example to stay within a machine's memory. Requests are sent
+one at a time; if the server runs with `OLLAMA_NUM_PARALLEL` above 1, set the
+same value where you run repowise to send that many at once.
 
 ### LiteLLM (100+ providers)
 
@@ -702,7 +938,7 @@ The `.repowise/.env` file is gitignored automatically.
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key |
-| `OPENAI_API_KEY` | OpenAI API key |
+| `OPENAI_API_KEY` | OpenAI or OpenAI-compatible gateway API key |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Google Gemini API key |
 | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `DEEPSEEK_API_KEY` | DeepSeek API key |
@@ -715,9 +951,11 @@ The `.repowise/.env` file is gitignored automatically.
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_BASE_URL` | Override the Anthropic API base URL |
-| `OPENAI_BASE_URL` | Override the OpenAI API base URL (used for vLLM/SGLang-compatible endpoints) |
+| `OPENAI_BASE_URL` | Override the OpenAI API base URL (used for vLLM/SGLang, 9router, and other compatible endpoints) |
 | `GEMINI_BASE_URL` | Override the Gemini API base URL |
 | `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
+| `REPOWISE_OLLAMA_NUM_CTX` | Fixed Ollama context window; unset sizes it to each prompt |
+| `OLLAMA_NUM_PARALLEL` | Ollama requests repowise sends at once (default: 1) |
 | `DEEPSEEK_BASE_URL` | Override the DeepSeek API base URL |
 | `KIMI_BASE_URL` | Override the Kimi API base URL |
 | `LITELLM_BASE_URL` | Override the LiteLLM proxy base URL |
@@ -778,7 +1016,7 @@ Anonymous usage telemetry is **enabled by default** (opt-out).
 
 | Variable | Description |
 |----------|-------------|
-| `REPOWISE_GIT_WINDOW_ANCHOR` | Set to `head` to anchor git "now" to the latest commit instead of wall-clock time |
+| `REPOWISE_GIT_WINDOW_ANCHOR` | Git history windows (90-day churn, prior defects, decay, blame age) are measured from the indexed commit's committer date by default. Set to `now` to measure them from wall-clock time instead |
 | `REPOWISE_SKIP_EDITOR_SETUP` | Truthy value stops `init` writing to your machine-wide editor config: the Claude Code / Claude Desktop MCP entry, the Claude Code hooks, and the distill rewrite-hook offer. Same switch as `init --no-editor-setup` ([CLI_REFERENCE.md](CLI_REFERENCE.md#repowise-init-path)); the env var is the one to use for CI, sandboxes, and benchmark runs that index many repos. Project-local files (`.repowise/mcp.json`, `CLAUDE.md`, Codex config) are written either way |
 | `REPOWISE_CHANGELOG` | Override the changelog source used by the "what's new" check |
 | `REPOWISE_PARSE_WORKERS` | How many processes parse files during indexing. Defaults to your CPU count capped at 8, and never exceeds the number of files to parse. Each worker is a separate interpreter holding roughly 50 MB, so lower it on a memory-constrained machine; raising it above 8 is not measurably faster |

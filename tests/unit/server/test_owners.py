@@ -254,3 +254,37 @@ async def test_get_owner_profile_not_found(client: AsyncClient) -> None:
     repo = await create_test_repo(client)
     resp = await client.get(f"/api/repos/{repo['id']}/owners/ghost@nowhere")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_commits_90d_counts_the_owners_own_commits(client: AsyncClient, app) -> None:
+    """The directory's 90-day count is distinct commits from the commit table,
+    anchored to the newest commit, and unknown (null) without that table."""
+    repo = await create_test_repo(client)
+    await _seed(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/owners")
+    assert {i["commit_count_90d"] for i in resp.json()["items"]} == {None}
+
+    head = datetime(2025, 3, 1, tzinfo=UTC)
+    rows = [
+        ("a1", "Alice", "alice@example.com", head),
+        ("a2", "Alice", "alice@example.com", head.replace(month=2)),
+        ("b1", "Bob", "bob@example.com", head.replace(year=2024)),
+    ]
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_git_commits_bulk(
+            session,
+            repo["id"],
+            [
+                {"sha": sha, "author_name": name, "author_email": email, "committed_at": at}
+                for sha, name, email, at in rows
+            ],
+        )
+        await crud.update_repo_git_totals(session, repo["id"], total_commit_count=3)
+
+    resp = await client.get(f"/api/repos/{repo['id']}/owners")
+    by_name = {i["name"]: i for i in resp.json()["items"]}
+    assert by_name["Alice"]["commit_count_90d"] == 2
+    assert by_name["Bob"]["commit_count_90d"] == 0
+    assert by_name["Bob"]["last_commit_at"].startswith("2024-03-01")

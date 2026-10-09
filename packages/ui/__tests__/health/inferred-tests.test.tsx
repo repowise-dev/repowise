@@ -42,8 +42,12 @@ function response(map: Partial<InferredTestMap> = {}): HealthCoverageResponse {
       line_coverage_pct: null,
       branch_coverage_pct: null,
       source_format: null,
+      source_formats: [],
+      mapping_partial: null,
       ingested_at: null,
       ingested_commit_sha: null,
+      report_paths: null,
+      freshness: null,
     },
     files: [],
     modules: [],
@@ -83,20 +87,17 @@ describe("RiskCoverageScatter, inferred basis", () => {
     expect(screen.queryByText("a test reaches it")).not.toBeInTheDocument();
   });
 
-  it("paints the dots by column in the sunset pair, never the health ramp", () => {
-    // Health is already the Y axis, so a health-banded dot would re-say its own
-    // position and leave nothing carrying the split. It would also paint a
-    // static reading in the colours reserved for measured health bands.
+  it("keeps dots neutral and colours only weak files nothing reaches", () => {
     const { container } = render(
       <RiskCoverageScatter basis="inferred" points={points} />,
     );
-    const fillOf = (path: string) =>
-      container.querySelector(`circle[data-file="${path}"]`)?.getAttribute("fill");
+    const classOf = (path: string) =>
+      container.querySelector(`circle[data-file="${path}"]`)?.getAttribute("class") ?? "";
 
-    expect(fillOf("src/a.py")).toBe("var(--color-accent-fill)");
-    expect(fillOf("src/b.py")).toBe("var(--color-accent-secondary)");
-    // src/b.py scores 3, which on the measured chart would be the error band.
-    expect(container.innerHTML).not.toContain("--color-error");
+    // src/a.py is reached by a test: quiet neutral mark.
+    expect(classOf("src/a.py")).toContain("--color-text-tertiary");
+    // src/b.py scores 3 and nothing reaches it: the one coloured kind.
+    expect(classOf("src/b.py")).toContain("--color-error");
     expect(container.innerHTML).not.toContain("--color-success");
   });
 
@@ -276,5 +277,29 @@ describe("TestsReachingList", () => {
     );
 
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("shows an error state instead of the empty answer when the fetch rejects", async () => {
+    // A rejected fetch must not be mapped to the same sentence as a real
+    // "nothing reaches this file" answer: the reader needs to know the
+    // request failed, not that the file is untested.
+    render(
+      <TestsReachingList
+        filePath="src/a.py"
+        cacheKey="k6"
+        fetcher={async () => {
+          throw new Error("HTTP 500");
+        }}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/could not load which tests reach this file/i),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText(/No test in the repository calls into this file/),
+    ).not.toBeInTheDocument();
   });
 });

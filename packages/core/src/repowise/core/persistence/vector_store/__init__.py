@@ -26,16 +26,28 @@ to avoid one embedding round-trip per page; the single-item
 
 from __future__ import annotations
 
-from ._base import VectorStore, cosine_similarity, embed_item
+from ._base import (
+    FILE_VOCABULARY_KEY,
+    BatchChunkFailure,
+    BatchEmbeddingError,
+    VectorStore,
+    cap_embed_text,
+    cosine_similarity,
+    embed_item,
+)
 from .in_memory import InMemoryVectorStore
 from .lancedb_store import LanceDBVectorStore
 from .pgvector_store import PgVectorStore
 
 __all__ = [
+    "FILE_VOCABULARY_KEY",
+    "BatchChunkFailure",
+    "BatchEmbeddingError",
     "InMemoryVectorStore",
     "LanceDBVectorStore",
     "PgVectorStore",
     "VectorStore",
+    "cap_embed_text",
     "cosine_similarity",
     "embed_item",
 ]

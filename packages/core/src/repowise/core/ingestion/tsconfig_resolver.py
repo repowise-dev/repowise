@@ -448,18 +448,57 @@ class TsconfigResolver:
 
     @staticmethod
     def _parse_json_lenient(config_path: Path) -> dict[str, Any] | None:
-        """Parse JSON with trailing-comma tolerance (common in tsconfig)."""
+        """Parse JSON with comment and trailing-comma tolerance (common in tsconfig)."""
         try:
             text = config_path.read_text(encoding="utf-8", errors="ignore")
             try:
                 data = json.loads(text)
             except json.JSONDecodeError:
-                cleaned = re.sub(r",\s*([}\]])", r"\1", text)
+                stripped = _strip_jsonc_comments(text)
+                cleaned = re.sub(r",\s*([}\]])", r"\1", stripped)
                 data = json.loads(cleaned)
             return data if isinstance(data, dict) else None
         except Exception as exc:
-            log.debug("tsconfig_parse_failed", path=str(config_path), error=str(exc))
+            log.warning("tsconfig_parse_failed", path=str(config_path), error=str(exc))
             return None
+
+
+def _strip_jsonc_comments(text: str) -> str:
+    """Strip // and /* */ comments from JSONC text while preserving string literals."""
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_string = False
+
+    while i < n:
+        c = text[i]
+        if in_string:
+            out.append(c)
+            if c == "\\":
+                if i + 1 < n:
+                    i += 1
+                    out.append(text[i])
+            elif c == '"':
+                in_string = False
+            i += 1
+        else:
+            if c == '"':
+                in_string = True
+                out.append(c)
+                i += 1
+            elif c == "/" and i + 1 < n and text[i + 1] == "/":
+                i += 2
+                while i < n and text[i] != "\n":
+                    i += 1
+            elif c == "/" and i + 1 < n and text[i + 1] == "*":
+                i += 2
+                while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                    i += 1
+                i += 2
+            else:
+                out.append(c)
+                i += 1
+    return "".join(out)
 
 
 def wire_tsconfig_resolver(

@@ -30,6 +30,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { scoreTextColor } from "@repowise-dev/ui/health/tokens";
+import { formatScore } from "@repowise-dev/types/health";
 import type {
   HomeSummary,
   PanelViewId,
@@ -47,11 +48,8 @@ import {
 import owlDarkTheme from "../../assets/owl-dark-theme.png";
 import owlLightTheme from "../../assets/owl-light-theme.png";
 
-/**
- * The shared score ramp, as a text class. This file used to carry its own
- * thresholds — healthy at 7.5 — which disagreed with every other surface in the
- * product and, more visibly, with the health dashboard this hero launches.
- */
+/** The shared band ramp as a text class, so this hero and the health dashboard
+ * it launches read a score the same way. */
 function scoreTone(score: number | null): string {
   return score == null ? "text-[var(--color-text-tertiary)]" : scoreTextColor(score);
 }
@@ -332,7 +330,7 @@ function Hero({
             <span
               className={`text-4xl font-bold leading-none tracking-tight tabular-nums ${scoreTone(headline)}`}
             >
-              {headline.toFixed(1)}
+              {formatScore(headline)}
             </span>
             <span className="pb-0.5 text-xs text-[var(--color-text-tertiary)]">/ 10</span>
           </div>
@@ -341,7 +339,7 @@ function Hero({
             {hasHotspot ? (
               <>
                 <span aria-hidden className="text-[var(--color-text-tertiary)]">·</span>
-                <span>hotspot {health?.hotspot?.toFixed(1)}</span>
+                <span>hotspot {health?.hotspot != null ? formatScore(health.hotspot) : undefined}</span>
                 <DeltaChip delta={health?.hotspotDelta ?? null} />
               </>
             ) : null}

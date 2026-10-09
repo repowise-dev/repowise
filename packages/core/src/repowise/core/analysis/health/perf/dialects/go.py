@@ -47,7 +47,7 @@ GO_SQL_METHODS: frozenset[str] = frozenset(
 # ``Scan`` is deliberately EXCLUDED: ``*sql.Rows.Scan`` (decoding an
 # already-fetched cursor row inside ``for rows.Next()``) is far more common than
 # GORM's ``db.Scan`` finisher and is NOT a round-trip — it FP'd ``io_in_loop``
-# on every cursor-read loop (Phase-7c syft corpus). Dropping it costs ~0
+# on every cursor-read loop, measured across a Go corpus. Dropping it costs ~0
 # measured recall (no corpus GORM-``Scan``-in-loop) and removes the FP class.
 GO_GORM_METHODS: frozenset[str] = frozenset(
     {
@@ -82,6 +82,7 @@ GO_REGEX_COMPILE: frozenset[str] = frozenset(
     {"MustCompile", "Compile", "MustCompilePOSIX", "CompilePOSIX"}
 )
 _GO_STRING_KINDS: frozenset[str] = frozenset({"interpreted_string_literal", "raw_string_literal"})
+_GO_LOOP_KINDS: frozenset[str] = frozenset({"for_statement"})
 
 # Heavy connection / client constructors, keyed ``(package, func)``. Opening one
 # per ``for ... range`` iteration is the connection-churn anti-pattern.
@@ -98,6 +99,18 @@ GO_RESOURCE_CTORS: frozenset[tuple[str, str]] = frozenset(
 )
 # ``sync.Mutex`` / ``sync.RWMutex`` acquisition (the contention side only).
 GO_LOCK_METHODS: frozenset[str] = frozenset({"Lock", "RLock"})
+# ``slices.Chunk`` (Go 1.23) and hand-rolled peers, matched on the call's
+# rightmost name so a local helper (``Batch(xs, n)``) counts too.
+GO_CHUNK_CALLS: frozenset[str] = frozenset({"Chunk", "chunk", "Batch", "batch", "Chunks", "chunks"})
+
+
+def _single_identifier(node: Node | None) -> bytes | None:
+    if node is None:
+        return None
+    targets = node.named_children if node.type == "expression_list" else [node]
+    if len(targets) != 1 or targets[0].type != "identifier":
+        return None
+    return targets[0].text
 
 
 class GoPerfDialect(BasePerfDialect):
@@ -110,14 +123,17 @@ class GoPerfDialect(BasePerfDialect):
             "regex_compile_in_loop",
             "resource_construction_in_loop",
             "lock_in_loop",
-            # Phase 7b — centrality-gated / nesting-confidence markers.
+            # Centrality-gated / nesting-confidence markers.
             "nested_loop_with_io",
             "nested_loop_quadratic",
             "hot_path_sync_io",
-            # Phase 7d — Go-specific spawn explosion.
+            # Go-specific spawn explosion.
             "goroutine_in_unbounded_loop",
         }
     )
+    # ``exec.Command`` only builds a Cmd; the process runs at ``Run`` / ``Output``
+    # / ``CombinedOutput`` / ``Start``, which are sinks of their own.
+    hot_path_excluded_methods = frozenset({"Command"})
 
     def sink_kind(
         self,
@@ -183,7 +199,24 @@ class GoPerfDialect(BasePerfDialect):
         if right is None:
             return False
         targets = right.named_children if right.type == "expression_list" else [right]
-        return any(c.type in _GO_STRING_KINDS for c in targets)
+        if not any(c.type in _GO_STRING_KINDS for c in targets):
+            return False
+        left = _single_identifier(node.child_by_field_name("left"))
+        return left is None or not self.resets_per_iteration(node, left, _GO_LOOP_KINDS)
+
+    def binds_name(self, node: Node, name: bytes) -> bool:
+        if node.type == "short_var_declaration":
+            return _single_identifier(node.child_by_field_name("left")) == name
+        if node.type == "var_spec":
+            identifier = node.child_by_field_name("name")
+            return (
+                identifier is not None
+                and identifier.type == "identifier"
+                and identifier.text == name
+            )
+        if node.type != "assignment_statement" or not any(c.type == "=" for c in node.children):
+            return False
+        return _single_identifier(node.child_by_field_name("left")) == name
 
     def loop_call_marker(
         self, root: str, method: str, node: Node, list_names: frozenset[str]
@@ -192,7 +225,7 @@ class GoPerfDialect(BasePerfDialect):
             # Only a *string-literal* pattern is unambiguously hoistable: a
             # dynamic argument (``regexp.MustCompile(pat)`` / a concatenation with
             # a per-iteration variable) may legitimately vary each iteration and
-            # cannot be lifted out of the loop. Phase-7c Go corpus: the 10
+            # cannot be lifted out of the loop. Measured on a Go corpus: the 10
             # dynamic-arg cases were all UNSURE; gating on a literal removes them.
             return "regex_compile_in_loop"
         if (root, method) in GO_RESOURCE_CTORS:
@@ -217,6 +250,21 @@ class GoPerfDialect(BasePerfDialect):
             return self._dotted_path(named[-1])
         return None
 
+    def is_chunked_loop(self, node: Node) -> bool:
+        """``for i := 0; i < n; i += step``, or ``range slices.Chunk(xs, n)``."""
+        if node.type != "for_statement":
+            return False
+        clause = next((c for c in node.children if c.type == "for_clause"), None)
+        if clause is not None:
+            return self._steps_by_chunk(clause.child_by_field_name("update"))
+        clause = next((c for c in node.children if c.type == "range_clause"), None)
+        if clause is None:
+            return False
+        right = clause.child_by_field_name("right")
+        if right is None or right.type != "call_expression":
+            return False
+        return self.callee_method_name(right) in GO_CHUNK_CALLS
+
     @staticmethod
     def _has_static_pattern_arg(node: Node) -> bool:
         """True if the call's first argument is a compile-time string literal.
@@ -232,6 +280,8 @@ class GoPerfDialect(BasePerfDialect):
 
     def loop_stmt_marker(self, node: Node, list_names: frozenset[str]) -> str | None:
         if node.type == "defer_statement":
+            if self._defer_runs_once_per_entry(node):
+                return None
             return "defer_in_loop"
         # ``go func(){…}()`` spawned per element of a ``for … range`` loop fans
         # out one goroutine per item with no concurrency bound (the spawn-
@@ -246,6 +296,148 @@ class GoPerfDialect(BasePerfDialect):
             if self._bounded_by_semaphore(node):
                 return None
             return "goroutine_in_unbounded_loop"
+        return None
+
+    # Statements an unlabeled Go ``break`` can exit. ``for_statement`` is Go's
+    # only loop; an unlabeled ``break`` inside a ``switch``/``select`` case
+    # leaves the case, not the loop.
+    _GO_BREAKABLE_KINDS: frozenset[str] = frozenset(
+        {
+            "for_statement",
+            "expression_switch_statement",
+            "type_switch_statement",
+            "select_statement",
+        }
+    )
+    # Function-scoped bodies a ``return`` (or a labeled ``break`` target) is
+    # relative to; a ``func`` literal nested in a loop is its own scope.
+    _GO_FUNC_KINDS: frozenset[str] = frozenset(
+        {"function_declaration", "method_declaration", "func_literal"}
+    )
+
+    def _defer_runs_once_per_entry(self, defer_node: Node) -> bool:
+        """True when the statement right after the defer leaves every loop.
+
+        A ``defer`` immediately followed by a ``return``, or by a ``break``
+        that exits the loop, can only be reached once before control leaves
+        the loop, so the deferred call is registered at most once and the
+        ``defer_in_loop`` leak does not apply. A ``break`` inside a
+        ``switch``/``select`` case leaves the case (loop keeps running), a
+        labeled ``break`` only counts when the label names a statement at or
+        outside the loop, and in a loop nest the exit must leave the OUTERMOST
+        loop — otherwise each outer iteration re-enters and registers the
+        defer again.
+        """
+        nxt = self._next_statement(defer_node)
+        if nxt is None:
+            return False
+        if nxt.type == "return_statement":
+            # ``return`` exits the whole function — unless a func literal or
+            # method sits between the loop and this statement, in which case it
+            # only exits that inner scope and the loop continues.
+            return self._scope_below_loop(defer_node) is None
+        if nxt.type == "break_statement":
+            return self._break_exits_all_loops(nxt)
+        return False
+
+    @staticmethod
+    def _next_statement(node: Node) -> Node | None:
+        """The first sibling statement after ``node`` in the same block."""
+        parent = node.parent
+        if parent is None:
+            return None
+        seen = False
+        for child in parent.children:
+            if not seen:
+                if child == node:
+                    seen = True
+                continue
+            # Skip trailing comments and punctuation (the ``;`` separator of
+            # single-line bodies is an unnamed child of the statement list).
+            if child.is_named and child.type != "comment":
+                return child
+        return None
+
+    def _scope_below_loop(self, node: Node) -> Node | None:
+        """The nearest func-like scope between ``node`` and its loop, if any."""
+        cur = node.parent
+        while cur is not None:
+            if cur.type in self._GO_FUNC_KINDS:
+                return cur
+            if cur.type == "for_statement":
+                return None
+            cur = cur.parent
+        return None
+
+    def _break_exits_all_loops(self, brk: Node) -> bool:
+        label = self._break_label(brk)
+        if label is None:
+            # An unlabeled ``break`` leaves the innermost breakable statement.
+            # If that is a switch/select, the loop keeps running; if it is the
+            # loop, no further loop may wrap it up to the function scope, or an
+            # outer iteration re-enters and registers the defer again.
+            innermost = self._innermost_breakable(brk)
+            if innermost is None or innermost.type != "for_statement":
+                return False
+            return self._no_loop_above(innermost)
+        # ``break L`` counts only when ``L`` labels a ``for`` statement that
+        # encloses the defer, and no further loop wraps that statement up to
+        # the function scope (an outer iteration would re-enter and register
+        # the defer again).
+        target = self._labeled_statement_ancestor(brk, label)
+        if target is None:
+            # Undefined label (invalid Go): stay conservative and report.
+            return False
+        if not any(c.type == "for_statement" for c in target.children):
+            return False
+        return self._no_loop_above(target)
+
+    def _no_loop_above(self, node: Node) -> bool:
+        """True if no ``for`` loop wraps ``node`` below its function scope."""
+        cur = node.parent
+        while cur is not None:
+            if cur.type == "for_statement":
+                return False
+            if cur.type in self._GO_FUNC_KINDS:
+                return True
+            cur = cur.parent
+        return True
+
+    def _innermost_breakable(self, node: Node) -> Node | None:
+        cur = node.parent
+        while cur is not None:
+            if cur.type in self._GO_BREAKABLE_KINDS:
+                return cur
+            if cur.type in self._GO_FUNC_KINDS:
+                return None
+            cur = cur.parent
+        return None
+
+    @staticmethod
+    def _break_label(brk: Node) -> str | None:
+        lab = brk.child_by_field_name("label")
+        if lab is None:
+            # tree-sitter-go exposes ``break outer`` without a named field:
+            # the label is a bare ``label_name`` child after ``break``.
+            for child in brk.children:
+                if child.type == "label_name":
+                    lab = child
+                    break
+        if lab is None or lab.text is None:
+            return None
+        return lab.text.decode("utf-8", "replace")
+
+    @staticmethod
+    def _labeled_statement_ancestor(node: Node, label: str) -> Node | None:
+        cur = node.parent
+        while cur is not None:
+            if cur.type == "labeled_statement":
+                lab = cur.child_by_field_name("label")
+                if lab is not None and lab.text is not None and lab.text.decode(
+                    "utf-8", "replace"
+                ) == label:
+                    return cur
+            cur = cur.parent
         return None
 
     def _bounded_by_semaphore(self, go_node: Node) -> bool:
@@ -351,7 +543,13 @@ class GoPerfDialect(BasePerfDialect):
 
     @staticmethod
     def _is_buffered_make(call: Node) -> bool:
-        """True if ``call`` is ``make(chan T, N)`` with a positive buffer size."""
+        """True if ``call`` is ``make(chan T, N)`` and ``N`` is not a literal ``0``.
+
+        The size is usually a variable, a field or a call (``nParallel``,
+        ``cfg.Workers``, ``runtime.NumCPU()``), which is taken as a bound. One
+        that happens to be 0 at run time cannot be seen from here and is not
+        claimed; the literal ``0`` is the one size known to be unbuffered.
+        """
         if call.type != "call_expression":
             return False
         fn = call.child_by_field_name("function")
@@ -365,17 +563,16 @@ class GoPerfDialect(BasePerfDialect):
             return False
         size = named[1]
         if size.type != "int_literal" or size.text is None:
-            return False
-        try:
-            return int(size.text.decode("utf-8", "replace")) > 0
-        except ValueError:
-            return False
+            return True
+        digits = size.text.decode("utf-8", "replace").lower().replace("_", "")
+        # 0, 00, 0x0, 0b0, 0o0: no digit other than zero after the base prefix.
+        return any(ch not in "0xob" for ch in digits)
 
     @staticmethod
     def _nearest_for_is_range(node: Node) -> bool:
         """True if the nearest enclosing ``for`` loop ranges over a COLLECTION.
 
-        Phase-7d gate: a single-variable ``for i := range n`` (Go 1.22
+        Gate: a single-variable ``for i := range n`` (Go 1.22
         range-over-int, or a count constant) is a bounded count loop, NOT a
         per-element fan-out — both 0%-precision FPs were ``for i := range
         <const>`` in tests. The two-variable ``for k, v := range coll`` form is

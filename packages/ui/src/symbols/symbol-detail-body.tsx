@@ -15,7 +15,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { StatGrid, StatTile } from "../shared/stat-grid";
 import { scoreBadgeClass } from "../health/tokens";
-import { formatRelativeTimeOrNull, truncatePath } from "../lib/format";
+import { formatRelativeTimeOrNull, formatTopPercentile, truncatePath } from "../lib/format";
 import { cn } from "../lib/cn";
 import { SymbolCallGraph } from "./symbol-call-graph";
 
@@ -119,7 +119,8 @@ export function SymbolDetailBody({
           value={data.complexity_estimate != null ? String(data.complexity_estimate) : "—"}
         />
         <StatTile
-          label="Modifications"
+          label="Commits in current code"
+          title="Distinct commits that wrote this symbol's current lines, by git blame. A commit whose lines were all rewritten since is not counted."
           value={data.blame_mod_count != null ? String(data.blame_mod_count) : "—"}
           {...(data.blame_recent_mod_count != null
             ? { hint: `${data.blame_recent_mod_count} recent` }
@@ -127,7 +128,7 @@ export function SymbolDetailBody({
         />
         <StatTile label="Median age" value={age != null ? `${age}d` : "—"} />
         {data.fix_count != null && data.fix_count > 0 && (
-          // "How often changed" (Modifications) beside "how often broken" is
+          // "How often changed" (commits in current code) beside "how often broken" is
           // the contrast that earns this tile. It appears only for a positive
           // count, since a symbol nobody has had to fix says nothing worth a cell,
           // and the hint hedges, because fixes are matched to symbols by line
@@ -154,9 +155,15 @@ export function SymbolDetailBody({
               {graph.pagerank_percentile != null && (
                 <Metric label="PageRank" value={`Top ${100 - graph.pagerank_percentile}%`} />
               )}
-              {graph.betweenness_percentile != null && (
-                <Metric label="Betweenness" value={`Top ${100 - graph.betweenness_percentile}%`} />
-              )}
+              {graph.betweenness_percentile != null &&
+                (graph.betweenness_scored === false ? (
+                  // Added since the last exact centrality run, so the stored
+                  // value is the column default. "Top 100%" would read as
+                  // genuinely peripheral.
+                  <Metric label="Betweenness" value="Not scored yet" />
+                ) : (
+                  <Metric label="Betweenness" value={`Top ${100 - graph.betweenness_percentile}%`} />
+                ))}
               <Metric label="Degree" value={`${graph.in_degree} in · ${graph.out_degree} out`} />
               {graph.community_label && (
                 <Metric label="Community" value={graph.community_label} />
@@ -280,7 +287,7 @@ export function SymbolDetailBody({
             {git.contributor_count != null && <span>{git.contributor_count} contributors</span>}
             {git.commit_count_90d != null && <span>{git.commit_count_90d} commits / 90d</span>}
             {git.churn_percentile != null && (
-              <span>churn top {100 - Math.round(git.churn_percentile)}%</span>
+              <span>churn {formatTopPercentile(git.churn_percentile)}</span>
             )}
             {git.is_hotspot && (
               <span className="inline-flex items-center gap-0.5 rounded bg-[var(--color-error)]/15 px-1.5 py-0.5 text-[var(--color-error)]">
@@ -339,7 +346,7 @@ export function SymbolDetailBody({
                 <span className="text-[var(--color-text-secondary)]">
                   <span className="font-medium">{f.kind}</span>{" "}
                   <span className="text-[var(--color-text-tertiary)]">
-                    — {f.reason} ({f.lines} lines)
+                    — {f.reason}{f.lines != null && ` (${f.lines} lines)`}
                   </span>
                 </span>
               </li>

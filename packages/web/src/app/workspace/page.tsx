@@ -20,11 +20,20 @@ import { CoChangeTable } from "@repowise-dev/ui/workspace/co-change-table";
 import { ContractTypeBadge } from "@repowise-dev/ui/workspace/contract-type-badge";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
-import { SyncButton } from "./sync-buttons";
+import { getWorkspaceActions } from "@/lib/api/actions";
+import { RemoveWorkspaceRepoButton, SyncButton } from "./sync-buttons";
+import { getTranslations } from "next-intl/server";
+import { WorkspaceNextActionsPanel } from "./workspace-next-actions-panel";
 
-export const metadata: Metadata = { title: "Workspace" };
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("views.workspace");
+  return { title: t("title") };
+}
 
 export const revalidate = 30;
+
+/** The minimal translator shape the sentence helpers below need; next-intl's `t` fits. */
+type Translator = (key: string, values?: Record<string, string | number>) => string;
 
 /** Co-change rows shown inline. The full list has its own page, and this
  *  figure is never reported as a total, so the cap cannot be read as one. */
@@ -49,16 +58,20 @@ const COCHANGE_PREVIEW = 8;
  *     that decides whether you open it.
  */
 export default async function WorkspaceDashboardPage() {
+  const t = await getTranslations("views.workspace");
   // One wave, both on the server. The graph section that used to sit here was
   // a client component fetching after mount, which waterfalled a second
   // per-repo sqlite sweep in behind the paint.
-  const [ws, cc] = await Promise.allSettled([
+  const [ws, cc, wa] = await Promise.allSettled([
     getWorkspace(),
     getWorkspaceCoChanges({ limit: COCHANGE_PREVIEW }),
+    getWorkspaceActions(),
   ]);
 
   const workspace = ws.status === "fulfilled" ? ws.value : null;
   const coChanges = cc.status === "fulfilled" ? cc.value : null;
+  // A server that predates actions 404s here; the page then reads as before.
+  const actions = wa.status === "fulfilled" ? wa.value : null;
   const repos = workspace?.repos ?? [];
   const crossRepo = workspace?.cross_repo_summary ?? null;
   const contracts = workspace?.contract_summary ?? null;
@@ -68,11 +81,11 @@ export default async function WorkspaceDashboardPage() {
       <PageShell
         title={workspace?.workspace_name ?? "Workspace"}
         icon={<Layers className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
-        description="Every repository registered in this workspace, and what connects them."
+        description={t("description")}
       >
         <EmptyState
-          title="No repositories discovered yet"
-          description="Run `repowise init .` in the workspace root to scan for git repositories and index them. They show up here as soon as the scan lands."
+          title={t("emptyTitle")}
+          description={t("emptyDescription")}
           icon={<Layers className="h-8 w-8" />}
         />
       </PageShell>
@@ -97,35 +110,35 @@ export default async function WorkspaceDashboardPage() {
 
   const ribbon: RibbonStat[] = [
     {
-      label: "Files",
+      label: t("ribbon.files"),
       value: formatNumber(totals.files),
-      sub: `across ${repos.length} ${repos.length === 1 ? "repository" : "repositories"}`,
+      sub: t("ribbon.filesSub", { count: repos.length }),
     },
     {
-      label: "Symbols",
+      label: t("ribbon.symbols"),
       value: formatNumber(totals.symbols),
-      sub: "functions, classes and methods",
+      sub: t("ribbon.symbolsSub"),
     },
     {
-      label: "Doc freshness",
+      label: t("ribbon.docFreshness"),
       value: docFreshness === null ? "—" : `${docFreshness}%`,
       sub:
         docFreshness === null
-          ? "no documentation generated yet"
-          : `weighted across ${formatNumber(totals.pages)} pages`,
+          ? t("ribbon.docFreshnessNoPages")
+          : t("ribbon.docFreshnessSub", { pages: formatNumber(totals.pages) }),
     },
     {
-      label: "Hotspots",
+      label: t("ribbon.hotspots"),
       value: formatNumber(totals.hotspots),
-      sub: "files by churn and prior fixes",
+      sub: t("ribbon.hotspotsSub"),
     },
     {
-      label: "Contract links",
+      label: t("ribbon.contractLinks"),
       value: contracts ? formatNumber(contracts.total_links) : "—",
       // No href: a linked ribbon cell drops its `sub`, and the sentence under
       // the figure is worth more than a second route to the section below,
       // which already carries its own link.
-      sub: contracts ? "matched provider to consumer" : "no contract data yet",
+      sub: contracts ? t("ribbon.contractLinksSub") : t("ribbon.contractLinksNone"),
     },
   ];
 
@@ -135,51 +148,61 @@ export default async function WorkspaceDashboardPage() {
     <PageShell
       title={workspace?.workspace_name ?? "Workspace"}
       icon={<Layers className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
-      description="Every repository registered in this workspace, and what connects them."
-      actions={<SyncButton variant="primary" label="Sync workspace" />}
+      description={t("description")}
+      actions={<SyncButton variant="primary" label={t("syncWorkspace")} />}
     >
       <PageLede
-        label="Repositories"
+        label={t("ledeLabel")}
         value={String(repos.length)}
-        unit="in this workspace"
+        unit={t("ledeUnit")}
         layout="beside"
-        action={<LedeLink href="/workspace/system-map" LinkComponent={Link}>See the system map</LedeLink>}
+        action={
+          <LedeLink href="/workspace/system-map" LinkComponent={Link}>
+            {t("seeSystemMap")}
+          </LedeLink>
+        }
       >
         <p>
-          {formatNumber(totals.files)} files and {formatNumber(totals.symbols)} symbols are under
-          intelligence here
-          {totals.pages > 0
-            ? `, with ${formatNumber(totals.pages)} documentation pages written from them`
-            : ""}
-          .{" "}
-          {workspace?.workspace_root && (
-            <>
-              Everything is rooted at{" "}
-              <span className="font-mono text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
-                {workspace.workspace_root}
-              </span>
-              .
-            </>
-          )}
+          {t("ledeSentence", {
+            files: formatNumber(totals.files),
+            symbols: formatNumber(totals.symbols),
+            pages:
+              totals.pages > 0
+                ? t("ledePagesWith", { pages: formatNumber(totals.pages) })
+                : "",
+          })}{" "}
+          {workspace?.workspace_root &&
+            t.rich("ledeRootedAt", {
+              root: (chunks) => (
+                <span className="font-mono text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
+                  {chunks}
+                </span>
+              ),
+              path: workspace.workspace_root,
+            })}
         </p>
-        <p>{attentionSentence(repos)}</p>
-        {unregisteredNote(repos, crossRepo)}
+        <p>{attentionSentence(t, repos)}</p>
+        {unregisteredNote(t, repos, crossRepo)}
       </PageLede>
 
       <StatRibbon stats={ribbon} LinkComponent={Link} />
 
+      {actions && <WorkspaceNextActionsPanel data={actions} />}
+
       <OverviewSection
-        title="Repositories"
-        description="Ordered by what needs attention first — never indexed, then missing on disk, then by health score — rather than by name."
+        title={t("reposTitle")}
+        description={t("reposDescription")}
       >
         <RepoRows
           repos={repos.slice().sort(byAttention).map(toRow)}
           LinkComponent={Link}
           actionsFor={(repo) =>
-            repo.status === "missing_dir" ? null : (
+            repo.status === "missing_dir" ? (
+              <RemoveWorkspaceRepoButton alias={repo.id} repoName={repo.name} />
+            ) : (
               <SyncButton
                 alias={repo.id}
-                label={repo.status === "indexed" ? "Sync" : "Index now"}
+                label={repo.status === "indexed" ? t("sync") : t("indexNow")}
               />
             )
           }
@@ -188,11 +211,11 @@ export default async function WorkspaceDashboardPage() {
 
       {contracts && contracts.total_contracts > 0 && (
         <OverviewSection
-          title="Contracts"
-          description="Routes, topics and tables one repository publishes and another consumes, matched across the workspace."
+          title={t("contractsTitle")}
+          description={t("contractsDescription")}
           action={
             <SectionLink href="/workspace/contracts" LinkComponent={Link}>
-              All contracts
+              {t("viewAllContracts")}
             </SectionLink>
           }
         >
@@ -216,11 +239,11 @@ export default async function WorkspaceDashboardPage() {
 
       {coChanges && coChanges.co_changes.length > 0 && (
         <OverviewSection
-          title="Files that change together"
-          description="Cross-repo file pairs that recent commits touched in the same session. A work-pattern signal mined from git history, not a declared dependency."
+          title={t("coChangesTitle")}
+          description={t("coChangesDescription")}
           action={
             <SectionLink href="/workspace/co-changes" LinkComponent={Link}>
-              All co-changes
+              {t("viewAllCoChanges")}
             </SectionLink>
           }
         >
@@ -280,14 +303,17 @@ function toRow(repo: WorkspaceRepoEntry): RepoRow {
 }
 
 /** One sentence naming what needs doing, or confirming nothing does. */
-function attentionSentence(repos: WorkspaceRepoEntry[]): string {
+function attentionSentence(t: Translator, repos: WorkspaceRepoEntry[]): string {
   const names = (list: WorkspaceRepoEntry[]) =>
     list.length <= 3
       ? list.map((r) => r.alias).join(", ")
-      : `${list
-          .slice(0, 3)
-          .map((r) => r.alias)
-          .join(", ")} and ${list.length - 3} more`;
+      : t("attention.andMore", {
+          list: list
+            .slice(0, 3)
+            .map((r) => r.alias)
+            .join(", "),
+          count: list.length - 3,
+        });
 
   const parts: string[] = [];
   const needsIndex = repos.filter((r) => statusOf(r) === "needs_index");
@@ -296,24 +322,28 @@ function attentionSentence(repos: WorkspaceRepoEntry[]): string {
 
   if (needsIndex.length > 0) {
     parts.push(
-      `${needsIndex.length} ${needsIndex.length === 1 ? "repository has" : "repositories have"} not been indexed yet (${names(needsIndex)})`,
+      t("attention.needsIndex", {
+        count: needsIndex.length,
+        names: names(needsIndex),
+      }),
     );
   }
   if (missing.length > 0) {
-    parts.push(
-      `${missing.length} ${missing.length === 1 ? "directory is" : "directories are"} missing on disk (${names(missing)})`,
-    );
+    parts.push(t("attention.missing", { count: missing.length, names: names(missing) }));
   }
   if (docsSkipped.length > 0) {
     parts.push(
-      `documentation was skipped for ${docsSkipped.length} (${names(docsSkipped)})`,
+      t("attention.docsSkipped", {
+        count: docsSkipped.length,
+        names: names(docsSkipped),
+      }),
     );
   }
 
   if (parts.length === 0) {
-    return "Every registered repository is indexed and present on disk.";
+    return t("attention.none");
   }
-  return `${parts.join("; ")}. Each is marked in the list below.`;
+  return t("attention.suffix", { parts: parts.join("; ") });
 }
 
 /**
@@ -327,6 +357,7 @@ function attentionSentence(repos: WorkspaceRepoEntry[]): string {
  * says why. Saying it is cheap; the disagreement is itself the signal.
  */
 function unregisteredNote(
+  t: Translator,
   repos: WorkspaceRepoEntry[],
   crossRepo: { top_connections: Array<{ repos: string[] }> } | null,
 ): ReactNode {
@@ -342,10 +373,7 @@ function unregisteredNote(
   const names = [...seen].sort();
   return (
     <p>
-      Cross-repo figures below also cover {names.length}{" "}
-      {names.length === 1 ? "repository" : "repositories"} the workspace config no longer
-      registers ({names.join(", ")}). Re-run a workspace sync to bring the two back into
-      agreement.
+      {t("unregisteredNote", { count: names.length, names: names.join(", ") })}
     </p>
   );
 }

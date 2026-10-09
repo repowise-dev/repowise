@@ -11,9 +11,13 @@ import pytest
 from repowise.core.ingestion.languages.receiver_types import (
     IMPLICIT_FIELD_LANGUAGES,
     RECEIVER_TYPE_LANGUAGES,
+    CallAssignment,
+    external_type_name,
+    scan_call_assignments,
     scan_declarations,
     types_by_class,
     types_in_span,
+    unwrapped_names_in_span,
 )
 
 
@@ -193,11 +197,16 @@ class TestRefusals:
         produced real wrong edges before this rule existed.
         """
         body = "void run() { Map.Entry<Object, Object> entry = it.next(); }"
-        assert "entry" not in declared_types(body, "java")
+        assert external_type_name(declared_types(body, "java")["entry"]) == "Map.Entry"
 
     def test_builtin_types_are_refused(self) -> None:
+        """Kept only as an external mark, which types nothing and refuses the call."""
         body = "void run(String name, Object value) { }"
-        assert declared_types(body, "java") == {}
+        types = declared_types(body, "java")
+        assert {name: external_type_name(t) for name, t in types.items()} == {
+            "name": "String",
+            "value": "Object",
+        }
 
     def test_single_letter_type_parameter_is_refused(self) -> None:
         body = "<T> void run(T item) { item.hash(); }"
@@ -548,7 +557,7 @@ class TestGoShapes:
 
     def test_a_constructor_call_names_no_type(self) -> None:
         """``x := NewFoo()`` types ``x`` only via the callee's return type,
-        which is a second lookup this mechanism does not do."""
+        which the resolver reads from ``scan_call_assignments``, not here."""
         assert declared_types("func f() { d := NewDetector() }", "go") == {}
 
     def test_a_slice_literal_does_not_type_its_element(self) -> None:
@@ -569,6 +578,107 @@ class TestGoShapes:
     def test_two_types_for_one_name_yields_neither(self) -> None:
         body = "func f(r *Rule) { r := Config{} }"
         assert declared_types(body, "go")["r"] is None
+
+
+def go_fields(source: str) -> dict[str, str | None]:
+    """The fields of one struct spanning the whole text; Go methods sit outside it."""
+    lines = source.count("\n") + 1
+    return types_by_class(
+        scan_declarations(source, "go"), {"f.go::C": (1, lines)}, [], "go"
+    ).get("f.go::C", {})
+
+
+class TestGoFields:
+    """A struct field ends at its line, so no closer marks it: it is a ``member``."""
+
+    def test_a_pointer_and_a_value_field(self) -> None:
+        source = "type C struct {\n\tparent *Command\n\tcfg    Config\n}"
+        assert go_fields(source) == {"parent": "Command", "cfg": "Config"}
+
+    def test_an_exported_field(self) -> None:
+        assert go_fields("type C struct {\n\tCmd *GitCmd\n}") == {"Cmd": "GitCmd"}
+
+    def test_every_name_of_a_shared_type(self) -> None:
+        source = "type C struct {\n\tleft, right *Node\n}"
+        assert go_fields(source) == {"left": "Node", "right": "Node"}
+
+    def test_a_tag_is_not_part_of_the_type(self) -> None:
+        source = 'type C struct {\n\tCmd GitCmd `json:"cmd,omitempty"`\n}'
+        assert go_fields(source) == {"Cmd": "GitCmd"}
+
+    def test_a_generic_keeps_its_head(self) -> None:
+        source = "type C struct {\n\tstore Store[K, V]\n\tdeep Store[Pair[K, V]]\n}"
+        assert go_fields(source) == {"store": "Store", "deep": "Store"}
+
+    def test_an_embedded_type_is_a_field_of_its_own_name(self) -> None:
+        source = "type C struct {\n\t*Base\n\tLogger\n}"
+        assert go_fields(source) == {"Base": "Base", "Logger": "Logger"}
+
+    def test_a_package_qualified_type_is_refused(self) -> None:
+        """``sftp.File`` is not the ``File`` this file declares, so it types nothing."""
+        source = "type C struct {\n\tfd *sftp.File\n\tsync.Mutex\n}"
+        assert go_fields(source) == {}
+
+    def test_a_trailing_comment_is_ignored(self) -> None:
+        assert go_fields("type C struct {\n\tcfg Config // the config\n}") == {"cfg": "Config"}
+
+    def test_a_container_does_not_type_its_element(self) -> None:
+        """``c.commands`` is a slice of Command, not a Command."""
+        source = (
+            "type C struct {\n\tcommands []*Command\n\tbyName map[string]*Command\n"
+            "\tch chan Command\n\tgen map[string]Store[K]\n}"
+        )
+        assert go_fields(source) == {}
+
+    def test_a_predeclared_type_is_refused(self) -> None:
+        assert go_fields("type C struct {\n\tname string\n\terr error\n}") == {}
+
+    def test_an_interface_method_is_not_a_field(self) -> None:
+        source = "type C interface {\n\tDo(a, b Command) error\n\tClose() error\n}"
+        assert go_fields(source) == {}
+
+    def test_a_function_typed_field_is_not_typed_by_its_parameters(self) -> None:
+        assert go_fields("type C struct {\n\tcb func(a, b Command) error\n}") == {}
+
+    def test_a_field_never_types_a_local(self) -> None:
+        """A body line of the same shape (``return err``) must not bind a local."""
+        body = "func f() {\n\tcfg Config\n\treturn err\n}"
+        assert declared_types(body, "go") == {}
+
+
+class TestGoCallAssignments:
+    """``x := f(..)``: the call the resolver reads a return type from."""
+
+    def test_a_qualified_call(self) -> None:
+        body = "func f() {\n\td := detect.NewDetector(ctx, cfg)\n}"
+        assert scan_call_assignments(body, "go") == (
+            CallAssignment(2, "d", "detect", "NewDetector"),
+        )
+
+    def test_a_multiple_result_call_names_its_first_result(self) -> None:
+        body = "func f() {\n\td, err := New()\n}"
+        assert scan_call_assignments(body, "go") == (CallAssignment(2, "d", None, "New"),)
+
+    def test_arguments_may_span_lines_and_quote_parens(self) -> None:
+        body = 'func f() {\n\td := New(\n\t\t")", `(`,\n\t)\n\td.Run()\n}'
+        assert [a.name for a in scan_call_assignments(body, "go")] == ["d"]
+
+    def test_an_if_initialiser_is_a_whole_statement(self) -> None:
+        body = "func f() {\n\tif d, err := New(); err != nil {\n\t}\n}"
+        assert [a.name for a in scan_call_assignments(body, "go")] == ["d"]
+
+    def test_a_chained_call_is_not_the_head_s_result(self) -> None:
+        """``x`` holds what ``g`` returns, not what ``f`` returns."""
+        assert scan_call_assignments("func f() {\n\tx := f().g()\n}", "go") == ()
+
+    def test_an_expression_around_the_call_is_refused(self) -> None:
+        assert scan_call_assignments("func f() {\n\tn := count() + 1\n}", "go") == ()
+
+    def test_a_composite_literal_is_left_to_scan_declarations(self) -> None:
+        assert scan_call_assignments("func f() {\n\tr := Rule{}\n}", "go") == ()
+
+    def test_other_languages_scan_nothing(self) -> None:
+        assert scan_call_assignments("x := f()\n", "java") == ()
 
 
 class TestClassScope:
@@ -625,15 +735,25 @@ class TestClassScope:
 
 def test_the_language_set_is_what_the_patterns_declare() -> None:
     """Excluding a language means removing its shapes, not gating a caller."""
-    assert set(RECEIVER_TYPE_LANGUAGES) == {"csharp", "go", "java", "kotlin", "python", "swift"}
+    assert set(RECEIVER_TYPE_LANGUAGES) == {
+        "cpp",
+        "csharp",
+        "go",
+        "java",
+        "kotlin",
+        "python",
+        "rust",
+        "swift",
+        "typescript",
+    }
 
 
 def test_go_is_not_a_field_language() -> None:
-    """Go declares no field this mechanism can read, and must not claim to.
+    """A Go field is read through its receiver, never as a bare name.
 
-    Its shapes capture no closer, so class scope would drop every one of them
-    anyway — but the set is the contract, and a package-level ``var`` is a
-    wider scope than a field rather than the same one.
+    Its struct fields reach class scope, where only a chain hop
+    (``c.parent.M()``) reads them; the set is the contract that a bare
+    ``parent.M()`` does not.
     """
     assert "go" not in IMPLICIT_FIELD_LANGUAGES
 
@@ -641,3 +761,166 @@ def test_go_is_not_a_field_language() -> None:
 @pytest.mark.parametrize("language", ["java", "csharp", "python", "go"])
 def test_an_empty_body_is_not_an_error(language: str) -> None:
     assert declared_types("", language) == {}
+
+
+def unwrapped(body: str) -> frozenset[str]:
+    """The names in *body* whose type came from inside a wrapper."""
+    return unwrapped_names_in_span(scan_declarations(body, "cpp"), 1, 10_000)
+
+
+class TestCppDeclarations:
+    """The C family's shape with ``::``, a pointer star, and lowercase heads."""
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ("Slice key = x;", {"key": "Slice"}),
+            ("Status s;", {"s": "Status"}),
+            ("DB* db;", {"db": "DB"}),
+            ("DB *db;", {"db": "DB"}),
+            ("Options& opt = o;", {"opt": "Options"}),
+            ("const Options& opt = o;", {"opt": "Options"}),
+            ("leveldb::Slice key;", {"key": "Slice"}),
+            ("void f(Slice key, DB* db);", {"key": "Slice", "db": "DB"}),
+            ("Row scratch{1};", {"scratch": "Row"}),
+        ],
+    )
+    def test_the_shapes_it_reads(self, body: str, expected: dict[str, str]) -> None:
+        assert declared_types(body, "cpp") == expected
+
+    def test_a_method_declaration_is_not_a_variable(self) -> None:
+        """The commonest line in a C++ header, and the reason ``(`` cannot close.
+
+        ``Status doIt(int x);`` reads as a ``doIt`` of type ``Status`` under any
+        closer set that admits the bracket, and a header is mostly these.
+        """
+        assert declared_types("Status doIt(int x);", "cpp") == {}
+
+    def test_a_constructed_local_is_given_up_rather_than_guessed(self) -> None:
+        """Same exclusion seen from the other side: a real declaration, dropped."""
+        assert declared_types("BtRequestMessage msg(0, 16);", "cpp") == {}
+
+    def test_auto_names_no_type(self) -> None:
+        assert declared_types("auto it = m.begin();", "cpp") == {}
+
+    @pytest.mark.parametrize("keyword", ["struct", "class", "namespace", "union", "enum"])
+    def test_a_keyword_head_is_not_a_type(self, keyword: str) -> None:
+        assert declared_types(f"{keyword} foo {{", "cpp") == {}
+
+    def test_a_builtin_is_refused(self) -> None:
+        assert declared_types("int count = 0;", "cpp") == {}
+
+    def test_a_comment_declares_nothing(self) -> None:
+        source = "// Slice key is the thing;\n/* Status s; */\nDB* db;"
+        assert declared_types(source, "cpp") == {"db": "DB"}
+
+
+class TestCppWrapperUnwrapping:
+    """``shared_ptr<Foo> p`` is a ``Foo`` at every call its arrow can reach."""
+
+    def test_a_smart_pointer_yields_what_it_holds(self) -> None:
+        assert declared_types("std::shared_ptr<Request> req;", "cpp") == {"req": "Request"}
+        assert unwrapped("std::shared_ptr<Request> req;") == {"req"}
+
+    def test_a_deleter_is_not_what_the_arrow_reaches(self) -> None:
+        assert declared_types("std::unique_ptr<Peer, D> peer;", "cpp") == {"peer": "Peer"}
+
+    def test_a_container_keeps_its_head(self) -> None:
+        """The control the unwrap has to fail: ``v.size()`` is not ``Entry::size``."""
+        assert declared_types("std::vector<Entry> items;", "cpp") == {"items": "vector"}
+        assert unwrapped("std::vector<Entry> items;") == frozenset()
+
+    def test_a_repo_wrapper_is_not_assumed_to_forward(self) -> None:
+        """Whether ``SharedHandle``'s arrow forwards is not written here."""
+        assert declared_types("SharedHandle<Thing> h;", "cpp") == {"h": "SharedHandle"}
+        assert unwrapped("SharedHandle<Thing> h;") == frozenset()
+
+    def test_weak_ptr_forwards_nowhere(self) -> None:
+        assert unwrapped("std::weak_ptr<Thing> w;") == frozenset()
+
+    def test_another_language_keeps_the_generic_head(self) -> None:
+        """The unwrap is C++ only: a Kotlin ``Column<T>`` really is a ``Column``."""
+        assert declared_types("val c: Column<Thing> = x", "kotlin") == {"c": "Column"}
+
+
+def test_cpp_is_not_a_field_language() -> None:
+    """C++ declares its fields in a header, away from the call that reads them.
+
+    Registering it would promise a scope the scan cannot answer from, which is
+    the condition that disqualified python on the same constant.
+    """
+    assert "cpp" not in IMPLICIT_FIELD_LANGUAGES
+
+
+def test_c_has_no_shapes_of_its_own() -> None:
+    """``c`` shares the C++ call strategies and is excluded here instead.
+
+    A struct declares no method, so the pair index the fallback ends in can
+    hold nothing for it.
+    """
+    assert "c" not in RECEIVER_TYPE_LANGUAGES
+    assert scan_declarations("Widget* w;", "c") == ()
+
+
+class TestRustShapes:
+    """Rust annotates after the name, and a constructor is an associated fn."""
+
+    def test_a_parameter(self) -> None:
+        assert declared_types("fn run(searcher: Searcher) {}", "rust") == {"searcher": "Searcher"}
+
+    def test_a_borrowed_parameter_is_its_referent(self) -> None:
+        body = "fn run(a: &Searcher, b: &mut Printer, c: &'a mut Sink<'a>) {}"
+        assert declared_types(body, "rust") == {"a": "Searcher", "b": "Printer", "c": "Sink"}
+
+    def test_a_boxed_parameter_is_its_contents(self) -> None:
+        assert declared_types("fn run(m: Box<Matcher>) {}", "rust") == {"m": "Matcher"}
+
+    def test_a_typed_let_and_a_closure_parameter(self) -> None:
+        body = "fn run() {\n    let w: Walker = make();\n    let f = |p: Printer| p.go();\n}"
+        assert declared_types(body, "rust") == {"w": "Walker", "p": "Printer"}
+
+    def test_a_constructor_local(self) -> None:
+        body = (
+            "fn run() {\n    let b = IgnoreBuilder::new();\n"
+            "    let mut e = PartialErrorBuilder::default();\n"
+            "    let g = GlobSet::from(x)?;\n    let v = Buf::with_capacity(8);\n}"
+        )
+        assert declared_types(body, "rust") == {
+            "b": "IgnoreBuilder",
+            "e": "PartialErrorBuilder",
+            "g": "GlobSet",
+            "v": "Buf",
+        }
+
+    def test_a_crate_relative_path_is_kept(self) -> None:
+        assert declared_types("fn run(m: crate::walk::Walker) {}", "rust") == {"m": "Walker"}
+
+
+class TestRustRefusals:
+    def test_a_path_from_outside_the_crate_is_refused(self) -> None:
+        """``std::process::Child`` would bare to a ``Child`` the repo may declare."""
+        body = "fn run(c: &mut std::process::Child) {\n    let p = io::Path::new(x);\n}"
+        assert declared_types(body, "rust") == {}
+
+    def test_a_trait_object_or_impl_type_is_refused(self) -> None:
+        body = "fn run(w: &mut dyn Write, b: Box<dyn Sink>, i: impl Matcher) {}"
+        assert declared_types(body, "rust") == {}
+
+    def test_builtins_and_type_parameters_are_refused(self) -> None:
+        body = "fn run<M>(v: Vec<Foo>, s: String, m: M, me: Self) {\n    let x = Self::new();\n}"
+        assert declared_types(body, "rust") == {}
+
+    def test_a_chained_constructor_types_nothing(self) -> None:
+        body = "fn run() {\n    let w = WalkBuilder::new(p).hidden(false).build();\n}"
+        assert declared_types(body, "rust") == {}
+
+    def test_an_associated_fn_not_named_as_a_constructor_types_nothing(self) -> None:
+        """``Glob::compile(..)`` may return anything; only constructor names are read."""
+        assert declared_types("fn run() {\n    let g = Glob::compile(p);\n}", "rust") == {}
+
+    def test_a_declaration_in_a_comment_is_ignored(self) -> None:
+        assert declared_types("fn run() {\n    // let w: Walker = x;\n}", "rust") == {}
+
+    def test_rust_is_not_a_field_language(self) -> None:
+        """A field is read through ``self.``, a dotted receiver not walked yet."""
+        assert "rust" not in IMPLICIT_FIELD_LANGUAGES

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -52,11 +53,10 @@ def _resolve_mcp_target(repo_path: Path) -> Path:
     repos. Otherwise fall back to the per-repo path, preserving single-repo
     behavior.
     """
-    # Deferred: importing ``core.workspace.config`` runs ``core.workspace``'s
-    # package init, which pulls the extractor stack, the language registry,
-    # networkx and sqlalchemy — 849ms measured. ``migrate_claude_code_hooks``
-    # is called on every agent hook invocation and never reaches this
-    # function, so at module scope the whole graph was hook hot-path cost.
+    # Deferred: ``migrate_claude_code_hooks`` runs on every agent hook
+    # invocation and never reaches this function. Keep it here —
+    # ``test_augment_hook_perf`` guards the whole ``repowise.core.workspace``
+    # prefix off the hook path.
     from repowise.core.workspace.config import find_workspace_root
 
     workspace_root = find_workspace_root(repo_path)
@@ -261,6 +261,102 @@ _AUGMENT_HOOK_COMMAND = (
 _FAILURE_MATCHER = "Read|Edit|Write|Grep|Glob|NotebookEdit"
 
 
+#: The shell tools, as their own PostToolUse entry rather than widened into
+#: :data:`_AUGMENT_MATCHER`. The capture prompt is the only thing that needs
+#: them, it is off by default, and the narrowing of the shared matcher is a
+#: measured decision this must not quietly reverse: 51% of hook invocations
+#: for 0.7% of emissions. A separate entry means the cost is paid only where
+#: the prompt is switched on, and removing it is removing one entry.
+#:
+#: **Never add this to :data:`_LEGACY_AUGMENT_MATCHERS`.** That list is what
+#: the self-heal rewrites to the narrow matcher, and this entry exists
+#: precisely to survive it.
+_CAPTURE_MATCHER = "Bash|PowerShell"
+
+
+def _capture_entry() -> dict:
+    return {
+        "matcher": _CAPTURE_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": _AUGMENT_HOOK_COMMAND,
+                "timeout": 10,
+                "statusMessage": "Checking for a decision to record...",
+            }
+        ],
+    }
+
+
+def _is_capture_entry(entry: object) -> bool:
+    if not isinstance(entry, dict) or entry.get("matcher") != _CAPTURE_MATCHER:
+        return False
+    entry_hooks = _hooks_of(entry)
+    return bool(entry_hooks) and all(_is_repowise_hook(h) for h in entry_hooks)
+
+
+def set_claude_code_capture_hook(enabled: bool) -> Path | None:
+    """Add or remove the shell PostToolUse entry the capture prompt needs.
+
+    The switch owns its own prerequisite: `decisions.capture_prompt` is a
+    per-repository policy, but the hook it fires from is a per-install
+    matcher, so turning the policy on without this writes a flag nothing
+    reads. Returns the settings file when it changed, else ``None``.
+
+    The entry is per *install*, so one repository opting in widens the surface
+    for every repository on this machine. They pay a process start on shell
+    calls and nothing else — the handler returns before any work when their
+    own policy is off — and turning it off here narrows it back for all of
+    them, which is why the caller says so.
+    """
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return None
+    try:
+        existing = load_existing_config(settings_path)
+    except Exception:
+        return None
+
+    hooks = existing.setdefault("hooks", {}) if enabled else existing.get("hooks")
+    if not isinstance(hooks, dict):
+        return None
+    entries = hooks.get("PostToolUse")
+    if not isinstance(entries, list):
+        if not enabled:
+            return None
+        entries = []
+        hooks["PostToolUse"] = entries
+
+    present = any(_is_capture_entry(e) for e in entries)
+    if enabled == present:
+        return None
+    if enabled:
+        entries.append(_capture_entry())
+    else:
+        entries[:] = [e for e in entries if not _is_capture_entry(e)]
+        if not entries:
+            hooks.pop("PostToolUse", None)
+        if not hooks:
+            existing.pop("hooks", None)
+    return settings_path if _write_settings(settings_path, existing) else None
+
+
+def claude_code_capture_hook_installed() -> bool:
+    """Whether the shell PostToolUse entry is present."""
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return False
+    try:
+        existing = load_existing_config(settings_path)
+    except Exception:
+        return False
+    hooks = existing.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    entries = hooks.get("PostToolUse")
+    return isinstance(entries, list) and any(_is_capture_entry(e) for e in entries)
+
+
 def _session_start_entry() -> dict:
     return {
         "matcher": _SESSION_START_MATCHER,
@@ -306,10 +402,124 @@ def _failure_entry() -> dict:
     }
 
 
+#: The repo-local coverage re-ingest entry (shell tools). ``--coverage-only``
+#: runs that one surface, so it never revives the shell notices the narrowed
+#: :data:`_AUGMENT_MATCHER` dropped.
+_COVERAGE_HOOK_COMMAND = (
+    "if command -v repowise-augment >/dev/null 2>&1; "
+    "then exec repowise-augment --coverage-only; fi"
+)
+_COVERAGE_HOOK_EVENTS = ("PostToolUse", "PostToolUseFailure")
+
+
+def claude_code_local_settings_path(repo_path: Path) -> Path:
+    """The repo's own, uncommitted Claude Code settings file."""
+    return Path(repo_path) / ".claude" / "settings.local.json"
+
+
+def _coverage_entry() -> dict:
+    return {
+        "matcher": SHELL_TOOL_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": _COVERAGE_HOOK_COMMAND,
+                "timeout": 10,
+            }
+        ],
+    }
+
+
+def _is_coverage_hook(hook: object) -> bool:
+    return "--coverage-only" in _hook_command(hook) and _is_repowise_hook(hook)
+
+
+def claude_code_augment_installed() -> bool:
+    """Whether ``~/.claude/settings.json`` carries the repowise augment hooks."""
+    path = _claude_code_settings_path()
+    try:
+        hooks = load_existing_config(path).get("hooks") if path.exists() else None
+    except Exception:
+        return False
+    post = hooks.get("PostToolUse") if isinstance(hooks, dict) else None
+    return isinstance(post, list) and _has_repowise_hook(post)
+
+
+def set_repo_coverage_hook(repo_path: Path, enabled: bool) -> Path | None:
+    """Add or remove the coverage re-ingest entries in the repo's ``settings.local.json``.
+
+    Claude Code delivers a shell command that exits non-zero, as a failing
+    test run does, as ``PostToolUseFailure``, so the entry sits under both
+    events. Repo-local because the per-shell-call process start is then paid
+    only in a repository that ingests coverage; Claude Code merges hooks across
+    settings files. Returns the file when it changed, else ``None``. A file
+    this leaves empty is removed.
+    """
+    path = claude_code_local_settings_path(repo_path)
+    settings = _read_local_settings(path, enabled)
+    if settings is None or not _apply_coverage_entries(settings, enabled):
+        return None
+    return _write_or_remove(path, settings)
+
+
+def _read_local_settings(path: Path, enabled: bool) -> dict | None:
+    """The file's object, ``{}`` when absent and adding, ``None`` when there is nothing to read."""
+    if not path.exists():
+        return {} if enabled else None
+    try:
+        return load_existing_config(path)
+    except Exception:
+        return None
+
+
+def _apply_coverage_entries(settings: dict, enabled: bool) -> bool:
+    """Add or remove our entry under each event of *settings*, in place; whether it changed."""
+    hooks = settings.setdefault("hooks", {}) if enabled else settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    changed = False
+    for event in _COVERAGE_HOOK_EVENTS:
+        changed = _apply_coverage_entry(hooks, event, enabled) or changed
+    if not hooks:
+        settings.pop("hooks", None)
+    return changed
+
+
+def _apply_coverage_entry(hooks: dict, event: str, enabled: bool) -> bool:
+    entries = hooks.setdefault(event, []) if enabled else hooks.get(event)
+    if not isinstance(entries, list):
+        return False
+    # Ours only inside a shell-matcher entry: the same command under any other
+    # matcher was written by someone else and is left alone.
+    own = [e for e in entries if isinstance(e, dict) and e.get("matcher") == SHELL_TOOL_MATCHER]
+    present = any(_is_coverage_hook(h) for e in own for h in _hooks_of(e))
+    changed = enabled != present
+    if changed and enabled:
+        entries.append(_coverage_entry())
+    elif changed:
+        kept = list(own)
+        _strip_hooks(kept, _is_coverage_hook)
+        dropped = [e for e in own if not any(e is k for k in kept)]
+        entries[:] = [e for e in entries if not any(e is d for d in dropped)]
+    if not entries:
+        hooks.pop(event, None)
+    return changed
+
+
+def _write_or_remove(path: Path, settings: dict) -> Path | None:
+    """Write *settings*, or remove the file when nothing is left in it."""
+    if not settings:
+        with contextlib.suppress(OSError):
+            path.unlink()
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path if _write_settings(path, settings) else None
+
+
 def install_claude_code_hooks() -> Path | None:
     """Register the augment hooks in ~/.claude/settings.json.
 
-    PostToolUse detects git staleness, enriches Grep/Glob results, and emits
+    PostToolUse enriches Grep/Glob results and emits
     Read-intelligence notices; SessionStart injects the live index-freshness
     context block; PostToolUseFailure carries the wrong-path rescue. Existing
     user hooks are preserved.
@@ -459,6 +669,41 @@ def add_claude_code_distill_allow_rules() -> Path | None:
         except OSError:
             return None
     return settings_path
+
+
+def uninstall_claude_code_distill_allow_rules() -> bool:
+    """Remove the distill allow rules from ``permissions.allow`` in settings.json.
+
+    Returns True when at least one rule was removed and saved, False otherwise.
+    Strictly removes only rules matching DISTILL_ALLOW_RULES; user rules survive.
+    """
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return False
+    try:
+        existing = load_existing_config(settings_path)
+    except Exception:
+        return False
+
+    permissions = existing.get("permissions")
+    if not isinstance(permissions, dict):
+        return False
+    allow = permissions.get("allow")
+    if not isinstance(allow, list):
+        return False
+
+    initial_len = len(allow)
+    allow[:] = [rule for rule in allow if rule not in DISTILL_ALLOW_RULES]
+    if len(allow) == initial_len:
+        return False
+
+    if not allow:
+        permissions.pop("allow", None)
+    if not permissions:
+        existing.pop("permissions", None)
+
+    return _write_settings(settings_path, existing)
+
 
 
 def _migrate_legacy_rewrite_matcher(hook_list: list) -> bool:
@@ -653,6 +898,12 @@ def claude_code_leftover_reason() -> str | None:
                         _is_repowise_hook(hook) or _is_rewrite_hook(hook)
                     ):
                         return "one of our hooks was still present after the write"
+
+    permissions = existing.get("permissions")
+    if isinstance(permissions, dict):
+        allow = permissions.get("allow")
+        if isinstance(allow, list) and any(r in DISTILL_ALLOW_RULES for r in allow):
+            return "our distill permission rules were still present after the write"
     return None
 
 

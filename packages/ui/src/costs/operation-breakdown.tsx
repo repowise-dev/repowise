@@ -1,6 +1,7 @@
 "use client";
 
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
+import { operationBreakdownHeight } from "./chart-height";
 import { formatCost } from "../lib/format";
 
 export interface OperationBreakdownProps {
@@ -31,57 +32,67 @@ const PALETTE = [
 export function OperationBreakdown({ groups, metric = "cost_usd" }: OperationBreakdownProps) {
   const sorted = [...groups].sort((a, b) => (b[metric] ?? 0) - (a[metric] ?? 0)).slice(0, 12);
   if (sorted.length === 0) {
+    // Sized to this chart's own floor, so an empty result occupies the same
+    // box the skeleton reserved.
     return (
-      <p className="text-sm text-[var(--color-text-secondary)] py-8 text-center">
+      <div
+        className="flex items-center justify-center text-center text-sm text-[var(--color-text-secondary)]"
+        style={{ height: operationBreakdownHeight(0) }}
+      >
         No data to break down.
-      </p>
+      </div>
     );
   }
 
+  // The plot box is reserved before recharts measures it. A bare
+  // ResponsiveContainer renders nothing until its ResizeObserver fires, so
+  // the card grew into place on every mount.
   return (
-    <ResponsiveContainer width="100%" height={Math.max(180, sorted.length * 24 + 40)}>
-      <BarChart
-        data={sorted}
-        layout="vertical"
-        margin={{ top: 4, right: 16, bottom: 0, left: 8 }}
-      >
-        <XAxis
-          type="number"
-          tick={{ fill: "var(--color-text-tertiary)", fontSize: 10 }}
-          axisLine={false}
-          tickLine={false}
-          tickFormatter={(v: number) => (metric === "cost_usd" ? `$${v.toFixed(3)}` : String(v))}
-        />
-        <YAxis
-          type="category"
-          dataKey="group"
-          tick={{ fill: "var(--color-text-secondary)", fontSize: 11 }}
-          axisLine={false}
-          tickLine={false}
-          width={140}
-        />
-        <Tooltip
-          cursor={{ fill: "var(--color-bg-elevated)" }}
-          contentStyle={{
-            background: "var(--color-bg-overlay)",
-            border: "1px solid var(--color-border-default)",
-            borderRadius: 6,
-            fontSize: 12,
-            color: "var(--color-text-primary)",
-          }}
-          formatter={(value) => {
-            const n = typeof value === "number" ? value : 0;
-            return metric === "cost_usd"
-              ? [formatCost(n), "Cost"]
-              : [n.toLocaleString(), metric.replace("_", " ")];
-          }}
-        />
-        <Bar dataKey={metric} radius={[0, 4, 4, 0]}>
-          {sorted.map((row, i) => (
-            <Cell key={row.group} fill={PALETTE[i % PALETTE.length] ?? "var(--color-accent-primary)"} />
-          ))}
-        </Bar>
-      </BarChart>
-    </ResponsiveContainer>
+    <div style={{ height: operationBreakdownHeight(sorted.length) }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart
+          data={sorted}
+          layout="vertical"
+          margin={{ top: 4, right: 16, bottom: 0, left: 8 }}
+        >
+          <XAxis
+            type="number"
+            tick={{ fill: "var(--color-text-tertiary)", fontSize: 10 }}
+            axisLine={false}
+            tickLine={false}
+            tickFormatter={(v: number) => (metric === "cost_usd" ? `$${v.toFixed(3)}` : String(v))}
+          />
+          <YAxis
+            type="category"
+            dataKey="group"
+            tick={{ fill: "var(--color-text-secondary)", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+            width={140}
+          />
+          <Tooltip
+            cursor={{ fill: "var(--color-bg-elevated)" }}
+            contentStyle={{
+              background: "var(--color-bg-overlay)",
+              border: "1px solid var(--color-border-default)",
+              borderRadius: 6,
+              fontSize: 12,
+              color: "var(--color-text-primary)",
+            }}
+            formatter={(value) => {
+              const n = typeof value === "number" ? value : 0;
+              return metric === "cost_usd"
+                ? [formatCost(n), "Cost"]
+                : [n.toLocaleString(), metric.replace("_", " ")];
+            }}
+          />
+          <Bar dataKey={metric} radius={[0, 4, 4, 0]}>
+            {sorted.map((row, i) => (
+              <Cell key={row.group} fill={PALETTE[i % PALETTE.length] ?? "var(--color-accent-primary)"} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   );
 }

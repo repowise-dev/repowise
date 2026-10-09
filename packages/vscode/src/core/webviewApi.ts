@@ -3,6 +3,7 @@ import {
   getChurnComplexity,
   getHealthOverview,
   getHealthTrend,
+  getHealthMap,
   listHealthFiles,
 } from "@repowise-dev/api-client/code-health";
 import { getArchitectureView } from "@repowise-dev/api-client/c4";
@@ -21,13 +22,18 @@ import {
   searchNodes,
 } from "@repowise-dev/api-client/graph";
 import {
+  getRefactoringOpportunities,
+  getRefactoringOpportunity,
   getRefactoringPlan,
   getRefactoringTargets,
 } from "@repowise-dev/api-client/refactoring";
 import { listDecisions } from "@repowise-dev/api-client/decisions";
 import { getPageById, listAllPages } from "@repowise-dev/api-client/pages";
-import { getRiskRange } from "@repowise-dev/api-client/risk";
-import { buildRefactoringPlanPrompt } from "@repowise-dev/ui/health/ai-prompt-builder";
+import { getPatchCoverage, getRiskRange } from "@repowise-dev/api-client/risk";
+import {
+  buildRefactoringOpportunityPrompt,
+  buildRefactoringPlanPrompt,
+} from "@repowise-dev/ui/health/ai-prompt-builder";
 import { CONFIG_SECTION } from "../constants";
 import {
   SETTING_KEYS,
@@ -54,6 +60,8 @@ const SETTING_DEFAULTS: SettingsValues = {
   "diagnostics.enabled": true,
   "diagnostics.minSeverity": "high",
   "diagnostics.dimensions": ["defect", "maintainability", "performance"],
+  "docDrift.diagnostics.enabled": true,
+  "docDrift.diagnostics.minConfidence": 0.7,
   "gutterHeat.enabled": true,
   "fileDecorations.enabled": true,
   "fileDecorations.maxScore": 4,
@@ -71,7 +79,7 @@ const SETTING_DEFAULTS: SettingsValues = {
 };
 
 const SEVERITIES = ["critical", "high", "medium", "low"];
-const DIMENSIONS = ["defect", "maintainability", "performance"];
+const DIMENSIONS = ["defect", "maintainability", "performance", "advisory"];
 
 /**
  * Per-key validator for writes. The webview is untrusted input, so an out-of-
@@ -82,6 +90,8 @@ const SETTING_VALIDATORS: Record<SettingKey, (v: SettingValue) => SettingValue> 
   "diagnostics.enabled": expectBoolean,
   "diagnostics.minSeverity": (v) => expectEnum(v, SEVERITIES),
   "diagnostics.dimensions": (v) => expectStringSubset(v, DIMENSIONS),
+  "docDrift.diagnostics.enabled": expectBoolean,
+  "docDrift.diagnostics.minConfidence": (v) => expectNumberInRange(v, 0, 1),
   "gutterHeat.enabled": expectBoolean,
   "fileDecorations.enabled": expectBoolean,
   "fileDecorations.maxScore": (v) => expectNumberInRange(v, 0, 10),
@@ -223,10 +233,14 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
             openFindings: summary.open_findings,
             band: summary.band ?? null,
             hotspotDelta: trendVal?.summary?.hotspot_delta ?? null,
+            // A snapshot only carries a hotspot figure for the whole
+            // repository, so a reading without one is dropped rather than
+            // plotted at zero.
             history: (trendVal?.history ?? [])
               .slice()
               .reverse()
-              .map((p) => p.hotspot_health),
+              .map((p) => p.hotspot_health)
+              .filter((v): v is number => v !== null),
           }
         : null,
       counts: {
@@ -252,6 +266,8 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
     healthOverview: (limit) => cached(`health:overview:${limit ?? ""}`, (id) => getHealthOverview(id, limit)),
     healthFiles: (query) =>
       cached(`health:files:${JSON.stringify(query ?? {})}`, (id) => listHealthFiles(id, query)),
+    healthMap: (query) =>
+      cached(`health:map:${JSON.stringify(query ?? {})}`, (id) => getHealthMap(id, query)),
     healthTrend: (limit) => cached(`health:trend:${limit ?? ""}`, (id) => getHealthTrend(id, limit)),
     churnComplexity: (limit) =>
       cached(`health:churn:${limit ?? ""}`, (id) => getChurnComplexity(id, limit != null ? { limit } : undefined)),
@@ -280,10 +296,33 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
     executionFlows: () => cached("graph:flows", (id) => getExecutionFlows(id)),
 
     // Refactoring
-    refactoringTargets: (filePath) =>
-      cached(`refactor:targets:${filePath ?? ""}`, (id) =>
-        getRefactoringTargets(id, filePath ? { filePath } : {}),
+    refactoringOpportunities: (filePath) =>
+      cached(`refactor:opps:${filePath ?? ""}`, (id) =>
+        getRefactoringOpportunities(id, {
+          ...(filePath ? { filePath } : {}),
+          // The row renders counts, not steps; the detail call carries those.
+          stepPreview: 0,
+          limit: 100,
+        }),
       ),
+    refactoringOpportunity: (opportunityId) =>
+      cached(`refactor:opp:${opportunityId}`, (id) =>
+        getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
+      ),
+    refactoringOpportunityPrompt: async (opportunityId, flavor) => {
+      const detail = await cached(`refactor:opp:${opportunityId}`, (id) =>
+        getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
+      );
+      if (!detail.found) {
+        throw new Error(`No refactoring opportunity resolves for ${opportunityId}.`);
+      }
+      const repoName = ctx.repo?.name;
+      return buildRefactoringOpportunityPrompt({
+        opportunity: detail,
+        flavor,
+        ...(repoName ? { repoName } : {}),
+      });
+    },
     refactoringPlan: (suggestionId) =>
       cached(`refactor:plan:${suggestionId}`, (id) => getRefactoringPlan(id, suggestionId)),
     refactoringPrompt: async (suggestionId, flavor) => {
@@ -312,9 +351,13 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
         .get<string>("risk.baseBranch", "")
         .trim();
       const base = configured || ctx.repo?.default_branch || "main";
-      const result = await getRiskRange(id, { base, head: "HEAD" });
+      const range = { base, head: "HEAD" };
+      const [result, patchCoverage] = await Promise.all([
+        getRiskRange(id, range),
+        getPatchCoverage(id, range).catch(() => null),
+      ]);
       const branch = await getCurrentBranchName(ctx.workspace.repoRoot ?? "");
-      return { base, branch, result };
+      return { base, branch, result, patchCoverage };
     },
 
     // Change impact: reads the working tree, so it tracks the live change set

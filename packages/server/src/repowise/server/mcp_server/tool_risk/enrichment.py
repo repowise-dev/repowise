@@ -6,8 +6,10 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.persistence.database import get_session
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._helpers import (
     _is_workspace_mode,
 )
@@ -116,7 +118,13 @@ def _combined_analysis(cross_state: dict, contract_state: dict, rows: list[dict]
     }
 
 
-async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
+async def _enrich_cross_repo(
+    results: list[dict],
+    alias: str,
+    collector: OmissionCollector | None = None,
+    *,
+    include_graph: bool = False,
+) -> None:
     """Add typed workspace relationships without changing dependency counts.
 
     Co-change is historical and undirected. Consumers exist only when a typed
@@ -140,6 +148,15 @@ async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
         r["consumers_total"] = len(consumers)
         r["consumers_emitted"] = len(r["consumers"])
         r["consumers_truncated"] = len(r["consumers"]) < len(consumers)
+        cap_collection(
+            r,
+            "consumers",
+            consumers,
+            _RELATIONSHIP_LIMIT,
+            collector if include_graph else None,
+            label=f"{target} :: consumers beyond cap={_RELATIONSHIP_LIMIT}",
+            preserve_counts=True,
+        )
         r["relationship_analysis"]["consumers"] = {
             **contract_state,
             "scope": "workspace_contract_links",
@@ -174,6 +191,15 @@ async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
         r["cross_repo_links_total"] = len(cross_repo_links)
         r["cross_repo_links_emitted"] = len(r["cross_repo_links"])
         r["cross_repo_links_truncated"] = len(r["cross_repo_links"]) < len(cross_repo_links)
+        cap_collection(
+            r,
+            "cross_repo_links",
+            cross_repo_links,
+            _RELATIONSHIP_LIMIT,
+            collector if include_graph else None,
+            label=f"{target} :: cross_repo_links beyond cap={_RELATIONSHIP_LIMIT}",
+            preserve_counts=True,
+        )
         r["relationship_analysis"]["cross_repo"] = _combined_analysis(
             cross_state, contract_state, cross_repo_links
         )
@@ -217,6 +243,15 @@ async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
         impact["cross_repo_consumers_truncated"] = len(impact["cross_repo_consumers"]) < len(
             legacy_co_changes
         )
+        cap_collection(
+            impact,
+            "cross_repo_consumers",
+            legacy_co_changes,
+            _RELATIONSHIP_LIMIT,
+            collector,
+            label=f"{target} :: cross_repo_consumers beyond cap={_RELATIONSHIP_LIMIT}",
+            preserve_counts=True,
+        )
         impact["cross_repo_consumers_analysis"] = cross_state
         impact["affected_repos"] = affected_repos
         impact["affected_repos_total"] = len(affected_repos)
@@ -229,7 +264,7 @@ async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
             link for link in consumer_links if link.get("provider_repo") != alias
         ]
         if cross_provider_links:
-            impact["contract_consumers"] = [
+            contract_consumers = [
                 {
                     "consumer_repo": lk["consumer_repo"],
                     "consumer_file": lk["consumer_file"],
@@ -239,15 +274,25 @@ async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
                     "direction": "provider_to_consumer",
                     "evidence_kind": "contract",
                 }
-                for lk in cross_provider_links[:_RELATIONSHIP_LIMIT]
+                for lk in cross_provider_links
             ]
+            impact["contract_consumers"] = contract_consumers[:_RELATIONSHIP_LIMIT]
             impact["contract_consumers_total"] = len(cross_provider_links)
             impact["contract_consumers_emitted"] = len(impact["contract_consumers"])
             impact["contract_consumers_truncated"] = len(impact["contract_consumers"]) < len(
                 cross_provider_links
             )
+            cap_collection(
+                impact,
+                "contract_consumers",
+                contract_consumers,
+                _RELATIONSHIP_LIMIT,
+                collector,
+                label=f"{target} :: contract_consumers beyond cap={_RELATIONSHIP_LIMIT}",
+                preserve_counts=True,
+            )
         if cross_consumer_links:
-            impact["contract_providers"] = [
+            contract_providers = [
                 {
                     "provider_repo": lk["provider_repo"],
                     "provider_file": lk["provider_file"],
@@ -257,20 +302,34 @@ async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
                     "direction": "provider_to_consumer",
                     "evidence_kind": "contract",
                 }
-                for lk in cross_consumer_links[:_RELATIONSHIP_LIMIT]
+                for lk in cross_consumer_links
             ]
+            impact["contract_providers"] = contract_providers[:_RELATIONSHIP_LIMIT]
             impact["contract_providers_total"] = len(cross_consumer_links)
             impact["contract_providers_emitted"] = len(impact["contract_providers"])
             impact["contract_providers_truncated"] = len(impact["contract_providers"]) < len(
                 cross_consumer_links
+            )
+            cap_collection(
+                impact,
+                "contract_providers",
+                contract_providers,
+                _RELATIONSHIP_LIMIT,
+                collector,
+                label=f"{target} :: contract_providers beyond cap={_RELATIONSHIP_LIMIT}",
+                preserve_counts=True,
             )
 
 
 async def _enrich_health(results: list[dict], ctx: Any, repo_id: str) -> None:
     """Attach per-file health_score, coverage, and top_biomarkers from the health
     tables. Conservative: missing data → no field, never invented. Never raises.
+
+    Coverage comes from the stored coverage rows, the source every other surface
+    reads, not the copy the health pass took of them.
     """
     try:
+        from repowise.core.persistence.crud import load_coverage_for_repo
         from repowise.core.persistence.models import HealthFileMetric, HealthFinding
 
         target_paths = [r["target"] for r in results if r.get("target")]
@@ -284,6 +343,12 @@ async def _enrich_health(results: list[dict], ctx: Any, repo_id: str) -> None:
                 )
             )
             metric_map = {m.file_path: m for m in m_res.scalars().all()}
+            coverage_map = {
+                c.file_path: c
+                for c in await load_coverage_for_repo(
+                    _h_session, repo_id, file_paths=target_paths, include_covered_lines=False
+                )
+            }
 
             f_res = await _h_session.execute(
                 select(HealthFinding)
@@ -291,6 +356,7 @@ async def _enrich_health(results: list[dict], ctx: Any, repo_id: str) -> None:
                     HealthFinding.repository_id == repo_id,
                     HealthFinding.file_path.in_(target_paths),
                     HealthFinding.status == "open",
+                    HealthFinding.biomarker_type.not_in(excluded_types()),
                 )
                 .order_by(HealthFinding.health_impact.desc())
             )
@@ -299,11 +365,14 @@ async def _enrich_health(results: list[dict], ctx: Any, repo_id: str) -> None:
                 lst = top_by_file.setdefault(f.file_path, [])
                 if len(lst) >= 3:
                     continue
+                # ``function_name`` absent rather than null on a file-level
+                # biomarker, matching the coverage fields just below: an absent
+                # key and a null one say the same thing, and only one is billed.
                 lst.append(
                     {
                         "biomarker_type": f.biomarker_type,
                         "severity": f.severity,
-                        "function_name": f.function_name,
+                        **({"function_name": f.function_name} if f.function_name else {}),
                         "impact": round(f.health_impact, 2),
                     }
                 )
@@ -311,12 +380,13 @@ async def _enrich_health(results: list[dict], ctx: Any, repo_id: str) -> None:
         for r in results:
             path = r.get("target")
             m = metric_map.get(path)
-            if m is not None:
+            if m is not None and m.score is not None:
                 r["health_score"] = round(m.score, 2)
-                if m.line_coverage_pct is not None:
-                    r["coverage_pct"] = round(m.line_coverage_pct, 2)
-                if m.branch_coverage_pct is not None:
-                    r["branch_coverage_pct"] = round(m.branch_coverage_pct, 2)
+            c = coverage_map.get(path)
+            if c is not None:
+                r["line_coverage_pct"] = round(c.line_coverage_pct, 2)
+                if c.branch_coverage_pct is not None:
+                    r["branch_coverage_pct"] = round(c.branch_coverage_pct, 2)
             if path in top_by_file:
                 r["top_biomarkers"] = top_by_file[path]
     except Exception:

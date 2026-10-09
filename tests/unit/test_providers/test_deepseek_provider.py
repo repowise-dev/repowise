@@ -59,6 +59,7 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
         def json(self) -> dict:
             return {
                 "data": [
+                    {"id": "deepseek-flash"},
                     {"id": "deepseek-v4-flash"},
                     {"id": "deepseek-v4-pro"},
                 ]
@@ -83,6 +84,7 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
         "auto",
         "off",
         "none",
+        "minimal",
         "low",
         "medium",
         "high",
@@ -90,6 +92,8 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
         "max",
     )
     assert flash.recommended is True
+    current_flash = next(option for option in options if option.model == "deepseek-flash")
+    assert current_flash.reasoning_modes == flash.reasoning_modes
 
 
 def _make_mock_chat_response(
@@ -192,6 +196,30 @@ async def test_generate_forwards_disabled_thinking():
     assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
+@pytest.mark.parametrize(
+    ("reasoning", "effort"),
+    [
+        ("minimal", "low"),
+        ("low", "low"),
+        ("medium", "high"),
+        ("xhigh", "high"),
+        ("max", "max"),
+    ],
+)
+async def test_generate_forwards_top_level_reasoning_effort(reasoning, effort):
+    provider = DeepSeekProvider(api_key="sk-test")
+    mock_response = _make_mock_chat_response()
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
+        provider._client = mock_client.return_value
+        await provider.generate("system", "user", reasoning=reasoning)
+
+    kwargs = mock_client.return_value.chat.completions.create.call_args.kwargs
+    assert kwargs["reasoning_effort"] == effort
+    assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+
+
 async def test_generate_rejects_reasoning_for_non_v4_model():
     provider = DeepSeekProvider(api_key="sk-test", model="deepseek-chat")
 
@@ -201,6 +229,31 @@ async def test_generate_rejects_reasoning_for_non_v4_model():
             await provider.generate("system", "user", reasoning="high")
 
     mock_client.return_value.chat.completions.create.assert_not_called()
+
+
+async def test_unknown_v4_name_does_not_inherit_speculative_reasoning_support():
+    provider = DeepSeekProvider(api_key="sk-test", model="deepseek-v4-future")
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        provider._client = mock_client.return_value
+        with pytest.raises(ProviderError, match="reasoning='high' is not supported"):
+            await provider.generate("system", "user", reasoning="high")
+
+    mock_client.return_value.chat.completions.create.assert_not_called()
+
+
+async def test_current_flash_model_accepts_documented_reasoning_effort():
+    provider = DeepSeekProvider(api_key="sk-test", model="deepseek-flash")
+    mock_response = _make_mock_chat_response()
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
+        provider._client = mock_client.return_value
+        await provider.generate("system", "user", reasoning="high")
+
+    kwargs = mock_client.return_value.chat.completions.create.call_args.kwargs
+    assert kwargs["reasoning_effort"] == "high"
+    assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
 
 
 async def test_generate_rate_limit_retry():
@@ -299,3 +352,5 @@ async def test_stream_chat_emits_text_delta_and_stop():
     assert text_deltas[1].text == "i"
     assert len(stops) == 1
     assert stops[0].stop_reason == "end_turn"
+    kwargs = mock_client.return_value.chat.completions.create.call_args.kwargs
+    assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}

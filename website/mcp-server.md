@@ -22,7 +22,7 @@ Connect repowise to Claude Code, Codex, Cursor, Cline, or any MCP-compatible edi
 
 ## Overview
 
-The MCP (Model Context Protocol) server is how repowise talks to AI coding assistants. It registers 17 tools: a curated 10-tool default surface in a single repository, `list_repos` added by default in workspace mode, and six opt-in specialists subject to mode eligibility. Once connected, your editor's AI can query your codebase wiki for synthesized answers, symbols, docs, ownership, file and change-risk signals, code health, and architectural decisions.
+The MCP (Model Context Protocol) server is how repowise talks to AI coding assistants. It registers 18 tools: a curated 10-tool default surface in a single repository, `list_repos` added by default in workspace mode, and seven opt-in specialists subject to mode eligibility. Once connected, your editor's AI can query your codebase wiki for synthesized answers, symbols, docs, ownership, file and change-risk signals, code health, and architectural decisions.
 
 Start the server with:
 
@@ -188,6 +188,7 @@ One-call RAG over the wiki layer. Runs retrieval, gates on confidence, and synth
 - `citations` (list of strings) — file paths backing the answer
 - `confidence` (string) — `"high"`, `"medium"`, or `"low"`. High-confidence answers can be cited directly without verification reads; lower confidence indicates the agent should fall back to `search_codebase` or `Read`.
 - `fallback_targets` (list of strings) — top retrieval hits the agent should `Read` if it does not trust the synthesized answer
+- `candidate_files` (list of strings): ranked file paths retrieval resolved that the citations do not already name: up to 3 on a high-confidence answer, 5 otherwise
 - `retrieval` (list) — raw top-N hits with snippets
 
 **When to use:** First call on any code question. Collapses the typical "search → read → reason" loop into a single round-trip.
@@ -247,7 +248,7 @@ Returns rich context for one or more files, modules, or symbols: documentation, 
 
 **Parameters:**
 - `targets` (list of strings) — file paths, module names, or symbol names
-- `include` (optional) — subset of `["docs", "ownership", "last_change", "decisions", "freshness"]`
+- `include` (optional) — opt-in blocks such as `"ownership"`, `"last_change"`, `"decisions"`, `"callers"`, `"metrics"`, `"skeleton"`, `"health"`, and `"doc_drift"` (the documents that name this file)
 - `compact` (optional, default `True`) — when `True`, drops the `structure` block, the `imported_by` list, and per-symbol docstrings/end-line fields to keep the response under ~10K characters. Pass `compact=False` to receive the full payload, e.g. when you specifically need the import-graph dependents or every symbol docstring on a dense file.
 
 **When to use:** Before reading or editing any file. Faster and richer than reading the raw source.
@@ -370,13 +371,18 @@ refresh.
 - `exclude_patterns` (optional) — gitignore-style paths; combined with root `.riskignore`
 - `baseline` (optional, int) — recent commits for percentile ranking (default `200`)
 
-**Returns:** `fix_history` first — the recency-weighted bug-fix record of the
+**Returns:** `risk_authority` names `risk_percentile` and `classification` as
+the benchmarked, population-relative authority for live change review.
+`fix_history` reports the recency-weighted bug-fix record of the
 files touched, which is what distinguishes a small dangerous change from a large
-boring one. Then the `score` (diff size and spread, per `score_measures`) with
-the `score_unit` it is calibrated on, repo-relative `risk_percentile` /
-`review_priority` / `classification` for that diff shape, a `fallback_band` when
-there was no baseline to rank against, plus `impacted_tests` when a per-test
-coverage map is ingested (`repowise coverage add`).
+boring one. `diff_shape` is one sentence on size and spread, beside repo-relative
+`risk_percentile` / `review_priority` / `classification`, plus
+`impacted_tests` when a per-test coverage map is ingested
+(`repowise coverage add`). The raw 0-10 `score` and its absolute
+`fallback_band` sit behind `include=["diagnostics"]`: the score ranks 0.99
+against lines added, so the percentile already carries the ranking.
+`include=["scales"]` supplies the kind, units, range, calibration, authority
+and shared thresholds for each value.
 
 **When to use:** Before merging a commit or PR range, or on work you have not
 committed yet.
@@ -396,7 +402,8 @@ same deterministic markers as `repowise health`. Zero LLM calls.
 **Parameters:**
 - `targets` (optional) — file paths, or `module:foo`; empty = dashboard mode
 - `include` (optional) — opt-in blocks such as `"biomarkers"`, `"refactoring"`,
-  `"trend"`, `"coverage"`, `"accuracy"`, `"signals"`, `"churn_complexity"`
+  `"trend"`, `"coverage"`, `"accuracy"`, `"signals"`, `"churn_complexity"`,
+  `"doc_drift"`
 - `limit` (optional, int) — max lowest-scoring files (default 20)
 
 **When to use:** Self-check a change before opening a PR, or find the worst
@@ -434,19 +441,21 @@ Full parameter tables and return shapes live in the repo guide:
 
 ## Supplementary tools
 
-### `list_repos()` (default)
+### `list_repos()` (default in a workspace)
 
-Lists the repos this server is serving. In workspace mode returns every
-configured alias; in single-repo mode a single `"default"` alias.
+Lists every configured alias in a workspace. It is not advertised in
+single-repo mode, where the server is bound to the only repository.
 
-### Workspace-only (default in a workspace)
+### Workspace-only (opt-in)
 
-When the server starts inside a workspace, two more tools appear automatically:
+These need a workspace and are off by default there too. Enable them the same
+way as the opt-in tools below:
 
 | Tool | Purpose |
 |------|---------|
 | `get_architecture()` | Whole-system coupling, cyclic core, 1–10 architecture score |
 | `get_blast_radius(targets, …)` | Cross-repo downstream impact of changing a service |
+| `get_conformance(…)` | Architecture-rule violations and dependency cycles |
 
 ### Opt-in tools (off by default)
 
@@ -459,7 +468,7 @@ or `repowise mcp --tools "+name"`:
 | `get_dependency_path(source, target)` | Shortest graph path between two files/modules |
 | `get_execution_flows(…)` | Top entry points and call traces |
 | `generate_refactoring_code(…)` | Code for a ranked refactoring plan from `get_health` |
-| `get_conformance(…)` | Architecture-rule violations (useful in workspace mode) |
+| `set_finding_status(…)` | Record a triage status on a refactoring plan |
 
 ---
 

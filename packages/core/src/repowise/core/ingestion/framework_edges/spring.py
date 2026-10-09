@@ -20,7 +20,7 @@ Expanded in Phase 4 of the JVM parity plan. The handler now covers:
   ``META-INF/spring/...AutoConfiguration.imports`` file (and
   ``spring.factories``) to the listed FQNs so the resource file
   shows as the importer (the FQN files were already stamped
-  ``is_entry_point`` during the JVM warmup).
+  ``is_reachability_root`` during the JVM warmup).
 """
 
 from __future__ import annotations
@@ -311,7 +311,7 @@ def _add_spring_edges(
     # ---- 3. Autoconfig consumer edges ----
     # Pull the JVM workspace index (already memoised on ctx) and emit edges
     # from each autoconfig resource file (key) to the FQN target files.
-    # The autoconfig FQN files were stamped ``is_entry_point`` in the
+    # The autoconfig FQN files were stamped ``is_reachability_root`` in the
     # warmup; here we add the resource file as a visible importer so the
     # autoconfig file itself does not read as orphan.
     try:
@@ -332,7 +332,7 @@ def _add_spring_edges(
                     node_type="file",
                     language="properties",
                     path=resource_path,
-                    is_entry_point=True,
+                    is_reachability_root=True,
                 )
             for fqn in fqns:
                 for target in jvm_index.files_for_fqn(fqn):
@@ -342,7 +342,7 @@ def _add_spring_edges(
         for iface_fqn, impls in jvm_index.services.items():
             # The resource path isn't tracked per-iface; we use a synthetic
             # source so the impl files gain a visible importer. The warmup
-            # already stamped them ``is_entry_point``, so this is belt-and-
+            # already stamped them ``is_reachability_root``, so this is belt-and-
             # suspenders for the unused_export visibility heuristic.
             source = f"META-INF/services/{iface_fqn}"
             if source not in graph:
@@ -351,7 +351,7 @@ def _add_spring_edges(
                     node_type="file",
                     language="properties",
                     path=source,
-                    is_entry_point=True,
+                    is_reachability_root=True,
                 )
             for impl_fqn in impls:
                 for target in jvm_index.files_for_fqn(impl_fqn):

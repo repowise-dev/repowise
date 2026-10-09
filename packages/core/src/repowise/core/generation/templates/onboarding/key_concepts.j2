@@ -3,6 +3,20 @@ narrative that gives the reader the mental model needed to read the
 code. Not a glossary dump. Identify 3–6 load-bearing concepts and
 explain how they fit together.
 
+{% if ctx.purpose_terms %}
+## Repository purpose vocabulary
+These terms come from the repository's own authoritative prose. Use them to
+decide which candidate symbols explain the product's purpose rather than merely
+ranking highly in the graph: {{ ctx.purpose_terms | join(", ") }}
+{% endif %}
+
+{% if ctx.lifecycle_entry_points %}
+## Lifecycle boundaries
+These repository-relative entry-point paths anchor where work enters the
+system. Prefer a concept set that helps explain the path from a boundary into
+the major architectural layers: {% for path in ctx.lifecycle_entry_points %}`{{ path }}`{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+
 ## Candidate concepts (the symbols the rest of the system depends on most —
 ## ground every concept you name in this list; do not invent new ones)
 {% for c in ctx.concept_symbols %}
@@ -77,4 +91,10 @@ Hard rules:
   concept feels missing, it isn't — say so explicitly rather than
   fabricating it.
 - Do not include code listings. Names + file paths are enough.
+- The chosen set should represent the repository purpose and lifecycle above,
+  not six variations of one graph-dominant subsystem. Preserve structural
+  diversity across layers/clusters when the candidates permit it.
+- Cite files only as backticked repository-relative paths. Never emit local
+  checkout/worktree paths or Markdown file URLs; the wiki resolves inline code
+  to file pages.
 - Output markdown only. No preamble, no apologies, no closing summary.

@@ -11,7 +11,6 @@ from __future__ import annotations
 from .assembler import ContextAssembler, _symbol_to_dict
 from .contexts import (
     ApiContractContext,
-    ArchitectureDiagramContext,
     FilePageContext,
     InfraPageContext,
     ModulePageContext,
@@ -23,7 +22,6 @@ from .contexts import (
 
 __all__ = [
     "ApiContractContext",
-    "ArchitectureDiagramContext",
     "ContextAssembler",
     "FilePageContext",
     "InfraPageContext",

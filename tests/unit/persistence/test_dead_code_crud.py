@@ -422,3 +422,51 @@ async def test_get_dead_code_git_fields_returns_last_commit_at_aware(async_sessi
     assert (datetime.now(UTC) - stored).days >= 0
     assert stored > datetime(2020, 1, 1, tzinfo=UTC)
     assert stored == datetime(2025, 12, 21, 0, 6, 49, tzinfo=UTC), "must not shift the instant"
+
+
+async def test_unknown_line_count_is_stored_as_null_and_summed_as_nothing(async_session):
+    """A count the analyzer could not make round-trips as NULL, not 0, and the
+    summary totals add only the counts that are known."""
+    from repowise.core.persistence.crud.analysis import dead_code as dead_code_crud
+
+    repo = await insert_repo(async_session)
+    known = _finding("known.py", "known")
+    known["lines"] = 19
+    unknown = _finding("unknown.py", "unknown")
+    unknown["lines"] = None
+    await save_dead_code_findings(async_session, repo.id, [known, unknown])
+
+    by_file = {r.file_path: r.lines for r in await _rows(async_session, repo.id)}
+    assert by_file == {"known.py": 19, "unknown.py": None}
+
+    summary = await dead_code_crud.get_dead_code_summary(async_session, repo.id)
+    assert summary["total_lines"] == 19
+    assert summary["deletable_lines"] == 19
+
+
+async def test_unknown_line_count_is_stored_as_null(async_session):
+    repo = await insert_repo(async_session)
+    finding = {**_finding("a.py", "fa"), "lines": None}
+    await save_dead_code_findings(async_session, repo.id, [finding])
+    assert [r.lines for r in await _rows(async_session, repo.id)] == [None]
+
+
+async def test_legacy_not_null_store_still_accepts_an_unknown_count(async_session):
+    """A SQLite store made before ``lines`` became nullable keeps NOT NULL
+    (no Alembic locally, additive-only reconciler). An unknown count must not
+    fail the whole write there."""
+    from sqlalchemy import text
+
+    ddl = (
+        await async_session.execute(
+            text("SELECT sql FROM sqlite_master WHERE name = 'dead_code_findings'")
+        )
+    ).scalar_one()
+    assert "lines INTEGER," in ddl
+    await async_session.execute(text("DROP TABLE dead_code_findings"))
+    await async_session.execute(text(ddl.replace("lines INTEGER,", "lines INTEGER NOT NULL,")))
+    repo = await insert_repo(async_session)
+    findings = [{**_finding("a.py", "fa"), "lines": None}, _finding("b.py", "fb")]
+    await save_dead_code_findings(async_session, repo.id, findings)
+    await replace_dead_code_findings(async_session, repo.id, findings)
+    assert sorted(r.lines for r in await _rows(async_session, repo.id)) == [0, 1]

@@ -12,7 +12,7 @@ from datetime import datetime
 
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.graph._rehydrate import _NODE_ATTR_KEYS
-from repowise.core.ingestion.models import FileInfo, Import, ParsedFile
+from repowise.core.ingestion.models import FileInfo, Import, ParsedFile, Symbol
 
 
 def _fi(path: str) -> FileInfo:
@@ -174,3 +174,56 @@ def test_rehydrate_without_metrics_falls_back_to_recompute():
     # Recompute on the rehydrated structure still equals the original.
     assert hydrated.pagerank() == original.pagerank()
     assert hydrated.in_degree()["c.py"] == 2
+
+
+def test_supplied_props_survives_rehydration():
+    """An edge's supplied_props must outlive the process that resolved it."""
+    original = _build_sample()
+    nodes, edges = _serialize(original)
+    edges[0] = {**edges[0], "edge_type": "calls", "supplied_props": ["showBanner", "isLoaded"]}
+
+    hydrated = GraphBuilder.from_persisted(nodes, edges, original.file_metrics_snapshot())
+    graph = hydrated.graph()
+
+    stamped = graph[edges[0]["source_node_id"]][edges[0]["target_node_id"]]
+    assert stamped["supplied_props"] == frozenset(["showBanner", "isLoaded"])
+    for e in edges[1:]:
+        assert "supplied_props" not in graph[e["source_node_id"]][e["target_node_id"]]
+
+
+
+def test_reachability_root_survives_rehydration():
+    original = _build_sample()
+    original.graph().nodes["c.py"]["is_reachability_root"] = True
+    nodes, edges = _serialize(original)
+    hydrated = GraphBuilder.from_persisted(nodes, edges, original.file_metrics_snapshot())
+    assert hydrated.graph().nodes["c.py"]["is_reachability_root"] is True
+    assert not hydrated.graph().nodes["a.py"].get("is_reachability_root")
+
+
+def test_parse_only_symbol_attrs_come_back_from_the_reparse():
+    sym = Symbol(
+        id="a.py::A::f",
+        name="f",
+        qualified_name="a.A.f",
+        kind="method",
+        signature="f()",
+        start_line=1,
+        end_line=2,
+        docstring=None,
+        decorators=["@override"],
+        parent_name="A",
+        modifiers=("override",),
+    )
+    parsed = _parsed("a.py")
+    parsed.symbols.append(sym)
+    original = GraphBuilder()
+    original.add_file(parsed)
+    original.build()
+    nodes, edges = _serialize(original)
+    hydrated = GraphBuilder.from_persisted(nodes, edges, original.file_metrics_snapshot())
+    assert "modifiers" not in hydrated.graph().nodes[sym.id]
+    hydrated.restore_parse_only_attrs([parsed])
+    node = hydrated.graph().nodes[sym.id]
+    assert node["modifiers"] == ("override",)
+    assert node["decorators"] == ["@override"]

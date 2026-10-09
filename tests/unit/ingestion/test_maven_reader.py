@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from repowise.core.ingestion.external_systems import (
+    extract_external_systems,
+    maven_model,
+)
 from repowise.core.ingestion.external_systems.maven import parse
 
 
@@ -138,3 +142,67 @@ class TestMavenParse:
         records = parse(pom, tmp_path)
         assert len(records) == 1
         assert records[0].version == "2.0.0"
+
+    def test_child_project_properties_use_child_builtins(self, tmp_path: Path) -> None:
+        parent_dir = tmp_path / "parent"
+        child_dir = tmp_path / "child"
+        parent_dir.mkdir()
+        child_dir.mkdir()
+        (parent_dir / "pom.xml").write_text(
+            """<project><groupId>com.example</groupId>
+  <artifactId>parent</artifactId><version>1.0.0</version></project>""",
+            encoding="utf-8",
+        )
+        child = child_dir / "pom.xml"
+        child.write_text(
+            """<project>
+  <parent><groupId>com.example</groupId><artifactId>parent</artifactId>
+    <version>1.0.0</version><relativePath>../parent/pom.xml</relativePath></parent>
+  <artifactId>child</artifactId><version>2.0.0</version>
+  <properties><dependency.version>${project.version}</dependency.version></properties>
+  <dependencies><dependency><groupId>com.example</groupId><artifactId>shared</artifactId>
+    <version>${dependency.version}</version></dependency></dependencies>
+</project>""",
+            encoding="utf-8",
+        )
+
+        records = parse(child, tmp_path)
+
+        assert len(records) == 1
+        assert records[0].version == "2.0.0"
+
+    def test_external_extraction_parses_each_pom_once(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        root = _pom(
+            tmp_path,
+            """<project><groupId>com.example</groupId><artifactId>parent</artifactId>
+  <version>1</version><packaging>pom</packaging>
+  <modules><module>child</module></modules></project>""",
+        )
+        child = tmp_path / "child" / "pom.xml"
+        child.parent.mkdir()
+        child.write_text(
+            """<project><parent><groupId>com.example</groupId><artifactId>parent</artifactId>
+  <version>1</version><relativePath>../pom.xml</relativePath></parent>
+  <artifactId>child</artifactId><dependencies><dependency>
+    <groupId>org.example</groupId><artifactId>library</artifactId><version>2</version>
+  </dependency></dependencies></project>""",
+            encoding="utf-8",
+        )
+        parsed: list[Path] = []
+        real_parse = maven_model.ET.parse
+
+        def counting_parse(path):
+            parsed.append(Path(path))
+            return real_parse(path)
+
+        monkeypatch.setattr(maven_model.ET, "parse", counting_parse)
+
+        records = extract_external_systems(tmp_path, [root, child])
+
+        assert [record.name for record in records] == ["org.example:library"]
+        assert len(parsed) == 2
+        assert set(parsed) == {root.resolve(), child.resolve()}

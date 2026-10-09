@@ -1,9 +1,12 @@
 /**
  * REST client for the change-risk endpoints.
- * Backend: packages/server/src/repowise/server/routers/git.py (risk/range)
+ * Backend: packages/server/src/repowise/server/routers/git.py (risk/range) and
+ * routers/code_health/coverage_routes.py (health/coverage/patch)
  */
 
 import { apiGet } from "./client";
+import type { PatchCoverageResponse } from "@repowise-dev/types/generated/http";
+import type { RiskAuthority } from "@repowise-dev/types/risk-semantics";
 import type { RiskDriverResponse } from "./types/git";
 
 export interface RiskRangeParams {
@@ -43,8 +46,10 @@ export interface FixHistory {
 export interface RiskRangeResponse {
   base: string;
   head: string;
-  /** Where the change lands. Read before `score`. */
+  /** Separate historical evidence about where the change lands. */
   fix_history: FixHistory;
+  /** Percentile/classification authority plus explicit absolute fallback. */
+  risk_authority: RiskAuthority;
   score: number;
   /** What `score` measures: diff size and spread, not where the change lands. */
   score_measures: string;
@@ -60,7 +65,7 @@ export interface RiskRangeResponse {
   drivers: RiskDriverResponse[];
 }
 
-/** Scores the aggregate diff between two revisions (0-10, with drivers). */
+/** Assesses a live diff; lead with its repo-relative percentile/classification. */
 export async function getRiskRange(
   repoId: string,
   params: RiskRangeParams,
@@ -70,4 +75,18 @@ export async function getRiskRange(
     head: params.head,
     baseline: params.baseline,
   });
+}
+
+/**
+ * Patch coverage of `base...head`: the share of the change's executable lines
+ * the stored test coverage ran. Null when no coverage report was ingested.
+ */
+export async function getPatchCoverage(
+  repoId: string,
+  params: Pick<RiskRangeParams, "base" | "head">,
+): Promise<PatchCoverageResponse | null> {
+  return apiGet<PatchCoverageResponse | null>(
+    `/api/repos/${repoId}/health/coverage/patch`,
+    { base: params.base, head: params.head },
+  );
 }

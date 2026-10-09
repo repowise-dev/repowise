@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
-from repowise.core.analysis.health.function_blame_rollup import build_function_blame_rows
+from repowise.core.analysis.health.function_blame_rollup import (
+    blame_commit_entries,
+    build_function_blame_rows,
+    commit_spans,
+)
 from repowise.core.ingestion.git_indexer.function_blame import BlameIndex
 
 
@@ -97,3 +102,36 @@ def test_rollup_empty_when_no_blame() -> None:
         )
         == []
     )
+
+
+def test_rollup_persists_the_commit_set_newest_first() -> None:
+    walked, meta = _walked_and_meta()
+    rows = {r["function_name"]: r for r in build_function_blame_rows(walked, meta, now_ts=_NOW)}
+    assert json.loads(rows["foo"]["commit_shas_json"]) == ["s2", "s1"]
+    assert json.loads(rows["bar"]["commit_shas_json"]) == ["s3"]
+
+
+def test_stored_rows_give_the_same_spans_as_the_blame_index() -> None:
+    walked, meta = _walked_and_meta()
+    functions = walked[0][1].functions
+    live = commit_spans(functions, blame_commit_entries(functions, meta["a.py"]["blame_index"]))
+    stored = [
+        (r["function_name"], r["start_line"], r["end_line"], json.loads(r["commit_shas_json"]))
+        for r in build_function_blame_rows(walked, meta, now_ts=_NOW)
+    ]
+    assert live == commit_spans(functions, stored)
+    assert live == [(1, 3, frozenset({"s1", "s2"})), (5, 6, frozenset({"s3"}))]
+
+
+def test_commit_spans_keep_the_last_same_named_function_like_the_store() -> None:
+    # Rows are keyed path::name, so the store holds only the last __init__.
+    functions = [_Fn("__init__", 1, 3), _Fn("__init__", 10, 12)]
+    entries = [("__init__", 1, 3, ["a"]), ("__init__", 10, 12, ["b"])]
+    assert commit_spans(functions, entries) == [(10, 12, frozenset({"b"}))]
+
+
+def test_commit_spans_drop_stale_rows() -> None:
+    # A stored row whose function moved or vanished no longer describes the file.
+    functions = [_Fn("foo", 5, 9)]
+    entries = [("foo", 1, 3, ["a"]), ("gone", 20, 30, ["b"])]
+    assert commit_spans(functions, entries) == []

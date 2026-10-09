@@ -1,0 +1,571 @@
+"""Composition, ordering, demotion, identity and lifecycle for opportunities."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from repowise.core.analysis.health.models import primary_biomarker_by_file
+from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
+from repowise.core.analysis.health.refactoring.opportunity import (
+    STEP_ORDER,
+    compose_opportunities,
+    is_standalone_clone,
+    opportunity_public_id,
+    opportunity_status,
+)
+from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
+    _details_payload,
+    _diversified_order,
+    _row_kwargs,
+)
+
+
+def plan(kind: str, symbol: str = "handle", **kwargs) -> RefactoringSuggestion:
+    payload = {
+        "refactoring_type": kind,
+        "file_path": "svc/orders.py",
+        "target_symbol": symbol,
+        "line_start": 10,
+        "line_end": 40,
+        "plan": {},
+        "evidence": {},
+        "impact_delta": 1.0,
+        "effort_bucket": "S",
+        "blast_radius": {"scope": "local"},
+        "confidence": "high",
+        "source_biomarker": "complex_method",
+    }
+    payload.update(kwargs)
+    return RefactoringSuggestion(**payload)
+
+
+def clone(*, intra: bool, co_change: int, **kwargs) -> RefactoringSuggestion:
+    kwargs.setdefault("blast_radius", {"files": ["svc/billing.py"], "file_count": 1})
+    return plan(
+        "extract_helper",
+        f"orders.py:{co_change}-{int(intra)}",
+        evidence={"is_intra_file": intra, "co_change_count": co_change},
+        impact_delta=0.0,
+        source_biomarker="dry_violation",
+        **kwargs,
+    )
+
+
+def split(**kwargs) -> RefactoringSuggestion:
+    return plan(
+        "split_file",
+        "orders.py -> 2 files",
+        plan={
+            "shim_required": True,
+            "groups": [
+                {"symbols": ["handle"], "suggested_file": "svc/orders_handle.py"},
+                {"symbols": ["render"], "suggested_file": "svc/orders_render.py"},
+            ],
+        },
+        evidence={"group_count": 2},
+        impact_delta=0.0,
+        blast_radius={"dependent_count": 3, "dependent_files": ["svc/api.py"]},
+        source_biomarker="",
+        **kwargs,
+    )
+
+
+# --------------------------------------------------------------------------
+# membership
+# --------------------------------------------------------------------------
+
+
+def test_one_opportunity_per_file() -> None:
+    rows = [plan("extract_method"), plan("extract_method", "render"), split()]
+    opportunities = compose_opportunities(rows)
+    assert len(opportunities) == 1
+    assert opportunities[0].step_count == 3
+
+
+def test_files_are_not_merged() -> None:
+    rows = [plan("extract_method"), plan("extract_method", file_path="svc/billing.py")]
+    assert {item.file_path for item in compose_opportunities(rows)} == {
+        "svc/orders.py",
+        "svc/billing.py",
+    }
+
+
+def test_performance_plans_are_left_to_their_own_layer() -> None:
+    rows = [plan("performance_fix", plan={"opportunity_id": "perf2_abc"})]
+    assert compose_opportunities(rows) == []
+
+
+# --------------------------------------------------------------------------
+# clone demotion
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("intra", "co_change", "standalone"),
+    [
+        (False, 3, True),  # cross-file and co-changed: worth instructing
+        (False, 2, False),  # cross-file, but nobody edits them together
+        (True, 9, False),  # co-changed, but it is one file's own repetition
+        (True, 0, False),
+    ],
+)
+def test_only_cross_file_co_changed_clones_earn_a_step(
+    intra: bool, co_change: int, standalone: bool
+) -> None:
+    assert is_standalone_clone(clone(intra=intra, co_change=co_change)) is standalone
+
+
+@pytest.mark.usefixtures("dry_violation_shown")
+def test_demoted_clones_become_evidence_on_the_file_opportunity() -> None:
+    rows = [plan("extract_method"), clone(intra=True, co_change=0)]
+    opportunity = compose_opportunities(rows)[0]
+    assert opportunity.step_count == 1
+    assert [item.refactoring_type for item in opportunity.evidence] == ["extract_helper"]
+    assert opportunity.evidence[0].summary["is_intra_file"] is True
+
+
+@pytest.mark.usefixtures("dry_violation_shown")
+def test_a_file_with_only_demoted_clones_publishes_nothing() -> None:
+    assert compose_opportunities([clone(intra=True, co_change=0)]) == []
+
+
+@pytest.mark.usefixtures("dry_violation_shown")
+def test_a_high_signal_clone_is_a_step_not_evidence() -> None:
+    opportunity = compose_opportunities([clone(intra=False, co_change=7)])[0]
+    assert opportunity.step_count == 1
+    assert opportunity.evidence == ()
+
+
+# --------------------------------------------------------------------------
+# ordering
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("dry_violation_shown")
+def test_structural_steps_precede_extractions() -> None:
+    rows = [plan("extract_method"), clone(intra=False, co_change=5), split()]
+    steps = compose_opportunities(rows)[0].steps
+    assert [step.refactoring_type for step in steps] == [
+        "split_file",
+        "extract_method",
+        "extract_helper",
+    ]
+
+
+def test_step_order_covers_every_composed_type() -> None:
+    from repowise.core.analysis.health.refactoring import registered_detectors
+    from repowise.core.analysis.health.refactoring.opportunity import EXCLUDED_TYPES
+
+    names = {detector.name for detector in registered_detectors()} - EXCLUDED_TYPES
+    assert names <= set(STEP_ORDER), f"unordered detector types: {sorted(names - set(STEP_ORDER))}"
+
+
+def test_same_type_steps_order_by_position_then_symbol() -> None:
+    rows = [
+        plan("extract_method", "z", line_start=90),
+        plan("extract_method", "a", line_start=10),
+    ]
+    steps = compose_opportunities(rows)[0].steps
+    assert [step.target_symbol for step in steps] == ["a", "z"]
+
+
+def test_steps_after_a_relocation_say_they_must_be_located_again() -> None:
+    steps = compose_opportunities([plan("extract_method"), split()])[0].steps
+    assert steps[0].refactoring_type == "split_file"
+    assert steps[0].relocated_by is None
+    assert steps[1].relocated_by == steps[0].plan_id
+
+
+def test_no_relocation_leaves_every_step_addressable_as_written() -> None:
+    steps = compose_opportunities([plan("extract_method"), plan("extract_method", "x")])[0].steps
+    assert all(step.relocated_by is None for step in steps)
+
+
+# --------------------------------------------------------------------------
+# lead diagnosis
+# --------------------------------------------------------------------------
+
+
+def test_the_lead_is_the_files_own_primary_problem() -> None:
+    opportunity = compose_opportunities(
+        [plan("extract_method")], primary_biomarker_by_file={"svc/orders.py": "complex_method"}
+    )[0]
+    assert opportunity.lead_biomarker == "complex_method"
+    assert opportunity.addresses_primary_problem is True
+
+
+def test_a_problem_no_detector_answers_is_reported_as_unaddressed() -> None:
+    opportunity = compose_opportunities(
+        [plan("extract_method")], primary_biomarker_by_file={"svc/orders.py": "churn_risk"}
+    )[0]
+    assert opportunity.lead_biomarker == "churn_risk"
+    assert opportunity.addresses_primary_problem is False
+
+
+def test_without_the_files_findings_the_question_is_unknown_not_no() -> None:
+    opportunity = compose_opportunities([plan("extract_method")])[0]
+    assert opportunity.addresses_primary_problem is None
+    assert opportunity.rank_factors["primary_problem"] == 0.0
+
+
+def test_a_purely_structural_file_leads_with_its_structure() -> None:
+    opportunity = compose_opportunities([split()])[0]
+    assert opportunity.lead_biomarker is None
+    assert opportunity.lead_refactoring_type == "split_file"
+
+
+# --------------------------------------------------------------------------
+# rollups
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("dry_violation_shown")
+def test_blast_radius_is_charged_once_over_the_union() -> None:
+    shared = {"files": ["svc/billing.py"], "file_count": 1}
+    one = compose_opportunities([clone(intra=False, co_change=4, blast_radius=shared)])[0]
+    two = compose_opportunities(
+        [
+            clone(intra=False, co_change=4, blast_radius=shared),
+            clone(intra=False, co_change=5, blast_radius=shared),
+        ]
+    )[0]
+    assert one.affected_files == two.affected_files == ("svc/billing.py", "svc/orders.py")
+    assert one.rank_factors["risk"] == two.rank_factors["risk"]
+
+
+def test_effort_is_the_largest_step_not_the_sum() -> None:
+    rows = [plan("extract_method", effort_bucket="S"), plan("extract_method", "x", effort_bucket="L")]
+    assert compose_opportunities(rows)[0].effort_bucket == "L"
+
+
+def test_confidence_is_the_weakest_step() -> None:
+    rows = [plan("extract_method"), plan("extract_method", "x", confidence="medium")]
+    assert compose_opportunities(rows)[0].confidence == "medium"
+
+
+def test_mechanical_and_judgment_steps_are_counted_separately() -> None:
+    opportunity = compose_opportunities([plan("extract_method"), split()])[0]
+    assert (opportunity.mechanical_steps, opportunity.judgment_steps) == (1, 1)
+    assert opportunity.step_count == 2
+
+
+@pytest.mark.usefixtures("dry_violation_shown")
+def test_the_stored_step_count_is_the_stored_steps() -> None:
+    """The row's ``step_count`` and the details it ships with describe one list.
+
+    A reader pairs the row (counts) with the details (steps) by id; if either
+    half could disagree, a queue would promise steps its drawer never shows.
+    """
+    rows = [
+        plan("extract_method"),
+        plan("extract_method", "render"),
+        split(),
+        clone(intra=False, co_change=7),
+        clone(intra=True, co_change=0),
+        plan("extract_method", file_path="svc/billing.py"),
+    ]
+    for rank, opportunity in enumerate(compose_opportunities(rows)):
+        details = _details_payload(opportunity, validations={}, finding_ids={})
+        row = _row_kwargs(
+            opportunity,
+            rank_position=rank,
+            queue_position=rank,
+            status="open",
+            details=details,
+            analyzed_commit=None,
+        )
+        stored_steps = json.loads(row["details_json"])["steps"]
+        assert row["step_count"] == len(stored_steps) == len(opportunity.steps)
+        assert row["mechanical_steps"] + row["judgment_steps"] == row["step_count"]
+        assert opportunity.as_dict()["step_count"] == len(opportunity.as_dict()["steps"])
+
+
+# --------------------------------------------------------------------------
+# ranking
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("dry_violation_shown")
+def test_a_step_set_with_no_benefit_cannot_outrank_one_that_recovers_health() -> None:
+    barren = compose_opportunities([clone(intra=False, co_change=4)])[0]
+    real = compose_opportunities([plan("extract_method", file_path="svc/billing.py")])[0]
+    assert barren.rank_score == 0.0
+    assert real.rank_score > barren.rank_score
+
+
+def test_addressing_the_primary_problem_ranks_above_not_addressing_it() -> None:
+    rows = [plan("extract_method"), plan("extract_method", file_path="svc/billing.py")]
+    ranked = compose_opportunities(
+        rows,
+        primary_biomarker_by_file={
+            "svc/orders.py": "complex_method",
+            "svc/billing.py": "churn_risk",
+        },
+    )
+    assert [item.file_path for item in ranked] == ["svc/orders.py", "svc/billing.py"]
+
+
+def test_order_is_total_and_repeatable() -> None:
+    rows = [plan("extract_method", file_path=f"svc/m{index}.py") for index in range(6)]
+    first = [item.opportunity_id for item in compose_opportunities(rows)]
+    assert first == [item.opportunity_id for item in compose_opportunities(list(reversed(rows)))]
+
+
+def test_why_ranked_names_the_factors_that_moved_it() -> None:
+    opportunity = compose_opportunities([plan("extract_method")])[0]
+    named = {entry["factor"] for entry in opportunity.why_ranked}
+    assert named <= set(opportunity.rank_factors)
+    assert "benefit" in named
+
+
+# --------------------------------------------------------------------------
+# identity and lifecycle
+# --------------------------------------------------------------------------
+
+
+def test_the_id_is_built_over_the_member_plan_ids() -> None:
+    opportunity = compose_opportunities([plan("extract_method"), split()])[0]
+    assert opportunity.opportunity_id == opportunity_public_id(
+        [step.plan_id for step in opportunity.steps], "svc/orders.py"
+    )
+    assert opportunity.opportunity_id.startswith("refop4_")
+
+
+def test_the_id_survives_a_uniform_line_shift() -> None:
+    before = compose_opportunities([plan("extract_method")])[0]
+    after = compose_opportunities([plan("extract_method", line_start=210, line_end=240)])[0]
+    assert before.opportunity_id == after.opportunity_id
+
+
+def test_the_id_changes_when_the_work_changes() -> None:
+    one = compose_opportunities([plan("extract_method")])[0]
+    two = compose_opportunities([plan("extract_method"), split()])[0]
+    assert one.opportunity_id != two.opportunity_id
+
+
+@pytest.mark.usefixtures("dry_violation_shown")
+def test_evidence_does_not_rename_the_work() -> None:
+    bare = compose_opportunities([plan("extract_method")])[0]
+    witnessed = compose_opportunities([plan("extract_method"), clone(intra=True, co_change=0)])[0]
+    assert bare.opportunity_id == witnessed.opportunity_id
+    assert len(witnessed.evidence) == 1
+
+
+def test_lifecycle_resolves_only_when_every_step_does() -> None:
+    opportunity = compose_opportunities([plan("extract_method"), split()])[0]
+    first, second = (step.plan_id for step in opportunity.steps)
+    assert opportunity_status(opportunity, {}) == "open"
+    assert opportunity_status(opportunity, {first: "resolved"}) == "open"
+    assert opportunity_status(opportunity, {first: "resolved", second: "resolved"}) == "resolved"
+    assert (
+        opportunity_status(opportunity, {first: "false_positive", second: "resolved"}) == "resolved"
+    )
+    assert (
+        opportunity_status(opportunity, {first: "acknowledged", second: "resolved"})
+        == "acknowledged"
+    )
+
+
+def test_an_untriaged_step_keeps_the_opportunity_open() -> None:
+    opportunity = compose_opportunities([plan("extract_method"), split()])[0]
+    known = opportunity.steps[0].plan_id
+    assert opportunity_status(opportunity, {known: "resolved"}) == "open"
+
+
+# --------------------------------------------------------------------------
+# input shapes
+# --------------------------------------------------------------------------
+
+
+def test_dicts_and_dataclasses_compose_to_the_same_opportunity() -> None:
+    from dataclasses import asdict
+
+    rows = [plan("extract_method"), split()]
+    from_objects = compose_opportunities(rows)[0]
+    from_dicts = compose_opportunities([asdict(row) for row in rows])[0]
+    assert from_objects.as_dict() == from_dicts.as_dict()
+
+
+# --------------------------------------------------------------------------
+# finding attribution
+# --------------------------------------------------------------------------
+
+
+def finding(public_id: str, function_name: str | None, line_start: int | None, **kwargs):
+    row = {
+        "public_id": public_id,
+        "file_path": "svc/orders.py",
+        "biomarker_type": "complex_method",
+        "function_name": function_name,
+        "line_start": line_start,
+        "line_end": None if line_start is None else line_start + 20,
+    }
+    row.update(kwargs)
+    return row
+
+
+def test_a_step_names_only_the_findings_its_target_answers() -> None:
+    rows = [
+        plan("extract_method", "handle", line_start=10, line_end=40),
+        plan("extract_method", "render", line_start=60, line_end=90),
+    ]
+    findings = [
+        finding("hf_handle", "handle", 10),
+        finding("hf_render", "render", 60),
+        finding("hf_other_biomarker", "handle", 10, biomarker_type="large_method"),
+        finding("hf_elsewhere", "handle", 10, file_path="svc/billing.py"),
+    ]
+    (opportunity,) = compose_opportunities(rows, findings=findings)
+    ids = {step.target_symbol: step.finding_ids for step in opportunity.steps}
+    assert ids == {"handle": ("hf_handle",), "render": ("hf_render",)}
+    assert opportunity.steps[0].as_dict()["finding_ids"] in (["hf_handle"], ["hf_render"])
+
+
+def test_finding_ids_stay_unknown_without_addressable_findings() -> None:
+    rows = [plan("extract_method")]
+    assert compose_opportunities(rows)[0].steps[0].finding_ids is None
+    unaddressable = [finding("", "handle", 10)]
+    step = compose_opportunities(rows, findings=unaddressable)[0].steps[0]
+    assert step.finding_ids is None
+    assert "finding_ids" not in step.as_dict()
+
+
+def block(name: str, **kwargs) -> RefactoringSuggestion:
+    return plan(
+        "extract_helper",
+        name,
+        evidence={"is_intra_file": False, "co_change_count": 7},
+        blast_radius={"files": ["svc/billing.py"], "file_count": 1},
+        source_biomarker="dry_violation",
+        **kwargs,
+    )
+
+
+@pytest.mark.usefixtures("dry_violation_shown")
+def test_a_finding_several_steps_answer_is_recovered_once() -> None:
+    # Two cross-file, co-changed clone blocks both overlap one file-level
+    # dry_violation finding: the file recovers it once, at the larger claim.
+    rows = [
+        block("a", line_start=10, line_end=20, impact_delta=0.7),
+        block("b", line_start=15, line_end=30, impact_delta=0.5),
+        plan("extract_method", "handle", impact_delta=1.0),
+    ]
+    findings = [
+        finding("hf_dry", None, 12, biomarker_type="dry_violation"),
+        finding("hf_handle", "handle", 10),
+    ]
+    (without,) = compose_opportunities(rows)
+    (deduped,) = compose_opportunities(rows, findings=findings)
+    assert without.recoverable_health == pytest.approx(2.2)
+    assert deduped.recoverable_health == pytest.approx(1.7)
+    assert deduped.rank_factors["benefit"] == pytest.approx(1.7)
+
+
+def test_work_that_recovers_health_ranks_ahead_of_zero_credit_work():
+    """A cycle's detector-native benefit outscored every proportionally credited
+    extraction on this repo. It stays listed, after the credited work."""
+    from types import SimpleNamespace
+
+    from repowise.core.analysis.health.refactoring.opportunity_rank import rank_sort_key
+
+    cycle = SimpleNamespace(
+        rank_score=0.78, recoverable_health=0.0, file_path="a.py", opportunity_id="o1"
+    )
+    small = SimpleNamespace(
+        rank_score=0.21, recoverable_health=0.21, file_path="b.py", opportunity_id="o2"
+    )
+    split = SimpleNamespace(
+        rank_score=0.42, recoverable_health=0.0, file_path="c.py", opportunity_id="o3"
+    )
+    ordered = sorted([cycle, small, split], key=rank_sort_key)
+    assert [o.opportunity_id for o in ordered] == ["o2", "o1", "o3"]
+
+
+# --------------------------------------------------------------------------
+# finding registry and test files
+# --------------------------------------------------------------------------
+
+
+def test_a_withheld_biomarker_is_neither_a_step_nor_evidence() -> None:
+    rows = [plan("extract_method"), clone(intra=False, co_change=7), clone(intra=True, co_change=0)]
+    (opportunity,) = compose_opportunities(rows)
+    assert [step.refactoring_type for step in opportunity.steps] == ["extract_method"]
+    assert opportunity.evidence == ()
+
+
+def test_a_file_whose_plans_are_all_withheld_publishes_nothing() -> None:
+    assert compose_opportunities([clone(intra=False, co_change=7)]) == []
+
+
+def test_a_withheld_plan_does_not_rename_the_shown_work() -> None:
+    shown = [plan("extract_method")]
+    elsewhere = clone(intra=False, co_change=7, file_path="svc/billing.py")
+    (alone,) = compose_opportunities(shown)
+    (beside,) = compose_opportunities([*shown, elsewhere])
+    assert beside.opportunity_id == alone.opportunity_id
+
+
+def test_a_withheld_finding_never_leads_a_file() -> None:
+    from types import SimpleNamespace
+
+    findings = [
+        SimpleNamespace(
+            file_path="svc/orders.py", biomarker_type="dry_violation", health_impact=9.0
+        ),
+        SimpleNamespace(
+            file_path="svc/orders.py", biomarker_type="complex_method", health_impact=2.0
+        ),
+    ]
+    assert primary_biomarker_by_file(findings) == {"svc/orders.py": "complex_method"}
+
+
+def test_many_withheld_clones_cannot_crowd_the_ranking() -> None:
+    clones = [
+        clone(intra=False, co_change=9, file_path=f"pkg{i % 4}/m{i}.py") for i in range(40)
+    ]
+    ranked = compose_opportunities([*clones, plan("extract_method")])
+    assert [item.file_path for item in ranked] == ["svc/orders.py"]
+
+
+def test_a_test_file_ranks_after_production_whatever_its_score() -> None:
+    rows = [
+        plan("extract_method", impact_delta=5.0, file_path="tests/test_orders.py"),
+        plan("extract_method", impact_delta=0.5),
+    ]
+    ranked = compose_opportunities(rows)
+    assert [item.file_path for item in ranked] == ["svc/orders.py", "tests/test_orders.py"]
+    assert ranked[1].rank_score > ranked[0].rank_score
+
+
+def _ranked(path: str, biomarker: str, kind: str = "extract_method"):
+    from types import SimpleNamespace
+
+    # Credited, so every row is interleaved (zero-credit work queues last).
+    return SimpleNamespace(
+        file_path=path,
+        lead_biomarker=biomarker,
+        lead_refactoring_type=kind,
+        recoverable_health=1.0,
+    )
+
+
+def test_one_cause_in_bulk_does_not_own_the_queue_head() -> None:
+    # Rank order: twenty clone opportunities in one area, then two other causes.
+    ranked = [_ranked(f"lib/dup/m{i}.py", "dry_violation", "extract_helper") for i in range(20)]
+    ranked += [_ranked("svc/a.py", "complex_method"), _ranked("api/b.py", "low_cohesion")]
+    head = [ranked[i].lead_biomarker for i in _diversified_order(ranked)[:3]]
+    assert sorted(head) == ["complex_method", "dry_violation", "low_cohesion"]
+
+
+def test_the_queue_puts_every_test_file_after_production() -> None:
+    # Two production files share a group; a test file would otherwise take the
+    # second slot in the first round.
+    ranked = [
+        _ranked("svc/a.py", "complex_method"),
+        _ranked("svc/b.py", "complex_method"),
+        _ranked("tests/test_a.py", "complex_method"),
+    ]
+    order = [ranked[i].file_path for i in _diversified_order(ranked)]
+    assert order == ["svc/a.py", "svc/b.py", "tests/test_a.py"]

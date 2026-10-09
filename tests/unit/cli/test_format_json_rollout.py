@@ -51,6 +51,7 @@ _FORMAT_COMMANDS = [
     ("repowise.cli.commands.workspace_cmd", "workspace_diagnostics"),
     ("repowise.cli.commands.workspace_cmd", "workspace_metrics"),
     ("repowise.cli.commands.dead_code_cmd", "dead_code_command"),
+    ("repowise.cli.commands.doc_drift_cmd", "doc_drift_command"),
 ]
 
 # Commands that shipped a machine mode under a different name. The old flag

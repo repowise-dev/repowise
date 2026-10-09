@@ -126,3 +126,6 @@ ehthumbs.db
 tests/fixtures/**/.gradle/
 tests/fixtures/**/bin/
 tests/fixtures/**/build/
+# Written by Claude Code into a plugin dir it loads a mod from
+plugins/claude-code/.claude-plugin/types/
+plugins/claude-code/tsconfig.json

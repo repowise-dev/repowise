@@ -43,6 +43,10 @@ def normalize_reasoning(
         return default
 
     normalized = str(value).strip().lower()
+    # Accept common boolean strings so ``reasoning: true/false`` works
+    # everywhere, not just when round-tripped through repo_config.
+    boolean_aliases: dict[str, ReasoningMode] = {"true": "auto", "false": "off"}
+    normalized = boolean_aliases.get(normalized, normalized)
     if normalized not in REASONING_MODES:
         choices = ", ".join(REASONING_MODES)
         raise ValueError(f"reasoning must be one of: {choices}")

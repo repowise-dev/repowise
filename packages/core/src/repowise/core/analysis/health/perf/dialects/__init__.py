@@ -20,6 +20,7 @@ from . import dart as _dart
 from . import go as _go
 from . import java as _java
 from . import kotlin as _kotlin
+from . import pascal as _pascal
 from . import python as _python
 from . import ruby as _ruby
 from . import rust as _rust
@@ -42,15 +43,21 @@ _REGISTER: tuple[tuple[str, BasePerfDialect], ...] = (
     ("java", _java.DIALECT),
     ("go", _go.DIALECT),
     ("csharp", _csharp.DIALECT),
+    # Razor/Blazor reaches the pass as a C# buffer (its C# regions
+    # projected by sfc_source), so the C# dialect applies verbatim.
+    ("razor", _csharp.DIALECT),
     ("rust", _rust.DIALECT),
     ("dart", _dart.DIALECT),
     ("scala", _scala.DIALECT),
     ("ruby", _ruby.DIALECT),
     ("kotlin", _kotlin.DIALECT),
     ("cpp", _cpp.DIALECT),
-    # NB: "c" shares the C++ grammar but has no ``LanguageNodeMap`` at all
-    # (``get_language_map("c")`` is ``None``), so the health pass never reaches
-    # a dialect for it. Registering it here would be dead configuration.
+    # NB: "c" shares the C++ grammar and now has its own ``LanguageNodeMap``,
+    # so it does reach the health pass for complexity. It is still absent here
+    # on purpose: no perf dialect has been written for it, and the coverage
+    # report names it as an unsupported language rather than pretending a
+    # detector ran.
+    ("pascal", _pascal.DIALECT),
 )
 
 for _tag, _dialect in _REGISTER:

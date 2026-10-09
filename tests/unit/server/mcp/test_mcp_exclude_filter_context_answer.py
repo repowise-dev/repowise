@@ -178,7 +178,7 @@ async def test_get_answer_filters_excluded_hits(setup_mcp, monkeypatch):
     best = [g.get("file") for g in result.get("best_guesses", [])]
     assert "src/db/models.py" not in best
     # The non-excluded hit survives.
-    assert "src/auth/service.py" in result.get("fallback_targets", [])
+    assert "src/auth/service.py" in best
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
@@ -21,11 +23,30 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
     validate_provider_config,
+    warn,
 )
 
 # ---------------------------------------------------------------------------
 # run_async
 # ---------------------------------------------------------------------------
+
+
+class TestWarn:
+    def test_warn_prints_warning_prefix_to_stderr(self, capsys):
+        warn("something went wrong")
+        captured = capsys.readouterr()
+        assert "Warning:" in captured.err
+        assert "something went wrong" in captured.err
+        # Nothing leaks to stdout.
+        assert captured.out == ""
+
+    def test_warn_prefix_rendered(self, capsys):
+        warn("boom")
+        captured = capsys.readouterr()
+        # Rich renders the [yellow] markup away when stderr isn't a tty, but the
+        # human-facing "Warning:" prefix must survive on the stderr stream.
+        assert captured.err.startswith("Warning: boom\n")
+        assert captured.out == ""
 
 
 class TestRunAsync:
@@ -41,6 +62,43 @@ class TestRunAsync:
 
         with pytest.raises(ValueError, match="boom"):
             run_async(_fail())
+
+    def test_closes_provider_clients_on_the_loop_that_ran_the_coroutine(self, monkeypatch):
+        # #2946: an SDK client's pooled connections belong to this loop, so
+        # they are closed before it goes away, after the coroutine is done.
+        events: list[object] = []
+
+        async def _close():
+            events.append(("closed", asyncio.get_running_loop()))
+
+        async def _work():
+            events.append(("ran", asyncio.get_running_loop()))
+            return "done"
+
+        monkeypatch.setattr(
+            "repowise.core.providers.llm.base.close_provider_clients", _close
+        )
+
+        assert run_async(_work()) == "done"
+        assert [name for name, _ in events] == ["ran", "closed"]
+        assert events[0][1] is events[1][1]
+
+    def test_closes_provider_clients_when_the_coroutine_raises(self, monkeypatch):
+        closed: list[bool] = []
+
+        async def _close():
+            closed.append(True)
+
+        async def _fail():
+            raise ValueError("boom")
+
+        monkeypatch.setattr(
+            "repowise.core.providers.llm.base.close_provider_clients", _close
+        )
+
+        with pytest.raises(ValueError, match="boom"):
+            run_async(_fail())
+        assert closed == [True]
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +296,95 @@ class TestSaveConfigPartial:
         cfg = load_config(tmp_path)
         assert cfg["commit_limit"] == 500
         assert cfg["embedder"] == "minilm"
+
+
+class TestStaleEmbeddingModelIsNotCarriedOver:
+    """A re-init that resolves no model must not keep a previous one (#2627)."""
+
+    def test_save_config_drops_a_stale_pin_on_the_new_embedder(self, tmp_path):
+        from repowise.cli.helpers import load_config, save_config
+
+        save_config(
+            tmp_path,
+            "openai",
+            "gpt-5",
+            "openai",
+            embedding_model="text-embedding-3-large",
+            save_key=False,
+        )
+        save_config(
+            tmp_path, "gemini", "gemini-2.5-flash", "gemini", embedding_model=None, save_key=False
+        )
+
+        cfg = load_config(tmp_path)
+        assert cfg["embedder"] == "gemini"
+        assert "embedding_model" not in cfg
+
+    def test_save_config_partial_drops_a_stale_pin_on_the_new_embedder(self, tmp_path):
+        from repowise.cli.helpers import load_config, save_config_partial
+
+        rw_dir = tmp_path / ".repowise"
+        rw_dir.mkdir()
+        (rw_dir / "config.yaml").write_text(
+            "embedder: openai\nembedding_model: text-embedding-3-large\n", encoding="utf-8"
+        )
+
+        save_config_partial(tmp_path, embedder="gemini", embedding_model=None)
+
+        cfg = load_config(tmp_path)
+        assert cfg["embedder"] == "gemini"
+        assert "embedding_model" not in cfg
+
+    def test_serve_does_not_export_the_dropped_pin(self, tmp_path, monkeypatch):
+        from repowise.cli.commands import serve_cmd
+        from repowise.cli.helpers import save_config
+
+        save_config(
+            tmp_path,
+            "openai",
+            "gpt-5",
+            "openai",
+            embedding_model="text-embedding-3-large",
+            save_key=False,
+        )
+        save_config(
+            tmp_path, "gemini", "gemini-2.5-flash", "gemini", embedding_model=None, save_key=False
+        )
+
+        monkeypatch.chdir(tmp_path)
+        # _load_local_provider_config only sets these when unset, and it writes
+        # straight to os.environ, which monkeypatch cannot undo unless it made
+        # the write itself. Pre-set the ones this test does not care about so
+        # the function leaves them alone, and only clear the one under test.
+        monkeypatch.setenv("REPOWISE_PROVIDER", "unrelated")
+        monkeypatch.setenv("REPOWISE_MODEL", "unrelated")
+        monkeypatch.setenv("REPOWISE_EMBEDDER", "unrelated")
+        monkeypatch.delenv("REPOWISE_EMBEDDING_MODEL", raising=False)
+        serve_cmd._load_local_provider_config()
+
+        assert os.environ.get("REPOWISE_EMBEDDING_MODEL") is None
+
+    def test_embedder_alone_does_not_clear_a_pin_it_was_never_told_changed(self, tmp_path):
+        """Regression from review on #2654: reindex passes only ``embedder=`` every run.
+
+        The first cut of the fix cleared the pin whenever ``embedder`` was
+        passed without ``embedding_model``, which reads reindex's silence
+        (it has never had a model to pass) as "the model is gone" and wiped a
+        real pin on every routine reindex. Clearing now needs an explicit
+        ``embedding_model=None``, not merely the absence of the keyword.
+        """
+        from repowise.cli.helpers import load_config, save_config_partial
+
+        rw_dir = tmp_path / ".repowise"
+        rw_dir.mkdir()
+        (rw_dir / "config.yaml").write_text(
+            "embedder: openai\nembedding_model: text-embedding-3-large\n", encoding="utf-8"
+        )
+
+        save_config_partial(tmp_path, embedder="openai")
+
+        cfg = load_config(tmp_path)
+        assert cfg["embedding_model"] == "text-embedding-3-large"
 
 
 class TestConfigFingerprint:
@@ -658,6 +805,30 @@ class TestResolveProviderConfigModel:
         assert resolve_provider("openrouter", "anthropic/claude-opus-4", repo_path=tmp_path)
         assert captured["kwargs"].get("model") == "anthropic/claude-opus-4"
 
+    def test_env_model_used_when_set(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {})
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
+        monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-sonnet-5")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"].get("model") == "anthropic/claude-sonnet-5"
+
+    def test_env_model_overrides_config_model(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
+        monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-opus-5")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"].get("model") == "anthropic/claude-opus-5"
+
+    def test_explicit_model_flag_overrides_env_model(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
+        monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-opus-5")
+
+        assert resolve_provider("openrouter", "openai/gpt-5.6-luna", repo_path=tmp_path) == "provider"
+        assert captured["kwargs"].get("model") == "openai/gpt-5.6-luna"
+
 
 # ---------------------------------------------------------------------------
 # Update queued / pending markers — coalescing primitives that prevent the
@@ -816,10 +987,50 @@ class TestResolveProviderOrPrompt:
             helpers.resolve_provider_or_prompt(None, None, tmp_path, interactive=False)
         assert called["prompt"] == 0
 
+    def test_explicit_provider_prompt_resolves_after_setup(self, tmp_path, monkeypatch):
+        """An explicit provider gets inline credential setup only when interactive."""
+        import click
+
+        from repowise.cli import helpers
+
+        sentinel = object()
+        calls = {"resolve": 0, "prompt": 0}
+
+        def _resolve(provider_name, model, repo_path=None):
+            calls["resolve"] += 1
+            if calls["resolve"] == 1:
+                raise click.ClickException("Provider 'openai' requires a key")
+            assert provider_name == "anthropic"
+            assert model == "ag/gemini-3.7-flash-medium"
+            assert repo_path == tmp_path
+            return sentinel
+
+        monkeypatch.setattr(helpers, "resolve_provider", _resolve)
+
+        def _credentials(console, provider, *, repo_path=None, save_key=True):
+            calls["prompt"] += 1
+            assert provider == "anthropic"
+            assert repo_path == tmp_path
+            assert save_key is True
+            return True
+
+        monkeypatch.setattr(
+            "repowise.cli.ui.provider_selection.interactive_provider_credentials",
+            _credentials,
+        )
+
+        result = helpers.resolve_explicit_provider_or_prompt(
+            "anthropic",
+            "ag/gemini-3.7-flash-medium",
+            tmp_path,
+            interactive=True,
+        )
+
+        assert result is sentinel
+        assert calls == {"resolve": 2, "prompt": 1}
+
     @pytest.mark.parametrize("exc_name", ["EOFError", "Abort"])
-    def test_unanswerable_prompt_falls_back_to_clean_error(
-        self, tmp_path, monkeypatch, exc_name
-    ):
+    def test_unanswerable_prompt_falls_back_to_clean_error(self, tmp_path, monkeypatch, exc_name):
         """A tty that lies: the prompt hits EOF/Abort, so we surface the clean
         actionable error instead of a bare 'Aborted!' — the agent-safe path."""
         import click

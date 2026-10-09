@@ -141,7 +141,7 @@ async def test_get_health_excludes_configured_paths(setup_mcp, health_data, tmp_
     (rw / "config.yaml").write_text("exclude_patterns:\n  - src/db/\n", encoding="utf-8")
     monkeypatch.setattr(mcp_mod._state, "_repo_path", str(tmp_path))
 
-    result = await get_health()
+    result = await get_health(only=["worst_files"])
     paths = {m["file_path"] for m in result.get("worst_files", [])}
     assert "src/db/models.py" not in paths
     assert "src/auth/service.py" in paths
@@ -209,7 +209,7 @@ async def test_risk_raw_pr_blast_radius_excludes_filtered(setup_mcp, tmp_path, m
     from repowise.server.mcp_server import get_risk
 
     args = (["src/auth/service.py"],)
-    kwargs = {"changed_files": ["src/auth/service.py"]}
+    kwargs = {"changed_files": ["src/auth/service.py"], "include": ["blast"]}
 
     # Baseline (no exclude config) — confirm the path is present, so the test
     # below is not vacuous.

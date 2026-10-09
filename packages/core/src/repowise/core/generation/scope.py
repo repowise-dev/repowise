@@ -145,6 +145,14 @@ def build_dependencies(
     generation emits. Repo-wide ids are the overview + architecture pages
     (keyed by repo name) plus every persisted onboarding page.
     """
+    # Full selection, not the ranked/budgeted path: cascade needs every
+    # module/SCC group's real page id, not a coverage-limited subset.
+    # This runs on every `update` (post-commit hook, watcher, polling), so its
+    # cost was benchmarked rather than assumed cheap: median 15.33ms select /
+    # 23.48ms build_dependencies on a ~1,250-file repo, 137.86ms / 204.91ms on
+    # an ~11,187-file repo (see scripts/benchmark_scope_selection.py). Both
+    # scale roughly linearly with file count, so this is safe to run inline on
+    # a hook-driven update rather than needing a separate async pass.
     selection = select_pages(
         _selection_inputs(
             parsed_files=parsed_files,

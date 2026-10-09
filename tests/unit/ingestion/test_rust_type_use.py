@@ -3,8 +3,8 @@
 ``rust.scm`` used to capture parameter types, return types, trait bounds,
 ``dyn``/``impl`` Trait and turbofish type arguments as ``@call.target`` /
 ``@call.site``, so ``fn take(x: MyType)`` recorded the enclosing function as
-*calling* ``MyType``. A type is not callable, so every such edge was wrong
-(bug 46). The captures now carry ``@param.type`` and resolve to ``type_use``.
+*calling* ``MyType``. A type is not callable, so every such edge was wrong.
+The captures now carry ``@param.type`` and resolve to ``type_use``.
 
 Covers:
 
@@ -122,6 +122,50 @@ class TestRustTypePositionsAreNotCalls:
         # ...while neither type position leaked back in as a call.
         assert "Config" not in targets
         assert "Report" not in targets
+
+
+class TestRustWrapperShapesReachTheResolver:
+    """Query-level coverage for issue #2298: `&Foo`, `Box<Foo>` and
+    `std::io::Error` in parameter and return position were previously
+    invisible to `type_use` because the query captured only a bare
+    `type_identifier`; the head extractor already unwrapped these shapes,
+    the query just never offered them."""
+
+    def test_reference_parameter(self) -> None:
+        body = "fn take(x: &MyType) {}\n"
+        assert "MyType" in _type_names(body)
+        assert "MyType" not in _call_targets(body)
+
+    def test_boxed_parameter(self) -> None:
+        body = "fn take(x: Box<MyType>) {}\n"
+        assert "MyType" in _type_names(body)
+        assert "MyType" not in _call_targets(body)
+
+    def test_scoped_parameter(self) -> None:
+        body = "fn take(x: std::io::Error) {}\n"
+        assert "Error" in _type_names(body)
+        assert "Error" not in _call_targets(body)
+
+    def test_reference_return_type(self) -> None:
+        body = "fn make() -> &MyType { todo!() }\n"
+        assert "MyType" in _type_names(body)
+        assert "MyType" not in _call_targets(body)
+
+    def test_boxed_return_type(self) -> None:
+        body = "fn make() -> Box<MyType> { todo!() }\n"
+        assert "MyType" in _type_names(body)
+        assert "MyType" not in _call_targets(body)
+
+    def test_scoped_return_type(self) -> None:
+        body = "fn make() -> std::io::Error { todo!() }\n"
+        assert "Error" in _type_names(body)
+        assert "Error" not in _call_targets(body)
+
+    def test_the_generic_constructor_itself_is_not_captured(self) -> None:
+        # "Box" is a builtin the head extractor filters -- only the type
+        # argument inside it should reach the resolver.
+        body = "fn take(x: Box<MyType>) {}\n"
+        assert "Box" not in _type_names(body)
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 """APScheduler background jobs for repowise server.
 
 Two recurring jobs:
-1. Staleness checker — finds stale wiki pages and queues regeneration.
+1. Staleness checker — reports stale wiki pages without regenerating them.
 2. Polling fallback — catches missed webhooks by comparing HEAD commits.
 """
 
@@ -18,6 +18,40 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 logger = logging.getLogger(__name__)
+
+
+def _inspect_repository(repo_path: str) -> tuple[str | None, str] | None:
+    """Read the persisted baseline and current HEAD for one repository.
+
+    This helper is intentionally synchronous so the scheduler can offload the
+    complete filesystem + Git inspection as one unit with ``asyncio.to_thread``.
+    """
+    import json
+    import subprocess
+    from pathlib import Path
+
+    state_path = Path(repo_path) / ".repowise" / "state.json"
+    stored_commit = None
+    if state_path.is_file():
+        try:
+            state_data = json.loads(state_path.read_text(encoding="utf-8"))
+            stored_commit = state_data.get("last_sync_commit")
+        except Exception:
+            pass
+
+    try:
+        head_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return None
+    if head_result.returncode != 0:
+        return None
+    return stored_commit, head_result.stdout.strip()
 
 
 def setup_scheduler(
@@ -39,7 +73,7 @@ def setup_scheduler(
 
     async def check_staleness() -> None:
         """Find stale pages and log them for regeneration."""
-        from sqlalchemy import select
+        from sqlalchemy import func, select
 
         from repowise.core.persistence.database import get_session
         from repowise.core.persistence.models import Page, Repository
@@ -51,19 +85,21 @@ def setup_scheduler(
 
                 for repo in repos:
                     stale_result = await session.execute(
-                        select(Page).where(
+                        select(func.count())
+                        .select_from(Page)
+                        .where(
                             Page.repository_id == repo.id,
                             Page.freshness_status.in_(["stale", "expired"]),
                         )
                     )
-                    stale = stale_result.scalars().all()
-                    if stale:
+                    stale_count = stale_result.scalar()
+                    if stale_count:
                         logger.info(
                             "staleness_check",
                             extra={
                                 "repo_id": repo.id,
                                 "repo_name": repo.name,
-                                "stale_count": len(stale),
+                                "stale_count": stale_count,
                             },
                         )
         except Exception:
@@ -76,10 +112,6 @@ def setup_scheduler(
         stored ``last_sync_commit`` in state.json, unless a job is already
         pending or running.
         """
-        import json as _json
-        import subprocess
-        from pathlib import Path as _Path
-
         from sqlalchemy import select
 
         from repowise.core.persistence import crud
@@ -95,30 +127,12 @@ def setup_scheduler(
                     if not repo.local_path:
                         continue
 
-                    # Read last_sync_commit from state.json
-                    state_path = _Path(repo.local_path) / ".repowise" / "state.json"
-                    stored_commit = None
-                    if state_path.is_file():
-                        try:
-                            state_data = _json.loads(state_path.read_text(encoding="utf-8"))
-                            stored_commit = state_data.get("last_sync_commit")
-                        except Exception:
-                            pass
-
-                    # Get current git HEAD
-                    try:
-                        head_result = subprocess.run(
-                            ["git", "rev-parse", "HEAD"],
-                            cwd=repo.local_path,
-                            capture_output=True,
-                            text=True,
-                            timeout=10,
-                        )
-                        if head_result.returncode != 0:
-                            continue
-                        current_head = head_result.stdout.strip()
-                    except Exception:
+                    # Keep each repo sequential, but move its complete
+                    # filesystem + Git inspection off the server event loop.
+                    inspection = await asyncio.to_thread(_inspect_repository, repo.local_path)
+                    if inspection is None:
                         continue
+                    stored_commit, current_head = inspection
 
                     if stored_commit and current_head == stored_commit:
                         continue

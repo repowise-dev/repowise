@@ -379,6 +379,48 @@ async def test_resume_reports_the_pages_it_skipped(tmp_path):
     assert "file_page:pkg/module_1.py" in {page.page_id for page in pages}
 
 
+async def test_resume_regenerates_a_page_with_a_vector_but_no_row(tmp_path):
+    """A run killed after embedding a page but before saving its row leaves
+    a vector with no page. Resume must regenerate that page, not skip it."""
+    from repowise.core.pipeline.phases.generation import run_generation
+
+    parsed_files, source_map, repo_structure = _make_concurrency_fixture()
+    builder = GraphBuilder()
+    for parsed in parsed_files:
+        builder.add_file(parsed)
+    builder.build()
+
+    saved = "file_page:pkg/module_0.py"
+    vector_only = "file_page:pkg/module_1.py"
+
+    class _StoreWithPriorRun(_SlowVectorStore):
+        async def list_page_ids(self) -> set[str]:
+            return {saved, vector_only}
+
+    preserved: set[str] = set()
+    pages = await run_generation(
+        repo_path=tmp_path,
+        parsed_files=parsed_files,
+        source_map=source_map,
+        graph_builder=builder,
+        repo_structure=repo_structure,
+        git_meta_map={},
+        llm_client=MockProvider(),
+        embedder=None,
+        vector_store=_StoreWithPriorRun(delay=0),
+        concurrency=2,
+        progress=None,
+        resume=True,
+        generation_config=GenerationConfig(max_file_pages=0, cache_enabled=False),
+        preserved_page_ids=preserved,
+        persisted_page_ids={saved},
+    )
+
+    ids = {page.page_id for page in pages}
+    assert saved in preserved and saved not in ids
+    assert vector_only in ids and vector_only not in preserved
+
+
 # ---------------------------------------------------------------------------
 # Test class
 # ---------------------------------------------------------------------------
@@ -406,9 +448,10 @@ class TestGenerationPipeline:
             f"Duplicate page IDs found: {[i for i in ids if ids.count(i) > 1]}"
         )
 
-    def test_all_pages_have_model_name(self, pipeline_result):
+    def test_model_name_only_on_model_written_pages(self, pipeline_result):
+        # A template page made no model call, so it names no model.
         for page in pipeline_result["pages"]:
-            assert page.model_name
+            assert bool(page.model_name) == (page.provider_name != "template")
 
     def test_all_pages_provider_is_mock(self, pipeline_result):
         # LLM pages use the mock provider; the deterministic coverage tail

@@ -4,6 +4,8 @@ import { ActiveJobBannerWrapper as ActiveJobBanner } from "@/components/dashboar
 import { PageTransition } from "@/components/layout/page-transition";
 import { ReindexHintBanner } from "@/components/layout/reindex-hint-banner";
 import { RepoBreadcrumb } from "@/components/layout/repo-breadcrumb";
+import { RepositoryChatProvider } from "@/components/chat/repository-chat-provider";
+import { RepositoryChatDock } from "@/components/chat/repository-chat-dock";
 
 interface RepoLayoutProps {
   children: React.ReactNode;
@@ -22,11 +24,12 @@ export default async function RepoLayout({ children, params }: RepoLayoutProps) 
     redirect("/");
   }
   return (
-    <>
+    <RepositoryChatProvider repoId={id} repoName={repoName}>
       <ReindexHintBanner repoId={id} />
       <ActiveJobBanner repoId={id} />
       <RepoBreadcrumb repoName={repoName} docsMode={docsMode ?? "none"} />
       <PageTransition>{children}</PageTransition>
-    </>
+      <RepositoryChatDock />
+    </RepositoryChatProvider>
   );
 }

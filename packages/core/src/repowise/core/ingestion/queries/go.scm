@@ -55,6 +55,49 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; Generic call with explicit type arguments and one argument: F[int](x)
+; tree-sitter-go cannot tell this from a conversion to a generic type, so it is
+; a type_conversion_expression, which no call_expression pattern matches. A
+; real conversion (List[int](xs)) is captured too, and resolves to the type as
+; a plain conversion (MyInt(x), a call_expression) always has.
+(type_conversion_expression
+  type: (generic_type
+    type: (type_identifier) @call.target
+  )
+) @call.site
+
+; The same through a package: pkg.NewQ[string](x)
+(type_conversion_expression
+  type: (generic_type
+    type: (qualified_type
+      package: (package_identifier) @call.receiver
+      name: (type_identifier) @call.target
+    )
+  )
+) @call.site
+
+; One type argument with no argument or several: F[int](), F[int](a, b)
+; Here the grammar reads F[int] as an index expression. (Two or more type
+; arguments with two or more arguments parse as an ordinary call_expression
+; with a type_arguments field, which the patterns above already match.)
+(call_expression
+  function: (index_expression
+    operand: (identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; The same through a package: pkg.NewQ[string](), pkg.F[int](a, b)
+(call_expression
+  function: (index_expression
+    operand: (selector_expression
+      operand: (identifier) @call.receiver
+      field: (field_identifier) @call.target
+    )
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
 ; Method call: obj.Method(args)
 (call_expression
   function: (selector_expression
@@ -85,7 +128,7 @@
 ; Chained call: obj.Method1().Method2(args)
 (call_expression
   function: (selector_expression
-    operand: (call_expression)
+    operand: (call_expression) @call.receiver_call
     field: (field_identifier) @call.target
   )
   arguments: (argument_list) @call.arguments
@@ -100,6 +143,42 @@
     (selector_expression
       operand: (_) @reference.receiver
       field: (field_identifier) @reference.name
+    )
+  )
+)
+
+; Function value in composite literal (keyed map/struct or slice/array element):
+; template.FuncMap{"greet": greet, "handler": pkg.Handler}, Config{fn: greet}, []func(){greet}
+(keyed_element
+  value: (literal_element
+    (identifier) @reference.name
+  )
+)
+
+(keyed_element
+  value: (literal_element
+    (selector_expression
+      operand: (_) @reference.receiver
+      field: (field_identifier) @reference.name
+    )
+  )
+)
+
+(composite_literal
+  body: (literal_value
+    (literal_element
+      (identifier) @reference.name
+    )
+  )
+)
+
+(composite_literal
+  body: (literal_value
+    (literal_element
+      (selector_expression
+        operand: (_) @reference.receiver
+        field: (field_identifier) @reference.name
+      )
     )
   )
 )

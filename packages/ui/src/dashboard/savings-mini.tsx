@@ -2,18 +2,19 @@ import { Sparkles } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { formatCost, formatTokens } from "../lib/format";
 
-/** Structural slice of the savings rollup this tile renders — the full
- *  /distill-savings payload and the overview-summary headline both fit. */
+/** Structural slice of the savings report this tile renders — the full
+ *  savings payload and the overview-summary headline both fit. */
 export interface SavingsMiniData {
   available: boolean;
-  saved_tokens?: number;
-  mcp_tokens?: number;
+  saved_input_tokens?: number;
+  measured_saved_input_tokens?: number;
+  inferred_saved_input_tokens?: number;
+  unpriced_saved_input_tokens?: number;
   estimated_usd_saved?: number;
-  pricing_model?: string;
 }
 
 interface SavingsMiniProps {
-  /** Rollup from /distill-savings (or the overview-summary headline);
+  /** The savings report (or the overview-summary headline);
    *  null/undefined when unavailable. */
   data?: SavingsMiniData | null;
   /** Repo id, for the "View costs →" link. */
@@ -29,19 +30,23 @@ interface SavingsMiniProps {
 }
 
 /**
- * Compact overview tile for agent token savings — the headline number, dollar
- * value priced at the detected agent model, and a distill-vs-MCP split, with a
- * jump to the full Costs results page.
+ * Compact overview tile for agent token savings — the headline number, what the
+ * priced part of it was worth, and the measured-vs-inferred evidence split,
+ * with a jump to the full Costs results page.
+ *
+ * The evidence split rides on the tile rather than the surface split because a
+ * lone headline reads as one confident number, and a counterfactual estimate
+ * and a measured before/after are not the same claim.
  */
 export function SavingsMini({ data, repoId, trackable = true }: SavingsMiniProps) {
-  const distillSaved = data?.saved_tokens ?? 0;
-  const mcpSaved = data?.mcp_tokens ?? 0;
-  const total = distillSaved + mcpSaved;
+  const total = data?.saved_input_tokens ?? 0;
+  const measured = data?.measured_saved_input_tokens ?? 0;
+  const inferred = data?.inferred_saved_input_tokens ?? 0;
   const hasData = !!data?.available && total > 0;
   const costsHref = `/repos/${repoId}/costs`;
 
-  const distillPct = total > 0 ? Math.round((distillSaved / total) * 100) : 0;
-  const mcpPct = 100 - distillPct;
+  const measuredPct = total > 0 ? Math.round((measured / total) * 100) : 0;
+  const inferredPct = 100 - measuredPct;
 
   return (
     <Card>
@@ -71,28 +76,28 @@ export function SavingsMini({ data, repoId, trackable = true }: SavingsMiniProps
               </span>
             </div>
             <p className="text-xs text-[var(--color-text-secondary)] -mt-1">
-              tokens saved for your agent
-              {data!.pricing_model ? (
+              {inferred > 0 ? "estimated tokens saved for your agent" : "tokens saved for your agent"}
+              {(data!.unpriced_saved_input_tokens ?? 0) > 0 ? (
                 <span className="text-[var(--color-text-tertiary)]">
                   {" "}
-                  · priced at {data!.pricing_model}
+                  · some events carry no recorded rate
                 </span>
               ) : null}
             </p>
 
             <div className="flex h-2 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
-              {distillSaved > 0 && (
+              {measured > 0 && (
                 <div
                   className="h-full"
-                  style={{ width: `${distillPct}%`, background: "var(--color-accent-fill)" }}
-                  title={`Distill — ${formatTokens(distillSaved)}`}
+                  style={{ width: `${measuredPct}%`, background: "var(--color-accent-fill)" }}
+                  title={`Measured — ${formatTokens(measured)}`}
                 />
               )}
-              {mcpSaved > 0 && (
+              {inferred > 0 && (
                 <div
                   className="h-full"
-                  style={{ width: `${mcpPct}%`, background: "var(--color-accent-secondary)" }}
-                  title={`MCP tools — ${formatTokens(mcpSaved)}`}
+                  style={{ width: `${inferredPct}%`, background: "var(--color-accent-secondary)" }}
+                  title={`Inferred — ${formatTokens(inferred)}`}
                 />
               )}
             </div>
@@ -103,10 +108,10 @@ export function SavingsMini({ data, repoId, trackable = true }: SavingsMiniProps
                     className="h-2 w-2 rounded-full shrink-0"
                     style={{ background: "var(--color-accent-fill)" }}
                   />{" "}
-                  Distill
+                  Measured
                 </span>
                 <span className="tabular-nums text-[var(--color-text-tertiary)] shrink-0">
-                  {formatTokens(distillSaved)}
+                  {formatTokens(measured)}
                 </span>
               </div>
               <div className="flex items-center justify-between gap-2">
@@ -115,10 +120,10 @@ export function SavingsMini({ data, repoId, trackable = true }: SavingsMiniProps
                     className="h-2 w-2 rounded-full shrink-0"
                     style={{ background: "var(--color-accent-secondary)" }}
                   />{" "}
-                  MCP tools
+                  Inferred
                 </span>
                 <span className="tabular-nums text-[var(--color-text-tertiary)] shrink-0">
-                  {formatTokens(mcpSaved)}
+                  {formatTokens(inferred)}
                 </span>
               </div>
             </div>

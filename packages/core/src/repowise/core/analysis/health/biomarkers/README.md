@@ -51,7 +51,8 @@ Organizational (cap −3.5):
 - `developer_congestion` — too many active authors competing on a file.
 - `knowledge_loss` — primary authors no longer active (de-rated to 0.4).
 - `hidden_coupling` — files that co-change in history without an explicit
-  import edge between them.
+  import edge between them. Advisory: filed here, deducts nothing (it showed no
+  defect signal on a held-out, pre-registered test).
 - `function_hotspot` — functions that are both structurally complex and
   frequently modified (per-function churn from the FULL-tier blame index).
 - `code_age_volatility` — dormant functions (median line age ≥ 1y) that
@@ -108,7 +109,10 @@ table alone would allow.
 `FileContext` (see `base.py`) carries:
 
 - `file_path`, `language`, `nloc`, `module`, `has_test_file`.
-- `function_metrics` — `dict[symbol_name → FunctionComplexity]`.
+- `all_functions` — `tuple[FunctionComplexity, ...]`, every walked
+  function in document order. Not keyed by name: a name key drops a
+  file's anonymous `it` callbacks and same-named methods on a second
+  class. Empty for SQL.
 - `class_metrics` — `list[ClassComplexity]` (LCOM4, method count, size).
   Empty for languages whose walker map doesn't opt into class analysis.
 - `git_meta` — per-file git metadata (commits, owners, bus factor,

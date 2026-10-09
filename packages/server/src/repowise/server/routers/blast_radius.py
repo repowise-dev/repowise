@@ -24,9 +24,10 @@ async def analyze_blast_radius(
 ) -> BlastRadiusResponse:
     """Compute blast radius for a proposed PR given its changed files.
 
-    Returns direct risk scores per file, transitively affected files (BFS up to
-    max_depth), historical co-change warnings, recommended reviewers, test gaps,
-    and an overall risk score (0–10).
+    Returns raw per-file structural scores, transitive structural reach, historical
+    co-change warnings, reviewers, compatibility test gaps, a canonical typed
+    test-impact population with evidence/availability state, and an uncalibrated
+    0–10 structural-impact heuristic. None is a runtime-breakage probability.
     """
     analyzer = PRBlastRadiusAnalyzer(session=session, repo_id=repo_id)
     result = await analyzer.analyze_files(

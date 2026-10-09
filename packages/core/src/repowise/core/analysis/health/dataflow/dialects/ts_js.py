@@ -66,6 +66,14 @@ class TsJsDefUseDialect(BaseDefUseDialect):
     # a write-target position, so counting it as an identifier only adds reads.
     identifier_kinds = frozenset({"identifier", "shorthand_property_identifier"})
 
+    # Only the *statement* forms bind in the enclosing scope, and they hoist.
+    # A named function expression binds its name inside its own body only, so
+    # recording it here would shadow an unrelated enclosing variable of the
+    # same name - the ``var fib = function fib(n) {...}`` idiom exactly.
+    enclosing_binder_kinds = frozenset(
+        {"function_declaration", "generator_function_declaration"}
+    )
+
     def _is_scope_boundary(self, node: Node) -> bool:
         return node.type in _SCOPE_BOUNDARIES
 
@@ -141,7 +149,9 @@ class TsJsDefUseDialect(BaseDefUseDialect):
             for declarator in node.named_children:
                 if declarator.type != _DECLARATOR:
                     continue
+                start = len(defs)
                 self._targets(declarator.child_by_field_name("name"), defs, uses)
+                self._declare(defs, start, declarator)
                 self._process(declarator.child_by_field_name("value"), defs, uses)
             return
         if t in self.member_access_kinds:
@@ -151,6 +161,7 @@ class TsJsDefUseDialect(BaseDefUseDialect):
             uses.append(self._occ(node))
             return
         if self._is_scope_boundary(node):
+            self.boundary_def(node, defs)
             return
         for child in node.named_children:
             self._process(child, defs, uses)

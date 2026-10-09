@@ -14,8 +14,8 @@ The level-by-level orchestration of ``generate_all`` lives in
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +25,7 @@ import structlog
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedResponse
 
+from ..agent_digest import rejoin_questions
 from ..context.evidence import (
     EvidenceItem,
     EvidenceSelection,
@@ -34,6 +35,7 @@ from ..context.evidence import (
 from ..context_assembler import ContextAssembler, FilePageContext
 from ..house_vocabulary import cell
 from ..languages import sanitize_language_code
+from ..mermaid_safety import renderable_mermaid
 from ..models import (
     MODEL_PAGE_CONFIDENCE,
     GeneratedPage,
@@ -49,12 +51,11 @@ from .pertype import PerTypeGenerationMixin
 from .prompts import CORRECTIVE_RETRY_DIRECTIVE, SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
 from .structural import (
     StructuralRenderMixin,
-    as_markdown,
-    oneline,
-    signature,
+    register_filters,
 )
 from .validation import (
     InvalidGeneratedContentError,
+    InvalidMermaidError,
     reset_artifact_check_counts,
     validate_generated_response,
 )
@@ -132,10 +133,13 @@ class PriorPage:
     source_hash: str
     model_name: str
     content: str
+    digest: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
     content_hash: str = ""
+    #: The stored page's metadata, for facts a reused page must carry forward.
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
@@ -178,6 +182,10 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # table.
         self._prior_pages: dict[str, PriorPage] = prior_pages or {}
         self._reuse_count: int = 0
+        # Pages whose vectors failed to land this run. Read by callers after
+        # ``generate_all``: a failed embed leaves semantic search without
+        # them, which a run must not report as healthy.
+        self.embed_failed_pages: int = 0
         # Per-template structural fingerprints, lazily computed; every input
         # they fold is fixed for the generator's lifetime. Keyed by template
         # name because each structural page type folds its own template source.
@@ -206,9 +214,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         self._jinja_env = jinja_env
         # Registered on whatever env we ended up with (including one a caller
         # injected), since deterministic templates depend on it.
-        self._jinja_env.filters.setdefault("oneline", oneline)
-        self._jinja_env.filters.setdefault("as_markdown", as_markdown)
-        self._jinja_env.filters.setdefault("signature", signature)
+        register_filters(self._jinja_env)
         # A pipe ends a table cell wherever it appears, and a deterministic
         # template interpolates the repository's own prose — which routinely
         # quotes a shell pipeline. Without this every column to the right of
@@ -248,6 +254,9 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         kg_data: dict | None = None,
         only_page_ids: set[str] | None = None,
         preserved_page_ids: set[str] | None = None,
+        timings: Any | None = None,
+        on_warning: Callable[[str], None] | None = None,
+        persisted_page_ids: set[str] | None = None,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
@@ -268,6 +277,14 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         caller hands the set to persistence, which must not sweep those ids as
         stale. Harmless to pass on a non-resume run (nothing is skipped for that
         reason, so nothing is added); None when the caller has no use for it.
+
+        ``persisted_page_ids`` is the set of ids that already have a stored
+        page row. On ``resume`` a page counts as done only when it is in both
+        this set and the vector store; None trusts the vector store alone.
+
+        ``timings`` is the run's shared ``PhaseTimings`` table. Generation
+        records its per-level and checkpoint spans into it so they report
+        beside the top-level phases; None disables those spans.
         """
         from .orchestrate import run_generate_all
 
@@ -279,6 +296,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # onboarding level would otherwise report the previous run's
         # vocabulary as its own.
         reset_house_terms()
+        self.embed_failed_pages = 0
 
         return await run_generate_all(
             self,
@@ -302,6 +320,9 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             kg_data=kg_data,
             only_page_ids=only_page_ids,
             preserved_page_ids=preserved_page_ids,
+            timings=timings,
+            on_warning=on_warning,
+            persisted_page_ids=persisted_page_ids,
         )
 
     # ------------------------------------------------------------------
@@ -332,6 +353,12 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # file template does not emit; keep this type's original extraction.
         page.summary = _extract_summary(page.content)
         _attach_file_provenance(page, ctx)
+        # Embedded for search, not rendered (see file_page.j2).
+        if ctx.file_vocabulary:
+            # Local: persistence pulls SQLAlchemy into every parse worker.
+            from repowise.core.persistence.vector_store import FILE_VOCABULARY_KEY
+
+            page.metadata[FILE_VOCABULARY_KEY] = ctx.file_vocabulary
         return page
 
     # ------------------------------------------------------------------
@@ -372,7 +399,9 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
                     target_path=target_path,
                 )
                 return GeneratedResponse(
-                    content=prior.content,
+                    # The stored body lost its questions to the digest; the
+                    # response it was split from carried them.
+                    content=rejoin_questions(prior.content, prior.digest),
                     input_tokens=0,
                     output_tokens=0,
                     cached_tokens=0,
@@ -430,8 +459,21 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
                 cache_hints=cache_hints,
             )
             # A second failure raises, so the caller's stub-fallback path is
-            # reached exactly as it was before the retry existed.
-            validate_generated_response(response)
+            # reached exactly as it was before the retry existed. A page lost
+            # only to a diagram is kept without it: the retry when its own
+            # failure is a diagram, else the first attempt when that one was.
+            # The retry's token counts stay either way; both were billed.
+            try:
+                validate_generated_response(response)
+            except InvalidGeneratedContentError as second_failure:
+                if isinstance(second_failure, InvalidMermaidError):
+                    salvage = response
+                elif isinstance(first_failure, InvalidMermaidError):
+                    salvage = discarded
+                else:
+                    raise
+                response = replace(response, content=renderable_mermaid(salvage.content))
+                validate_generated_response(response)
             # The discarded attempt was billed. Carrying its tokens forward is
             # what keeps the run report's totals equal to what the provider
             # actually charged for; the page itself is the retry's content.

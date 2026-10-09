@@ -5,6 +5,11 @@ SQL upserts, the stale-page sweep, and a full-text index loop that awaits once
 per generated page. On a few thousand pages that is minutes of a screen that
 looks identical whether the run is working or wedged — directly after a
 generation bar that had just announced it was finished.
+
+The full-text index is one statement now, so the loop that earned a real
+denominator is gone and what remains is bounded by the SQL half. The phase is
+still announced and still closed; it is the per-page count that no longer
+describes anything.
 """
 
 from __future__ import annotations
@@ -72,7 +77,12 @@ def _result(pages: list[GeneratedPage]) -> SimpleNamespace:
     )
 
 
-async def test_full_text_indexing_reports_a_page_at_a_time(tmp_path):
+async def test_persistence_claims_no_per_page_progress_it_cannot_report(tmp_path):
+    """Counting pages here would fill the bar the instant the batch landed.
+
+    The rest of persistence would then run behind a bar reading 100%, which
+    misreads as a hang the same way the old silent spinner did.
+    """
     repo_path = tmp_path / "repo"
     repo_path.mkdir()
     progress = _RecordingProgress()
@@ -80,9 +90,8 @@ async def test_full_text_indexing_reports_a_page_at_a_time(tmp_path):
     pages = [_page("a"), _page("b"), _page("c")]
     await persist_result(_result(pages), repo_path, progress)
 
-    # A real denominator, not a spinner: the loop length is known up front.
-    assert ("persist", len(pages)) in progress.started
-    assert progress.items.count("persist") == len(pages)
+    assert [phase for phase, _ in progress.started if phase == "persist"] == []
+    assert progress.items.count("persist") == 0
     assert "persist" in progress.done
 
 

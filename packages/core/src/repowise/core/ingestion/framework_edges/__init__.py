@@ -1,9 +1,9 @@
 """Framework-aware synthetic edge detection.
 
 Detects convention-based relationships (Django, FastAPI, Flask, ASP.NET, Rails,
-Laravel, Spring, Express/Nest, Gin/Echo/Chi, Axum/Actix/Rocket, TYPO3, and
-pytest ``conftest.py``) and adds ``edge_type="framework"`` edges that no static
-import graph captures.
+Laravel, Spring, Express/Nest, Angular, Gin/Echo/Chi, Axum/Actix/Rocket, TYPO3, Godot
+``class_name`` globals, pytest ``conftest.py`` and AWS Lambda handlers) and adds
+``edge_type="framework"`` edges that no static import graph captures.
 
 Previously a single ``framework_edges.py`` module; split (PR 3.5) into one
 module per framework behind this façade. The public entry point —
@@ -19,13 +19,18 @@ from typing import TYPE_CHECKING
 
 from . import (
     android_manifest,
+    angular,
     aspnet,
+    aws_lambda,
     django,
+    dotnet_discovery,
+    dotnet_roots,
     express,
     fastapi,
     flask,
     flutter,
     go,
+    godot,
     gtest,
     hono,
     jakarta,
@@ -57,6 +62,8 @@ _HANDLERS: list[FrameworkHandler] = [
     *fastapi.HANDLERS,
     *flask.HANDLERS,
     *aspnet.HANDLERS,  # ASP.NET edges, then the any-C# extension-method scan
+    *dotnet_discovery.HANDLERS,  # types a .NET framework finds by assembly scan
+    *dotnet_roots.HANDLERS,
     *rails.HANDLERS,
     *laravel.HANDLERS,
     *spring.HANDLERS,
@@ -66,14 +73,20 @@ _HANDLERS: list[FrameworkHandler] = [
     *android_manifest.HANDLERS,
     *flutter.HANDLERS,
     *express.HANDLERS,
+    *angular.HANDLERS,
     *next_app.HANDLERS,
     *hono.HANDLERS,
     *remix.HANDLERS,
     *trpc.HANDLERS,
     *go.HANDLERS,
+    # `class_name Foo` registers a project-global identifier other scripts use
+    # with no import at all: Godot's own name table, and the largest remaining
+    # dead-code false positive once scene edges land.
+    *godot.HANDLERS,
     *gtest.HANDLERS,
     *rust.HANDLERS,
     *typo3.HANDLERS,
+    *aws_lambda.HANDLERS,
 ]
 
 

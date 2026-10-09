@@ -40,14 +40,21 @@ export function ValidationSummary({ validation, fileHref }: ValidationSummaryPro
 
       {validation.tests.length > 0 ? (
         <ul className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
-          {validation.tests.map((test) => (
-            <li
-              key={test}
-              className="break-all py-2 font-mono text-xs text-[var(--color-text-secondary)]"
-            >
-              {test}
-            </li>
-          ))}
+          {validation.tests.map((test) => {
+            const reason = validation.reasons?.[test];
+            return (
+              <li key={test} className="py-2">
+                <span className="block break-all font-mono text-xs text-[var(--color-text-secondary)]">
+                  {test}
+                </span>
+                {reason ? (
+                  <span className="mt-0.5 block text-xs text-[var(--color-text-tertiary)]">
+                    {reason}
+                  </span>
+                ) : null}
+              </li>
+            );
+          })}
         </ul>
       ) : null}
 

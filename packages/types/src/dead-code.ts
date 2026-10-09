@@ -77,7 +77,8 @@ export interface DeadCodeFinding {
   symbol_kind: string | null;
   confidence: number;
   reason: string;
-  lines: number;
+  /** Lines the finding covers; null when they could not be counted. */
+  lines: number | null;
   /**
    * Effective deletion-readiness — high confidence AND no runtime-load risk
    * factors. Re-derived server-side, not the raw persisted boolean.

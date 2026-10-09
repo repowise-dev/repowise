@@ -1,7 +1,7 @@
 ---
 frontmatter: |
     description: Rebuild the Repowise vector store by re-embedding all wiki pages. No LLM calls — only embedding API calls.
-    allowed-tools: Bash, Read, AskFollowupQuestion
+    allowed-tools: Bash(repowise reindex:*), Read, AskUserQuestion
 ---
 
 # Repowise Reindex
@@ -24,7 +24,7 @@ This is useful when:
 ## Available flags
 
 - `--embedder gemini|openai|openrouter|ollama|edenai|auto` — embedding provider (default: auto-detect from env vars)
-- `--batch-size N` — pages per embedding batch (default: 20)
+- `--batch-size N` — pages per embedding batch, must be 1 or greater (default: 32)
 
 ## Requirements
 

@@ -110,7 +110,7 @@ class _SqlGraphRecordsMixin(GraphRecordsIndexStore):
         )
 
     async def link_graph_nodes_to_external_systems(
-        self, repository_id: str, name_to_id: dict[str, int]
+        self, repository_id: str, name_to_id: dict[str, int | None]
     ) -> int:
         return await crud.link_graph_nodes_to_external_systems(
             self._session, repository_id, name_to_id

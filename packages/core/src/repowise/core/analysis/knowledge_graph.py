@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from repowise.core.generation.entry_points import orientation_entry_points
+from repowise.core.support_paths import CONFIG_EXTENSIONS, DOC_EXTENSIONS, classification_token
 
 _log = logging.getLogger(__name__)
 
@@ -147,10 +148,7 @@ class KnowledgeGraphResult:
 # Node classification helpers
 # ---------------------------------------------------------------------------
 
-_CONFIG_EXTENSIONS = frozenset({
-    ".yaml", ".yml", ".toml", ".json", ".env", ".ini", ".cfg", ".conf",
-    ".properties", ".xml",
-})
+_CONFIG_EXTENSIONS = CONFIG_EXTENSIONS
 
 _INFRA_EXTENSIONS = frozenset({
     ".dockerfile", ".tf", ".hcl",
@@ -163,16 +161,17 @@ _INFRA_NAMES = frozenset({
 
 _INFRA_LANGUAGES = frozenset({"dockerfile", "makefile"})
 
-_DOC_EXTENSIONS = frozenset({
-    ".md", ".rst", ".txt", ".adoc",
-})
+_DOC_EXTENSIONS = DOC_EXTENSIONS
 
 
 def _classify_file_type(path: str, language: str, is_config: bool) -> str:
-    ext = PurePosixPath(path).suffix.lower()
-    stem = PurePosixPath(path).stem.lower()
+    p = PurePosixPath(path)
+    ext = p.suffix.lower()
+    stem = p.stem.lower()
 
-    if is_config or ext in _CONFIG_EXTENSIONS:
+    # `classification_token` covers dotfiles: `.env` has no suffix, so the
+    # suffix-only check below never matched the entry that names it (#2379).
+    if is_config or classification_token(path) in _CONFIG_EXTENSIONS:
         return "config"
     # Infra names only count for extension-less files (Dockerfile, Makefile)
     # or when ingestion parsed the file as an infra language — a Python module
@@ -217,7 +216,9 @@ def _slugify(text: str) -> str:
 # macros reach the export instead of being dropped.
 # "4": `framework_binds` joined the map, so a container-wired symbol pair
 # reaches the export instead of being dropped.
-KG_BUILDER_VERSION = "4"
+# "5": which files are tests changed (``repowise.core.test_paths``), moving the
+# ``test`` tag on file nodes without moving a node or edge count.
+KG_BUILDER_VERSION = "5"
 
 # An unmapped type is dropped from the export entirely (see the
 # `if not kg_type: continue` below), which is silent. Six real types used to be
@@ -280,6 +281,10 @@ def build_knowledge_graph_skeleton(
         "is_monorepo": repo_structure.is_monorepo if repo_structure else False,
         "total_files": repo_structure.total_files if repo_structure else len(parsed_files),
         "entry_points": orientation_entry_points(repo_structure),
+        "packages": [
+            {"name": p.name, "path": p.path, "declared": p.declared}
+            for p in getattr(repo_structure, "packages", None) or []
+        ],
         "tech_stack": tech_stack[:20],
     }
 

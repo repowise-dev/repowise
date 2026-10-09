@@ -235,3 +235,55 @@ def test_enricher_symbol_indexes_survive_a_reload(tmp_path: Path):
     assert len(enricher.get_contracts_for_symbol("src/types.ts::Order")) == 1
     assert len(enricher.get_contract_links_by_provider_symbol("src/types.ts::Order")) == 1
     assert enricher.get_contracts_for_symbol("nope.ts::Nope") == []
+
+
+@pytest.mark.asyncio
+async def test_a_consumer_row_names_the_tests_that_guard_it(tmp_path: Path):
+    """Without an open consumer index the link is reported, never dropped."""
+    provider = _provider()
+    consumer = _consumer()
+    with _in_workspace(_enricher(tmp_path, [provider, consumer], [_link(provider, consumer)])):
+        result = await get_blast_radius(["src/types.ts::Order"])
+    block = result["symbol_targets"][0]
+    tests = block["consumers"][0]["tests"]
+    assert tests["state"] == "unresolved"
+    assert tests["unresolved_reason"] == "no_index"
+    assert tests["tests_to_run"] == []
+    assert block["tests_summary"] == "tests to run: 0 across 1 consumer(s), 1 unresolved"
+
+
+@pytest.mark.asyncio
+async def test_no_tests_block_when_the_symbol_has_no_consumers(tmp_path: Path):
+    """No link means no join to run, so the row carries no empty promise."""
+    provider = _provider(file_path="src/types.ts", service="packages/gone")
+    with _in_workspace(_enricher(tmp_path, [provider], [])):
+        result = await get_blast_radius(["src/types.ts::Order"])
+    block = result["symbol_targets"][0]
+    assert block["consumers"] == []
+    assert "tests_summary" not in block
+
+
+@pytest.mark.asyncio
+async def test_a_caller_supplies_the_test_join(tmp_path: Path):
+    """The payload builder runs over any enricher and any join, outside the tool."""
+    from repowise.core.workspace.test_impact import WorkspaceTestImpactResult
+    from repowise.server.mcp_server.tool_blast_radius import blast_radius_payload
+
+    provider = _provider()
+    consumer = _consumer()
+    enricher = _enricher(tmp_path, [provider, consumer], [_link(provider, consumer)])
+    asked: list[dict] = []
+
+    async def join(changed_by_repo):
+        asked.append(dict(changed_by_repo))
+        return WorkspaceTestImpactResult(summary={"reason": "no_matching_links"})
+
+    payload = await blast_radius_payload(
+        enricher, enricher.get_system_graph(), ["src/types.ts::Order"], tests_for=join
+    )
+    assert asked == [{"backend": ["src/types.ts"]}]
+    assert payload["symbol_targets"][0]["consumers"][0]["tests"]["state"] == "none"
+    assert "_meta" not in payload
+    with _in_workspace(enricher):
+        tool = await get_blast_radius(["src/types.ts::Order"])
+    assert set(tool) - set(payload) == {"_meta"}

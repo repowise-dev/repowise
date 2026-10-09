@@ -3,9 +3,9 @@
 io_in_loop / string_concat_in_loop / blocking_sync_in_async and the Phase-7
 loop-level / centrality-gated markers.
 
-One whole-tree pass mirroring ``_collect_error_handling`` but carrying the
-per-node context the perf signal needs: loop depth, in-async, lock depth, and
-the enclosing function name. Two non-negotiable refinements (Phase-0 gate: they
+One whole-tree pass, kept apart from the walker's shared ``file_scan`` because
+it carries the per-node context the perf signal needs down the tree: loop depth,
+in-async, lock depth, and the enclosing function name. Two non-negotiable refinements (Phase-0 gate: they
 took precision from 49% to 79%) are baked in:
   1. Loop-BODY scoping — only calls under a loop node's ``body`` field run
      per-iteration; a call in the ``for x in <iterable>`` header runs once.
@@ -19,12 +19,19 @@ registered.
 
 from __future__ import annotations
 
+import re
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ..perf.dialects import PERF_DIALECTS
 from ..perf.dialects.base import BasePerfDialect as BasePerfDialectClass
-from ..perf.io_boundaries import collect_io_names
-from .ast_utils import _dart_signature_sibling, _find_name
+from ..perf.loop_facts import LoopFacts
+from .ast_utils import (
+    _dart_signature_sibling,
+    _find_function_entry_name,
+    _find_name,
+    is_function_node,
+)
 from .languages import LanguageNodeMap
 from .models import PerfFnFacts, PerfHit
 
@@ -93,22 +100,72 @@ _HOT_PATH_SINK_KINDS = frozenset({"subprocess", "filesystem"})
 # (``synchronized(repo.find(id)){…}``) runs BEFORE the lock is taken.
 _LOCK_BODY_KINDS = frozenset({"block", "statement_block", "compound_statement", "do_block"})
 
-# Non-semantic wrapper nodes tree-sitter inserts between a ``call`` and its
-# enclosing ``await`` — parenthesising an awaited call (``await (foo())``) adds a
-# ``parenthesized_expression`` hop, so the immediate-parent ``await`` check would
-# miss it and wrongly read the call as un-awaited. Walk up through these before
-# testing for ``await``.
-_AWAIT_WRAPPER_KINDS = frozenset({"parenthesized_expression"})
+# A whole condition that is one null test, and the name it tests: ``x == null``,
+# ``this.x.get() == null``, ``o.x is null`` (the last segment, ``.get()`` stripped).
+_NULL_GUARD = re.compile(
+    r"(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(?:\.get\(\))?"
+    r"\s*(?:===?\s*(?:null|nil|None)|is\s+null)"
+)
+_IF_KINDS = frozenset({"if_statement", "if_expression"})
+# ``x = ...`` / ``x ??= ...`` / ``x.set(...)``: the held body stores the guarded name.
+_ASSIGNS = r"\b{}\s*(?:=(?!=)|\?\?=|\.set\(|\.compareAndSet\()"
 
 
-def _is_awaited(node: Node) -> bool:
-    """Whether ``node`` is (transitively, through parenthesising wrappers) the
-    operand of an ``await``. Mirrors the old immediate-parent substring test but
-    first skips non-semantic wrappers so ``await (foo())`` reads as awaited."""
-    parent = node.parent
-    while parent is not None and parent.type in _AWAIT_WRAPPER_KINDS:
-        parent = parent.parent
-    return parent is not None and "await" in parent.type
+def _null_guarded_name(node: Node | None) -> str | None:
+    """The name *node* tests when it is exactly ``if (x == null) {...}``, with no ``else``."""
+    if node is None or node.type not in _IF_KINDS or node.child_by_field_name("alternative"):
+        return None
+    cond = node.child_by_field_name("condition")
+    text = (cond.text if cond is not None else b"").decode("utf-8", "replace")
+    guard = _NULL_GUARD.fullmatch(text.strip("() \t\r\n"))
+    return guard.group(1) if guard is not None else None
+
+
+def _sole_statement(body: Node) -> Node | None:
+    """The one statement a held body runs, ignoring comments and a trailing ``return``."""
+    stmts = [c for c in body.children if c.is_named and "comment" not in c.type]
+    if len(stmts) == 2 and stmts[1].type == "return_statement":
+        stmts = stmts[:1]
+    return stmts[0] if len(stmts) == 1 else None
+
+
+def _is_coalescing_assignment(stmt: Node | None) -> bool:
+    """``x ??= Load();``: assigns only when ``x`` is still null."""
+    if stmt is None or stmt.type != "expression_statement":
+        return False
+    return b"??=" in (stmt.text or b"")
+
+
+def _enclosing_statement(lock: Node) -> Node | None:
+    """The statement around *lock*, looking through the block it sits in."""
+    outer = lock.parent
+    if outer is not None and outer.type in _LOCK_BODY_KINDS:
+        outer = outer.parent
+    return outer
+
+
+def _is_memoizing_lock(lock: Node) -> bool:
+    """The lock only makes a one-time initialisation thread-safe.
+
+    The held body assigns the name a null guard tests, where the guard either
+    wraps the lock (``if (x == null) { synchronized (m) { x = ... } }``) or is
+    the whole held body (double-checked locking); or the whole body is
+    ``x ??= Load()``. A trailing ``return`` is allowed. The I/O then runs once,
+    and moving it out of the lock would run it more than once, so such a lock
+    is not a ``blocking_io_under_lock`` region.
+    """
+    body = next((c for c in lock.children if c.type in _LOCK_BODY_KINDS), None)
+    if body is None:
+        return False
+    only = _sole_statement(body)
+    if _is_coalescing_assignment(only):
+        return True
+    held = (body.text or b"").decode("utf-8", "replace")
+    for guard in (only, _enclosing_statement(lock)):
+        name = _null_guarded_name(guard)
+        if name and re.search(_ASSIGNS.format(re.escape(name)), held):
+            return True
+    return False
 
 
 def _perf_func_name(node: Node) -> str | None:
@@ -126,6 +183,28 @@ def _perf_func_name(node: Node) -> str | None:
     # it already handles that chain (and every other irregular shape).
     name = _find_name(node)
     return name if name != "<anonymous>" else None
+
+
+def _name_lambda_hits(hits: list[PerfHit], spans: list[tuple[int, int, str]]) -> list[PerfHit]:
+    """Name a hit with no enclosing named function after the lambda holding it.
+
+    The innermost span wins, and the name is the one the complexity walker gives
+    that lambda (its binding, ``<callee> callback``, or ``<anonymous@line>``), so
+    the two passes agree. A hit outside every lambda is top-level code and keeps
+    ``None``. Only the hit is renamed: the per-function facts stay keyed to
+    module scope, where the cross-function bridge resolves them.
+    """
+    if not spans:
+        return hits
+    named: list[PerfHit] = []
+    for hit in hits:
+        if hit.function is None:
+            inside = [span for span in spans if span[0] <= hit.line <= span[1]]
+            if inside:
+                innermost = min(inside, key=lambda span: span[1] - span[0])
+                hit = replace(hit, function=innermost[2])
+        named.append(hit)
+    return named
 
 
 def _enclosing_loop_iterables(
@@ -151,6 +230,109 @@ def _enclosing_loop_iterables(
                 names.add(nm)
         cur = cur.parent
     return names
+
+
+def _is_lock_acquire_spin(
+    node: Node,
+    func: str | None,
+    dialect: BasePerfDialect,
+    loop_kinds: frozenset[str],
+    fn_kinds: frozenset[str],
+) -> bool:
+    """Is *node* inside the unbounded retry loop of a lock-acquiring function?
+
+    Only the nearest enclosing loop counts: a per-item loop nested in (or
+    instead of) the spin loop still takes a lock per iteration.
+    """
+    cur = node.parent
+    while cur is not None and cur.type not in fn_kinds:
+        if cur.type in loop_kinds and cur.is_named:
+            return dialect.is_lock_acquire_spin(func, cur)
+        cur = cur.parent
+    return False
+
+
+def _enclosing_loops(
+    node: Node, dialect: BasePerfDialect, loop_kinds: frozenset[str], fn_kinds: frozenset[str]
+) -> list[Node]:
+    """The data-dependent loops around *node* in its function, innermost first;
+    walked up only for hits. A loop whose iterable holds *node* is not one."""
+    loops: list[Node] = []
+    cur = node.parent
+    for _ in range(64):
+        if cur is None or cur.type in fn_kinds:
+            break
+        if cur.type in loop_kinds and cur.is_named and not dialect.is_constant_loop(cur):
+            iterable = dialect.iterable_node(cur)
+            # ``for row in result.all():`` runs ``.all()`` once per pass of the loop
+            # around it, so the for loop itself is not what repeats it.
+            if iterable is None or not (
+                iterable.start_byte <= node.start_byte and node.end_byte <= iterable.end_byte
+            ):
+                loops.append(cur)
+        cur = cur.parent
+    return loops
+
+
+# Loop-header fields that bind the element a for-each loop yields, across the
+# grammars (``left`` Python/JS/C#, ``name`` Java, ``pattern`` Rust/Ruby,
+# ``declarator`` C++ range-for), and the init fields of a counted loop, which
+# bind its index only when they declare (``for (int i = 0; ...)``, not
+# ``for (p = head; ...)``, which walks a list it was handed).
+_ELEMENT_FIELDS = ("left", "name", "pattern", "declarator")
+_INIT_FIELDS = ("initializer", "init")
+# Go keeps both shapes in a child clause; Kotlin declares the element unfielded.
+_LOOP_CLAUSE_KINDS = frozenset({"range_clause", "for_clause"})
+
+
+def _identifiers(node: Node) -> set[bytes]:
+    """Every identifier under *node*, type names excluded."""
+    names: set[bytes] = set()
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        if cur.type.endswith("identifier") and cur.type != "type_identifier" and cur.text:
+            names.add(cur.text)
+        stack.extend(cur.children)
+    return names
+
+
+def _bound_in(part: Node) -> set[bytes]:
+    """Names one loop-header part binds through an element field or a declaring init field."""
+    nodes = [part.child_by_field_name(field) for field in _ELEMENT_FIELDS]
+    nodes += [
+        node
+        for field in _INIT_FIELDS
+        if (node := part.child_by_field_name(field)) is not None and "declaration" in node.type
+    ]
+    return set().union(*(_identifiers(node) for node in nodes if node is not None))
+
+
+def _loop_bound_names(loop: Node) -> set[bytes]:
+    """The element or index names *loop*'s header binds; empty for a ``while`` loop."""
+    parts = [loop, *(c for c in loop.children if c.type in _LOOP_CLAUSE_KINDS)]
+    unfielded = [c for c in loop.children if c.type == "variable_declaration"]
+    return set().union(*(_bound_in(p) for p in parts), *(_identifiers(c) for c in unfielded))
+
+
+def _loop_key_feeds(call: Node, loop: Node) -> bool:
+    """The loop's element or index appears in *call*, which makes the call per-key.
+
+    A retry or fallback loop (``while (true)``, ``while (tries < max)``), a
+    partial-write loop and a walk down a list handed in bind no element, so
+    nothing per-key reaches the call and there is no set of keys to batch. A key
+    that reaches the call only through a derived local is not counted (recall
+    ceiling).
+    """
+    return bool(_loop_bound_names(loop) & _identifiers(call))
+
+
+def _key_unused(hit: PerfHit) -> bool:
+    return hit.loop is not None and hit.loop.key_unused
+
+
+def _overrides(dialect: BasePerfDialect, hook: str) -> bool:
+    return getattr(type(dialect), hook) is not getattr(BasePerfDialectClass, hook)
 
 
 def _is_block_loop_body_scope(
@@ -180,8 +362,13 @@ def _is_block_loop_body_scope(
     return False
 
 
+def perf_pass_runs(language: str, lmap: LanguageNodeMap) -> bool:
+    """Whether ``_collect_perf_hits`` does anything for *language*."""
+    return bool(lmap.call_kinds) and language in PERF_DIALECTS
+
+
 def _collect_perf_hits(
-    root: Node, language: str, lmap: LanguageNodeMap
+    root: Node, language: str, lmap: LanguageNodeMap, io_names: dict[str, str]
 ) -> tuple[list[PerfHit], dict[str, str], list[PerfFnFacts]]:
     """Whole-tree perf pass → ``(hits, io_boundary_names, fn_facts)``.
 
@@ -193,16 +380,17 @@ def _collect_perf_hits(
     genuinely per-iteration calls are flagged. Returns nothing for languages
     that opt out of the perf pass (empty ``call_kinds``).
 
+    *io_names* is ``perf.io_boundaries.collect_io_names`` for *root*, which the
+    walker's shared file descent collects whenever ``perf_pass_runs``.
+
     Alongside the same-function ``hits``, it accumulates ``fn_facts`` (one
     :class:`PerfFnFacts` per enclosing function that has any loop-nested call
     or a bare sink) — the input to PR4's cross-function reachability.
     """
-    call_kinds = lmap.call_kinds
-    dialect = PERF_DIALECTS.get(language)
-    if not call_kinds or dialect is None:
+    if not perf_pass_runs(language, lmap):
         return [], {}, []
-
-    io_names = collect_io_names(root, language)
+    call_kinds = lmap.call_kinds
+    dialect = PERF_DIALECTS[language]
     has_db_import = any(k == "db" for k in io_names.values())
     markers = dialect.markers
     do_string_concat = "string_concat_in_loop" in markers
@@ -229,9 +417,58 @@ def _collect_perf_hits(
     fn_kinds = lmap.function_kinds
     lambda_kinds = lmap.lambda_kinds
     async_fn_kinds = lmap.async_function_kinds
+    bare_call_wrapper_kinds = lmap.bare_call_wrapper_kinds
     # Block-iteration loops (Ruby ``items.each do … end``): only pay for the
     # per-call-node hook when the dialect actually overrides it.
-    do_block_loop = type(dialect).block_loop_body is not BasePerfDialectClass.block_loop_body
+    do_block_loop = _overrides(dialect, "block_loop_body")
+    # Parenless calls (Pascal ``Q.Open;``): only probe a bare-call wrapper
+    # (``statement``) when the dialect actually overrides the hook, same
+    # pay-for-what-you-use posture as ``do_block_loop``.
+    do_bare_stmt_call = (
+        bool(bare_call_wrapper_kinds)
+        and _overrides(dialect, "bare_statement_call")
+    )
+    do_chunked = _overrides(dialect, "is_chunked_loop")
+    do_magnitude = _overrides(dialect, "loop_magnitude")
+    do_batch = _overrides(dialect, "batch_form")
+    do_bound = _overrides(dialect, "concurrency_bound")
+    do_loop_facts = do_chunked or do_magnitude or do_batch or do_bound
+
+    do_in_place = _overrides(dialect, "runs_in_place")
+
+    def probe(call: Node) -> str | None:
+        return dialect.call_sink_kind(
+            call, awaited=dialect.is_awaited(call), io_names=io_names, has_db_import=has_db_import
+        )
+
+    def magnitude(loops: list[Node]) -> str:
+        """Grows if any enclosing loop grows; bounded only if every one is, since a
+        retry loop inside a loop over rows still runs once per row."""
+        found = {dialect.loop_magnitude(loop, probe) or "unknown" for loop in loops}
+        if "grows_with_data" in found:
+            return "grows_with_data"
+        return "bounded" if found == {"bounded"} else "unknown"
+
+    def loop_facts(node: Node, sink: bool, per_call: bool = False) -> LoopFacts | None:
+        """Facts of *node*'s innermost loop; batch and bound only mean something at a sink.
+
+        *per_call* marks the call each iteration makes, a sink or a helper that
+        reaches one: only there does it matter whether the loop's key feeds it.
+        """
+        if not (do_loop_facts or per_call):
+            return None
+        loops = _enclosing_loops(node, dialect, loop_kinds, fn_kinds)
+        if not loops:
+            return None
+        loop = loops[0]
+        facts = LoopFacts(
+            chunked=do_chunked and dialect.is_chunked_loop(loop),
+            magnitude=magnitude(loops) if do_magnitude else "unknown",
+            batch=dialect.batch_form(node, loop, probe) if sink and do_batch else None,
+            concurrency_bound=dialect.concurrency_bound(node, loop) if sink and do_bound else None,
+            key_unused=per_call and not _loop_key_feeds(node, loop),
+        )
+        return facts if facts != LoopFacts() else None
 
     hits: list[PerfHit] = []
     # Per-enclosing-function accumulators keyed by the function's start line
@@ -247,6 +484,13 @@ def _collect_perf_hits(
     fn_acc: dict[
         int, tuple[str | None, dict[str, int], dict[str, int], list[str | None], list]
     ] = {}
+    # func_start -> {call_line: facts} for the loop-call targets above.
+    call_facts: dict[int, dict[int, LoopFacts]] = {}
+    # func_start -> {call_line: loop header line} for the same targets.
+    call_loop_lines: dict[int, dict[int, int]] = {}
+    # ``(first_line, last_line, name)`` of each lambda with no named function
+    # around it, so a hit inside one is named for it rather than left blank.
+    lambda_spans: list[tuple[int, int, str]] = []
 
     def _acc(
         func_start: int, func_name: str | None
@@ -257,14 +501,18 @@ def _collect_perf_hits(
             fn_acc[func_start] = entry
         return entry[1], entry[2], entry[3], entry[4]
 
-    # (node, loop_depth, in_async, func_name, func_start, lock_depth, outer_iter)
-    # ``outer_iter`` is whether the OUTERMOST enclosing loop iterates a collection
-    # (vs a ``while``/cursor) — the precision gate for ``nested_loop_with_io``.
-    stack: list[tuple[Node, int, bool, str | None, int, int, bool]] = [
-        (root, 0, False, None, 0, 0, True)
+    # (node, loop_depth, in_async, func_name, func_start, lock_depth, outer_iter,
+    # loop_line). ``outer_iter`` is whether the OUTERMOST enclosing loop iterates
+    # a collection (vs a ``while``/cursor) — the precision gate for
+    # ``nested_loop_with_io``. ``loop_line`` is the innermost data-dependent
+    # loop's header line (0 outside one), so a reader can show the iteration.
+    stack: list[tuple[Node, int, bool, str | None, int, int, bool, int]] = [
+        (root, 0, False, None, 0, 0, True, 0)
     ]
     while stack:
-        node, loop_depth, in_async, func_name, func_start, lock_depth, outer_iter = stack.pop()
+        (
+            node, loop_depth, in_async, func_name, func_start, lock_depth, outer_iter, loop_line
+        ) = stack.pop()
         t = node.type
 
         # ``node.is_named`` guards grammars (Ruby) whose keyword tokens share
@@ -296,17 +544,28 @@ def _collect_perf_hits(
         # inline invocation, so those are cleared too — accepted (favouring
         # precision), and the Go IIFE case is the idiomatic defer-in-loop fix.
         # …except the lambda a block-iteration combinator passes as its body,
-        # which runs per element rather than later (Kotlin ``ids.forEach { … }``).
-        body_scope = (
-            entering_fn and do_block_loop and _is_block_loop_body_scope(node, dialect, call_kinds)
+        # which runs per element rather than later (Kotlin ``ids.forEach { … }``),
+        # and a closure the dialect proves runs in place (an awaited limiter call).
+        body_scope = entering_fn and (
+            (do_block_loop and _is_block_loop_body_scope(node, dialect, call_kinds))
+            or (do_in_place and dialect.runs_in_place(node))
         )
         next_loop_depth = loop_depth if (body_scope or not entering_fn) else 0
         next_lock_depth = lock_depth if (body_scope or not entering_fn) else 0
+        next_loop_line = loop_line if (body_scope or not entering_fn) else 0
         next_func = func_name
         next_start = func_start
-        if t in fn_kinds:
+        if t in fn_kinds and is_function_node(node, lmap):
             next_func = _perf_func_name(node) or func_name
             next_start = node.start_point[0] + 1
+        elif t in lambda_kinds and func_name is None:
+            lambda_spans.append(
+                (
+                    node.start_point[0] + 1,
+                    node.end_point[0] + 1,
+                    _find_function_entry_name(node, lmap),
+                )
+            )
 
         # A data-dependent loop nested inside another (``loop_depth`` only counts
         # non-constant loops) is an O(n^2) shape. Record the site as a fact; the
@@ -335,29 +594,40 @@ def _collect_perf_hits(
                 hits.append(
                     PerfHit(icm, node.start_point[0] + 1, next_func, "", func_start=next_start)
                 )
+        # Hits from here on sit in the loop the stack names; the iterable marker
+        # above is on the loop's own header line.
+        stamp_from = len(hits)
 
+        call_node: Node | None = None
         if t in call_kinds:
-            method = dialect.callee_method_name(node) or ""
-            root_name = dialect.callee_root_name(node) or ""
-            awaited = _is_awaited(node)
-            line = node.start_point[0] + 1
+            call_node = node
+        elif do_bare_stmt_call and t in bare_call_wrapper_kinds:
+            # A parenless call (Pascal ``Q.Open;``): no ``call_kinds`` node
+            # exists at all, so the dialect is asked whether this particular
+            # statement wrapper IS one (it also wraps non-call statements —
+            # Pascal's bare ``Exit;`` / ``inherited;`` — that must stay None).
+            call_node = dialect.bare_statement_call(node)
+
+        if call_node is not None:
+            method = dialect.callee_method_name(call_node) or ""
+            root_name = dialect.callee_root_name(call_node) or ""
+            awaited = dialect.is_awaited(call_node)
+            line = call_node.start_point[0] + 1
             if do_bare_call_marker:
                 # A call that is its own iteration construct (``.reduce`` with an
                 # accumulator spread) — a perf smell at any loop depth.
-                bare = dialect.bare_call_marker(root_name, method, node)
+                bare = dialect.bare_call_marker(root_name, method, call_node)
                 if bare is not None:
                     hits.append(PerfHit(bare, line, next_func, "", func_start=next_start))
-            kind = dialect.sink_kind(
-                root_name,
-                method,
-                awaited=awaited,
-                is_attribute=dialect.callee_is_attribute(node),
-                io_names=io_names,
-                has_db_import=has_db_import,
+            kind = dialect.call_sink_kind(
+                call_node, awaited=awaited, io_names=io_names, has_db_import=has_db_import
             )
             if kind is not None:
                 if loop_depth >= 1:
-                    hits.append(PerfHit("io_in_loop", line, next_func, kind, func_start=next_start))
+                    facts = loop_facts(call_node, sink=True, per_call=True)
+                    hits.append(
+                        PerfHit("io_in_loop", line, next_func, kind, func_start=next_start, loop=facts)
+                    )
                     if do_serial_await and awaited:
                         # An *awaited* sink in a loop body is additionally a
                         # missed-concurrency candidate (a serial round-trip that
@@ -366,7 +636,8 @@ def _collect_perf_hits(
                         # the boundary kind for the finding.
                         hits.append(
                             PerfHit(
-                                "serial_await_in_loop", line, next_func, kind, func_start=next_start
+                                "serial_await_in_loop", line, next_func, kind,
+                                func_start=next_start, loop=facts,
                             )
                         )
                     if do_nested_io and loop_depth >= 2 and outer_iter:
@@ -379,7 +650,8 @@ def _collect_perf_hits(
                         # (Phase-7c TS while-cursor FP).
                         hits.append(
                             PerfHit(
-                                "nested_loop_with_io", line, next_func, kind, func_start=next_start
+                                "nested_loop_with_io", line, next_func, kind,
+                                func_start=next_start, loop=facts,
                             )
                         )
                 else:
@@ -399,8 +671,8 @@ def _collect_perf_hits(
                         # An inherently-blocking (non-awaited subprocess / fs /
                         # sync-network) sink outside any loop. Noisy everywhere,
                         # so record it as a fact; the engine emits
-                        # ``hot_path_sync_io`` only for a hot, request-reachable
-                        # function (centrality gate). ``db`` is excluded — see
+                        # ``hot_path_sync_io`` only for a hot, central function
+                        # (centrality gate). ``db`` is excluded — see
                         # ``_HOT_PATH_SINK_KINDS``; point-sized reads/writes are
                         # excluded per-dialect — see ``hot_path_excluded_methods``
                         # (outside a loop their cost is bounded, so they belong to
@@ -418,12 +690,21 @@ def _collect_perf_hits(
             else:
                 if loop_depth >= 1:
                     marker = (
-                        dialect.loop_call_marker(root_name, method, node, list_names)
+                        dialect.loop_call_marker(root_name, method, call_node, list_names)
                         if do_loop_call_marker
                         else None
                     )
+                    if marker == "lock_in_loop" and _is_lock_acquire_spin(
+                        call_node, next_func, dialect, loop_kinds, fn_kinds
+                    ):
+                        marker = None
                     if marker is not None:
-                        hits.append(PerfHit(marker, line, next_func, "", func_start=next_start))
+                        hits.append(
+                            PerfHit(
+                                marker, line, next_func, "", func_start=next_start,
+                                loop=loop_facts(call_node, sink=False),
+                            )
+                        )
                     elif method:
                         # A loop-nested call to a non-sink helper: a candidate
                         # entry for cross-function reachability (PR4). Keep the
@@ -431,6 +712,11 @@ def _collect_perf_hits(
                         targets = _acc(next_start, next_func)[0]
                         if method not in targets:
                             targets[method] = line
+                            if loop_line:
+                                call_loop_lines.setdefault(next_start, {})[line] = loop_line
+                            facts = loop_facts(call_node, sink=False, per_call=True)
+                            if facts is not None:
+                                call_facts.setdefault(next_start, {})[line] = facts
                 if do_lock_io and lock_depth >= 1 and method:
                     # A non-sink call under a held lock: a candidate entry for the
                     # cross-function ``blocking_io_under_lock`` reachability pass.
@@ -439,7 +725,7 @@ def _collect_perf_hits(
                         lock_targets[method] = line
             if do_blocking and in_async and not awaited:
                 api = dialect.blocking_sync_api(root_name, method)
-                if api is not None:
+                if api is not None and not dialect.task_already_complete(call_node):
                     hits.append(
                         PerfHit(
                             "blocking_sync_in_async", line, next_func, api, func_start=next_start
@@ -449,7 +735,7 @@ def _collect_perf_hits(
             if do_blocking and in_async:
                 # A non-call member read that blocks in async (C# ``task.Result``).
                 mem = dialect.async_blocking_member(node)
-                if mem is not None:
+                if mem is not None and not dialect.task_already_complete(node):
                     hits.append(
                         PerfHit(
                             "blocking_sync_in_async",
@@ -468,10 +754,15 @@ def _collect_perf_hits(
                             next_func,
                             "",
                             func_start=next_start,
+                            loop=loop_facts(node, sink=False),
                         )
                     )
                 elif do_loop_stmt_marker:
                     sm = dialect.loop_stmt_marker(node, list_names)
+                    if sm == "lock_in_loop" and _is_lock_acquire_spin(
+                        node, next_func, dialect, loop_kinds, fn_kinds
+                    ):
+                        sm = None
                     if sm is not None:
                         hits.append(
                             PerfHit(
@@ -480,14 +771,20 @@ def _collect_perf_hits(
                                 next_func,
                                 "",
                                 func_start=next_start,
+                                loop=loop_facts(node, sink=False),
                             )
                         )
+
+        if loop_line and len(hits) > stamp_from:
+            hits[stamp_from:] = [replace(h, loop_line=loop_line) for h in hits[stamp_from:]]
 
         # A block-scoped lock (``lock``/``synchronized``) opens a held region.
         # Only its BLOCK body runs with the lock held — a sink in the lock-object
         # expression (``synchronized(repo.find(id)){…}``) runs before the lock is
         # taken — so ``lock_depth`` is raised per-child, for the body block only.
-        entering_lock = do_lock_io and dialect.is_lock_scope(node)
+        entering_lock = (
+            do_lock_io and dialect.is_lock_scope(node) and not _is_memoizing_lock(node)
+        )
 
         if is_loop:
             # The outermost loop in a nest fixes ``outer_iter``; deeper loops
@@ -499,13 +796,23 @@ def _collect_perf_hits(
             body = block_loop_body
             if body is None:
                 body = dialect.loop_body(node)
+            header = node.start_point[0] + 1
             if body is not None:
                 # NB: tree-sitter Node wrappers are not singletons, so compare
                 # with ``==`` (identity by tree + byte range), never ``is``.
                 for c in node.children:
-                    cd = next_loop_depth + 1 if c == body else next_loop_depth
+                    inside = c == body
                     stack.append(
-                        (c, cd, next_async, next_func, next_start, next_lock_depth, next_outer_iter)
+                        (
+                            c,
+                            next_loop_depth + 1 if inside else next_loop_depth,
+                            next_async,
+                            next_func,
+                            next_start,
+                            next_lock_depth,
+                            next_outer_iter,
+                            header if inside else next_loop_line,
+                        )
                     )
             else:
                 for c in node.children:
@@ -518,6 +825,7 @@ def _collect_perf_hits(
                             next_start,
                             next_lock_depth,
                             next_outer_iter,
+                            header,
                         )
                     )
         elif entering_lock:
@@ -525,7 +833,16 @@ def _collect_perf_hits(
             for c in node.children:
                 cl = next_lock_depth + 1 if c.type in _LOCK_BODY_KINDS else next_lock_depth
                 stack.append(
-                    (c, next_loop_depth, next_async, next_func, next_start, cl, outer_iter)
+                    (
+                        c,
+                        next_loop_depth,
+                        next_async,
+                        next_func,
+                        next_start,
+                        cl,
+                        outer_iter,
+                        next_loop_line,
+                    )
                 )
         else:
             for c in node.children:
@@ -538,20 +855,24 @@ def _collect_perf_hits(
                         next_start,
                         next_lock_depth,
                         outer_iter,
+                        next_loop_line,
                     )
                 )
 
     # Dedup chained sinks: ``result.scalars().all()`` parses as two call nodes
     # on one line (the ``.scalars()`` sink and the ``.all()`` materializer) —
-    # one logical query, one finding. Collapse per (kind, line, function).
-    seen: set[tuple[str, int, str | None]] = set()
+    # one logical query, one finding. Collapse per (kind, line, function),
+    # keeping a call the loop's key reaches when one of them does.
+    kept: dict[tuple[str, int, str | None], int] = {}
     deduped: list[PerfHit] = []
-    for h in hits:
+    for h in _name_lambda_hits(hits, lambda_spans):
         key = (h.kind, h.line, h.function)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(h)
+        at = kept.get(key)
+        if at is None:
+            kept[key] = len(deduped)
+            deduped.append(h)
+        elif _key_unused(deduped[at]) and not _key_unused(h):
+            deduped[at] = h
     deduped.sort(key=lambda h: (h.line, h.kind))
 
     fn_facts = [
@@ -564,6 +885,8 @@ def _collect_perf_hits(
             nested_loop_line=misc[0],
             blocking_sink_kind=misc[1],
             blocking_sink_line=misc[2],
+            loop_call_facts=tuple(sorted(call_facts.get(start, {}).items())),
+            loop_call_lines=tuple(sorted(call_loop_lines.get(start, {}).items())),
         )
         for start, (name, loop_targets, lock_targets, sink, misc) in fn_acc.items()
         if (loop_targets or lock_targets or sink[0] is not None or misc[0] or misc[1] is not None)

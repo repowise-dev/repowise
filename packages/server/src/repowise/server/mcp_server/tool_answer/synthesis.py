@@ -20,6 +20,8 @@ from repowise.core.reasoning import ReasoningMode, resolve_reasoning
 from repowise.core.repo_config import load_repo_config
 from repowise.server.mcp_server.tool_answer.config import (
     _SYNTHESIS_MAX_TOKENS,
+    _SYNTHESIS_MAX_TOKENS_ENV,
+    _SYNTHESIS_REASONING_MAX_TOKENS,
     _SYNTHESIS_TEMPERATURE,
 )
 
@@ -75,6 +77,27 @@ def _resolve_reasoning_for_answer(repo_path: Path | None) -> ReasoningMode:
     """Resolve the synthesis reasoning mode from env and repo config."""
     config = load_repo_config(repo_path) if repo_path is not None else None
     return resolve_reasoning(config=config)
+
+
+def _synthesis_reasoning_and_budget(
+    provider, reasoning: ReasoningMode
+) -> tuple[ReasoningMode, int]:
+    """The reasoning mode and token cap one synthesis call is sent with.
+
+    An OpenAI reasoning model left on ``auto`` thinks at its default effort and
+    can spend the whole cap before the first answer token, so synthesis asks
+    for ``low`` and gets reasoning headroom. An explicit mode is kept as given.
+    Other providers keep their defaults; their ``auto`` semantics differ.
+    """
+    try:
+        modes = provider.supported_reasoning_modes()
+    except Exception:
+        # A provider that cannot report its modes must not fail the answer.
+        modes = ()
+    if getattr(provider, "provider_name", None) != "openai" or "low" not in modes:
+        return reasoning, _SYNTHESIS_MAX_TOKENS
+    effective: ReasoningMode = "low" if reasoning == "auto" else reasoning
+    return effective, _SYNTHESIS_REASONING_MAX_TOKENS
 
 
 def _load_repo_provider_config(
@@ -314,7 +337,7 @@ def _synthesis_failure_note(exc: BaseException, provider, timeout_s: float, time
     )
 
 
-def _empty_completion_note(provider, response) -> str:
+def _empty_completion_note(provider, response, max_tokens: int = _SYNTHESIS_MAX_TOKENS) -> str:
     """Note for a call that succeeded and returned no text.
 
     Measured against a local reasoning model on ollama: it spent all 1024
@@ -329,10 +352,11 @@ def _empty_completion_note(provider, response) -> str:
     )
     if getattr(response, "stop_reason", None) == "max_tokens":
         return (
-            f"DEGRADED: the model used its entire {_SYNTHESIS_MAX_TOKENS}-token "
+            f"DEGRADED: the model used its entire {max_tokens}-token "
             f"budget without emitting an answer ({who}). Reasoning models spend "
-            "that budget on hidden thinking; try a non-reasoning model for "
-            "synthesis. Read the listed files to answer meanwhile."
+            "that budget on hidden thinking before any answer token; raise it "
+            f"with {_SYNTHESIS_MAX_TOKENS_ENV}=<tokens>, or use a non-reasoning "
+            "model for synthesis. Read the listed files to answer meanwhile."
         )
     return (
         f"DEGRADED: the model returned an empty completion ({who}). "
@@ -440,6 +464,7 @@ async def synthesize(
     persisted.
     """
     timeout_s = _synthesis_timeout(provider)
+    reasoning, max_tokens = _synthesis_reasoning_and_budget(provider, reasoning)
 
     async def _generate() -> tuple[object | None, BaseException | None]:
         """Swallow the provider's own errors so only our deadline escapes.
@@ -454,7 +479,7 @@ async def synthesize(
                 await provider.generate(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
-                    max_tokens=_SYNTHESIS_MAX_TOKENS,
+                    max_tokens=max_tokens,
                     temperature=_SYNTHESIS_TEMPERATURE,
                     reasoning=reasoning,
                 ),
@@ -477,7 +502,9 @@ async def synthesize(
         # go unpriced.
         await _record_synthesis_cost(provider, response, session_factory, repo_id)
         text = (getattr(response, "content", None) or "").strip()
-        return (text, None) if text else ("", _empty_completion_note(provider, response))
+        if text:
+            return text, None
+        return "", _empty_completion_note(provider, response, max_tokens)
 
     _log.warning(
         "get_answer LLM call failed (provider=%s, model=%s, budget=%.1fs, timed_out=%s): %s",

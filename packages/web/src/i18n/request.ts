@@ -1,0 +1,45 @@
+import { cookies } from "next/headers";
+import { getRequestConfig } from "next-intl/server";
+import { DEFAULT_LOCALE, LOCALE_COOKIE, resolveLocale, type Locale } from "./config";
+import { withFallback } from "./fallback";
+import en from "../../messages/en.json";
+
+/**
+ * next-intl request config — the no-prefix (cookie) strategy.
+ *
+ * There is no i18n routing: the locale is never part of the URL. The server
+ * reads `NEXT_LOCALE` from the request cookies on every render, so a request
+ * carrying `Cookie: NEXT_LOCALE=<tag>` renders that language server-side and
+ * an unset cookie renders English.
+ *
+ * English is the source of truth: a locale catalog is layered on top of
+ * `en.json` (`withFallback`), so a key its translator has not reached yet
+ * renders the English string instead of the raw key or a `MISSING_MESSAGE`
+ * throw. That is what lets UI copy change without every locale being updated
+ * in the same commit.
+ *
+ * Messages are imported statically rather than read from disk at runtime: the
+ * build is `output: "standalone"`, and a `fs.readFile` on a computed path is
+ * not traced into the standalone bundle, so the JSON would be missing in a
+ * production container.
+ */
+const MESSAGES: Record<string, Record<string, unknown>> = {
+  en,
+};
+
+export default getRequestConfig(async ({ requestLocale }) => {
+  // `requestLocale` is the routing-provided locale; with no routing configured
+  // it is undefined, so the cookie is the authority. Kept in the chain so the
+  // config keeps working if prefix routing is ever turned on.
+  const fromRouting = await requestLocale;
+  const fromCookie = (await cookies()).get(LOCALE_COOKIE)?.value;
+  const locale: Locale = resolveLocale(fromRouting ?? fromCookie ?? DEFAULT_LOCALE);
+
+  return {
+    locale,
+    messages: withFallback(en, MESSAGES[locale]),
+    // A fixed zone keeps server and client formatting in agreement; the UI
+    // renders relative times from the API rather than formatting zones itself.
+    timeZone: "UTC",
+  };
+});

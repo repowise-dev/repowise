@@ -3,3 +3,15 @@
 # "#!/bin/bash\r" shebang that Linux cannot resolve, causing:
 #   exec /app/entrypoint.sh: no such file or directory
 *.sh text eol=lf
+
+# Generated TypeScript is written with LF and diffed byte-for-byte by CI.
+# Without this, a Windows checkout rewrites it to CRLF and every local
+# regeneration reads as drift against what CI produces on Linux.
+packages/types/src/generated/*.ts text eol=lf
+
+# The UI copy of core-owned data, written by scripts/generate_biomarker_labels.py.
+packages/ui/src/health/generated/*.ts text eol=lf
+
+# The Lens mod bundle, written by packages/claude-mod/build.mjs and checked
+# byte for byte by `build:mod -- --check`.
+plugins/claude-code/hooks/lens/*.js text eol=lf

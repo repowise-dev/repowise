@@ -26,6 +26,7 @@
 
 import { use, useCallback, useMemo, useRef, useState } from "react";
 import { parseAsString, useQueryState } from "nuqs";
+import { useTranslations } from "next-intl";
 import { ScanSearch } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { ZoomCanvas } from "@repowise-dev/ui/zoom";
@@ -44,6 +45,7 @@ const EMPTY_RELATIONS: ZoomRelation[] = [];
 const NO_RELATIONS: Map<string, ZoomRelation[]> = new Map();
 
 export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: string }> }) {
+  const t = useTranslations("views.knowledgeGraph");
   const { id: repoId } = use(params);
 
   const { zoomMap, error, isLoading } = useZoomMap(repoId);
@@ -92,9 +94,9 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
 
   return (
     <PageShell
-      title="Knowledge Graph"
+      title={t("title")}
       icon={<ScanSearch className="h-5 w-5 text-[var(--color-accent-primary)]" />}
-      description="Explore your codebase like a map: scroll to zoom, drag to pan, and double-click any card to dive into its layers, folders and files, ranked by how the code actually runs."
+      description={t("description")}
       // The export has its own endpoint and does not need the zoom map, but a
       // map that failed to load is the cheapest signal that this repo has
       // nothing indexed to export either.
@@ -103,12 +105,12 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
     >
       {isLoading && (
         <div className="flex h-[520px] items-center justify-center text-sm text-[var(--color-text-secondary)]">
-          Building the knowledge graph…
+          {t("loading")}
         </div>
       )}
       {error && !isLoading && (
         <div className="flex h-[520px] items-center justify-center text-sm text-[var(--color-error)]">
-          Could not load the knowledge graph for this repository.
+          {t("error")}
         </div>
       )}
       {zoomMap && !isLoading && (

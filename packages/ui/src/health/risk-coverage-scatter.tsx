@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CoverageBasis } from "@repowise-dev/types/health";
+import { GOOD_MIN, formatScore, type CoverageBasis } from "@repowise-dev/types/health";
 
 export interface RiskCoveragePoint {
   file_path: string;
@@ -26,7 +26,7 @@ export interface RiskCoverageScatterProps {
 }
 
 /**
- * Health × tests. Y is the defect-risk score (0 to 10, higher is better) and
+ * Health × tests. Y is the defect-health score (0 to 10, higher is healthier) and
  * dot radius encodes lines of code on both bases. What X means depends on which
  * signal answered, and that is the whole design.
  *
@@ -115,7 +115,7 @@ export function RiskCoverageScatter({
     const maxNloc = Math.max(...data.map((d) => d.nloc), 1);
     const xScale = (pct: number) => padL + (pct / 100) * plotW;
     const yScale = (score: number) => padT + ((10 - score) / 10) * plotH;
-    const radius = (nloc: number) => 2 + Math.min(7, Math.sqrt(nloc / maxNloc) * 7);
+    const radius = (nloc: number) => 1.5 + Math.min(3.5, Math.sqrt(nloc / maxNloc) * 3.5);
     // Column centres and the half-width the swarm may spread into. Kept clear
     // of the divider so the two clouds never touch and the split stays legible
     // at any container width.
@@ -144,7 +144,7 @@ export function RiskCoverageScatter({
       // 60% coverage and a 7.0 score are the quadrant thresholds. On the
       // inferred basis the vertical one is the column divider instead.
       midX: inferred ? padL + plotW * 0.5 : xScale(60),
-      midY: yScale(7),
+      midY: yScale(GOOD_MIN),
     };
   }, [width, height, data, inferred]);
 
@@ -162,9 +162,8 @@ export function RiskCoverageScatter({
             cx={geom.xOf(p)}
             cy={geom.yScale(p.health_score)}
             r={geom.radius(p.nloc)}
-            className={`${inferred ? "" : bandFill(p.health_score)} ${onSelect ? "cursor-pointer" : ""}`}
-            {...(inferred ? { fill: reachedFill(p.reached) } : {})}
-            fillOpacity={0.75}
+            className={`${markFill(p, inferred)} ${onSelect ? "cursor-pointer" : ""}`}
+            fillOpacity={isCritical(p, inferred) ? 0.7 : 0.35}
           />
         ))}
       </g>
@@ -214,65 +213,54 @@ export function RiskCoverageScatter({
             if (point) onSelect(point);
           }}
         >
-          {inferred ? null : (
-            <>
-              {/* Quadrant tinting. Faint enough to read as ground rather than as
-                  four coloured panels the dots sit on top of. */}
-              <rect x={padL} y={padT} width={midX - padL} height={midY - padT} fill="currentColor" className="text-[var(--color-warning)]/5" />
-              <rect x={midX} y={padT} width={W - padR - midX} height={midY - padT} fill="currentColor" className="text-[var(--color-success)]/5" />
-              <rect x={padL} y={midY} width={midX - padL} height={H - padB - midY} fill="currentColor" className="text-[var(--color-error)]/8" />
-              <rect x={midX} y={midY} width={W - padR - midX} height={H - padB - midY} fill="currentColor" className="text-[var(--color-caution)]/5" />
-            </>
-          )}
-
           {/* Axes and the two thresholds */}
-          <line x1={padL} y1={padT} x2={padL} y2={H - padB} stroke="currentColor" strokeOpacity={0.2} />
-          <line x1={padL} y1={H - padB} x2={W - padR} y2={H - padB} stroke="currentColor" strokeOpacity={0.2} />
-          <line x1={midX} y1={padT} x2={midX} y2={H - padB} stroke="currentColor" strokeOpacity={0.1} strokeDasharray="3 3" />
-          <line x1={padL} y1={midY} x2={W - padR} y2={midY} stroke="currentColor" strokeOpacity={0.1} strokeDasharray="3 3" />
+          <line x1={padL} y1={padT} x2={padL} y2={H - padB} className="stroke-[var(--color-border-default)]" />
+          <line x1={padL} y1={H - padB} x2={W - padR} y2={H - padB} className="stroke-[var(--color-border-default)]" />
+          <line x1={midX} y1={padT} x2={midX} y2={H - padB} strokeDasharray="3 3" className="stroke-[var(--color-border-hover)]" />
+          <line x1={padL} y1={midY} x2={W - padR} y2={midY} strokeDasharray="3 3" className="stroke-[var(--color-border-hover)]" />
 
           {inferred ? (
             <>
-              <text x={geom.colLeft} y={H - padB + 15} fontSize={10} textAnchor="middle" fill="currentColor" opacity={0.6}>
+              <text x={geom.colLeft} y={H - padB + 15} fontSize={10} textAnchor="middle" className="fill-[var(--color-text-tertiary)]">
                 no test reaches it
               </text>
-              <text x={geom.colRight} y={H - padB + 15} fontSize={10} textAnchor="middle" fill="currentColor" opacity={0.6}>
+              <text x={geom.colRight} y={H - padB + 15} fontSize={10} textAnchor="middle" className="fill-[var(--color-text-tertiary)]">
                 a test reaches it
               </text>
             </>
           ) : (
             [0, 25, 50, 75, 100].map((v) => (
-              <text key={`x${v}`} x={xScale(v)} y={H - padB + 15} fontSize={10} textAnchor="middle" fill="currentColor" opacity={0.5}>
+              <text key={`x${v}`} x={xScale(v)} y={H - padB + 15} fontSize={10} textAnchor="middle" className="fill-[var(--color-text-tertiary)]">
                 {v}%
               </text>
             ))
           )}
           {[0, 2, 4, 6, 8, 10].map((v) => (
-            <text key={`y${v}`} x={padL - 7} y={yScale(v) + 3} fontSize={10} textAnchor="end" fill="currentColor" opacity={0.5}>
+            <text key={`y${v}`} x={padL - 7} y={yScale(v) + 3} fontSize={10} textAnchor="end" className="fill-[var(--color-text-tertiary)]">
               {v}
             </text>
           ))}
           {!inferred && (
-            <text x={padL + (W - padL - padR) / 2} y={H - 3} fontSize={10} textAnchor="middle" fill="currentColor" opacity={0.6}>
+            <text x={padL + (W - padL - padR) / 2} y={H - 3} fontSize={10} textAnchor="middle" className="fill-[var(--color-text-tertiary)]">
               Line coverage
             </text>
           )}
-          <text x={11} y={H / 2} fontSize={10} textAnchor="middle" fill="currentColor" opacity={0.6} transform={`rotate(-90 11 ${H / 2})`}>
+          <text x={11} y={H / 2} fontSize={10} textAnchor="middle" className="fill-[var(--color-text-tertiary)]" transform={`rotate(-90 11 ${H / 2})`}>
             Health score
           </text>
 
           {/* Region captions. These stay on the canvas because they name a part
               of it; the chart's key, which does not, sits underneath. */}
           {inferred ? (
-            <text x={padL + 8} y={H - padB - 8} fontSize={10} fill="currentColor" opacity={0.55}>
+            <text x={padL + 8} y={H - padB - 8} fontSize={10} className="fill-[var(--color-text-tertiary)]">
               Weak, and nothing runs it
             </text>
           ) : (
             <>
-              <text x={padL + 8} y={padT + 14} fontSize={10} fill="currentColor" opacity={0.5}>Risky, needs tests</text>
-              <text x={W - padR - 8} y={padT + 14} fontSize={10} textAnchor="end" fill="currentColor" opacity={0.5}>Sweet spot</text>
-              <text x={padL + 8} y={H - padB - 8} fontSize={10} fill="currentColor" opacity={0.5}>Critical hotspot</text>
-              <text x={W - padR - 8} y={H - padB - 8} fontSize={10} textAnchor="end" fill="currentColor" opacity={0.5}>Tested but messy</text>
+              <text x={padL + 8} y={padT + 14} fontSize={10} className="fill-[var(--color-text-tertiary)]">Risky, needs tests</text>
+              <text x={W - padR - 8} y={padT + 14} fontSize={10} textAnchor="end" className="fill-[var(--color-text-tertiary)]">Sweet spot</text>
+              <text x={padL + 8} y={H - padB - 8} fontSize={10} className="fill-[var(--color-text-tertiary)]">Critical hotspot</text>
+              <text x={W - padR - 8} y={H - padB - 8} fontSize={10} textAnchor="end" className="fill-[var(--color-text-tertiary)]">Tested but messy</text>
             </>
           )}
 
@@ -285,8 +273,7 @@ export function RiskCoverageScatter({
               cx={xOf(active)}
               cy={yScale(active.health_score)}
               r={geom.radius(active.nloc) * 1.5}
-              className={inferred ? "" : bandFill(active.health_score)}
-              {...(inferred ? { fill: reachedFill(active.reached) } : {})}
+              className={markFill(active, inferred)}
               fillOpacity={0.9}
               stroke="var(--color-text-primary)"
               strokeWidth={1.5}
@@ -309,7 +296,7 @@ export function RiskCoverageScatter({
               {active.file_path}
             </span>
             <span className="tabular-nums text-[var(--color-text-tertiary)]">
-              {active.health_score.toFixed(1)} health ·{" "}
+              {formatScore(active.health_score)} health ·{" "}
               {inferred
                 ? active.reached
                   ? "a test reaches it"
@@ -323,7 +310,7 @@ export function RiskCoverageScatter({
 
       <p className="border-t border-[var(--color-border-default)] pt-2 font-mono text-[10px] uppercase tracking-[0.12em] tabular-nums text-[var(--color-text-tertiary)]">
         {inferred
-          ? `${data.length.toLocaleString()} files · ${reachedCount.toLocaleString()} reached by a test · colour repeats the column · dot size = lines of code · height is the health score · horizontal spread carries no meaning`
+          ? `${data.length.toLocaleString()} files · ${reachedCount.toLocaleString()} reached by a test · dot size = lines of code · height is the health score · horizontal spread carries no meaning`
           : `${data.length.toLocaleString()} files · dot size = lines of code · thresholds at 60% coverage and 7.0 health`}
       </p>
     </div>
@@ -331,29 +318,20 @@ export function RiskCoverageScatter({
 }
 
 /**
- * Fill by which column the file sits in, on the inferred basis.
- *
- * The sunset pair, and deliberately not the health ramp. Green/amber/red carry a
- * band, so spending them here would dress a static reading as a measurement -
- * and it would be redundant besides, because the Y axis already *is* the health
- * score. Hue is the only thing left to carry the split, which is the one fact
- * this chart exists to show.
- *
- * Tried first as a 6% wash behind the dots, which failed twice over: plum at
- * that opacity is indistinguishable from grey on a light ground, and the
- * health-banded dots on top took the whole visual budget to re-say what their
- * own vertical position already said.
+ * A point is drawn in colour only when it is the thing the chart exists to
+ * find: weak health with nothing guarding it (under 60% coverage, or no test
+ * reaching it). Every other file is a quiet neutral mark, so the few that
+ * matter are the only ones that read.
  */
-function reachedFill(reached: boolean | undefined): string {
-  return reached ? "var(--color-accent-fill)" : "var(--color-accent-secondary)";
+function isCritical(p: RiskCoveragePoint, inferred: boolean): boolean {
+  if (p.health_score >= GOOD_MIN) return false;
+  return inferred ? !p.reached : (p.line_coverage_pct ?? 100) < 60;
 }
 
-/** Fill by health band. The bands are the same ones the rest of health uses. */
-function bandFill(score: number): string {
-  if (score < 4) return "fill-[var(--color-error)]";
-  if (score < 6) return "fill-[var(--color-warning)]";
-  if (score < 8) return "fill-[var(--color-caution)]";
-  return "fill-[var(--color-success)]";
+function markFill(p: RiskCoveragePoint, inferred: boolean): string {
+  return isCritical(p, inferred)
+    ? "fill-[var(--color-error)]"
+    : "fill-[var(--color-text-tertiary)]";
 }
 
 /**

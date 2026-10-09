@@ -253,6 +253,9 @@ def attach_wiki_links_and_backlinks(
         if not sources:
             by_id[page_id].metadata["backlinks"] = []
             continue
+        # Sort by source_page_id and anchor to ensure deterministic backlink ordering
+        # regardless of incoming page traversal or async completion order.
+        sources.sort(key=lambda s: (s["source_page_id"], s.get("anchor", "")))
         # Dedup by source_page_id — a single source linking via 5
         # different anchors counts once.
         seen: set[str] = set()

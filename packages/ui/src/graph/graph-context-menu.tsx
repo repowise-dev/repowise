@@ -28,7 +28,11 @@ export const GraphContextMenu = memo(function GraphContextMenu({
 
   return (
     <div
-      className="fixed z-50 min-w-[200px] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] shadow-xl shadow-black/40 backdrop-blur-md py-1 text-xs"
+      // `--z-modal`, because this is `fixed` and has to clear the rail at
+      // `--z-sidebar`. Not `--z-dropdown`: that is the floating tier, which now
+      // outranks every surface, and this menu should still yield to a dialog
+      // and to the command palette.
+      className="fixed z-[var(--z-modal)] min-w-[200px] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] shadow-xl shadow-black/40 backdrop-blur-md py-1 text-xs"
       style={{ left: x, top: y }}
     >
       <div className="px-3 py-1.5 text-[10px] text-[var(--color-text-tertiary)] font-mono truncate border-b border-[var(--color-border-default)] mb-1">

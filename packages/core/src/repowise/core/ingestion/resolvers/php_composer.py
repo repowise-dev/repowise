@@ -1,95 +1,127 @@
-"""composer.json PSR-4 autoload parsing for PHP import resolution."""
+"""PSR-4 lookup for PHP import resolution, built from the shared composer reader.
+
+Reading ``composer.json`` itself is :mod:`..composer`'s job; this module only
+turns the manifests into the autoload map and answers class-name lookups.
+"""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
+import posixpath
 from typing import TYPE_CHECKING
+
+from ..composer import repo_composer_manifests
 
 if TYPE_CHECKING:
     from .context import ResolverContext
 
 
-def _normalise_dirs(value: object) -> list[str]:
-    """PSR-4 values may be a single string or a list of strings."""
-    if isinstance(value, str):
-        return [value.rstrip("/")]
-    if isinstance(value, list):
-        return [str(v).rstrip("/") for v in value if isinstance(v, str)]
-    return []
-
-
-def read_composer_psr4(repo_path: Path | None) -> dict[str, list[str]]:
-    """Read root ``composer.json`` and return ``{namespace_prefix: [dir, ...]}``.
-
-    Both ``autoload.psr-4`` and ``autoload-dev.psr-4`` are merged. Namespace
-    keys are returned with their trailing ``\\`` preserved (composer spec).
-    """
-    if repo_path is None:
-        return {}
-    composer = repo_path / "composer.json"
-    if not composer.is_file():
-        return {}
-    try:
-        data = json.loads(composer.read_text(encoding="utf-8", errors="ignore"))
-    except Exception:
-        return {}
-
-    result: dict[str, list[str]] = {}
-    for section in ("autoload", "autoload-dev"):
-        block = data.get(section) if isinstance(data, dict) else None
-        if not isinstance(block, dict):
-            continue
-        psr4 = block.get("psr-4")
-        if not isinstance(psr4, dict):
-            continue
-        for prefix, dirs in psr4.items():
-            if not isinstance(prefix, str):
-                continue
-            result.setdefault(prefix, []).extend(_normalise_dirs(dirs))
-    return result
-
-
 def get_or_build_psr4_map(ctx: ResolverContext) -> dict[str, list[str]]:
+    """``{namespace_prefix: [repo-relative dir, ...]}`` over every first-party manifest.
+
+    The root manifest comes first, so its directories are probed first when a
+    nested package declares the same prefix.
+    """
     cached = getattr(ctx, "_php_psr4_map", None)
     if cached is not None:
         return cached
-    psr4 = read_composer_psr4(ctx.repo_path)
+    psr4: dict[str, list[str]] = {}
+    for manifest in repo_composer_manifests(ctx):
+        for prefix, dirs in manifest.psr4:
+            known = psr4.setdefault(prefix, [])
+            known.extend(d for d in dirs if d not in known)
     ctx._php_psr4_map = psr4  # type: ignore[attr-defined]
     return psr4
+
+
+def _claims(ctx: ResolverContext) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
+    """Namespace prefixes the repo autoloads (None: every namespace), and classmap dirs.
+
+    A ``""`` PSR-4 or PSR-0 prefix is composer's catch-all, so it claims every
+    namespace. Classmap directories claim whatever classes their files declare,
+    which no prefix can express, so they are returned for a path check instead.
+    """
+    cached = getattr(ctx, "_php_claims", None)
+    if cached is None:
+        prefixes: list[str] | None = []
+        classmap: list[str] = []
+        for manifest in repo_composer_manifests(ctx):
+            classmap.extend(manifest.classmap)
+            for prefix, _dirs in (*manifest.psr4, *manifest.psr0):
+                if not prefix:
+                    prefixes = None
+                elif prefixes is not None:
+                    prefixes.append(prefix)
+        cached = (None if prefixes is None else tuple(prefixes), tuple(classmap))
+        ctx._php_claims = cached  # type: ignore[attr-defined]
+    return cached
+
+
+def claims_namespace(module_path: str, ctx: ResolverContext) -> bool:
+    """Whether a first-party autoload prefix covers *module_path*."""
+    prefixes, _classmap = _claims(ctx)
+    if prefixes is None:
+        return True
+    fqn = module_path.replace("/", "\\")
+    return any(fqn.startswith(prefix) for prefix in prefixes)
+
+
+def in_classmap(path: str, ctx: ResolverContext) -> bool:
+    """Whether *path* sits under a directory some manifest classmaps."""
+    _prefixes, classmap = _claims(ctx)
+    return any(not d or path == d or path.startswith(f"{d}/") for d in classmap)
+
+
+def basename_index(ctx: ResolverContext) -> dict[str, list[str]]:
+    """``{file basename: [paths, sorted]}`` for the PHP files in the index, cached on *ctx*."""
+    cached = getattr(ctx, "_php_basename_index", None)
+    if cached is None:
+        cached = {}
+        for p in ctx.sorted_paths:
+            if p.endswith(".php"):
+                cached.setdefault(posixpath.basename(p), []).append(p)
+        ctx._php_basename_index = cached  # type: ignore[attr-defined]
+    return cached
 
 
 def resolve_via_psr4(module_path: str, ctx: ResolverContext) -> str | None:
     """Try PSR-4 prefix matching from composer.json. Returns repo-relative
     path or None.
 
-    *module_path* is the FQN as written in PHP (``Foo\\Bar\\Baz`` form).
+    *module_path* is the FQN as written in PHP (``Foo\\Bar\\Baz`` form). The
+    answer does not depend on the importing file, so it is memoized on *ctx*.
     """
     psr4 = get_or_build_psr4_map(ctx)
     if not psr4:
         return None
+    memo: dict[str, str | None] | None = getattr(ctx, "_php_psr4_memo", None)
+    if memo is None:
+        memo = {}
+        ctx._php_psr4_memo = memo  # type: ignore[attr-defined]
+    elif module_path in memo:
+        return memo[module_path]
     fqn = module_path.replace("/", "\\")
-    # Longest-prefix match wins. Composer prefixes always end in `\\`.
-    best: tuple[str, list[str]] | None = None
-    for prefix, dirs in psr4.items():
-        if not prefix:
-            continue
-        if fqn.startswith(prefix) and (best is None or len(prefix) > len(best[0])):
-            best = (prefix, dirs)
-    if best is None:
-        return None
-    prefix, dirs = best
-    tail = fqn[len(prefix) :].replace("\\", "/")
-    if not tail:
-        return None
-    for base_dir in dirs:
-        candidate = f"{base_dir}/{tail}.php" if base_dir else f"{tail}.php"
-        if candidate in ctx.path_set:
-            return candidate
-        # Also tolerate paths whose first segment differs (some repos vendor
-        # the root differently). Probe by suffix as a forgiving fallback.
-        suffix_probe = f"/{candidate}"
-        for p in ctx.sorted_paths:
-            if p == candidate or p.endswith(suffix_probe):
-                return p
-    return None
+    # Longest prefix first, then shorter ones, as composer's own class loader
+    # does: ``Illuminate\\Support\\`` may list four directories and still leave
+    # ``Str`` to the ``Illuminate\\`` entry. Composer prefixes end in ``\\``.
+    by_prefix = [
+        [f"{base_dir}/{tail}.php" if base_dir else f"{tail}.php" for base_dir in psr4[prefix]]
+        for prefix in sorted((p for p in psr4 if p and fqn.startswith(p)), key=len, reverse=True)
+        if (tail := fqn[len(prefix) :].replace("\\", "/"))
+    ]
+    found = next((c for group in by_prefix for c in group if c in ctx.path_set), None)
+    if found is None and by_prefix:
+        # Tolerate paths whose first segments differ (some repos vendor the
+        # root differently), for the longest prefix only: a shorter one yields
+        # short tails that end too many unrelated paths.
+        index = basename_index(ctx)
+        found = next(
+            (
+                p
+                for candidate in by_prefix[0]
+                for p in index.get(posixpath.basename(candidate), ())
+                if p.endswith(f"/{candidate}")
+            ),
+            None,
+        )
+    memo[module_path] = found
+    return found

@@ -5,7 +5,7 @@ resampled on every render: two calls with the same prompt, the same model and
 the same temperature produced pages that disagreed on their row count and on
 which paths they cited. Facts the run already holds — which packages exist,
 where they are, how big they are — are built here instead and embedded after
-the page comes back, the same way the architecture map already is.
+the page comes back, the same way the system map is.
 
 That makes them identical on the model-written page and on the structure-only
 page, stable across updates that changed no code, and assertable in a test.
@@ -33,8 +33,14 @@ CAPABILITY_TABLE_HEADING = "## What it does"
 
 # The heading plus everything up to the next heading of the same or higher
 # level. Anchored at a line start so a mention inside prose is not a match.
+#
+# The provenance footer carries no heading, only a horizontal rule, so it is a
+# terminator too. Without it a section that is last on the page runs to the end
+# and the replacement eats the footer — which is what happened the moment the
+# deterministic overview stopped rendering a path table below its packages.
+_SECTION_END = r"(?=^#{1,2}[ \t]|^---[ \t]*$|\Z)"
 _PACKAGE_SECTION_RE = re.compile(
-    r"^##[ \t]+Packages[ \t]*\n(?:.*?)(?=^#{1,2}[ \t]|\Z)",
+    r"^##[ \t]+Packages[ \t]*\n(?:.*?)" + _SECTION_END,
     re.MULTILINE | re.DOTALL,
 )
 
@@ -99,7 +105,7 @@ MAX_CAPABILITY_ROWS = 6
 _MAX_CAPABILITY_DEFINITION = 160
 
 _CAPABILITY_SECTION_RE = re.compile(
-    r"^##[ \t]+What it does[ \t]*\n(?:.*?)(?=^#{1,2}[ \t]|\Z)",
+    r"^##[ \t]+What it does[ \t]*\n(?:.*?)" + _SECTION_END,
     re.MULTILINE | re.DOTALL,
 )
 
@@ -116,29 +122,35 @@ def select_capabilities(
     more of the same list, so the ranking, the corroboration and the definition
     test are shared rather than derived twice — the front page is the top of
     the glossary by construction, which is also what a reader expects of it.
+
+    Only defined terms: a front-page row reading "—" says nothing, while the
+    glossary still lists them. Filtered before the cap so defined terms fill it.
     """
-    return select_terms(house_terms, module_names, limit=limit)
+    defined = [t for t in select_terms(house_terms, module_names) if t.definition]
+    return defined[:limit]
 
 
 def build_capability_table(capabilities: Sequence[Capability]) -> str | None:
     """Render ``Capability | What it is | Where it is written`` as markdown.
 
-    Returns ``None`` when nothing was selected. A repository whose documents
+    Returns ``None`` when no selected row carries a definition. A repository whose documents
     name nothing its code also spells is a supported and common outcome, and a
     header over an empty table says less than no section at all.
     """
-    if not capabilities:
-        log.info("overview_capability_table_empty")
+    # An undefined row renders as "—" and says nothing; no rows means no table.
+    rows = [cap for cap in capabilities if cap.definition]
+    if not rows:
+        log.info("overview_capability_table_empty", undefined=len(capabilities))
         return None
 
     lines = [
         "| Capability | What it is | Where it is written |",
         "|---|---|---|",
     ]
-    for cap in capabilities:
-        definition = clamp(cap.definition, _MAX_CAPABILITY_DEFINITION) if cap.definition else "—"
+    for cap in rows:
+        definition = clamp(cap.definition, _MAX_CAPABILITY_DEFINITION)
         lines.append(f"| {cell(cap.term)} | {definition} | `{cell(cap.source_path)}` |")
-    log.debug("overview_capability_table_built", rows=len(capabilities))
+    log.debug("overview_capability_table_built", rows=len(rows))
     return "\n".join(lines)
 
 
@@ -147,10 +159,12 @@ def embed_capability_table(content: str, table: str | None) -> str:
 
     Same contract as :func:`embed_package_table`: an existing section of that
     name is replaced wholesale, so a reused or cached page picks up the current
-    selection instead of accumulating a second one.
+    selection instead of accumulating a second one. With no table the section
+    is removed: a page reused verbatim from an earlier run still carries the
+    rows that run selected, and the current selection has none.
     """
     if not table:
-        return content
+        return _CAPABILITY_SECTION_RE.sub("", content, count=1)
 
     section = f"{CAPABILITY_TABLE_HEADING}\n\n{table}\n\n"
     if _CAPABILITY_SECTION_RE.search(content):

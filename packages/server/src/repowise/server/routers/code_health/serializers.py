@@ -5,11 +5,18 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from repowise.core.analysis.finding_registry import verification_label
+from repowise.core.analysis.health.aggregation import (
+    primary_and_magnitude,
+    primary_and_magnitude_by_file,
+)
+from repowise.core.analysis.health.scoring import unclamped_score
 from repowise.core.analysis.health.signals import FileSignals
 from repowise.core.analysis.health.trends import FileTrend
+from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL
 
 
-def _finding_to_dict(f: Any) -> dict:
+def _finding_to_dict(f: Any, lower_priority: str | None = None) -> dict:
     try:
         details = json.loads(f.details_json) if f.details_json else {}
     except Exception:
@@ -30,6 +37,9 @@ def _finding_to_dict(f: Any) -> dict:
         # so the UI can filter findings per dimension. Defaults to defect for
         # rows that predate the split.
         "dimension": getattr(f, "dimension", None) or "defect",
+        # "unverified" for a provisional type a caller asked for by name.
+        "verification": verification_label(f.biomarker_type),
+        "lower_priority": LOW_PRIORITY_LABEL.get(lower_priority or ""),
     }
 
 
@@ -38,37 +48,9 @@ def _round_opt(v: Any) -> float | None:
     return round(v, 2) if v is not None else None
 
 
-def _primary_and_magnitude(findings: list[Any]) -> dict:
-    """Dominant cause + pre-clamp deduction magnitude for one file's findings.
-
-    Two presentation signals the score alone can't carry:
-
-    - ``primary_biomarker`` / ``primary_reason`` — the single worst finding, so a
-      low file can lead with "the one reason" instead of a wall of markers.
-    - ``total_deduction`` — the summed (pre-floor) ``health_impact``. Equal to
-      the breakdown endpoint's ``total_deduction`` (each finding's stored impact
-      is already the applied, capped value), so it distinguishes two files that
-      both floor at 1.0 (a -25 file from a -9 one) without touching ``score``.
-
-    All-null on an empty list: a clean file has no lead and no magnitude.
-    """
-    if not findings:
-        return {"primary_biomarker": None, "primary_reason": None, "total_deduction": None}
-    primary = max(findings, key=lambda x: x.health_impact)
-    total = sum(float(x.health_impact or 0.0) for x in findings)
-    return {
-        "primary_biomarker": primary.biomarker_type,
-        "primary_reason": primary.reason,
-        "total_deduction": round(total, 3),
-    }
-
-
-def _leads_by_file(findings: list[Any]) -> dict[str, dict]:
-    """Group findings by file and reduce each group to its dominant-cause lead."""
-    by_file: dict[str, list[Any]] = {}
-    for f in findings:
-        by_file.setdefault(f.file_path, []).append(f)
-    return {path: _primary_and_magnitude(fs) for path, fs in by_file.items()}
+# Old names kept for the routes and tests that import them.
+_primary_and_magnitude = primary_and_magnitude
+_leads_by_file = primary_and_magnitude_by_file
 
 
 def _metric_to_dict(
@@ -98,7 +80,8 @@ def _metric_to_dict(
     # Built in the historical key order so the full row stays byte-identical.
     out: dict = {
         "file_path": m.file_path,
-        "score": round(m.score, 2),
+        # ``None`` for a language health has no dialect for: nothing measured it.
+        "score": _round_opt(m.score),
         "max_ccn": m.max_ccn,
         "max_nesting": m.max_nesting,
     }
@@ -121,6 +104,14 @@ def _metric_to_dict(
     out["performance_findings"] = perf_findings
     out["performance_analyzed"] = perf_analyzed
     if not summary:
+        # The headline's two halves, and the score the file would carry without
+        # the floor. A file pinned at 1.0 reads 1.0 for months while real work
+        # lands on it; the unclamped number is the only place that shows.
+        structure = _round_opt(getattr(m, "structure_deduction", None))
+        history = _round_opt(getattr(m, "history_deduction", None))
+        out["structure_deduction"] = structure
+        out["history_deduction"] = history
+        out["unclamped_score"] = unclamped_score(structure, history)
         # Dominant-cause lead + pre-clamp magnitude (null when findings weren't
         # loaded for this row, or the file is clean). Additive; readers degrade.
         out["primary_biomarker"] = lead.get("primary_biomarker") if lead else None

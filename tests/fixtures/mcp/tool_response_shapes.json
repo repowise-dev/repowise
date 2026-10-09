@@ -1,0 +1,1957 @@
+{
+  "get_answer": {
+    "_meta": {
+      "cached": null,
+      "contract_version": null,
+      "embedder_degraded": null,
+      "index_age_days": null,
+      "indexed_commit": null,
+      "projection": {
+        "recovery": {
+          "arguments": {
+            "include": [
+              null
+            ]
+          },
+          "same_arguments": null,
+          "tool": null
+        }
+      },
+      "timing_ms": null
+    },
+    "answer": null,
+    "candidate_files": [
+      null
+    ],
+    "citations": [
+      null
+    ],
+    "confidence": null,
+    "fallback_targets_emitted": null,
+    "fallback_targets_reduced_reason": null,
+    "fallback_targets_total": null,
+    "flow_path": [
+      null
+    ],
+    "next_action_hint": null,
+    "note": null,
+    "quotes": [
+      {
+        "lines": [
+          null
+        ],
+        "path": null,
+        "quote": null
+      }
+    ],
+    "quotes_emitted": null,
+    "quotes_reduced_reason": null,
+    "quotes_total": null,
+    "retrieval_quality": null
+  },
+  "get_architecture": {
+    "_meta": {
+      "analysis_commits": {
+        "backend": null,
+        "frontend": null,
+        "repowise": null
+      },
+      "analysis_timestamp": null,
+      "contract_version": null,
+      "embedder_degraded": null
+    },
+    "architecture_type": null,
+    "conformance_violations": null,
+    "core_members": [
+      null
+    ],
+    "core_members_truncated": null,
+    "core_ratio": null,
+    "core_size": null,
+    "cycle_count": null,
+    "node_count": null,
+    "propagation_cost_pct": null,
+    "role_breakdown": {
+      "control": null,
+      "core": null,
+      "peripheral": null,
+      "shared": null
+    },
+    "score": null,
+    "summary": null
+  },
+  "get_blast_radius": {
+    "_meta": {
+      "analysis_commits": {
+        "backend": null,
+        "frontend": null,
+        "repowise": null
+      },
+      "analysis_timestamp": null,
+      "contract_version": null,
+      "embedder_degraded": null
+    },
+    "behavioral_count": null,
+    "impact_score_semantics": {
+      "authoritative_for_change_review": null,
+      "calibration": {
+        "status": null
+      },
+      "field": null,
+      "kind": null,
+      "measures": null,
+      "range": {
+        "maximum": null,
+        "minimum": null
+      },
+      "runtime_breakage_probability": null,
+      "unit": null
+    },
+    "impacted": [],
+    "impacted_repos": [],
+    "impacted_truncated": null,
+    "max_distance": null,
+    "structural_count": null,
+    "summary": null,
+    "target_repos": [],
+    "targets": [],
+    "total_impacted": null,
+    "unresolved_targets": [
+      null
+    ]
+  },
+  "get_change_risk": {
+    "_meta": {
+      "contract_version": null,
+      "embedder_degraded": null,
+      "index_age_days": null,
+      "index_behind": null,
+      "index_scope": {
+        "content_provenance": null,
+        "fingerprint": null,
+        "full": null,
+        "git_tier": null,
+        "projection": null,
+        "run_mode": null,
+        "status": null,
+        "version": null
+      },
+      "indexed_commit": null,
+      "live_head": null,
+      "source": null,
+      "stale_warning": null,
+      "timing_ms": null
+    },
+    "branch_overlap": {
+      "base": null,
+      "branches": [
+        {
+          "ahead": null,
+          "behind": null,
+          "branch": null,
+          "files": [
+            {
+              "basis": null,
+              "file": null
+            }
+          ],
+          "last_commit": null
+        }
+      ],
+      "current": null,
+      "scanned": null,
+      "summary": null,
+      "total": null,
+      "truncated": null
+    },
+    "classification": null,
+    "diff_shape": null,
+    "directive": {
+      "headline": null,
+      "next_actions": [
+        null
+      ],
+      "reasons": [],
+      "status": null
+    },
+    "exclude_patterns": [],
+    "fix_history": {
+      "available": null,
+      "density": null,
+      "files": [
+        {
+          "churn": null,
+          "fix_pressure": null,
+          "path": null
+        }
+      ],
+      "overlap": {
+        "changed_lines_in_fixed_files": null,
+        "files": [
+          {
+            "changed_lines": null,
+            "file_path": null,
+            "fix_count": null,
+            "last_fix_days_ago": null,
+            "overlapping_lines": null,
+            "share_of_change": null
+          }
+        ],
+        "files_with_fixes": null,
+        "line_overlap": null,
+        "summary": null,
+        "total_fixes": null,
+        "truncated": null
+      },
+      "percentile": null
+    },
+    "health_delta": {
+      "basis": null,
+      "by_dimension": {},
+      "by_severity": {},
+      "explanation": null,
+      "findings_emitted": null,
+      "findings_total": null,
+      "introduced": null,
+      "resolved": null,
+      "scope": {
+        "analyzed": null,
+        "changed": null,
+        "eligible": null,
+        "failed": null,
+        "skipped": null
+      },
+      "skipped": {
+        "by_reason": {
+          "not_health_analyzable": null
+        },
+        "total": null
+      },
+      "status": null,
+      "top_findings": [],
+      "worsened": null
+    },
+    "impacted_tests": {
+      "basis": null,
+      "line_coverage": {
+        "covered": [],
+        "no_coverage_data": [],
+        "stale_test_candidates": [],
+        "untested_changes": []
+      },
+      "map_present": null,
+      "status": null,
+      "summary": null,
+      "tests_to_run": [
+        null
+      ],
+      "total": null,
+      "truncated": null
+    },
+    "is_fix": null,
+    "ref": null,
+    "review_priority": null,
+    "risk_percentile": null,
+    "working_tree": null
+  },
+  "get_conformance": {
+    "_meta": {
+      "analysis_commits": {
+        "backend": null,
+        "frontend": null,
+        "repowise": null
+      },
+      "analysis_timestamp": null,
+      "contract_version": null,
+      "embedder_degraded": null
+    },
+    "checked_at": null,
+    "cycle_count": null,
+    "cycles": [
+      {
+        "edge_ids": [
+          null
+        ],
+        "length": null,
+        "nodes": [
+          null
+        ]
+      }
+    ],
+    "cycles_truncated": null,
+    "rules_evaluated": null,
+    "summary": null,
+    "total_cycles": null,
+    "violation_count": null,
+    "violations": [],
+    "violations_truncated": null
+  },
+  "get_context": {
+    "_meta": {
+      "contract_version": null,
+      "embedder_degraded": null,
+      "index_age_days": null,
+      "indexed_commit": null,
+      "timing_ms": null
+    },
+    "targets": {
+      "<path>": {
+        "_call_graph_note": null,
+        "architectural_layer": {
+          "description": null,
+          "name": null,
+          "role": null
+        },
+        "callers": [
+          {
+            "file": null,
+            "imports": null,
+            "inbound_calls": null
+          }
+        ],
+        "docs": {
+          "summary": null,
+          "symbols": [
+            {
+              "kind": null,
+              "line": null,
+              "name": null,
+              "signature": null,
+              "symbol_id": null
+            }
+          ],
+          "symbols_truncated": {
+            "hint": null,
+            "shown": null,
+            "total": null
+          },
+          "title": null
+        },
+        "episodes": null,
+        "fix_history": {
+          "bug_magnet": null,
+          "fix_count": null,
+          "last_fix_days_ago": null
+        },
+        "freshness": {
+          "confidence_score": null,
+          "freshness_status": null,
+          "is_stale": null
+        },
+        "hotspot": null,
+        "parent_page": {
+          "section": null,
+          "target_path": null,
+          "title": null
+        },
+        "path": null,
+        "skeleton": {
+          "bodies_kept": [],
+          "full_tokens": null,
+          "mode": null,
+          "pct_of_full": null,
+          "text": null,
+          "tokens": null,
+          "verified": null
+        },
+        "target": null,
+        "type": null
+      }
+    }
+  },
+  "get_dead_code": {
+    "_meta": {
+      "contract_version": null,
+      "embedder_degraded": null,
+      "index_age_days": null,
+      "indexed_commit": null,
+      "omitted": {
+        "refs": [
+          null
+        ],
+        "restore": null,
+        "tokens": null
+      }
+    },
+    "impact": {
+      "recommendation": null,
+      "safe_lines_reclaimable": null,
+      "total_lines_reclaimable": null
+    },
+    "limit_note": null,
+    "omission_marker": null,
+    "summary": {
+      "by_kind": {
+        "unreachable_file": null,
+        "unused_export": null,
+        "unused_internal": null,
+        "zombie_package": null
+      },
+      "deletable_lines": null,
+      "filtered_findings": null,
+      "filters": {
+        "excluded_kinds": [],
+        "min_confidence": null
+      },
+      "safe_to_delete_count": null,
+      "scope": null,
+      "total_findings": null
+    },
+    "tiers": {
+      "high": {
+        "count": null,
+        "description": null,
+        "findings": [
+          {
+            "age_days": null,
+            "commit_count_90d": null,
+            "confidence": null,
+            "end_line": null,
+            "file_path": null,
+            "id": null,
+            "kind": null,
+            "last_commit_at": null,
+            "last_meaningful_change": null,
+            "lines": null,
+            "primary_owner": null,
+            "reason": null,
+            "repository": null,
+            "risk_factors": [],
+            "safe_to_delete": null,
+            "start_line": null,
+            "symbol_kind": null,
+            "symbol_name": null
+          }
+        ],
+        "lines": null,
+        "safe_count": null,
+        "truncated": null
+      },
+      "low": {
+        "count": null,
+        "description": null,
+        "findings": [
+          {
+            "age_days": null,
+            "commit_count_90d": null,
+            "confidence": null,
+            "end_line": null,
+            "file_path": null,
+            "id": null,
+            "kind": null,
+            "last_commit_at": null,
+            "last_meaningful_change": null,
+            "lines": null,
+            "primary_owner": null,
+            "reason": null,
+            "repository": null,
+            "risk_factors": [
+              null
+            ],
+            "safe_to_delete": null,
+            "start_line": null,
+            "symbol_kind": null,
+            "symbol_name": null
+          }
+        ],
+        "lines": null,
+        "safe_count": null,
+        "truncated": null
+      },
+      "medium": {
+        "count": null,
+        "description": null,
+        "findings": [
+          {
+            "age_days": null,
+            "commit_count_90d": null,
+            "confidence": null,
+            "end_line": null,
+            "file_path": null,
+            "id": null,
+            "kind": null,
+            "last_commit_at": null,
+            "last_meaningful_change": null,
+            "lines": null,
+            "primary_owner": null,
+            "reason": null,
+            "repository": null,
+            "risk_factors": [
+              null
+            ],
+            "safe_to_delete": null,
+            "start_line": null,
+            "symbol_kind": null,
+            "symbol_name": null
+          }
+        ],
+        "lines": null,
+        "safe_count": null,
+        "truncated": null
+      }
+    }
+  },
+  "get_dependency_path": {
+    "distance": null,
+    "explanation": null,
+    "path": [],
+    "visual_context": {
+      "bridge_suggestions": [
+        {
+          "node": null,
+          "pagerank": null
+        }
+      ],
+      "community": {
+        "same_community": null,
+        "source_community": null,
+        "target_community": null
+      },
+      "disconnected": null,
+      "nearest_common_ancestors": [
+        {
+          "distance_from_source": null,
+          "distance_from_target": null,
+          "node": null
+        }
+      ],
+      "reverse_path": {
+        "distance": null,
+        "exists": null,
+        "note": null,
+        "path": [
+          null
+        ]
+      },
+      "shared_neighbors": [
+        null
+      ],
+      "suggestion": null
+    }
+  },
+  "get_execution_flows": {
+    "_meta": {
+      "contract_version": null,
+      "embedder_degraded": null,
+      "hint": null,
+      "timing_ms": null
+    },
+    "flows": [
+      {
+        "communities_visited": [
+          null
+        ],
+        "crosses_community": null,
+        "depth": null,
+        "entry_point": null,
+        "entry_point_name": null,
+        "entry_point_score": null,
+        "termination": null,
+        "trace": [
+          null
+        ],
+        "trace_via": [
+          null
+        ]
+      }
+    ],
+    "total_entry_points": null
+  },
+  "get_health": {
+    "_meta": {
+      "contract_version": null,
+      "embedder": null,
+      "embedder_degraded": null,
+      "health_analysis": {
+        "analyzed_at": null,
+        "analyzed_commit": null,
+        "analyzed_commits_distinct": null,
+        "live_verification": {
+          "basis": null,
+          "source_bytes_verified": null
+        },
+        "recomputed_this_call": null,
+        "refresh": {
+          "command": null,
+          "precondition": null,
+          "required_before_comparison": null
+        },
+        "source": null,
+        "status": null
+      },
+      "health_analyzed_at": null,
+      "health_analyzed_commit": null,
+      "health_analyzed_commits_distinct": null,
+      "index_age_days": null,
+      "index_behind": null,
+      "index_scope": {
+        "content_provenance": null,
+        "fingerprint": null,
+        "full": null,
+        "git_tier": null,
+        "projection": null,
+        "run_mode": null,
+        "status": null,
+        "version": null
+      },
+      "indexed_commit": null,
+      "live_head": null,
+      "semantic_search": null,
+      "stale_warning": null,
+      "timing_ms": null
+    },
+    "counts": null,
+    "distribution": {
+      "bands": {
+        "at_risk": {
+          "files": null,
+          "nloc": null,
+          "pct": null
+        },
+        "excellent": {
+          "files": null,
+          "nloc": null,
+          "pct": null
+        },
+        "fair": {
+          "files": null,
+          "nloc": null,
+          "pct": null
+        },
+        "good": {
+          "files": null,
+          "nloc": null,
+          "pct": null
+        },
+        "needs_work": {
+          "files": null,
+          "nloc": null,
+          "pct": null
+        }
+      },
+      "total_files": null,
+      "total_nloc": null
+    },
+    "fix_first": {
+      "basis": {
+        "analyzed_commit": null,
+        "health_analyzed_at": null
+      },
+      "by_improves": {
+        "defect": null,
+        "maintainability": null,
+        "performance": null
+      },
+      "detail_call": null,
+      "items": [
+        {
+          "confidence": null,
+          "effort": null,
+          "gain": null,
+          "id": null,
+          "kind": null,
+          "next_call": {
+            "arguments": {
+              "opportunity_id": null
+            },
+            "cli": null,
+            "mcp": null,
+            "purpose": null,
+            "tool": null
+          },
+          "target": {
+            "file_path": null,
+            "line_end": null,
+            "line_start": null,
+            "symbol": null
+          },
+          "tier": null,
+          "title": null,
+          "why": null
+        }
+      ],
+      "items_emitted": null,
+      "items_total": null,
+      "lead": {
+        "confidence": null,
+        "effort": null,
+        "gain": null,
+        "id": null,
+        "kind": null,
+        "next_call": {
+          "arguments": {
+            "opportunity_id": null
+          },
+          "cli": null,
+          "mcp": null,
+          "purpose": null,
+          "tool": null
+        },
+        "target": {
+          "file_path": null,
+          "line_end": null,
+          "line_start": null,
+          "symbol": null
+        },
+        "tier": null,
+        "title": null,
+        "why": null
+      },
+      "model_version": null,
+      "totals": {
+        "candidates": null,
+        "eligible": null,
+        "excluded": {
+          "below_min_worth": null,
+          "expected": null,
+          "generated": null,
+          "history_only": null,
+          "no_plan": null,
+          "test": null,
+          "tooling": null
+        },
+        "shown": null
+      }
+    },
+    "gap_analysis": {
+      "files_below_target": null,
+      "files_for_half_gap": null,
+      "files_to_reach_target": null,
+      "target_score": null,
+      "weighted_gap_points": null,
+      "weighted_gross_gap_points": null
+    },
+    "high_leverage_files": [
+      {
+        "branch_coverage_pct": null,
+        "file_path": null,
+        "has_test_file": null,
+        "is_test": null,
+        "line_coverage_pct": null,
+        "maintainability_score": null,
+        "max_ccn": null,
+        "max_nesting": null,
+        "module": null,
+        "nloc": null,
+        "performance_score": null,
+        "primary_biomarker": null,
+        "primary_reason": null,
+        "score": null,
+        "share_of_repo_gap_pct": null,
+        "total_deduction": null,
+        "weighted_deficit": null
+      }
+    ],
+    "high_leverage_files_emitted": null,
+    "high_leverage_files_reduced_reason": null,
+    "high_leverage_files_total": null,
+    "kpis": {
+      "average_health": null,
+      "average_health_unweighted": null,
+      "average_health_weighting": null,
+      "band": null,
+      "file_count": null,
+      "history_average": null,
+      "hotspot_health": null,
+      "maintainability_average": null,
+      "performance_analyzed_files": null,
+      "performance_average": null,
+      "performance_coverage_pct": null,
+      "performance_covered_files": null,
+      "performance_findings": null,
+      "performance_findings_density_per_10k_loc": null,
+      "performance_skipped_files": null,
+      "performance_unsupported_languages": [
+        null
+      ],
+      "performance_unsupported_languages_emitted": null,
+      "performance_unsupported_languages_total": null,
+      "structure_average": null,
+      "worst_performer_path": null,
+      "worst_performer_score": null,
+      "worst_test_path": null,
+      "worst_test_score": null
+    },
+    "mode": null,
+    "performance_opportunities": [
+      {
+        "actionability_reason": null,
+        "actionability_state": null,
+        "affected_call_sites_total": null,
+        "affected_files_total": null,
+        "biomarker_type": null,
+        "biomarker_types": [
+          null
+        ],
+        "biomarker_types_emitted": null,
+        "biomarker_types_total": null,
+        "boundary_kind": null,
+        "confidence": null,
+        "evidence": [
+          {
+            "biomarker_type": null,
+            "file_path": null,
+            "finding_id": null,
+            "function_name": null,
+            "line_end": null,
+            "line_start": null,
+            "path": [
+              null
+            ],
+            "path_emitted": null,
+            "path_total": null,
+            "provenance": null,
+            "reason": null
+          }
+        ],
+        "evidence_emitted": null,
+        "evidence_next_cursor": null,
+        "evidence_reduced_reason": null,
+        "evidence_total": null,
+        "evidence_truncated": null,
+        "execution_context": null,
+        "facets": {
+          "actionability_confidence": null,
+          "amplification": null,
+          "change_risk": null,
+          "exposure": null,
+          "leverage": null,
+          "loop_magnitude": null
+        },
+        "file_path": null,
+        "fix": {
+          "rationale": null,
+          "safety": null,
+          "strategy": null
+        },
+        "intervention_symbol": null,
+        "observations_total": null,
+        "opportunity_id": null,
+        "performance_model_version": null,
+        "plan_economics": {
+          "benefit": null,
+          "cost": null,
+          "effort_bucket": null,
+          "risk": null
+        },
+        "plan_id": null,
+        "plan_reason": null,
+        "plan_reference": null,
+        "plan_status": null,
+        "plan_steps": [
+          {
+            "action": null,
+            "applicability": null,
+            "file_path": null,
+            "line": null,
+            "order": null,
+            "symbol": null
+          }
+        ],
+        "plan_steps_emitted": null,
+        "plan_steps_total": null,
+        "prerequisites": [
+          null
+        ],
+        "prerequisites_emitted": null,
+        "prerequisites_total": null,
+        "provenance": null,
+        "rank_factors": {
+          "affected_call_sites": null,
+          "boundary_kind": null,
+          "entry_reachability": null,
+          "execution_context": null,
+          "loop_magnitude": null,
+          "multiplier_shape": null,
+          "provenance": null
+        },
+        "rank_position": null,
+        "rank_score": null,
+        "reliable_entry_reachability": null,
+        "resource_fingerprints": [],
+        "resource_fingerprints_emitted": null,
+        "resource_fingerprints_total": null,
+        "shared_path_suffix": [
+          null
+        ],
+        "shared_path_suffix_emitted": null,
+        "shared_path_suffix_total": null,
+        "siblings": [],
+        "siblings_emitted": null,
+        "siblings_total": null,
+        "terminal_sink": null,
+        "validation": {
+          "basis": null,
+          "commands": [
+            null
+          ],
+          "commands_emitted": null,
+          "commands_total": null,
+          "tests": [
+            null
+          ],
+          "tests_emitted": null,
+          "tests_total": null,
+          "total": null,
+          "via": null
+        },
+        "why_ranked": [
+          {
+            "factor": null,
+            "points": null,
+            "value": null
+          }
+        ],
+        "why_ranked_emitted": null,
+        "why_ranked_total": null
+      }
+    ],
+    "performance_opportunities_emitted": null,
+    "performance_opportunities_reduced_reason": null,
+    "performance_opportunities_total": null,
+    "performance_summary": {
+      "actionability": {
+        "advisory": null,
+        "expected": null,
+        "investigate": null
+      },
+      "analyzed_commit": null,
+      "boundary": {
+        "db": null,
+        "filesystem": null,
+        "network": null,
+        "none": null,
+        "subprocess": null
+      },
+      "context": {
+        "production": null
+      },
+      "facets": {
+        "actionability": [
+          {
+            "total": null,
+            "value": null
+          }
+        ],
+        "actionability_emitted": null,
+        "actionability_total": null,
+        "boundary": [
+          {
+            "total": null,
+            "value": null
+          }
+        ],
+        "boundary_emitted": null,
+        "boundary_total": null,
+        "confidence": [
+          {
+            "total": null,
+            "value": null
+          }
+        ],
+        "confidence_emitted": null,
+        "confidence_total": null,
+        "context": [
+          {
+            "total": null,
+            "value": null
+          }
+        ],
+        "context_emitted": null,
+        "context_total": null,
+        "plan_state": [
+          {
+            "total": null,
+            "value": null
+          }
+        ],
+        "plan_state_emitted": null,
+        "plan_state_total": null
+      },
+      "materialized_model_version": null,
+      "next_call": {
+        "arguments": {
+          "include": [
+            null
+          ],
+          "limit": null,
+          "only": [
+            null
+          ]
+        },
+        "cli": null,
+        "mcp": null,
+        "purpose": null,
+        "tool": null
+      },
+      "performance_model_version": null,
+      "repository_total": null,
+      "status": null,
+      "total": null,
+      "with_plan_total": null
+    },
+    "recovery": {
+      "high_leverage_files": {
+        "call": null,
+        "remaining": null
+      },
+      "performance_opportunities": {
+        "call": null,
+        "remaining": null
+      },
+      "refactoring_opportunities": {
+        "call": null,
+        "remaining": null
+      }
+    },
+    "refactoring_opportunities": [
+      {
+        "addresses_primary_problem": null,
+        "affected_files_total": null,
+        "confidence": null,
+        "dependents": null,
+        "effort_bucket": null,
+        "evidence_total": null,
+        "file_nloc": null,
+        "file_path": null,
+        "judgment_steps": null,
+        "lead_biomarker": null,
+        "lead_refactoring_type": null,
+        "mechanical_steps": null,
+        "opportunity_id": null,
+        "queue_position": null,
+        "rank_factors": {
+          "benefit": null,
+          "cost": null,
+          "mechanical_share": null,
+          "primary_problem": null,
+          "risk": null
+        },
+        "rank_position": null,
+        "rank_score": null,
+        "recoverable_health": null,
+        "refactoring_model_version": null,
+        "status": null,
+        "step_count": null,
+        "steps": [
+          {
+            "applicability": {
+              "classification": null,
+              "facts": {
+                "affected_file_count": null,
+                "blast_size": null,
+                "confidence": null,
+                "cross_file": null,
+                "local_scope": null
+              },
+              "reasons": [
+                null
+              ],
+              "reasons_emitted": null,
+              "reasons_total": null,
+              "unknowns": [],
+              "unknowns_emitted": null,
+              "unknowns_total": null
+            },
+            "confidence": null,
+            "effort_bucket": null,
+            "file_path": null,
+            "finding_ids": [
+              null
+            ],
+            "finding_ids_emitted": null,
+            "finding_ids_total": null,
+            "impact_delta": null,
+            "line_end": null,
+            "line_start": null,
+            "plan_id": null,
+            "refactoring_type": null,
+            "relocated_by": null,
+            "source_biomarker": null,
+            "target_symbol": null,
+            "validation_profile_id": null
+          }
+        ],
+        "steps_emitted": null,
+        "steps_total": null,
+        "why_ranked": [
+          {
+            "factor": null,
+            "value": null
+          }
+        ],
+        "why_ranked_emitted": null,
+        "why_ranked_total": null
+      }
+    ],
+    "refactoring_opportunities_emitted": null,
+    "refactoring_opportunities_reduced_reason": null,
+    "refactoring_opportunities_total": null,
+    "refactoring_summary": {
+      "addresses_primary_problem": {
+        "no": null,
+        "unknown": null,
+        "yes": null
+      },
+      "analyzed_commit": null,
+      "by_confidence": {
+        "high": null,
+        "medium": null
+      },
+      "by_effort": {
+        "L": null,
+        "M": null,
+        "S": null,
+        "XL": null
+      },
+      "by_lead_type": {
+        "break_cycle": null,
+        "extract_class": null,
+        "extract_helper": null,
+        "extract_method": null,
+        "move_method": null,
+        "split_file": null
+      },
+      "by_status": {
+        "open": null
+      },
+      "facets": {
+        "confidence": {
+          "high": null,
+          "medium": null
+        },
+        "effort": {
+          "L": null,
+          "M": null,
+          "S": null,
+          "XL": null
+        },
+        "lead_type": {
+          "break_cycle": null,
+          "extract_class": null,
+          "extract_helper": null,
+          "extract_method": null,
+          "move_method": null,
+          "split_file": null
+        }
+      },
+      "files_total": null,
+      "judgment_steps_total": null,
+      "lead": {
+        "addresses_primary_problem": null,
+        "confidence": null,
+        "effort_bucket": null,
+        "file_path": null,
+        "judgment_steps": null,
+        "lead_biomarker": null,
+        "lead_refactoring_type": null,
+        "mechanical_steps": null,
+        "opportunity_id": null,
+        "recoverable_health": null,
+        "status": null,
+        "step_count": null
+      },
+      "mechanical_steps_total": null,
+      "next_call": {
+        "arguments": {
+          "include": [
+            null
+          ],
+          "limit": null,
+          "only": [
+            null
+          ]
+        },
+        "cli": null,
+        "mcp": null,
+        "purpose": null,
+        "tool": null
+      },
+      "opportunities_total": null,
+      "refactoring_model_version": null,
+      "status": null,
+      "steps_total": null,
+      "view": null
+    },
+    "scope": null,
+    "secondary_rankings": {
+      "modules": {
+        "call": null,
+        "total": null
+      },
+      "test_findings": {
+        "call": null,
+        "total": null
+      },
+      "test_worst_files": {
+        "call": null,
+        "total": null
+      },
+      "top_findings": {
+        "call": null,
+        "total": null
+      },
+      "worst_files": {
+        "call": null,
+        "total": null
+      }
+    },
+    "suggestion_legend": {
+      "hot_path_sync_io": null,
+      "io_in_loop": null,
+      "nested_loop_with_io": null
+    },
+    "unknown_include_keys": [
+      null
+    ],
+    "unknown_include_keys_emitted": null,
+    "unknown_include_keys_total": null,
+    "unscored_files": null
+  },
+  "get_overview": {
+    "_meta": {
+      "contract_version": null,
+      "embedder_degraded": null,
+      "index_age_days": null,
+      "indexed_commit": null,
+      "omitted": {
+        "refs": [
+          null
+        ],
+        "restore": null,
+        "tokens": null
+      }
+    },
+    "architecture": {
+      "layers": [
+        {
+          "file_count": null,
+          "name": null
+        }
+      ],
+      "tour_available": null,
+      "tour_step_count": null
+    },
+    "code_health": {
+      "average_health": null,
+      "band": null,
+      "distribution": {
+        "bands": {
+          "at_risk": {
+            "files": null,
+            "nloc": null,
+            "pct": null
+          },
+          "excellent": {
+            "files": null,
+            "nloc": null,
+            "pct": null
+          },
+          "fair": {
+            "files": null,
+            "nloc": null,
+            "pct": null
+          },
+          "good": {
+            "files": null,
+            "nloc": null,
+            "pct": null
+          },
+          "needs_work": {
+            "files": null,
+            "nloc": null,
+            "pct": null
+          }
+        },
+        "total_files": null,
+        "total_nloc": null
+      },
+      "file_count": null,
+      "hotspot_health": null,
+      "open_findings": null,
+      "worst_performer_path": null,
+      "worst_performer_score": null
+    },
+    "content_hint": null,
+    "content_md": null,
+    "entry_points": [
+      null
+    ],
+    "git_health": {
+      "avg_bus_factor": null,
+      "churn_trend": null,
+      "files_git_attributed": null,
+      "files_with_bus_factor_1": null,
+      "hotspot_count": null,
+      "top_churn_modules": [
+        null
+      ]
+    },
+    "key_modules": [
+      {
+        "name": null,
+        "path": null,
+        "section": null
+      }
+    ],
+    "more": null,
+    "omission_marker": null,
+    "title": null,
+    "tool_surface": {
+      "counts": {
+        "default": null,
+        "eligible": null,
+        "enabled": null,
+        "opt_in_available": null,
+        "tiers": {
+          "canonical": null
+        }
+      },
+      "enabled": [
+        null
+      ],
+      "mode": null,
+      "opt_in": [
+        {
+          "description": null,
+          "enabled": null,
+          "name": null
+        }
+      ],
+      "recipes": [
+        {
+          "call": null,
+          "name": null
+        }
+      ],
+      "tools": [
+        {
+          "default": null,
+          "description": null,
+          "name": null,
+          "tier": null
+        }
+      ]
+    }
+  },
+  "get_risk": {
+    "_meta": {
+      "contract_version": null,
+      "embedder_degraded": null,
+      "index_age_days": null,
+      "indexed_commit": null,
+      "omitted": {
+        "refs": [
+          null
+        ],
+        "restore": null,
+        "tokens": null
+      }
+    },
+    "directive": {
+      "coverage": {
+        "reason": null,
+        "status": null
+      },
+      "files_without_measured_tests": [
+        null
+      ],
+      "governance_risk": [],
+      "may_break": [
+        null
+      ],
+      "may_break_emitted": null,
+      "may_break_omitted": null,
+      "may_break_reduced_reason": null,
+      "may_break_total": null,
+      "may_break_truncated": null,
+      "missing_cochanges": [
+        null
+      ],
+      "missing_cochanges_emitted": null,
+      "missing_cochanges_omitted": null,
+      "missing_cochanges_reduced_reason": null,
+      "missing_cochanges_total": null,
+      "missing_cochanges_truncated": null,
+      "next_calls": [
+        {
+          "arguments": {},
+          "cli": null,
+          "mcp": null,
+          "purpose": null,
+          "tool": null
+        }
+      ],
+      "reach": null,
+      "recommended_reviewers": [
+        {
+          "email": null,
+          "files": null,
+          "ownership_pct": null
+        }
+      ],
+      "summary": null,
+      "test_recommendations": [
+        {
+          "basis": null,
+          "evidence": [
+            {
+              "basis": null,
+              "source_file": null,
+              "via": null
+            }
+          ],
+          "test_id": null
+        }
+      ],
+      "test_recommendations_emitted": null,
+      "test_recommendations_omitted": null,
+      "test_recommendations_repository": null,
+      "test_recommendations_repository_id": null,
+      "test_recommendations_total": null,
+      "test_recommendations_truncated": null,
+      "test_unknown_files": [],
+      "tests_to_run": [
+        null
+      ],
+      "tests_to_run_basis": null,
+      "tests_to_run_emitted": null,
+      "tests_to_run_kind": null,
+      "tests_to_run_omitted": null,
+      "tests_to_run_total": null,
+      "tests_to_run_truncated": null,
+      "tests_to_update": [
+        {
+          "path": null,
+          "reason": null
+        }
+      ]
+    },
+    "omission_marker": null,
+    "pr_blast_radius": {
+      "cochange_warnings": [
+        {
+          "changed": null,
+          "direction": null,
+          "evidence_kind": null,
+          "missing_partner": null,
+          "provenance": null,
+          "relationship_type": null,
+          "score": null,
+          "support": null
+        }
+      ],
+      "cochange_warnings_emitted": null,
+      "cochange_warnings_total": null,
+      "cochange_warnings_truncated": null,
+      "cochange_warnings_truncated_total": null,
+      "guarding_tests": {
+        "analysis": {
+          "basis_categories": [
+            null
+          ],
+          "degraded": null,
+          "partial": null,
+          "stale": null,
+          "status": null
+        },
+        "basis": null,
+        "by_file": {
+          "<path>": [
+            null
+          ]
+        },
+        "coverage": {
+          "changed_files_total": null,
+          "changed_files_with_measured_tests": null,
+          "changed_files_without_measured_tests": null,
+          "freshness": {
+            "indexed_commit": null,
+            "ingested_commit": null,
+            "reason": null,
+            "status": null
+          },
+          "ingested_at": null,
+          "map_present": null,
+          "pair_count": null,
+          "reason": null,
+          "source_file_count": null,
+          "source_format": null,
+          "status": null,
+          "test_count": null
+        },
+        "inference": {
+          "candidates_before_dedup": null,
+          "changed_files_total": null,
+          "changed_files_with_candidates": null,
+          "reason": null,
+          "status": null
+        },
+        "map_present": null,
+        "tests_to_run": [
+          null
+        ],
+        "tests_to_run_emitted": null,
+        "tests_to_run_total": null,
+        "tests_to_run_truncated": null,
+        "tests_to_run_with_basis": [
+          {
+            "bases": [
+              null
+            ],
+            "basis": null,
+            "evidence": [
+              {
+                "basis": null,
+                "source_file": null,
+                "source_format": null,
+                "via": null
+              }
+            ],
+            "repository": null,
+            "repository_id": null,
+            "source_files": [
+              null
+            ],
+            "test_file": null,
+            "test_id": null
+          }
+        ]
+      },
+      "test_gaps": [
+        null
+      ],
+      "test_gaps_emitted": null,
+      "test_gaps_total": null,
+      "test_gaps_truncated": null,
+      "test_impact": {
+        "analysis": {
+          "basis_categories": [
+            null
+          ],
+          "degraded": null,
+          "partial": null,
+          "stale": null,
+          "status": null
+        },
+        "coverage": {
+          "changed_files_total": null,
+          "changed_files_with_measured_tests": null,
+          "changed_files_without_measured_tests": null,
+          "freshness": {
+            "indexed_commit": null,
+            "ingested_commit": null,
+            "reason": null,
+            "status": null
+          },
+          "ingested_at": null,
+          "map_present": null,
+          "pair_count": null,
+          "reason": null,
+          "source_file_count": null,
+          "source_format": null,
+          "status": null,
+          "test_count": null
+        },
+        "deleted_files": [],
+        "files": [
+          {
+            "change_status": null,
+            "head_present": null,
+            "inferred_tests": [
+              null
+            ],
+            "inferred_tests_total": null,
+            "measured_tests": [],
+            "measured_tests_total": null,
+            "source_file": null,
+            "status": null
+          }
+        ],
+        "files_total": null,
+        "files_without_measured_tests": [
+          null
+        ],
+        "inference": {
+          "candidates_before_dedup": null,
+          "changed_files_total": null,
+          "changed_files_with_candidates": null,
+          "reason": null,
+          "status": null
+        },
+        "recommendations": [
+          {
+            "basis": null,
+            "evidence": [
+              {
+                "basis": null,
+                "source_file": null,
+                "via": null
+              }
+            ],
+            "test_id": null
+          }
+        ],
+        "recommendations_by_primary_basis": {
+          "inferred": null,
+          "measured": null
+        },
+        "recommendations_emitted": null,
+        "recommendations_omitted": null,
+        "recommendations_repository": null,
+        "recommendations_repository_id": null,
+        "recommendations_total": null,
+        "recommendations_truncated": null,
+        "unknown_files": []
+      },
+      "transitive_affected": [
+        {
+          "claim": null,
+          "depth": null,
+          "direct": null,
+          "direction": null,
+          "distance": null,
+          "evidence_kind": null,
+          "path": null,
+          "runtime_breakage_claim": null
+        }
+      ],
+      "transitive_affected_emitted": null,
+      "transitive_affected_total": null,
+      "transitive_affected_truncated": null,
+      "transitive_affected_truncated_total": null
+    },
+    "targets": {
+      "packages/core/src/repowise/core/ingestion/call_resolver.py": {
+        "bus_factor": null,
+        "co_change_partners": [
+          {
+            "direction": null,
+            "evidence_kind": null,
+            "file_path": null,
+            "has_import_link": null,
+            "has_structural_link": null,
+            "last_co_change": null,
+            "provenance": null,
+            "relationship_type": null,
+            "structural_relationship_types": [
+              null
+            ],
+            "support": null,
+            "weight": null
+          }
+        ],
+        "co_change_partners_emitted": null,
+        "co_change_partners_omitted": null,
+        "co_change_partners_reduced_reason": null,
+        "co_change_partners_total": null,
+        "co_change_partners_truncated": null,
+        "commit_count_capped": null,
+        "contributor_count": null,
+        "defect_profile": {
+          "bug_magnet": null,
+          "fix_count": null,
+          "last_fix_days_ago": null,
+          "top_symbols": {
+            "_link_declarations": null,
+            "_merged_symbols_for": null,
+            "_published": null
+          },
+          "window": null
+        },
+        "dependents_count": null,
+        "episodes": null,
+        "health_score": null,
+        "hotspot_score": null,
+        "is_hotspot": null,
+        "line_coverage_pct": null,
+        "owner_pct": null,
+        "primary_owner": null,
+        "recent_owner": null,
+        "recent_owner_pct": null,
+        "risk_summary": null,
+        "security_signals": [],
+        "target": null,
+        "test_gap": null,
+        "top_biomarkers": [
+          {
+            "biomarker_type": null,
+            "function_name": null,
+            "impact": null,
+            "severity": null
+          }
+        ],
+        "trend": null
+      }
+    }
+  },
+  "get_symbol": {
+    "_meta": {
+      "contract_version": null,
+      "embedder_degraded": null,
+      "index_age_days": null,
+      "indexed_commit": null,
+      "replaced_tokens": null,
+      "timing_ms": null
+    },
+    "continuation": null,
+    "continuation_reference": {
+      "id": null,
+      "kind": null,
+      "path": null,
+      "range": [
+        null
+      ],
+      "repository": null,
+      "source_kind": null,
+      "verification_basis": null
+    },
+    "end_line": null,
+    "file": null,
+    "kind": null,
+    "language": null,
+    "name": null,
+    "note": null,
+    "qualified_name": null,
+    "signature": null,
+    "source": null,
+    "start_line": null,
+    "symbol_end_line": null,
+    "symbol_id": null,
+    "symbol_start_line": null,
+    "truncated": null,
+    "verified": null
+  },
+  "get_why": {
+    "_meta": {
+      "contract_version": null,
+      "embedder_degraded": null,
+      "index_age_days": null,
+      "indexed_commit": null,
+      "omitted": {
+        "refs": [
+          null
+        ],
+        "restore": null,
+        "tokens": null
+      }
+    },
+    "alignment": {
+      "active_count": null,
+      "deprecated_count": null,
+      "explanation": null,
+      "governing_count": null,
+      "score": null,
+      "sibling_coverage": null,
+      "stale_count": null
+    },
+    "answer_basis": null,
+    "code_rationale": [
+      {
+        "comment": null,
+        "evidence_refs": [
+          {
+            "content_id": null,
+            "id": null,
+            "kind": null,
+            "line": null,
+            "path": null,
+            "provenance": null,
+            "range": [
+              null
+            ],
+            "repository": null,
+            "source": null,
+            "source_kind": null,
+            "verification": null,
+            "verification_basis": null
+          }
+        ],
+        "lines": [
+          null
+        ],
+        "matched_terms": [],
+        "path": null,
+        "provenance": null
+      }
+    ],
+    "code_rationale_emitted": null,
+    "code_rationale_omitted": null,
+    "code_rationale_reduced_reason": null,
+    "code_rationale_total": null,
+    "code_rationale_truncated": null,
+    "decisions": [],
+    "episodes": [
+      {
+        "evidence": null,
+        "evidence_refs": [
+          {
+            "commit": null,
+            "id": null,
+            "kind": null,
+            "provenance": null,
+            "repository": null,
+            "source": null,
+            "source_kind": null,
+            "verification_basis": null
+          }
+        ],
+        "kind": null,
+        "provenance": null,
+        "recorded": null,
+        "scope": [
+          null
+        ],
+        "still_true": null,
+        "subject": null,
+        "tier": null
+      }
+    ],
+    "episodes_emitted": null,
+    "episodes_omitted": null,
+    "episodes_reduced_reason": null,
+    "episodes_total": null,
+    "episodes_truncated": null,
+    "git_archaeology": {
+      "cross_references": [],
+      "file_commits": [
+        {
+          "author": null,
+          "date": null,
+          "evidence_refs": [
+            {
+              "commit": null,
+              "id": null,
+              "kind": null,
+              "provenance": null,
+              "repository": null,
+              "source": null,
+              "source_kind": null,
+              "verification_basis": null
+            }
+          ],
+          "message": null,
+          "provenance": null,
+          "sha": null
+        }
+      ],
+      "file_commits_emitted": null,
+      "file_commits_omitted": null,
+      "file_commits_reduced_reason": null,
+      "file_commits_total": null,
+      "file_commits_truncated": null,
+      "git_log": [],
+      "provenance": null,
+      "summary": null,
+      "triggered": null
+    },
+    "mode": null,
+    "omission_marker": null,
+    "origin_story": {
+      "age_days": null,
+      "author_commit_pct": null,
+      "available": null,
+      "contributors": [
+        {
+          "commit_count": null,
+          "email": null,
+          "first_commit_ts": null,
+          "last_commit_ts": null,
+          "name": null
+        }
+      ],
+      "first_commit": null,
+      "key_commits": [
+        {
+          "author": null,
+          "date": null,
+          "evidence_refs": [
+            {
+              "commit": null,
+              "id": null,
+              "kind": null,
+              "provenance": null,
+              "repository": null,
+              "source": null,
+              "source_kind": null,
+              "verification_basis": null
+            }
+          ],
+          "message": null,
+          "pr_number": null,
+          "provenance": null,
+          "sha": null
+        }
+      ],
+      "key_commits_emitted": null,
+      "key_commits_omitted": null,
+      "key_commits_reduced_reason": null,
+      "key_commits_total": null,
+      "key_commits_truncated": null,
+      "last_commit": null,
+      "linked_decisions": [],
+      "primary_author": null,
+      "provenance": null,
+      "summary": null,
+      "total_commits": null
+    },
+    "path": null
+  },
+  "list_repos": {
+    "_meta": {
+      "contract_version": null,
+      "embedder_degraded": null
+    },
+    "default_repo": null,
+    "hint": null,
+    "repos": [
+      {
+        "absolute_path": null,
+        "alias": null,
+        "is_default": null,
+        "path": null
+      }
+    ],
+    "workspace": null,
+    "workspace_root": null
+  },
+  "search_codebase": {
+    "_meta": {
+      "contract_version": null,
+      "embedder_degraded": null,
+      "index_age_days": null,
+      "indexed_commit": null
+    },
+    "candidates": [
+      {
+        "path": null
+      }
+    ],
+    "results": [
+      {
+        "confidence_score": null,
+        "page_id": null,
+        "page_type": null,
+        "path": null,
+        "relevance_score": null,
+        "snippet": null,
+        "sources": [
+          null
+        ],
+        "title": null
+      }
+    ]
+  },
+  "set_finding_status": {
+    "_meta": {
+      "contract_version": null,
+      "embedder_degraded": null
+    },
+    "id": null,
+    "note": null,
+    "public_id": null,
+    "status": null,
+    "status_changed_at": null,
+    "status_reason": null
+  }
+}

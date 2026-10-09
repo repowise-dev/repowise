@@ -29,7 +29,7 @@ file-level import graph cannot see:
 The helper derives directories from the graph itself; the
 :class:`CppWorkspaceIndex` populated during ingestion is not threaded
 into the analyzer. Workspace-discovered conditional sources surface
-through the warmup as ``is_never_flag`` / ``is_entry_point`` graph
+through the warmup as ``is_never_flag`` / ``is_reachability_root`` graph
 attributes instead.
 """
 
@@ -38,6 +38,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any
 
+from ...entry_candidacy import is_reachability_root
 from ...ingestion.languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 
@@ -198,7 +199,7 @@ def is_cpp_file_reachable(
             continue
         sib_data = graph.nodes.get(sibling, {})
         sib_has_importer = graph.in_degree(sibling) > 0
-        if sib_data.get("is_entry_point", False):
+        if is_reachability_root(sib_data):
             has_sibling_entry = True
             break
         if _file_defines_entry_function(graph, sibling):

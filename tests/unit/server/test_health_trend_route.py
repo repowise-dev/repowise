@@ -152,3 +152,66 @@ async def test_a_single_snapshot_reports_no_movement(client, session, tmp_path) 
     assert body["file_deltas"] == []
     assert body["file_deltas_total"] == 0
     assert body["snapshot_count"] == 1
+
+
+async def test_history_rows_carry_the_split_and_the_maintainability_pillar(
+    client, session, tmp_path
+) -> None:
+    """The per-point series the chart draws must survive the response model.
+
+    These three are stored per snapshot and serialized by ``recent_kpis``, but
+    the route declares a response model, so a field missing from that model is
+    dropped after serialization and reaches the client as ``null`` — with the
+    core unit tests still green.
+    """
+    repo_id = await _repo(client, session, tmp_path)
+    await save_health_snapshot(
+        session,
+        repo_id,
+        hotspot_health=5.0,
+        average_health=7.0,
+        worst_performer_path=None,
+        worst_performer_score=None,
+        per_file_scores={"a.py": 7.0},
+        structure_average=1.6,
+        history_average=1.4,
+        maintainability_average=8.0,
+    )
+    await session.commit()
+
+    body = (await client.get(f"/api/repos/{repo_id}/health/trend")).json()
+
+    assert body["history"][0]["structure_average"] == 1.6
+    assert body["history"][0]["history_average"] == 1.4
+    assert body["history"][0]["maintainability_average"] == 8.0
+
+
+async def test_a_narrowed_trend_blanks_the_figures_it_never_recorded(
+    client, session, tmp_path
+) -> None:
+    """A production-scoped snapshot recorded only its own average. The rest
+    describes the whole repository, so it is blanked rather than served under a
+    label that would make it read as a production measurement."""
+    repo_id = await _repo(client, session, tmp_path)
+    await save_health_snapshot(
+        session,
+        repo_id,
+        hotspot_health=5.0,
+        average_health=7.0,
+        worst_performer_path=None,
+        worst_performer_score=None,
+        per_file_scores={"a.py": 7.0},
+        structure_average=1.6,
+        history_average=1.4,
+        maintainability_average=8.0,
+        production_average=6.0,
+    )
+    await session.commit()
+
+    body = (await client.get(f"/api/repos/{repo_id}/health/trend?scope=production")).json()
+
+    row = body["history"][0]
+    assert row["average_health"] == 6.0
+    assert row["structure_average"] is None
+    assert row["history_average"] is None
+    assert row["maintainability_average"] is None

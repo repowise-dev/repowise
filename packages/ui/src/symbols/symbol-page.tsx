@@ -8,6 +8,7 @@ import type {
   SymbolDetailResponse,
 } from "@repowise-dev/types/symbols";
 import { FixHistoryBadge, SYMBOL_FIX_TITLE } from "../git/fix-history-badge";
+import { AskAboutThis } from "../chat/ask-about-this";
 import { SymbolDetailBody } from "./symbol-detail-body";
 import { toSymbolBodyCall, toSymbolBodyRelations } from "./normalize-calls";
 
@@ -147,6 +148,17 @@ export function SymbolPage({
             >
               {s.file_path}:{s.start_line}
             </a>
+            <AskAboutThis
+              context={{
+                kind: "symbol",
+                label: s.qualified_name || s.name,
+                target: s.symbol_id,
+                targetKind: "symbol",
+              }}
+              question={`What does ${s.qualified_name || s.name} do, who calls it, and what should tests protect?`}
+              label={`Ask about ${s.name}`}
+              className="h-6 w-6"
+            />
           </>
         }
         {...(LinkComponent ? { LinkComponent } : {})}

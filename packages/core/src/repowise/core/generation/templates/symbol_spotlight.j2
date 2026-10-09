@@ -1,9 +1,12 @@
 {#- Deterministic (no-LLM) symbol spotlight.
 
-    Note the wording around callers: ``ctx.callers`` holds files that import
-    the containing module, not verified call sites. The LLM template hedges
-    the same way; a template that claimed otherwise would over-state what the
-    graph actually knows.
+    "Where it is used" has two sources and says which one it is reading.
+    ``ctx.call_sites`` is what the call resolver resolved to this symbol, and
+    is what the section means wherever it is non-empty. ``ctx.callers`` is the
+    fallback: files importing the containing module, not verified call sites,
+    which for a constant meant listing thirty-seven files that may never touch
+    it. The wording changes with the source, because a page that called an
+    import a call would over-state what the graph knows.
 
     The rendered list stops at 25, the same bound ``file_page.j2`` puts on its
     "Used by" section over the same data, while the summary line above it keeps
@@ -21,7 +24,11 @@
     the identifiers this page exists to carry. Deleting it would blank the
     summary for every undocumented symbol.
 -#}
-# {{ ctx.qualified_name }}
+{#- The symbol's own name, not the synthetic dotted path built by joining
+    every directory above it. The file it lives in is on the line below, which
+    is where a reader looks for it and is the form ``get_symbol`` takes.
+-#}
+# {{ ctx.symbol_name }}
 
 **{{ labels.kind }}:** {{ ctx.kind }}{% if ctx.is_async %} ({{ labels.async_marker }}){% endif %} | **{{ labels.defined_in }}:** `{{ ctx.file_path }}`{% if ctx.complexity_estimate %} | **{{ labels.estimated_complexity }}:** {{ ctx.complexity_estimate }}{% endif %}
 {%- if ctx.signature %}
@@ -41,7 +48,42 @@
 - `{{ d }}`
 {%- endfor %}
 {%- endif %}
+{%- if ctx.call_sites %}
+
+## {{ labels.where_used }}
+
+{{ labels.call_sites_summary.format(count=ctx.call_sites | length, call_word=labels.call_site_plural if ctx.call_sites | length != 1 else labels.call_site_singular) }}
+{% for site in ctx.call_sites[:25] %}
+- `{{ site.caller }}`{% if site.caller_file %} {{ labels.in_file.format(path=site.caller_file) }}{% endif %}
+{%- endfor %}
+{%- if ctx.call_sites | length > 25 %}
+
+_{{ labels.and_more.format(count=ctx.call_sites | length - 25) }}_
+{%- endif %}
+{#- The importers, once the resolved calls have answered the question.
+
+    Their own heading, and one the reader personas hide: for a hub symbol
+    these are twenty-five files that import the module and may never touch
+    the symbol, which is what "where it is used" used to mean and why it was
+    worth replacing. They stay on the page because ``content`` is the index
+    entry — dropping them would take fifteen thousand file paths across a
+    thousand pages out of search — and out of the reader's way because the
+    section above already answered honestly.
+-#}
 {%- if ctx.callers %}
+
+## {{ labels.imported_by_heading }}
+
+{{ labels.importers_summary.format(count=ctx.callers | length, file_word=labels.file_plural if ctx.callers | length != 1 else labels.file_singular, import_verb=labels.import_verb_plural if ctx.callers | length != 1 else labels.import_verb_singular) }}
+{% for c in ctx.callers[:25] %}
+- `{{ c }}`
+{%- endfor %}
+{%- if ctx.callers | length > 25 %}
+
+_{{ labels.and_more.format(count=ctx.callers | length - 25) }}_
+{%- endif %}
+{%- endif %}
+{%- elif ctx.callers %}
 
 ## {{ labels.where_used }}
 
@@ -77,7 +119,9 @@ _{{ labels.and_more.format(count=ctx.callers | length - 25) }}_
 
 - {{ labels.question_where_defined.format(symbol=ctx.symbol_name) }}
 - {{ labels.question_what_is.format(symbol=ctx.qualified_name) }}
-{%- if ctx.callers %}
+{%- if ctx.call_sites %}
+- {{ labels.question_what_calls.format(symbol=ctx.symbol_name) }}
+{%- elif ctx.callers %}
 - {{ labels.question_which_files_import.format(symbol=ctx.symbol_name) }}
 {%- endif %}
 

@@ -74,7 +74,20 @@ class OllamaEmbedder:
         env_dimensions = os.environ.get("OLLAMA_EMBEDDING_DIMS") or os.environ.get(
             "REPOWISE_EMBEDDING_DIMS"
         )
-        self._requested_dimensions = dimensions or (int(env_dimensions) if env_dimensions else None)
+        resolved_dims: int | None = None
+        if dimensions is not None:
+            if dimensions <= 0:
+                raise ValueError("dimensions must be a positive integer")
+            resolved_dims = dimensions
+        elif env_dimensions:
+            try:
+                parsed = int(env_dimensions)
+            except (ValueError, OverflowError):
+                parsed = 0
+            if parsed > 0:
+                resolved_dims = parsed
+            # else: silently fall through to model inference, matching timeout behaviour
+        self._requested_dimensions = resolved_dims
         self._dimensions = self._requested_dimensions or _infer_dimensions(self._model)
         self._timeout = resolve_embedding_timeout(
             timeout, _DEFAULT_TIMEOUT, provider_env="OLLAMA_EMBEDDING_TIMEOUT"

@@ -47,6 +47,15 @@ Budgets in ``tests/unit/server/mcp/test_tool_table_drift.py``.
 
 from __future__ import annotations
 
+#: Row text that is true only on a model-backed index. A keyless index answers
+#: every question at low confidence and serves full-text hits only, so these
+#: clauses are dropped there rather than steering the agent to distrust them.
+_KEYED_ONLY: dict[str, str] = {
+    "get_answer": 'Cite `confidence: "high"` or `grounding: "extracted"` directly; ',
+    "search_codebase": " A hit whose `sources` are `[fts]` only has no semantic agreement, "
+    "so verify it.",
+}
+
 # Tool name -> (signature shown in the table, agent-facing row text).
 TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
     "get_answer": (
@@ -58,9 +67,9 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         # payload on the strength of it, so it re-searched after every call.
         # `retrieval_quality` is the field that rates what such a payload does
         # carry. Reworded, not lengthened: 186 chars against the 179 it replaced.
-        'First call for any how/where/why question. Cite `confidence: "high"` or '
-        '`grounding: "extracted"` directly; `degraded` means judge by '
-        "`retrieval_quality`. `symbol_bodies` has live bodies.",
+        "First call for any how/where/why question. "
+        + _KEYED_ONLY["get_answer"]
+        + "`degraded` means judge by `retrieval_quality`. `symbol_bodies` has live bodies.",
     ),
     "get_context": (
         "get_context(targets=[...])",
@@ -77,8 +86,7 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
     "search_codebase": (
         "search_codebase(query)",
         "Hybrid search, auto-routed by query shape; force with "
-        "`mode=symbol|path|concept|hybrid`. A hit whose `sources` are `[fts]` only "
-        "has no semantic agreement, so verify it.",
+        "`mode=symbol|path|concept|hybrid`." + _KEYED_ONLY["search_codebase"],
     ),
     "get_why": (
         "get_why(query, targets?)",
@@ -86,21 +94,22 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         "rationale comments. Call before a refactor or a pattern divergence.",
     ),
     "get_risk": (
-        "get_risk(targets, changed_files?, include?)",
-        "Call before editing: what history says about touching these files. "
-        "PR mode (`changed_files`) leads with a `directive`: read `may_break` "
-        "/ `missing_cochanges` / `missing_tests` / `tests_to_run`.",
+        "get_risk(targets?, changed_files?, include?)",
+        "File history and structural reach. PR mode leads with `directive`; its "
+        "0-10 structural heuristic is uncalibrated, not a probability. Read typed "
+        "test recommendations and coverage state first.",
     ),
     "get_change_risk": (
         "get_change_risk(revspec?, extensions?, exclude_patterns?)",
-        "Defect score for a whole commit or `base..head` range, from its diff on the "
-        "live checkout. Lead with `fix_history`. Scores a range; `get_risk` "
-        "scores paths.",
+        "Deterministic live-diff review signal for a commit or range. Lead with "
+        "benchmarked percentile/classification; the 0-10 diff-shape score is "
+        "supporting, not a probability. `get_risk` scores paths.",
     ),
     "get_health": (
         "get_health(targets?, include?)",
-        "Defect / maintainability / performance scores and findings. Self-check the "
-        "files you touched before finishing.",
+        "Defect / maintainability / performance scores and findings, plus "
+        "documentation the code no longer supports. Self-check the files you "
+        "touched before finishing.",
     ),
     "get_dead_code": (
         "get_dead_code(tier?, min_confidence?, safe_only?)",
@@ -109,15 +118,16 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
     ),
     "get_overview": (
         "get_overview()",
-        "Architecture map. Call once, first, in an unfamiliar repo; skip it after "
-        "that.",
+        "Architecture map. Call once, first, in an unfamiliar repo; skip it after that.",
     ),
 }
 
 
-def render_tool_table() -> str:
+def render_tool_table(*, keyless: bool = False) -> str:
     """Markdown table of the tool rows, in the dict's curated order."""
     lines = ["| Tool | When and why |", "|------|--------------|"]
-    for signature, row in TOOL_TABLE_ROWS.values():
+    for name, (signature, row) in TOOL_TABLE_ROWS.items():
+        if keyless and name in _KEYED_ONLY:
+            row = row.replace(_KEYED_ONLY[name], "")
         lines.append(f"| `{signature}` | {row} |")
     return "\n".join(lines)

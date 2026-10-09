@@ -103,6 +103,7 @@ _PHASE_LABELS: dict[str, str] = {
     "dead_code": "Detecting dead code…",
     "health": "Scoring code health…",
     "decisions": "Extracting decisions…",
+    "doc_drift": "Checking documentation drift…",
     "knowledge_graph.skeleton": "Building the knowledge graph…",
     "knowledge_graph.enrich": "  ↳ Naming layers and building the tour",
     "generation": "Generating pages…",

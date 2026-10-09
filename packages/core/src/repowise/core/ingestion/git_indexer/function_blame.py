@@ -20,6 +20,7 @@ engine can pick it up when building each ``FileContext``.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,11 +33,13 @@ logger = structlog.get_logger(__name__)
 
 __all__ = [
     "BlameIndex",
+    "blame_as_of",
     "build_blame_index",
     "distinct_commits_in_range",
     "median_author_time_in_range",
     "owner_in_range",
     "recent_commits_in_range",
+    "recent_distinct_commits_in_range",
 ]
 
 # Files with fewer than this many total commits have no useful signal — the
@@ -59,6 +62,14 @@ class BlameIndex:
 
     lines: dict[int, tuple[str, int]] = field(default_factory=dict)
     authors: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # The indexer's history anchor (unix seconds), so line ages are measured
+    # from the indexed commit like every other git window.
+    as_of_ts: int | None = None
+
+
+def blame_as_of(idx: BlameIndex) -> int:
+    """Reference 'now' for *idx*: its anchor, or wall clock when built without one."""
+    return idx.as_of_ts if idx.as_of_ts is not None else int(time.time())
 
 
 def ownership_from_blame(idx: BlameIndex) -> tuple[str | None, str | None, float | None]:
@@ -144,6 +155,10 @@ def _parse_porcelain(
     # Cache author-time per sha — porcelain only emits headers the first
     # time a sha appears; subsequent blocks repeat sha + line numbers only.
     sha_author_time: dict[str, int] = {}
+    # One shared ``(sha, time)`` tuple per commit instead of a fresh tuple,
+    # sha string and int per line: the index stays alive from the git stage
+    # until health finishes, and per-line copies tripled its size.
+    entries: dict[tuple[str, int], tuple[str, int]] = {}
 
     for line in raw.splitlines():
         if not line:
@@ -151,7 +166,8 @@ def _parse_porcelain(
         if line.startswith("\t"):
             if current_sha is not None and current_final is not None:
                 t = current_author_time or sha_author_time.get(current_sha, 0)
-                out[current_final] = (current_sha, t)
+                entry = (current_sha, t)
+                out[current_final] = entries.setdefault(entry, entry)
                 if current_sha not in authors and current_author_name:
                     authors[current_sha] = (
                         current_author_name,
@@ -248,6 +264,24 @@ def distinct_commits_in_range(idx: BlameIndex, start_line: int, end_line: int) -
         if entry is not None:
             out.add(entry[0])
     return out
+
+
+def recent_distinct_commits_in_range(
+    idx: BlameIndex, start_line: int, end_line: int, *, limit: int
+) -> list[str]:
+    """The *limit* most recent distinct shas touching the range, newest first.
+
+    Recency is the blame author time; ties break on the sha so the cut is
+    deterministic. Empty when the range has no blame coverage.
+    """
+    if not idx.lines or start_line > end_line or limit <= 0:
+        return []
+    times: dict[str, int] = {}
+    for ln in range(start_line, end_line + 1):
+        entry = idx.lines.get(ln)
+        if entry is not None:
+            times[entry[0]] = max(entry[1], times.get(entry[0], 0))
+    return sorted(times, key=lambda sha: (-times[sha], sha))[:limit]
 
 
 def median_author_time_in_range(idx: BlameIndex, start_line: int, end_line: int) -> int | None:

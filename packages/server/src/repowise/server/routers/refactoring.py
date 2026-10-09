@@ -22,10 +22,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.health.refactoring.recommendations import (
     apply_view,
     blast_size,
+    detail_recommendations,
     hydrate_recommendations,
 )
+from repowise.core.analysis.health.refactoring.serving import (
+    CANONICAL_ORDERS,
+    CANONICAL_VIEWS,
+    DEFAULT_VIEW,
+    parse_query,
+)
+from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES, summarize_plans
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.schemas import (
+    RefactoringOpportunitiesResponse,
+    RefactoringOpportunityDetailResponse,
+    RefactoringOpportunityStatusResponse,
+    RefactoringPlanStatusResponse,
+    RefactoringRollupResponse,
+)
+from repowise.server.services.refactoring_health import RefactoringHealthService
+
+_STEPS_PER_ROW = 3
+"""Steps carried on a queue row; the detail call pages the rest."""
 
 router = APIRouter(
     prefix="/api/repos",
@@ -122,34 +142,12 @@ def _to_response(data: dict[str, Any]) -> RefactoringPlanResponse:
     return RefactoringPlanResponse(**data)
 
 
-_STRUCTURAL_TYPES = {"split_file", "break_cycle", "extract_class", "move_method"}
+_STRUCTURAL_TYPES = STRUCTURAL_TYPES
 _EFFORT_ORDER = {"S": 0, "M": 1, "L": 2, "XL": 3}
 
 
 def _summary(recommendations: list[Any]) -> RefactoringSummary:
-    by_type: dict[str, int] = {}
-    for recommendation in recommendations:
-        suggestion = recommendation.suggestion
-        by_type[suggestion.refactoring_type] = by_type.get(suggestion.refactoring_type, 0) + 1
-    return RefactoringSummary(
-        total=len(recommendations),
-        by_type=[
-            RefactoringTypeCount(type=kind, count=count)
-            for kind, count in sorted(by_type.items(), key=lambda item: (-item[1], item[0]))
-        ],
-        files_total=len({item.suggestion.file_path for item in recommendations}),
-        structural_total=sum(
-            item.suggestion.refactoring_type in _STRUCTURAL_TYPES for item in recommendations
-        ),
-        performance_total=by_type.get("performance_fix", 0),
-        small_effort_total=sum(item.suggestion.effort_bucket == "S" for item in recommendations),
-        health_recovery_total=sum(item.suggestion.impact_delta >= 0.1 for item in recommendations),
-        negligible_health_total=sum(item.suggestion.impact_delta < 0.5 for item in recommendations),
-        best_health_gain=round(
-            max((float(item.suggestion.impact_delta) for item in recommendations), default=0.0),
-            3,
-        ),
-    )
+    return RefactoringSummary(**summarize_plans(item.suggestion for item in recommendations))
 
 
 def _csv_values(value: str | None) -> set[str]:
@@ -279,12 +277,15 @@ async def get_refactoring_plan_page(
 ) -> RefactoringPlanPageResponse:
     """Bounded list with server-owned filters and deterministic ordering.
 
-    Hydration remains one batched pass over the repository plans so validation
-    and priority have exactly the Phase 3 semantics and a constant SQL shape.
-    Only the requested page crosses the wire.
+    Ranking is one batched pass over the repository plans, so priority keeps its
+    validation-basis input and a constant SQL shape. The symbol-level evidence
+    that orders each plan's tests is read only for the rows this response
+    returns.
     """
     rows = await crud.get_refactoring_suggestions(session, repo_id, min_confidence=min_confidence)
-    canonical = await hydrate_recommendations(session, repo_id, rows, view="canonical")
+    canonical = await hydrate_recommendations(
+        session, repo_id, rows, view="canonical", rank_only=True
+    )
     summary = _summary(canonical)
     structural_leads = [
         item for item in canonical if item.suggestion.refactoring_type in _STRUCTURAL_TYPES
@@ -313,6 +314,13 @@ async def get_refactoring_plan_page(
     total = len(ordered)
     page = ordered[offset : offset + limit]
     next_offset = offset + len(page) if offset + len(page) < total else None
+    shown = list({id(item): item for item in [*page, *structural_leads]}.values())
+    detailed = {
+        id(item.suggestion): item
+        for item in await detail_recommendations(session, repo_id, shown)
+    }
+    page = [detailed[id(item.suggestion)] for item in page]
+    structural_leads = [detailed[id(item.suggestion)] for item in structural_leads]
     return RefactoringPlanPageResponse(
         items=[_to_response(item.as_dict()) for item in page],
         total=total,
@@ -368,6 +376,189 @@ async def _local_repo_path(session: AsyncSession, repo_id: str) -> Path:
             status_code=404, detail="repository checkout not accessible on this server"
         )
     return repo_path
+
+
+# ---------------------------------------------------------------------------
+# Composed opportunities. Thin adapters: filtering, ordering, paging, facets
+# and detail all live in ``services/refactoring_health.py``, which the MCP
+# surface reads through as well, so the two cannot answer differently.
+# ---------------------------------------------------------------------------
+
+
+def _service(session: AsyncSession, repo_id: str) -> RefactoringHealthService:
+    return RefactoringHealthService(session, repo_id, repo_id)
+
+
+@router.get(
+    "/{repo_id}/refactoring/opportunities",
+    response_model=RefactoringOpportunitiesResponse,
+    # ``ignored_arguments`` is only present when the query dropped something;
+    # a default would put an empty object on every response.
+    response_model_exclude_unset=True,
+)
+async def get_refactoring_opportunities(
+    repo_id: str,
+    refactoring_type: str | None = Query(
+        None, description="Lead refactoring type, or several comma-separated"
+    ),
+    status: str = Query(
+        "open", description="open | acknowledged | resolved | false_positive"
+    ),
+    confidence: str | None = Query(None, description="low | medium | high"),
+    effort: str | None = Query(None, description="S | M | L | XL"),
+    file_path: str | None = Query(None, description="One repo-relative file path"),
+    search: str | None = Query(None, description="Substring of the file path"),
+    mechanical: bool = Query(False, description="Only opportunities with a mechanical step"),
+    scope: str | None = Query(
+        None,
+        description=(
+            "fix_first (default for the open queue with no file_path): only what Fix first "
+            "would take, the rest counted in `hidden` | all: the full inventory"
+        ),
+    ),
+    view: str = Query(DEFAULT_VIEW, description=" | ".join(CANONICAL_VIEWS)),
+    order: str | None = Query(None, description=" | ".join(CANONICAL_ORDERS)),
+    step_preview: int = Query(
+        _STEPS_PER_ROW,
+        ge=0,
+        le=20,
+        description="Steps inlined per row. 0 for a list that renders counts only.",
+    ),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """One page of composed opportunities, with facets and the rollup.
+
+    ``step_preview`` defaults to three, which is what an agent reading the queue
+    wants. A product list that renders the step *counts* and opens a drawer for
+    the rest asks for zero: the steps are most of the row's bytes and none of
+    its pixels.
+    """
+    query, ignored = parse_query(
+        lead_type=refactoring_type,
+        status=status,
+        confidence=confidence,
+        effort=effort,
+        mechanical=mechanical,
+        file_paths=[file_path] if file_path else None,
+        search=search,
+        view=view,
+        order=order,
+        limit=limit,
+        offset=offset,
+        scope=scope,
+    )
+    page = await _service(session, repo_id).page(
+        query,
+        steps_per_item=step_preview if step_preview > 0 else None,
+        with_facets=True,
+        with_summary=True,
+    )
+    body: dict[str, Any] = {
+        "items": page.items,
+        "total": page.total,
+        "offset": page.offset,
+        "has_more": page.next_offset is not None,
+        "next_offset": page.next_offset,
+        "facets": page.facets,
+        "summary": page.summary,
+        "scope": page.scope,
+    }
+    if page.hidden is not None:
+        body["hidden"] = page.hidden
+    if ignored:
+        body["ignored_arguments"] = ignored
+    return body
+
+
+@router.get("/{repo_id}/refactoring/summary", response_model=RefactoringRollupResponse)
+async def get_refactoring_rollup(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """The repository rollup and its one lead, by primary key."""
+    service = _service(session, repo_id)
+    return {"summary": await service.summary(), "directive": await service.directive()}
+
+
+@router.get(
+    "/{repo_id}/refactoring/opportunities/{opportunity_id}",
+    response_model=RefactoringOpportunityDetailResponse,
+    response_model_exclude_unset=True,
+)
+async def get_refactoring_opportunity_detail(
+    repo_id: str,
+    opportunity_id: str,
+    step_limit: int = Query(20, ge=0, le=200),
+    step_offset: int = Query(0, ge=0),
+    evidence_limit: int = Query(8, ge=0, le=200),
+    evidence_offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """One opportunity: its ordered steps, evidence, validation and plans."""
+    detail = await _service(session, repo_id).detail(
+        opportunity_id,
+        step_limit=step_limit,
+        step_offset=step_offset,
+        evidence_limit=evidence_limit,
+        evidence_offset=evidence_offset,
+    )
+    if not detail.get("found"):
+        raise HTTPException(status_code=404, detail="Unknown opportunity id")
+    return detail
+
+
+class RefactoringOpportunityStatusUpdate(BaseModel):
+    """The finding-triage vocabulary, applied to a whole opportunity."""
+
+    status: str = Field(..., description="open | acknowledged | resolved | false_positive")
+
+
+@router.patch(
+    "/{repo_id}/refactoring/opportunities/{opportunity_id}/status",
+    response_model=RefactoringOpportunityStatusResponse,
+)
+async def update_refactoring_opportunity_state(
+    repo_id: str,
+    opportunity_id: str,
+    payload: RefactoringOpportunityStatusUpdate,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Record a decision about one opportunity, and so about all of its steps.
+
+    One request rather than one per step: the transition is applied to every
+    member plan through the same owner the plan route uses, and the
+    opportunity's own state is the rollup of what those plans then say.
+    """
+    if payload.status not in ALLOWED_STATUSES:
+        raise HTTPException(status_code=400, detail=f"invalid status: {payload.status}")
+    result = await crud.update_refactoring_opportunity_status(
+        session, repo_id, opportunity_id, payload.status
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=404, detail=f"refactoring opportunity not found: {opportunity_id}"
+        )
+    row, updated = result
+    if not updated:
+        # The opportunity exists but none of its steps could be written, so
+        # nothing was decided. Saying 200 here would report the caller's own
+        # request back to them as the stored state.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"refactoring opportunity {opportunity_id} has no resolvable steps to "
+                "transition; re-index the repository and try again"
+            ),
+        )
+    await session.commit()
+    return {
+        "opportunity_id": row.opportunity_id,
+        "status": row.status,
+        "steps_updated": updated,
+        "status_changed_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
 
 
 @router.get("/{repo_id}/refactoring/settings", response_model=RefactoringSettings)
@@ -436,6 +627,44 @@ async def get_refactoring_plan(
         raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
     recommendation = (await hydrate_recommendations(session, repo_id, [row]))[0]
     return _to_response(recommendation.as_dict())
+
+
+class RefactoringStatusUpdate(BaseModel):
+    """Same shape and vocabulary as health finding triage — one triage system."""
+
+    status: str = Field(..., description="open | acknowledged | resolved | false_positive")
+
+
+@router.patch(
+    "/{repo_id}/refactoring/{suggestion_id}/status",
+    response_model=RefactoringPlanStatusResponse,
+)
+async def update_refactoring_plan_status(
+    repo_id: str,
+    suggestion_id: str,
+    payload: RefactoringStatusUpdate,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Record a decision about one plan.
+
+    ``false_positive`` also suppresses the plan on every later analysis, which
+    is how a wrong suggestion stops coming back instead of being re-emitted.
+    """
+    if payload.status not in ALLOWED_STATUSES:
+        raise HTTPException(status_code=400, detail=f"invalid status: {payload.status}")
+    row = await crud.update_refactoring_suggestion_status(
+        session, repo_id, suggestion_id, payload.status
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
+    await session.commit()
+    return {
+        "id": row.id,
+        "public_id": row.public_id,
+        "status": row.status,
+        "status_reason": row.status_reason,
+        "status_changed_at": row.status_changed_at.isoformat() if row.status_changed_at else None,
+    }
 
 
 # ---------------------------------------------------------------------------

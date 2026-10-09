@@ -7,7 +7,9 @@ correlated with regression rates in published industry studies.
 Fires when ALL of:
 
 - ``contributor_count`` ≥ 5
-- ``commit_count_90d`` ≥ 6 (the file is genuinely active)
+- ``churn_percentile`` ≥ 0.75 (the file is genuinely active *for this
+  repository* — a fixed commit count is a different bar on a repository
+  landing dozens a day than on one landing a handful a week)
 - the primary owner's share is below 50% (no clear DRI)
 
 Reads ``ctx.git_meta`` only; no AST work needed.
@@ -19,7 +21,7 @@ from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
 _CONTRIB_THRESHOLD = 5
-_RECENT_COMMITS_THRESHOLD = 6
+_CHURN_PERCENTILE_FLOOR = 0.75
 _OWNER_SHARE_THRESHOLD = 0.5
 
 
@@ -49,7 +51,10 @@ class DeveloperCongestionDetector:
 
         if contributors < _CONTRIB_THRESHOLD:
             return []
-        if commits_90d < _RECENT_COMMITS_THRESHOLD:
+        # "Actively changing" has to mean actively changing for this repository:
+        # a fixed count of commits in 90 days is a different bar on a repository
+        # landing a handful a week than on one landing dozens a day.
+        if _as_float(meta.get("churn_percentile")) < _CHURN_PERCENTILE_FLOOR:
             return []
         # primary_owner_commit_pct may be stored as a 0-1 fraction or
         # 0-100 percentage depending on the source - normalize.

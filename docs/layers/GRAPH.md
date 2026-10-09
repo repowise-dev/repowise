@@ -1,23 +1,24 @@
 # Graph Intelligence
 
 Most tools that draw a code graph will tell you `A calls B`. Very few will tell
-you *how sure they are*, and none of the interesting questions can be answered
+you how sure they are, and the interesting questions cannot be answered
 without that.
 
 repowise builds a two-tier graph of your codebase, files and symbols, with no
-model calls and no network. What makes it worth trusting is not its size. It is
-that **every edge carries its own evidence**.
+model calls and no network. It needs no LLM key and is built during
+`repowise init` and kept current by `repowise update`. What makes it worth
+trusting is not its size. Every edge carries its own evidence: the strategy
+that produced it and the confidence that strategy earns.
 
 <p>
   <img src="https://img.shields.io/badge/17-edge_types-3178C6?style=flat-square&labelColor=0A0A0A" alt="17 edge types" />
-  <img src="https://img.shields.io/badge/29-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="29 resolution origins" />
-  <img src="https://img.shields.io/badge/19-languages-F59520?style=flat-square&labelColor=0A0A0A" alt="19 languages" />
-  <img src="https://img.shields.io/badge/22-framework_detectors-7F52FF?style=flat-square&labelColor=0A0A0A" alt="22 framework detectors" />
+  <img src="https://img.shields.io/badge/39-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="39 resolution origins" />
+  <img src="https://img.shields.io/badge/26-full--AST_languages-F59520?style=flat-square&labelColor=0A0A0A" alt="26 full-AST languages" />
   <img src="https://img.shields.io/badge/0-LLM_calls-1E293B?style=flat-square&labelColor=0A0A0A" alt="zero LLM calls" />
-  <img src="https://img.shields.io/badge/compiler_graded-7_of_7_cells_undominated-DC2626?style=flat-square&labelColor=0A0A0A" alt="no tool is both more precise and more complete, in 7 of 7 compiler-graded cells" />
 </p>
 
-**Contents:** [The problem with a plain arrow](#the-problem-with-a-plain-arrow) ·
+**Contents:** [Quick start](#quick-start) ·
+[The problem with a plain arrow](#the-problem-with-a-plain-arrow) ·
 [Two stages, and they fail differently](#two-stages-and-they-fail-differently) ·
 [How good is it, and how we know](#how-good-is-it-and-how-we-know) ·
 [What is in the graph](#what-is-in-the-graph) ·
@@ -28,6 +29,29 @@ that **every edge carries its own evidence**.
 [What the graph powers](#what-the-graph-powers) ·
 [Seeing it yourself](#seeing-it-yourself) ·
 [Honest ceilings](#honest-ceilings)
+
+---
+
+## Quick start
+
+```bash
+repowise init                                    # builds the graph; no API key needed
+repowise context src/app.py --include callers    # who depends on this file, with confidence
+repowise serve                                   # dashboard: Graph, Architecture, Coupling, Blast radius
+```
+
+From an agent, over MCP:
+
+```text
+get_context(targets=["src/app.py::App.run"], include=["callers"])
+get_symbol(id="src/app.py::App.run", depth=2)
+```
+
+`get_context` lists callers and callees with their confidence; `get_symbol` at
+depth 2 also returns the bodies the symbol calls. Both expansions drop call
+edges below 0.7, which keeps
+the repo-wide name guesses out of them (see
+[how an agent should read confidence](#how-an-agent-should-read-confidence)).
 
 ---
 
@@ -42,34 +66,33 @@ user.save()
 To draw an edge, a tool has to answer "what is `user`?". There are three ways to
 do it, and they are not equally good:
 
-1. **Give up.** Emit nothing. The edge is missing, so a dead-code pass now
-   thinks `save` is unused and offers to delete it.
-2. **Guess.** Find every method named `save` in the repo and pick one. If your
+1. Give up. Emit nothing. The edge is missing, so a dead-code pass now thinks
+   `save` is unused and offers to delete it.
+2. Guess. Find every method named `save` in the repo and pick one. If your
    codebase has `User.save`, `Draft.save` and `Session.save`, you have a two in
    three chance of drawing an arrow to the wrong file.
-3. **Work out what `user` is**, then resolve `save` on that type.
+3. Work out what `user` is, then resolve `save` on that type.
 
 Most graphs do (2) and present the result identically to an edge they were
 certain about. That is the actual problem. A wrong arrow is worse than a missing
 one, because a missing arrow looks like missing information and a wrong arrow
 looks like an answer.
 
-repowise does (3) where it can, falls back to (2) where it must, and **labels
-which one happened, every time**.
+repowise does (3) where it can, falls back to (2) where it must, and labels
+which one happened on every edge.
 
 ---
 
 ## Two stages, and they fail differently
 
-An edge is two claims made by two different pieces of machinery, and the reason
-to keep them apart is that they break in opposite directions.
+An edge is two claims made by two different pieces of machinery. They are kept
+apart because they break in opposite directions.
 
-**Stage one: capture.** Before anything can be resolved, the parser has to
-notice that a call was written at all. That is a tree-sitter query per language,
-listing the source shapes that count as a call site:
+**Capture** is noticing that a call was written at all. It is a tree-sitter
+query per language, listing the source shapes that count as a call site:
 
 ```scheme
-; queries/go.scm -- Method call: obj.Method(args)
+; Go method call: obj.Method(args)
 (call_expression
   function: (selector_expression
     operand: (identifier) @call.receiver
@@ -79,137 +102,64 @@ listing the source shapes that count as a call site:
 ) @call.site
 ```
 
-There is one of those files per language, and a shape that is not in it is a
-call the graph will never contain. Go alone lists a plain call, a method call, a
-package-qualified call, a chained call and a function passed as an argument, and
-that last one is captured deliberately as a *reference* rather than a call,
-because passing a handler is not invoking it.
+A shape that no query matches is a call the graph will never contain. Not low
+confidence, not unresolved: absent. Nothing downstream can recover it, because
+nothing downstream knows the call was there. Go alone lists a plain call, a
+method call, a package-qualified call, a chained call, and a function passed as
+an argument. That last one is captured as a reference, not a call, because
+passing a handler is not invoking it.
 
-A shape no query matches is invisible. Not low confidence, not unresolved:
-**absent**. Nothing downstream can recover it, because nothing downstream knows
-the call was there.
+**Resolution** is working out what a captured name points at.
+`repo.save(draft)` hands you the name `save` and a receiver spelled `repo`, and
+the job is to turn that into one declaration in one file. This is where the 39
+resolution origins live.
 
-**Stage two: resolution.** Given a captured site, work out what the name points
-at. `repo.save(draft)` hands you the name `save` and a receiver spelled `repo`,
-and the job is to turn that into one declaration in one file. This is where the
-29 origins below live, and it is the `user.save()` problem from the section
-above.
-
-| | fails when | costs you | how you find out |
+| Stage | Fails when | Costs you | How you find out |
 |---|---|---|---|
-| **capture** | nobody wrote a query for that call shape | **recall.** the edge does not exist | nothing internal can tell you, so it takes an outside answer key |
-| **resolution** | the receiver cannot be typed, or the name is ambiguous | **precision** if it guesses, **recall** if it declines | the origin on the edge names the strategy that answered, so a wrong class is found and fixed once rather than per call site |
+| Capture | no query covers that call shape | recall: the edge does not exist | nothing internal can tell you; it takes an outside answer key |
+| Resolution | the receiver cannot be typed, or the name is ambiguous | precision if it guesses, recall if it declines | the origin on the edge names the strategy, so a wrong class of edge is found and fixed once |
 
-That asymmetry sets the whole design. A missed capture is silent, so it is
-measured against a compiler rather than against ourselves. A bad resolution is
-loud, so every edge is stamped with the strategy that produced it and nothing is
-allowed to launder a guess into a fact.
+That asymmetry sets the design. A missed capture is silent, so it is measured
+against a compiler. A bad resolution is loud, so every edge is stamped with the
+strategy that produced it, and nothing is allowed to launder a guess into a
+fact.
 
-**And at the bottom of the ladder repowise declines rather than guesses.** That
-is a choice with a price, paid in the recall column below, and it is the right
-way round: a missing arrow looks like missing information, a wrong arrow looks
-like an answer.
+At the bottom of the ladder repowise declines to guess. That costs recall, and
+it is the right way round.
 
 ---
 
 ## How good is it, and how we know
 
-Two readings of the same question, and we graded only one of them.
+Measured on main, freshly indexed from source, on 2026-10-03.
 
-### The one we did not grade
+- **Against a compiler, Go and TypeScript.** Seven cells over five
+  repositories, 37,853 compiler edges (the Go team's RTA call graph and `tsc`'s
+  own resolution). Precision runs 0.976 to 0.995, and recall is higher than our
+  August figure in all seven cells. In all seven, no tool in the five-tool
+  comparison that finds as much of the call graph gets more of it right. Two
+  tools post higher precision in some cells by drawing much smaller graphs.
+- **Against compiler indexes for more languages.** Java on jsoup reads 0.781
+  precision against javac (0.725 to 0.781 across three repositories). C on git, a
+  repository held out from all tuning, reads 0.979 precision at 0.83 recall.
+  C#, C++, Rust and Python (against jedi, a static analyser) are in the same
+  table.
+- **Hand-graded across nine languages.** 280 call edges per tool, 560 in all,
+  each read with its imports and enclosing scope open: 240 of 280 correct for
+  repowise (85.7%) against 164 of 280 for CodeGraph 1.5.0 (58.6%), intervals
+  disjoint. Read the other way round, about one call edge in seven (roughly
+  fourteen percent) is wrong, concentrated in Rust, C++ and Java.
 
-On Go the answer key is the **Go team's own RTA call graph** from
-`golang.org/x/tools`, computed over the fully type-checked program. On TypeScript
-it is the **`tsc` checker's own resolution** of every call site. We wrote
-neither, we can tune neither, and anyone with the toolchain can regenerate both.
+Recall is the column we do not lead everywhere. Against the compiler we lead
+recall in three of the seven cells and trail in four. Where our misses go is
+mostly dynamic dispatch, which no tool in the comparison has cleared without
+emitting several wrong edges for each right one.
 
-Seven cells, five repositories, **five tools**, 37,853 oracle edges. Of the call
-edges we emit, the share the compiler confirms runs **0.943 to 0.992** per cell.
-
-That number on its own is not the claim, because precision on its own has a cheap
-way to win: draw one edge you are certain of and you score 1.000. Two of the five
-tools do a version of exactly that. One scores 0.997 on cobra, the highest figure
-in the whole experiment, from a graph holding **17% of the calls in the
-repository**. Another takes both gitleaks cells from a graph that
-finds 89% of the calls where we find 95%. Meanwhile the tool with the best recall emits, on the largest
-repository measured, more than a third of its edges as calls the compiler says do
-not exist.
-
-**Recall alone is gameable in the other direction and precision alone in this
-one, so the claim is the pair:**
-
-> In all seven cells, **no tool that recovers as much of the call graph as we do
-> gets more of it right.**
-
-It names no threshold, so it cannot be tuned, and a new competitor can only break
-it. Two were added after it was written and it held in all seven cells.
-
-The weaker readings, so nobody has to infer them: most precise outright in one
-cell, tied in one more, beaten in five by tools drawing much smaller graphs. And
-against the two tools the experiment started with, most precise in seven of
-seven, which is the narrower claim it should always be labelled as.
-
-**Two languages, and only two.** C#, Java, Kotlin and C++ each need a toolchain
-installed and a working build per repository, and nobody has done that here.
-Python, Ruby and PHP can never have an oracle at all, because what a call
-resolves to can change at runtime. That is a fact about those languages rather
-than a gap in the harness, and it is why the hand-graded reading below is
-permanent rather than a stopgap.
-
-[The cells, the method and the graded pre-registration](../BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control)
-
-### The one we did
-
-Nine languages, 30 call edges per language per tool, every row opened in its own
-file with its imports and enclosing scope, then the target declaration opened
-too. **229 of 270 correct for us, 154 of 270 for CodeGraph 1.5.0**, intervals
-disjoint. Four of the nine cells separate and five are ties, reported as ties.
-
-Read our own number the other way round: **roughly fifteen percent of our call
-edges are wrong**, concentrated in java, rust and cpp. That is the figure to plan
-against, and it is a floor rather than a best case, because every resolver change
-since the earliest rows were graded only removes wrong edges.
-
-**The two readings agree.** On Go the hand grade says 96.7% for us and the
-compiler says 97.6%, over roughly 1,600 edges rather than 30 rows. A person
-reading source and a type checker landing within about a point of each other is
-the strongest available evidence that the hand-graded half is accurate rather
-than self-serving, and it is the result here we care about most.
-
-[The nine cells, and all 540 graded rows with the reason each was given](../BENCHMARKS.md#7-edge-precision)
-
-### The column we lose
-
-Recall is the other half of the same question, and we do not lead it.
-
-Across the five Go cells our recall runs 0.32 to 0.96 and **we lead none of
-them**; codebase-memory-mcp leads four and CodeGraph the fifth. On cross-file
-coverage over 35 repositories the same tool separates from us on 15 and we
-separate on none. We do lead recall in both TypeScript cells, and we lead it over
-the two tools that beat us on precision in every cell, which is the same trade
-seen from the other side.
-
-The oracle explains the trade rather than excusing it. **That tool recovers more
-of the true call graph and emits far more that is not in it**: on the largest Go
-repository measured, more than a third of what it emits is a call the compiler
-says does not exist. Coverage rewards drawing edges and never asks whether they
-are real, which is why no page in that benchmark prints a coverage number without
-a precision number beside it.
-
-Where our own miss actually goes, decomposed on one cell rather than waved at.
-On syft without tests we miss **3,846 of the oracle's 7,898 edges**, and
-**44% of that miss is dynamic dispatch alone, with a further 39% dispatch with a
-closure at one end**. The two buckets overlap, so neither is the whole gap. Interface dispatch is the ceiling and
-nobody in the comparison has cleared it: of 3,303 dispatch edges we match 12,
-CodeGraph 35, codebase-memory-mcp 81, at 6.5 distinct possible targets per call
-site. Matching that recall means emitting six edges where one is right, which is
-the behaviour the precision table charges the other tool for.
-
-The obvious cheap fix was priced and refused: giving Go `func` literals a symbol
-would recover **50** static edges on that cell, not the 1,309 the raw closure
-count suggests, because the rest need the dispatch ceiling cleared first.
-
-[Both tables, the recall decomposition and what it would cost to close](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g4-oracle-anchored)
+The per-language table, the five-tool table and the method are in
+[BENCHMARKS.md: accuracy by language](../BENCHMARKS.md#accuracy-by-language) and
+[BENCHMARKS.md: call graph against a compiler](../BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control).
+The hand-graded rows are in
+[BENCHMARKS.md: hand-graded](../BENCHMARKS.md#7-edge-precision).
 
 ---
 
@@ -217,64 +167,80 @@ count suggests, because the rest need the dispatch ceiling cleared first.
 
 **Two tiers of node.** Files and packages on one tier; functions, classes,
 methods and interfaces on the other. Third-party packages appear as lightweight
-external nodes so a dependency is visible without being documented.
+external nodes, so a dependency is visible without being documented.
 
 **Two families of edge.** Structure the parser can see (imports, calls,
 inheritance) and structure only history can see (files that keep changing
-together without importing each other). They are kept apart on purpose: a
-co-change edge is real signal, but treating it as a dependency would put
-"these two files were edited in the same commit" into your import graph.
+together without importing each other). They are kept apart on purpose. A
+co-change edge is real signal, but treating it as a dependency would put "these
+two files were edited in the same commit" into your import graph.
 
-Consumers never hand-roll a filter over this. Three named views are derived
-from the vocabulary and shared:
+Every consumer reads the graph through one of three shared views, so no two
+features disagree about what counts as a dependency:
 
 | View | Answers |
 |------|---------|
-| `FILE_DEPENDENCY_EDGE_TYPES` | "what does this file depend on?" Used for communities, cycles, coupling |
-| `SYMBOL_USE_EDGE_TYPES` | "what reaches this symbol?" Containment excluded, since a class holding a method is not a use of it |
-| `REACHABILITY_USE_EDGE_TYPES` | "does anything use this at all?" The dead-code view |
-
-Before those views existed, four different places each wrote their own edge
-filter, and two of them silently counted co-change edges as imports.
+| File dependency | "what does this file depend on?" Used for communities, cycles and coupling |
+| Symbol use | "what reaches this symbol?" Containment is excluded, since a class holding a method is not a use of it |
+| Reachability | "does anything use this at all?" The dead-code view |
 
 ---
 
 ## Every edge says how it got there
 
-Each `calls` edge is stamped with a **resolution origin**: the named strategy
-that produced it. There are 29, drawn from a closed vocabulary, and each one
-carries exactly one confidence.
+Each `calls` and `references` edge is stamped with a **resolution origin**: the
+named strategy that produced it. There are 39, from a closed vocabulary, and
+each one carries exactly one confidence. The table lists the 18 base origins;
+the other 21 are receiver-typing variants, covered in
+[Typing the receiver](#typing-the-receiver).
 
-| Confidence | Origin | What was actually established |
+| Confidence | Origin | What was established |
 |:---:|---|---|
-| **0.95** | `same_file` | The callee is defined in the calling file. A certainty |
-| **0.95** | `self_scope` | `self` / `this`, a method on the caller's own class |
-| **0.93** | `receiver_same_file` | The receiver names a type declared right here |
-| **0.90** | `import_scoped` | The name was imported from the file that defines it |
-| **0.90** | `same_package` | A sibling file that needs no import (Go, JVM) |
-| **0.88** | `receiver_import` | The receiver's type was found in an imported file |
-| **0.85** | `import_merged` | It is in *one* of the imported files. Which one is unattributed |
-| **0.75** | `receiver_global` | The `(class, method)` pair exists somewhere in the repo |
-| **0.50** | `global_unique` | The name is unique repo-wide. **A guess, and stored as one** |
+| 0.95 | `same_file` | The callee is defined in the calling file |
+| 0.95 | `self_scope` | `self` / `this`: a method on the caller's own class |
+| 0.95 | `enclosing_class` | A bare call, bound to the caller's own class |
+| 0.93 | `receiver_same_file` | The receiver names a type declared in this file |
+| 0.93 | `scoped_name` | C/C++ `Qualifier::name()`: the class is written at the call site |
+| 0.90 | `import_scoped` | The name was imported from the file that defines it |
+| 0.90 | `same_package` | A sibling file that needs no import (Go, JVM) |
+| 0.90 | `receiver_same_package` | The receiver is a class in the same package (JVM) |
+| 0.90 | `self_inherited` | `self` / `this` or Python `super()`, found on exactly one ancestor |
+| 0.90 | `enclosing_inherited` | A bare call, found on exactly one ancestor |
+| 0.88 | `package_alias` | Go `pkg.Func`, resolved across the whole package |
+| 0.88 | `module_alias` | The receiver is an imported module |
+| 0.88 | `crate_root` | A Rust crate-scoped reference |
+| 0.88 | `receiver_import` | The receiver's type was found in an imported file |
+| 0.85 | `import_merged` | It is in one of the imported files; which one is unattributed |
+| 0.85 | `same_target` | C/C++: a sibling translation unit of the same build target |
+| 0.75 | `receiver_global` | The `(class, method)` pair exists somewhere in the repo |
+| 0.50 | `global_unique` | The name is unique repo-wide. A guess, and stored as one |
 
 Because every origin has exactly one confidence, the origin distribution and the
-confidence histogram are two views of the same data, which is what makes the
-stamping checkable rather than decorative.
+confidence histogram are two views of the same data. That is what makes the
+stamping checkable.
 
-**Why this matters in practice.** An agent tracing an execution flow can decline
-anything below a threshold and know what it declined. A reviewer looking at a
-blast radius can tell "this definitely breaks" from "this shares a method name
-with something that breaks". And when the graph is wrong, the origin tells you
-*which strategy* was wrong, so it can be fixed once rather than patched per
-call site.
+### How an agent should read confidence
+
+| Confidence | Read it as |
+|:---:|---|
+| 0.93 to 0.95 | Established in the calling file or class. Treat as fact |
+| 0.85 to 0.90 | Established through an import, a package or one ancestor. Safe to act on |
+| 0.75 | A class and method name match somewhere in the repo. Verify before acting on it alone |
+| 0.50 | A unique name, nothing more. A lead, not an answer |
+
+An agent tracing a flow can decline anything below a threshold and know what it
+declined. A reviewer reading a blast radius can tell "this definitely breaks"
+from "this shares a method name with something that breaks". When the graph is
+wrong, the origin names which strategy was wrong, so it is fixed once for every
+call site that strategy touched.
 
 ---
 
 ## Typing the receiver
 
-Twelve of the 29 origins exist to answer the `user.save()` question properly.
-Rather than matching a bare method name, repowise reads the receiver's
-**declaration** and resolves the method on that type.
+21 of the 39 origins exist to answer the `user.save()` question properly. They
+read the receiver's declaration and resolve the method on that type, instead of
+matching a bare method name.
 
 ```java
 void handle(UserRepo repo) {     // parameter declares the type
@@ -284,36 +250,38 @@ void handle(UserRepo repo) {     // parameter declares the type
 }
 ```
 
-Five receiver shapes are covered, each a separate origin family so each can be
-measured on its own:
+Each receiver shape is its own origin family, so each can be measured on its
+own:
 
-| Shape | Example |
-|---|---|
-| Locals and parameters | `var repo = new UserRepo()`, `fun f(r: UserRepo)` |
-| Fields of the enclosing class | `this.cache.evict(...)` |
-| Freshly constructed receivers | `new Foo().bar()` |
-| The method's own receiver | Go's `func (s *Server) handle()` |
-| Framework-retyped symbols | `@shared_task def add` makes `add` a `Task`, so `add.s()` is `Task::s` |
+| Family | Example | Origins |
+|---|---|:---:|
+| Locals and parameters, including Go's method receiver | `var repo = new UserRepo()`, `func (s *Server) handle()` | 4 |
+| Fields of the enclosing class | `this.cache.evict(...)` | 4 |
+| Framework-retyped symbols | `@shared_task def add` makes `add` a `Task`, so `add.s()` is `Task::s` | 4 |
+| C# extension methods, via the type their `this` parameter names | `items.Paged(10)` | 3 |
+| Dotted receivers typed hop by hop through declared fields | `this.a.b.m()` | 2 |
+| The declared return type of an inner call | `repo.find(id).save()` | 4 |
 
-Shipped for **Java, C#, Python, Go, Kotlin and Swift**. The typed origins share
-their untyped twin's confidence deliberately: the inferred type had to declare
-the method before any edge was emitted, so the evidence is no weaker. What
-differs is how the receiver was named, and naming that difference is the entire
-point of an origin.
+The families map onto the same scopes as the base origins (same file, same
+package, import, global), and a typed origin shares its untyped twin's
+confidence. The inferred type had to declare the method before any edge was
+emitted, so the evidence is no weaker. What differs is how the receiver was
+named, and naming that difference is the point of an origin.
 
-Languages are added here one at a time, each gated on a sampled precision audit
-before it ships. Several are deliberately absent because they failed that gate.
-An unsupported language falls back to the weaker origins and says so, which is
-the correct degradation.
+Declaration scanning covers Java, C#, Python, Go, Kotlin, Swift, TypeScript,
+Rust and C++. A language outside that list falls back to the base origins and
+says so on every edge.
 
 ---
 
 ## Seventeen edge types, because `calls` was doing too many jobs
 
 An edge type is a claim. If one type carries several different claims, every
-consumer downstream has to guess which one it is looking at.
+consumer downstream has to guess which one it is looking at. The graph has 17
+edge types. These six carry the distinctions that matter most when you read an
+answer:
 
-| Edge | Claims | Explicitly does **not** claim |
+| Edge | Claims | Does not claim |
 |---|---|---|
 | `calls` | The parser saw a call expression and resolved its callee | |
 | `references` | Something holds a handle to this function: a dispatch-table entry, a callback field, a registration macro | That it is ever invoked. Enough to make deleting it unsafe, not enough to call it a call |
@@ -322,25 +290,28 @@ consumer downstream has to guess which one it is looking at.
 | `type_use` | A type is referenced in a constructor, method, delegate or record parameter | An import. Weighted below one |
 | `co_changes` | These files keep changing in the same commit | Any code dependency at all |
 
+The other eleven are `imports`, `defines`, `has_method`, `extends`,
+`implements`, `method_implements`, `framework`, `reads`, `dynamic_uses`,
+`dynamic_imports` and `dynamic_url_route`.
+
 The `references` distinction is not academic. A handler sitting in a dispatch
 table is never called anywhere a parser can see. Counting that as "no use"
-reported entire registration layers as safe to delete.
+would report entire registration layers as safe to delete.
 
-`framework_binds` is separated from `calls` for the same reason in reverse. A
-fixture nobody calls and a collaborator nobody constructs are both genuinely
-used, by the container. But an inferred wiring hop is not source, and letting it
-render as a call would put it into an execution flow as though someone had
-written it.
+`framework_binds` is separated from `calls` for the opposite reason. A fixture
+nobody calls and a collaborator nobody constructs are both used, by the
+container. But an inferred wiring hop is not source, and letting it render as a
+call would put it into an execution flow as though someone had written it.
 
 ---
 
 ## Flows that say why they stopped
 
 An execution flow walks the call graph from an entry point. Every walk ends, and
-a trace that just stops reads identically whether execution really ends there or
+a trace that just stops reads the same whether execution really ends there or
 the walker ran out of things it could follow.
 
-So a flow never simply ends. It terminates with one of six reasons:
+So every flow ends with one of six reasons:
 
 | Termination | Meaning |
 |---|---|
@@ -351,11 +322,11 @@ So a flow never simply ends. It terminates with one of six reasons:
 | `excluded_target` | Every successor was a test, demo or fixture node |
 | `callees_truncated` | Rows were cut before the walk saw them |
 
-Two details carry most of the value. `no_callees` is **deliberately not called a
-leaf**, because a symbol whose calls we failed to resolve looks exactly like a
-function that genuinely calls nothing, and asserting the second is a claim the
-graph cannot support. And when a confidence floor is what stopped the walk, the
-flow reports *which origins it declined*, which is the part you can act on.
+Two details carry most of the value. `no_callees` is deliberately not called a
+leaf: a symbol whose calls we failed to resolve looks exactly like a function
+that calls nothing, and asserting the second is a claim the graph cannot
+support. When a confidence floor stopped the walk, the flow reports which
+origins it declined, which is the part you can act on.
 
 ---
 
@@ -368,19 +339,19 @@ The graph is not the product. These are:
   visible as one.
 - **Dead code.** Reachability over the union view, not over `calls` alone. A
   symbol reached only by a framework, a dispatch table or a type reference is
-  not dead, and each of those is a different edge type for exactly this reason.
+  not dead, and each of those is a different edge type for this reason.
 - **Communities.** Leiden clustering (Louvain as fallback) finds the modules
-  your codebase actually has, which is frequently not the directory layout.
+  your codebase actually has, which is often not the directory layout.
 - **Centrality.** PageRank over the file tier ranks what everything depends on.
   Betweenness finds the bridges whose removal splits the graph. Neither is fed
   co-change edges, because "changes alongside many things" is not "many things
   depend on it".
 - **Cycles.** Strongly connected components, which need their own documentation
-  strategy because nothing in them can be explained before the others.
+  order because nothing in them can be explained before the others.
 - **Execution flows.** Entry point to leaf, ranked, with the termination reason
   attached.
-- **Framework wiring.** 22 detectors connect routes to handlers, DI
-  registrations to implementations, and ORM entities to their relationships,
+- **Framework wiring.** Framework handlers connect routes to handlers, DI
+  registrations to implementations and ORM entities to their relationships,
   across Django, FastAPI, Flask, Spring, ASP.NET, Rails, Laravel, Next.js,
   Express, Axum, Gin and more.
 
@@ -388,61 +359,68 @@ The graph is not the product. These are:
 
 ## Seeing it yourself
 
-**For your agent**, via MCP:
+**For your agent**, over MCP:
 
 | Tool | Gives you |
 |---|---|
-| `get_context(targets)` | Dependencies, dependents and co-change partners for a file or symbol |
+| `get_context(targets)` | Dependencies, dependents and co-change partners for a file or symbol; `include=["callers"]` for callers with confidence |
+| `get_symbol(id, depth)` | One symbol's verified body; depth 2-3 adds the bodies it calls |
 | `get_risk(targets)` | What history and the graph say about touching these paths |
-| `get_execution_flows()` | Traced flows with their termination reason |
 | `get_dead_code()` | Unreachable files, unused exports and zombie packages, by confidence tier |
-| `get_blast_radius()` | Cross-repo impact, in workspace mode |
+| `get_execution_flows()` | Traced flows with their termination reason (opt-in) |
+| `get_blast_radius()` | Cross-repo impact, in workspace mode (opt-in) |
 
-**In the dashboard**, `repowise serve` gives you the graph, architecture,
-coupling, blast-radius, knowledge-graph and dead-code views.
+Opt-in tools are enabled through the tool surface settings; see
+[MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_execution_flows).
 
-**Everything above is computed without a single model call.** An LLM is an
-optional upgrade for prose quality in the wiki. It is never part of building the
-graph, which is why the graph is reproducible and why indexing needs no API key.
+**In the dashboard**, `repowise serve` gives you the Graph, Architecture,
+Coupling, Blast radius, Knowledge graph and Dead code views.
+
+**Across a multi-repo workspace**, a service-level system graph built from
+contracts and package dependencies adds declared dependency rules, cycle
+detection, a dependency-structure matrix and a 1-10 architecture score. Those
+rules work between services, not between layers inside one repository. See
+[Architecture Conformance](../scale/WORKSPACES.md#architecture-conformance) and
+[Architecture Metrics](../scale/WORKSPACES.md#architecture-metrics).
+
+**Everything above is computed without a model call.** An LLM is an optional
+upgrade for prose quality in the wiki. It is never part of building the graph,
+which is why the graph is reproducible and why indexing needs no API key.
 
 ---
 
 ## Honest ceilings
 
-- **Resolution quality varies by language**, and the [language support
-  page](LANGUAGE_SUPPORT.md) says how per language. Statically typed languages
-  with explicit declarations resolve best. Dynamically typed and heavily
-  reflective code resolves worst, and falls back to the low-confidence origins
-  rather than pretending.
+- **Resolution quality varies by language.** The
+  [language support page](LANGUAGE_SUPPORT.md) says what each rung covers.
+  Statically typed languages with explicit declarations resolve best.
+  Dynamically typed and reflective code resolves worst, and falls back to the
+  low-confidence origins.
 - **Receiver typing reads declarations with per-language patterns**, not a full
   type checker. A declaration the patterns cannot see is a receiver that does
   not get typed, and the call falls back to a weaker origin.
 - **`dispatches_to` compares no signature.** It matches by method name, so it
-  names a possible dispatch target rather than a proven override.
+  names a possible dispatch target, not a proven override.
 - **A repo-wide unique name is still a guess**, and `global_unique` at 0.50 is
   where that lives. It is kept because a labelled guess beats a missing edge for
-  reachability, and it is labelled so nothing downstream can mistake it for a
-  fact.
-- **Method-level dead-code detection is not shipped**, for any language. It was
-  measured, precision failed, and shipping it would have meant confidently
-  recommending deletions that were wrong.
-- **Roughly fifteen percent of our call edges are wrong**, and **we lead no Go
-  recall cell**. Both are measured, both are above under [how good is it, and how
-  we know](#how-good-is-it-and-how-we-know), and neither is buried down here.
-- **Two competing tools are more precise than us in five of seven oracle cells.**
-  Each of them draws a much smaller graph, which is the whole reason, and it is
-  stated above rather than left out. A precision figure quoted without the recall
-  beside it is a misuse of this data, including by us.
-- **The compiler-graded reading covers two languages.** Go and TypeScript are the
-  only ones with an oracle, so on the other seventeen the precision figure is the
-  hand-graded one, at 30 rows per language. That is a smaller n and a method we
-  ran ourselves; the two agree to within a point where both exist, which is the
-  reason to trust the half where only one does.
-- **A competitor's coverage lead is only priced on two languages too.** The tool
-  that beats us on cross-file coverage across 35 repositories has an
-  oracle-anchored precision figure on go and typescript alone. That its extra
-  edges are mostly wrong is measured there and inferred elsewhere, and the
-  benchmark says so rather than generalising quietly.
+  reachability, and it is labelled so nothing downstream mistakes it for a fact.
+- **Unused methods are not reported**, for any language. Method-level precision
+  did not hold up when measured, and shipping it would mean confidently
+  recommending wrong deletions.
+- **About fourteen percent of our call edges are wrong** on the hand-graded
+  sample (85.7% correct over 280 rows), and we trail on recall in four of seven
+  compiler-graded cells.
+- **Overloads cost precision on Java and C#.** The graph keeps one node per
+  overload set, so a call to the right method can land on the wrong overload.
+  On C#, plan against the compiler figure (0.73 to 0.92), not the hand-graded
+  30 of 30.
+- **Precision is published for ten languages, not all 26.** Go, TypeScript,
+  Java, C#, C, C++, Rust and Python have a compiler or analyser answer key.
+  Kotlin and Swift have the hand-graded sample only, at 30 rows each. The other
+  full-AST languages have no published precision figure.
+- **A precision figure without the recall beside it is a misuse of this data**,
+  including by us. Two tools beat us on precision in some compiler cells, each by
+  drawing a much smaller graph.
 
 ---
 
@@ -452,7 +430,7 @@ graph, which is why the graph is reproducible and why indexing needs no API key.
 - [architecture/language-support.md](../architecture/language-support.md) · call resolution internals and the contributor recipe
 - [architecture/graph-algorithms.md](../architecture/graph-algorithms.md) · PageRank, Leiden, betweenness and SCC in detail
 - [DEAD_CODE.md](DEAD_CODE.md) · how reachability becomes a confidence-tiered report
-- [CHANGE_RISK.md](CHANGE_RISK.md) · how the graph feeds a per-change risk score
+- [CHANGE_RISK.md](CHANGE_RISK.md) · how live diff-shape review and structural PR impact stay distinct
 - [reference/COMPUTED_GLOSSARY.md](../reference/COMPUTED_GLOSSARY.md) · every derived metric, defined
-- [BENCHMARKS.md §7](../BENCHMARKS.md#7-edge-precision) and [§8](../BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control) · the precision numbers on this page, with their sample sizes and intervals
-- [repowise-bench/graph](https://github.com/repowise-dev/repowise-bench/tree/master/graph) · the harnesses, the five arms, the graded rows and the pre-registrations behind all of it
+- [BENCHMARKS.md](../BENCHMARKS.md#accuracy-by-language) · the accuracy numbers on this page, with sample sizes, intervals and method
+- [repowise-bench/graph](https://github.com/repowise-dev/repowise-bench/tree/master/graph) · the harnesses, the graded rows and the pre-registrations

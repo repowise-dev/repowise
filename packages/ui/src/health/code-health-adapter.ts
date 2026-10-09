@@ -2,24 +2,40 @@ import type { ReactNode } from "react";
 import type {
   HealthCoverageResponse,
   HealthFilesQuery,
+  HealthScope,
   HealthFilesResponse,
   HealthFinding,
   HealthOverviewResponse,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
+  ImpactEffortQuery,
+  ImpactEffortResponse,
+  PerformanceOpportunityDetail,
   PerformanceOpportunityPage,
+  PerformanceOpportunityQuery,
+  RelatedWorkResponse,
   TestsReachingFile,
 } from "@repowise-dev/types/health";
 import type { Paginated } from "@repowise-dev/types";
-import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
+import type { CodeHealthOverlay } from "./map/types";
+import type { RelatedWorkHref } from "./related-work";
+import type {
+  RefactoringOpportunity,
+  RefactoringPlan,
+} from "@repowise-dev/types/refactoring";
 
 /** Subset of the findings list query the shared views need. */
 export interface CodeHealthFindingsQuery {
   biomarker_type?: string;
   file_path?: string;
   min_severity?: string;
+  /** Exact severities, comma-separated. Overrides `min_severity`. */
+  severity?: string;
   dimension?: string;
+  /** Comma-separated statuses, or `"all"`. Defaults to open work. */
+  status?: string;
   limit?: number;
+  scope?: HealthScope;
 }
 
 export type FindingStatusValue =
@@ -50,21 +66,39 @@ export interface CodeHealthAdapter {
 
   getOverview(limit: number): Promise<HealthOverviewResponse>;
   listFindings(opts?: CodeHealthFindingsQuery): Promise<HealthFinding[]>;
-  getPerformanceOpportunities?(opts?: {
-    context?: "production_tooling" | "test" | "all";
-    limit?: number;
-    offset?: number;
-  }): Promise<PerformanceOpportunityPage>;
+  getPerformanceOpportunities?(
+    opts?: PerformanceOpportunityQuery,
+  ): Promise<PerformanceOpportunityPage>;
+  /**
+   * One opportunity by its stable id. Optional: a host that has not wired it
+   * renders the row it already holds and says so, rather than claiming a
+   * lifecycle and analyzed commit it never read.
+   */
+  getPerformanceOpportunity?(
+    opportunityId: string,
+    opts?: { evidenceLimit?: number; evidenceOffset?: number },
+  ): Promise<PerformanceOpportunityDetail>;
   getPerformanceOpportunityFindings?(
     opportunityId: string,
     opts?: { limit?: number; offset?: number },
   ): Promise<Paginated<HealthFinding>>;
   /** Fetch one exact canonical plan for the performance drawer. */
   getRefactoringPlan?(planId: string): Promise<RefactoringPlan>;
-  listFiles(opts?: HealthFilesQuery): Promise<HealthFilesResponse>;
+  /**
+   * @deprecated Unused. The repo's Files page owns the file inventory; the
+   * health views are triage surfaces and list only what carries findings.
+   * Optional so a host can stop binding it without breaking its build.
+   */
+  listFiles?(opts?: HealthFilesQuery): Promise<HealthFilesResponse>;
   getHealthWorkQueue?(
     opts?: HealthWorkQueueQuery,
   ): Promise<HealthWorkQueueResponse>;
+  /**
+   * Every file the queue's filters keep, placed by effort and recoverable
+   * health. Optional: a host without it shows no impact / effort graph, since
+   * a graph of one page would contradict the count above it.
+   */
+  getImpactEffort?(opts?: ImpactEffortQuery): Promise<ImpactEffortResponse>;
   /** @deprecated Legacy adapter name; FindingsView accepts it during migration. */
   getRefactoringTargets?(
     opts?: HealthWorkQueueQuery,
@@ -95,6 +129,30 @@ export interface CodeHealthAdapter {
   symbolHref?(symbolId: string): string | undefined;
   /** Exact stable-id handoff into the existing structured-plan page. */
   refactoringPlanHref?(planId: string, opportunityId: string): string;
+  /**
+   * The file's one composed refactoring opportunity, or null when it has none.
+   * Optional: a host that cannot answer offers no link rather than a dead one.
+   */
+  getFileOpportunity?(filePath: string): Promise<RefactoringOpportunity | null>;
+  /** Deep link into the refactoring surface for one opportunity. */
+  refactoringOpportunityHref?(opportunityId: string): string;
+  /**
+   * What every lens holds for these files. Optional: a host without it shows
+   * no "elsewhere" section rather than an empty one.
+   */
+  getRelatedWork?(filePaths: string[]): Promise<RelatedWorkResponse>;
+  /** Where one related item lives, or null when it has nowhere to go. */
+  relatedWorkHref?: RelatedWorkHref;
+  /**
+   * Where this cause lives on the one map. Optional: a host without a galaxy
+   * offers no link rather than a second map.
+   */
+  mapHref?(opportunityId: string, filePath: string): string;
+  /**
+   * The file's text from the checkout, for an inline excerpt. Optional: a host
+   * without it shows the location and no code.
+   */
+  readSource?(path: string): Promise<string>;
   /** Navigate to an href (host wires this to its router). */
   navigate(href: string): void;
 
@@ -102,9 +160,15 @@ export interface CodeHealthAdapter {
    * Render the app's file-detail drawer for the inspected path. Kept as a slot
    * so each app supplies its own data fetch + toast wiring; pass `null` for
    * `filePath` to render nothing.
+   *
+   * `lens` names the surface the file was opened from, so the drawer can lead
+   * with what the reader was looking at. It is optional in both directions: a
+   * host that ignores it renders exactly what it rendered before, and a caller
+   * that does not know one omits it and gets the default.
    */
   renderFileDrawer(args: {
     filePath: string | null;
     onClose: () => void;
+    lens?: CodeHealthOverlay;
   }): ReactNode;
 }

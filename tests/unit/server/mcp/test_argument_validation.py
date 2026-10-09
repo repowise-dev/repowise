@@ -59,7 +59,8 @@ class TestDeadCodeMinConfidence:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("value", "expected"),
-        [("high", 1), ("medium", 3), ("low", 3)],
+        # Engine bands (0.7 / 0.4): dc1 0.9 and dc2 0.7 are high, dc3 0.5 medium.
+        [("high", 2), ("medium", 3), ("low", 3)],
     )
     async def test_tier_names_resolve_to_their_own_bands(self, setup_mcp, value, expected):
         # The response is organised by these words and each tier description
@@ -219,3 +220,118 @@ class TestSearchKind:
         result = await search_codebase("AuthService", kind="tests")
 
         assert _entry(result, "kind")["values"] == ["tests"]
+
+
+class TestSearchMode:
+    # An unknown mode used to be remapped to ``auto`` inside ``_resolve_mode``
+    # with nothing in the response, so the caller got a different search
+    # strategy than the one it asked for and could not tell (#2347).
+
+    @pytest.mark.asyncio
+    async def test_unknown_mode_is_named(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication service", mode="symbl")
+
+        entry = _entry(result, "mode")
+        assert entry["values"] == ["symbl"]
+        assert entry["valid"] == ["auto", "concept", "hybrid", "path", "symbol"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_mode_still_runs_under_auto(self, setup_mcp):
+        # An identifier-shaped query is what ``auto`` routes to symbol search,
+        # so landing there shows the dropped mode fell back to ``auto``.
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("AuthService", mode="symbl")
+
+        assert result["mode"] == "symbol"
+        assert _entry(result, "mode")["values"] == ["symbl"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_mode_falls_back_to_auto_not_a_fixed_mode(self, setup_mcp):
+        # ``auto`` sends a path-shaped query to path search, so this tells a
+        # real ``auto`` fallback apart from one pinned to any single mode.
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("src/auth/service.py", mode="symbl")
+
+        assert result["mode"] == "path"
+        assert _entry(result, "mode")["values"] == ["symbl"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_mode_is_reported_as_spelled(self, setup_mcp):
+        # Only a valid mode is case-folded; a miss is named as the caller wrote it.
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication service", mode="Symbl")
+
+        assert _entry(result, "mode")["values"] == ["Symbl"]
+
+    @pytest.mark.asyncio
+    async def test_known_mode_adds_nothing(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication service", mode="concept")
+
+        assert "ignored_arguments" not in result
+
+    @pytest.mark.asyncio
+    async def test_mode_is_still_case_insensitive(self, setup_mcp):
+        # ``_resolve_mode`` has always lowercased the mode; validation must not
+        # turn a capitalised but valid mode into a typo.
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication service", mode="Symbol")
+
+        assert result["mode"] == "symbol"
+        assert "ignored_arguments" not in result
+
+
+class TestSearchPatternAlias:
+    # A host that defers tool schemas lets the model call search_codebase before
+    # it has seen one, so it guesses grep's `pattern` for `query`.
+
+    @pytest.mark.asyncio
+    async def test_pattern_alone_runs_as_the_query(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        by_pattern = await search_codebase(pattern="AuthService")
+        by_query = await search_codebase("AuthService")
+
+        assert "error" not in by_pattern
+        assert by_pattern["mode"] == by_query["mode"] == "symbol"
+        assert by_pattern["results"] == by_query["results"]
+        assert "ignored_arguments" not in by_pattern
+
+    @pytest.mark.asyncio
+    async def test_query_wins_and_pattern_is_named(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("AuthService", pattern="src/auth/service.py")
+
+        assert result["mode"] == "symbol"
+        entry = _entry(result, "pattern")
+        assert entry["values"] == ["src/auth/service.py"]
+        assert entry["superseded_by"] == "query"
+
+    @pytest.mark.asyncio
+    async def test_neither_names_the_required_argument(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase()
+
+        assert result["results"] == []
+        assert "`query`" in result["error"]
+        assert "`pattern`" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_schema_accepts_pattern_without_query(self):
+        # The original failure was FastMCP's own validation, before the body ran.
+        from repowise.server.mcp_server import mcp
+
+        tools = await mcp.list_tools()
+        schema = next(t for t in tools if t.name == "search_codebase").inputSchema
+
+        assert "pattern" in schema["properties"]
+        assert "query" not in schema.get("required", [])

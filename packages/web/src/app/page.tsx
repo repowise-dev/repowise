@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import Link from "next/link";
+import { getTranslations } from "next-intl/server";
 import { LayoutGrid } from "lucide-react";
 import type { RepoSummaryRow } from "@repowise-dev/types/repos";
 import { PageShell } from "@repowise-dev/ui/shared";
@@ -19,7 +20,10 @@ import { DeleteRepoButton } from "@/components/repos/delete-repo-button";
 import { EmptyReposState } from "@/components/repos/empty-repos-state";
 import { JobRows } from "@/components/jobs/job-rows";
 
-export const metadata: Metadata = { title: "Dashboard" };
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("dashboard");
+  return { title: t("title") };
+}
 
 export const revalidate = 30;
 
@@ -47,6 +51,8 @@ const JOB_WINDOW = 10;
  * above it.
  */
 export default async function DashboardPage() {
+  const t = await getTranslations("dashboard");
+  const ta = await getTranslations("attention");
   // One wave. The shape this replaces fetched the repo list, then a stats call
   // per repo, then a git-summary call per repo, in two sequential rounds.
   const [summary, jobs, ws] = await Promise.allSettled([
@@ -65,9 +71,9 @@ export default async function DashboardPage() {
   if (repos.length === 0) {
     return (
       <PageShell
-        title="Repositories"
+        title={t("title")}
         icon={<LayoutGrid className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
-        description="Everything repowise has indexed from this machine."
+        description={t("description")}
       >
         <EmptyReposState />
       </PageShell>
@@ -88,32 +94,35 @@ export default async function DashboardPage() {
 
   const ribbon: RibbonStat[] = [
     {
-      label: "Files",
+      label: t("ribbon.files"),
       value: formatNumber(totals.files),
-      sub: `across ${repos.length} repositories`,
+      sub: t("ribbon.filesSub", { count: repos.length }),
     },
     {
-      label: "Symbols",
+      label: t("ribbon.symbols"),
       value: formatNumber(totals.symbols),
-      sub: "functions, classes and methods",
+      sub: t("ribbon.symbolsSub"),
     },
     {
-      label: "Doc freshness",
+      label: t("ribbon.docFreshness"),
       value: totals.pages > 0 ? `${Math.round((totals.freshPages / totals.pages) * 100)}%` : "—",
       sub:
         totals.pages > 0
-          ? `${formatNumber(totals.freshPages)} of ${formatNumber(totals.pages)} pages`
-          : "no documentation generated yet",
+          ? t("ribbon.docFreshnessSub", {
+              fresh: formatNumber(totals.freshPages),
+              total: formatNumber(totals.pages),
+            })
+          : t("ribbon.docFreshnessNone"),
     },
     {
-      label: "Hotspots",
+      label: t("ribbon.hotspots"),
       value: formatNumber(totals.hotspots),
-      sub: "files by churn and prior fixes",
+      sub: t("ribbon.hotspotsSub"),
     },
     {
-      label: "Unused exports",
+      label: t("ribbon.unusedExports"),
       value: formatNumber(totals.deadExports),
-      sub: "open dead-code findings",
+      sub: t("ribbon.unusedExportsSub"),
     },
   ];
 
@@ -122,38 +131,44 @@ export default async function DashboardPage() {
 
   return (
     <PageShell
-      title="Repositories"
+      title={t("title")}
       icon={<LayoutGrid className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
-      description="Everything repowise has indexed from this machine."
+      description={t("description")}
     >
       <PageLede
-        label="Repositories"
+        label={t("ledeLabel")}
         value={String(repos.length)}
-        unit="indexed on this machine"
+        unit={t("ledeUnit")}
         layout="beside"
       >
         <p>
-          {formatNumber(totals.files)} files and {formatNumber(totals.symbols)} symbols are under
-          intelligence here, with {formatNumber(totals.pages)} documentation pages written from
-          them. Every figure below is measured from the index rather than estimated.
+          {t("intro", {
+            files: formatNumber(totals.files),
+            symbols: formatNumber(totals.symbols),
+            pages: formatNumber(totals.pages),
+          })}
         </p>
-        <p>{attentionSentence(repos)}</p>
+        <p>{attentionSentence(repos, ta)}</p>
       </PageLede>
 
       <StatRibbon stats={ribbon} />
 
       {activeJobs.length > 0 && (
         <OverviewSection
-          title={activeJobs.length === 1 ? "Indexing now" : `Indexing now (${activeJobs.length})`}
-          description="Progress streams live; this page does not need a refresh to catch up."
+          title={
+            activeJobs.length === 1
+              ? t("indexingNow")
+              : t("indexingNowCount", { count: activeJobs.length })
+          }
+          description={t("indexingNowDescription")}
         >
           <JobRows jobs={activeJobs} nameFor={nameFor} />
         </OverviewSection>
       )}
 
       <OverviewSection
-        title="Repositories"
-        description="Ordered by what needs attention first — never indexed, then behind their working tree, then by health score — rather than by when they last changed."
+        title={t("repositoriesTitle")}
+        description={t("repositoriesDescription")}
       >
         <RepoRows
           repos={repos.slice().sort(byAttention).map(toRow)}
@@ -164,8 +179,8 @@ export default async function DashboardPage() {
 
       {jobList.length > 0 && (
         <OverviewSection
-          title="Recent activity"
-          description="The last indexing and sync runs across every repository."
+          title={t("recentActivity")}
+          description={t("recentActivityDescription")}
         >
           <JobRows jobs={jobList} nameFor={nameFor} />
         </OverviewSection>

@@ -2,12 +2,13 @@
 
 One normalized :class:`Event` stream over coding-agent transcripts, behind a
 :class:`HarnessAdapter` interface so consumers never parse harness-specific
-JSONL themselves. Claude Code is the first adapter; Codex and others slot in
-behind the same interface later.
+JSONL themselves. Claude Code and Codex today, behind the same interface;
+which of them a repository actually reads is a config question, not a
+registry one.
 
-Consumers today are the distill transcript miners (missed savings, wasteful
-re-reads, correction mining). Session decision mining rides the same stream
-next.
+Consumers are the distill transcript miners (missed savings, wasteful
+re-reads, correction mining) and session decision mining, which rides the
+same stream.
 
 Everything here is read-only and local: transcripts are read from the user's
 own machine and never leave it.

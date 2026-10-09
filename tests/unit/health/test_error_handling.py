@@ -205,3 +205,112 @@ def test_biomarker_no_hits_no_findings():
         module=None,
     )
     assert ErrorHandlingDetector().detect(ctx) == []
+
+
+# Rust unwraps that provably cannot panic are no finding; the controls beside
+# each stay findings.
+_RUST_CANNOT_PANIC = [
+    (b"fn f(x: Option<u8>) { if x.is_some() { g(x.unwrap()); } }\n", 0, "is_some guard"),
+    (b"fn f(x: Option<u8>) { if x.is_some() && h() { g(x.unwrap()); } }\n", 0, "guard conjunct"),
+    (b"fn f(x: Option<u8>) { if x.is_some() || h() { g(x.unwrap()); } }\n", 1, "|| is no guard"),
+    (b"fn f(x: Option<u8>) { if !x.is_some() { g(x.unwrap()); } }\n", 1, "negated guard"),
+    (b"fn f(x: Option<u8>) { if x.is_some() { } else { g(x.unwrap()); } }\n", 1, "else branch"),
+    (b"fn f(x: Option<u8>) { if y.is_some() { g(x.unwrap()); } }\n", 1, "other receiver"),
+    (b"fn f(v: Vec<u8>) { if !v.is_empty() && v.last().unwrap() == &0 { } }\n", 0, "non-empty"),
+    (b"fn f(v: Vec<u8>) { if v.is_empty() && v.last().unwrap() == &0 { } }\n", 1, "empty check"),
+    (
+        b"fn f(s: &S) { if s.r.is_some() { let r = (*s.r).as_ref().map(|r| r).unwrap(); } }\n",
+        0,
+        "guard through as_ref/map/deref",
+    ),
+    (
+        b'fn f() -> String { let mut s = String::new(); writeln!(s, "a").unwrap(); s }\n',
+        0,
+        "write into a String",
+    ),
+    (
+        b'fn f(s: &mut String) { write!(&mut s, "a").unwrap(); }\n',
+        0,
+        "write into a &mut String parameter",
+    ),
+    (
+        b'fn f() { let mut o = io::stdout(); writeln!(o, "a").unwrap(); }\n',
+        1,
+        "write into stdout can fail",
+    ),
+    (
+        b"fn f() { let mut w = String::new(); { let mut w = io::stdout(); "
+        b'writeln!(w, "a").unwrap(); } }\n',
+        1,
+        "a shadowing rebind of the String",
+    ),
+    (
+        b'fn f(o: &mut File) { let c = |o: String| 1; writeln!(o, "a").unwrap(); }\n',
+        1,
+        "a closure parameter of the same name",
+    ),
+    (b"fn f(x: Option<u8>) { if x.is_some() { let x = h(); g(x.unwrap()); } }\n", 1, "rebind"),
+    (b"fn f(mut x: Option<u8>) { if x.is_some() { x = h(); g(x.unwrap()); } }\n", 1, "assign"),
+    (
+        b"fn f(s: &mut S) { if s.v.is_some() { s.v = None; g(s.v.unwrap()); } }\n",
+        1,
+        "field assigned after the guard",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected", "note"),
+    _RUST_CANNOT_PANIC,
+    ids=[note for _, _, note in _RUST_CANNOT_PANIC],
+)
+def test_rust_unwrap_that_cannot_panic_is_no_hit(source: bytes, expected: int, note: str):
+    hits = [h for h in _hits("rust", source) if h.kind == "unsafe_unwrap"]
+    assert len(hits) == expected, note
+
+
+_RUST_IDIOMS = [
+    (b"fn f(m: &Mutex<u8>) { let g = m.lock().unwrap(); }\n", "lock_poison"),
+    (b"fn f(m: &RwLock<u8>) { let g = m.write().unwrap(); }\n", "lock_poison"),
+    (b"fn f(h: JoinHandle<()>) { h.join().unwrap(); }\n", "thread_join"),
+    (b'fn f() { g().expect("config is validated at load"); }\n', "invariant_expect"),
+    (b"fn f() { g().expect(MSG); }\n", "invariant_expect"),
+    (b'fn f(x: u8) { match x { 0 => {}, _ => unreachable!("x is 0") } }\n', "unreachable"),
+    (b"fn f() { g().unwrap(); }\n", None),
+    (b"fn f(r: &mut File) { r.read(&mut buf).unwrap(); }\n", None),
+    (b'fn f() { g().expect(&format!("bad {}", 1)); }\n', None),
+    (b'fn f() { panic!("boom"); }\n', None),
+]
+
+
+@pytest.mark.parametrize(("source", "idiom"), _RUST_IDIOMS)
+def test_rust_idiomatic_assertions_are_labelled(source: bytes, idiom: str | None):
+    hits = _hits("rust", source)
+    assert len(hits) == 1
+    assert hits[0].idiom == idiom
+
+
+def test_rust_unwrap_anchors_on_the_unwrap_line_of_a_chain():
+    hits = _hits("rust", b"fn f() {\n    let x = g()\n        .h()\n        .unwrap();\n}\n")
+    assert [h.line for h in hits] == [4]
+
+
+def test_idiomatic_hit_is_labelled_and_not_scored():
+    ctx = FileContext(
+        file_path="a.rs",
+        language="rust",
+        nloc=20,
+        has_test_file=False,
+        module=None,
+        error_handling_hits=[
+            ErrorHandlingHit("unsafe_unwrap", 3, "lock_poison"),
+            ErrorHandlingHit("unsafe_unwrap", 5),
+        ],
+    )
+    idiomatic, plain = ErrorHandlingDetector().detect(ctx)
+    assert idiomatic.details == {"kind": "unsafe_unwrap", "idiom": "lock_poison", "deduction": 0.0}
+    assert idiomatic.deduction == 0.0
+    assert "idiomatic" in idiomatic.reason
+    assert plain.details == {"kind": "unsafe_unwrap"}
+    assert plain.deduction is None
+    assert plain.reason == "unwrap/expect turns a recoverable error into a crash"

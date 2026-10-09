@@ -5,6 +5,7 @@ One dataclass per template; extracted from the former context_assembler.py.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,6 +37,9 @@ class FilePageContext:
     file_category: str = "code"
     rag_context: list[str] = field(default_factory=list)
     git_metadata: dict | None = None
+    # Files that change in the same commits as this one and that the import
+    # graph does not explain: [{"path", "commits", "last"}]. Coupling a reader
+    # cannot see from the code, decoded from the git metadata's partner cell.
     co_change_pages: list[dict] = field(default_factory=list)
     dead_code_findings: list[dict] = field(default_factory=list)
     depth: str = "standard"
@@ -81,8 +85,14 @@ class SymbolSpotlightContext:
     decorators: list[str]
     is_async: bool
     complexity_estimate: int
+    # Files importing the module that defines the symbol. Import-level
+    # references, not call sites; the template says so where it lists them.
     callers: list[str]
     source_body: str | None = None
+    # Resolved calls *to* this symbol: [{"caller", "caller_file"}]. Where the
+    # call resolver reached a verdict this is what "where it is used" means,
+    # and ``callers`` is the fallback for the symbols it did not resolve.
+    call_sites: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -111,6 +121,17 @@ class ModulePageContext:
     is_rollup: bool = False
     # Child concept pages this rollup sits above: [{"title", "path", "summary"}].
     child_pages: list[dict] = field(default_factory=list)
+    # Sibling packages a package roll-up covers: [{"path", "files"}].
+    packages: list[dict] = field(default_factory=list)
+    # What the page's packages publish, computed from manifests and re-exports:
+    # [{"name", "kind", "file", "signature", "doc", "alias_of"}]; past the budget, names only.
+    public_api: list[dict] = field(default_factory=list)
+    # Public API entries past the hard cap, counted, not listed.
+    public_api_omitted: int = 0
+    # Exact source for the central symbols: [{"file", "symbol", "lines",
+    # "truncated", "code"}], then one-line signatures for files with no excerpt.
+    code_excerpts: list[dict] = field(default_factory=list)
+    declared_files: list[str] = field(default_factory=list)
     # Git-derived subsystem health, aggregated over the page's member files.
     # All degrade to zero/empty when no git metadata is available, so the
     # template renders nothing rather than a wrong number.
@@ -143,6 +164,14 @@ class ModulePageContext:
     # Top files inside the module by PageRank, for the "key files" section.
     key_files: list[dict] = field(default_factory=list)
     top_owners: list[dict] = field(default_factory=list)
+    # What the model writes the page from: parts, import edges between them,
+    # key files, neighbours and a traced flow. See ``module_facts.py``.
+    facts: dict = field(default_factory=dict)
+
+    @property
+    def facts_json(self) -> str:
+        """The facts as the prompt shows them: readable JSON, arrows left unescaped."""
+        return json.dumps(self.facts, indent=1, ensure_ascii=False)
 
 
 @dataclass
@@ -182,20 +211,15 @@ class RepoOverviewContext:
     # Phase 2: third-party dependencies + headline architectural decisions
     external_systems: list[dict] = field(default_factory=list)
     decision_records: list[dict] = field(default_factory=list)
+    # The repository's own headings and section openers, capped. Framing and
+    # vocabulary only: every path, count and package name on the page still
+    # comes from the structural fields above. See ``readme_digest``.
+    prose_digest: str = ""
     # Per-package file counts and observed languages, largest first. Counted
     # from the run's own parsed files rather than written by the model, so the
     # table they feed reads the same on every render. Empty when the repository
     # has no packages to tabulate.
     package_stats: list[dict] = field(default_factory=list)
-
-
-@dataclass
-class ArchitectureDiagramContext:
-    repo_name: str
-    nodes: list[str]
-    edges: list[tuple[str, str]]
-    communities: dict[int, list[str]]
-    scc_groups: list[list[str]]
 
 
 @dataclass

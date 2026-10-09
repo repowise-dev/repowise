@@ -15,6 +15,11 @@ through this package instead of rolling its own silent drop. Three pieces:
 
 Tools with fixed per-list caps use the collector directly at their cap sites,
 under whichever whole-response ceiling they enforce.
+
+Every tool is budgeted. A tool that declares no shed order still gets the final
+size guard, so nothing reaches an agent unbounded and unflagged. The handful of
+tools needing a step of their own once shedding has settled register it through
+:mod:`._hooks` rather than being named inside the shared layer.
 """
 
 from __future__ import annotations
@@ -33,20 +38,41 @@ from repowise.server.mcp_server._budget.budgeter import (
     over_budget,
     truncate_to_budget,
 )
-from repowise.server.mcp_server._budget.collector import OmissionCollector
+from repowise.server.mcp_server._budget.collector import OmissionCollector, cap_collection
+from repowise.server.mcp_server._budget.contracts import (
+    DEFAULT_RESPONSE_CHARS,
+    EXPANDED_RESPONSE_CHARS,
+    budgeted_tool_names,
+    enforce_response_budget,
+    resolve_response_budget_repo_root,
+)
+from repowise.server.mcp_server._budget.hooks import (
+    register_post_enforce,
+    register_post_shed,
+    registered_hook_tools,
+)
 
 __all__ = [
     "CHARS_PER_TOKEN",
     "CHAR_BUDGET",
+    "DEFAULT_RESPONSE_CHARS",
+    "EXPANDED_RESPONSE_CHARS",
     "FIT_HEADROOM_CHARS",
     "HOST_CAP_BUDGET_FRACTION",
     "HOST_MCP_TOKEN_CAP_DEFAULT",
     "TOKEN_BUDGET",
     "OmissionCollector",
+    "budgeted_tool_names",
+    "cap_collection",
     "effective_char_budget",
+    "enforce_response_budget",
     "estimate_response_tokens",
     "fit_to_budget",
     "host_token_cap",
     "over_budget",
+    "register_post_enforce",
+    "register_post_shed",
+    "registered_hook_tools",
+    "resolve_response_budget_repo_root",
     "truncate_to_budget",
 ]

@@ -1,0 +1,477 @@
+"""How ``search_codebase`` reads a query's shape, and its relevance constants.
+
+Stdlib only at import time: no database session, no MCP tool registry, so a
+caller can reuse the routing without loading either. The language registry is
+imported on the first extension check, not at import.
+"""
+
+from __future__ import annotations
+
+import os.path
+import re
+from collections.abc import Container, Sequence
+from functools import cache
+
+from repowise.server.mcp_server._stack_trace import parse_trace
+
+
+@cache
+def _code_exts() -> frozenset[str]:
+    from repowise.core.ingestion.languages.registry import REGISTRY
+
+    return REGISTRY.all_code_extensions()
+
+
+# Words that mark a string as a natural-language question rather than a path.
+# Keep this small — false positives here send genuine paths to the NL branch,
+# which is harmless (path lookup also runs as a fallback) but slower.
+_NL_QUESTION_TOKENS = frozenset(
+    {
+        "why",
+        "how",
+        "what",
+        "when",
+        "where",
+        "who",
+        "which",
+        "should",
+        "can",
+        "does",
+        "do",
+        "is",
+        "are",
+        "was",
+        "were",
+    }
+)
+
+
+def _is_path(query: str) -> bool:
+    """Heuristic: does this string look like a file or module path?
+
+    Natural-language questions take precedence over the slash heuristic
+    because phrases like "two-phase plan/apply flow" or "client/server
+    boundary" contain a slash without being paths. We treat anything with
+    a question mark, that starts with a question word, or that has 4+
+    whitespace-separated tokens including a question word, as NL.
+    """
+    stripped = query.strip()
+    if not stripped:
+        return False
+
+    # Trailing "?" is an unambiguous NL signal.
+    if stripped.endswith("?"):
+        return False
+
+    tokens = stripped.split()
+
+    # First token is a question word → NL.
+    if tokens and tokens[0].lower().rstrip(",.;:") in _NL_QUESTION_TOKENS:
+        return False
+
+    # Sentence-shaped input (multiple words including a question word) → NL.
+    if len(tokens) >= 4 and any(t.lower().rstrip(",.;:") in _NL_QUESTION_TOKENS for t in tokens):
+        return False
+
+    # A path can't contain whitespace.
+    if any(ch.isspace() for ch in stripped):
+        return False
+
+    if "/" in stripped or "\\" in stripped:
+        return True
+    _, ext = os.path.splitext(stripped)
+    return ext in _code_exts()
+
+
+_TOKEN_EDGE_CHARS = "`'\"()[]{},;"
+_LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
+
+
+def path_tokens(query: str, paths: Sequence[str] = ()) -> list[str]:
+    """The words of ``query`` that read as paths. ``services/x.py register
+    hotkey`` -> ``[services/x.py]``.
+
+    A word with a code file extension counts. A ``/`` or ``\\`` word without
+    one counts only when it is a run of whole segments of one of ``paths``, so
+    ``and/or`` does not. URLs never count; a ``::member`` or ``:line`` suffix
+    is dropped.
+    """
+    out: list[str] = []
+    for raw in query.split():
+        if "://" in raw:
+            continue
+        token = raw.strip(_TOKEN_EDGE_CHARS).split("::", 1)[0].rstrip(".:")
+        token = _LINE_SUFFIX_RE.sub("", token)
+        if os.path.splitext(token)[1] in _code_exts() or (
+            ("/" in token or "\\" in token) and _names_indexed_segments(token, paths)
+        ):
+            out.append(token)
+    return out
+
+
+def _names_indexed_segments(token: str, paths: Sequence[str]) -> bool:
+    norm = token.lower().replace("\\", "/").removeprefix("./").strip("/")
+    if not norm:
+        return False
+    needle = f"/{norm}/"
+    return any(needle in f"/{path.lower()}/" for path in paths)
+
+
+def _qual_norm(name: str | None) -> str:
+    """Normalize a qualified name's separators (``::``/``/`` -> ``.``), lowered."""
+    s = name or ""
+    for sep in ("::", "/"):
+        s = s.replace(sep, ".")
+    return s.lower()
+
+
+# Pure-identifier pattern: a single bareword that looks like a code symbol
+# (no spaces, no punctuation other than _/.). These are almost always
+# better handled by Grep than by semantic search — vector embeddings of a
+# bare ``getCurrentUser`` quickly drift to thematically-similar but
+# textually-distant pages, while Grep would have found the literal usage
+# in milliseconds. We hint to Grep but still run the search so callers
+# that genuinely want fuzzy symbol search are not blocked.
+_IDENT_QUERY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{1,29}$")
+
+
+def _canonical_symbol_query(query: str) -> tuple[str, str] | None:
+    """Return ``(path, symbol)`` for an exact canonical ``path::Symbol`` query."""
+    stripped = query.strip().replace("\\", "/")
+    if "::" not in stripped:
+        return None
+    path, symbol = stripped.rsplit("::", 1)
+    if not path or not symbol or "/" not in path:
+        return None
+    return path, symbol
+
+
+def _looks_like_exact_token(query: str) -> bool:
+    """True when the query is a single identifier-shaped token best served by Grep."""
+    stripped = query.strip()
+    if not stripped or " " in stripped:
+        return False
+    return bool(_IDENT_QUERY_RE.match(stripped))
+
+
+# Identifier-shaped tokens inside a longer query: snake_case of any casing
+# (≥1 underscore, incl. _UPPER_SNAKE constants) or CamelCase (≥2 humps).
+# Plain English words never match.
+_IDENT_TOKEN_RE = re.compile(
+    r"\b(?:_*[A-Za-z0-9]+_[A-Za-z0-9_]+|[A-Z][A-Za-z0-9_]+)"
+    r"(?:\.[A-Za-z_][A-Za-z0-9_]*)+\b"
+    r"|\b(?:_*[A-Za-z0-9]+_[A-Za-z0-9_]+|[A-Z][a-z][a-z0-9]*(?:[A-Z][a-z0-9]+)+)\b"
+)
+
+
+# Every word, dotted chains kept whole. Which of them are identifiers is
+# decided against the symbol table (``_embedded_identifiers`` with ``names``),
+# not by shape: shape alone misses ``proxyExecute`` and ``OpenAIProvider`` and
+# takes ``TypeScript``.
+_WORD_CHAIN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+
+def _identifier_shaped(token: str) -> bool:
+    """At least 3 chars with a capital, an underscore or a digit. Plain
+    lowercase words (``method``, ``class``) name symbols too broadly to count."""
+    return len(token) >= 3 and ("_" in token or any(ch.isupper() or ch.isdigit() for ch in token))
+
+
+def _folds_case(token: str) -> bool:
+    """Whether a case-insensitive match may stand for ``token``.
+
+    Mixed case past the first letter, or an underscore. A sentence-initial
+    ``Where`` or an all-caps ``API`` would otherwise fold onto a lowercase
+    ``where`` or ``api`` symbol, which the question never named.
+    """
+    body = token.strip("_")
+    return "_" in body or (
+        any(ch.islower() for ch in body) and any(ch.isupper() for ch in body[1:])
+    )
+
+
+def _names_symbol(token: str, names: Container[str]) -> bool:
+    """Case-sensitive first, then case-insensitive where ``_folds_case`` allows;
+    a dotted token also counts when its last part names a symbol."""
+    if token in names or (_folds_case(token) and token.lower() in names):
+        return True
+    return "." in token and _names_symbol(token.rsplit(".", 1)[1], names)
+
+
+def _embedded_identifiers(query: str, names: Container[str] | None = None) -> list[str]:
+    """Identifier tokens carried inside a natural-language query.
+
+    Without ``names``: the shape regex alone. With ``names`` (the indexed
+    symbol names), a token counts when it names at least one of them, or the
+    last part of a dotted token does: ``executeWithTool`` and
+    ``client.proxyExecute`` count when indexed, ``TypeScript`` does not unless
+    a symbol carries that name. A token no prose word fits
+    (``_looks_like_code_name``) counts even unindexed, so a search can say it
+    does not exist. ``names`` is tested for the token, then for its lowered
+    form, so a container that also answers for each name's lowered spelling
+    gets the case-insensitive leg. A one-hump word (``Add``, ``API``) is also
+    an English word, so it counts only in code context (``_in_code_context``);
+    all-caps constants (``DEBUG``, ``TIMEOUT``) included.
+    """
+    if names is None:
+        return _IDENT_TOKEN_RE.findall(query)
+    return [
+        m.group()
+        for m in _name_token_matches(query)
+        if _looks_like_code_name(m.group())
+        or (
+            _names_symbol(m.group(), names)
+            and (not _one_hump(m.group()) or _in_code_context(query, m))
+        )
+    ]
+
+
+def _unmistakably_code(token: str) -> bool:
+    """Dotted, snake_case, a digit, or a capital past the first letter beside
+    a lowercase one. ``Config`` and ``Result`` are English words too."""
+    if "." in token:
+        return True
+    body = token.strip("_")
+    if "_" in body or any(ch.isdigit() for ch in body):
+        return True
+    return any(ch.islower() for ch in body) and any(ch.isupper() for ch in body[1:])
+
+
+def defined_identifiers(query: str, names: Container[str]) -> list[str]:
+    """Code-shaped tokens of ``query`` (``_unmistakably_code``) that name an
+    indexed symbol. ``names`` as for ``_embedded_identifiers``."""
+    return [
+        t
+        for t in _embedded_identifiers(query, names)
+        if _unmistakably_code(t) and _names_symbol(t, names)
+    ]
+
+
+def is_issue_shaped(query: str, names: Container[str], frames: list | None = None) -> bool:
+    """Whether ``query`` pastes a stack trace or names an identifier the index
+    defines. ``frames`` is ``parse_trace(query)`` when the caller already has it."""
+    if frames is None:
+        frames = parse_trace(query)
+    return bool(frames) or bool(defined_identifiers(query, names))
+
+
+def _name_token_matches(query: str) -> list[re.Match[str]]:
+    """Words that could name a symbol: identifier-shaped, or dotted chains."""
+    return [
+        m
+        for m in _WORD_CHAIN_RE.finditer(query)
+        if "." in m.group() or _identifier_shaped(m.group())
+    ]
+
+
+def _name_tokens(query: str) -> list[str]:
+    return [m.group() for m in _name_token_matches(query)]
+
+
+def _one_hump(token: str) -> bool:
+    """``Add``, ``Client``, ``API``: letters only, one capitalised hump. Go
+    exports plain English words, so prose (``Add support for``) names them."""
+    return token.isalpha() and len(_CAMEL_HUMP_RE.findall(token)) == 1
+
+
+_CALLED_RE = re.compile(r"\(|::")  # no space: "Add (optional) support" is prose
+_ASKS_AFTER_RE = re.compile(
+    r"^\s*(?:where\s+is|where's|where\s+are|what\s+does|how\s+is|how\s+does|how\s+do)\s+(?:the\s+)?$",
+    re.IGNORECASE,
+)
+_LOOKUP_VERB_RE = re.compile(r"\b(?:find|show|open|locate)\s+$", re.IGNORECASE)
+_BARE_LEAD_RE = re.compile(r"^\s*(?:the\s+)?$", re.IGNORECASE)
+_KIND_TAIL_RE = re.compile(
+    r"\s+(?:class|struct|interface|trait|function|method|type|enum)\W*$", re.IGNORECASE
+)
+
+
+def _in_code_context(query: str, m: re.Match[str]) -> bool:
+    """Code syntax around the word (backtick span, ``Add(``, ``Client::new``),
+    or a short lookup frame (``where is Session``, ``find Config``,
+    ``the Router struct``). Issue prose ("Add support for", "Add type
+    annotations") fits none. Dotted chains never get here."""
+    before, after = query[: m.start()], query[m.end() :]
+    if before.count("`") % 2 or before.endswith("::") or _CALLED_RE.match(after):
+        return True
+    if _ASKS_AFTER_RE.match(before):
+        return True
+    if len(query.split()) > 3:
+        return False
+    return bool(
+        _LOOKUP_VERB_RE.search(before) or (_BARE_LEAD_RE.match(before) and _KIND_TAIL_RE.match(after))
+    )
+
+
+def _name_lookup_keys(query: str) -> set[str]:
+    """Lowered names ``_embedded_identifiers`` may test for ``query``, so a
+    caller loads only these rows of the symbol table."""
+    return {t.rsplit(".", 1)[-1].lower() for t in _name_tokens(query)}
+
+
+_CAMEL_HUMP_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+_LOWER_CAMEL_RE = re.compile(r"[a-z]{2,}[a-z0-9]*[A-Z][a-z]")
+
+
+def _looks_like_code_name(token: str) -> bool:
+    """Shaped so no prose word or product name fits it.
+
+    snake_case, lowerCamel (``proxyExecute``), or three or more capitalised
+    humps (``AnthropicStreamingAdapter``). ``TypeScript``, ``GitHub``,
+    ``iPhone`` and ``macOS`` do not fit, so a name like them that matches no
+    symbol never reads as "that symbol does not exist".
+    """
+    if not _WORD_CHAIN_RE.fullmatch(token):
+        return False  # prose around a name ("AuthService login") is not one name
+    leaf = token.rsplit(".", 1)[-1].strip("_")
+    if "_" in leaf or _LOWER_CAMEL_RE.match(leaf):
+        return True
+    return leaf[:1].isupper() and len(_CAMEL_HUMP_RE.findall(leaf)) >= 3
+
+
+def _names_a_path(token: str, paths: list[str]) -> bool:
+    """Whether ``token``'s last dotted part is a directory or file stem among
+    ``paths``: a module the question names, which no symbol table carries."""
+    leaf = token.rsplit(".", 1)[-1]
+    return any(leaf == seg.split(".", 1)[0] for path in paths for seg in path.split("/"))
+
+
+# The label and score ceiling on the pages a search returns for a named
+# symbol that is not indexed: they answer the prose around the name at best.
+NOT_THE_NAMED_SYMBOL = "related, not the named symbol"
+_NOT_THE_NAMED_SYMBOL_CEILING = 0.45
+
+
+def _mark_not_the_named_symbol(items: list[dict]) -> None:
+    """Label ``items`` as related to the question, not the missing symbol, and
+    hold their scores under the 0.5 an agent would trust.
+
+    ``relevance_score`` (what ranks and what clients read) is scaled so the
+    best item sits at the ceiling, keeping the order; ``confidence_score`` is
+    capped where present.
+    """
+    top = max((item.get("relevance_score") or 0.0 for item in items), default=0.0)
+    scale = min(1.0, _NOT_THE_NAMED_SYMBOL_CEILING / top) if top else 1.0
+    for item in items:
+        item["relation"] = NOT_THE_NAMED_SYMBOL
+        if item.get("relevance_score"):
+            item["relevance_score"] = round(item["relevance_score"] * scale, 4)
+        if "confidence_score" in item:
+            item["confidence_score"] = min(item["confidence_score"], _NOT_THE_NAMED_SYMBOL_CEILING)
+
+
+def _identifier_candidates(query: str, mode: str, names: Container[str] | None = None) -> list[str]:
+    """Identifier tokens the query is asking after, for the exact-match signal.
+
+    A single-token query IS the identifier (symbol mode); a natural-language
+    query carrying identifiers (hybrid mode) exposes them the same way
+    ``_resolve_mode`` used to route here. Concept/path queries name none.
+    ``names`` validates the hybrid tokens (see ``_embedded_identifiers``).
+    """
+    if mode == "symbol":
+        q = query.strip()
+        canonical = _canonical_symbol_query(q)
+        return [q, canonical[1]] if canonical else ([q] if q else [])
+    if mode == "hybrid":
+        return _embedded_identifiers(query, names)
+    return []
+
+
+def _qualified_name_matches(qn: str, wanted: set[str]) -> bool:
+    if not qn:
+        return False
+    if qn in wanted:
+        return True
+    return any("." in candidate and qn.endswith(f".{candidate}") for candidate in wanted)
+
+
+def _symbol_matches_name(item: dict, wanted: set[str]) -> bool:
+    symbol_id = (item.get("symbol_id") or "").strip().lower().replace("\\", "/")
+    if symbol_id and symbol_id in wanted:
+        return True
+    name = (item.get("name") or "").strip().lower()
+    if name and name in wanted:
+        return True
+    return _qualified_name_matches(_qual_norm(item.get("qualified_name")), wanted)
+
+
+def _has_exact_symbol(candidates: list[str], symbols: list[dict]) -> bool:
+    """True when some returned symbol's name/qualified-name equals a candidate.
+
+    Reuses the scorer's separator-normalisation so an agent's ``Class.method``
+    matches a ``Class::method`` qualified_name in the index. This is the score
+    cliff made explicit: an exact hit and a fuzzy neighbour look identical in
+    the result list otherwise, and the agent anchors on whatever ranks first.
+    """
+    if not candidates or not symbols:
+        return False
+    wanted = {c.strip().lower() for c in candidates if c.strip()}
+    wanted |= {_qual_norm(c) for c in candidates if c.strip()}
+    return any(_symbol_matches_name(symbol, wanted) for symbol in symbols)
+
+
+_VALID_MODES = {"auto", "concept", "symbol", "path", "hybrid"}
+
+
+def _resolve_mode(query: str, mode: str | None, names: Container[str] | None = None) -> str:
+    """Resolve ``mode="auto"`` to a concrete branch from the query shape.
+
+    Explicit modes pass through. ``auto`` routes path-shaped queries to path
+    search, single identifier-shaped tokens to symbol search, and queries that
+    merely *carry* an identifier inside natural language to hybrid; everything
+    else stays concept (the original wiki-semantic path). The routing reuses
+    the exact heuristics that previously only emitted a grep_hint. With
+    ``names``, only validated identifiers route to hybrid.
+    """
+    m = (mode or "auto").lower()
+    if m not in _VALID_MODES:
+        m = "auto"
+    if m != "auto":
+        return m
+    if _canonical_symbol_query(query):
+        return "symbol"
+    if _is_path(query):
+        return "path"
+    if _looks_like_exact_token(query):
+        return "symbol"
+    if _embedded_identifiers(query, names):
+        return "hybrid"
+    return "concept"
+
+
+# Minimum relevance score below which results are dropped. Prevents
+# returning semantically unrelated pages when the corpus has no real match.
+_MIN_RELEVANCE_SCORE = 0.03
+
+
+# Decision records are short, dense title-statements; they win cosine
+# similarity against long file-page embeddings on any query containing
+# design nouns ("store", "SQLite", "cap", "prune") and crowd file pages
+# out of the top ranks entirely. Down-weight them unless the query is
+# why-shaped — rationale questions are get_why's territory, but a caller
+# who phrases one here clearly wants the decision pages ranked honestly.
+_DECISION_DOWNWEIGHT = 0.6
+
+
+_WHY_SHAPED_RE = re.compile(
+    r"^\s*(why|when\s+did|when\s+was|who\s+decided|who\s+chose|what\s+was\s+the\s+(reason|rationale))\b"
+    r"|\b(decision|decided|rationale|adr)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_why_shaped(query: str) -> bool:
+    """True when the query asks for rationale, so decision records should rank naturally."""
+    return bool(_WHY_SHAPED_RE.search(query))
+
+
+def _fetch_limit_for(limit: int, kind: str | None) -> int:
+    """Over-fetch headroom for post-filters and decision down-weighting.
+
+    Always over-fetch at least 3x: without headroom the down-weighting can
+    only reorder a window that decision records may already fill, so file
+    pages never surface. ``kind`` trims hardest (decision/module/overview
+    pages all classify as "doc"), so it gets 6x — 3x was measured to leave
+    zero implementation pages in the window on decision-heavy queries.
+    """
+    return limit * (6 if kind else 3)

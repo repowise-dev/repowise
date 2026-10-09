@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import networkx as nx
@@ -418,6 +420,87 @@ class TestWorkspaceResolution:
         assert result == "packages/core/index.cts"
 
 
+class TestNestedSubPackage:
+    """A workspace package with a sub-package nested inside its own tree,
+    not declared as a separate workspace member (solid's ``packages/solid/web``,
+    ``store``, etc.). Its own ``package.json`` and entry point win over the
+    outer package's ``src``/``lib``/``dist`` guesses (issue #2301)."""
+
+    def test_nested_subpackage_with_its_own_src_entry(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
+        pkg = tmp_path / "packages" / "solid"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(json.dumps({"name": "solid-js"}))
+        sub = pkg / "web"
+        sub.mkdir()
+        (sub / "package.json").write_text(json.dumps({"name": "solid-js/web"}))
+        ctx = _ctx(
+            tmp_path,
+            [
+                "packages/solid/src/index.ts",
+                "packages/solid/web/src/index.ts",
+            ],
+        )
+        result = resolve_via_workspaces("solid-js/web", ctx)
+        assert result == "packages/solid/web/src/index.ts"
+
+    def test_nested_subpackage_main_field_wins_over_index_probe(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
+        pkg = tmp_path / "packages" / "solid"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(json.dumps({"name": "solid-js"}))
+        sub = pkg / "store"
+        sub.mkdir()
+        (sub / "package.json").write_text(
+            json.dumps({"name": "solid-js/store", "main": "dist/store.js"})
+        )
+        ctx = _ctx(tmp_path, ["packages/solid/store/dist/store.js"])
+        result = resolve_via_workspaces("solid-js/store", ctx)
+        assert result == "packages/solid/store/dist/store.js"
+
+    def test_nested_subpackage_exports_field_is_honoured(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
+        pkg = tmp_path / "packages" / "solid"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(json.dumps({"name": "solid-js"}))
+        sub = pkg / "web"
+        sub.mkdir()
+        (sub / "package.json").write_text(
+            json.dumps({"name": "solid-js/web", "exports": {".": "./src/entry.ts"}})
+        )
+        ctx = _ctx(tmp_path, ["packages/solid/web/src/entry.ts"])
+        result = resolve_via_workspaces("solid-js/web", ctx)
+        assert result == "packages/solid/web/src/entry.ts"
+
+    def test_a_subpath_that_already_resolves_is_not_retargeted(self, tmp_path: Path) -> None:
+        # A nested package.json under `web` must never override a subpath
+        # that the existing probes already resolve under the outer package.
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
+        pkg = tmp_path / "packages" / "solid"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(json.dumps({"name": "solid-js"}))
+        sub = pkg / "web"
+        sub.mkdir()
+        (sub / "package.json").write_text(json.dumps({"name": "solid-js/web"}))
+        ctx = _ctx(
+            tmp_path,
+            [
+                "packages/solid/src/web.ts",
+                "packages/solid/web/src/index.ts",
+            ],
+        )
+        result = resolve_via_workspaces("solid-js/web", ctx)
+        assert result == "packages/solid/src/web.ts"
+
+    def test_no_manifest_at_the_subpath_still_resolves_to_none(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
+        pkg = tmp_path / "packages" / "solid"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(json.dumps({"name": "solid-js"}))
+        ctx = _ctx(tmp_path, ["packages/solid/src/index.ts"])
+        assert resolve_via_workspaces("solid-js/nonexistent", ctx) is None
+
+
 def _setup_workspace(
     tmp_path: Path,
     pkg_name: str,
@@ -753,6 +836,108 @@ class TestWorkspaceExportsField:
             resolve_via_workspaces("@org/ui/secret", ctx)
             == "packages/ui/src/secret.ts"
         )
+
+
+_DIST_EXPORTS = {
+    ".": {"types": "./dist/index.d.mts", "import": "./dist/index.mjs"},
+    "./net/guard": {
+        "workerd": "./dist/net/guard.workerd.mjs",
+        "node": "./dist/net/guard.node.mjs",
+        "default": "./dist/net/guard.node.mjs",
+    },
+    "./typed": {"types": "./dist/typed/api.d.mts"},
+    "./features/*": {"import": "./dist/features/*/entry.mjs"},
+    "./ship": "./lib/shipped.js",
+}
+
+
+@pytest.fixture
+def ts_exports_dist_to_src(tmp_path: Path) -> tuple[Path, list[str]]:
+    """A workspace package whose every export names absent ``dist`` output."""
+    _setup_workspace(tmp_path, "@org/core", {"exports": _DIST_EXPORTS})
+    pkg = tmp_path / "packages" / "core"
+    (pkg / "lib").mkdir()
+    (pkg / "lib" / "shipped.js").write_text("module.exports = {};\n")  # committed build
+    paths = [
+        "packages/core/src/index.ts",
+        "packages/core/src/net/guard.node.ts",
+        "packages/core/src/net/guard.workerd.ts",
+        "packages/core/src/typed/api.ts",
+        "packages/core/src/features/alpha/entry.tsx",
+        "packages/core/src/shipped.ts",
+    ]
+    return tmp_path, paths
+
+
+class TestExportsDistToSrc:
+    """Exports naming build output a source checkout lacks bind the source it is built from."""
+
+    @pytest.mark.parametrize(
+        ("spec", "expected"),
+        [
+            ("@org/core/net/guard", "packages/core/src/net/guard.node.ts"),
+            ("@org/core/typed", "packages/core/src/typed/api.ts"),
+            ("@org/core/features/alpha", "packages/core/src/features/alpha/entry.tsx"),
+            ("@org/core", "packages/core/src/index.ts"),
+        ],
+    )
+    def test_dist_target_maps_to_src(
+        self, ts_exports_dist_to_src: tuple[Path, list[str]], spec: str, expected: str
+    ) -> None:
+        ctx = _ctx(*ts_exports_dist_to_src)
+        assert resolve_via_workspaces(spec, ctx) == expected
+
+    def test_bare_package_maps_a_non_index_source(self, tmp_path: Path) -> None:
+        _setup_workspace(tmp_path, "@org/app", {"exports": {".": "./dist/main.mjs"}})
+        ctx = _ctx(tmp_path, ["packages/app/src/main.ts"])
+        assert resolve_via_workspaces("@org/app", ctx) == "packages/app/src/main.ts"
+
+    def test_committed_build_is_not_remapped(
+        self, ts_exports_dist_to_src: tuple[Path, list[str]]
+    ) -> None:
+        ctx = _ctx(*ts_exports_dist_to_src)
+        assert resolve_via_workspaces("@org/core/ship", ctx) is None
+
+    def test_exact_hits_only(self, ts_exports_dist_to_src: tuple[Path, list[str]]) -> None:
+        # No ``src/features/beta/entry.*`` file: nothing, never a near miss.
+        repo, paths = ts_exports_dist_to_src
+        ctx = _ctx(repo, [*paths, "packages/core/src/features/beta/entry/index.ts"])
+        assert resolve_via_workspaces("@org/core/features/beta", ctx) is None
+
+    def test_existing_fallback_binding_is_not_moved(
+        self, ts_exports_dist_to_src: tuple[Path, list[str]]
+    ) -> None:
+        repo, paths = ts_exports_dist_to_src
+        ctx = _ctx(repo, [*paths, "packages/core/src/net/guard.ts"])
+        assert resolve_via_workspaces("@org/core/net/guard", ctx) == "packages/core/src/net/guard.ts"
+
+    @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+    def test_gitignored_local_build_is_remapped(
+        self, ts_exports_dist_to_src: tuple[Path, list[str]]
+    ) -> None:
+        # A wildcard export's output is not named up front; a local build of
+        # it on disk is still not the checkout when git ignores it.
+        repo, paths = ts_exports_dist_to_src
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / ".gitignore").write_text("dist/\n")
+        built = repo / "packages" / "core" / "dist" / "features"
+        built.mkdir(parents=True)
+        (built / "alpha").mkdir()
+        (built / "alpha" / "entry.mjs").write_text("export {};\n")
+        ctx = _ctx(repo, paths)
+        assert (
+            resolve_via_workspaces("@org/core/features/alpha", ctx)
+            == "packages/core/src/features/alpha/entry.tsx"
+        )
+
+    def test_resolver_emits_no_external_node(
+        self, ts_exports_dist_to_src: tuple[Path, list[str]]
+    ) -> None:
+        repo, paths = ts_exports_dist_to_src
+        ctx = _ctx(repo, [*paths, "apps/web/main.ts"])
+        target = resolve_ts_js_import("@org/core/net/guard", "apps/web/main.ts", ctx)
+        assert target == "packages/core/src/net/guard.node.ts"
+        assert not any(str(n).startswith("external:") for n in ctx.graph.nodes)
 
 
 class TestMtsCtsResolution:

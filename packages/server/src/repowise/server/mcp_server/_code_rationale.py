@@ -38,10 +38,13 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.analysis.decisions.rationale_comments import (
+    CODE_EXTENSIONS,
     RATIONALE_MARKERS,
     extract_comment_blocks,
+    harvest_file_rationale,
 )
 from repowise.core.exclusion import build_exclude_spec, is_excluded
+from repowise.server.mcp_server._why_relevance import floor_ranked
 
 _log = logging.getLogger("repowise.mcp.code_rationale")
 
@@ -234,6 +237,7 @@ def mine_rationale(
     near_lines: dict[str, int] | None = None,
     max_files: int = _MAX_FILES,
     max_results: int = _MAX_RESULTS,
+    truncate_blocks: bool = True,
 ) -> list[dict]:
     """Mine in-code rationale comments from ``file_paths``.
 
@@ -305,7 +309,7 @@ def mine_rationale(
                     {
                         "path": path,
                         "lines": [start, end],
-                        "comment": _truncate_block(comment),
+                        "comment": _truncate_block(comment) if truncate_blocks else comment,
                         "matched_terms": matched + matched_nums,
                     },
                 )
@@ -339,6 +343,12 @@ _CAP_FAMILY: tuple[str, ...] = ("cap", "limit", "max", "bound", "ceiling", "thre
 
 # Git-grep is bounded so a pathological pattern can't stall a tool response.
 _GREP_TIMEOUT_S = 20
+# A pasted issue body carries 100+ nouns and numbers; an uncapped alternation
+# matches most comment lines in the repo. Longest nouns are the most specific:
+# on sample issue bodies they ranked the target no worse than the uncapped or
+# first-12 sets, and a minimum per-file count added nothing.
+_MAX_GREP_NOUNS = 12
+_MAX_GREP_NUMBERS = 4
 
 
 def grep_comment_candidates(
@@ -368,9 +378,10 @@ def grep_comment_candidates(
         return []
     if not repo_root:
         return []
-    numbers = _salient_numbers(query)
+    numbers = _salient_numbers(query)[:_MAX_GREP_NUMBERS]
     terms = _content_terms(query)
-    nouns = [t for t in terms if t not in _CAP_FAMILY]
+    nouns = sorted((t for t in terms if t not in _CAP_FAMILY), key=lambda t: (-len(t), t))
+    nouns = nouns[:_MAX_GREP_NOUNS]
     anchors = list(numbers) or list(_CAP_FAMILY)
     if not nouns or not anchors:
         return []
@@ -401,7 +412,9 @@ def grep_comment_candidates(
                 # ``color.ui=always`` git config must not wrap paths in ANSI
                 # escapes (which would corrupt the path split below).
                 "--no-color",
-                "-n",
+                # -c: one ``path:count`` line per file, so the output is bounded
+                # by the file count, not by how many lines a broad pattern hits.
+                "-c",
                 "-I",
                 "-i",
                 "-E",
@@ -428,12 +441,96 @@ def grep_comment_candidates(
         return []
     counts: Counter[str] = Counter()
     for line in proc.stdout.splitlines():
-        path = line.split(":", 1)[0]
-        if path:
-            counts[path] += 1
+        path, _, n = line.rpartition(":")
+        if path and n.isdigit():
+            counts[path] += int(n)
     # ``git grep`` only scans tracked files, but a gitignored copy can still be
     # tracked (or land here via a future --no-index retry); filter the winners
     # through the repo's exclusion rules so an ignored path is never anchored on.
     spec = build_exclude_spec(root)
     ranked = [p for p, _ in counts.most_common() if not is_excluded(p, spec)]
     return ranked[:max_files]
+
+
+# One repository's harvest, keyed on (root, HEAD): harvesting reads every
+# tracked code file (about 2s cold on a 3,000-file repository), so a session
+# asking several questions pays it once. Ceiling: edits since HEAD are not seen
+# until the next commit; the path-scoped miner above stays live for those.
+_HARVEST_CACHE: dict[tuple[str, str], list[dict]] = {}
+_MAX_HARVEST_FILES = 20_000
+
+
+def _head(root: Path) -> str | None:
+    try:
+        proc = subprocess.run(
+            ["git", "--no-pager", "rev-parse", "HEAD"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=_GREP_TIMEOUT_S,
+        )
+    except Exception:
+        return None
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def _harvest_repo(root: Path) -> list[dict]:
+    """Every tracked file's strong-marker comments, strongest first per file.
+
+    ``harvest_file_rationale`` with its defaults: a causal marker is required
+    and docstrings are skipped. That is the precision bar a comment must clear
+    to be served for a question naming no file, where nothing else vouches for
+    it. These are never decisions (#751); they are served as comments.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "--no-pager", "ls-files", "-z"],
+            cwd=str(root),
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=_GREP_TIMEOUT_S,
+        )
+    except Exception:
+        return []
+    if proc.returncode != 0:
+        return []
+    spec = build_exclude_spec(root)
+    rows: list[dict] = []
+    paths = [p for p in proc.stdout.decode("utf-8", "replace").split("\0") if p]
+    for path in paths[:_MAX_HARVEST_FILES]:
+        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+        if ext not in CODE_EXTENSIONS or is_excluded(path, spec):
+            continue
+        text = _read_text(root, path)
+        if text is None:
+            continue
+        for h in harvest_file_rationale(text, ext):
+            rows.append({"path": path, "lines": [h.start_line, h.end_line], "comment": h.text})
+    return rows
+
+
+def repo_rationale(repo_root: Any, query: str, *, max_results: int = 3) -> list[dict]:
+    """Strong-marker comments anywhere in the repository that answer *query*.
+
+    For a question naming no file, when no decision record matched. Ranked by
+    the decision store's own relevance floor, with rarity taken over the whole
+    harvest, so a comment is served only when it carries most of the
+    question's weighted vocabulary. Rows have the ``mine_rationale`` shape.
+    Best-effort: ``[]`` on any failure.
+    """
+    if not repo_root or not query:
+        return []
+    try:
+        root = Path(str(repo_root))
+        head = _head(root)
+        if head is None:
+            return []
+        key = (str(root.resolve()), head)
+        if key not in _HARVEST_CACHE:
+            _HARVEST_CACHE.clear()
+            _HARVEST_CACHE[key] = _harvest_repo(root)
+        return floor_ranked(query, _HARVEST_CACHE[key], lambda r: r["comment"], max_results)
+    except Exception as exc:  # never let the harvest break a tool
+        _log.debug("repo rationale harvest failed: %s", exc)
+        return []

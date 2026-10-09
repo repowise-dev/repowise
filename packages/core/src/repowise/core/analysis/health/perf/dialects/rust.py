@@ -19,8 +19,8 @@ Flagship: a ``sqlx`` query or a ``std::fs`` / ``reqwest`` round-trip inside a
 
 Rust has no compile-optimization hazard around ``String`` building — ``push_str``
 / ``+=`` on a ``String`` are amortized O(1) (the buffer grows geometrically), so
-``string_concat_in_loop`` is deliberately NOT in :attr:`markers` (it would be a
-guaranteed-FP marker — the language-scope rule in ``MARKER_BACKLOG.md``).
+``string_concat_in_loop`` is deliberately NOT in :attr:`markers`: it would be a
+guaranteed false positive, which is why markers are scoped per language.
 
 The per-grammar seam: Rust spells free calls (``foo()``), method calls
 (``x.fetch_all()`` -> ``call_expression`` over a ``field_expression``) and
@@ -131,7 +131,7 @@ class RustPerfDialect(BasePerfDialect):
             "regex_compile_in_loop",
             "resource_construction_in_loop",
             "serial_await_in_loop",
-            # Phase 7b — centrality-gated / nesting-confidence markers (parity).
+            # Centrality-gated / nesting-confidence markers (parity).
             "nested_loop_with_io",
             "nested_loop_quadratic",
             "hot_path_sync_io",

@@ -104,7 +104,7 @@ def test_compute_kpis_uses_nloc_weighting():
 
 def test_compute_kpis_empty_returns_defaults():
     kpis = compute_kpis([], hotspot_paths=set())
-    assert kpis["average_health"] == 10.0
+    assert kpis["average_health"] is None
     assert kpis["file_count"] == 0
     assert kpis["maintainability_average"] is None
     assert kpis["performance_average"] is None

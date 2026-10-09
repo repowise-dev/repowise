@@ -25,6 +25,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..models import Severity
+from ..semantics import format_top_percentile
 from .base import BiomarkerResult, FileContext
 
 _MIN_PERCENTILE = 0.80
@@ -91,7 +92,7 @@ class ChangeEntropyDetector:
                 },
                 reason=(
                     f"changes are scattered across noisy commits "
-                    f"(top {(1 - percentile) * 100:.0f}% change entropy); "
+                    f"({format_top_percentile(percentile, 'files eligible for change-entropy ranking')}); "
                     "a strong history-based fault predictor"
                 ),
             )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import event
 
@@ -13,6 +14,10 @@ from repowise.core.persistence import (
     batch_upsert_graph_nodes,
     crud,
 )
+
+# The seed covers every plan type, extract_helper included; the registry's
+# hiding of its biomarker is tested in test_refactoring_opportunities.py.
+pytestmark = pytest.mark.usefixtures("dry_violation_shown")
 
 
 async def create_test_repo(client: AsyncClient) -> dict:
@@ -676,4 +681,46 @@ async def test_settings_put_blank_provider_clears_key(client: AsyncClient, app) 
 
 async def test_settings_unknown_repo_404(client: AsyncClient, app) -> None:
     resp = await client.get("/api/repos/does-not-exist/refactoring/settings")
+    assert resp.status_code == 404
+
+
+async def test_plan_status_round_trips_and_hides_the_row(client: AsyncClient, app) -> None:
+    """The triage vocabulary is the findings one, and the write is visible."""
+    repo_id = await _seed(client, app)
+    listed = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()["plans"]
+    target = next(p for p in listed if p["refactoring_type"] == "break_cycle")
+
+    resp = await client.patch(
+        f"/api/repos/{repo_id}/refactoring/{target['id']}/status",
+        json={"status": "acknowledged"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "acknowledged"
+    assert body["status_reason"] == "user"
+    assert body["status_changed_at"] is not None
+    assert body["public_id"].startswith("refac4_")
+
+    resp = await client.patch(
+        f"/api/repos/{repo_id}/refactoring/{target['id']}/status",
+        json={"status": "false_positive"},
+    )
+    assert resp.status_code == 200
+    remaining = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()["plans"]
+    assert target["id"] not in {plan["id"] for plan in remaining}
+
+
+async def test_plan_status_refuses_an_unknown_state_and_an_unknown_plan(
+    client: AsyncClient, app
+) -> None:
+    repo_id = await _seed(client, app)
+    listed = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()["plans"]
+    resp = await client.patch(
+        f"/api/repos/{repo_id}/refactoring/{listed[0]['id']}/status",
+        json={"status": "wontfix"},
+    )
+    assert resp.status_code == 400
+    resp = await client.patch(
+        f"/api/repos/{repo_id}/refactoring/deadbeef/status", json={"status": "resolved"}
+    )
     assert resp.status_code == 404

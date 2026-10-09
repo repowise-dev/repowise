@@ -5,6 +5,9 @@ but ships its own routing verbs (``@Get`` / ``@Post`` / …) and DI
 qualifiers (``@Factory`` / ``@Replaces`` / ``@Primary``). Annotation
 short-names collide with Spring's ``@Controller``; we disambiguate by
 the import set (``io.micronaut.*``).
+
+``@Controller`` itself is recognised by ``ingestion.framework_routes``, shared
+with the contract dialect that reads the same annotation for its route prefix.
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from ..framework_routes import micronaut_class_paths
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
@@ -25,8 +29,9 @@ if TYPE_CHECKING:
     import networkx as nx
 
 
+# ``@Controller`` is not here: it is read through the shared recogniser below,
+# which the contract dialect reads its route prefix from.
 _MICRONAUT_STEREOTYPE_ANNOT = (
-    "@Controller",
     "@Filter",
     "@Singleton",
     "@Prototype",
@@ -98,7 +103,11 @@ def _add_micronaut_edges(
         text = read_text(parsed)
         if not text:
             continue
-        has_stereotype = any(annot in text for annot in _MICRONAUT_STEREOTYPE_ANNOT)
+        # Any controller entry counts, prefix or not: a `@Controller(PREFIX)`
+        # is as much a component as one written with a literal path.
+        has_stereotype = bool(micronaut_class_paths(text)) or any(
+            annot in text for annot in _MICRONAUT_STEREOTYPE_ANNOT
+        )
         if not has_stereotype:
             continue
 

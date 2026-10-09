@@ -33,6 +33,24 @@ def test_config_files():
     assert file_category("settings.py", "python", is_config=True) == CATEGORY_CONFIG
 
 
+def test_dotfile_named_after_a_config_extension_is_config():
+    """#2454: `.env` has no pathlib suffix, but its whole name is the entry.
+
+    `file_category()` used to fall through to `code` because dotfiles carry no
+    language and the ingestion flag stays False; the sibling surfaces are fixed
+    separately (#2381 for #2379).
+    """
+    assert file_category(".env") == CATEGORY_CONFIG
+    assert file_category("proj/.env") == CATEGORY_CONFIG
+    # `foo.env` carries the same suffix and is config on every surface.
+    assert file_category("foo.env") == CATEGORY_CONFIG
+
+
+def test_dotfiles_the_sets_do_not_name_stay_code():
+    """The token match is against `CONFIG_EXTENSIONS`, not "any dotfile"."""
+    assert file_category(".gitignore") == CATEGORY_CODE
+
+
 def test_code_default():
     assert file_category("src/services/billing.py", "python") == CATEGORY_CODE
 

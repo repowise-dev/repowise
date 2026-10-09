@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -35,7 +36,8 @@ class RepoContext:
     fts: Any  # FullTextSearch
     vector_store: Any  # LanceDB or InMemoryVectorStore
     decision_store: Any  # LanceDB or InMemoryVectorStore
-    vector_store_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    # None: readiness is not tracked, so searches do not wait for it.
+    vector_store_ready: asyncio.Event | None = field(default_factory=asyncio.Event)
     _engine: Any = field(default=None, repr=False)  # AsyncEngine, for dispose
 
 
@@ -79,13 +81,56 @@ class RepoRegistry:
         workspace_root: Path,
         ws_config: Any,  # WorkspaceConfig
         embedder_factory: Callable[[], Any] | None = None,
+        on_vector_store_error: Callable[[str, BaseException], None] | None = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._ws_config = ws_config
         self._embedder_factory = embedder_factory
+        # Told when a repo's semantic index exists but cannot be opened, so
+        # the server can stop calling semantic search healthy.
+        self._on_vector_store_error = on_vector_store_error
         self._contexts: dict[str, RepoContext] = {}
         self._access_order: dict[str, float] = {}
         self._vs_tasks: dict[str, asyncio.Task[None]] = {}
+        self._validate_public_identities()
+
+    def _identity_key(self, value: str | Path) -> str:
+        return os.path.normcase(Path(value).as_posix().rstrip("/") or ".").replace(
+            "\\", "/"
+        )
+
+    @staticmethod
+    def _alias_key(value: str) -> str:
+        return value.strip().casefold()
+
+    def _validate_public_identities(self) -> None:
+        owners: dict[str, str] = {}
+        alias_owners = {
+            self._alias_key(entry.alias): entry.alias for entry in self._ws_config.repos
+        }
+        for entry in self._ws_config.repos:
+            if self._alias_key(entry.alias) == "all" or self._identity_key(entry.path) == "all":
+                raise ValueError("Workspace repository identity 'all' is reserved")
+            identities = {
+                self._alias_key(entry.alias),
+                self._identity_key(entry.path),
+                self._identity_key((self._workspace_root / entry.path).resolve()),
+            }
+            for path_identity in identities - {self._alias_key(entry.alias)}:
+                alias_owner = alias_owners.get(self._alias_key(path_identity))
+                if alias_owner is not None and alias_owner != entry.alias:
+                    raise ValueError(
+                        "Workspace repository identities collide: "
+                        f"alias {alias_owner!r} shadows path {path_identity!r} "
+                        f"from {entry.alias!r}"
+                    )
+            for identity in identities:
+                owner = owners.setdefault(identity, entry.alias)
+                if owner != entry.alias:
+                    raise ValueError(
+                        "Workspace repository identities collide: "
+                        f"{owner!r} and {entry.alias!r} both expose {identity!r}"
+                    )
 
     # -- Public API --------------------------------------------------------
 
@@ -125,11 +170,24 @@ class RepoRegistry:
             return self.get_default_alias()
         if repo == "all":
             return self.get_all_aliases()
-        # Validate alias exists
-        if self._ws_config.get_repo(repo) is None:
-            available = self.get_all_aliases()
-            raise ValueError(f"Unknown repo '{repo}'. Available: {available}")
-        return repo
+        # Alias is canonical, but ``list_repos`` also emits each repository's
+        # config-relative and absolute path. Accept those identities directly
+        # so a discovery result never needs caller-side translation.
+        aliases = {self._alias_key(entry.alias): entry.alias for entry in self._ws_config.repos}
+        alias = aliases.get(self._alias_key(repo))
+        if alias is not None:
+            return alias
+        candidate = Path(repo)
+        candidate_text = self._identity_key(candidate)
+        for entry in self._ws_config.repos:
+            relative = self._identity_key(entry.path)
+            absolute = (self._workspace_root / entry.path).resolve()
+            if candidate_text == relative:
+                return entry.alias
+            if candidate.is_absolute() and candidate.resolve() == absolute:
+                return entry.alias
+        available = self.get_all_aliases()
+        raise ValueError(f"Unknown repo '{repo}'. Available: {available}")
 
     async def get(self, alias: str) -> RepoContext:
         """Get the ``RepoContext`` for *alias*, loading lazily if needed."""
@@ -218,12 +276,18 @@ class RepoRegistry:
         embedder: Any,
     ) -> None:
         """Background task: load LanceDB vector stores for a repo."""
+        lance_dir = repo_path / ".repowise" / "lancedb"
+
+        def _report(exc: BaseException) -> None:
+            # No index on disk is a keyless repo, not a failure.
+            if lance_dir.exists() and self._on_vector_store_error is not None:
+                self._on_vector_store_error(ctx.alias, exc)
+
         try:
             try:
                 await asyncio.to_thread(__import__, "lancedb")
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-                lance_dir = repo_path / ".repowise" / "lancedb"
                 if lance_dir.exists():
                     vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                     await vs._ensure_connected()
@@ -231,13 +295,14 @@ class RepoRegistry:
                     # Decisions live under the "decision:" page-id namespace.
                     ctx.vector_store = vs
                     ctx.decision_store = vs
-            except ImportError:
-                pass
-            except Exception:
+            except ImportError as exc:
+                _report(exc)
+            except Exception as exc:
                 _log.warning(
                     "LanceDB load failed for '%s' — using InMemory fallback",
                     ctx.alias,
                 )
+                _report(exc)
         finally:
             # Only signal ready if this context is still the active one.
             # If it was evicted before we finished loading, a fresh context

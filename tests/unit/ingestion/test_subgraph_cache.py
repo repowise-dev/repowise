@@ -53,6 +53,16 @@ class TestSubgraphCache:
         gb = _builder(tmp_path)
         assert gb.symbol_subgraph() is gb.symbol_subgraph()
 
+    def test_symbol_subgraph_released_once_both_kernels_scored(self, tmp_path: Path) -> None:
+        gb = _builder(tmp_path)
+        gb.symbol_pagerank()
+        # Betweenness has not read it yet, so the copy must survive.
+        assert gb._symbol_subgraph_cache is not None
+        gb.symbol_betweenness_centrality()
+        assert gb._symbol_subgraph_cache is None
+        # A later reader still gets the same subgraph, rebuilt on demand.
+        assert set(gb.symbol_subgraph().nodes) == set(gb.symbol_pagerank())
+
     def test_contents_unchanged_by_caching(self, tmp_path: Path) -> None:
         gb = _builder(tmp_path)
         sub = gb.file_subgraph()

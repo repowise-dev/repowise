@@ -196,16 +196,19 @@ class CppDefUseDialect(BaseDefUseDialect):
             return
         if t in _DECL_KINDS:
             for child in node.named_children:
+                start = len(defs)
                 if child.type == _INIT_DECLARATOR:
                     binder = self._binder_identifier(child.child_by_field_name("declarator"))
                     if binder is not None:
                         defs.append(self._occ(binder))
+                    self._declare(defs, start, child)
                     self._process(child.child_by_field_name("value"), defs, uses)
                 elif child.type in self.identifier_kinds or child.type in _DECLARATOR_WRAPPERS:
                     # ``int x;`` / ``int* p;`` — a binding with no initialiser.
                     binder = self._binder_identifier(child)
                     if binder is not None:
                         defs.append(self._occ(binder))
+                    self._declare(defs, start, child)
             return
         if t == _CALL:
             self.collect_reads(node, uses)
@@ -220,23 +223,10 @@ class CppDefUseDialect(BaseDefUseDialect):
             uses.append(self._occ(node))
             return
         if self._is_scope_boundary(node):
+            self.boundary_def(node, defs)
             return
         for child in node.named_children:
             self._process(child, defs, uses)
-
-    def _process_may_def(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
-        """Process *node* whose writes execute only on some path (a switch arm).
-
-        Each def found within is recorded as a def AND a use: the may-def keeps
-        the variable in every "written in this region" set while its paired use
-        stays upward-exposed, so a downstream must-def proof can only get more
-        conservative, never less.
-        """
-        inner_defs: list[Occurrence] = []
-        for child in node.named_children:  # not the node itself: no re-dispatch
-            self._process(child, inner_defs, uses)
-        defs.extend(inner_defs)
-        uses.extend(inner_defs)
 
     # -- write-target extraction ----------------------------------------------
 

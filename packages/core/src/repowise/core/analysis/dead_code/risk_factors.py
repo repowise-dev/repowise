@@ -39,12 +39,30 @@ from pathlib import PurePosixPath
 # so the analyzer and every read-time consumer agree.
 SAFE_CONFIDENCE_THRESHOLD: float = 0.7
 
+# Confidence for an unreachable file that has no git row at all. Absence is
+# the weakest evidence the ladder sees, not the strongest: the file may be
+# untracked, newly added, or outside the walk that produced the rows. Held
+# below the deletion-ready threshold so no verdict is issued on it.
+NO_GIT_SIGNAL_CONFIDENCE: float = 0.5
+
+# Confidence for an unused export whose absence nothing could have shown: no
+# importer of its file names the symbols it takes (a C ``#include``, a C#
+# ``using``, or no importer at all). Below the deletion-ready threshold, above
+# the review cap: still ranked, never issued as a deletion.
+UNPROVEN_EXPORT_CONFIDENCE: float = 0.6
+
 # Confidence ceiling applied to a finding that carries a runtime-load risk
 # factor. 0.4 is the default ``min_confidence`` floor across CLI, REST router,
 # and MCP tools (which import this value as their single source of truth), so the
 # finding still surfaces (as a medium / review-required candidate) but never
 # reads as deletion-ready.
 RISK_CAP_CONFIDENCE: float = 0.4
+
+# Finding kinds that are never deletion-ready, whatever their confidence. A
+# whole file with no importers was measured well below the deletion-ready bar
+# (files read by build scripts, manifests and runtime loaders by path), so it
+# is a review candidate until path mentions and entry-shape evidence exist.
+REVIEW_ONLY_KINDS: frozenset[str] = frozenset({"unreachable_file"})
 
 # Filename-stem tokens → risk-factor tag. Matched against the basename split on
 # ``. _ -`` so ``environment.db.js`` yields {environment, db, js} → environment
@@ -192,6 +210,7 @@ def effective_safe_to_delete(
     confidence: float,
     file_path: str,
     stored_safe: bool = True,
+    kind: str | None = None,
 ) -> bool:
     """Re-derive whether a finding is genuinely deletion-ready.
 
@@ -200,9 +219,10 @@ def effective_safe_to_delete(
 
     - never True when ``stored_safe`` is already False,
     - never True below :data:`SAFE_CONFIDENCE_THRESHOLD`,
-    - never True when the path carries any runtime-load risk factor.
+    - never True when the path carries any runtime-load risk factor,
+    - never True for a :data:`REVIEW_ONLY_KINDS` finding.
     """
-    if not stored_safe:
+    if not stored_safe or kind in REVIEW_ONLY_KINDS:
         return False
     if confidence < SAFE_CONFIDENCE_THRESHOLD:
         return False

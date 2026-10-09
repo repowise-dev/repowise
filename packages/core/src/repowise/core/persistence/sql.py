@@ -7,6 +7,9 @@ escaping the CRUD layer uses.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import Any
+
 #: The escape character to pass as ``escape=`` on every ``like``/``ilike``
 #: paired with :func:`escape_like`. SQLite has no default LIKE escape
 #: character, so it has to be declared on the call for the escaping below to
@@ -23,3 +26,56 @@ def escape_like(value: str) -> str:
     quietly returns rows the caller never asked for.
     """
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def rule_predicate(model: Any, rule: Any, value: Any) -> Any:
+    """One ``analysis.health.queue_rules.FilterRule`` as a SQL predicate on *model*.
+
+    ``queue_rules.matches`` is the same rule read over a row in memory.
+    """
+    # Deferred: the analysis package imports persistence.
+    from repowise.core.analysis.health.queue_rules import NULL_VALUE
+
+    column = getattr(model, rule.field)
+    if rule.op == "eq":
+        return column == value
+    if rule.op == "in":
+        # One value is still one equality; an empty list matches nothing.
+        values = list(value)
+        return column == values[0] if len(values) == 1 else column.in_(values)
+    if rule.op == "eq_or_null":
+        return column.is_(None) if value == NULL_VALUE else column == value
+    if rule.op == "contains":
+        return column.ilike(f"%{escape_like(value)}%", escape=LIKE_ESCAPE)
+    if rule.op == "prefix":
+        return column.like(f"{escape_like(value)}%", escape=LIKE_ESCAPE)
+    if rule.op == "positive":
+        return column > 0
+    return column.is_(value)
+
+
+def order_by(model: Any, keys: Iterable[tuple[str, bool]]) -> tuple[Any, ...]:
+    """``(field, descending)`` sort keys as an ``ORDER BY`` on *model*."""
+    return tuple(
+        getattr(model, name).desc() if descending else getattr(model, name).asc()
+        for name, descending in keys
+    )
+
+
+def is_missing_table(exc: Exception) -> bool:
+    """Whether *exc* is "that table is not there" rather than a real failure.
+
+    Backend-specific wording, so this is a substring check and not a code. It
+    fails toward ``unavailable``: mistaking a missing table for a failure costs
+    a visible block that should have been silent, while the reverse would let a
+    genuine failure render as a clean bill.
+
+    Every clause is table-scoped for that reason. Postgres says "does not
+    exist" for a missing column, database, function or role too, and each of
+    those is real schema drift or misconfiguration -- swallowing them here
+    would rebuild the exact silence this check exists to break.
+    """
+    text = str(getattr(exc, "orig", "") or exc).lower()
+    if "no such table" in text or "undefined table" in text:
+        return True
+    return "does not exist" in text and ("relation" in text or "table" in text)

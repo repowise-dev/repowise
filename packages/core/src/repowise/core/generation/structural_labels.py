@@ -33,46 +33,63 @@ ENGLISH_LABELS: dict[str, str] = {
     # -- shared ------------------------------------------------------------
     "overview": "Overview",
     "source": "Source",
-    "footer": (
-        "*Built from the code itself: parsed symbols, the import graph, git history and\n"
-        "the knowledge graph. Every statement here is checked against the source rather\n"
-        "than written about it.*"
-    ),
+    "footer": "*Generated from parsed code, the import graph and git history.*",
     "and_more": "and {count} more.",
     "file": "File",
     "file_singular": "file",
     "file_plural": "files",
     "symbol": "Symbol",
     "kind": "Kind",
-    "signature": "Signature",
     "questions_heading": "Questions this page answers",
     # -- file page ---------------------------------------------------------
-    # The overview sentence is assembled from fragments rather than stored
-    # whole: four independent optional clauses would need sixteen variants as
-    # one string. A translation that needs a different order pays for it here.
-    "is_a": "is a",
-    "entry_point": "entry-point",
-    "test": "test",
-    "source_file": "source file",
-    "in_layer": "in the {layer} layer",
-    "part_of_module_cluster_intro": "part of the {community} module cluster",
-    "exposes_symbols": "It exposes {symbol_count} {symbol_word}.",
-    "exposes_symbols_and_depends": (
-        "It exposes {symbol_count} {symbol_word} and depends on {file_count} {file_word}."
-    ),
-    "public_symbol_singular": "public symbol",
-    "public_symbol_plural": "public symbols",
-    "other_file_singular": "other file",
-    "other_file_plural": "other files",
+    # The opening sentences carry a ``{subject}`` slot the template fills with
+    # the file's name for the page's first sentence and ``it_subject`` after.
+    "and_word": "and",
+    "and_count_more": "{count} more",
+    "it_subject": "It",
+    "file_defines": "{subject} defines {names}.",
+    "file_imported_by": "{subject} is imported by {names}.",
+    "file_imported_by_count": "{subject} is imported by {count} files{tests}.",
+    "of_them_tests": " ({count} of them tests)",
+    "largest_share": "{count} of them are in {directory}.",
+    "largest_share_code": "Of the others, {count} are in {directory}.",
+    "all_in_directory": "All of them are in {directory}.",
+    "file_imports": "{subject} imports {names}.",
+    "file_imports_count": "{subject} imports {count} files from this repository.",
+    "file_layer": "{subject} belongs to the {layer} layer.",
+    "file_layer_boundary": "{subject} belongs to the {layer} layer, and other layers import it.",
+    "file_layer_entry": "{subject} belongs to the {layer} layer and is an entry point into it.",
+    "file_entry_point": "{subject} is an entry point.",
+    "file_fallback": "{subject} is {article} {language} file.",
     "public_api": "Public API",
     "depends_on": "Depends on",
     "used_by": "Used by",
-    "imported_by_files": "Imported by {count} {file_word} in this repository.",
-    "usage_notes": "Usage Notes",
-    "part_of_module_cluster": "Part of the **{community}** module cluster.",
-    "layer": "Layer",
-    "role": "Role",
-    "in_the_code": "In the code",
+    # Symbols the API list leaves out, named so the identifier stays on the
+    # page even though the entry does not.
+    "also_defined": "Also defined: {names}.",
+    # -- file page: history ------------------------------------------------
+    "history": "History",
+    "history_commits": "{total} {commit_word} in its history, {recent} in the last 90 days.",
+    "history_last_commit": "The last landed on {date}.",
+    # ``history_owner`` when only commit shares are known (no blame);
+    # ``history_owner_lines`` when blame chose the owner, naming both shares
+    # because the top blame author need not be the top committer.
+    "history_owner": "**{owner}** is its primary maintainer, at {pct}% of commits.",
+    "history_owner_lines": "**{owner}** wrote {line}% of its current lines ({commit}% of commits).",
+    "history_owner_lines_only": "**{owner}** wrote {line}% of its current lines.",
+    "history_fixes": "{count} of those commits fixed a bug.",
+    "history_hotspot": "It is one of the repository's change hotspots.",
+    "history_stable": "It has been stable: nothing has changed it lately.",
+    "commit_singular": "commit",
+    "commit_plural": "commits",
+    "changes_with": "Changes together with",
+    "changes_with_intro": (
+        "Files that change in the same commits as this one without importing it "
+        "or being imported by it."
+    ),
+    "changes_with_entry": "{count} shared {commit_word}",
+    "last_together": "last together on {date}",
+    "decisions_heading": "Decisions touching this file",
     "question_exports": "What does `{path}` export?",
     "question_where_defined": "Where is `{symbol}` defined?",
     "question_what_imports": "What imports `{path}`?",
@@ -95,6 +112,12 @@ ENGLISH_LABELS: dict[str, str] = {
     ),
     "import_verb_singular": "imports",
     "import_verb_plural": "import",
+    "call_sites_summary": "Reached by {count} resolved {call_word}.",
+    "imported_by_heading": "Files importing this module",
+    "call_site_singular": "call",
+    "call_site_plural": "calls",
+    "in_file": "in `{path}`",
+    "question_what_calls": "What calls `{symbol}`?",
     "implementation": "Implementation",
     "question_what_is": "What is `{symbol}`?",
     "question_which_files_import": ("Which files import the module that defines `{symbol}`?"),
@@ -155,43 +178,62 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
     "de": {
         "overview": "Überblick",
         "source": "Quelltext",
-        "footer": (
-            "*Aus dem Code selbst erstellt: geparste Symbole, der Importgraph, die "
-            "Git-Historie\nund der Wissensgraph. Jede Aussage hier wird gegen den "
-            "Quelltext geprüft, statt\nnur darüber geschrieben zu werden.*"
-        ),
+        "footer": "*Erstellt aus geparstem Code, dem Importgraphen und der Git-Historie.*",
         "and_more": "und {count} weitere.",
         "file": "Datei",
         "file_singular": "Datei",
         "file_plural": "Dateien",
         "symbol": "Symbol",
         "kind": "Art",
-        "signature": "Signatur",
         "questions_heading": "Fragen, die diese Seite beantwortet",
-        "is_a": "ist eine",
-        "entry_point": "Einstiegspunkt",
-        "test": "Test",
-        "source_file": "Quelldatei",
-        "in_layer": "in der Schicht {layer}",
-        "part_of_module_cluster_intro": "Teil des Modulclusters {community}",
-        "exposes_symbols": "Sie stellt {symbol_count} {symbol_word} bereit.",
-        "exposes_symbols_and_depends": (
-            "Sie stellt {symbol_count} {symbol_word} bereit und hängt von {file_count} "
-            "{file_word} ab."
+        "and_word": "und",
+        "and_count_more": "{count} weitere",
+        "it_subject": "Die Datei",
+        "file_defines": "{subject} definiert {names}.",
+        "file_imported_by": "{subject} wird von {names} importiert.",
+        "file_imported_by_count": "{subject} wird von {count} Dateien{tests} importiert.",
+        "of_them_tests": " (davon {count} Tests)",
+        "largest_share": "{count} davon liegen in {directory}.",
+        "largest_share_code": "Von den übrigen liegen {count} in {directory}.",
+        "all_in_directory": "Alle liegen in {directory}.",
+        "file_imports": "{subject} importiert {names}.",
+        "file_imports_count": "{subject} importiert {count} Dateien aus diesem Repository.",
+        "file_layer": "{subject} gehört zur Schicht {layer}.",
+        "file_layer_boundary": (
+            "{subject} gehört zur Schicht {layer} und wird aus anderen Schichten importiert."
         ),
-        "public_symbol_singular": "öffentliches Symbol",
-        "public_symbol_plural": "öffentliche Symbole",
-        "other_file_singular": "weiteren Datei",
-        "other_file_plural": "weiteren Dateien",
+        "file_layer_entry": (
+            "{subject} gehört zur Schicht {layer} und ist ein Einstiegspunkt in sie."
+        ),
+        "file_entry_point": "{subject} ist ein Einstiegspunkt.",
+        "file_fallback": "{subject} ist eine {language}-Datei.",
         "public_api": "Öffentliche API",
         "depends_on": "Abhängigkeiten",
         "used_by": "Wird verwendet von",
-        "imported_by_files": "Importiert von {count} {file_word} in diesem Repository.",
-        "usage_notes": "Nutzungshinweise",
-        "part_of_module_cluster": "Teil des Modulclusters **{community}**.",
-        "layer": "Schicht",
-        "role": "Rolle",
-        "in_the_code": "Im Code",
+        "also_defined": "Ebenfalls definiert: {names}.",
+        "history": "Historie",
+        "history_commits": (
+            "{total} {commit_word} in ihrer Historie, {recent} in den letzten 90 Tagen."
+        ),
+        "history_last_commit": "Der letzte stammt vom {date}.",
+        "history_owner": "**{owner}** betreut sie hauptsächlich, mit {pct}% der Commits.",
+        "history_owner_lines": (
+            "**{owner}** hat {line}% ihrer aktuellen Zeilen geschrieben ({commit}% der Commits)."
+        ),
+        "history_owner_lines_only": "**{owner}** hat {line}% ihrer aktuellen Zeilen geschrieben.",
+        "history_fixes": "{count} dieser Commits haben einen Fehler behoben.",
+        "history_hotspot": "Sie gehört zu den Änderungs-Hotspots des Repositorys.",
+        "history_stable": "Sie ist stabil: zuletzt hat sich nichts an ihr geändert.",
+        "commit_singular": "Commit",
+        "commit_plural": "Commits",
+        "changes_with": "Ändert sich gemeinsam mit",
+        "changes_with_intro": (
+            "Dateien, die in denselben Commits geändert werden wie diese, ohne sie zu "
+            "importieren oder von ihr importiert zu werden."
+        ),
+        "changes_with_entry": "{count} gemeinsame {commit_word}",
+        "last_together": "zuletzt gemeinsam am {date}",
+        "decisions_heading": "Entscheidungen zu dieser Datei",
         "question_exports": "Was exportiert `{path}`?",
         "question_where_defined": "Wo ist `{symbol}` definiert?",
         "question_what_imports": "Was importiert `{path}`?",
@@ -213,6 +255,12 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
         ),
         "import_verb_singular": "importiert",
         "import_verb_plural": "importieren",
+        "call_sites_summary": "Erreicht von {count} aufgelösten {call_word}.",
+        "imported_by_heading": "Dateien, die dieses Modul importieren",
+        "call_site_singular": "Aufrufstelle",
+        "call_site_plural": "Aufrufstellen",
+        "in_file": "in `{path}`",
+        "question_what_calls": "Was ruft `{symbol}` auf?",
         "implementation": "Implementierung",
         "question_what_is": "Was ist `{symbol}`?",
         "question_which_files_import": (

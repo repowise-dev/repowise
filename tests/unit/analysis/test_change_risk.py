@@ -39,7 +39,7 @@ def test_score_is_bounded_and_levelled() -> None:
 
 
 def test_logit_is_exact_sum_of_driver_contributions() -> None:
-    """The reported per-driver contributions must reconstruct the probability
+    """The reported per-driver contributions must reconstruct the model output
     exactly — the attribution is the model, not a post-hoc approximation."""
     f = _feat(la=50, ld=10, nf=5, nd=3, ns=2, entropy=2.0, exp=8)
     risk = score_change(f)
@@ -103,6 +103,41 @@ def test_payload_includes_friendly_repo_relative_classification() -> None:
     assert payload["review_priority"] == "moderate"
     assert payload["classification"] == "Typical"
     assert payload["baseline_sample_size"] == 200
+    assert payload["risk_authority"] == {
+        "authoritative_for": "live_change_review",
+        "primary_fields": ["risk_percentile", "classification"],
+        "primary_basis": "benchmarked_population_relative",
+        "fallback_field": "fallback_band",
+        "fallback_basis": "absolute_model_score_band",
+        "score_role": "supporting_diff_shape_signal",
+    }
+    # The per-field dictionary never varies between calls, so it is opt-in.
+    assert "risk_scales" not in payload
+    expanded = change_risk_payload(
+        ChangeRiskResult(
+            features=features,
+            risk=score_change(features),
+            percentile=66.6,
+            priority="moderate",
+            baseline_sample_size=200,
+            riskignore_excludes=(),
+            request_excludes=(),
+        ),
+        scales=True,
+    )
+    scales = {scale["field"]: scale for scale in expanded["risk_scales"]}
+    assert scales["score"]["unit"] == "normalized_points"
+    assert scales["score"]["authoritative"] is False
+    assert scales["risk_percentile"]["unit"] == "percentile_rank"
+    assert scales["risk_percentile"]["authoritative"] is True
+    assert scales["fallback_band"]["thresholds"] == {
+        "moderate_score": 4.0,
+        "high_score": 7.0,
+    }
+    # No uncalibrated scalar may be described as a probability, anywhere.
+    assert "probability" not in str(expanded["risk_scales"]).lower()
+    assert all(s["kind"] != "probability" for s in expanded["risk_scales"])
+    assert all(s["unit"] != "probability" for s in expanded["risk_scales"])
 
 
 # ---------------------------------------------------------------------------
@@ -301,11 +336,11 @@ def test_score_live_change_three_dot_range_is_valid(git_repo: Path) -> None:
         ["git", "rev-parse", "HEAD"], cwd=git_repo, check=True, capture_output=True, text=True
     ).stdout.strip()
     _commit(git_repo, {"r/a.py": "a=1\n"}, "feat: a", author="Dev")
-    # Three-dot syntax (base...HEAD) must degrade to a valid anchor rather than
-    # leaving a leading dot that git rejects as a ref.
+    # Three-dot syntax (base...HEAD) resolves to valid refs and keeps its
+    # merge-base meaning in the label.
     result = score_live_change(str(git_repo), f"{base}...HEAD", baseline=0)
     assert result.features.nf == 1
-    assert result.features.ref == f"{base}..HEAD"
+    assert result.features.ref == f"{base}...HEAD"
 
 
 def test_score_live_change_below_min_baseline_yields_no_percentile(git_repo: Path) -> None:
@@ -503,8 +538,18 @@ def test_merge_commit_scores_its_first_parent_diff(git_repo: Path) -> None:
     _git(["checkout", "-q", "-"], git_repo)
     _commit(git_repo, {"main.py": "m = 1\n"}, "feat: main", author="Dev")
     _git(
-        ["-c", "user.name=Dev", "-c", "user.email=t@e.com", "merge", "-q", "--no-ff", "side",
-         "-m", "merge: side"],
+        [
+            "-c",
+            "user.name=Dev",
+            "-c",
+            "user.email=t@e.com",
+            "merge",
+            "-q",
+            "--no-ff",
+            "side",
+            "-m",
+            "merge: side",
+        ],
         git_repo,
     )
 
@@ -567,3 +612,26 @@ def test_payload_offers_the_absolute_band_only_as_a_fallback(git_repo: Path) -> 
     assert unranked["fallback_band"] in {"low", "moderate", "high"}
     assert unranked["score_unit"] == "per-commit"
     assert "probability" not in ranked and "level" not in ranked
+
+
+@pytest.mark.parametrize(
+    "features",
+    [
+        ChangeFeatures(la=la, ld=ld, nf=nf, nd=nd, ns=ns, entropy=ent, exp=exp)
+        for la in (0, 3, 40, 900)
+        for ld in (0, 25, 400)
+        for nf, nd, ns, ent in ((1, 1, 1, 0.0), (6, 3, 2, 2.1), (80, 20, 6, 5.5))
+        for exp in (None, 0, 12, 4000)
+    ],
+)
+def test_top_driver_is_the_argmax_of_the_shown_contributions(features) -> None:
+    """The list's "top driver" is the biggest score-raising row the breakdown shows."""
+    risk = score_change(features)
+    shown = [d for d in risk.top_drivers if d.value is not None]
+    raising = [d for d in shown if d.contribution > 0]
+    if not raising:
+        assert risk.top_driver is None
+        return
+    assert risk.top_driver is not None
+    assert risk.top_driver.contribution == max(d.contribution for d in shown)
+    assert risk.top_driver in shown

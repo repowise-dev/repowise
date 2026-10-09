@@ -1,6 +1,7 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import useSWR from "swr";
 import Link from "next/link";
 import { Folder } from "lucide-react";
@@ -17,6 +18,7 @@ import type { ModuleHealthDetail } from "@/lib/api/types";
 export default function ModuleHealthPage() {
   const { id, path } = useParams<{ id: string; path: string }>();
   const router = useRouter();
+  const t = useTranslations("views.modules");
   const modulePath = decodeURIComponent(path);
 
   const { data, isLoading, error } = useSWR<ModuleHealthDetail>(
@@ -43,8 +45,8 @@ export default function ModuleHealthPage() {
       {error && (
         <EmptyState
           icon={<Folder className="h-6 w-6" />}
-          title="Module not found"
-          description="The requested module path doesn't exist in this repository's index."
+          title={t("notFoundTitle")}
+          description={t("notFoundDescription")}
         />
       )}
 
@@ -54,7 +56,7 @@ export default function ModuleHealthPage() {
           breadcrumb={[
             // There is no Modules tab any more — it folded into the map's hub
             // layer on the overview. Name where the link actually goes.
-            { label: "Code Health", href: `/repos/${id}/code-health?tab=triage` },
+            { label: t("breadcrumb"), href: `/repos/${id}/code-health?tab=triage` },
             { label: modulePath.split("/").pop() || modulePath },
           ]}
           LinkComponent={Link}

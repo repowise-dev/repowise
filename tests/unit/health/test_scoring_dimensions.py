@@ -7,9 +7,19 @@ stood before the split. ``test_defect_dimension_matches_legacy_golden`` asserts
 ``score_file(...)["defect"]`` equals that frozen reference across a broad fixture
 set. If it ever drifts, the split has corrupted the calibrated, surfaced score
 and the change is wrong - do NOT update the golden to match; fix the regression.
+
+One deliberate revision since the split: the history (organizational) category
+is capped at ``min(3.5, 1.0 + structure)`` rather than a flat 3.5, where
+``structure`` is the file's capped deduction from every other category. The
+frozen reference carries that rule with its own frozen constants, so the gate
+still pins the whole algorithm.
 """
 
 from __future__ import annotations
+
+from dataclasses import replace
+
+import pytest
 
 from repowise.core.analysis.health.biomarkers.base import BiomarkerResult
 from repowise.core.analysis.health.models import Severity
@@ -36,6 +46,10 @@ _LEGACY_CATEGORY_CAPS = {
     "test_quality": 0.5,
     "error_handling": 0.5,
 }
+
+# The structure-conditioned history cap, frozen here.
+_HISTORY_CAP_BASE = 1.0
+_HISTORY_CAP_PER_STRUCTURE = 1.0
 
 _LEGACY_SEVERITY_DEDUCTION = {
     Severity.LOW: 0.3,
@@ -117,9 +131,16 @@ def _legacy_score_file(results: list[BiomarkerResult]) -> float:
         weighted = base * _LEGACY_WEIGHT_MULTIPLIER.get(r.biomarker_type, 1.0)
         raw[cat] = raw.get(cat, 0.0) + weighted
 
+    structure = sum(
+        min(cat_sum, _LEGACY_CATEGORY_CAPS.get(cat, 1.0))
+        for cat, cat_sum in raw.items()
+        if cat != "organizational"
+    )
     total = 0.0
     for cat, cat_sum in raw.items():
         cap = _LEGACY_CATEGORY_CAPS.get(cat, 1.0)
+        if cat == "organizational":
+            cap = min(cap, _HISTORY_CAP_BASE + _HISTORY_CAP_PER_STRUCTURE * structure)
         total += min(cat_sum, cap)
     return max(1.0, min(10.0, 10.0 - total))
 
@@ -173,6 +194,31 @@ def test_defect_dimension_matches_legacy_golden():
     for fixture in _FIXTURES:
         scores, _ = score_file(fixture)
         assert scores["defect"] == _legacy_score_file(fixture)
+
+
+# The widened maintainability pillar, pinned per fixture. Maintainability is
+# the number a refactor is meant to move, so it needs a golden of its own: the
+# defect gate above cannot see a change here, and every pure code-shape marker
+# now counts toward it. A deliberate retune updates these; a surprise does not.
+_MAINTAINABILITY_GOLDEN: list[float] = [10.0, 8.0, 6.0, 6.1, 8.0, 10.0, 4.2, 10.0, 10.0]
+
+
+def test_maintainability_dimension_matches_golden():
+    for fixture, expected in zip(_FIXTURES, _MAINTAINABILITY_GOLDEN, strict=True):
+        scores, _ = score_file(fixture)
+        assert round(scores["maintainability"], 4) == expected
+
+
+def test_code_shape_markers_reach_maintainability():
+    """A method too complex to follow is a maintainability problem.
+
+    These three are calibrated defect predictors and were scored as nothing
+    else, which left the pillar a reader watches while refactoring blind to the
+    most common thing a refactor removes.
+    """
+    for marker in ("complex_method", "complex_conditional", "bumpy_road"):
+        scores, _ = score_file([_r(marker, Severity.CRITICAL)])
+        assert scores["maintainability"] < 10.0, marker
 
 
 def test_defect_deductions_unchanged():
@@ -269,6 +315,21 @@ def test_perf_bonus_markers_advisory_weight():
     assert s1["performance"] == round(10.0 - 0.21, 2)
     s2, _ = score_file([_r("blocking_sync_in_async", Severity.MEDIUM)])  # 0.7 * 0.7
     assert s2["performance"] == round(10.0 - 0.49, 2)
+
+
+@pytest.mark.parametrize(
+    ("orm", "weight"),
+    [("django", 0.7), ("sqlalchemy", 0.4), (None, 0.4)],
+)
+def test_lazy_load_weight_is_read_per_finding_from_its_orm(orm, weight):
+    """Django cleared its held-out bar; SQLAlchemy and an unrecorded ORM did not."""
+    finding = replace(
+        _r("lazy_load_in_loop", Severity.LOW), details={} if orm is None else {"orm": orm}
+    )
+    scores, deductions = score_file([finding])
+    assert scores["performance"] == round(10.0 - 0.3 * weight, 2)
+    assert scores["defect"] == 10.0
+    assert deductions == [0.0]
 
 
 def test_perf_home_dimension():

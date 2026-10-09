@@ -1,7 +1,8 @@
 """Service boundary detection for monorepo sub-services.
 
 Walks a repo directory tree looking for marker files (package.json, go.mod,
-Dockerfile, etc.) that indicate independent service boundaries. Used to
+Dockerfile, etc., named per ecosystem in :data:`~..manifests.ECOSYSTEMS`) that
+indicate independent service boundaries. Used to
 distinguish intra-service calls from inter-service calls when matching
 contracts.
 
@@ -20,25 +21,11 @@ from pathlib import Path
 
 from repowise.core.fs_walk import walk_repo
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.workspace.manifests import SERVICE_MARKERS
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-_SERVICE_MARKERS = frozenset(
-    {
-        "package.json",
-        "go.mod",
-        "Dockerfile",
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-        "Cargo.toml",
-        "pyproject.toml",
-        "requirements.txt",
-        "mix.exs",
-    }
-)
 
 _BLOCKED_DIRS = frozenset(
     {
@@ -134,7 +121,7 @@ def detect_service_boundaries(repo_path: Path) -> list[ServiceBoundary]:
             continue  # skip repo root itself
 
         # Check for marker files
-        found_markers = [f for f in filenames if f in _SERVICE_MARKERS]
+        found_markers = [f for f in filenames if f in SERVICE_MARKERS]
         if not found_markers:
             continue
 

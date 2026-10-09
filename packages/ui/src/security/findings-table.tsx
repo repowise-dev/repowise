@@ -5,6 +5,7 @@ import { Search } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
+import { CiHint } from "../shared/ci-hint";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { formatDate, formatDateTime, formatRelativeTimeOrNull } from "../lib/format";
@@ -132,7 +133,7 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
             className="block max-w-[320px] truncate font-mono text-xs text-[var(--color-text-tertiary)]"
             title={f.snippet ?? ""}
           >
-            {f.snippet ?? "—"}
+            {f.snippet || "—"}
           </span>
         ),
       },
@@ -186,10 +187,13 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
 
   if (findings.length === 0) {
     return (
-      <EmptyState
-        title="No findings"
-        description="No security findings detected on this repo. Re-run analysis to refresh."
-      />
+      <div className="flex flex-col items-center gap-2">
+        <EmptyState
+          title="No findings"
+          description="No security findings detected on this repo. Re-run analysis to refresh."
+        />
+        <CiHint command="repowise security check" checks="what each change adds" />
+      </div>
     );
   }
 

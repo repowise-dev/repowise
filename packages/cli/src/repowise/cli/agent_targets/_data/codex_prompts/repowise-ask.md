@@ -36,7 +36,7 @@ the other tool-adapter commands.
 ## How to present the result
 
 - `confidence: high` is content-grounded — cite it directly.
-- `medium` / `low` — say so, and follow any `best_guesses` / `fallback_targets`
+- `medium` / `low`: say so, and follow any `best_guesses` / `fallback_targets` / `candidate_files`
   into `/prompts:repowise-context` or `get_context` rather than inventing detail.
 - If a `note` warns that numbers may be synthesised, surface that caveat.
 - Prefer this over `/prompts:repowise-search` when the user asked a *question*. Prefer

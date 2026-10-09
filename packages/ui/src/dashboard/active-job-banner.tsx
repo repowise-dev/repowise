@@ -1,6 +1,7 @@
 "use client";
 
-import { Loader2, CheckCircle, XCircle, ExternalLink } from "lucide-react";
+import { CheckCircle, XCircle, ExternalLink } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { Progress } from "../ui/progress";
 import { formatNumber, formatRelativeTime } from "../lib/format";
 import type { Job } from "@repowise-dev/types/jobs";
@@ -46,7 +47,7 @@ export function ActiveJobBanner({ job, detailsHref }: ActiveJobBannerProps) {
   return (
     <div className="px-4 py-2 border-b border-[var(--color-border-default)] bg-[var(--color-bg-inset)]">
       <div className="flex items-center gap-3">
-        {isRunning && <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-accent-primary)] shrink-0" />}
+        {isRunning && <Spinner size="sm" className="text-[var(--color-accent-primary)]" />}
         {isDone && <CheckCircle className="h-3.5 w-3.5 text-[var(--color-success)] shrink-0" />}
         {isFailed && <XCircle className="h-3.5 w-3.5 text-[var(--color-error)] shrink-0" />}
 

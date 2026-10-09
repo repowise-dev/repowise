@@ -52,6 +52,14 @@ def test_io_kinds_are_the_frozen_canonical_set() -> None:
         # TS / Node filesystem / subprocess
         ("node:fs", "filesystem"),
         ("child_process", "subprocess"),
+        # Object Pascal / Delphi (uses-clause unit names)
+        ("firedac", "db"),
+        ("adodb", "db"),
+        ("idhttp", "network"),
+        ("fphttpclient", "network"),
+        # Progressive dotted prefix, the shape the Pascal import classifier
+        # generates for a qualified unit (``FireDAC.Comp.Client``).
+        ("system.net.httpclient", "network"),
     ],
 )
 def test_known_libs_map_to_expected_io_kind(name: str, expected: str) -> None:
@@ -72,3 +80,13 @@ def test_classification_is_case_and_whitespace_insensitive() -> None:
     assert classify_io_kind("HTTPX") == "network"
     assert classify_io_kind("  SQLAlchemy  ") == "db"
     assert classify_io_kind("@Prisma/Client") == "db"
+
+
+def test_pascal_bare_system_prefix_is_not_seeded() -> None:
+    """Delphi's ``System`` unit is in nearly every ``uses`` clause; a bare
+    ``system`` or ``system.net`` entry would make almost every Pascal file
+    read as a network/db import. Only the full qualified
+    ``system.net.httpclient`` is seeded -- guard against a future addition
+    seeding the short prefixes by accident."""
+    assert classify_io_kind("system") is None
+    assert classify_io_kind("system.net") is None

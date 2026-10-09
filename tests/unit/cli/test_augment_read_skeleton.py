@@ -738,3 +738,56 @@ def test_the_reread_notice_no_longer_fires(repo: Path) -> None:
     for _ in range(3):
         result = _read(repo)
         assert "You already read" not in (result.context or "")
+
+
+def test_the_mode_switch_serves_plus_and_defaults_to_smart(repo: Path, monkeypatch) -> None:
+    """``hooks.read_skeleton_mode: plus`` keeps module code that smart elides."""
+    from repowise.cli.commands.augment_cmd.read_skeleton import (
+        configured_mode,
+        skeleton_replacement,
+    )
+
+    table = "TABLE = {\n" + "".join(f"    'k{i}': {i},\n" for i in range(8)) + "}\n"
+    source = _source() + table
+    (repo / "pkg" / "table.py").write_text(source, encoding="utf-8")
+    _write_index(repo, "pkg/table.py", source)
+
+    def serve() -> str:
+        offer = skeleton_replacement(repo, "pkg/table.py", min_ratio_gain=1.0, min_saved_tokens=0)
+        assert offer is not None
+        return offer.text
+
+    assert configured_mode(repo) == "smart"
+    assert "'k5': 5," not in serve()
+
+    (repo / ".repowise" / "config.yaml").write_text(
+        "hooks:\n  read_skeleton: true\n  read_skeleton_mode: plus\n", encoding="utf-8"
+    )
+    assert configured_mode(repo) == "plus"
+    plus = serve()
+    assert "'k5': 5," in plus
+    assert "def func_3(argument_one, argument_two):" in plus
+    assert "value_20 = argument_one" not in plus
+
+    monkeypatch.setenv("REPOWISE_HOOK_READ_SKELETON_MODE", "smart")
+    assert configured_mode(repo) == "smart"
+
+
+def test_the_mode_env_override_ignores_blank_and_unknown_values(repo: Path, monkeypatch) -> None:
+    from repowise.cli.commands.augment_cmd.read_skeleton import configured_mode
+
+    (repo / ".repowise" / "config.yaml").write_text(
+        "hooks:\n  read_skeleton: true\n  read_skeleton_mode: plus\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("REPOWISE_HOOK_READ_SKELETON_MODE", "  ")
+    assert configured_mode(repo) == "plus"  # blank counts as unset
+    monkeypatch.setenv("REPOWISE_HOOK_READ_SKELETON_MODE", "everything")
+    assert configured_mode(repo) == "smart"
+
+    monkeypatch.delenv("REPOWISE_HOOK_READ_SKELETON_MODE")
+    (repo / ".repowise" / "config.yaml").write_text(
+        "hooks: [read_skeleton_mode: plus\n", encoding="utf-8"
+    )
+    assert configured_mode(repo) == "smart"
+    (repo / ".repowise" / "config.yaml").write_text("- read_skeleton_mode\n", encoding="utf-8")
+    assert configured_mode(repo) == "smart"

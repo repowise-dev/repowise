@@ -1,4 +1,4 @@
-"""DeadCodeAnalyzer — pure graph + git-metadata dead-code detection.
+"""DeadCodeAnalyzer â€” pure graph + git-metadata dead-code detection.
 
 All analysis is graph traversal + SQL. No LLM calls. Must complete in
 < 10 seconds.
@@ -11,45 +11,82 @@ this package.
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
+import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from collections.abc import Set as AbstractSet
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from ...code_origin import is_build_file
+from ...entry_candidacy import is_reachability_root
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
+from ...ingestion.package_roots import package_manifest_names
+from ...ingestion.symbol_identity import base_symbol_id, overload_sets
+from .c_name_uses import (
+    DEFINITION_HEADER_LINES,
+    DeclarationSites,
+    drop_preprocessed_named_elsewhere,
+)
 from .constants import (
     _CONTAINER_USE_LANGUAGES,
+    _DEAD_CODE_EXEMPT_LANGUAGES,
     _DEFAULT_DYNAMIC_PATTERNS,
     _DELIBERATELY_UNUSED_ANNOTATIONS,
     _FRAMEWORK_DECORATOR_SUFFIXES,
     _FRAMEWORK_DECORATORS,
+    _FRAMEWORK_INNER_CLASS_NAMES,
+    _NAMESPACE_IMPORT_LANGUAGES,
     _NEVER_PACKAGE_DIRS,
-    _NON_CODE_LANGUAGES,
+    _PREPROCESSED_LANGUAGES,
+    _PROJECT_FILE_SUFFIXES,
+    _PURE_WRAPPER_DECORATOR_ATTRS,
+    _PURE_WRAPPER_DECORATOR_MODULES,
+    _RUN_NOT_IMPORTED_LANGUAGES,
     _is_fixture_path,
-    never_flag_match,
+    never_flag_path,
 )
-from .contract_methods import is_contract_method
+from .contract_methods import is_com_method_implementation, is_contract_method
+from .csharp_reachability import build_csharp_named_files, build_csharp_named_types
 from .dynamic_markers import (
     find_dynamic_edge_files,
     find_dynamic_import_files,
     read_source_text,
 )
+from .entry_shape import clamp_entry_shaped, drop_program_entries, is_program
 from .file_reachability import (
+    CSHARP_SUFFIX,
     PackageFileMap,
     ReachabilityRescues,
     build_package_file_map,
     is_file_reachable,
 )
+from .go_name_uses import drop_go_package_uses
+from .kotlin_multiplatform import settle_platform_declarations
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
-from .name_occurrences import IDENTIFIER_RE, clamp_unverified_absence
+from .module_strings import drop_named_modules
+from .name_occurrences import (
+    IDENTIFIER_RE,
+    clamp_named_types,
+    clamp_path_mentions,
+    clamp_unverified_absence,
+    demote_used_in_own_file,
+    drop_bare_name_uses,
+    drop_internals_used_in_own_file,
+    drop_reference_assembly_api,
+)
+from .published_api import BuildFacts, demote_published_api
 from .risk_factors import (
+    NO_GIT_SIGNAL_CONFIDENCE,
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
+    UNPROVEN_EXPORT_CONFIDENCE,
     path_risk_factors,
     risk_evidence,
 )
@@ -69,7 +106,7 @@ _IDENTIFIER_RE = IDENTIFIER_RE
 #: omission is the bug.
 
 #: Read budgets for the unindexed scan. These files are skipped *because* they
-#: are large — one corpus repo ships a 104 MB generated parser — so the scan is
+#: are large â€” one corpus repo ships a 104 MB generated parser â€” so the scan is
 #: bounded per file and in total. Tree-sitter costs ~95 MB of RSS per MB of
 #: source; this pass is a byte scan and costs far less, but the bound is what
 #: keeps it from ever becoming the expensive thing.
@@ -81,7 +118,7 @@ _UNINDEXED_SCAN_TOTAL_BYTES = 32 * 1024 * 1024
 # ---------------------------------------------------------------------------
 
 #: Normalised decorator/annotation bases (after stripping leading ``@`` and
-#: any call-argument ``(…)`` tail) that signal a symbol is deprecated.
+#: any call-argument ``(â€¦)`` tail) that signal a symbol is deprecated.
 #:
 #: Rust inner-attr form (``deprecated``), C# stripped form (``Obsolete``), and
 #: C++ stripped form (``deprecated``) are included verbatim because the
@@ -123,7 +160,7 @@ def _declared_deliberately_unused(decorators: Iterable[str]) -> bool:
     """
     for blob in decorators:
         # A Java/Kotlin modifiers node delivers every annotation concatenated,
-        # so the blob is split the way ``_is_symbol_deprecated`` splits it —
+        # so the blob is split the way ``_is_symbol_deprecated`` splits it â€”
         # without this, ``@Named("unused-legacy-bean")`` beside an unrelated
         # ``@SuppressWarnings`` reads as the author's statement.
         for token in str(blob).split("@"):
@@ -142,7 +179,7 @@ def _decorator_base(raw: str) -> str:
     """Return the normalised base name of a single decorator/annotation token.
 
     Strips a leading ``@``, trims whitespace, and drops any call-argument
-    ``(…)`` tail.  For multi-word tokens (e.g. a Java modifier blob fragment
+    ``(â€¦)`` tail.  For multi-word tokens (e.g. a Java modifier blob fragment
     ``"Deprecated\n    public"``) only the first whitespace-delimited word is
     kept, so visibility keywords that trail the annotation name are discarded.
 
@@ -155,7 +192,7 @@ def _decorator_base(raw: str) -> str:
         base = base[:paren].strip()
     else:
         # Handle trailing visibility keywords in modifier blobs:
-        # "Deprecated\n    public" → "Deprecated"
+        # "Deprecated\n    public" â†’ "Deprecated"
         parts = base.split()
         base = parts[0] if parts else base
     return base
@@ -169,28 +206,75 @@ def _is_framework_registered(decorators: list[str]) -> bool:
     drifts between the export pass and the internals pass is a bug nobody goes
     looking for.
 
-    Three spellings of one fact:
+    Four spellings of one fact:
 
     * a known base name or dotted prefix (``@Component``, ``@app.route``);
     * a known trailing attribute, for a receiver the prefix list cannot
       anticipate because it is named locally (``@my_group.command``);
+    * any other attribute of a receiver that is not a pure wrapper
+      (``@nox.session``), see :func:`_is_receiver_registration`;
     * a registration verb in the final path segment. Every suffix entry begins
       with a dot, so that list can only ever see a *dotted* decorator, and
-      celery's ``@register_drainer('eventlet')`` is bare — invisible to all of
+      celery's ``@register_drainer('eventlet')`` is bare â€” invisible to all of
       them. Reading the final segment covers both spellings at once:
       ``@register``, ``@register_drainer``, ``@Field.register_lookup``. Held to
       ``register`` exactly or a ``register_`` stem so that a past participle
       guarding a handler (``@registered_only``) is not read as one.
     """
-    bases = [_decorator_base(d) for d in decorators]
+    bases = _decorator_bases(decorators)
     if any(b.startswith(_FRAMEWORK_DECORATORS) for b in bases):
         return True
     if any(b.endswith(_FRAMEWORK_DECORATOR_SUFFIXES) for b in bases):
+        return True
+    if any(_is_receiver_registration(b) for b in bases):
         return True
     return any(
         segment == "register" or segment.startswith("register_")
         for segment in (b.rsplit(".", 1)[-1] for b in bases)
     )
+
+
+def _decorator_bases(decorators: Iterable[str]) -> list[str]:
+    """The base name of every annotation in *decorators*.
+
+    A Java or Kotlin modifiers blob carries all of a declaration's annotations
+    (``@Fork(1) @State(Scope.Thread) public``), so each blob is split on
+    ``@`` once its quoted arguments are blanked, the way
+    :func:`_is_symbol_deprecated` reads it. Reading only the blob's first
+    annotation missed every one after it.
+    """
+    return [
+        _decorator_base(token)
+        for blob in decorators
+        for token in _QUOTED_STR_RE.sub('""', str(blob)).split("@")
+        if token.strip()
+    ]
+
+
+def _is_receiver_registration(base: str) -> bool:
+    """Whether a dotted decorator hands the symbol to a receiver object.
+
+    ``@nox.session``, ``@mcp.tool()`` and ``@sub.handle(...)`` are the shape:
+    an attribute of some object, called later by that object. The lists above
+    can only name receivers someone thought of, so the rule is inverted: any
+    ``recv.attr`` is a registration unless it is a pure wrapper (functools,
+    typing, contextlib, ``@x.setter`` and the like), which returns the function
+    for an ordinary caller to call.
+
+    Held to a lowercase attribute. A capitalised last segment is a qualified
+    type name (``@java.lang.Deprecated``, ``[System.Obsolete]``), an annotation
+    rather than a method on a receiver.
+
+    Ceiling: matched on the text, so an aliased wrapper module
+    (``import functools as ft``) reads as a registration. That only ever hides
+    a finding.
+    """
+    receiver, _, attr = base.rpartition(".")
+    if not receiver or not (attr[:1].islower() or attr.startswith("_")):
+        return False
+    if receiver.split(".", 1)[0] in _PURE_WRAPPER_DECORATOR_MODULES:
+        return False
+    return attr not in _PURE_WRAPPER_DECORATOR_ATTRS
 
 
 def _is_symbol_deprecated(sym_name: str, decorators: list[str]) -> bool:
@@ -215,15 +299,15 @@ def _is_symbol_deprecated(sym_name: str, decorators: list[str]) -> bool:
     The *decorators* list is produced by ``parser.py`` ``_extract_symbols``:
     - Python / Scala / Swift: full decorator text with leading ``@``
       (e.g. ``"@deprecated"``, ``"@typing.deprecated"``).
-    - Java / Kotlin: full modifier-node text — one blob per declaration that
+    - Java / Kotlin: full modifier-node text â€” one blob per declaration that
       may contain several annotations plus visibility keywords
       (e.g. ``"@Deprecated\n    public"``,
       ``"@Override\n  @Deprecated\n  public"``).
-    - Rust: inner attribute content stripped of ``#[…]``
+    - Rust: inner attribute content stripped of ``#[â€¦]``
       (e.g. ``"deprecated"`` from ``#[deprecated]``).
-    - C#: inner attribute content stripped of ``[…]``
+    - C#: inner attribute content stripped of ``[â€¦]``
       (e.g. ``"Obsolete"`` from ``[Obsolete]``).
-    - C++: inner attribute content stripped of ``[[…]]``
+    - C++: inner attribute content stripped of ``[[â€¦]]``
       (e.g. ``"deprecated"`` from ``[[deprecated]]``).
     """
     # 1. Name suffix
@@ -249,7 +333,7 @@ def _is_symbol_deprecated(sym_name: str, decorators: list[str]) -> bool:
 
 # Symbol kinds that cannot be independently imported by name in any
 # supported language. Flagging them as "unused exports" is a guaranteed
-# false-positive — they're always accessed through an enclosing class /
+# false-positive â€” they're always accessed through an enclosing class /
 # namespace. C# auto-properties land in the graph as ``variable``;
 # fields / enum members / type aliases / namespace anchors share the
 # same property.
@@ -264,19 +348,20 @@ _UNIVERSAL_NON_IMPORTABLE: frozenset[str] = frozenset(
         "type_alias",
         "namespace",
         "module",
+        "impl",
     }
 )
 
 # Additional kinds skipped only for languages where the graph cannot yet
 # observe interface usage. In practice these are DI-heavy languages
-# whose canonical interface-consumption path is constructor injection —
+# whose canonical interface-consumption path is constructor injection â€”
 # resolved by the type-use edge pass (see
 # ``ingestion/type_ref_resolution.py``). Once a language emits
 # ``via=type_use`` edges, its entry here can be removed.
 #
 # C# already has type-use coverage (ctor + method + delegate +
 # primary-ctor param.type captures), so ``interface`` is *not* skipped
-# for C# — a genuinely unused C# interface is now observable.
+# for C# â€” a genuinely unused C# interface is now observable.
 #
 # TS / Python / JS interfaces were always imported by name and never
 # needed the skip; treating them uniformly produced false negatives.
@@ -291,11 +376,11 @@ _LANGUAGE_NON_IMPORTABLE: dict[str, frozenset[str]] = {
 _TS_JS_IMPORTABLE_KINDS: frozenset[str] = frozenset({"constant", "variable"})
 
 # Single-file-component languages: the whole file is one component, so their
-# exports behave unlike an ordinary module's — see _non_importable_kinds.
+# exports behave unlike an ordinary module's â€” see _non_importable_kinds.
 _SFC_LANGUAGES: frozenset[str] = frozenset({"svelte", "vue"})
 
 # Every kind an SFC component prop can take, plus "class" for the synthetic
-# component symbol itself — see _non_importable_kinds.
+# component symbol itself â€” see _non_importable_kinds.
 _SFC_NON_IMPORTABLE_KINDS: frozenset[str] = frozenset(
     {"constant", "variable", "function", "class", "interface", "type_alias"}
 )
@@ -305,7 +390,7 @@ def _non_importable_kinds(language: str) -> frozenset[str]:
     """Per-language set of symbol kinds excluded from unused-export passes.
 
     Returns the union of the universal set and any language-specific
-    additions. Cheap to call — short lookup, no per-call allocation
+    additions. Cheap to call â€” short lookup, no per-call allocation
     when the language has no additions.
     """
     # An SFC's top-level exports are its props: Svelte's ``export let x`` is
@@ -315,9 +400,9 @@ def _non_importable_kinds(language: str) -> frozenset[str]:
     # would read as an unused export.
     #
     # The component symbol itself needs the same treatment, which is why
-    # "class" is in the set. A component is reached as a whole module — by a
+    # "class" is in the set. A component is reached as a whole module â€” by a
     # markup tag, or by a router's ``import('@/views/profile')``, which binds
-    # no name at all — so it never carries the symbol-level inbound edge the
+    # no name at all â€” so it never carries the symbol-level inbound edge the
     # unused-export pass looks for. On vue-element-admin that alone accounted
     # for 45 of 53 findings, every one of them a false positive.
     #
@@ -335,8 +420,6 @@ def _non_importable_kinds(language: str) -> frozenset[str]:
         return _UNIVERSAL_NON_IMPORTABLE
     return _UNIVERSAL_NON_IMPORTABLE | extra
 
-
-
 # Preserved for tests / external callers that imported the old name.
 # New code should prefer ``_non_importable_kinds(language)``.
 _NON_IMPORTABLE_SYMBOL_KINDS: frozenset[str] = _UNIVERSAL_NON_IMPORTABLE | frozenset({"interface"})
@@ -344,8 +427,8 @@ _NON_IMPORTABLE_SYMBOL_KINDS: frozenset[str] = _UNIVERSAL_NON_IMPORTABLE | froze
 # Aggregate *type* kinds that are never call targets. The unused-internal
 # pass is a call-graph check ("private symbol with no incoming CALL edges"),
 # which is meaningful for functions/methods but not for types: a struct or
-# interface used only as a field/parameter/return type — especially within
-# its own file — has no call edge and no observable symbol-level type edge,
+# interface used only as a field/parameter/return type â€” especially within
+# its own file â€” has no call edge and no observable symbol-level type edge,
 # so "no callers" is not evidence of deadness. Such types are still subject
 # to the *unused-export* pass (which reasons over import names / type_use),
 # so genuinely-dead exported types are still surfaced there.
@@ -355,13 +438,20 @@ _UNCALLABLE_TYPE_KINDS: frozenset[str] = frozenset(
         "interface",
         "enum",
         "type_alias",
+        "impl",
     }
 )
 
 
 #: C/C++ symbol kinds a bare ``class Env;`` / ``struct Options;`` can carry.
 #: Paired with ``is_declaration`` this identifies a type forward declaration,
-#: which is never a deletable unit — see the guard in ``_detect_unused_exports``.
+#: which is never a deletable unit â€” see the guard in ``_detect_unused_exports``.
+#: Kinds that declare a type, which Java and C# use from their own package or
+#: namespace without an import.
+_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
+    {"class", "interface", "struct", "enum", "record", "trait", "object"}
+)
+
 _CPP_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
     {
         "class",
@@ -371,13 +461,13 @@ _CPP_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
 )
 
 # Symbol names that are language-runtime entry points or compiler-implicit
-# anchors — never invoked by user-authored callers, never dead.
+# anchors â€” never invoked by user-authored callers, never dead.
 _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset(
     {
         "Main",  # C#, Java, Kotlin, Go, Rust, Swift, Scala
         "main",  # most others
         # ---- Go runtime / test conventions ------------------------------
-        # ``func init`` is run by the Go runtime when the package is linked —
+        # ``func init`` is run by the Go runtime when the package is linked â€”
         # never called by name, so it has no inbound call edge. ``TestMain``
         # is the test-binary entry the ``go test`` runner invokes by reflection.
         "init",
@@ -420,6 +510,10 @@ _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset(
         "WinMain",  # ANSI WinMain
         "wmain",  # Unicode console main
         "ServiceMain",  # Win32 service entry
+        # Screen savers: scrnsave.lib calls these three by name.
+        "ScreenSaverProc",
+        "ScreenSaverConfigureDialog",
+        "RegisterDialogClasses",
         # ---- libFuzzer / Honggfuzz / AFL fuzz harness entries ------------
         # The fuzzer driver invokes these by name via dlsym; no static
         # caller will ever exist.
@@ -450,7 +544,7 @@ _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset(
         # distinctive enough not to risk masking dead code in unrelated
         # files; common identifiers (``load``, ``action``, ``metadata``,
         # ``config``, ``headers``, ``meta``, ``links``, ``runtime``) are
-        # deliberately omitted — they get file-level protection via the
+        # deliberately omitted â€” they get file-level protection via the
         # convention globs in :data:`_NEVER_FLAG_PATTERNS`.
         "generateStaticParams",
         "generateMetadata",
@@ -498,7 +592,7 @@ _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset(
 # \n#define __has_include(h) 0``). The tree-sitter cpp grammar extracts the
 # ``#define`` as a ``preproc_function_def`` symbol, but the call sites are
 # preprocessor ``#if __has_include(...)`` directives, which the static
-# graph cannot observe — so without this skip every such fallback flags
+# graph cannot observe â€” so without this skip every such fallback flags
 # as an unused export.
 _CPP_BUILTIN_MACROS: frozenset[str] = frozenset(
     {
@@ -538,7 +632,7 @@ def _find_jsx_namespace_files(
 
     Symbols whose name is in :data:`_TS_JSX_NAMESPACE_TYPES` and whose
     defining file lives in this set are integration points with the JSX
-    transformer — referenced implicitly by every JSX expression, never
+    transformer â€” referenced implicitly by every JSX expression, never
     imported by name. The scan is a cheap substring check; tree-sitter
     grammar work for a richer signal would be wasted effort.
     """
@@ -552,7 +646,7 @@ def _find_jsx_namespace_files(
             if src_path.suffix not in (".ts", ".tsx", ".d.ts"):
                 continue
             source = read_source_text(path, file_info.abs_path, source_map)
-            # Match ``namespace JSX`` and ``declare namespace JSX`` — both
+            # Match ``namespace JSX`` and ``declare namespace JSX`` â€” both
             # are JSX transformer integration points in practice.
             if "namespace JSX" in source:
                 matches.add(path)
@@ -579,7 +673,7 @@ def _find_bundler_alias_targets(
     """Repo-relative paths referenced from bundler config files.
 
     Vite/webpack ``resolve.alias`` entries substitute a bare package import
-    with a local file (``shiki`` → ``src/shims/shiki.ts``): no source file
+    with a local file (``shiki`` â†’ ``src/shims/shiki.ts``): no source file
     ever imports the shim path, only the config names it, so the shim reads
     as unreachable. Any relative path string inside a bundler config that
     resolves to an indexed file marks that file reachable.
@@ -642,8 +736,8 @@ def _is_synthetic_node(node: str) -> bool:
     """True for non-file graph nodes that should be skipped in 'is this dead?' passes.
 
     Two synthetic prefixes exist:
-      - ``external:`` — third-party / unresolved imports.
-      - ``framework:`` — anchors added by ``framework_edges`` to model
+      - ``external:`` â€” third-party / unresolved imports.
+      - ``framework:`` â€” anchors added by ``framework_edges`` to model
         convention-based loading (e.g. TYPO3 core loading ``ext_localconf.php``).
 
     Both are skipped when the analyzer asks "is this node itself dead?",
@@ -652,6 +746,117 @@ def _is_synthetic_node(node: str) -> bool:
     mediated dependencies), whereas ``external:`` predecessors do not.
     """
     return node.startswith("external:") or node.startswith("framework:")
+
+
+@dataclass
+class _ExportFile:
+    """One file's facts, shared by every public symbol the export pass judges in it."""
+
+    node: Any
+    node_data: dict
+    symbol_pairs: list[tuple[str, dict]]
+    # An importer names a symbol this file defines, so a name missing from
+    # every importer means something. A C ``#include`` names nothing and a C#
+    # ``using`` names a namespace, so neither says anything about a symbol.
+    importers_name_symbols: bool
+    # Classes holding C# extension methods, called as ``x.Method()`` without
+    # naming the class, so no importer would name them either.
+    extension_containers: frozenset[str]
+    imported_as_namespace: bool
+    enclosing_ranges: list[tuple[int, int]]
+
+
+def _is_compiler_invoked(sym: dict, sym_name: str) -> bool:
+    """Symbols the compiler or linker calls, which no graph edge can show."""
+    # Fallback definitions of compiler intrinsics (``__has_include``) are only
+    # ever used from preprocessor directives.
+    if sym.get("language") in ("cpp", "c") and sym_name in _CPP_BUILTIN_MACROS:
+        return True
+    # Rust proc-macro entry points are invoked by the compiler.
+    if sym.get("language") == "rust":
+        decorators = sym.get("decorators") or []
+        if any(d.startswith("proc_macro") for d in decorators):
+            return True
+    # Explicit export markers (``dllexport``, ``visibility("default")``) mean
+    # callers outside this binary.
+    return bool(sym.get("is_exported_symbol"))
+
+
+def _is_declaration_only(sym: dict) -> bool:
+    """C/C++ declarations that are not a deletable unit of their own."""
+    # A prototype whose definition was found: the definition carries the
+    # finding. An unmatched prototype is still reported.
+    if sym.get("is_declaration") and sym.get("defined_by"):
+        return True
+    # A type forward declaration (``class Env;``) exists so its own file can
+    # name the type, which makes that file its user.
+    return bool(
+        sym.get("is_declaration")
+        and sym.get("language") in ("cpp", "c")
+        and sym.get("kind") in _CPP_TYPE_DECLARATION_KINDS
+    )
+
+
+# Evidence line for a finding whose ``lines`` is ``None``: the count is
+# omitted rather than estimated.
+_LINES_UNKNOWN = "Line count unavailable: source was not read"
+
+
+#: ``(days, confidence)`` rungs for a file with no commit in 90 days, oldest
+#: first. ``_is_old`` uses strict >, so days-1 gives >= semantics: a year or
+#: more untouched is 1.0, very likely dead.
+_GIT_AGE_RUNGS: tuple[tuple[int, float], ...] = ((364, 1.0), (179, 0.9), (89, 0.8))
+
+
+def _is_public_top_level(sym: dict, kinds: AbstractSet[str] | None) -> bool:
+    if sym.get("visibility") != "public" or sym.get("parent_name"):
+        return False
+    return kinds is None or sym.get("kind") in kinds
+
+
+def _nested_class_used(node_data: dict, sym: dict) -> bool:
+    """Whether a nested class is one a framework reads or its module names.
+
+    ``ingestion/python_local_refs.py`` records a nested class its module reaches
+    (``Outer.Inner``, or ``Inner`` inside ``Outer``) under its ``Outer.Inner``
+    name, since a bare inner name like ``ErrorModel`` repeats across classes.
+    """
+    parent = sym.get("parent_name")
+    if not parent:
+        return False
+    name = sym.get("name", "")
+    if name in _FRAMEWORK_INNER_CLASS_NAMES.get(sym.get("language", ""), ()):
+        return True
+    return f"{parent}.{name}" in (node_data.get("local_refs") or ())
+
+
+def _csharp_exports(findings: list[DeadCodeFindingData]) -> list[DeadCodeFindingData]:
+    """The unused-export findings in ``.cs`` files."""
+    return [
+        f
+        for f in findings
+        if f.kind is DeadCodeKind.UNUSED_EXPORT and f.file_path.endswith(CSHARP_SUFFIX)
+    ]
+
+
+def _names_by_file(findings: list[DeadCodeFindingData]) -> dict[str, set[str]]:
+    """File -> the symbol names *findings* report there."""
+    out: dict[str, set[str]] = {}
+    for f in findings:
+        out.setdefault(f.file_path, set()).add(f.symbol_name or "")
+    return out
+
+
+def _symbol_span(data: dict) -> dict[str, int | None]:
+    """``lines``/``start_line``/``end_line`` for a symbol finding.
+
+    Both-or-neither: a half-known span is worse than none. Spans are
+    inclusive, so a one-line symbol is 1 line; an unknown span is ``None``.
+    """
+    start, end = data.get("start_line") or None, data.get("end_line") or None
+    if start is None or end is None or end < start:
+        return {"lines": None, "start_line": None, "end_line": None}
+    return {"lines": end - start + 1, "start_line": start, "end_line": end}
 
 
 class DeadCodeAnalyzer:
@@ -667,17 +872,23 @@ class DeadCodeAnalyzer:
         source_map: dict[str, bytes] | None = None,
         repo_root: Path | None = None,
         unindexed_source_files: list[tuple[str, str]] | None = None,
+        dotnet_index: Any | None = None,
     ) -> None:
         self.graph = graph
+        # The C# resolver's project index (``GraphBuilder.dotnet_index``):
+        # scopes the C# name rescue to the projects that can see a file.
+        self._dotnet_index = dotnet_index
+        self._csharp_named_files: frozenset[str] | None = None
         self.git_meta_map = git_meta_map or {}
         # Source files ingestion could not read (currently: dropped on size).
         # An unread importer is invisible to the graph, so "no importers" stops
-        # meaning "unused" and starts meaning "we did not look" — which is how
+        # meaning "unused" and starts meaning "we did not look" â€” which is how
         # one skipped entry point turned into 38 deletion-ready components at
         # high confidence (#1237). ``(path, reason)`` pairs; the reason rides
         # along so the evidence line can say why.
         self._unindexed_source_files = list(unindexed_source_files or [])
         self._repo_root = repo_root
+        self._source_map = source_map
         self._unindexed_tokens: frozenset[str] | None = None
         # Kept for the absence check below, which is the one pass that needs
         # the raw text of *every* indexed file rather than of a suffix-filtered
@@ -716,7 +927,7 @@ class DeadCodeAnalyzer:
         self._jsx_namespace_files: set[str] = _find_jsx_namespace_files(
             parsed_files or {}, source_map
         )
-        # Files substituted in via bundler ``resolve.alias`` config — named
+        # Files substituted in via bundler ``resolve.alias`` config â€” named
         # by the config, never imported by path.
         self._bundler_alias_targets: set[str] = _find_bundler_alias_targets(
             parsed_files or {}, source_map
@@ -733,15 +944,30 @@ class DeadCodeAnalyzer:
         # because the whitelist arrives per ``analyze()`` call and the map does
         # not.
         self._package_files: PackageFileMap | None = None
+        # Cache for JSX prop-guard extraction: maps pred_file â†’ list of
+        # (parent_fn, child_component, guard_prop) triples. Populated lazily
+        # by _get_unsatisfied_prop_guard so each TSX/JSX file is read from
+        # disk and parsed by tree-sitter at most once per analysis run.
+        self._guard_cache: dict[str, list[tuple[str, str, str]]] = {}
+        # {base id: overload member ids}, built on first use.
+        self._overload_units: dict[str, list[str]] | None = None
 
     def _reachability_rescues(self, whitelist: AbstractSet[str]) -> ReachabilityRescues:
         """Assemble the rescue state the shared predicate reads."""
         if self._package_files is None:
             self._package_files = build_package_file_map(self.graph)
+        if self._csharp_named_files is None:
+            self._csharp_named_files = build_csharp_named_files(
+                self.graph,
+                self._source_map,
+                dotnet_index=self._dotnet_index,
+                repo_root=self._repo_root,
+            )
         return ReachabilityRescues(
             bundler_alias_targets=frozenset(self._bundler_alias_targets),
             whitelist=frozenset(whitelist),
             package_files=self._package_files,
+            csharp_named_files=self._csharp_named_files,
         )
 
     def analyze(
@@ -764,7 +990,7 @@ class DeadCodeAnalyzer:
         whitelist = set(cfg.get("whitelist", []))
 
         if cfg.get("detect_unreachable_files", True):
-            findings.extend(self._detect_unreachable_files(dynamic_patterns, whitelist))
+            findings.extend(self._detect_unreachable_files(whitelist))
             if on_step:
                 on_step("unreachable_files")
 
@@ -783,40 +1009,100 @@ class DeadCodeAnalyzer:
             if on_step:
                 on_step("zombie_packages")
 
+        # First: a C# type another file in its scope names is used, and a
+        # C/C++ name written outside its declaration is a use. Both settle the
+        # finding before any clamp re-scores it.
+        findings = self._drop_csharp_named_exports(findings)
+        findings = drop_preprocessed_named_elsewhere(
+            findings,
+            self._source_map,
+            self._preprocessed_declaration_sites(),
+            self._unindexed_identifier_tokens(),
+        )
+        # Same for Go, scoped to the package and to importers naming it.
+        findings = drop_go_package_uses(findings, self._source_map, self.graph)
         # Before the confidence filter, not after: a finding an unread importer
         # could explain must be able to fall *below* min_confidence and drop
         # out entirely, rather than being reported at a number it no longer
         # deserves.
         findings = self._clamp_for_unindexed_importers(findings)
+        # Before the name search: an ``expect``'s own ``actual`` files write its
+        # name, which that search would read as a use elsewhere.
+        findings = settle_platform_declarations(findings, self._source_map)
         # Same position and for the same reason. This one asks the wider
-        # version of the same question — not "could an unread file explain
+        # version of the same question â€” not "could an unread file explain
         # this" but "did we look anywhere except the import graph".
+        findings = drop_bare_name_uses(findings, self._source_map)
         findings = clamp_unverified_absence(findings, self._source_map)
+        findings = drop_internals_used_in_own_file(findings, self._source_map)
+        findings = clamp_path_mentions(findings, self._source_map)
+        findings = drop_program_entries(findings, self._source_map)
+        type_names = self._public_top_level_names(findings, kinds=_TYPE_DECLARATION_KINDS)
+        findings = drop_reference_assembly_api(findings, self._source_map, type_names)
+        findings = clamp_named_types(findings, self._source_map, type_names)
+        findings = drop_named_modules(findings, self._source_map, self._dynamic_import_files)
+        findings = clamp_entry_shaped(
+            findings, self._source_map, self._public_top_level_names(findings)
+        )
+
+        findings = demote_published_api(
+            findings,
+            self._published_api_languages(findings, type_names),
+            BuildFacts(repo_root=self._repo_root, dotnet_index=self._dotnet_index),
+        )
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
         findings = [f for f in findings if f.confidence >= min_conf]
 
-        now = datetime.now(UTC)
-        deletable = sum(f.lines for f in findings if f.safe_to_delete)
+        return DeadCodeReport.from_findings(
+            findings, hidden_below_threshold=hidden_below_threshold
+        )
 
-        high = sum(1 for f in findings if f.confidence >= SAFE_CONFIDENCE_THRESHOLD)
-        medium = sum(
-            1
+    def _drop_csharp_named_exports(
+        self, findings: list[DeadCodeFindingData]
+    ) -> list[DeadCodeFindingData]:
+        """Drop C# unused exports whose type a file that can see it names.
+
+        The symbol-level counterpart of the file rescue in
+        :func:`build_csharp_named_files`: a C# type is used from its own
+        namespace with no import, so "no importer" says nothing about it. A
+        project-scoped name is the same evidence the file pass drops on. One
+        its own file uses is capped below the floor instead (see
+        :func:`demote_used_in_own_file`). Returns a new list.
+        """
+        exports = _csharp_exports(findings)
+        if not exports:
+            return findings
+        named = build_csharp_named_types(
+            self.graph,
+            self._source_map,
+            _names_by_file(exports),
+            dotnet_index=self._dotnet_index,
+            repo_root=self._repo_root,
+        )
+        dropped = {id(f) for f in exports if (f.file_path, f.symbol_name) in named}
+        demote_used_in_own_file([f for f in exports if id(f) not in dropped], self._source_map)
+        return [f for f in findings if id(f) not in dropped]
+
+    def _published_api_languages(
+        self, findings: list[DeadCodeFindingData], type_names: dict[str, frozenset[str]]
+    ) -> dict[str, str]:
+        """Language of each file whose finding is about public API.
+
+        Every unused export is; an unreachable file only when it declares a
+        public type (*type_names*).
+        """
+        files = {
+            f.file_path
             for f in findings
-            if RISK_CAP_CONFIDENCE <= f.confidence < SAFE_CONFIDENCE_THRESHOLD
-        )
-        low = sum(1 for f in findings if f.confidence < RISK_CAP_CONFIDENCE)
-
-        return DeadCodeReport(
-            repo_id="",
-            analyzed_at=now,
-            total_findings=len(findings),
-            findings=findings,
-            deletable_lines=deletable,
-            confidence_summary={"high": high, "medium": medium, "low": low},
-            hidden_below_threshold=hidden_below_threshold,
-        )
+            if f.kind is DeadCodeKind.UNUSED_EXPORT or type_names.get(f.file_path)
+        }
+        return {
+            path: self.graph.nodes[path].get("language", "")
+            for path in files
+            if self.graph.has_node(path)
+        }
 
     # ------------------------------------------------------------------
     # Detection methods
@@ -824,7 +1110,6 @@ class DeadCodeAnalyzer:
 
     def _detect_unreachable_files(
         self,
-        dynamic_patterns: tuple[str, ...],
         whitelist: set[str],
     ) -> list[DeadCodeFindingData]:
         """Detect files nothing can reach that are not tests, fixtures, or config."""
@@ -842,12 +1127,12 @@ class DeadCodeAnalyzer:
             # The three skips left here are *scoping*, not reachability: a test
             # file is perfectly reachable, it is just not something this pass
             # reports. Everything that answers "can anything get to this file"
-            # — entry points, API contracts, never-flag globs, the whitelist,
+            # â€” entry points, API contracts, never-flag globs, the whitelist,
             # barrels, bundler-alias shims and the package-granular languages
-            # (Go / JVM / C-C++) — lives in the predicate, which the overview
+            # (Go / JVM / C-C++) â€” lives in the predicate, which the overview
             # assembler calls with the same state so the two cannot disagree.
             # See :mod:`file_reachability`.
-            if node_data.get("language", "unknown") in _NON_CODE_LANGUAGES:
+            if node_data.get("language", "unknown") in _DEAD_CODE_EXEMPT_LANGUAGES:
                 continue
             if node_data.get("is_test", False):
                 continue
@@ -857,11 +1142,24 @@ class DeadCodeAnalyzer:
             if is_file_reachable(str(node), self.graph, rescues):
                 continue
 
-            finding = self._make_unreachable_finding(str(node), node_data, dynamic_patterns)
+            finding = self._make_unreachable_finding(str(node), node_data)
             if finding:
                 findings.append(finding)
 
         return findings
+
+    def _preprocessed_declaration_sites(self) -> DeclarationSites:
+        """Where each C/C++ symbol name is declared: a prototype's whole span, a
+        definition's header lines. An occurrence there is not a use of it."""
+        sites: dict[str, list[tuple[str, int, int]]] = {}
+        for _, data in self.graph.nodes(data=True):
+            if data.get("node_type") != "symbol" or data.get("language") not in _PREPROCESSED_LANGUAGES:
+                continue
+            start, end = data.get("start_line") or 0, data.get("end_line") or 0
+            if not data.get("is_declaration"):
+                end = min(end, start + DEFINITION_HEADER_LINES - 1)
+            sites.setdefault(data.get("name", ""), []).append((data.get("file_path", ""), start, end))
+        return sites
 
     def _unindexed_identifier_tokens(self) -> frozenset[str]:
         """Identifiers appearing in the source files ingestion never read.
@@ -922,7 +1220,9 @@ class DeadCodeAnalyzer:
         if not tokens:
             return findings
 
-        skipped_names = ", ".join(path for path, _ in self._unindexed_source_files[:3])
+        # Sorted so the same skipped set always yields the same evidence text.
+        skipped = sorted(path for path, _ in self._unindexed_source_files)
+        skipped_names = ", ".join(skipped[:3])
         if len(self._unindexed_source_files) > 3:
             skipped_names += f" (+{len(self._unindexed_source_files) - 3} more)"
 
@@ -936,7 +1236,7 @@ class DeadCodeAnalyzer:
             # Exported symbols only, for the same reason stated the other way:
             # an importer can only reach what a file exports, so a match on an
             # internal one is a name collision rather than evidence. That is
-            # not hypothetical — a published API dump lists a public `add`, and
+            # not hypothetical â€” a published API dump lists a public `add`, and
             # every unrelated private `add` in the repo would clamp with it.
             if finding.kind is DeadCodeKind.UNUSED_INTERNAL:
                 continue
@@ -955,28 +1255,24 @@ class DeadCodeAnalyzer:
         self,
         node: str,
         node_data: dict,
-        dynamic_patterns: tuple[str, ...],
     ) -> DeadCodeFindingData | None:
         """Create an unreachable file finding with confidence scoring."""
-        git_meta = self.git_meta_map.get(node, {})
+        git_meta = self.git_meta_map.get(node)
+        # No row at all is not "no commits in 90 days": that rung is for a
+        # file git has data on. Scored below the deletion-ready threshold and
+        # said so in the evidence, on every path that builds this map.
+        no_git_signal = not git_meta
+        git_meta = git_meta or {}
         commit_90d = git_meta.get("commit_count_90d", 0)
         last_commit = git_meta.get("last_commit_at")
         age_days = git_meta.get("age_days")
         primary_owner = git_meta.get("primary_owner_name")
 
-        # _is_old uses strict >, so pass days-1 to get >= semantics.
-        if commit_90d == 0 and last_commit and self._is_old(last_commit, days=364):
-            confidence = 1.0  # Untouched for a year+ — very likely dead
-        elif commit_90d == 0 and last_commit and self._is_old(last_commit, days=179):
-            confidence = 0.9
-        elif commit_90d == 0 and last_commit and self._is_old(last_commit, days=89):
-            confidence = 0.8
-        elif commit_90d == 0 and age_days is not None and age_days < 30:
-            confidence = 0.55  # Recently created — may be WIP
-        elif commit_90d == 0:
-            confidence = 0.7
-        else:
-            confidence = 0.4
+        confidence = (
+            NO_GIT_SIGNAL_CONFIDENCE
+            if no_git_signal
+            else self._git_age_confidence(commit_90d, last_commit, age_days)
+        )
 
         # The ladder above is an evidence scale, not a tier boundary: its rungs
         # stay literal so moving a threshold does not silently re-score how
@@ -991,24 +1287,39 @@ class DeadCodeAnalyzer:
         # environment / script / asset). These are files the never-flag allowlist
         # didn't catch but that are commonly referenced outside static
         # imports, so "in_degree=0" is weak evidence. Cap confidence below the
-        # deletion-ready threshold and surface the factors as evidence — the
+        # deletion-ready threshold and surface the factors as evidence â€” the
         # finding still shows up as a review candidate.
         risk_factors = path_risk_factors(node)
         if risk_factors:
             confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
-        safe = confidence >= SAFE_CONFIDENCE_THRESHOLD
-        if safe and self._matches_dynamic_patterns(node, dynamic_patterns):
-            safe = False
+        # A namespace-imported file is reached without an edge (a same-namespace
+        # ``new T()``), so no edge says little and its age says nothing more.
+        namespace_imported = node_data.get("language") in _NAMESPACE_IMPORT_LANGUAGES
+        if namespace_imported:
+            confidence = min(confidence, RISK_CAP_CONFIDENCE)
+
+        # A whole file is a review candidate, never deletion-ready: see
+        # ``REVIEW_ONLY_KINDS``. Confidence still ranks it.
+        safe = False
 
         evidence = ["in_degree=0 (no files import this)"]
-        if commit_90d == 0:
+        if no_git_signal:
+            evidence.append("No git history recorded for this file")
+        elif commit_90d == 0:
             evidence.append("No commits in last 90 days")
         if self._dynamic_import_files and confidence <= RISK_CAP_CONFIDENCE:
             evidence.append("Package uses dynamic imports or runtime-resolved edges")
         risk_line = risk_evidence(risk_factors)
         if risk_line:
             evidence.append(risk_line)
+        if namespace_imported:
+            evidence.append(
+                "Imported by namespace, not by file, so having no importer is weak evidence"
+            )
+        lines = self._file_line_count(node)
+        if lines is None:
+            evidence.append(_LINES_UNKNOWN)
 
         return DeadCodeFindingData(
             kind=DeadCodeKind.UNREACHABLE_FILE,
@@ -1019,13 +1330,27 @@ class DeadCodeAnalyzer:
             reason="File has no importers (in_degree=0)",
             last_commit_at=last_commit if isinstance(last_commit, datetime) else None,
             commit_count_90d=commit_90d,
-            lines=node_data.get("symbol_count", 0) * 10,  # rough estimate
+            lines=lines,
             evidence=evidence,
             safe_to_delete=safe,
             primary_owner=primary_owner,
             age_days=age_days,
             risk_factors=list(risk_factors),
         )
+
+    def _git_age_confidence(
+        self, commit_90d: int, last_commit: Any, age_days: int | None
+    ) -> float:
+        """The git-age evidence ladder for a file no edge reaches."""
+        if commit_90d != 0:
+            return 0.4
+        if last_commit:
+            for days, confidence in _GIT_AGE_RUNGS:
+                if self._is_old(last_commit, days=days):
+                    return confidence
+        if age_days is not None and age_days < 30:
+            return 0.55  # Recently created â€” may be WIP
+        return 0.7
 
     def _member_is_used(self, sym_id: str, language: str | None) -> bool:
         """True when this container declares a method something else uses.
@@ -1037,7 +1362,7 @@ class DeadCodeAnalyzer:
 
         **The use must come from outside the container.** A class's own methods
         are predecessors of each other, so counting them would make any class
-        with two methods where one calls the other rescue itself — evidence
+        with two methods where one calls the other rescue itself â€” evidence
         about the inside of a container is not evidence that anything reaches
         it.
 
@@ -1072,388 +1397,504 @@ class DeadCodeAnalyzer:
         findings = []
 
         for node in self.graph.nodes():
-            if _is_synthetic_node(str(node)):
+            file_ctx = self._export_file_context(node, whitelist)
+            if file_ctx is None:
                 continue
+            for sym_id, sym in file_ctx.symbol_pairs:
+                if sym.get("visibility") != "public":
+                    continue
+                if not self._is_export_candidate(file_ctx, sym, dynamic_patterns):
+                    continue
+                rescued, unsatisfied_guard = self._export_use_evidence(file_ctx, sym_id, sym)
+                if rescued:
+                    continue
+                findings.append(self._make_unused_export_finding(file_ctx, sym, unsatisfied_guard))
 
-            node_data = self.graph.nodes[node]
-            if node_data.get("language", "unknown") in _NON_CODE_LANGUAGES:
-                continue
-            # Framework-instantiated files (Spring stereotypes, JAX-RS
-            # resources, Quarkus components, Spring Data repos, …) have
-            # no source-level caller; the runtime constructs them via
-            # classpath scanning, so an ``@RestController`` class must not be
-            # reported as an unused export.
-            #
-            # Deliberately not ``is_file_reachable``, which the sibling
-            # unreachable-files pass uses: this pass asks about *symbols*, and
-            # the predicate's barrel rescue is scoped to files on purpose — a
-            # genuine symbol defined in a barrel nobody imports should still be
-            # flagged. See ``BARREL_FILENAMES``'s scope note.
-            if node_data.get("is_entry_point", False):
-                continue
-            if node_data.get("is_test", False):
-                continue
-            if _is_fixture_path(str(node)):
-                continue
-            if self._should_never_flag(str(node), whitelist):
-                continue
+        return findings
 
-            # Pair each symbol's data with its node id so we can check
-            # incoming ``calls`` edges on the symbol itself further down.
-            symbol_pairs = [
-                (succ, self.graph.nodes[succ])
-                for succ in self.graph.successors(node)
-                if self.graph.nodes[succ].get("node_type") == "symbol"
-                and self.graph.get_edge_data(node, succ, {}).get("edge_type") == "defines"
-            ]
-            if not symbol_pairs:
-                continue
-            symbols = [sym for _, sym in symbol_pairs]
+    def _defined_symbols(self, node: Any) -> list[tuple[str, dict]]:
+        """``(symbol_id, data)`` for each symbol *node* defines."""
+        return [
+            (succ, self.graph.nodes[succ])
+            for succ in self.graph.successors(node)
+            if self.graph.nodes[succ].get("node_type") == "symbol"
+            and self.graph.get_edge_data(node, succ, {}).get("edge_type") == "defines"
+        ]
 
-            file_has_importers = self.graph.in_degree(node) > 0
-
-            # Dispatch-table / namespace-import rescue at the file level:
-            # if any importer pulled this file by its module name
-            # (``from . import cargo``, ``import * as cargo from
-            # "./cargo"``), every public symbol in the file is reachable
-            # via ``cargo.<attr>`` and we cannot tell statically which
-            # attribute is being called. Treat all public symbols as live.
-            # Generic across Python and TS/JS — no repo-specific assumptions.
-            #
-            # Excluded for Go: every Go import names the *package*, and a
-            # file commonly shares its package's name (``dynacache.go`` in
-            # package ``dynacache``), which would blanket-rescue every public
-            # symbol in such files. Go package-qualified calls are now
-            # resolved precisely (call_resolver._resolve_go_package_call), so
-            # the imprecise namespace rescue is both unnecessary and harmful
-            # here — it would hide genuinely dead exports.
-            file_stem = Path(str(node)).stem
-            file_imported_as_namespace = False
-            if (
-                file_stem
-                and file_stem not in ("__init__", "index")
-                and node_data.get("language") != "go"
-            ):
-                for pred in self.graph.predecessors(node):
-                    edge = self.graph.get_edge_data(pred, node, {})
-                    if edge.get("edge_type") != "imports":
-                        continue
-                    imported = edge.get("imported_names", [])
-                    if file_stem in imported:
-                        file_imported_as_namespace = True
-                        break
-
-            # Dynamic-use edges (DI registration, reflection, event bus
-            # subscriptions, framework-mediated loading) target a file
-            # as a whole — the runtime resolves the class and reaches
-            # any public member. Treat the whole file as live so we
-            # don't flag e.g. ``BasketService`` (registered via
-            # ``MapGrpcService<BasketService>()``) as an unused export.
-            # Was ("dynamic_uses", "dynamic", "framework"): the bare "dynamic"
-            # matched nothing and dynamic_imports was absent, so a file reached
-            # only by a dynamic import was never rescued here.
-            # Deliberately NOT `is_dynamic_edge`: `dynamic_imports` and
-            # `dynamic_url_route` mean the module gets loaded, which is what a
-            # plain `imports` edge means, and that is not rescued here either.
-            # Only `dynamic_uses` carries "the runtime reached a member".
-            # Widening this to every dynamic_* hides an unused export in any
-            # package.json `main` target or Django INSTALLED_APPS module.
-            file_dynamically_loaded = any(
-                self.graph.get_edge_data(pred, node, {}).get("edge_type")
-                in ("dynamic_uses", "framework")
-                for pred in self.graph.predecessors(node)
+    def _public_top_level_names(
+        self, findings: list[DeadCodeFindingData], kinds: AbstractSet[str] | None = None
+    ) -> dict[str, frozenset[str]]:
+        """Top-level public symbol names (of *kinds*, if given) of each unreachable file."""
+        return {
+            f.file_path: frozenset(
+                sym["name"]
+                for _, sym in self._defined_symbols(f.file_path)
+                if _is_public_top_level(sym, kinds)
             )
-            if file_dynamically_loaded:
-                continue
+            for f in findings
+            if f.kind is DeadCodeKind.UNREACHABLE_FILE and self.graph.has_node(f.file_path)
+        }
 
-            # Bundler ``resolve.alias`` shim: the whole module is substituted
-            # for a package at build time — every public symbol is reachable
-            # through the aliased import.
-            if str(node) in self._bundler_alias_targets:
-                continue
+    def _export_file_context(self, node: Any, whitelist: set[str]) -> _ExportFile | None:
+        """The file-level facts the unused-export pass needs, or None to skip the file."""
+        if _is_synthetic_node(str(node)):
+            return None
 
-            # Function/method line ranges in this file — used to skip symbols
-            # whose definition is nested inside another function (closures,
-            # inner helpers).  Such symbols are only reachable from their
-            # enclosing scope and are guaranteed false positives.
-            enclosing_ranges = [
+        node_data = self.graph.nodes[node]
+        if node_data.get("language", "unknown") in _DEAD_CODE_EXEMPT_LANGUAGES:
+            return None
+        # Roots include framework-instantiated files the runtime constructs.
+        # Not ``is_file_reachable``: its barrel rescue is scoped to files, and an
+        # unused symbol defined in a barrel should still be flagged.
+        if is_reachability_root(node_data):
+            return None
+        if node_data.get("is_test", False):
+            return None
+        if _is_fixture_path(str(node)):
+            return None
+        if self._should_never_flag(str(node), whitelist):
+            return None
+
+        symbol_pairs = self._defined_symbols(node)
+        if not symbol_pairs:
+            return None
+
+        # A dynamic-use or framework edge means the runtime reaches any public
+        # member of the file. Only these two: ``dynamic_imports`` means the
+        # module is loaded, which a plain import edge does not rescue either.
+        # A framework edge that names its exports (a Lambda handler) rescues
+        # only those, through the importer check below.
+        if any(
+            edge.get("edge_type") in ("dynamic_uses", "framework")
+            and not edge.get("imported_names")
+            for edge in (
+                self.graph.get_edge_data(pred, node, {}) for pred in self.graph.predecessors(node)
+            )
+        ):
+            return None
+
+        # A bundler ``resolve.alias`` target stands in for a whole package.
+        if str(node) in self._bundler_alias_targets:
+            return None
+
+        symbols = [sym for _, sym in symbol_pairs]
+        return _ExportFile(
+            node=node,
+            node_data=node_data,
+            symbol_pairs=symbol_pairs,
+            importers_name_symbols=self._importers_name_symbols(node, symbols),
+            extension_containers=self._extension_containers(node_data, symbol_pairs),
+            imported_as_namespace=self._imported_as_namespace(node, node_data),
+            # Function bodies, so nested defs (closures) can be skipped.
+            enclosing_ranges=[
                 (sym.get("start_line", 0), sym.get("end_line", 0))
                 for sym in symbols
                 if sym.get("kind") in ("function", "method", "async_function")
                 and sym.get("end_line", 0) > sym.get("start_line", 0)
-            ]
+            ],
+        )
 
-            for sym_id, sym in symbol_pairs:
-                if sym.get("visibility") != "public":
-                    continue
-                sym_name = sym.get("name", "")
+    def _importers_name_symbols(self, node: Any, symbols: list[dict]) -> bool:
+        """Whether any edge into *node* names a symbol the file defines."""
+        defined = {sym.get("name") for sym in symbols}
+        return any(
+            not defined.isdisjoint(imported)
+            for imported in self._imported_names_by_edge(node, edge_types=None)
+        )
 
-                # Skip symbol kinds that can't be independently imported
-                # (methods, properties, fields, enum members, namespace
-                # anchors). They're always reached through their enclosing
-                # class / module, so the unused-export pass can't observe
-                # their real usage and would report guaranteed false
-                # positives. C# auto-properties surface here as ``variable``.
-                if sym.get("kind") in _non_importable_kinds(sym.get("language", "unknown")):
-                    continue
-                # Types declared inside a ``namespace JSX`` block are
-                # integration points with the JSX transformer — referenced
-                # implicitly by every JSX expression, never imported by
-                # name. The tree-sitter extractor doesn't carry namespace
-                # parentage through to ``parent_name``, so the file-level
-                # ``namespace JSX`` source-scan is the working signal we
-                # have. Names like ``IntrinsicElements`` /
-                # ``ElementChildrenAttribute`` carry the canonical TS
-                # JSX-protocol meaning; anything else inside such a file
-                # is an HTML-attribute / CSS-property shape consumed by
-                # the same machinery.
-                if (
-                    sym.get("kind") in ("interface", "type_alias")
-                    and str(node) in self._jsx_namespace_files
+    def _extension_containers(
+        self, node_data: dict, symbol_pairs: list[tuple[str, dict]]
+    ) -> frozenset[str]:
+        """Names of the classes in this file that declare a C# extension method."""
+        if node_data.get("language") not in _CONTAINER_USE_LANGUAGES:
+            return frozenset()
+        return frozenset(
+            sym.get("name", "")
+            for sym_id, sym in symbol_pairs
+            if self._declares_extension_method(sym_id)
+        )
+
+    def _imported_as_namespace(self, node: Any, node_data: dict) -> bool:
+        """Whether an importer pulled this file by its module name.
+
+        Then any public symbol may be reached as ``mod.<attr>``. Not for Go,
+        where every import names a package and package calls resolve precisely.
+        """
+        file_stem = Path(str(node)).stem
+        if (
+            not file_stem
+            or file_stem in ("__init__", "index")
+            or node_data.get("language") == "go"
+        ):
+            return False
+        return any(file_stem in imported for imported in self._imported_names_by_edge(node))
+
+    def _imported_names_by_edge(
+        self, node: Any, edge_types: tuple[str, ...] | None = ("imports",)
+    ) -> Iterator[list[str]]:
+        """``imported_names`` of every edge of *edge_types* into *node* (any type if None)."""
+        for pred in self.graph.predecessors(node):
+            edge = self.graph.get_edge_data(pred, node, {})
+            if edge_types is not None and edge.get("edge_type") not in edge_types:
+                continue
+            yield edge.get("imported_names", [])
+
+    def _is_export_candidate(
+        self, file_ctx: _ExportFile, sym: dict, dynamic_patterns: tuple[str, ...]
+    ) -> bool:
+        """Whether a public symbol is the kind of thing the pass may report."""
+        if not self._is_importable_by_name(file_ctx, sym):
+            return False
+        return not self._used_without_an_edge(file_ctx.node_data, sym, dynamic_patterns)
+
+    def _is_importable_by_name(self, file_ctx: _ExportFile, sym: dict) -> bool:
+        """False for symbols no importer can name: members, intrinsics, declarations."""
+        node = file_ctx.node
+        sym_name = sym.get("name", "")
+        # Members are reached through their container, never imported by name.
+        if sym.get("kind") in _non_importable_kinds(sym.get("language", "unknown")):
+            return False
+        # Types in a ``namespace JSX`` file are used implicitly by JSX expressions.
+        if (
+            sym.get("kind") in ("interface", "type_alias")
+            and str(node) in self._jsx_namespace_files
+        ):
+            return False
+        if sym_name.startswith("__") and sym_name.endswith("__"):
+            return False
+        if sym_name in _ENTRY_POINT_SYMBOL_NAMES:
+            return False
+        # VS Code calls ``activate``/``deactivate`` on the extension module.
+        if sym_name in ("activate", "deactivate") and Path(str(node)).stem == "extension":
+            return False
+        if _is_compiler_invoked(sym, sym_name):
+            return False
+        # A COM interface method the runtime calls through the vtable.
+        if is_com_method_implementation(sym.get("signature"), sym.get("language")):
+            return False
+        if _is_declaration_only(sym):
+            return False
+        # Dotted names are namespace path fragments, not exports.
+        if "." in sym_name:
+            return False
+        # A def nested in another function's body cannot be imported.
+        sym_start = sym.get("start_line", 0)
+        return not any(
+            start < sym_start < end
+            for start, end in file_ctx.enclosing_ranges
+            if (start, end) != (sym_start, sym.get("end_line", 0))
+        )
+
+    def _used_without_an_edge(
+        self, node_data: dict, sym: dict, dynamic_patterns: tuple[str, ...]
+    ) -> bool:
+        """Uses the graph cannot carry: framework registration, dynamic names, local refs."""
+        sym_name = sym.get("name", "")
+        decorators = sym.get("decorators", [])
+
+        if _is_framework_registered(decorators):
+            return True
+        if _declared_deliberately_unused(decorators):
+            return True
+
+        if self._name_matches_dynamic(sym_name, dynamic_patterns):
+            return True
+
+        if _nested_class_used(node_data, sym):
+            return True
+
+        # TS/JS: type names referenced in type positions of the same file.
+        local_type_uses = node_data.get("local_type_uses")
+        if local_type_uses and sym_name in local_type_uses:
+            return True
+
+        # Python: same-module references in non-call positions (callables passed
+        # as values, annotations, decorators), see ``ingestion/python_local_refs.py``.
+        local_refs = node_data.get("local_refs")
+        return bool(local_refs and sym_name in local_refs)
+
+    def _export_use_evidence(
+        self, file_ctx: _ExportFile, sym_id: str, sym: dict
+    ) -> tuple[bool, tuple[str, str] | None]:
+        """``(rescued, unsatisfied_guard)`` from importers and symbol-level edges.
+
+        A symbol with importers is rescued unless every import renders it
+        behind a JSX prop guard nobody supplies; that guard is returned so the
+        finding can say so.
+        """
+        node = file_ctx.node
+        sym_name = sym.get("name", "")
+        # ``export { local as alias }`` publishes the symbol under the
+        # alias; importers carry the alias in ``imported_names``.
+        export_alias = self._ts_export_aliases.get(str(node), {}).get(sym_name)
+        has_importers = any(
+            sym_name in imported_names
+            or "*" in imported_names
+            or (export_alias is not None and export_alias in imported_names)
+            for imported_names in (
+                self.graph[pred][node].get("imported_names", [])
+                for pred in self.graph.predecessors(node)
+            )
+        )
+
+        unsatisfied_guard: tuple[str, str] | None = None
+        if has_importers:
+            if file_ctx.node_data.get("language", "") in ("typescript", "javascript"):
+                unsatisfied_guard = self._get_unsatisfied_prop_guard(sym_id, sym_name)
+            if unsatisfied_guard is None:
+                return True, None
+
+        # Namespace-import rescue: see ``_imported_as_namespace``. Any public
+        # symbol in a file pulled by module name could be the dispatch target
+        # for ``<modname>.<attr>(...)``.
+        if file_ctx.imported_as_namespace and unsatisfied_guard is None:
+            return True, None
+
+        # Symbol-level usage signal: any incoming ``calls`` /
+        # ``method_implements`` / ``reads`` / ``extends`` /
+        # ``implements`` / ``type_use`` edge means somewhere in
+        # the codebase actually uses this symbol â€” even if the
+        # file-level ``imported_names`` machinery missed it. A use of one
+        # member of an overload set uses the set.
+        if unsatisfied_guard is None and self._has_inbound_use(sym_id):
+            return True, None
+
+        if self._member_is_used(sym_id, sym.get("language")):
+            return True, None
+        return False, unsatisfied_guard
+
+    def _make_unused_export_finding(
+        self,
+        file_ctx: _ExportFile,
+        sym: dict,
+        unsatisfied_guard: tuple[str, str] | None,
+    ) -> DeadCodeFindingData:
+        node = file_ctx.node
+        sym_name = sym.get("name", "")
+        risk_factors = path_risk_factors(str(node))
+
+        if unsatisfied_guard:
+            guard_prop, caller_name = unsatisfied_guard
+            confidence = RISK_CAP_CONFIDENCE
+            if risk_factors:
+                confidence = min(confidence, RISK_CAP_CONFIDENCE)
+            safe = False
+            reason = f"Public symbol '{sym_name}' is rendered behind prop guard '{guard_prop}' which is never supplied"
+            evidence = [f"Prop '{guard_prop}' is missing across all call sites of '{caller_name}'"]
+        else:
+            confidence = self._unused_export_confidence(file_ctx, sym, risk_factors)
+            safe = confidence >= SAFE_CONFIDENCE_THRESHOLD
+
+            evidence = [f"No file imports symbol '{sym_name}' from {Path(node).name}"]
+            risk_line = risk_evidence(risk_factors)
+            if risk_line:
+                evidence.append(risk_line)
+            if self._dynamic_import_files and confidence <= RISK_CAP_CONFIDENCE:
+                evidence.append(
+                    "Package uses dynamic imports or runtime-resolved edges, "
+                    "so the absence of a static reference does not establish disuse"
+                )
+            reason = f"Public symbol '{sym_name}' has no importers"
+
+        return DeadCodeFindingData(
+            kind=DeadCodeKind.UNUSED_EXPORT,
+            file_path=str(node),
+            symbol_name=sym_name,
+            symbol_kind=sym.get("kind"),
+            confidence=confidence,
+            reason=reason,
+            evidence=evidence,
+            safe_to_delete=safe,
+            risk_factors=list(risk_factors),
+            **_symbol_span(sym),
+            **self._git_fields(str(node)),
+        )
+
+    @staticmethod
+    def _import_absence_is_evidence(file_ctx: _ExportFile, sym: dict) -> bool:
+        """Whether a use of *sym* would have shown up as an importer naming it.
+
+        Not when no importer names this file's symbols; not where the
+        preprocessor reaches a symbol through macros, typedef aliases and token
+        pasting; not for a class holding C# extension methods.
+        """
+        return (
+            file_ctx.importers_name_symbols
+            and sym.get("language") not in _PREPROCESSED_LANGUAGES
+            and sym.get("name") not in file_ctx.extension_containers
+        )
+
+    def _declares_extension_method(self, sym_id: str) -> bool:
+        """Whether this container declares a C# extension method (``this T x``)."""
+        return any(
+            data.get("edge_type") == "has_method"
+            and "(this " in (self.graph.nodes[method_id].get("signature") or "")
+            for _, method_id, data in self.graph.out_edges(sym_id, data=True)
+        )
+
+    def _unused_export_confidence(
+        self, file_ctx: _ExportFile, sym: dict, risk_factors: Any
+    ) -> float:
+        """Confidence for an export no importer reaches, capped by each doubt."""
+        node = file_ctx.node
+        sym_name = sym.get("name", "")
+        if _is_symbol_deprecated(sym_name, sym.get("decorators") or []):
+            confidence = 0.3
+        elif self._import_absence_is_evidence(file_ctx, sym):
+            confidence = 1.0
+        else:
+            # Ranked, never deletion-ready.
+            confidence = UNPROVEN_EXPORT_CONFIDENCE
+
+        if sym.get("kind") == "interface" and not self._file_has_implementors(node):
+            confidence = min(confidence, RISK_CAP_CONFIDENCE)
+
+        if is_contract_method(sym_name, sym.get("kind"), sym.get("language", "unknown")):
+            confidence = min(confidence, RISK_CAP_CONFIDENCE)
+
+        if risk_factors:
+            confidence = min(confidence, RISK_CAP_CONFIDENCE)
+
+        if self._dynamic_import_dirs and str(Path(node).parent) in self._dynamic_import_dirs:
+            confidence = min(confidence, RISK_CAP_CONFIDENCE)
+        return confidence
+
+    def _git_fields(self, file_path: str) -> dict[str, Any]:
+        """The git-activity fields a symbol finding carries for *file_path*."""
+        git_meta = self.git_meta_map.get(file_path, {})
+        return {
+            "last_commit_at": git_meta.get("last_commit_at")
+            if isinstance(git_meta.get("last_commit_at"), datetime)
+            else None,
+            "commit_count_90d": git_meta.get("commit_count_90d", 0),
+            "primary_owner": git_meta.get("primary_owner_name"),
+            "age_days": git_meta.get("age_days"),
+        }
+
+    def _get_unsatisfied_prop_guard(
+        self,
+        sym_id: str,
+        sym_name: str,
+        visited: set[str] | None = None,
+        memo: dict[str, tuple[str, str] | None] | None = None,
+    ) -> tuple[str, str] | None:
+        """Check if a symbol is rendered behind a prop guard that is never supplied."""
+        if not self.graph.has_node(sym_id):
+            return None
+
+        if visited is None:
+            visited = set()
+        if memo is None:
+            memo = {}
+        if sym_id in memo:
+            return memo[sym_id]
+        if sym_id in visited:
+            return None
+        visited.add(sym_id)
+
+        from .jsx_prop_guards import extract_guarded_jsx_renders
+
+        predecessors = [
+            pred for pred in self.graph.predecessors(sym_id)
+            if self.graph[pred][sym_id].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
+        ]
+        if not predecessors:
+            memo[sym_id] = None
+            return None
+
+        resolved_guards: list[tuple[str, str]] = []
+        for pred in predecessors:
+            pred_file = pred.split("::")[0] if "::" in pred else pred
+            if not pred_file.endswith((".tsx", ".jsx", ".ts", ".js")):
+                continue
+
+            if pred_file not in self._guard_cache:
+                src = self._read_file_text(pred_file)
+                self._guard_cache[pred_file] = (
+                    extract_guarded_jsx_renders(pred_file, src) if src else []
+                )
+            pred_parent = pred.split("::")[-1] if "::" in pred else None
+            guarded = self._guard_cache[pred_file]
+            found_guard = None
+            for parent_fn, child_comp, prop_name in guarded:
+                if child_comp == sym_name and (
+                    pred_parent is None or parent_fn == pred_parent or parent_fn == "Anonymous"
                 ):
-                    continue
-                if sym_name.startswith("__") and sym_name.endswith("__"):
-                    continue
-                if sym_name in _ENTRY_POINT_SYMBOL_NAMES:
-                    continue
-                # VS Code extension lifecycle: the host calls ``activate`` /
-                # ``deactivate`` on the ``main`` module (conventionally
-                # ``extension.ts``) — no in-repo importer ever names them.
-                if sym_name in ("activate", "deactivate") and Path(str(node)).stem == "extension":
-                    continue
-                # Compiler-builtin macros defined as a fallback
-                # (``#if !defined(__has_include)\n#define __has_include(h) 0``).
-                # The tree-sitter cpp grammar emits the ``#define`` as a
-                # ``preproc_function_def`` symbol, but the name is a
-                # compiler intrinsic — there will never be a static caller
-                # because the real call sites are preprocessor
-                # ``#if __has_include(...)`` directives, not C/C++ calls.
-                if sym.get("language") in ("cpp", "c") and sym_name in _CPP_BUILTIN_MACROS:
-                    continue
-                # Rust proc-macro entry points — invoked by the compiler,
-                # not by call edges in the dependency graph.
-                if sym.get("language") == "rust":
-                    decorators = sym.get("decorators") or []
-                    if any(d.startswith("proc_macro") for d in decorators):
+                    found_guard = (prop_name, parent_fn if parent_fn != "Anonymous" else (pred_parent or ""))
+                    break
+
+            if found_guard:
+                prop_name, parent_name = found_guard
+                incoming = [
+                    caller for caller in self.graph.predecessors(pred)
+                    if self.graph[caller][pred].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
+                ]
+                if incoming:
+                    all_missing = True
+                    for caller in incoming:
+                        edge = self.graph[caller][pred]
+                        supplied = edge.get("supplied_props")
+                        if supplied is None or prop_name in supplied:
+                            all_missing = False
+                            break
+                    if all_missing:
+                        resolved_guards.append((prop_name, parent_name))
                         continue
-                # Explicit language-level export markers (C/C++
-                # ``__declspec(dllexport)``, GCC ``visibility("default")``)
-                # signal "called from outside this translation unit /
-                # binary" — never observable in the static graph.
-                if sym.get("is_exported_symbol"):
-                    continue
-                # A C/C++ forward declaration whose definition was found is not
-                # independently deletable — the definition is the unit of
-                # deletion, and call resolution attaches the use edge there
-                # rather than to the header line, so reporting the declaration
-                # too would only restate what the definition says (#1601). A
-                # prototype with no definition anywhere is the opposite case:
-                # nothing else can carry the finding, so it still gets one.
-                if sym.get("is_declaration") and sym.get("defined_by"):
-                    continue
-                # A C/C++ *type* forward declaration is not a deletable unit at
-                # all, paired or not, so it is not held to the clause above.
-                # A prototype promises a body, and a body that exists nowhere
-                # makes the prototype itself the dead thing. ``class Env;``
-                # promises nothing: it exists so the declaring file can name
-                # the type without including its header, which makes that file
-                # the declaration's user. Deleting the line breaks it whether
-                # the definition lives in this repo or in a dependency — and
-                # when it is in the repo, the definition already carries the
-                # finding.
-                if (
-                    sym.get("is_declaration")
-                    and sym.get("language") in ("cpp", "c")
-                    and sym.get("kind") in _CPP_TYPE_DECLARATION_KINDS
-                ):
-                    continue
-                # Names that contain a dot are namespace path fragments
-                # (e.g. ``eShop.ClientApp``), not user-visible exports.
-                if "." in sym_name:
-                    continue
 
-                # Skip nested defs: a symbol whose start_line falls strictly
-                # inside another function/method's body cannot be imported
-                # by name from outside the enclosing scope.
-                sym_start = sym.get("start_line", 0)
-                if any(
-                    start < sym_start < end
-                    for start, end in enclosing_ranges
-                    if (start, end) != (sym_start, sym.get("end_line", 0))
-                ):
-                    continue
+            pred_name = pred.split("::")[-1]
+            parent_guard = self._get_unsatisfied_prop_guard(
+                pred, pred_name, set(visited), memo
+            )
+            if parent_guard is None:
+                memo[sym_id] = None
+                return None
+            resolved_guards.append(parent_guard)
 
-                decorators = sym.get("decorators", [])
+        # One blocked route is insufficient: any unguarded or satisfied route
+        # keeps the symbol reachable. Report only when every predecessor path
+        # resolves to an unsatisfied guard.
+        result = (
+            resolved_guards[0]
+            if resolved_guards and len(resolved_guards) == len(predecessors)
+            else None
+        )
+        memo[sym_id] = result
+        return result
 
-                if _is_framework_registered(decorators):
-                    continue
-                if _declared_deliberately_unused(decorators):
-                    continue
+    def _file_line_count(self, file_path: str) -> int | None:
+        """Physical line count of an indexed file, or ``None`` when unread.
 
-                if self._name_matches_dynamic(sym_name, dynamic_patterns):
-                    continue
+        Prefers ingestion's bytes; falls back to disk only under a known repo
+        root, so a missing source is reported as unknown rather than guessed.
+        """
+        data = self._source_map.get(file_path)
+        if data is None and self._repo_root is not None:
+            try:
+                data = (Path(self._repo_root) / file_path).read_bytes()
+            except OSError:
+                return None
+        if data is None:
+            return None
+        return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
 
-                # Same-file type-position usage rescue (TS/JS): the
-                # type-ref strategy stamps ``local_type_uses`` on a file
-                # node with every type name referenced inside its own
-                # source — parameter / field / return / heritage /
-                # generic-constraint / type-alias-RHS positions. An
-                # ``interface DefaultRenderer`` consumed only as a
-                # ``type Renderer = ... : DefaultRenderer`` annotation in
-                # the same module is genuinely live; without this rescue
-                # the whole class of intra-module type protocols (Hono's
-                # ``Get``/``Set`` generics, AWS Lambda's per-adapter
-                # event-shape interfaces) reads as dead exports.
-                local_type_uses = node_data.get("local_type_uses")
-                if local_type_uses and sym_name in local_type_uses:
-                    continue
-
-                # Same-file reference rescue (Python): a top-level function
-                # or class consumed only within its own module in a non-call
-                # position carries no graph edge — passed as a first-class
-                # callable argument (``_score_dimension(.., weight_fn, ..)``),
-                # used purely as a type annotation (a Pydantic model that is
-                # only a FastAPI request-body param type), named in a
-                # decorator, or stored as a default/collection value. The
-                # parser stamps these intra-module references on the file node
-                # (see ``ingestion/python_local_refs.py``); treat them as live.
-                local_refs = node_data.get("local_refs")
-                if local_refs and sym_name in local_refs:
-                    continue
-
-                is_deprecated = _is_symbol_deprecated(
-                    sym_name, sym.get("decorators") or []
+    def _read_file_text(self, file_path: str) -> str | None:
+        """Safely read the content of a file, using source_map if available."""
+        try:
+            if getattr(self, "_source_map", None) is not None:
+                abs_path = (
+                    str(Path(self._repo_root) / file_path)
+                    if getattr(self, "_repo_root", None) and not Path(file_path).is_absolute()
+                    else file_path
                 )
-
-                # ``export { local as alias }`` publishes the symbol under the
-                # alias; importers carry the alias in ``imported_names``.
-                export_alias = self._ts_export_aliases.get(str(node), {}).get(sym_name)
-
-                has_importers = False
-                for pred in self.graph.predecessors(node):
-                    edge_data = self.graph[pred][node]
-                    imported_names = edge_data.get("imported_names", [])
-                    if (
-                        sym_name in imported_names
-                        or "*" in imported_names
-                        or (export_alias is not None and export_alias in imported_names)
-                    ):
-                        has_importers = True
-                        break
-
-                if has_importers:
-                    continue
-
-                # Namespace-import rescue: see ``file_imported_as_namespace``
-                # computation above. Any public symbol in a file pulled by
-                # module name could be the dispatch target for
-                # ``<modname>.<attr>(...)``.
-                if file_imported_as_namespace:
-                    continue
-
-                # Symbol-level usage signal: any incoming ``calls`` /
-                # ``method_implements`` / ``reads`` / ``extends`` /
-                # ``implements`` / ``type_use`` edge means somewhere in
-                # the codebase actually uses this symbol — even if the
-                # file-level ``imported_names`` machinery missed it
-                # (intra-file C++ helpers, ``Foo::method`` qualified
-                # definitions linked by call resolution but never named
-                # in a header, Razor/XAML code-behind dispatches, and
-                # abstract base classes / interfaces that are only ever
-                # extended or implemented, never called directly — Java
-                # padding bases like ``BoundedLocalCache.BLCHeader``,
-                # Kotlin sealed parents, Scala typeclass traits).
-                if self.graph.has_node(sym_id) and any(
-                    self.graph[pred][sym_id].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
-                    for pred in self.graph.predecessors(sym_id)
-                ):
-                    continue
-
-                # A container whose member is used is itself used, and no
-                # search for the container's own name can see it. A C# static
-                # holder class is only ever named at its declaration --
-                # ``Guard.Against.EmptyBasket(...)`` writes the method, never
-                # ``BasketGuards`` -- so the name really is absent and the name
-                # is the wrong thing to look for. Asked after the direct check
-                # so it can only rescue, never displace.
-                #
-                # Gated to C# because that is where the idiom lives. The
-                # argument generalises -- deleting any class whose method has a
-                # caller breaks that caller -- but ungating it removes findings
-                # in every language at once, which is its own measured change.
-                if self._member_is_used(sym_id, sym.get("language")):
-                    continue
-
-                if is_deprecated:
-                    confidence = 0.3
-                elif file_has_importers:
-                    confidence = 1.0
-                else:
-                    confidence = 0.7
-
-                # Interfaces / protocols are reached almost exclusively
-                # through their implementors. Implementor detection is
-                # heuristic — its absence is "evidence missing", not
-                # "evidence of absence". Cap confidence below the
-                # safe-to-delete threshold when the file containing the
-                # interface has no incoming ``implements``-class edges,
-                # so the demo doesn't ship public-API interfaces as
-                # confident dead code. Generic across all languages
-                # (C#, Java, Kotlin, Scala, Swift protocols, TS).
-                if sym.get("kind") == "interface" and not self._file_has_implementors(node):
-                    confidence = min(confidence, RISK_CAP_CONFIDENCE)
-
-                # COM / IUnknown / IDispatch contract methods
-                # (``QueryInterface``, ``AddRef``, ``Release``, …) are
-                # dispatched through native vtables — no static caller
-                # edge will ever land in the graph. Clamp below the
-                # safe-to-delete threshold so we never ship them as
-                # confident dead code on Windows / COM-heavy C++ repos.
-                if is_contract_method(sym_name, sym.get("kind"), sym.get("language", "unknown")):
-                    confidence = min(confidence, RISK_CAP_CONFIDENCE)
-
-                # Runtime-load risk factors for the defining file (config /
-                # bootstrap / database / environment / script / asset): symbols in
-                # such files are often wired up reflectively, so cap below the
-                # deletion-ready threshold and tag the finding for review.
-                risk_factors = path_risk_factors(str(node))
-                if risk_factors:
-                    confidence = min(confidence, RISK_CAP_CONFIDENCE)
-
-                safe = confidence >= SAFE_CONFIDENCE_THRESHOLD
-
-                git_meta = self.git_meta_map.get(str(node), {})
-
-                evidence = [f"No imports of '{sym_name}' found in graph"]
-                risk_line = risk_evidence(risk_factors)
-                if risk_line:
-                    evidence.append(risk_line)
-
-                findings.append(
-                    DeadCodeFindingData(
-                        kind=DeadCodeKind.UNUSED_EXPORT,
-                        file_path=str(node),
-                        symbol_name=sym_name,
-                        symbol_kind=sym.get("kind"),
-                        confidence=confidence,
-                        reason=f"Public symbol '{sym_name}' has no importers",
-                        last_commit_at=git_meta.get("last_commit_at")
-                        if isinstance(git_meta.get("last_commit_at"), datetime)
-                        else None,
-                        commit_count_90d=git_meta.get("commit_count_90d", 0),
-                        lines=sym.get("end_line", 0) - sym.get("start_line", 0),
-                        # Both-or-neither: a half-known span is worse than none.
-                        start_line=(sym.get("start_line") or None) if sym.get("end_line") else None,
-                        end_line=(sym.get("end_line") or None) if sym.get("start_line") else None,
-                        evidence=evidence,
-                        safe_to_delete=safe,
-                        primary_owner=git_meta.get("primary_owner_name"),
-                        age_days=git_meta.get("age_days"),
-                        risk_factors=list(risk_factors),
-                    )
-                )
-
-        return findings
+                return read_source_text(file_path, abs_path, self._source_map)
+            p = Path(file_path)
+            if not p.is_absolute() and getattr(self, "_repo_root", None):
+                p = Path(self._repo_root) / p
+            if p.exists():
+                return p.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            logger.warning("read_file_text_failed", path=file_path, error=str(exc))
+        return None
 
     def _detect_unused_internals(
         self,
@@ -1469,68 +1910,10 @@ class DeadCodeAnalyzer:
         findings: list[DeadCodeFindingData] = []
 
         for node, node_data in self.graph.nodes(data=True):
-            if node_data.get("node_type") != "symbol":
-                continue
-            # Rust: the graph builder does not yet emit intra-file call
-            # edges, so every private Rust function appears "uncalled".
-            # Skip the entire language until call-edge support lands.
-            if node_data.get("language") == "rust":
-                continue
-            # Go's call resolver now resolves same-package (sibling-file) and
-            # package-qualified calls (see call_resolver._resolve_go_*), so
-            # private symbols used across a package's files carry real
-            # ``calls`` edges and no longer read as universally uncalled. The
-            # blanket exemption that Phase 2 added has been lifted.
-            # ``internal`` is not narrow: assembly-wide in C#, module-wide in
-            # Swift and Kotlin, crate-wide in Rust. A legitimate user can sit
-            # anywhere in the module, so a missing inbound call edge is not
-            # evidence of deadness. Nothing else observes ``internal`` either,
-            # which drops an unmodified C# top-level type out of both passes.
-            if node_data.get("visibility") != "private":
+            if not self._is_internal_candidate(node_data, dynamic_patterns, whitelist):
                 continue
             file_path = node_data.get("file_path", "")
-            if not file_path:
-                continue
-            file_data = self.graph.nodes.get(file_path, {})
-            if file_data.get("is_test", False):
-                continue
-            if _is_fixture_path(file_path):
-                continue
-            if self._should_never_flag(file_path, whitelist):
-                continue
-
             sym_name = node_data.get("name", "")
-            if sym_name.startswith("__") and sym_name.endswith("__"):
-                continue
-            if sym_name in _ENTRY_POINT_SYMBOL_NAMES:
-                continue
-            # Namespace-path fragments (e.g. ``eShop.ClientApp``) and
-            # non-callable kinds bypass the call-edge pass by design.
-            if "." in sym_name:
-                continue
-            if node_data.get("kind") in _non_importable_kinds(node_data.get("language", "unknown")):
-                continue
-            # Non-callable type kinds can't have CALL edges; the call-graph
-            # check this pass performs is meaningless for them (see
-            # _UNCALLABLE_TYPE_KINDS). They remain covered by unused_export.
-            if node_data.get("kind") in _UNCALLABLE_TYPE_KINDS:
-                continue
-            if is_contract_method(
-                sym_name, node_data.get("kind"), node_data.get("language", "unknown")
-            ):
-                continue
-            if self._name_matches_dynamic(sym_name, dynamic_patterns):
-                continue
-
-            # Framework-decorator skip — same shape as unused-export. A
-            # private ``@PostConstruct``/``@EventListener``/``@Scheduled``
-            # method is invoked by the container, not by a source call.
-            decorators = node_data.get("decorators") or []
-
-            if _is_framework_registered(decorators):
-                continue
-            if _declared_deliberately_unused(decorators):
-                continue
 
             # Any inbound use, not only a call. A base class that is subclassed
             # rather than instantiated, a collaborator the container constructs,
@@ -1538,38 +1921,30 @@ class DeadCodeAnalyzer:
             # symbol-level edge of their own; reading only ``calls`` here
             # reported all three as unused. The set is shared with the
             # unused-export pass, so it also carries types this population can
-            # never hold — a method or an interface is filtered out above.
-            is_used = any(
-                self.graph.get_edge_data(pred, node, {}).get("edge_type")
-                in REACHABILITY_USE_EDGE_TYPES
-                for pred in self.graph.predecessors(node)
-            )
-            if is_used:
+            # never hold â€” a method or an interface is filtered out above.
+            # ``new X(..)`` lands on X's constructor (``path::X::X``) when X
+            # declares one, and constructing a type uses it.
+            if self._has_inbound_use(node) or self._has_inbound_use(
+                f"{file_path}::{sym_name}::{sym_name}"
+            ):
                 continue
 
             # Dispatch-table pattern: a private helper imported by name
             # into a sibling module and stored in a lookup dict
             # (``HANDLERS = {"python": _extract_python_heritage, ...}``).
             # The function is reached at runtime via dict lookup, so no
-            # direct ``calls`` edge ever lands in the graph — but the
+            # direct ``calls`` edge ever lands in the graph â€” but the
             # ``imports`` edge into its file carries the symbol name. If
             # any cross-file importer pulled this symbol by name,
             # something is actively referencing it; do not flag.
-            file_pred_imports = False
-            for pred in self.graph.predecessors(file_path):
-                edge = self.graph.get_edge_data(pred, file_path, {})
-                if edge.get("edge_type") != "imports":
-                    continue
-                imported = edge.get("imported_names", [])
-                if sym_name in imported or "*" in imported:
-                    file_pred_imports = True
-                    break
-            if file_pred_imports:
+            if any(
+                sym_name in imported or "*" in imported
+                for imported in self._imported_names_by_edge(file_path)
+            ):
                 continue
 
-            git_meta = self.git_meta_map.get(file_path, {})
             # Private symbols keep the standard 0.65 base confidence even if deprecated.
-            # A private symbol has no external consumer by construction —
+            # A private symbol has no external consumer by construction â€”
             # deprecated + uncalled is the strongest possible delete signal and
             # must not be buried below the default min_confidence floor.
             # (0.3 is reserved for unused *exports*, where an invisible consumer
@@ -1582,33 +1957,155 @@ class DeadCodeAnalyzer:
                     symbol_kind=node_data.get("kind"),
                     confidence=0.65,
                     reason=f"Private symbol '{sym_name}' is not used anywhere",
-                    last_commit_at=git_meta.get("last_commit_at")
-                    if isinstance(git_meta.get("last_commit_at"), datetime)
-                    else None,
-                    commit_count_90d=git_meta.get("commit_count_90d", 0),
-                    lines=node_data.get("end_line", 0) - node_data.get("start_line", 0),
-                    # Both-or-neither: a half-known span is worse than none.
-                    start_line=(node_data.get("start_line") or None)
-                    if node_data.get("end_line")
-                    else None,
-                    end_line=(node_data.get("end_line") or None)
-                    if node_data.get("start_line")
-                    else None,
                     evidence=[f"No call, reference or override reaches '{sym_name}'"],
                     safe_to_delete=False,
-                    primary_owner=git_meta.get("primary_owner_name"),
-                    age_days=git_meta.get("age_days"),
                     risk_factors=list(path_risk_factors(file_path)),
+                    **_symbol_span(node_data),
+                    **self._git_fields(file_path),
                 )
             )
 
         return findings
 
+    def _overload_unit(self, node: str) -> list[str]:
+        """The members of the overload set *node* belongs to or names, else ``[]``.
+
+        A plain id names its set when the set's members carry discriminators,
+        which is how a composed constructor id ``path::X::X`` still finds
+        ``X::X#0`` and ``X::X#2``.
+        """
+        if self._overload_units is None:
+            self._overload_units = overload_sets(
+                n for n in self.graph.nodes if isinstance(n, str)
+            )
+        return self._overload_units.get(base_symbol_id(node), [])
+
+    def _has_inbound_use(self, node: str, _visiting: frozenset[str] = frozenset()) -> bool:
+        """Whether any reachability-use edge lands on *node* or its overload set."""
+        members = self._overload_unit(node)
+        if members:
+            return any(self._lands_on(member, _visiting) for member in members)
+        return self._lands_on(node, _visiting)
+
+    def _lands_on(self, node: str, _visiting: frozenset[str] = frozenset()) -> bool:
+        """Whether any reachability-use edge lands on *node* (False if absent).
+
+        An edge from inside *node*'s own span only counts when that caller is
+        itself live. *_visiting* holds the nodes being resolved up the call
+        chain, so a cycle of contained callers cannot recurse forever.
+        """
+        if not self.graph.has_node(node):
+            return False
+        visiting = _visiting | {node}
+        for pred in self.graph.predecessors(node):
+            if (
+                self.graph.get_edge_data(pred, node, {}).get("edge_type")
+                not in REACHABILITY_USE_EDGE_TYPES
+            ):
+                continue
+            if not self._is_self_use(pred, node):
+                return True
+            if pred != node and pred not in visiting and self._has_inbound_use(pred, visiting):
+                return True
+        return False
+
+    def _is_self_use(self, pred: str, node: str) -> bool:
+        """Whether *pred* sits inside *node*'s own span, so its edge is no outside use.
+
+        A self-loop, or a caller declared within the symbol's own body, does
+        not keep the symbol alive on its own; such a caller decides that only
+        if it is itself used from elsewhere (see ``_lands_on``).
+
+        A predecessor whose span is missing or invalid, or that lives in
+        another file, is not treated as inside, so
+        the edge keeps counting as a use.
+        """
+        if pred == node:
+            return True
+        pred_data, node_data = self.graph.nodes[pred], self.graph.nodes[node]
+        if pred_data.get("file_path") != node_data.get("file_path"):
+            return False
+        pred_span, node_span = _symbol_span(pred_data), _symbol_span(node_data)
+        if pred_span["start_line"] is None or node_span["start_line"] is None:
+            return False
+        return (
+            node_span["start_line"] <= pred_span["start_line"]
+            and pred_span["end_line"] <= node_span["end_line"]
+        )
+
+    def _is_internal_candidate(
+        self, node_data: dict, dynamic_patterns: tuple[str, ...], whitelist: set[str]
+    ) -> bool:
+        """Whether a graph node is a private symbol the unused-internal pass may judge."""
+        if node_data.get("node_type") != "symbol":
+            return False
+        # Rust: rustc's own `dead_code` lint already reports unused
+        # private items, with the macro expansion and type information a
+        # static graph cannot match. Nothing here it would not find first.
+        if node_data.get("language") == "rust":
+            return False
+        # Go's call resolver now resolves same-package (sibling-file) and
+        # package-qualified calls (see call_resolver._resolve_go_*), so
+        # private symbols used across a package's files carry real
+        # ``calls`` edges and no longer read as universally uncalled. The
+        # blanket exemption that Phase 2 added has been lifted.
+        # ``internal`` is not narrow: assembly-wide in C#, module-wide in
+        # Swift and Kotlin, crate-wide in Rust. A legitimate user can sit
+        # anywhere in the module, so a missing inbound call edge is not
+        # evidence of deadness. Nothing else observes ``internal`` either,
+        # which drops an unmodified C# top-level type out of both passes.
+        if node_data.get("visibility") != "private":
+            return False
+        file_path = node_data.get("file_path", "")
+        if not file_path:
+            return False
+        file_data = self.graph.nodes.get(file_path, {})
+        if file_data.get("is_test", False):
+            return False
+        if _is_fixture_path(file_path):
+            return False
+        if self._should_never_flag(file_path, whitelist):
+            return False
+        return self._is_judgeable_internal(node_data, dynamic_patterns)
+
+    def _is_judgeable_internal(self, node_data: dict, dynamic_patterns: tuple[str, ...]) -> bool:
+        """Whether a missing call edge says anything about this private symbol."""
+        sym_name = node_data.get("name", "")
+        if sym_name.startswith("__") and sym_name.endswith("__"):
+            return False
+        if sym_name in _ENTRY_POINT_SYMBOL_NAMES:
+            return False
+        # Namespace-path fragments (e.g. ``eShop.ClientApp``) and
+        # non-callable kinds bypass the call-edge pass by design.
+        if "." in sym_name:
+            return False
+        if node_data.get("kind") in _non_importable_kinds(node_data.get("language", "unknown")):
+            return False
+        # Non-callable type kinds can't have CALL edges; the call-graph
+        # check this pass performs is meaningless for them (see
+        # _UNCALLABLE_TYPE_KINDS). They remain covered by unused_export.
+        if node_data.get("kind") in _UNCALLABLE_TYPE_KINDS:
+            return False
+        if is_contract_method(
+            sym_name, node_data.get("kind"), node_data.get("language", "unknown")
+        ):
+            return False
+        if self._name_matches_dynamic(sym_name, dynamic_patterns):
+            return False
+
+        # Framework-decorator skip â€” same shape as unused-export. A
+        # private ``@PostConstruct``/``@EventListener``/``@Scheduled``
+        # method is invoked by the container, not by a source call.
+        decorators = node_data.get("decorators") or []
+        return not (
+            _is_framework_registered(decorators) or _declared_deliberately_unused(decorators)
+        )
+
     def _detect_zombie_packages(self, whitelist: set[str]) -> list[DeadCodeFindingData]:
         """Detect monorepo packages with no incoming inter_package edges.
 
         ``framework:`` predecessors (synthetic anchors added by
-        ``framework_edges``) count as cross-package importers — TYPO3 / Django
+        ``framework_edges``) count as cross-package importers â€” TYPO3 / Django
         / etc. wiring is a real cross-cutting dependency. ``external:``
         predecessors do not count (they represent third-party imports).
         """
@@ -1627,88 +2124,131 @@ class DeadCodeAnalyzer:
             return findings
 
         for pkg, files in packages.items():
-            if pkg in whitelist:
+            if not self._is_package_candidate(pkg, files, whitelist):
                 continue
-            # Skip known non-package dirs (.github, .vscode, docs, ...)
-            # and any other dotfile directory at the repo root.
-            if pkg in _NEVER_PACKAGE_DIRS or pkg.startswith("."):
+            if self._has_cross_package_importer(pkg, files):
                 continue
-            # A real package contains at least one source-code file. If
-            # every file under the candidate dir is config/data (YAML,
-            # JSON, MD, TOML), it is not a package — it is metadata.
-            has_code_file = any(
-                self.graph.nodes.get(f, {}).get("language", "unknown") not in _NON_CODE_LANGUAGES
+
+            # A package total is only as known as its least-known file.
+            counts = [
+                self._file_line_count(f)
                 for f in files
+                if self.graph.nodes[f].get("node_type") != "symbol"
+            ]
+            known = [c for c in counts if c is not None]
+            total_lines = sum(known) if len(known) == len(counts) else None
+            evidence = [f"No inter-package imports into '{pkg}'"]
+            if total_lines is None:
+                evidence.append(_LINES_UNKNOWN)
+            activity = self._package_git_activity(files)
+            findings.append(
+                DeadCodeFindingData(
+                    kind=DeadCodeKind.ZOMBIE_PACKAGE,
+                    file_path=pkg,
+                    symbol_name=None,
+                    symbol_kind=None,
+                    confidence=0.5,
+                    reason=f"Package '{pkg}' has no importers from other packages",
+                    lines=total_lines,
+                    evidence=evidence,
+                    safe_to_delete=False,
+                    risk_factors=list(path_risk_factors(pkg)),
+                    **activity,
+                )
             )
-            if not has_code_file:
-                continue
-
-            has_external_importers = False
-            for f in files:
-                for pred in self.graph.predecessors(f):
-                    pred_str = str(pred)
-                    if pred_str.startswith("external:"):
-                        # Third-party imports don't count as cross-package
-                        # importers; framework: synthetic anchors do.
-                        continue
-                    pred_parts = Path(pred_str).parts
-                    if len(pred_parts) > 0 and pred_parts[0] != pkg:
-                        has_external_importers = True
-                        break
-                if has_external_importers:
-                    break
-
-            if not has_external_importers:
-                total_lines = sum(
-                    self.graph.nodes[f].get("symbol_count", 0) * 10
-                    for f in files
-                    if f in self.graph
-                )
-                pkg_last_commit: datetime | None = None
-                pkg_total_commits_90d = 0
-                pkg_owner: str | None = None
-                owner_counts: dict[str, int] = {}
-                for f in files:
-                    # git_meta_map values are plain dicts (see pipeline/phases/analysis.py);
-                    # use .get() not getattr() — getattr on a dict never finds arbitrary
-                    # string keys and always returns the default, silently zeroing all
-                    # git-activity metadata on zombie-package findings.
-                    gm = self.git_meta_map.get(f)
-                    if gm is None:
-                        continue
-                    f_last = gm.get("last_commit_at")
-                    if f_last and (pkg_last_commit is None or f_last > pkg_last_commit):
-                        pkg_last_commit = f_last
-                    pkg_total_commits_90d += gm.get("commit_count_90d", 0) or 0
-                    f_owner = gm.get("primary_owner_name")
-                    if f_owner:
-                        owner_counts[f_owner] = owner_counts.get(f_owner, 0) + 1
-                if owner_counts:
-                    pkg_owner = max(owner_counts, key=lambda k: owner_counts[k])
-                pkg_age_days: int | None = None
-                if pkg_last_commit:
-                    pkg_age_days = (datetime.now(UTC) - pkg_last_commit).days
-
-                findings.append(
-                    DeadCodeFindingData(
-                        kind=DeadCodeKind.ZOMBIE_PACKAGE,
-                        file_path=pkg,
-                        symbol_name=None,
-                        symbol_kind=None,
-                        confidence=0.5,
-                        reason=f"Package '{pkg}' has no importers from other packages",
-                        last_commit_at=pkg_last_commit,
-                        commit_count_90d=pkg_total_commits_90d,
-                        lines=total_lines,
-                        evidence=[f"No inter-package imports into '{pkg}'"],
-                        safe_to_delete=False,
-                        primary_owner=pkg_owner,
-                        age_days=pkg_age_days,
-                        risk_factors=list(path_risk_factors(pkg)),
-                    )
-                )
 
         return findings
+
+    def _is_package_candidate(self, pkg: str, files: list[str], whitelist: set[str]) -> bool:
+        """Whether a top-level directory is a code package the zombie pass may judge."""
+        if pkg in whitelist:
+            return False
+        # Skip known non-package dirs (.github, .vscode, docs, ...)
+        # and any other dotfile directory at the repo root.
+        if pkg in _NEVER_PACKAGE_DIRS or pkg.startswith("."):
+            return False
+        # A folder is a package only when it declares itself one: a Next.js
+        # ``app/``, a ``benchmarks/`` folder or a Go ``cmd/`` has no manifest
+        # and nothing is meant to import it.
+        if not self._has_package_manifest(pkg, files):
+            return False
+        # Tests are run, never imported, and so is a package that ships a
+        # program (a CLI started by its shebang). One program file is enough,
+        # even a stray script: this errs toward not calling a package dead.
+        files = [f for f in files if not self.graph.nodes.get(f, {}).get("is_test")]
+        if any(is_program(f, self._source_map.get(f, b"")) for f in files):
+            return False
+        # A real package contains at least one source file something could
+        # import. Config and data (YAML, JSON, MD, TOML) is metadata, and a
+        # folder of Dockerfiles, shell scripts and build files is run, never
+        # imported.
+        return any(
+            self.graph.nodes.get(f, {}).get("language", "unknown")
+            not in _DEAD_CODE_EXEMPT_LANGUAGES | _RUN_NOT_IMPORTED_LANGUAGES
+            and not is_build_file(f)
+            for f in files
+        )
+
+    def _has_package_manifest(self, pkg: str, files: list[str]) -> bool:
+        """Whether *pkg* holds a package manifest of its own, on disk or indexed.
+
+        A top-level folder whose manifest sits at the repository root (a
+        Python package built by the root ``pyproject.toml``) is the repository
+        itself, not a package of it, so it is never a candidate.
+        """
+        names = {f.partition("/")[2] for f in files if f.count("/") == 1}
+        if self._repo_root is not None:
+            with contextlib.suppress(OSError):
+                names.update(os.listdir(Path(self._repo_root) / pkg))
+        manifests = package_manifest_names()
+        return any(n in manifests or n.endswith(_PROJECT_FILE_SUFFIXES) for n in names)
+
+    def _has_cross_package_importer(self, pkg: str, files: list[str]) -> bool:
+        """Whether anything outside *pkg* depends on a file inside it."""
+        for f in files:
+            for pred in self.graph.predecessors(f):
+                pred_str = str(pred)
+                if pred_str.startswith("external:"):
+                    # Third-party imports don't count as cross-package
+                    # importers; framework: synthetic anchors do.
+                    continue
+                pred_parts = Path(pred_str).parts
+                if len(pred_parts) > 0 and pred_parts[0] != pkg:
+                    return True
+        return False
+
+    def _package_git_activity(self, files: list[str]) -> dict[str, Any]:
+        """Latest commit, 90-day commits, most common owner and age across *files*."""
+        pkg_last_commit: datetime | None = None
+        pkg_total_commits_90d = 0
+        pkg_owner: str | None = None
+        owner_counts: dict[str, int] = {}
+        for f in files:
+            # git_meta_map values are plain dicts (see pipeline/phases/analysis.py);
+            # use .get() not getattr() â€” getattr on a dict never finds arbitrary
+            # string keys and always returns the default, silently zeroing all
+            # git-activity metadata on zombie-package findings.
+            gm = self.git_meta_map.get(f)
+            if gm is None:
+                continue
+            f_last = gm.get("last_commit_at")
+            if f_last and (pkg_last_commit is None or f_last > pkg_last_commit):
+                pkg_last_commit = f_last
+            pkg_total_commits_90d += gm.get("commit_count_90d", 0) or 0
+            f_owner = gm.get("primary_owner_name")
+            if f_owner:
+                owner_counts[f_owner] = owner_counts.get(f_owner, 0) + 1
+        if owner_counts:
+            pkg_owner = max(owner_counts, key=lambda k: owner_counts[k])
+        pkg_age_days: int | None = None
+        if pkg_last_commit:
+            pkg_age_days = (datetime.now(UTC) - pkg_last_commit).days
+        return {
+            "last_commit_at": pkg_last_commit,
+            "commit_count_90d": pkg_total_commits_90d,
+            "primary_owner": pkg_owner,
+            "age_days": pkg_age_days,
+        }
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1724,11 +2264,11 @@ class DeadCodeAnalyzer:
         """
         if path in whitelist:
             return True
-        if never_flag_match(path):
+        if never_flag_path(path):
             return True
-        # Workspace-driven never-flag — set by language warmups that read
+        # Workspace-driven never-flag â€” set by language warmups that read
         # the build manifest (Gradle non-``main`` source sets, Cargo
-        # ``[[example]]`` / ``[[bench]]`` targets, …). Lets each language
+        # ``[[example]]`` / ``[[bench]]`` targets, â€¦). Lets each language
         # learn conventions from its own build files instead of us
         # extending the hardcoded glob list every time a repo defines a
         # custom source set like ``testFixtures`` / ``javaPoet`` /
@@ -1756,7 +2296,7 @@ class DeadCodeAnalyzer:
         for pred in self.graph.predecessors(file_node):
             if self.graph[pred][file_node].get("edge_type") in implementor_edges:
                 return True
-        # Symbol-level incoming edges — interfaces typically receive
+        # Symbol-level incoming edges â€” interfaces typically receive
         # ``implements`` edges on the type symbol, not on the file.
         for succ in self.graph.successors(file_node):
             succ_data = self.graph.nodes.get(succ, {})
@@ -1767,9 +2307,6 @@ class DeadCodeAnalyzer:
                     return True
         return False
 
-    def _matches_dynamic_patterns(self, path: str, patterns: tuple[str, ...]) -> bool:
-        name = Path(path).stem
-        return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
     def _name_matches_dynamic(self, name: str, patterns: tuple[str, ...]) -> bool:
         return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
@@ -1784,4 +2321,3 @@ class DeadCodeAnalyzer:
                 dt = dt.replace(tzinfo=UTC)
             return (now - dt).days > days
         return False
-

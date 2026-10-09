@@ -197,7 +197,14 @@ async def test_performance_only_partial_scope_clears_stale_plan(async_session):
 
 
 @pytest.mark.asyncio
-async def test_partial_performance_scope_persists_downstream_intervention(async_session):
+async def test_a_partial_run_never_persists_its_own_performance_plans(async_session):
+    """A partial run sees a subset of the findings, so its plans are a subset.
+
+    The plans it carries are a report-level convenience. The authoritative ones
+    are rebuilt from the merged stored findings by the writer both index paths
+    share, which is also what retired the path bookkeeping this writer used to
+    need to reach a shared intervention downstream of its callers.
+    """
     from repowise.core.pipeline.incremental import persist_partial_health
 
     repo = await insert_repo(async_session)
@@ -224,7 +231,5 @@ async def test_partial_performance_scope_persists_downstream_intervention(async_
     await persist_partial_health(async_session, repo.id, report)
     await async_session.commit()
 
-    rows = await get_refactoring_suggestions(async_session, repo.id)
-    assert [(row.refactoring_type, row.file_path, row.target_symbol) for row in rows] == [
-        ("performance_fix", "shared.py", "shared.py::load")
-    ]
+    # No stored findings, so the rebuild leaves no performance plan behind.
+    assert await get_refactoring_suggestions(async_session, repo.id) == []

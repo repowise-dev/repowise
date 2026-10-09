@@ -30,10 +30,14 @@ describe("ChatMessage", () => {
     ).toBeNull();
   });
 
-  it("renders the question above the reply's body size", () => {
+  it("renders the user on the opposite side with a neutral identity surface", () => {
     render(<ChatMessage message={USER} repoId="r1" />);
+    const turn = screen.getByRole("article", { name: "You" });
+    expect(turn.className).toContain("justify-end");
+    expect(turn).toHaveAttribute("data-chat-role", "user");
+    expect(screen.getByText("You")).toBeInTheDocument();
     expect(screen.getByText("Where is auth handled?").className).toContain(
-      "text-lg",
+      "bg-[var(--color-bg-surface)]",
     );
   });
 
@@ -52,5 +56,56 @@ describe("ChatMessage", () => {
     expect(
       (ChatMessage as unknown as { $$typeof: symbol }).$$typeof,
     ).toBe(Symbol.for("react.memo"));
+  });
+});
+
+describe("ChatMessage truncation", () => {
+  it("shows a quiet row when the answer stopped at the step ceiling", () => {
+    const { container } = render(
+      <ChatMessage message={{ ...ASSISTANT, text: "", truncated: true }} repoId="r1" />,
+    );
+    const row = container.querySelector('[data-chat-truncated="true"]');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toMatch(/step limit/);
+    expect(row?.className).not.toContain("color-error");
+    expect(row?.className).not.toContain("color-accent-primary");
+  });
+
+  it("holds the row back while the turn is still streaming", () => {
+    const { container } = render(
+      <ChatMessage
+        message={{ ...ASSISTANT, text: "", truncated: true, isStreaming: true }}
+        repoId="r1"
+      />,
+    );
+    expect(container.querySelector('[data-chat-truncated="true"]')).toBeNull();
+  });
+
+  it("renders nothing extra for a completed answer", () => {
+    const { container } = render(<ChatMessage message={ASSISTANT} repoId="r1" />);
+    expect(container.querySelector('[data-chat-truncated="true"]')).toBeNull();
+  });
+
+  it("keeps the working marker while a grounded turn waits for its first token", () => {
+    const { container } = render(
+      <ChatMessage
+        message={{
+          ...ASSISTANT,
+          text: "",
+          isStreaming: true,
+          toolCalls: [
+            {
+              id: "grounding-1",
+              name: "get_context",
+              arguments: {},
+              status: "done",
+              origin: "grounding",
+            },
+          ],
+        }}
+        repoId="r1"
+      />,
+    );
+    expect(container.querySelector('[data-working-orb="true"]')).not.toBeNull();
   });
 });

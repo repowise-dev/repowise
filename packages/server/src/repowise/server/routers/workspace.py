@@ -14,6 +14,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from repowise.core.docs_mode import resolve_docs_mode
+from repowise.core.workspace import reads
 from repowise.server.deps import (
     get_cross_repo_enricher,
     get_workspace_config,
@@ -24,12 +25,10 @@ from repowise.server.schemas import (
     WorkspaceArchitectureResponse,
     WorkspaceBlastRadiusResponse,
     WorkspaceBreakingChangesResponse,
-    WorkspaceCoChangeEntry,
     WorkspaceCoChangesResponse,
+    WorkspaceCoChangeStructure,
     WorkspaceConformanceResponse,
     WorkspaceContractDetail,
-    WorkspaceContractEntry,
-    WorkspaceContractLinkEntry,
     WorkspaceContractsResponse,
     WorkspaceContractSummary,
     WorkspaceCrossRepoSummary,
@@ -38,8 +37,16 @@ from repowise.server.schemas import (
     WorkspaceGraphNode,
     WorkspaceGraphResponse,
     WorkspaceRepoEntry,
+    WorkspaceRepoRemovedResponse,
     WorkspaceResponse,
+    WorkspaceSyncResponse,
     WorkspaceSystemGraphResponse,
+    WorkspaceTestImpactResponse,
+)
+from repowise.server.schemas.actions import (
+    WorkspaceActionsResponse,
+    WorkspaceCrossRepoAction,
+    WorkspaceRepoActions,
 )
 from repowise.server.services.module_health import read_repo_health_score
 
@@ -149,7 +156,7 @@ def _query_repo_stats(db_path: Path) -> dict:
         if row:
             result["repo_id"] = row[0]
 
-        # file count (graph_nodes) 
+        # file count (graph_nodes)
         row = c.execute("SELECT COUNT(*) FROM graph_nodes WHERE node_type = 'file'").fetchone()
         result["file_count"] = row[0] if row else 0
 
@@ -246,47 +253,6 @@ async def get_workspace(
     )
 
 
-def _contract_entry(c: dict) -> WorkspaceContractEntry:
-    """Project one raw ``contracts.json`` row onto the wire model.
-
-    ``schema`` is dropped on purpose — it is the one field the list endpoint
-    cannot afford and the detail endpoint carries separately.
-    """
-    return WorkspaceContractEntry(
-        contract_id=c.get("contract_id", ""),
-        contract_type=c.get("contract_type", ""),
-        role=c.get("role", ""),
-        repo=c.get("repo", ""),
-        file_path=c.get("file_path", ""),
-        symbol_name=c.get("symbol_name", ""),
-        confidence=c.get("confidence", 0.0),
-        service=c.get("service"),
-        line=c.get("line"),
-        symbol_id=c.get("symbol_id"),
-        meta=c.get("meta") or {},
-    )
-
-
-def _contract_link(lk: dict) -> WorkspaceContractLinkEntry:
-    """Project one raw ``contract_links`` row onto the wire model."""
-    return WorkspaceContractLinkEntry(
-        contract_id=lk.get("contract_id", ""),
-        contract_type=lk.get("contract_type", ""),
-        match_type=lk.get("match_type", "exact"),
-        confidence=lk.get("confidence", 0.0),
-        provider_repo=lk.get("provider_repo", ""),
-        provider_file=lk.get("provider_file", ""),
-        provider_symbol=lk.get("provider_symbol", ""),
-        consumer_repo=lk.get("consumer_repo", ""),
-        consumer_file=lk.get("consumer_file", ""),
-        consumer_symbol=lk.get("consumer_symbol", ""),
-        provider_service=lk.get("provider_service"),
-        consumer_service=lk.get("consumer_service"),
-        provider_symbol_id=lk.get("provider_symbol_id"),
-        consumer_symbol_id=lk.get("consumer_symbol_id"),
-    )
-
-
 # ---------------------------------------------------------------------------
 # GET /api/workspace/contracts
 # ---------------------------------------------------------------------------
@@ -296,9 +262,24 @@ def _contract_link(lk: dict) -> WorkspaceContractLinkEntry:
 async def get_contracts(
     ws_config=Depends(get_workspace_config),
     enricher=Depends(get_cross_repo_enricher),
-    contract_type: str | None = Query(None, description="Filter: http, grpc, socket, topic, or data"),
+    contract_type: str | None = Query(
+        None, description="Filter: http, grpc, socket, topic, or data"
+    ),
     repo: str | None = Query(None, description="Filter by repo alias"),
     role: str | None = Query(None, description="Filter: provider or consumer"),
+    q: str | None = Query(
+        None,
+        description="Case-insensitive search over id, file, symbol, repo and service. "
+        "Every whitespace-separated term must match.",
+    ),
+    linked: bool | None = Query(
+        None, description="true: only contracts on a matched link; false: only those on none"
+    ),
+    include_links: bool = Query(
+        True,
+        description="false omits the link rows (total_links is still counted), for a caller "
+        "paging the contract list that already holds the links",
+    ),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
@@ -313,63 +294,25 @@ async def get_contracts(
             total_links=0,
         )
 
-    contracts = list(getattr(enricher, "_contracts", []))
-    links = list(getattr(enricher, "_contract_links", []))
-
-    # Apply filters to contracts
-    if contract_type:
-        contracts = [c for c in contracts if c.get("contract_type") == contract_type]
-        links = [lk for lk in links if lk.get("contract_type") == contract_type]
-    if repo:
-        contracts = [c for c in contracts if c.get("repo") == repo]
-        links = [
-            lk for lk in links if lk.get("provider_repo") == repo or lk.get("consumer_repo") == repo
-        ]
-    if role:
-        contracts = [c for c in contracts if c.get("role") == role]
-
-    total_contracts = len(contracts)
-    total_links = len(links)
-
-    # Count by type
-    by_type: dict[str, int] = {}
-    for c in contracts:
-        ct = c.get("contract_type", "unknown")
-        by_type[ct] = by_type.get(ct, 0) + 1
-
-    # Paginate contracts only (links are typically small enough)
-    contracts_page = contracts[offset : offset + limit]
-
     return WorkspaceContractsResponse(
-        contracts=[_contract_entry(c) for c in contracts_page],
-        links=[_contract_link(lk) for lk in links],
-        total_contracts=total_contracts,
-        total_links=total_links,
-        by_type=by_type,
+        **reads.list_contracts(
+            enricher.contracts,
+            enricher.contract_links,
+            contract_type=contract_type,
+            repo=repo,
+            role=role,
+            q=q,
+            linked=linked,
+            include_links=include_links,
+            limit=limit,
+            offset=offset,
+        )
     )
 
 
 # ---------------------------------------------------------------------------
 # GET /api/workspace/contracts/detail
 # ---------------------------------------------------------------------------
-
-
-def _unmatched_reason(enricher, repo: str, file_path: str, contract_id: str) -> str | None:
-    """Look up why one consumer matched nothing, from the system graph.
-
-    The reasons live in ``system_graph.json``, not ``contracts.json``, and are
-    keyed by the same ``(repo, file_path, contract_id)`` triple this endpoint
-    takes. Returns None when no graph is built or the consumer did match.
-    """
-    diagnostics = enricher.get_diagnostics() or {}
-    for u in diagnostics.get("unmatched_consumers", []):
-        if (
-            u.get("repo") == repo
-            and u.get("file_path") == file_path
-            and u.get("contract_id") == contract_id
-        ):
-            return u.get("reason")
-    return None
 
 
 @router.get("/contracts/detail", response_model=WorkspaceContractDetail)
@@ -398,40 +341,17 @@ async def get_contract_detail(
     if enricher is None:
         raise HTTPException(status_code=404, detail="No contract data for this workspace")
 
-    match = next(
-        (
-            c
-            for c in getattr(enricher, "_contracts", [])
-            if c.get("repo") == repo
-            and c.get("file_path") == file
-            and c.get("contract_id") == id
-        ),
-        None,
+    detail = reads.contract_detail(
+        enricher.contracts,
+        enricher.contract_links,
+        enricher.get_diagnostics(),
+        repo=repo,
+        file_path=file,
+        contract_id=id,
     )
-    if match is None:
+    if detail is None:
         raise HTTPException(status_code=404, detail="Contract not found")
-
-    role = match.get("role", "")
-    if role == "consumer":
-        repo_key, file_key = "consumer_repo", "consumer_file"
-    else:
-        repo_key, file_key = "provider_repo", "provider_file"
-    links = [
-        lk
-        for lk in getattr(enricher, "_contract_links", [])
-        if lk.get("contract_id") == id and lk.get(repo_key) == repo and lk.get(file_key) == file
-    ]
-
-    reason = None
-    if role == "consumer" and not links:
-        reason = _unmatched_reason(enricher, repo, file, id)
-
-    return WorkspaceContractDetail(
-        contract=_contract_entry(match),
-        contract_schema=match.get("schema"),
-        links=[_contract_link(lk) for lk in links],
-        unmatched_reason=reason,
-    )
+    return WorkspaceContractDetail(**detail)
 
 
 # ---------------------------------------------------------------------------
@@ -453,39 +373,49 @@ async def get_co_changes(
     if enricher is None:
         return WorkspaceCoChangesResponse(co_changes=[], total=0, total_mined=0)
 
-    co_changes = list(getattr(enricher, "_co_changes", []))
-    total_mined = getattr(enricher, "_total_co_changes", len(co_changes))
-
-    if repo:
-        co_changes = [
-            cc
-            for cc in co_changes
-            if cc.get("source_repo") == repo or cc.get("target_repo") == repo
-        ]
-    if min_strength > 0:
-        co_changes = [cc for cc in co_changes if cc.get("strength", 0) >= min_strength]
-
-    # Sort by strength descending
-    co_changes.sort(key=lambda cc: -cc.get("strength", 0))
-
-    total = len(co_changes)
-    co_changes = co_changes[:limit]
-
     return WorkspaceCoChangesResponse(
-        co_changes=[
-            WorkspaceCoChangeEntry(
-                source_repo=cc.get("source_repo", ""),
-                source_file=cc.get("source_file", ""),
-                target_repo=cc.get("target_repo", ""),
-                target_file=cc.get("target_file", ""),
-                strength=cc.get("strength", 0.0),
-                frequency=cc.get("frequency", 0),
-                last_date=cc.get("last_date", ""),
-            )
-            for cc in co_changes
-        ],
-        total=total,
-        total_mined=total_mined,
+        **reads.list_co_changes(
+            enricher.co_changes,
+            enricher.total_co_changes,
+            repo=repo,
+            min_strength=min_strength,
+            limit=limit,
+        )
+    )
+
+
+@router.get("/co-changes/structure", response_model=WorkspaceCoChangeStructure)
+async def get_co_change_structure(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+    source_repo: str = Query(...),
+    source_file: str = Query(...),
+    target_repo: str = Query(...),
+    target_file: str = Query(...),
+):
+    """Declared structure behind one co-changing pair: the contract links between
+    the two files, and between their repositories through any files.
+
+    Served per pair so the co-change drawer never downloads the whole link list.
+    """
+    _require_workspace(ws_config)
+    if enricher is None:
+        return WorkspaceCoChangeStructure(
+            pair_links=[],
+            repo_links_total=0,
+            repo_links_by_type={},
+            source_file_links=0,
+            target_file_links=0,
+        )
+
+    return WorkspaceCoChangeStructure(
+        **reads.co_change_structure(
+            enricher.contract_links,
+            source_repo=source_repo,
+            source_file=source_file,
+            target_repo=target_repo,
+            target_file=target_file,
+        )
     )
 
 
@@ -541,8 +471,7 @@ async def get_workspace_graph(
 
     if enricher is not None:
         # Contract-based edges: each link connects two repos
-        links = list(getattr(enricher, "_contract_links", []))
-        for lk in links:
+        for lk in enricher.contract_links:
             p_repo = lk.get("provider_repo", "")
             c_repo = lk.get("consumer_repo", "")
             if not p_repo or not c_repo or p_repo == c_repo:
@@ -564,9 +493,8 @@ async def get_workspace_graph(
             )
 
         # Co-change-based edges: aggregate per repo-pair
-        co_changes = list(getattr(enricher, "_co_changes", []))
         pair_strengths: dict[tuple[str, str], list[float]] = {}
-        for cc in co_changes:
+        for cc in enricher.co_changes:
             s_repo = cc.get("source_repo", "")
             t_repo = cc.get("target_repo", "")
             if not s_repo or not t_repo or s_repo == t_repo:
@@ -686,6 +614,143 @@ async def get_blast_radius(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/workspace/test-impact
+# ---------------------------------------------------------------------------
+
+
+@router.get("/test-impact", response_model=WorkspaceTestImpactResponse)
+async def get_test_impact(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+    repo: str = Query(..., description="Provider repo alias the changed files belong to."),
+    file: list[str] = Query(
+        ..., description="Changed file path, relative to that repo's root. Repeatable."
+    ),
+):
+    """Which tests in the consumer repos guard a change to these provider files.
+
+    Rows carry the basis they came from: ``measured`` when a coverage map
+    recorded the test against the consumer call site, ``inferred`` when the
+    consumer's call or import graph reaches it. A link the join could not
+    follow is reported in ``unresolved`` with its reason, never dropped, so an
+    empty answer always names the state that produced it.
+
+    Shares :func:`cross_repo_tests` with the MCP tools, so the REST answer and
+    the agent answer cannot drift apart.
+    """
+    _require_workspace(ws_config)
+
+    if enricher is None:
+        return WorkspaceTestImpactResponse(summary={"reason": "no_contract_data"})
+
+    # Imported here, not at module scope: the helper pulls in the cross-repo
+    # join and holds consumer indexes open, and a single-repo server never
+    # reaches this route.
+    from repowise.server.mcp_server._test_impact import cross_repo_tests
+
+    result = await cross_repo_tests(repo, list(file))
+    if result is None:
+        return WorkspaceTestImpactResponse(summary={"reason": "no_contract_data"})
+
+    from repowise.core.workspace.test_impact import workspace_test_impact_to_dict
+
+    return WorkspaceTestImpactResponse(**workspace_test_impact_to_dict(result))
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/actions
+# ---------------------------------------------------------------------------
+
+#: Per repository, per horizon: enough to say what leads, not a second copy of
+#: each repository's own list.
+WORKSPACE_ACTIONS_PER_REPO = 2
+
+
+@router.get("/actions", response_model=WorkspaceActionsResponse)
+async def get_workspace_actions(
+    request: Request,
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+) -> WorkspaceActionsResponse:
+    """What to do next across the workspace: each repository's lead actions,
+    plus the cross-repository ones only the workspace can see.
+
+    Each repository's list is the same fold its own Overview serves
+    (``load_actions_view``), trimmed to the work tiers, so the two pages never
+    disagree about what leads.
+    """
+    from repowise.core.persistence.crud.analysis.actions import load_actions_view
+    from repowise.core.persistence.database import get_session
+
+    _require_workspace(ws_config)
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    ws_root_path = Path(ws_root) if ws_root else None
+
+    repos: list[WorkspaceRepoActions] = []
+    for r in ws_config.repos:
+        repo_id = None
+        if ws_root_path:
+            db_path = (ws_root_path / r.path).resolve() / ".repowise" / "wiki.db"
+            repo_id = _query_repo_stats(db_path).get("repo_id")
+        if not repo_id:
+            repos.append(
+                WorkspaceRepoActions(
+                    alias=r.alias, repo_id=None, status="unavailable", reason="Not indexed yet."
+                )
+            )
+            continue
+        try:
+            async with get_session(resolve_session_factory(request.app.state, repo_id)) as session:
+                view = await load_actions_view(session, repo_id)
+        except Exception as exc:  # one repository must not cost the page
+            _log.warning("workspace actions: %s unavailable: %s", r.alias, exc)
+            repos.append(
+                WorkspaceRepoActions(
+                    alias=r.alias,
+                    repo_id=repo_id,
+                    status="unavailable",
+                    reason="Could not read this repository's index.",
+                )
+            )
+            continue
+        horizons = {}
+        for key, h in view["horizons"].items():
+            work = [a for a in h["actions"] if a["tier"] != "improve_signal"]
+            horizons[key] = {
+                **h,
+                "actions": work[:WORKSPACE_ACTIONS_PER_REPO],
+                "total": (h["by_tier"].get("act_now", 0) + h["by_tier"].get("plan", 0)),
+            }
+        repos.append(
+            WorkspaceRepoActions(
+                alias=r.alias, repo_id=repo_id, status="available", horizons=horizons
+            )
+        )
+
+    cross_repo: list[WorkspaceCrossRepoAction] = []
+    report = enricher.get_breaking_changes() if enricher is not None else None
+    if report:
+        view = reads.breaking_changes_view(report, repo=None, severity="breaking")
+        count = int(view.get("breaking_count") or 0)
+        if count:
+            impacted = sorted(view.get("impacted_repos") or [])
+            cross_repo.append(
+                WorkspaceCrossRepoAction(
+                    kind="breaking_contract",
+                    title=f"Resolve {count} breaking contract change{'' if count == 1 else 's'}",
+                    impact=(
+                        "A provider changed a route, topic or table that another repository "
+                        "consumes"
+                        + (f"; {', '.join(impacted)} depend on it." if impacted else ".")
+                    ),
+                    count=count,
+                    repos=impacted,
+                )
+            )
+    return WorkspaceActionsResponse(repos=repos, cross_repo=cross_repo)
+
+
+# ---------------------------------------------------------------------------
 # GET /api/workspace/breaking-changes
 # ---------------------------------------------------------------------------
 
@@ -697,47 +762,22 @@ async def get_breaking_changes(
     repo: str | None = Query(None, description="Filter to changes whose provider is in this repo."),
     severity: str | None = Query(None, description="Filter: breaking or warning."),
 ):
-    """Provider contract changes that break consumers across repos.
+    """Provider contract findings and directly linked consumer exposure across repos.
 
     Computed during the most recent ``repowise update --workspace`` by diffing the
     freshly-extracted contracts against the previously-indexed set, then resolving
-    each change's direct consumers from the matched links. Returns an empty report
-    (not 404) when no breaking changes were detected or no report exists yet.
+    each finding's direct consumers from the matched links. Returns an empty report
+    (not 404) when no findings were detected or no report exists yet; ``generated_at``
+    distinguishes those states.
     """
     _require_workspace(ws_config)
 
     report = enricher.get_breaking_changes() if enricher is not None else None
     if not report:
         return WorkspaceBreakingChangesResponse()
-
-    changes = list(report.get("changes", []))
-    if repo:
-        changes = [c for c in changes if c.get("provider_repo") == repo]
-    if severity:
-        changes = [c for c in changes if c.get("severity") == severity]
-
-    # Recompute rollups when a filter narrowed the set so the response stays
-    # self-consistent; otherwise pass the persisted rollups straight through.
-    if repo or severity:
-        impacted_repos = sorted(
-            {ic.get("repo", "") for c in changes for ic in c.get("impacted_consumers", [])}
-        )
-        impacted_services = sorted(
-            {ic.get("node_id", "") for c in changes for ic in c.get("impacted_consumers", [])}
-        )
-        return WorkspaceBreakingChangesResponse(
-            version=report.get("version", 1),
-            generated_at=report.get("generated_at") or None,
-            changes=changes,
-            total=len(changes),
-            breaking_count=sum(1 for c in changes if c.get("severity") == "breaking"),
-            warning_count=sum(1 for c in changes if c.get("severity") == "warning"),
-            impacted_repos=impacted_repos,
-            impacted_services=impacted_services,
-            total_impacted_consumers=sum(len(c.get("impacted_consumers", [])) for c in changes),
-        )
-
-    return WorkspaceBreakingChangesResponse(**report)
+    return WorkspaceBreakingChangesResponse(
+        **reads.breaking_changes_view(report, repo=repo, severity=severity)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -765,40 +805,7 @@ async def get_conformance(
     report = enricher.get_conformance() if enricher is not None else None
     if not report:
         return WorkspaceConformanceResponse()
-
-    if not repo:
-        # An artifact written before cycle totals were recorded has no
-        # total_cycles key; falling back to the listed count is better than
-        # letting the model default report zero cycles alongside a non-zero list.
-        return WorkspaceConformanceResponse(
-            **{
-                **report,
-                "total_cycles": report.get("total_cycles", len(report.get("cycles", []))),
-            }
-        )
-
-    # Narrow to findings that involve the repo, recomputing rollups so the
-    # response stays self-consistent.
-    scoped = enricher.get_conformance_for_repo(repo)
-    violations = scoped["violations"]
-    cycles = scoped["cycles"]
-    violating_repos = sorted(
-        {v.get("source", "").split("::", 1)[0] for v in violations}
-        | {v.get("target", "").split("::", 1)[0] for v in violations}
-    )
-    return WorkspaceConformanceResponse(
-        version=report.get("version", 1),
-        generated_at=report.get("generated_at") or None,
-        rules_evaluated=report.get("rules_evaluated", 0),
-        violations=violations,
-        cycles=cycles,
-        violation_count=len(violations),
-        cycle_count=len(cycles),
-        # The unscoped total, not the scoped count: how many cycles the
-        # workspace has does not change because the view was narrowed.
-        total_cycles=report.get("total_cycles", len(report.get("cycles", []))),
-        violating_repos=violating_repos,
-    )
+    return WorkspaceConformanceResponse(**reads.conformance_view(report, repo=repo))
 
 
 # ---------------------------------------------------------------------------
@@ -848,7 +855,7 @@ async def get_architecture(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/sync", status_code=202)
+@router.post("/sync", response_model=WorkspaceSyncResponse, status_code=202)
 async def sync_workspace(
     request: Request,
     repo_alias: str | None = Query(
@@ -868,10 +875,7 @@ async def sync_workspace(
     scheduler, cost ledger, and live-progress hooks all work without
     special cases.
     """
-    from repowise.server.schemas import (
-        WorkspaceSyncResponse,
-        WorkspaceSyncResult,
-    )
+    from repowise.server.schemas import WorkspaceSyncResult
 
     _require_workspace(ws_config)
 
@@ -1024,3 +1028,80 @@ async def sync_workspace(
         skipped=sum(1 for r in results if r.status == "skipped"),
         errors=sum(1 for r in results if r.status == "error"),
     )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/workspace/repos/{alias}
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/repos/{alias}",
+    response_model=WorkspaceRepoRemovedResponse,
+    status_code=200,
+)
+async def remove_workspace_repo(
+    alias: str,
+    request: Request,
+    ws_config=Depends(get_workspace_config),
+):
+    """Remove a repository from the workspace configuration.
+
+    Drops the repo entry from ``.repowise-workspace.yaml`` and cleans up
+    running server state (session factories, FTS, repo id mappings) so
+    the change takes effect immediately without requiring a restart.
+    """
+    _require_workspace(ws_config)
+
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    if ws_root is None:
+        raise HTTPException(status_code=500, detail="Workspace root missing on app state")
+    ws_root_path = Path(ws_root)
+
+    entry = ws_config.get_repo(alias)
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown repo alias '{alias}' in workspace.",
+        )
+
+    # Compute absolute repo path to clean up mappings
+    repo_path_str = str((ws_root_path / entry.path).resolve())
+
+    # Remove from config and save to disk
+    removed = ws_config.remove_repo(alias)
+    if removed is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown repo alias '{alias}' in workspace.",
+        )
+    ws_config.save(ws_root_path)
+
+    # Update live in-memory app state
+    request.app.state.workspace_config = ws_config
+
+    # Clean up associated in-memory references if present
+    path_to_rid = getattr(request.app.state, "workspace_path_to_repo_id", None)
+    repo_id = None
+    if path_to_rid and repo_path_str in path_to_rid:
+        repo_id = path_to_rid.pop(repo_path_str)
+
+    if repo_id is not None:
+        ws_sessions = getattr(request.app.state, "workspace_sessions", None)
+        if ws_sessions and repo_id in ws_sessions:
+            ws_sessions.pop(repo_id, None)
+
+        ws_fts = getattr(request.app.state, "workspace_fts", None)
+        if ws_fts and repo_id in ws_fts:
+            ws_fts.pop(repo_id, None)
+
+        ws_vs = getattr(request.app.state, "workspace_vector_stores", None)
+        if ws_vs and repo_id in ws_vs:
+            ws_vs.pop(repo_id, None)
+
+    return WorkspaceRepoRemovedResponse(
+        ok=True,
+        alias=alias,
+        remaining_repos=len(ws_config.repos),
+    )
+

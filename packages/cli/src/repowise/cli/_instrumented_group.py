@@ -64,6 +64,14 @@ class InstrumentedGroup(click.Group):
         #: name -> "module:attr", for commands not yet imported.
         self._lazy_commands: dict[str, str] = {}
 
+    def main(self, *args, **kwargs):
+        # Click expands wildcards in arguments on Windows by default, so a
+        # quoted ``--report "artifacts/**/lcov.info"`` arrived as several
+        # arguments, without the pruning the commands apply. A command that
+        # takes a glob expands it itself, the same on every platform.
+        kwargs.setdefault("windows_expand_args", False)
+        return super().main(*args, **kwargs)
+
     def add_lazy_command(self, name: str, target: str) -> None:
         """Register *name* without importing the module that defines it."""
         # Last registration wins, which is what ``click.Group.add_command``
@@ -179,10 +187,33 @@ class InstrumentedGroup(click.Group):
         except click.ClickException as exc:
             status = "error"
             error_type = type(exc).__name__  # class name only, never the message
+            # Only the exception that actually ends the command reports its
+            # reason. Recording at the raise site instead attributed a failure
+            # to runs that caught it and went on to succeed.
+            reason = getattr(exc, "reason", None)
+            if isinstance(reason, str) and reason:
+                from repowise.cli.platform import telemetry
+
+                telemetry.add_command_outcome(failure_reason=reason)
             raise
         except Exception as exc:
             status = "error"
             error_type = type(exc).__name__
+            # A task-group crash raises one leaf and stamps the class names of
+            # its siblings on it. `error_type` can only name the one, which
+            # cannot say whether a crash-looping server has a single fault or
+            # several. Read here rather than in the command, so every host of a
+            # task group is covered and an interrupt - handled above, and not a
+            # failure - never lands in the failure dimension.
+            from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
+
+            leaves = getattr(exc, GROUP_LEAF_TYPES_ATTR, None)
+            if isinstance(leaves, tuple) and leaves:
+                from repowise.cli.platform import telemetry
+
+                telemetry.add_command_outcome(
+                    error_leaves=",".join(leaves), error_leaf_count=len(leaves)
+                )
             raise
         finally:
             # ``invoked_subcommand`` is only populated once ``super().invoke``

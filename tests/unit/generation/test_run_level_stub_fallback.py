@@ -55,9 +55,13 @@ class _RecordingJobSystem:
         self.completed: list[str] = []
         self.failed: list[tuple[str, str]] = []
         self.levels: list[int] = []
+        self.flushes = 0
 
     def update_level(self, job_id, level):
         self.levels.append(level)
+
+    def flush(self, job_id):
+        self.flushes += 1
 
     def complete_page(self, job_id, page_id):
         self.completed.append(page_id)
@@ -85,6 +89,7 @@ def _run_level() -> tuple[list[GeneratedPage], _RecordingJobSystem, _RecordingSt
             on_page_ready=None,
             vector_store=store,
             completed_page_summaries={},
+            timings=None,
         )
         return await _GenerationRun.run_level(
             run,
@@ -100,6 +105,13 @@ def test_stub_fallback_is_recorded_as_a_failed_page() -> None:
     _pages, jobs, _store = _run_level()
 
     assert jobs.failed == [("module_page:lost", "upstream 529 overloaded")]
+
+
+def test_a_finished_level_flushes_its_checkpoint() -> None:
+    """Page completions buffer, so the level boundary has to make them durable."""
+    _pages, jobs, _store = _run_level()
+
+    assert jobs.flushes == 1
 
 
 def test_stub_fallback_is_not_recorded_as_completed() -> None:
@@ -119,3 +131,31 @@ def test_stub_fallback_is_kept_out_of_the_resume_ledger() -> None:
 
     embedded = [pid for batch in store.batches for (pid, *_rest) in batch]
     assert embedded == ["module_page:ok"]
+
+
+def test_the_streaming_sink_receives_the_sanitized_page() -> None:
+    """The sink writes the first stored version. Sanitizing only after the
+    level made the final pass rewrite the page and archive a spurious one."""
+    seen: list[str] = []
+
+    async def _go():
+        async def preamble():
+            page = _page("module_page:p")
+            page.content = "\n# module_page:p\n\nbody"
+            return page
+
+        run = SimpleNamespace(
+            semaphore=asyncio.Semaphore(1),
+            job_system=None,
+            job_id=None,
+            on_page_done=None,
+            on_page_ready=lambda page: seen.append(page.content),
+            vector_store=_RecordingStore(),
+            completed_page_summaries={},
+            timings=None,
+        )
+        await _GenerationRun.run_level(run, [("module_page:p", preamble())], level=4)
+
+    asyncio.run(_go())
+
+    assert seen == ["# module_page:p\n\nbody"]

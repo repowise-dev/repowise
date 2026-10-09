@@ -170,7 +170,7 @@ export function CommunitySummaryGrid({
             Architecture Communities ({communities.length})
           </CardTitle>
           {prefix && (
-            <a href={`${prefix}/architecture?view=graph&colorMode=community`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
+            <a href={`${prefix}/architecture?view=communities`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
               View in Graph →
             </a>
           )}

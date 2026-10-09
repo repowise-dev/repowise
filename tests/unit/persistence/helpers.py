@@ -41,3 +41,19 @@ async def insert_repo(session, **overrides) -> Repository:
     repo = await upsert_repository(session, **make_repo_kwargs(**overrides))
     await session.commit()
     return repo
+
+
+async def accept(session, decision_id: str, *, accepter: str = "tester"):
+    """Accept a stored record, the way the product does.
+
+    Tests that need a *governing* decision must go through this rather than
+    handing ``status="active"`` to ``bulk_upsert_decisions``: extraction cannot
+    create authority, so a setup that fabricates one is testing a state the
+    product can no longer reach.
+    """
+    from repowise.core.persistence.crud.authority import accept_decision
+    from repowise.core.persistence.models import DecisionRecord
+
+    record = await session.get(DecisionRecord, decision_id)
+    await accept_decision(session, record, accepter=accepter)
+    return record

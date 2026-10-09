@@ -369,11 +369,15 @@ def build_cpp_workspace_index(ctx: ResolverContext) -> CppWorkspaceIndex:
     path_set = set(ctx.path_set)
     # ``getattr``, not attribute access: the call resolver builds these
     # indexes from a minimal stand-in context that carries neither field
-    # (``call_resolver._Ctx``). A miss means disk and a live walk, which
+    # (``call_language_strategies._Ctx``). A miss means disk and a live walk, which
     # is what that path did before.
     source_map = getattr(ctx, "source_map", None)
 
-    cmake_files = discover_cmake_reactor(repo_path)
+    # Same reason as ``source_map`` above: the stand-in context has no
+    # snapshot, and None means the live walk this always did.
+    cmake_files = discover_cmake_reactor(
+        repo_path, snapshot=getattr(ctx, "walk_snapshot", None)
+    )
     file_api_targets = parse_cmake_file_api_reply(repo_path)
     bazel_files = discover_bazel_packages(repo_path) if is_bazel_repo(repo_path) else []
 

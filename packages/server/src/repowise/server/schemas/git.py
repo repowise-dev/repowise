@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
+
+from repowise.core.co_change import parse_partners
+from repowise.server.schemas.risk_semantics import RiskAuthority
 
 
 class GitMetadataResponse(BaseModel):
@@ -18,6 +22,8 @@ class GitMetadataResponse(BaseModel):
     primary_owner_name: str | None
     primary_owner_email: str | None
     primary_owner_commit_pct: float | None
+    # The primary (blame) owner's share of current lines; None without blame.
+    primary_owner_line_pct: float | None = None
     recent_owner_name: str | None
     recent_owner_commit_pct: float | None
     top_authors: list[dict]
@@ -72,11 +78,15 @@ class GitMetadataResponse(BaseModel):
             primary_owner_name=obj.primary_owner_name,  # type: ignore[attr-defined]
             primary_owner_email=obj.primary_owner_email,  # type: ignore[attr-defined]
             primary_owner_commit_pct=obj.primary_owner_commit_pct,  # type: ignore[attr-defined]
+            primary_owner_line_pct=getattr(obj, "primary_owner_line_pct", None),
             recent_owner_name=obj.recent_owner_name,  # type: ignore[attr-defined]
             recent_owner_commit_pct=obj.recent_owner_commit_pct,  # type: ignore[attr-defined]
             top_authors=json.loads(obj.top_authors_json),  # type: ignore[attr-defined]
             significant_commits=json.loads(obj.significant_commits_json),  # type: ignore[attr-defined]
-            co_change_partners=json.loads(obj.co_change_partners_json),  # type: ignore[attr-defined]
+            co_change_partners=[
+                p.record
+                for p in parse_partners(obj.co_change_partners_json)  # type: ignore[attr-defined]
+            ],
             is_hotspot=obj.is_hotspot,  # type: ignore[attr-defined]
             is_stable=obj.is_stable,  # type: ignore[attr-defined]
             # Normalize 0-1 -> 0-100 to match the rest of the HTTP API.
@@ -181,10 +191,14 @@ class CommitResponse(BaseModel):
     subsystems_changed: int
     entropy: float
     is_fix: bool
+    #: Supporting 0-10 calibrated diff-size/spread score; not a probability.
     change_risk_score: float | None
+    #: Absolute per-commit compatibility band; prefer ``review_priority``.
     change_risk_level: str | None
     # Repo-relative normalization (the portable signal).
+    #: Repo-relative percentile rank, 0-100.
     risk_percentile: float
+    #: Authoritative repo-relative review-priority tercile.
     review_priority: str
     # The dominant risk driver, surfaced on rows so reviewers don't have to
     # open every detail sheet. Recomputed deterministically from the stored
@@ -216,11 +230,57 @@ class RiskDriverResponse(BaseModel):
     label: str
 
 
+class CommitHealthFindingResponse(BaseModel):
+    """One thing a commit introduced or worsened."""
+
+    change_kind: str
+    dimension: str
+    biomarker_type: str
+    severity: str
+    #: Only set on ``worsened``: what the severity was before the commit.
+    severity_before: str | None = None
+    path: str
+    symbol: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    #: How directly the commit is responsible, from ``added_lines`` down to
+    #: ``unknown``. Lets a reader separate what a change wrote from what it
+    #: merely touched.
+    attribution_basis: str
+    reason: str
+
+
+class CommitHealthResponse(BaseModel):
+    """What a commit did to code health, as computed at index time.
+
+    Absent on the commit, rather than empty, when the commit was never
+    scanned — the scan is bounded, so older commits routinely have no row and
+    that is not the same claim as "changed nothing".
+    """
+
+    #: ``available`` when every changed file was compared, ``partial`` when
+    #: some were skipped (unsupported language, binary, unreadable).
+    status: str
+    introduced_count: int
+    worsened_count: int
+    resolved_count: int
+    files_analyzed: int
+    files_skipped: int
+    #: Worst first, capped. ``introduced_count + worsened_count`` is the true
+    #: total, so a shorter list means the rest was not stored.
+    findings: list[CommitHealthFindingResponse] = []
+
+
 class CommitDetailResponse(CommitResponse):
     """A single commit with its full, attributable risk-driver breakdown."""
 
     drivers: list[RiskDriverResponse] = []
     agent_channel: str | None = None
+    #: Files this commit touched, biggest churn first. Empty on an index
+    #: written before per-commit files were captured — re-index to fill it.
+    files: list[CommitFileResponse] = []
+    #: What the commit did to health. ``None`` when it was never scanned.
+    health: CommitHealthResponse | None = None
 
 
 class AgentTrendBucket(BaseModel):
@@ -286,6 +346,17 @@ class ChangeFeaturesResponse(BaseModel):
     exp: int | None
 
 
+class CommitFileResponse(BaseModel):
+    """One file a commit touched, with what it cost and what it carries."""
+
+    path: str
+    lines_added: int
+    lines_deleted: int
+    #: Bug-fix commits recorded against this path. ``None`` when the file is no
+    #: longer tracked, which is not the same claim as "never fixed".
+    prior_fixes: int | None = None
+
+
 class FixHistoryFileResponse(BaseModel):
     """One changed file's recency-weighted bug-fix record."""
 
@@ -323,9 +394,10 @@ class RiskRangeResponse(BaseModel):
 
     base: str
     head: str
-    #: Where the change lands. Read this before ``score``: it is the part that
-    #: distinguishes a small edit to a fragile file from a large boring one.
+    #: Separate historical evidence about where the change lands; it is not
+    #: folded into the authoritative percentile/classification.
     fix_history: FixHistoryResponse
+    risk_authority: RiskAuthority
     score: float
     #: What ``score`` measures. It tracks diff size and spread, not danger.
     score_measures: str
@@ -335,7 +407,7 @@ class RiskRangeResponse(BaseModel):
     risk_percentile: float | None
     review_priority: str | None
     classification: str | None
-    #: Absolute calibrated band, present only when there was no baseline to
+    #: Absolute model-score band, present only when there was no baseline to
     #: rank against — so it is not a peer of ``review_priority``.
     fallback_band: str | None
     is_fix: bool
@@ -344,7 +416,7 @@ class RiskRangeResponse(BaseModel):
 
 
 class RiskHistogramBucket(BaseModel):
-    """One bin of the repo's raw change-risk score distribution."""
+    """One bin of the repo's supporting 0-10 diff-shape score distribution."""
 
     start: float  # bin lower bound on the 0-10 raw score axis (inclusive)
     end: float  # bin upper bound (exclusive, except the final bin)
@@ -372,3 +444,17 @@ class CommitStatsResponse(BaseModel):
     risk_histogram: list[RiskHistogramBucket] = []
     moderate_cut: float | None = None  # raw score at the low/moderate boundary
     high_cut: float | None = None  # raw score at the moderate/high boundary
+
+
+class CoChangeResponse(BaseModel):
+    """Files that historically change together with one file.
+
+    Partners are the verbatim persisted records, not a projection: the
+    indexer writes fields this layer does not model, and a closed row model
+    would drop them.
+    """
+
+    file_path: str
+    co_change_partners: list[dict[str, Any]] = []
+    #: Partners meeting ``min_count`` shared commits.
+    total: int = 0

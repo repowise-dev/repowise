@@ -14,8 +14,8 @@ not just *bigger*.
 
 ## Pick the mode by what you pass
 
-- **Dashboard** — `get_health()` (no targets): a `directive` naming what to fix
-  first, then repo-level KPIs and the lowest-scoring files. Start here for "how
+- **Dashboard**: `get_health()` (no targets): `fix_first`, the ranked list of
+  what to fix first, then repo-level KPIs and the lowest-scoring files. Start here for "how
   healthy is this codebase?" or "what should we clean up?".
 - **Targeted** — `get_health(targets=["src/x.py", "src/y.py"])`: per-file score
   and the specific marker findings driving it. Use before/after a refactor,
@@ -33,9 +33,9 @@ not just *bigger*.
 
 ## How to use the results
 
-1. For "what should I refactor?" → dashboard mode, lead with `directive`, then
-   `get_health(targets=[worst files], include=["refactoring"])` and present the
-   ranked plans, not just the scores.
+1. For "what should I refactor?" → dashboard mode, lead with `fix_first`; open
+   an item with `get_health(fix_id=...)` for its steps and the tests to run,
+   and present the plan, not just the scores.
 2. Rank by `weighted_deficit`, not `score` — the score floors at 1.0.
 3. For a specific file → report the score, the top 2–3 marker findings, and
    what each one means in plain language. Avoid dumping the raw payload.

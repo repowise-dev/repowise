@@ -42,10 +42,10 @@ class ExpressDialect:
     name = "express"
     extensions = JS_TS
 
-    def collect_mounts(self, content: str) -> dict[str, str]:
-        """Find ``app.use('/prefix', router)`` mounts declared in *content*."""
+    def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
+        """Find ``app.use('/prefix', router)`` mounts declared in the file."""
         out: dict[str, str] = {}
-        for m in _APP_USE_RE.finditer(content):
+        for m in _APP_USE_RE.finditer(ctx.content):
             out[m.group(2).split(".")[-1]] = m.group(1)
         return out
 

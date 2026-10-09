@@ -2,12 +2,43 @@
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+from typing import Any
+
 from repowise.core.providers.embedding.base import Embedder
 
 from ..search import _SNIPPET_LEN, SearchResult, snippet_around
-from ._base import STORED_SNIPPET_CHARS, VectorStore, iter_embed_chunks
+from ._base import (
+    STORED_SNIPPET_CHARS,
+    BatchChunkFailure,
+    BatchEmbeddingError,
+    VectorStore,
+    cap_embed_text,
+    iter_embed_chunks,
+)
 
-__all__ = ["STORED_SNIPPET_CHARS", "LanceDBVectorStore"]
+__all__ = ["STORED_SNIPPET_CHARS", "LanceDBVectorStore", "read_recorded_vector_dim", "record_vector_dim"]
+
+# DataFusion expands every literal in a large ``IN`` filter into native query
+# state. A several-thousand-path generation level can otherwise commit
+# gigabytes before returning even though the selected result is small.
+_SUMMARY_PATH_BATCH_SIZE = 100
+
+logger = logging.getLogger(__name__)
+
+# LanceDB caches each table version's manifest (default cap 1 GiB), and every
+# manifest lists all fragments so far. Writes are batched below, but update runs
+# and long-lived servers still accumulate versions; reads only need the latest.
+_METADATA_CACHE_BYTES = 64 * 1024 * 1024
+
+# Rows per LanceDB write in ``embed_batch``. Every write is a table version
+# and a fragment, and ``merge_insert`` joins against the whole table, so
+# writing each 16-item embedder chunk on its own made a level's writes grow
+# with the square of its size (22k pages: about 1,400 versions). Rows are
+# buffered as float32 Arrow data, about 8 KB each at 1,536 dimensions, so a
+# full buffer stays near 32 MB.
+_UPSERT_BATCH_ROWS = 4096
 
 # ``STORED_SNIPPET_CHARS`` — how much of a page's content each row keeps — is
 # defined with the embed recipe and re-exported here so the historical import
@@ -20,6 +51,38 @@ __all__ = ["STORED_SNIPPET_CHARS", "LanceDBVectorStore"]
 # search sees was fixed when the row was written. So the row keeps enough
 # content for a window to exist inside it. A row written before the widening
 # holds 200 characters and simply windows to its opener.
+
+
+def _dim_record(db_path: str | Path, table_name: str) -> Path:
+    return Path(db_path) / f"{table_name}.vector_dim"
+
+
+def read_recorded_vector_dim(db_path: str | Path, table_name: str) -> int | None:
+    """The width last recorded for *table_name*, read without importing lancedb.
+
+    Importing lancedb costs well over a second, and the store-upgrade check
+    runs on every ``update``. ``None`` means "no usable record": no file, an
+    unparsable one, or a record whose table directory is gone.
+    """
+    if not (Path(db_path) / f"{table_name}.lance").is_dir():
+        return None
+    try:
+        dim = int(_dim_record(db_path, table_name).read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return None
+    return dim if dim > 0 else None
+
+
+def record_vector_dim(db_path: str | Path, table_name: str, dim: int | None) -> None:
+    """Record (or with ``None``, forget) *table_name*'s width. Best-effort."""
+    path = _dim_record(db_path, table_name)
+    try:
+        if dim is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_text(str(dim), encoding="ascii")
+    except OSError:
+        pass
 
 
 def _evidence(stored: str, query: str | None) -> str:
@@ -57,6 +120,38 @@ def _page_ids_in_filter(page_ids: list[str]) -> str:
     return f"page_id IN ({quoted})"
 
 
+def _last_row_per_page(batches: list[Any]) -> Any:
+    """One Arrow table from *batches*, keeping each page_id's last row.
+
+    ``merge_insert`` rejects a source holding a key twice once that key is
+    in the table, and inserts both rows when it is not. Written chunk by
+    chunk, a repeated page simply overwrote itself, so the last occurrence
+    is the one that wins here too.
+    """
+    import pyarrow as pa  # type: ignore[import]
+
+    table = pa.Table.from_batches(batches)
+    last = {page_id: i for i, page_id in enumerate(table.column("page_id").to_pylist())}
+    if len(last) < table.num_rows:
+        table = table.take(sorted(last.values()))
+    return table
+
+
+class LanceDBUnavailableError(RuntimeError):
+    """lancedb is missing or broken: an install problem, not a store one."""
+
+
+def store_open_fix_hint(exc: BaseException) -> str:
+    """What to do about a store that would not open, by what actually failed.
+
+    Only an install problem earns "reinstall"; a locked or unreadable table
+    does not, and telling someone to reinstall for it sends them the wrong way.
+    """
+    if isinstance(exc, (LanceDBUnavailableError, ImportError, AttributeError)):
+        return "pip install --force-reinstall lancedb"
+    return "retry; if it persists, run repowise doctor"
+
+
 class LanceDBVectorStore(VectorStore):
     """Vector store backed by LanceDB (embedded, local file storage).
 
@@ -78,18 +173,32 @@ class LanceDBVectorStore(VectorStore):
         self._table_name = table_name or self._TABLE_NAME
         self._db = None
         self._table = None
+        self._dim_recorded = False
 
     async def _ensure_connected(self) -> None:
         if self._db is not None:
             return
         try:
             import lancedb  # type: ignore[import]
-        except ImportError as exc:
-            raise RuntimeError(
-                "LanceDB is not installed. Install it with: pip install repowise-core[search]"
+
+            connect_async = lancedb.connect_async
+        except (ImportError, AttributeError) as exc:
+            # A partial install imports fine and lacks the async API, which
+            # used to surface as a bare AttributeError far from its cause.
+            raise LanceDBUnavailableError(
+                f"LanceDB is missing or broken ({type(exc).__name__}: {exc}). "
+                "Reinstall it with: pip install --force-reinstall lancedb"
             ) from exc
 
-        self._db = await lancedb.connect_async(self._db_path)
+        # ``Session`` arrived after the oldest supported LanceDB; without it
+        # the connection keeps the library default.
+        session_cls = getattr(lancedb, "Session", None)
+        kwargs = (
+            {"session": session_cls(metadata_cache_size_bytes=_METADATA_CACHE_BYTES)}
+            if session_cls is not None
+            else {}
+        )
+        self._db = await connect_async(self._db_path, **kwargs)
         table_names = await self._db.table_names()
         if self._table_name in table_names:
             self._table = await self._db.open_table(self._table_name)
@@ -135,8 +244,15 @@ class LanceDBVectorStore(VectorStore):
         if self._table is not None:
             existing_dim = self._existing_vector_dim(await self._table.schema())
             if existing_dim is None or existing_dim == dim:
+                # Re-stamped once per store so a missing or stale record heals
+                # on the next write instead of lingering.
+                if existing_dim is not None and not self._dim_recorded:
+                    record_vector_dim(self._db_path, self._table_name, existing_dim)
+                    self._dim_recorded = True
                 return
             # Embedder changed dimensions — the old vectors are unusable.
+            # Forget the record first so a crash mid-rebuild leaves none.
+            record_vector_dim(self._db_path, self._table_name, None)
             await self._db.drop_table(self._table_name)  # type: ignore[union-attr]
             self._table = None
 
@@ -153,6 +269,8 @@ class LanceDBVectorStore(VectorStore):
         self._table = await self._db.create_table(  # type: ignore[union-attr]
             self._table_name, schema=schema, exist_ok=True
         )
+        record_vector_dim(self._db_path, self._table_name, dim)
+        self._dim_recorded = True
 
     @staticmethod
     def _row(page_id: str, vector: list[float], metadata: dict) -> dict:
@@ -166,7 +284,8 @@ class LanceDBVectorStore(VectorStore):
             "content_snippet": content[:STORED_SNIPPET_CHARS],
         }
 
-    async def _upsert_rows(self, rows: list[dict]) -> None:
+    async def _upsert_rows(self, rows: list[dict] | Any) -> None:
+        """Upsert by ``page_id``; *rows* is a list of row dicts or an Arrow table."""
         # merge_insert: upsert by page_id (LanceDB 0.12+)
         try:
             await (
@@ -177,6 +296,8 @@ class LanceDBVectorStore(VectorStore):
             )
         except AttributeError:
             # Fallback for older LanceDB versions: delete + add
+            if not isinstance(rows, list):
+                rows = rows.to_pylist()
             for row in rows:
                 safe_id = str(row["page_id"]).replace("'", "''")
                 await self._table.delete(f"page_id = '{safe_id}'")  # type: ignore[union-attr]
@@ -184,42 +305,75 @@ class LanceDBVectorStore(VectorStore):
 
     async def embed_and_upsert(self, page_id: str, text: str, metadata: dict) -> None:
         await self._ensure_connected()
-        vectors = await self._embedder.embed([text])
+        vectors = await self._embedder.embed([cap_embed_text(page_id, text)])
         vector = vectors[0]
         await self._ensure_table(vector)
         meta = {"content": text, **metadata}
         await self._upsert_rows([self._row(page_id, vector, meta)])
 
     async def embed_batch(self, items: list[tuple[str, str, dict]]) -> None:
-        """Embed and upsert in request-sized chunks with failure isolation.
+        """Embed in request-sized chunks and write in a few large upserts.
 
         One embedder call per :data:`EMBED_BATCH_MAX_ITEMS` items — a whole
         generation level in a single request blew OpenAI's 300k-token cap
-        and silently lost every file-page embedding. A failed chunk no
-        longer sinks the rest; the summary error is raised at the end so
-        callers still see the loss.
+        and silently lost every file-page embedding. Writes are buffered up
+        to :data:`_UPSERT_BATCH_ROWS` rows (see there for why). A failed
+        chunk no longer sinks the rest; the summary error is raised at the
+        end so callers still see the loss. A failed write reports every
+        chunk it carried, at the ``persistence`` stage.
         """
         if not items:
             return
         await self._ensure_connected()
-        failed = 0
-        last_exc: Exception | None = None
+        failures: list[BatchChunkFailure] = []
+        pending: list[Any] = []  # Arrow record batches, one per embedded chunk
+        pending_chunks: list[list[tuple[str, str, dict]]] = []
+        pending_rows = 0
+
+        async def flush() -> None:
+            nonlocal pending_rows
+            if not pending:
+                return
+            try:
+                await self._upsert_rows(_last_row_per_page(pending))
+            except Exception as exc:  # preserve vectors' failure stage for callers
+                failures.extend(
+                    BatchChunkFailure(tuple(chunk), "persistence", exc) for chunk in pending_chunks
+                )
+            pending.clear()
+            pending_chunks.clear()
+            pending_rows = 0
+
         for chunk, texts in iter_embed_chunks(items):
             try:
                 vectors = await self._embedder.embed(texts)
+            except Exception as exc:  # isolate per provider request
+                failures.append(BatchChunkFailure(tuple(chunk), "embedding", exc))
+                continue
+            try:
                 await self._ensure_table(vectors[0])
                 rows = [
                     self._row(page_id, vector, {"content": text, **metadata})
                     for (page_id, text, metadata), vector in zip(chunk, vectors, strict=True)
                 ]
-                await self._upsert_rows(rows)
-            except Exception as exc:  # isolate per chunk
-                failed += len(chunk)
-                last_exc = exc
-        if failed:
-            raise RuntimeError(
-                f"embed_batch: {failed}/{len(items)} items failed to embed"
-            ) from last_exc
+                pending.append(await self._record_batch(rows))
+            except Exception as exc:  # preserve vectors' failure stage for callers
+                failures.append(BatchChunkFailure(tuple(chunk), "persistence", exc))
+                continue
+            pending_chunks.append(chunk)
+            pending_rows += len(rows)
+            if pending_rows >= _UPSERT_BATCH_ROWS:
+                await flush()
+        await flush()
+        if failures:
+            raise BatchEmbeddingError(failures=failures, total_items=len(items))
+
+    async def _record_batch(self, rows: list[dict]) -> Any:
+        """*rows* as Arrow data in the table's schema (float32 vectors)."""
+        import pyarrow as pa  # type: ignore[import]
+
+        schema = await self._table.schema()  # type: ignore[union-attr]
+        return pa.RecordBatch.from_pylist(rows, schema=schema)
 
     async def _search_by_vector(
         self, q_vec: list[float], limit: int, query: str | None = None
@@ -321,8 +475,20 @@ class LanceDBVectorStore(VectorStore):
         await self._ensure_connected()
         if self._table is None:
             return set()
-        rows = await self._table.query().select(["page_id"]).to_list()  # type: ignore[union-attr]
-        return {r["page_id"] for r in rows}
+
+        try:
+            rows = await self._table.query().select(["page_id"]).to_list()  # type: ignore[union-attr]
+            return {r["page_id"] for r in rows}
+        except Exception as exc:
+            logger.warning(
+                "Failed to read page IDs from LanceDB vector store at %s. "
+                "The vector store may be damaged. Repowise will regenerate "
+                "pages instead. Run 'repowise reindex' to rebuild the vector store. "
+                "Error: %s",
+                self._db_path,
+                exc,
+            )
+            return set()
 
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.
@@ -356,10 +522,11 @@ class LanceDBVectorStore(VectorStore):
         return {"summary": summary, "key_exports": []}
 
     async def get_page_summaries_by_paths(self, paths: list[str]) -> dict[str, dict]:
-        """One ``IN``-filtered scan instead of one filtered query per path.
+        """Read summaries with bounded ``IN``-filtered scans.
 
         Mirrors the single-path semantics (first row per path wins, empty
-        summaries dropped, ``key_exports`` not stored in this schema).
+        summaries dropped, ``key_exports`` not stored in this schema). Batches
+        bound DataFusion's native query-plan allocation for large levels.
         """
         if not paths:
             return {}
@@ -367,22 +534,25 @@ class LanceDBVectorStore(VectorStore):
         if self._table is None:
             return {}
 
-        try:
-            rows = (
-                await self._table.query()  # type: ignore[union-attr]
-                .where(_paths_in_filter(paths))
-                .select(["target_path", "content_snippet"])
-                .to_list()
-            )
-        except Exception:
-            return {}
-
         out: dict[str, dict] = {}
-        for r in rows:
-            tp = str(r.get("target_path") or "")
-            if not tp or tp in out:
-                continue
-            summary = str(r.get("content_snippet") or "")[:_SNIPPET_LEN]
-            if summary:
-                out[tp] = {"summary": summary, "key_exports": []}
+        unique_paths = list(dict.fromkeys(paths))
+        for index in range(0, len(unique_paths), _SUMMARY_PATH_BATCH_SIZE):
+            batch = unique_paths[index : index + _SUMMARY_PATH_BATCH_SIZE]
+            try:
+                rows = (
+                    await self._table.query()  # type: ignore[union-attr]
+                    .where(_paths_in_filter(batch))
+                    .select(["target_path", "content_snippet"])
+                    .to_list()
+                )
+            except Exception:
+                return {}
+
+            for row in rows:
+                target_path = str(row.get("target_path") or "")
+                if not target_path or target_path in out:
+                    continue
+                summary = str(row.get("content_snippet") or "")[:_SNIPPET_LEN]
+                if summary:
+                    out[target_path] = {"summary": summary, "key_exports": []}
         return out

@@ -144,7 +144,7 @@ RISK_PAYLOAD = {
                                "top_symbols": {"_prune_stale_file_rows": 9,
                                                "mark_tombstone_pages": 4}},
             "health_score": 3.2,
-            "coverage_pct": 61.0,
+            "line_coverage_pct": 61.0,
             "top_biomarkers": [
                 {"biomarker_type": "nested_complexity", "severity": "high",
                  "function_name": "persist_analysis", "impact": 0.71},
@@ -171,7 +171,6 @@ PR_RISK_PAYLOAD = {
     "targets": RISK_PAYLOAD["targets"],
     "directive": {
         "may_break": ["packages/core/src/repowise/core/pipeline/orchestrator.py"],
-        "may_break_tests": ["tests/unit/persistence/test_models.py"],
         "missing_cochanges": ["packages/core/src/repowise/core/persistence/models.py"],
         "missing_tests": ["packages/core/src/repowise/core/pipeline/persist.py"],
         "tests_to_run": ["tests/unit/pipeline/test_persist.py::test_tombstone"],
@@ -198,12 +197,12 @@ PR_RISK_PAYLOAD = {
             {"file": "persist.py", "decision_id": "dr-7", "title": "persist tombstones",
              "status": "accepted", "reason": "stale_governance"}
         ],
+        "recommended_reviewers": [{"name": "Raghav Chamadiya", "commits": 40}],
         "overall_risk_score": 7.4,
         "summary": "PR touches 1 file(s). ~1 downstream file(s) may be affected.",
     },
     "pr_blast_radius": {
         "transitive_affected": ["packages/core/src/repowise/core/pipeline/orchestrator.py"],
-        "recommended_reviewers": [{"name": "Raghav Chamadiya", "commits": 40}],
         "test_gaps": ["packages/core/src/repowise/core/pipeline/persist.py"],
         "overall_risk_score": 7.4,
     },
@@ -291,6 +290,21 @@ def test_a_symbol_spotlight_hit_carries_the_openable_file_beside_its_page_id():
 
     assert row["path"].endswith("::resolve_console_width"), "the payload changed shape"
     assert row["file"] == "packages/cli/src/repowise/cli/output.py"
+
+
+@pytest.mark.parametrize(
+    "hit",
+    [
+        {**SYMBOL_HIT, "path": "served/sym.py", "file": "old/sym.py"},
+        {**FILE_HIT, "path": "served/file.py", "file": "old/file.py"},
+        {**PAGE_HIT, "path": "served/page.py", "target_path": "old/page.py"},
+    ],
+    ids=["symbol", "file", "page"],
+)
+def test_every_row_kind_prefers_the_served_path(hit):
+    """``file`` and ``target_path`` are transition aliases of ``path``."""
+    row = project({"results": [hit]}, "q", multi=False)["results"][0]
+    assert row["path"].startswith("served/")
 
 
 def test_a_plain_file_hit_does_not_carry_a_redundant_file_key():
@@ -761,13 +775,13 @@ def test_risk_target_error_exits_one(monkeypatch, repo):
     assert json.loads(result.output)["error"] == "no index yet"
 
 
-def test_risk_projection_keeps_the_reviewers_nothing_else_names():
-    """``pr_blast_radius`` is the only carrier of ``recommended_reviewers``,
-    and the tool has already capped its noisy lists before the CLI sees it."""
+def test_risk_projection_keeps_the_reviewers_and_the_blast_block():
+    """The directive carries the reviewers; the capped blast block rides whole."""
     out = project_risk(PR_RISK_PAYLOAD)
-    assert out["pr_blast_radius"]["recommended_reviewers"] == [
+    assert out["directive"]["recommended_reviewers"] == [
         {"name": "Raghav Chamadiya", "commits": 40}
     ]
+    assert out["pr_blast_radius"] == PR_RISK_PAYLOAD["pr_blast_radius"]
 
 
 def test_risk_table_renders_the_health_and_coverage_it_keeps(monkeypatch, repo):
@@ -792,7 +806,8 @@ def test_risk_full_on_a_revspec_is_json_not_a_table(monkeypatch, repo):
     from repowise.core.analysis.change_risk import ChangeRiskResult
 
     monkeypatch.setattr(
-        "repowise.cli.commands.risk_cmd.change_risk_payload", lambda r: {"risk": 4.2}
+        "repowise.cli.commands.risk_cmd.change_risk_payload",
+        lambda r, **kw: {"risk": 4.2},
     )
     monkeypatch.setattr(
         "repowise.cli.commands.risk_cmd.score_live_change",
@@ -817,6 +832,7 @@ class _FakeFeatures:
     entropy = 0.5
     exp = 40
     is_fix = False
+    file_churn = ()
 
 
 class _FakeChangeResult:

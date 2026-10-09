@@ -87,14 +87,12 @@ async def test_honors_the_exclusion_spec(async_session, tmp_path) -> None:
 async def test_unmeasured_repo_reports_none_rather_than_a_perfect_score(
     async_session, tmp_path
 ) -> None:
-    """No rows is "not measured", not 10.0.
+    """No rows is "not measured", not 10.0, in the summary and the badge alike.
 
-    ``get_health_summary`` returns 10.0 here, which the badge endpoint has
-    always rendered and still does — it maps ``None`` back to 10.0 itself. The
-    crud helper stays honest so a new caller is not handed a perfect score for
-    a repo nobody has analysed.
+    A repository of only data and config files has no rows, since those files
+    never get one, so a 10.0 here would badge it as perfect.
     """
     repo = await upsert_repository(async_session, name="repo", local_path=str(tmp_path))
 
     assert await get_average_health(async_session, repo.id) is None
-    assert (await get_health_summary(async_session, repo.id))["average_health"] == 10.0
+    assert (await get_health_summary(async_session, repo.id))["average_health"] is None

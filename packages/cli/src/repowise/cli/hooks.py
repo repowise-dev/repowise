@@ -1,15 +1,17 @@
-"""Git hook management for repowise auto-sync.
+"""Git hook management for repowise auto-sync and the opt-in security check.
 
 Installs/uninstalls a post-commit hook that runs ``repowise update`` in the
-background after every commit, keeping the wiki in sync automatically.
+background after every commit, keeping the wiki in sync automatically, and on
+request a pre-commit block that runs ``repowise security check --staged``.
 
-The hook uses start/end markers so it can safely coexist with other hooks
+Each block uses start/end markers so it can safely coexist with other hooks
 in the same file (a lint hook, another tool's index hook).
 """
 
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 import stat
 import subprocess
@@ -57,13 +59,21 @@ _LEGACY_HOOK_FINGERPRINTS = (
 # The outer ``{ ... } &`` brace group ensures the queued marker is written
 # synchronously (so the augment hook sees it on the *next* tool call after
 # the commit) before the heavy update spawns into the background.
+#
+# Two gates keep a default-on hook boring. It fires only when
+# ``.repowise/state.json`` exists, which is the precondition ``repowise
+# update`` itself checks, so a dry-run directory or a deleted store does not
+# fail on every commit forever. And when ``repowise`` is not on PATH it looks
+# only in the repo's own ``.venv``; the old ``uv run`` fallback resolved
+# whatever project ``uv`` found above the repo, on every commit, in repos
+# that were not Python projects at all.
 _HOOK_SCRIPT = """\
 # repowise-hook-start
 # Auto-syncs repowise wiki after each commit (background, non-blocking).
 # Installed by: repowise hook install
 {
   ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-  [ -d "$ROOT/.repowise" ] || exit 0
+  [ -f "$ROOT/.repowise/state.json" ] || exit 0
   HEAD=$(git rev-parse HEAD 2>/dev/null) || HEAD=""
   TS=$(date +%s 2>/dev/null) || TS=""
   if [ -n "$TS" ]; then
@@ -79,13 +89,63 @@ _HOOK_SCRIPT = """\
     cd "$ROOT" || exit 1
     if command -v repowise >/dev/null 2>&1; then
       repowise update >> "$LOG" 2>&1
-    elif command -v uv >/dev/null 2>&1; then
-      uv run repowise update >> "$LOG" 2>&1
+    elif [ -x "$ROOT/.venv/bin/repowise" ]; then
+      "$ROOT/.venv/bin/repowise" update >> "$LOG" 2>&1
+    elif [ -x "$ROOT/.venv/Scripts/repowise.exe" ]; then
+      "$ROOT/.venv/Scripts/repowise.exe" update >> "$LOG" 2>&1
     fi
   ) &
 } >/dev/null 2>&1
 # repowise-hook-end
 """
+
+_SECURITY_MARKER = "# repowise-security-hook-start"
+_SECURITY_MARKER_END = "# repowise-security-hook-end"
+
+# Pre-commit contract: only exit 1 (the gate failed) blocks the commit. Exit 2
+# (the check could not run) and a missing ``repowise`` let it through, because
+# a broken tool must not stop anyone committing. ``|| RW_STATUS=$?`` keeps a
+# ``sh -e`` hook alive to read the code, and there is no ``exit 0`` at the end,
+# so the user's own pre-commit lines after the block still run.
+_SECURITY_HOOK_SCRIPT = """\
+# repowise-security-hook-start
+# Blocks a commit whose staged lines add a security finding.
+# Installed by: repowise hook install --security (skip once: git commit --no-verify)
+RW_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || RW_ROOT=""
+RW_BIN=""
+if command -v repowise >/dev/null 2>&1; then
+  RW_BIN=repowise
+elif [ -x "$RW_ROOT/.venv/bin/repowise" ]; then
+  RW_BIN="$RW_ROOT/.venv/bin/repowise"
+elif [ -x "$RW_ROOT/.venv/Scripts/repowise.exe" ]; then
+  RW_BIN="$RW_ROOT/.venv/Scripts/repowise.exe"
+fi
+if [ -n "$RW_BIN" ]; then
+  RW_STATUS=0
+  "$RW_BIN" security check --staged || RW_STATUS=$?
+  if [ "$RW_STATUS" -eq 1 ]; then
+    echo "repowise: commit blocked by the security check (git commit --no-verify skips it)." >&2
+    exit 1
+  elif [ "$RW_STATUS" -ne 0 ]; then
+    echo "repowise: the security check could not run (exit $RW_STATUS); commit allowed." >&2
+  fi
+else
+  echo "repowise: repowise not found; security check skipped, commit allowed." >&2
+fi
+# repowise-security-hook-end
+"""
+
+
+def _write_hook(hook_path: Path, content: str) -> None:
+    """Write a hook script with LF endings and make it executable.
+
+    sh reads ``then\\r`` as a syntax error, and a pre-commit hook that errors
+    blocks every commit.
+    """
+    hook_path.write_text(content, encoding="utf-8", newline="\n")
+    # Make executable (no-op on Windows but harmless)
+    with contextlib.suppress(OSError):
+        hook_path.chmod(hook_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
 def _git_root(path: Path) -> Path | None:
@@ -105,6 +165,16 @@ def _hooks_dir(repo_path: Path) -> Path | None:
     metadata dir — so ``root / ".git" / "hooks"`` is ``NotADirectoryError``
     territory. Ask git for the real hooks path so both layouts work, and fall
     back to the ``.git/hooks`` heuristic when git is unavailable or not a repo.
+
+    ``git rev-parse --git-path hooks`` also honours ``core.hooksPath``, which
+    husky and lefthook both set. A *global* ``core.hooksPath`` (say
+    ``~/.githooks``) resolves outside any repo, so the hook is shared:
+    ``status`` then reports installed from every repo, and ``uninstall`` run
+    in one repo removes it for all of them. Following the config is still
+    correct, because that directory is genuinely where git looks, and the
+    hook body is repo-scoped at runtime -- it resolves its own ``$ROOT`` and
+    returns early unless ``$ROOT/.repowise`` exists -- so a shared hook is
+    inert in repos with no index rather than wrong.
     """
     try:
         result = subprocess.run(
@@ -116,15 +186,116 @@ def _hooks_dir(repo_path: Path) -> Path | None:
         )
         if result.returncode == 0:
             p = Path(result.stdout.strip())
-            if p.is_absolute():
-                return p
-            return repo_path / p
+            if not p.is_absolute():
+                p = repo_path / p
+            return _husky_user_hook_dir(p)
     except Exception:
         pass
     root = _git_root(repo_path)
     if root is None:
         return None
     return root / ".git" / "hooks"
+
+
+def removal_blocked_reason(repo_path: Path, hooks_dir: Path) -> str | None:
+    """Why the hook at *hooks_dir* must not be removed from *repo_path*, or ``None``.
+
+    Two shapes, both about a hooks directory that outlives this one repo.
+
+    A linked git worktree stores no hooks of its own: ``_hooks_dir`` follows
+    ``--git-path``, which resolves through the worktree's common dir straight
+    to the main checkout's ``.git/hooks``. Removing the hook from a worktree
+    would remove the one hook every other worktree (including the main
+    checkout) also runs on their own commits.
+
+    A global ``core.hooksPath`` (husky, lefthook, a user dotfile) is the same
+    problem at machine scope: the directory is shared across every repo that
+    points at it, and ``uninstall`` is deliberately scoped to one repo (unlike
+    ``repowise hook uninstall``, whose whole job is the hooks command).
+    """
+    from repowise.cli.worktree import detect_worktree_base
+
+    base = detect_worktree_base(repo_path)
+    if base is not None:
+        return f"this is a worktree; the hook lives in the main checkout at {base}"
+
+    root = _git_root(repo_path)
+    if root is not None:
+        try:
+            hooks_dir.resolve().relative_to(root.resolve())
+            return None
+        except (OSError, ValueError):
+            pass
+    return (
+        "core.hooksPath points outside this repo; removing the hook here "
+        "would remove it for every repo that shares it"
+    )
+
+
+def _is_shell_hook(content: str) -> bool:
+    """Whether an existing hook file can take an appended POSIX sh block.
+
+    A hook with no shebang, or a sh, bash, dash, zsh or ksh one, can. A hook
+    written for node or python cannot, and appending shell to it would break
+    the user's own hook on every commit after this one.
+    """
+    first = content.split("\n", 1)[0].strip()
+    if not first.startswith("#!"):
+        return True
+    return re.search(r"\b(sh|bash|dash|zsh|ksh)\b", first) is not None
+
+
+def _husky_user_hook_dir(hooks_dir: Path) -> Path:
+    """Redirect husky's generated shim directory to its user-hook directory.
+
+    husky points ``core.hooksPath`` at ``.husky/_``, which it regenerates on
+    every install and gitignores wholesale (``.husky/_/.gitignore`` is ``*``), so
+    a hook written there is deleted by the next ``npm install``. husky's shim
+    dispatches to ``.husky/<hook-name>`` one level up, which is the committed,
+    durable location.
+
+    Dispatch does not depend on which user hooks already exist. husky writes a
+    shim for a fixed list of all 14 git hook names on every install, regardless
+    of what is in ``.husky/`` (husky 9.1.7 ``index.js``: the ``l`` array includes
+    ``post-commit``, and ``l.forEach`` writes each one unconditionally), and each
+    shim sources ``_/h``, which execs ``.husky/<name>`` when that file exists and
+    exits 0 when it does not. So a hook written here is picked up immediately
+    rather than waiting for the next ``npm install``.
+
+    The exception is a checkout where husky has never run: ``.husky/_`` does not
+    exist, ``core.hooksPath`` points at a missing directory, and git therefore
+    runs no hooks at all -- husky's own included. Writing to ``.husky/`` is still
+    the right destination, since it survives, but nothing fires until husky is
+    installed. :func:`husky_pending_reason` reports that so it is visible at
+    install time instead of looking like a working hook.
+    """
+    if hooks_dir.name != "_":
+        return hooks_dir
+    # Only remap a directory that really is husky's, not any directory named
+    # "_". The generated helpers are the strongest signal, but they are absent
+    # in a fresh worktree where husky has not been installed yet; there the
+    # parent being a ``.husky`` directory is what identifies the layout.
+    is_husky = any((hooks_dir / marker).exists() for marker in ("h", "husky.sh"))
+    if not (is_husky or hooks_dir.parent.name == ".husky"):
+        return hooks_dir
+    return hooks_dir.parent
+
+
+def husky_pending_reason(hooks_dir: Path) -> str | None:
+    """Why a hook in *hooks_dir* will not run yet, or None if it will.
+
+    Only one case: the husky user-hook directory in a checkout where husky has
+    not been installed, so ``core.hooksPath`` points at a ``_`` that is not there
+    and git runs nothing. Silent in every other layout.
+    """
+    if hooks_dir.name != ".husky":
+        return None
+    if (hooks_dir / "_" / "h").exists():
+        return None
+    return (
+        "husky is not set up in this checkout (no .husky/_), so git runs no hooks "
+        "here yet -- run your package manager's install to activate it"
+    )
 
 
 def _strip_legacy_block(content: str) -> tuple[str, bool]:
@@ -152,9 +323,7 @@ def _strip_legacy_block(content: str) -> tuple[str, bool]:
             start = i
             for j in range(i - 1, -1, -1):
                 stripped = lines[j].strip()
-                if stripped.startswith("# post-commit hook") or stripped.startswith(
-                    "# Auto-syncs"
-                ):
+                if stripped.startswith("# post-commit hook") or stripped.startswith("# Auto-syncs"):
                     start = j
                     break
                 if not stripped or stripped.startswith("#!"):
@@ -171,11 +340,20 @@ def _strip_legacy_block(content: str) -> tuple[str, bool]:
             break
         end = k
 
-    cleaned = "\n".join(lines[:start] + lines[end + 1:]).rstrip() + "\n"
+    cleaned = "\n".join(lines[:start] + lines[end + 1 :]).rstrip() + "\n"
     return cleaned, True
 
 
-def _replace_marker_block(content: str, new_block: str) -> tuple[str, bool]:
+def _marker_block_re(start: str, end: str) -> re.Pattern[str]:
+    return re.compile(rf"{re.escape(start)}.*?{re.escape(end)}\n?", flags=re.DOTALL)
+
+
+def _replace_marker_block(
+    content: str,
+    new_block: str,
+    start: str = _HOOK_MARKER,
+    end: str = _HOOK_MARKER_END,
+) -> tuple[str, bool]:
     """Replace an existing repowise marker block in place. Returns (content, replaced).
 
     Used when the hook is being upgraded: the marker is present but the
@@ -193,10 +371,7 @@ def _replace_marker_block(content: str, new_block: str) -> tuple[str, bool]:
     breaking the shell quoting of the printf format string. A callable
     bypasses escape processing entirely.
     """
-    pattern = re.compile(
-        rf"{re.escape(_HOOK_MARKER)}.*?{re.escape(_HOOK_MARKER_END)}\n?",
-        flags=re.DOTALL,
-    )
+    pattern = _marker_block_re(start, end)
     if not pattern.search(content):
         return content, False
     replacement_text = new_block.rstrip() + "\n"
@@ -223,43 +398,92 @@ def install(repo_path: Path) -> str:
     hooks_dir.mkdir(parents=True, exist_ok=True)
     hook_path = hooks_dir / "post-commit"
 
+    pending = husky_pending_reason(hooks_dir)
+
+    def _annotate(state: str) -> str:
+        return f"{state} ({pending})" if pending else state
+
     migrated_legacy = False
     if hook_path.exists():
         content = hook_path.read_text(encoding="utf-8")
+        if not _is_shell_hook(content):
+            return "not installed: the existing post-commit hook is not a shell script"
         content, migrated_legacy = _strip_legacy_block(content)
         if migrated_legacy:
-            hook_path.write_text(content, encoding="utf-8")
+            _write_hook(hook_path, content)
 
         if _HOOK_MARKER in content:
             # Marker block present. Decide whether to leave alone or upgrade.
             current_block = _HOOK_SCRIPT.rstrip() + "\n"
             if current_block in content:
-                return (
-                    "migrated legacy hook" if migrated_legacy else "already installed"
-                )
+                state = "migrated legacy hook" if migrated_legacy else "already installed"
+                return _annotate(_with_hook_execution_state(hook_path, state))
             content, replaced = _replace_marker_block(content, _HOOK_SCRIPT)
             if replaced:
-                hook_path.write_text(content, encoding="utf-8")
-                with contextlib.suppress(OSError):
-                    hook_path.chmod(
-                        hook_path.stat().st_mode
-                        | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH
-                    )
-                return "upgraded"
-            return "already installed"
+                _write_hook(hook_path, content)
+                return _annotate(_with_hook_execution_state(hook_path, "upgraded"))
+            return _annotate("already installed")
         # Append to existing hook
-        hook_path.write_text(
-            content.rstrip() + "\n\n" + _HOOK_SCRIPT,
-            encoding="utf-8",
-        )
+        _write_hook(hook_path, content.rstrip() + "\n\n" + _HOOK_SCRIPT)
     else:
-        hook_path.write_text("#!/bin/sh\n" + _HOOK_SCRIPT, encoding="utf-8")
+        _write_hook(hook_path, "#!/bin/sh\n" + _HOOK_SCRIPT)
 
-    # Make executable (no-op on Windows but harmless)
-    with contextlib.suppress(OSError):
-        hook_path.chmod(hook_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return _annotate(_with_hook_execution_state(hook_path, "installed"))
 
-    return "installed"
+
+def _is_executable(path: Path) -> bool:
+    if os.name == "nt":
+        return True
+    try:
+        return bool(path.stat().st_mode & stat.S_IXUSR)
+    except OSError:
+        return False
+
+
+def _with_hook_execution_state(path: Path, state: str) -> str:
+    if os.name != "nt":
+        with contextlib.suppress(OSError):
+            path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return state if _is_executable(path) else f"{state} but not executable"
+
+
+def install_security(repo_path: Path) -> str:
+    """Install the opt-in pre-commit block running ``repowise security check --staged``.
+
+    The block goes first, right after the shebang, so a user script that ends
+    in ``exit 0`` cannot make it unreachable. An older block is replaced in
+    place. Returns a human-readable status message.
+    """
+    if _git_root(repo_path) is None or (hooks_dir := _hooks_dir(repo_path)) is None:
+        return "not a git repository"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook_path = hooks_dir / "pre-commit"
+    pending = husky_pending_reason(hooks_dir)
+    content = hook_path.read_text(encoding="utf-8") if hook_path.exists() else None
+    if content is not None and not _is_shell_hook(content):
+        return "not installed: the existing pre-commit hook is not a shell script"
+    content, state = _with_security_block(content)
+    if state != "already installed":
+        _write_hook(hook_path, content)
+    return f"{state} ({pending})" if pending else state
+
+
+def _with_security_block(content: str | None) -> tuple[str, str]:
+    """*content* (``None`` for no hook yet) holding the current block, and what changed."""
+    block = _SECURITY_HOOK_SCRIPT.rstrip() + "\n"
+    if content is None:
+        return "#!/bin/sh\n" + block, "installed"
+    if block in content:
+        return content, "already installed"
+    if _SECURITY_MARKER in content:
+        content, replaced = _replace_marker_block(
+            content, block, _SECURITY_MARKER, _SECURITY_MARKER_END
+        )
+        return content, "upgraded" if replaced else "already installed"
+    if content.startswith("#!"):
+        shebang, _, rest = content.partition("\n")
+        return f"{shebang}\n{block}{rest}", "installed"
+    return f"{block}{content}", "installed"
 
 
 def uninstall(repo_path: Path) -> str:
@@ -268,6 +492,15 @@ def uninstall(repo_path: Path) -> str:
     Preserves other tools' hook content. Deletes the file entirely if
     repowise was the only content.
     """
+    return _remove_block(repo_path, "post-commit", _HOOK_MARKER, _HOOK_MARKER_END)
+
+
+def uninstall_security(repo_path: Path) -> str:
+    """Remove the repowise security block from the pre-commit hook, as :func:`uninstall`."""
+    return _remove_block(repo_path, "pre-commit", _SECURITY_MARKER, _SECURITY_MARKER_END)
+
+
+def _remove_block(repo_path: Path, hook_name: str, start: str, end: str) -> str:
     root = _git_root(repo_path)
     if root is None:
         return "not a git repository"
@@ -275,31 +508,38 @@ def uninstall(repo_path: Path) -> str:
     hooks_dir = _hooks_dir(repo_path)
     if hooks_dir is None:
         return "not a git repository"
-    hook_path = hooks_dir / "post-commit"
+    hook_path = hooks_dir / hook_name
     if not hook_path.exists():
-        return "no post-commit hook found"
+        return f"no {hook_name} hook found"
 
-    content = hook_path.read_text(encoding="utf-8")
-    if _HOOK_MARKER not in content:
-        return "repowise hook not found in post-commit"
+    try:
+        content = hook_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return f"could not read {hook_name} hook: {exc}"
+    if start not in content:
+        return f"repowise hook not found in {hook_name}"
 
-    new_content = re.sub(
-        rf"{re.escape(_HOOK_MARKER)}.*?{re.escape(_HOOK_MARKER_END)}\n?",
-        "",
-        content,
-        flags=re.DOTALL,
-    ).strip()
+    new_content = _marker_block_re(start, end).sub("", content).strip()
 
     if not new_content or new_content in ("#!/bin/bash", "#!/bin/sh"):
         hook_path.unlink()
         return "removed"
     else:
-        hook_path.write_text(new_content + "\n", encoding="utf-8")
+        _write_hook(hook_path, new_content + "\n")
         return "removed (other hook content preserved)"
 
 
 def status(repo_path: Path) -> str:
     """Check if the repowise post-commit hook is installed."""
+    return _block_status(repo_path, "post-commit", _HOOK_MARKER)
+
+
+def security_status(repo_path: Path) -> str:
+    """Check if the repowise security pre-commit block is installed."""
+    return _block_status(repo_path, "pre-commit", _SECURITY_MARKER)
+
+
+def _block_status(repo_path: Path, hook_name: str, start: str) -> str:
     root = _git_root(repo_path)
     if root is None:
         return "not a git repository"
@@ -307,11 +547,16 @@ def status(repo_path: Path) -> str:
     hooks_dir = _hooks_dir(repo_path)
     if hooks_dir is None:
         return "not a git repository"
-    hook_path = hooks_dir / "post-commit"
+    hook_path = hooks_dir / hook_name
     if not hook_path.exists():
         return "not installed"
 
-    content = hook_path.read_text(encoding="utf-8")
-    if _HOOK_MARKER in content:
-        return "installed"
+    try:
+        content = hook_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "unreadable"
+    if start in content:
+        pending = husky_pending_reason(hook_path.parent)
+        state = "installed" if _is_executable(hook_path) else "installed but not executable"
+        return f"{state} ({pending})" if pending else state
     return "not installed"

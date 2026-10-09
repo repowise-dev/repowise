@@ -12,6 +12,7 @@ from repowise.core.ingestion.git_indexer.function_blame import (
     distinct_commits_in_range,
     median_author_time_in_range,
     recent_commits_in_range,
+    recent_distinct_commits_in_range,
 )
 
 _PORCELAIN = (
@@ -51,6 +52,14 @@ def test_parse_porcelain_indexes_each_final_line():
     assert lines[4] == ("cccccccccccccccccccccccccccccccccccccccc", 1755000000)
 
 
+def test_parse_porcelain_shares_one_entry_per_commit():
+    # Lines from the same commit hold the same tuple, so the index costs one
+    # entry per commit rather than one tuple and sha string per line.
+    lines, _ = _parse_porcelain(_PORCELAIN)
+    assert lines[1] is lines[2]
+    assert lines[1] is not lines[3]
+
+
 def test_distinct_commits_in_range():
     idx = BlameIndex(lines=_parse_porcelain(_PORCELAIN)[0])
     # Range 1-2 → single sha (a*).
@@ -84,6 +93,19 @@ def test_recent_commits_in_range():
         "b" * 40,
         "c" * 40,
     }
+
+
+def test_recent_distinct_commits_in_range_keeps_the_newest():
+    idx = BlameIndex(lines=_parse_porcelain(_PORCELAIN)[0])
+    assert recent_distinct_commits_in_range(idx, 1, 4, limit=10) == ["c" * 40, "b" * 40, "a" * 40]
+    assert recent_distinct_commits_in_range(idx, 1, 4, limit=2) == ["c" * 40, "b" * 40]
+    assert recent_distinct_commits_in_range(BlameIndex(), 1, 4, limit=2) == []
+    assert recent_distinct_commits_in_range(idx, 4, 1, limit=2) == []
+
+
+def test_recent_distinct_commits_in_range_breaks_ties_on_sha():
+    idx = BlameIndex(lines={1: ("b", 5), 2: ("a", 5), 3: ("c", 1)})
+    assert recent_distinct_commits_in_range(idx, 1, 3, limit=2) == ["a", "b"]
 
 
 def test_build_blame_index_skips_low_commit_count():

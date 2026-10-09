@@ -10,16 +10,26 @@ partition — are explicit.
 
 from __future__ import annotations
 
-import networkx as nx
+from types import SimpleNamespace
 
+import networkx as nx
+import pytest
+
+from repowise.core.analysis.health.function_blame_rollup import (
+    blame_commit_entries,
+    commit_spans,
+)
 from repowise.core.analysis.health.refactoring import (
     RefactoringContext,
     detect_refactorings,
 )
 from repowise.core.analysis.health.refactoring.split_file import (
     SplitFileDetector,
+    _CallSignals,
     _dominant_token,
+    _module_label,
     _shim_required,
+    _weighted_graph,
 )
 from repowise.core.ingestion.git_indexer.function_blame import BlameIndex
 
@@ -71,15 +81,22 @@ def _ctx(
     nloc: int = 600,
     language: str = "python",
     blame_index: BlameIndex | None = None,
-    module_map: dict[str, str] | None = None,
+    community_label_map: dict[str, str] | None = None,
 ) -> RefactoringContext:
+    # The file's symbols stand in for the walker's functions, and the spans go
+    # through the projection the engine uses on a full index.
+    functions = [
+        SimpleNamespace(name=d["name"], start_line=d["start_line"], end_line=d["end_line"])
+        for _n, d in g.nodes(data=True)
+        if d.get("file_path") == file_path and d.get("start_line") is not None
+    ]
     return RefactoringContext(
         file_path=file_path,
         language=language,
         nloc=nloc,
         graph=g,
-        blame_index=blame_index,
-        module_map=module_map or {},
+        commit_spans=commit_spans(functions, blame_commit_entries(functions, blame_index)),
+        community_label_map=community_label_map or {},
     )
 
 
@@ -371,8 +388,8 @@ def test_import_name_signal_separates_distinct_dependencies():
         _add_foreign_call(g, f"big.py::fn_{i}", "ext/b.py", "beta_dep")
     _imports(g, "big.py", "ext/a.py", ["alpha_dep"])
     _imports(g, "big.py", "ext/b.py", ["beta_dep"])
-    module_map = {"ext/a.py": "extpkg", "ext/b.py": "extpkg"}
-    out = _detect(g, "big.py", module_map=module_map)
+    community_label_map = {"ext/a.py": "extpkg", "ext/b.py": "extpkg"}
+    out = _detect(g, "big.py", community_label_map=community_label_map)
     assert len(out) == 1
     s = out[0]
     assert s.evidence["group_count"] == 2
@@ -391,8 +408,8 @@ def test_foreign_module_proxy_is_used_when_imported_names_empty():
         _add_foreign_call(g, f"big.py::fn_{i}", "ext/a.py", "alpha_dep")
     for i in range(4, 8):
         _add_foreign_call(g, f"big.py::fn_{i}", "ext/b.py", "beta_dep")
-    module_map = {"ext/a.py": "moda", "ext/b.py": "modb"}
-    out = _detect(g, "big.py", module_map=module_map)
+    community_label_map = {"ext/a.py": "moda", "ext/b.py": "modb"}
+    out = _detect(g, "big.py", community_label_map=community_label_map)
     assert len(out) == 1
     s = out[0]
     assert s.evidence["group_count"] == 2
@@ -410,7 +427,226 @@ def test_signals_are_deterministic():
     assert first[0].evidence == second[0].evidence
 
 
+def test_cochange_unions_a_classes_methods():
+    # Each class collects the commit sets of the methods inside its span, so
+    # the co-change edge sees the class even though no row is keyed by it.
+    g = nx.DiGraph()
+    for i in range(8):
+        _add_class(g, "big.py", f"Cls{i}", start=10 * i + 1, end=10 * i + 10)
+    functions = [
+        SimpleNamespace(name=f"m{i}", start_line=10 * i + 2, end_line=10 * i + 5) for i in range(8)
+    ]
+    ctx = RefactoringContext(
+        file_path="big.py",
+        language="python",
+        nloc=600,
+        graph=g,
+        commit_spans=commit_spans(
+            functions,
+            [(f"m{i}", 10 * i + 2, 10 * i + 5, ["ca" if i < 4 else "cb"]) for i in range(8)],
+        ),
+    )
+    detector = SplitFileDetector()
+    nodes = [f"big.py::Cls{i}" for i in range(8)]
+    sets = detector._commit_sets(ctx, detector._defined_symbols(g, "big.py"), nodes)
+    assert sets["big.py::Cls0"] == {"ca"}
+    assert sets["big.py::Cls7"] == {"cb"}
+
+
+def test_stored_commit_sets_split_like_the_blame_index():
+    # A re-score reads the stored rows instead of a blame index; the plan must
+    # be the one the full index produced.
+    g = _disconnected_blocks()
+    blame = _blame_index(
+        [(10 * i + 1, 10 * i + 10, "ca" if i < 4 else "cb") for i in range(8)]
+    )
+    live = _detect(g, "big.py", blame_index=blame)
+    stored = [
+        s
+        for s in detect_refactorings(
+            RefactoringContext(
+                file_path="big.py",
+                language="python",
+                nloc=600,
+                graph=g,
+                commit_spans=[
+                    (10 * i + 1, 10 * i + 10, frozenset({"ca" if i < 4 else "cb"}))
+                    for i in range(8)
+                ],
+            )
+        )
+        if s.refactoring_type == "split_file"
+    ]
+    assert live and stored
+    assert stored[0].plan == live[0].plan
+    assert stored[0].evidence == live[0].evidence
+
+
 def test_empty_blame_index_is_silent():
     # An empty index (the documented "no signal" outcome) must not raise and
     # must not invent co-change edges.
     assert _detect(_disconnected_blocks(), "big.py", blame_index=BlameIndex()) == []
+
+
+# --- group labels and symbol lists (#2885) -----------------------------------
+
+_CPP = "src/Workspaces/AppUtils.cpp"
+
+
+def _two_cpp_clusters(header: str, names: list[str] | None = None) -> nx.DiGraph:
+    """Two call cliques of four functions with no shared name token, every
+    function calling into the precompiled *header*."""
+    g = nx.DiGraph()
+    names = names or [f"fn_{i}" for i in range(8)]
+    sids = [_add_func(g, _CPP, name, start=10 * i + 1, end=10 * i + 10) for i, name in enumerate(names)]
+    for cluster in (sids[:4], sids[4:]):
+        for src in cluster:
+            for dst in cluster:
+                if src != dst:
+                    _call(g, src, dst)
+    for sid in sids:
+        _add_foreign_call(g, sid, f"src/Workspaces/{header}", "precompiled")
+    return g
+
+
+@pytest.mark.parametrize("header", ["pch.h", "pch.hpp", "stdafx.h", "StdAfx.h", "precomp.h"])
+def test_a_precompiled_header_never_names_a_group(header):
+    out = _detect(_two_cpp_clusters(header), _CPP, language="cpp")
+    assert len(out) == 1
+    groups = out[0].plan["groups"]
+    assert len(groups) == 2
+    # Nothing else is called, so there is no honest name: the surface asks.
+    assert [g["name"] for g in groups] == [None, None]
+    assert [g["suggested_file"] for g in groups] == [None, None]
+
+
+@pytest.mark.parametrize("header", ["pch.h", "pch.hpp", "stdafx.h", "StdAfx.h"])
+def test_a_group_takes_the_next_most_called_module_over_the_precompiled_header(header):
+    g = _two_cpp_clusters(header)
+    # Three of four, so the header (four of four) still wins the vote.
+    for i in range(3):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/registry.h", "open_key")
+    for i in range(4, 7):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/layout.h", "arrange")
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    by_first = {grp["symbols"][0]: grp for grp in out[0].plan["groups"]}
+    assert by_first["fn_0"]["name"] == "registry"
+    assert by_first["fn_0"]["suggested_file"] == "src/Workspaces/registry.cpp"
+    assert by_first["fn_4"]["name"] == "layout"
+    assert by_first["fn_4"]["suggested_file"] == "src/Workspaces/layout.cpp"
+
+
+def test_overloads_are_listed_once_in_a_group():
+    g = _two_cpp_clusters("pch.h", ["GetApp", *(f"fn_{i}" for i in range(1, 8))])
+    # A second overload: its own node id, the same bare name.
+    overload = f"{_CPP}::GetApp#2"
+    g.add_node(
+        overload,
+        node_type="symbol",
+        kind="function",
+        name="GetApp",
+        file_path=_CPP,
+        start_line=81,
+        end_line=90,
+        parent_name=None,
+    )
+    g.add_edge(_CPP, overload, edge_type="defines")
+    for i in range(1, 4):
+        _call(g, overload, f"{_CPP}::fn_{i}")
+        _call(g, f"{_CPP}::fn_{i}", overload)
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    symbols = next(grp["symbols"] for grp in out[0].plan["groups"] if "GetApp" in grp["symbols"])
+    assert symbols == ["GetApp", "fn_1", "fn_2", "fn_3"]
+
+
+def test_overloads_are_listed_once_in_the_residual():
+    g = _two_cpp_clusters("pch.h")
+    # Two overloads nothing in the file is tied to: neither joins a group.
+    for sid, start in ((f"{_CPP}::Trim", 81), (f"{_CPP}::Trim#2", 91)):
+        g.add_node(
+            sid,
+            node_type="symbol",
+            kind="function",
+            name="Trim",
+            file_path=_CPP,
+            start_line=start,
+            end_line=start + 9,
+            parent_name=None,
+        )
+        g.add_edge(_CPP, sid, edge_type="defines")
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    assert out[0].plan["residual"] == {"symbols": ["Trim"]}
+
+
+def test_direct_call_edges_are_added_in_sorted_order():
+    # A set of pairs iterates in hash order, and the community partitioner reads
+    # edges in insertion order, so the order must not follow the hash seed.
+    signals = _CallSignals()
+    for pair in [("z", "a"), ("m", "a"), ("c", "a"), ("q", "a"), ("x", "a")]:
+        signals.add_local_call(*pair)
+    wg, _ = _weighted_graph(["a", "c", "m", "q", "x", "z"], set(), signals, {})
+    assert list(wg.adj["a"]) == ["c", "m", "q", "x", "z"]
+
+
+def test_a_two_area_community_label_never_names_a_group():
+    foreign_of = {"a": {"tpl, resources"}, "b": {"tpl, resources", "path/to/layout.go"}}
+    assert _module_label(foreign_of, ["a"], set()) == ""
+    assert _module_label(foreign_of, ["a", "b"], set()) == "layout"
+
+
+# --- a module label two groups share names neither (#2933) --------------------
+
+
+def _names(out: list) -> list[tuple[str | None, str | None]]:
+    return [(grp["name"], grp["suggested_file"]) for grp in out[0].plan["groups"]]
+
+
+@pytest.mark.parametrize("header", ["utils.h", "common.h", "types.h", "platform.h"])
+def test_a_module_every_group_calls_names_none_of_them(header):
+    out = _detect(_two_cpp_clusters(header), _CPP, language="cpp")
+    assert len(out) == 1
+    assert _names(out) == [(None, None), (None, None)]
+
+
+def test_groups_sharing_a_top_module_take_their_next_one():
+    g = _two_cpp_clusters("utils.h")
+    for i in range(3):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/registry.h", "open_key")
+    for i in range(4, 7):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/layout.h", "arrange")
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    by_first = {grp["symbols"][0]: grp for grp in out[0].plan["groups"]}
+    assert by_first["fn_0"]["suggested_file"] == "src/Workspaces/registry.cpp"
+    assert by_first["fn_4"]["suggested_file"] == "src/Workspaces/layout.cpp"
+
+
+def test_a_second_shared_module_is_dropped_too():
+    g = _two_cpp_clusters("utils.h")
+    # Both groups' runner-up is the same module as well.
+    for i in (0, 1, 2, 4, 5, 6):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/common.h", "helper")
+    for i in (0, 1):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/registry.h", "open_key")
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    by_first = {grp["symbols"][0]: grp for grp in out[0].plan["groups"]}
+    assert by_first["fn_0"]["suggested_file"] == "src/Workspaces/registry.cpp"
+    assert by_first["fn_4"]["suggested_file"] is None
+    assert not any("_2" in (grp["suggested_file"] or "") for grp in out[0].plan["groups"])
+
+
+def test_a_module_only_one_group_leans_on_still_names_it():
+    g = _two_cpp_clusters("pch.h")
+    for i in range(4):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/utils.h", "trim")
+    for i in range(4, 8):
+        _add_foreign_call(g, f"{_CPP}::fn_{i}", "src/Workspaces/layout.h", "arrange")
+    out = _detect(g, _CPP, language="cpp")
+    assert len(out) == 1
+    by_first = {grp["symbols"][0]: grp for grp in out[0].plan["groups"]}
+    assert by_first["fn_0"]["suggested_file"] == "src/Workspaces/utils.cpp"
+    assert by_first["fn_4"]["suggested_file"] == "src/Workspaces/layout.cpp"

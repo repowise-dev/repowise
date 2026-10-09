@@ -15,23 +15,30 @@
     "./decisions": "./src/decisions.ts",
     "./episodes": "./src/episodes.ts",
     "./dead-code": "./src/dead-code.ts",
+    "./doc-drift": "./src/doc-drift.ts",
     "./symbols": "./src/symbols.ts",
     "./chat": "./src/chat.ts",
     "./workspace": "./src/workspace.ts",
     "./blast-radius": "./src/blast-radius.ts",
+    "./risk-semantics": "./src/risk-semantics.ts",
     "./jobs": "./src/jobs.ts",
     "./settings": "./src/settings.ts",
     "./security": "./src/security.ts",
     "./owners": "./src/owners.ts",
     "./modules": "./src/modules.ts",
     "./overview": "./src/overview.ts",
+    "./actions": "./src/actions.ts",
     "./repos": "./src/repos.ts",
     "./files": "./src/files.ts",
     "./external-systems": "./src/external-systems.ts",
     "./health": "./src/health.ts",
     "./coupling": "./src/coupling.ts",
     "./stats": "./src/stats.ts",
-    "./refactoring": "./src/refactoring.ts"
+    "./refactoring": "./src/refactoring.ts",
+    "./fix-first": "./src/fix-first.ts",
+    "./agent-prompts": "./src/agent-prompts.ts",
+    "./serve-lock": "./src/serve-lock.ts",
+    "./generated/http": "./src/generated/http.ts"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",
@@ -43,6 +50,6 @@
   },
   "devDependencies": {
     "typescript": "^5.6.0",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.11"
   }
 }

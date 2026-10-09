@@ -101,7 +101,7 @@ def _uses_lean_tool_surface(repo_path: Path) -> bool:
     loaded, so init skips the tool-search (schema deferral) recommendation for
     it; deferral would reintroduce the schema-load round trip the profile
     exists to remove. Mirrors the "lean" token the selection layer resolves
-    (see ``repowise.server.mcp_server._tool_selection.LEAN``), read here via
+    (see ``repowise.core.registry.tool_selection.LEAN``), read here via
     the lightweight config loader so init does not import the server stack.
     """
     try:

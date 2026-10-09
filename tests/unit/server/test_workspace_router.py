@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,8 +15,16 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 
+from repowise.core.workspace.cross_repo import MAX_EDGES, MAX_EDGES_PER_REPO_PAIR
+from repowise.core.workspace.diagnostics import ExtractionDiagnostics
+from repowise.core.workspace.test_impact import (
+    UnresolvedLink,
+    WorkspaceTestImpactResult,
+    WorkspaceTestRecommendation,
+)
 from repowise.server.mcp_server._enrichment import CrossRepoEnricher
 from repowise.server.routers import workspace
+from repowise.server.schemas.workspace import WorkspaceExtractionDiagnostics
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -322,6 +332,9 @@ class TestGetWorkspace:
         data = resp.json()
         assert data["cross_repo_summary"]["co_change_count"] == 1
         assert data["cross_repo_summary"]["package_dep_count"] == 1
+        assert data["cross_repo_summary"]["package_diagnostic_count"] == 0
+        assert data["cross_repo_summary"]["package_diagnostics_emitted"] == 0
+        assert data["cross_repo_summary"]["package_diagnostic_codes"] == []
 
     @pytest.mark.asyncio
     async def test_contract_summary(self, tmp_path: Path) -> None:
@@ -434,6 +447,54 @@ class TestGetContracts:
         data = resp.json()
         assert data["total_contracts"] == 0
         assert data["total_links"] == 0
+
+    @pytest.mark.asyncio
+    async def test_search_matches_every_term_across_fields(self, tmp_path: Path) -> None:
+        """``q`` is case-insensitive and every term must match somewhere."""
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            by_path = (await c.get("/api/workspace/contracts", params={"q": "USERS"})).json()
+            by_file_and_repo = (
+                await c.get("/api/workspace/contracts", params={"q": "client.ts frontend"})
+            ).json()
+            no_hit = (await c.get("/api/workspace/contracts", params={"q": "users grpc"})).json()
+        assert by_path["total_contracts"] == 2
+        assert by_path["total_links"] == 1
+        assert [r["file_path"] for r in by_file_and_repo["contracts"]] == ["client.ts"]
+        assert no_hit["total_contracts"] == 0
+        assert no_hit["total_links"] == 0
+
+    @pytest.mark.asyncio
+    async def test_filter_by_linked(self, tmp_path: Path) -> None:
+        """``linked`` splits contracts by whether their own side sits on a link."""
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yes = (await c.get("/api/workspace/contracts", params={"linked": "true"})).json()
+            no = (
+                await c.get(
+                    "/api/workspace/contracts", params={"linked": "false", "role": "provider"}
+                )
+            ).json()
+        assert {(r["repo"], r["file_path"]) for r in yes["contracts"]} == {
+            ("backend", "routes.py"),
+            ("frontend", "client.ts"),
+        }
+        assert [r["contract_id"] for r in no["contracts"]] == ["grpc::Auth/Login"]
+
+    @pytest.mark.asyncio
+    async def test_include_links_false_omits_rows_but_keeps_the_count(self, tmp_path: Path) -> None:
+        """A pager that already holds the links can skip them; the total still counts."""
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            data = (
+                await c.get("/api/workspace/contracts", params={"include_links": "false"})
+            ).json()
+        assert data["links"] == []
+        assert data["total_links"] == 1
+        assert data["total_contracts"] == 4
 
 
 class TestContractWireFields:
@@ -696,6 +757,82 @@ class TestGetCoChanges:
         data = resp.json()
         assert data["total"] == 0
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("stored", "total_mined", "expected"),
+        [
+            (1, 1, None),  # nothing dropped
+            (1, 9, "per_repo_pair"),  # trimmed below the global budget
+            (MAX_EDGES, MAX_EDGES + 5, "total"),  # the workspace-wide cap stopped it
+        ],
+    )
+    async def test_reports_which_cap_trimmed(
+        self, tmp_path: Path, stored: int, total_mined: int, expected: str | None
+    ) -> None:
+        """The page words its scope from the cap that applied, not a guess."""
+        enricher = _make_enricher(tmp_path)
+        row = enricher._co_changes[0]
+        enricher._co_changes = [dict(row, source_file=f"f{i}.py") for i in range(stored)]
+        enricher._total_co_changes = total_mined
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=enricher)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            # A filter narrower than the overlay must not change the verdict.
+            resp = await c.get("/api/workspace/co-changes", params={"limit": 1})
+        data = resp.json()
+        assert data["truncated_by"] == expected
+        assert data["per_repo_pair_cap"] == MAX_EDGES_PER_REPO_PAIR
+        assert data["total_cap"] == MAX_EDGES
+
+
+class TestGetCoChangeStructure:
+    @staticmethod
+    async def _get(tmp_path: Path, **params: str) -> dict:
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/api/workspace/co-changes/structure", params=params)
+        assert resp.status_code == 200
+        return resp.json()
+
+    @pytest.mark.asyncio
+    async def test_pair_linked_by_contract(self, tmp_path: Path) -> None:
+        """Either orientation of the pair finds the link between the two files."""
+        data = await self._get(
+            tmp_path,
+            source_repo="frontend",
+            source_file="client.ts",
+            target_repo="backend",
+            target_file="routes.py",
+        )
+        assert [lk["contract_id"] for lk in data["pair_links"]] == ["http::GET::/api/users"]
+        assert data["repo_links_total"] == 1
+        assert data["repo_links_by_type"] == {"http": 1}
+        assert data["source_file_links"] == 1
+        assert data["target_file_links"] == 1
+
+    @pytest.mark.asyncio
+    async def test_pair_with_no_declared_link(self, tmp_path: Path) -> None:
+        """A pair the contracts do not connect still reports the repo-level links."""
+        data = await self._get(
+            tmp_path,
+            source_repo="backend",
+            source_file="api/routes.py",
+            target_repo="frontend",
+            target_file="src/client.ts",
+        )
+        assert data["pair_links"] == []
+        assert data["repo_links_total"] == 1
+        assert data["source_file_links"] == 0
+        assert data["target_file_links"] == 0
+
+    @pytest.mark.asyncio
+    async def test_all_four_params_required(self, tmp_path: Path) -> None:
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get(
+                "/api/workspace/co-changes/structure", params={"source_repo": "backend"}
+            )
+        assert resp.status_code == 422
+
 
 # ---------------------------------------------------------------------------
 # Tests — GET /api/workspace/graph
@@ -852,7 +989,6 @@ class TestQueryRepoStats:
 
         assert stats["hotspot_count"] == 0
 
-    
     def test_file_count_excludes_symbol_nodes(self, tmp_path: Path) -> None:
         """Regression: graph_nodes stores file *and* symbol rows.
 
@@ -1151,6 +1287,12 @@ class TestGetDiagnostics:
         assert len(data["orphan_providers"]) == 1
         assert data["orphan_providers"][0]["contract_id"] == "http::GET::/orphan"
 
+    def test_extraction_diagnostics_schema_matches_core_payload(self) -> None:
+        diagnostics = ExtractionDiagnostics()
+        payload = diagnostics.to_dict()
+
+        assert set(payload) == set(WorkspaceExtractionDiagnostics.model_fields)
+
 
 # ---------------------------------------------------------------------------
 # GET /api/workspace/breaking-changes
@@ -1200,6 +1342,28 @@ def _make_breaking_enricher(tmp_path: Path) -> CrossRepoEnricher:
 
 
 class TestGetBreakingChanges:
+    def test_response_model_preserves_comparison_evidence(self) -> None:
+        from repowise.server.schemas.workspace import WorkspaceBreakingChange
+
+        payload = WorkspaceBreakingChange(
+            kind="field_enum_changed",
+            severity="breaking",
+            contract_id="http::POST::/orders",
+            contract_type="http",
+            provider_repo="api",
+            provider_file="openapi.yaml",
+            provider_symbol="openapi:POST /orders",
+            detail="request enum narrowed",
+            side="request",
+            comparison_source="openapi",
+            comparison_key="openapi-wire-v1",
+            field_name="body.priority",
+        ).model_dump(exclude_none=True)
+
+        assert payload["side"] == "request"
+        assert payload["comparison_source"] == "openapi"
+        assert payload["comparison_key"] == "openapi-wire-v1"
+
     @pytest.mark.asyncio
     async def test_not_workspace_mode(self) -> None:
         app = _make_workspace_app()
@@ -1418,9 +1582,7 @@ class TestRepoQueryBudget:
         return statements, connections
 
     @pytest.mark.asyncio
-    async def test_per_repo_cost_does_not_grow_with_repo_count(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_per_repo_cost_does_not_grow_with_repo_count(self, tmp_path: Path) -> None:
         two_stmts, two_conns = await self._measure(tmp_path, 2)
         six_stmts, six_conns = await self._measure(tmp_path, 6)
 
@@ -1442,3 +1604,174 @@ class TestRepoQueryBudget:
         statements, connections = await self._measure(tmp_path, 3)
         assert statements == self.QUERIES_PER_REPO * 3
         assert connections == self.CONNECTIONS_PER_REPO * 3
+
+
+class TestGetTestImpact:
+    """`/api/workspace/test-impact`: consumer tests for a provider change."""
+
+    @staticmethod
+    def _install_helper(monkeypatch: pytest.MonkeyPatch, fn) -> None:
+        """Point the route's ``cross_repo_tests`` import at *fn*.
+
+        The module is created when it is absent, so this test pins the route's
+        own behaviour without depending on the helper's implementation.
+        """
+        name = "repowise.server.mcp_server._test_impact"
+        module = sys.modules.get(name) or ModuleType(name)
+        monkeypatch.setitem(sys.modules, name, module)
+        monkeypatch.setattr(module, "cross_repo_tests", fn, raising=False)
+
+    @pytest.mark.asyncio
+    async def test_not_workspace_mode(self) -> None:
+        app = _make_workspace_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get(
+                "/api/workspace/test-impact",
+                params={"repo": "backend", "file": "api/routes.py"},
+            )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_file_is_required(self) -> None:
+        app = _make_workspace_app(ws_config=_make_ws_config())
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/test-impact", params={"repo": "backend"})
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_no_contract_data_names_its_reason(self) -> None:
+        """Without an enricher the answer is empty but says why, not a 404."""
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=None)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get(
+                "/api/workspace/test-impact",
+                params={"repo": "backend", "file": "api/routes.py"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["recommendations"] == []
+        assert data["summary"]["reason"] == "no_contract_data"
+
+    @pytest.mark.asyncio
+    async def test_helper_returning_none_is_an_empty_answer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _none(alias: str, changed_files: list[str]):
+            return None
+
+        self._install_helper(monkeypatch, _none)
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get(
+                "/api/workspace/test-impact",
+                params={"repo": "backend", "file": "api/routes.py"},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["summary"]["reason"] == "no_contract_data"
+
+    @pytest.mark.asyncio
+    async def test_repeated_file_params_reach_the_helper(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, object] = {}
+
+        async def _capture(alias: str, changed_files: list[str]):
+            seen["alias"] = alias
+            seen["files"] = list(changed_files)
+            return WorkspaceTestImpactResult()
+
+        self._install_helper(monkeypatch, _capture)
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get(
+                "/api/workspace/test-impact",
+                params=[
+                    ("repo", "backend"),
+                    ("file", "api/routes.py"),
+                    ("file", "api/models.py"),
+                ],
+            )
+        assert resp.status_code == 200
+        assert seen["alias"] == "backend"
+        assert seen["files"] == ["api/routes.py", "api/models.py"]
+
+    @pytest.mark.asyncio
+    async def test_rows_keep_symbol_ids_and_unresolved_reasons(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The boundary carries the symbol id, the basis, and the reason."""
+        result = WorkspaceTestImpactResult(
+            recommendations=[
+                WorkspaceTestRecommendation(
+                    test_id="tests/test_client.py::test_users",
+                    test_file="tests/test_client.py",
+                    consumer_repo="frontend",
+                    consumer_files=["src/client.ts"],
+                    consumer_symbol_ids=["src/client.ts::fetchUsers"],
+                    provider_repo="backend",
+                    contract_ids=["http::GET::/api/users"],
+                    contract_types=["http"],
+                    basis="measured",
+                    via="coverage-map",
+                    confidence=0.9,
+                    source_files=["api/routes.py"],
+                    evidence=[{"basis": "measured", "via": "coverage-map"}],
+                )
+            ],
+            recommendations_total=1,
+            recommendations_emitted=1,
+            unresolved=[
+                UnresolvedLink(
+                    consumer_repo="frontend",
+                    consumer_file="src/orders.ts",
+                    consumer_symbol_id=None,
+                    provider_repo="backend",
+                    provider_file="api/routes.py",
+                    contract_id="http::GET::/api/orders",
+                    contract_type="http",
+                    reason="unbound",
+                    detail=None,
+                )
+            ],
+            files_analyzed=[
+                {
+                    "consumer_repo": "frontend",
+                    "consumer_file": "src/client.ts",
+                    "state": "measured",
+                    "measured_tests_count": 1,
+                    "inferred_tests_count": 0,
+                    "via": "coverage-map",
+                    "provider_repos": ["backend"],
+                    "contract_ids": ["http::GET::/api/users"],
+                    "consumer_symbol_ids": ["src/client.ts::fetchUsers"],
+                }
+            ],
+            summary={"states": {"measured": 1, "inferred": 0, "none": 0, "unresolved": 0}},
+        )
+
+        async def _result(alias: str, changed_files: list[str]):
+            return result
+
+        self._install_helper(monkeypatch, _result)
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get(
+                "/api/workspace/test-impact",
+                params={"repo": "backend", "file": "api/routes.py"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        row = data["recommendations"][0]
+        assert row["consumer_symbol_ids"] == ["src/client.ts::fetchUsers"]
+        assert row["basis"] == "measured"
+        assert row["confidence"] == 0.9
+        assert data["unresolved"][0]["reason"] == "unbound"
+        assert data["unresolved"][0]["consumer_symbol_id"] is None
+        assert data["files_analyzed"][0]["state"] == "measured"
+        assert data["summary"]["states"]["measured"] == 1

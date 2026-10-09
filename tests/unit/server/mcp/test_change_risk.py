@@ -53,7 +53,24 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
     )
 
     assert result["working_tree"] is False
-    assert result["features"] == {
+    # Raw model mechanics are a projection now; the default leads with action.
+    assert "features" not in result
+    assert "drivers" not in result
+    assert "risk_authority" not in result
+    assert result["directive"]["status"] in {
+        "review_required",
+        "review_recommended",
+        "clear_in_analyzed_scope",
+        "unknown",
+    }
+    diagnostics = await module.get_change_risk(
+        "HEAD",
+        extensions=["py", "md"],
+        exclude_patterns=["docs/"],
+        baseline=0,
+        include=["diagnostics"],
+    )
+    assert diagnostics["features"] == {
         "la": 1,
         "ld": 0,
         "nf": 1,
@@ -62,14 +79,58 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
         "entropy": 0.0,
         "exp": 1,
     }
+    assert diagnostics["risk_authority"]["primary_fields"] == [
+        "risk_percentile",
+        "classification",
+    ]
     assert result["exclude_patterns"] == ["tests/", "docs/"]
     assert result["risk_percentile"] is None
     assert result["review_priority"] is None
     assert result["classification"] is None
-    assert result["baseline_sample_size"] == 0
+    assert diagnostics["fallback_band"] in {"low", "moderate", "high"}
+    assert diagnostics["baseline_sample_size"] == 0
+    # The per-field dictionary is identical on every call, so it is opt-in.
+    assert "risk_scales" not in result
+    expanded = await module.get_change_risk(
+        "HEAD", extensions=["py", "md"], exclude_patterns=["docs/"], baseline=0, include=["scales"]
+    )
+    scales = {scale["field"]: scale for scale in expanded["risk_scales"]}
+    assert scales["score"]["authoritative"] is False
+    assert scales["risk_percentile"]["authoritative"] is True
+    assert scales["features.la|features.ld"]["unit"] == "lines"
+    assert scales["drivers[].contribution"]["unit"] == "logit_points"
     # Live-git responses carry a _meta envelope flagged as index-independent.
     assert result["_meta"]["source"] == "live_git"
     assert "warning" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_change_risk_labels_the_priority_tercile_as_diff_size(tmp_path, monkeypatch):
+    """The tercile ranks diff shape, so its label names size rather than a verdict."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"src/app.py": "value = 1\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "value = 2\n"}, "feat: app")
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    real_payload = module.change_risk_payload
+
+    def _ranked(result, **kwargs):
+        payload = real_payload(result, **kwargs)
+        payload.update(review_priority="high", classification="Elevated")
+        return payload
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    monkeypatch.setattr(module, "change_risk_payload", _ranked)
+    result = await module.get_change_risk("HEAD", baseline=0)
+
+    assert result["review_priority"] == "high"
+    assert result["classification"] == "Above-typical diff size"
 
 
 @pytest.mark.asyncio
@@ -110,9 +171,10 @@ async def test_get_change_risk_empty_diff_warns(tmp_path, monkeypatch) -> None:
     # Only a .py change exists; restricting to .md counts zero files.
     result = await module.get_change_risk(extensions=["md"], baseline=0)
 
-    assert result["features"]["nf"] == 0
-    assert "warning" in result
+    assert result["status"] == "nothing_to_score"
+    assert "score" not in result
     assert "no counted file changes" in result["warning"].lower()
+    assert result["scored_repo"]["root"] == str(repo)
 
 
 @pytest.mark.asyncio
@@ -215,6 +277,7 @@ async def test_impacted_tests_line_precise_hit_and_miss(tmp_path, monkeypatch) -
     it = result["impacted_tests"]
     assert it["status"] == "map_present"
     assert it["basis"] == "measured"
+    assert it["tests_to_run_kind"] == "test_id"
     assert it["map_present"] is True
     # app.py line 3 is covered -> its test is named; other/new are not covering.
     assert it["tests_to_run"] == ["tests/test_app.py::test_app"]
@@ -280,9 +343,7 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     factory = await _factory_with_repo(None)
     async with factory() as s:
         for path, is_test in (("tests/test_round_trips.py", True), ("src/app.py", False)):
-            s.add(
-                GraphNode(repository_id="repo1", node_id=path, node_type="file", is_test=is_test)
-            )
+            s.add(GraphNode(repository_id="repo1", node_id=path, node_type="file", is_test=is_test))
         s.add(
             GraphEdge(
                 repository_id="repo1",
@@ -303,6 +364,7 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
 
     assert it["status"] == "inferred"
     assert it["basis"] == "inferred"
+    assert it["tests_to_run_kind"] == "test_file"
     assert it["map_present"] is False
     assert it["tests_to_run"] == ["tests/test_round_trips.py"]
     assert it["line_coverage"]["untested_changes"] == []
@@ -345,7 +407,9 @@ async def test_impacted_tests_overflow_cap_is_honest(tmp_path, monkeypatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_impacted_tests_no_session_factory_degrades_to_no_index(tmp_path, monkeypatch) -> None:
+async def test_impacted_tests_no_session_factory_degrades_to_no_index(
+    tmp_path, monkeypatch
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(["init", "-q"], repo)
@@ -377,6 +441,9 @@ async def test_the_two_risk_tools_do_not_share_a_key_for_different_questions() -
     empty = module._empty_impacted("no_map", "run the suite")
 
     assert "missing_tests" not in empty
+    # Every shape says which signal named the tests, including none.
+    assert empty["basis"] == "none"
+    assert empty["tests_to_run_kind"] is None
     assert set(empty["line_coverage"]) == {
         "untested_changes",
         "stale_test_candidates",
@@ -385,9 +452,29 @@ async def test_the_two_risk_tools_do_not_share_a_key_for_different_questions() -
     }
 
 
-def test_score_measures_names_the_other_zero_to_ten() -> None:
-    """Whichever risk tool an agent calls first, it learns the other is not it."""
+def test_score_measures_names_only_the_supporting_diff_shape_signal() -> None:
+    """The compatibility string stays precise while typed metadata carries authority."""
     from repowise.core.analysis.change_risk import SCORE_MEASURES
 
     assert "diff size and spread" in SCORE_MEASURES
-    assert "overall_risk_score" in SCORE_MEASURES
+    assert "where the change lands" in SCORE_MEASURES
+    assert "probability" not in SCORE_MEASURES
+
+
+@pytest.mark.asyncio
+async def test_health_references_on_an_index_without_a_repository_are_skipped(factory) -> None:
+    """An index with no repository row reads as "no index", not a failed call."""
+    from repowise.server.mcp_server import tool_change_risk as tool
+
+    finding = SimpleNamespace(
+        path="a.py",
+        biomarker_type="complex_method",
+        symbol="f",
+        line_start=1,
+        line_end=2,
+        health_reference=None,
+    )
+    await tool._attach_health_references(
+        SimpleNamespace(session_factory=factory), SimpleNamespace(findings=[finding])
+    )
+    assert finding.health_reference is None

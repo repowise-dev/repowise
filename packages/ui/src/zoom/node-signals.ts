@@ -1,17 +1,12 @@
 /**
  * What a card says about itself, in words. Pure, browser-free.
  *
- * A card carries two dots and nothing on the surface named either. Worse, they
- * shared a palette: the role dot painted `--color-success` for "has an entry
- * point" while the health dot painted the same token for "healthy", so a reader
- * who worked out one dot would misread the other. Colour bands belong to health
- * (one accent, two semantics), so the role dot is now a single accent dot
- * meaning "there is something here" and this module supplies the words that say
- * what.
+ * A card carries two dots and nothing on its surface names either, so the role
+ * dot is a single accent dot meaning "there is something here" and the band
+ * colours are left to health. These are the words that say which roles.
  *
- * Naming all applicable roles also fixes a silent drop: the old dot ran a
- * priority cascade (entry > hotspot > dead > on-flow) and drew only the winner,
- * so a box that was both an entry point and a hotspot reported only "entry".
+ * Every applicable role is named, not the winner of a priority cascade: a box
+ * that is both an entry point and a hotspot is both.
  */
 
 import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
@@ -55,11 +50,8 @@ export function hasRole(node: ZoomNode): boolean {
 }
 
 /**
- * The health dot's band as a word, from the canonical 3-band scale in
- * `@repowise-dev/types/health` — the same `bandForScore` the dot itself paints
- * on. Not the 5-step Excellent/Good/Fair ladder the scan surfaces use: a 6.9
- * reads "Good" there and paints amber here, and a label that contradicts the
- * dot it sits beside is worse than no label.
+ * The health dot's band as a word, on the same `bandForScore` the dot itself
+ * paints on, so the label never contradicts the mark it sits beside.
  */
 export function healthBandLabel(score: number | null): string | null {
   if (score === null) return null;

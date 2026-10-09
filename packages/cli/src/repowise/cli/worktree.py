@@ -12,10 +12,13 @@ import json
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
-from repowise.cli.helpers import console
+from repowise.cli.helpers import as_commit_id, console, warn
+
+_SEED_TEMPDIR_STALENESS_SECS = 3600
 
 
 def _git_output(args: list[str], cwd: Path) -> str:
@@ -59,11 +62,21 @@ def base_is_seedable(base: Path) -> bool:
 
 
 def sweep_stale_seed_backups(paths: list[Path]) -> None:
-    """Remove ``.repowise.bak.*`` leftovers from previously disrupted seeds."""
+    """Remove leftovers from previously disrupted seeds."""
+    now = time.time()
     for root in paths:
-        for p in root.glob(".repowise.bak.*"):
-            if p.is_dir():
-                shutil.rmtree(p, ignore_errors=True)
+        for glob_pattern in (".repowise.bak.*", ".repowise-seed-*"):
+            for p in root.glob(glob_pattern):
+                if p.is_dir():
+                    try:
+                        if ".repowise.bak." in p.name:
+                            shutil.rmtree(p, ignore_errors=True)
+                        else:
+                            mtime = p.stat().st_mtime
+                            if now - mtime > _SEED_TEMPDIR_STALENESS_SECS:
+                                shutil.rmtree(p, ignore_errors=True)
+                    except OSError:
+                        pass
 
 
 def _get_initial_commit(p: Path) -> str:
@@ -77,9 +90,11 @@ def _adopt_repository_identity(repowise_dir: Path, *, src_repo: Path, dest_repo:
     update in the worktree upserts a second repository row named after the
     worktree dir, and every regenerated page lands under it while the seeded
     pages stay under the base row — prior-page reuse and repo-scoped queries
-    both silently split. Rewriting name + local_path (and retargeting the two
-    repo-level pages that are keyed by repo name) makes the copy fully the
-    worktree's own. Best-effort: an unmatched row means the base index is
+    both silently split. Rewriting name + local_path (and re-keying the two
+    repo-level pages whose id carries the repo name) makes the copy fully the
+    worktree's own. Ceiling: the vector store keeps the old page id until the
+    page is regenerated, so semantic search can return an id that no longer
+    resolves; re-keying vectors needs the store open, which seeding avoids. Best-effort: an unmatched row means the base index is
     unusual, and falling through leaves today's (pre-fix) behavior.
     """
     import sqlite3
@@ -101,12 +116,32 @@ def _adopt_repository_identity(repowise_dir: Path, *, src_repo: Path, dest_repo:
             "UPDATE repositories SET name = ?, local_path = ? WHERE id = ?",
             (dest_repo.name, str(dest_repo), repo_id),
         )
-        conn.execute(
-            "UPDATE wiki_pages SET target_path = ? "
-            "WHERE repository_id = ? AND target_path = ? "
-            "AND page_type IN ('repo_overview', 'architecture_diagram')",
-            (dest_repo.name, repo_id, old_name),
-        )
+        # A page id is ``<type>:<target_path>``, so the id moves with the target:
+        # generation writes the new id, and a page left under the old one is
+        # never regenerated and never found by ``generate --page``.
+        has_fts = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'page_fts'"
+        ).fetchone()
+        for page_type in ("repo_overview", "architecture_diagram"):
+            old_id, new_id = f"{page_type}:{old_name}", f"{page_type}:{dest_repo.name}"
+            conn.execute(
+                "UPDATE wiki_pages SET id = ?, target_path = ? "
+                "WHERE repository_id = ? AND id = ?",
+                (new_id, dest_repo.name, repo_id, old_id),
+            )
+            conn.execute(
+                "UPDATE wiki_page_versions SET page_id = ? WHERE page_id = ?", (new_id, old_id)
+            )
+            conn.execute(
+                "UPDATE wiki_pages SET parent_page_id = ? "
+                "WHERE repository_id = ? AND parent_page_id = ?",
+                (new_id, repo_id, old_id),
+            )
+            if has_fts:
+                conn.execute(
+                    "UPDATE page_fts SET page_id = ?, target_path = ? WHERE page_id = ?",
+                    (new_id, dest_repo.name, old_id),
+                )
         conn.commit()
 
 
@@ -116,6 +151,7 @@ def seed_index_from_base(
     repo_paths: list[Path],
     seed_base: Path,
     include_submodules: bool | None = None,
+    dry_run: bool = False,
 ) -> bool:
     """Copy ``.repowise/`` from a base checkout into each target repo.
 
@@ -167,8 +203,10 @@ def seed_index_from_base(
             break
 
         try:
+            if as_commit_id(last_sync_commit) is None:
+                raise subprocess.CalledProcessError(1, "git merge-base")
             subprocess.check_call(
-                ["git", "merge-base", "--is-ancestor", last_sync_commit, "HEAD"],
+                ["git", "merge-base", "--is-ancestor", "--end-of-options", last_sync_commit, "HEAD"],
                 cwd=r_path,
                 stderr=subprocess.DEVNULL,
             )
@@ -188,40 +226,78 @@ def seed_index_from_base(
                 f"from last synced commit {last_sync_commit[:8]}.[/dim]"
             )
 
-        temp_dir = Path(tempfile.mkdtemp(prefix=".repowise-seed-", dir=r_path))
-        temp_dirs.append((r_path, temp_dir))
+        if dry_run:
+            continue
 
-        shutil.copytree(src_repo / ".repowise", temp_dir, dirs_exist_ok=True)
+        try:
+            temp_dir = Path(tempfile.mkdtemp(prefix=".repowise-seed-", dir=r_path))
+            temp_dirs.append((r_path, temp_dir))
 
-        # Since config.yaml is copied atomically alongside state.json, the
-        # config_fingerprint remains valid.
-        st_data = json.loads((temp_dir / "state.json").read_text(encoding="utf-8"))
+            shutil.copytree(src_repo / ".repowise", temp_dir, dirs_exist_ok=True)
 
-        if include_submodules is not None:
-            state_include = st_data.get("include_submodules", False)
-            if include_submodules != state_include:
-                console.print(
-                    f"[yellow]Warning: --include-submodules={include_submodules} "
-                    f"conflicts with copied state ({state_include}). Seeded state "
-                    f"will take precedence.[/yellow]"
-                )
+            # Since config.yaml is copied atomically alongside state.json, the
+            # config_fingerprint remains valid.
+            st_data = json.loads((temp_dir / "state.json").read_text(encoding="utf-8"))
 
-        (temp_dir / "state.json").write_text(json.dumps(st_data, indent=2), encoding="utf-8")
+            if include_submodules is not None:
+                state_include = st_data.get("include_submodules", False)
+                if include_submodules != state_include:
+                    warn(
+                        f"--include-submodules={include_submodules} "
+                        f"conflicts with copied state ({state_include}). Seeded state "
+                        f"will take precedence."
+                    )
 
-        _adopt_repository_identity(temp_dir, src_repo=src_repo, dest_repo=r_path)
+            (temp_dir / "state.json").write_text(json.dumps(st_data, indent=2), encoding="utf-8")
+
+            _adopt_repository_identity(temp_dir, src_repo=src_repo, dest_repo=r_path)
+        except Exception as e:
+            console.print(
+                f"[yellow]Error staging seed for {r_path}: {e}. Falling back to full init.[/yellow]"
+            )
+            success = False
+            break
 
     if not success:
         for _, temp_dir in temp_dirs:
             shutil.rmtree(temp_dir, ignore_errors=True)
         return False
 
-    for r_path, temp_dir in temp_dirs:
-        target = r_path / ".repowise"
-        backup = None
-        if target.exists():
-            backup = r_path / f".repowise.bak.{uuid.uuid4().hex[:8]}"
-            target.rename(backup)
-        temp_dir.rename(target)
-        if backup:
+    if dry_run:
+        return True
+
+    backups_created: list[tuple[Path, Path]] = []
+    renamed_targets: list[Path] = []
+
+    try:
+        # Pass 1: backup existing
+        for r_path, _ in temp_dirs:
+            target = r_path / ".repowise"
+            if target.exists():
+                backup = r_path / f".repowise.bak.{uuid.uuid4().hex[:8]}"
+                target.rename(backup)
+                backups_created.append((target, backup))
+
+        # Pass 2: rename temp to target
+        for r_path, temp_dir in temp_dirs:
+            target = r_path / ".repowise"
+            temp_dir.rename(target)
+            renamed_targets.append(target)
+
+        # Pass 3: clean backups
+        for _, backup in backups_created:
             shutil.rmtree(backup, ignore_errors=True)
+    except Exception:
+        # Rollback target renames
+        for target in renamed_targets:
+            shutil.rmtree(target, ignore_errors=True)
+        # Rollback backups
+        for target, backup in backups_created:
+            if backup.exists():
+                backup.rename(target)
+        # Clean temp dirs
+        for _, temp_dir in temp_dirs:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+
     return True

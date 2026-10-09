@@ -20,23 +20,23 @@ interface Band {
   ring: string;
 }
 
-function band(score: number): Band {
-  if (score >= 7)
+function band(value: BlastRadiusResponse["structural_impact_band"]): Band {
+  if (value === "broad")
     return {
-      label: "High risk",
+      label: "Broad structural impact",
       color: "var(--color-error)",
       text: "text-[var(--color-error)]",
       ring: "border-[var(--color-error)]/30 bg-[var(--color-error)]/5",
     };
-  if (score >= 4)
+  if (value === "moderate")
     return {
-      label: "Medium risk",
+      label: "Moderate structural impact",
       color: "var(--color-warning)",
       text: "text-[var(--color-warning)]",
       ring: "border-[var(--color-warning)]/30 bg-[var(--color-warning)]/5",
     };
   return {
-    label: "Low risk",
+    label: "Localized structural impact",
     color: "var(--color-success)",
     text: "text-[var(--color-success)]",
     ring: "border-[var(--color-success)]/30 bg-[var(--color-success)]/5",
@@ -69,14 +69,21 @@ function arcPath(
   return `M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y}`;
 }
 
-/** A 180° gauge that fills proportionally to the 0–10 score. */
-function RiskGauge({ score }: { score: number }) {
-  const b = band(score);
+/** A 180° gauge for the server-classified 0–10 structural heuristic. */
+function StructuralImpactGauge({ score, impactBand }: {
+  score: number;
+  impactBand: BlastRadiusResponse["structural_impact_band"];
+}) {
+  const b = band(impactBand);
   const frac = Math.max(0, Math.min(1, score / 10));
   const valueEnd = 180 + frac * 180;
   return (
     <div className="relative shrink-0" style={{ width: GW, height: GH }}>
-      <svg viewBox={`0 0 ${GW} ${GH}`} className="h-auto w-full" aria-hidden="true">
+      <svg
+        viewBox={`0 0 ${GW} ${GH}`}
+        className="h-auto w-full"
+        aria-hidden="true"
+      >
         <path
           d={arcPath(GCX, GCY, GR, 180, 360)}
           fill="none"
@@ -95,7 +102,9 @@ function RiskGauge({ score }: { score: number }) {
         )}
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-end pb-1">
-        <span className={cn("text-4xl font-bold leading-none tabular-nums", b.text)}>
+        <span
+          className={cn("text-4xl font-bold leading-none tabular-nums", b.text)}
+        >
           {score.toFixed(1)}
         </span>
         <span className="mt-1 text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
@@ -122,7 +131,12 @@ function StatTile({ tile }: { tile: Tile }) {
         tile.active ? "" : "opacity-60",
       )}
     >
-      <span className={cn("shrink-0", tile.value > 0 ? tile.tone : "text-[var(--color-text-tertiary)]")}>
+      <span
+        className={cn(
+          "shrink-0",
+          tile.value > 0 ? tile.tone : "text-[var(--color-text-tertiary)]",
+        )}
+      >
         {tile.icon}
       </span>
       <div className="min-w-0">
@@ -147,25 +161,47 @@ function verdict(result: BlastRadiusResponse, changedCount: number): string {
   if (reach === 0) {
     return `Changing ${changedCount} ${filesWord} looks self-contained — nothing downstream depends on it within this depth.`;
   }
-  const gapClause =
-    gaps > 0
-      ? ` ${gaps} affected ${gaps === 1 ? "file lacks" : "files lack"} tests.`
-      : " Affected files have tests.";
+  const testImpact = result.test_impact;
+  let gapClause: string;
+  if (!testImpact) {
+    gapClause =
+      " Test analysis state was not provided by this server; no conclusion about needed tests is possible.";
+  } else if (["unavailable", "degraded"].includes(testImpact.coverage.status)) {
+    gapClause =
+      " Test analysis is unavailable; no conclusion about needed tests is possible.";
+  } else if (testImpact.recommendations_total > 0) {
+    const measured = testImpact.recommendations_by_primary_basis.measured;
+    const inferred = testImpact.recommendations_by_primary_basis.inferred;
+    const state = testImpact.analysis.stale
+      ? " Coverage evidence is stale."
+      : testImpact.analysis.partial
+        ? " Test analysis is partial."
+        : "";
+    gapClause = ` ${testImpact.recommendations_total} test recommendation${testImpact.recommendations_total === 1 ? "" : "s"} (${measured} measured, ${inferred} inferred).${state}`;
+  } else if (gaps > 0) {
+    gapClause = ` No test evidence was found for ${gaps} affected ${gaps === 1 ? "file" : "files"}.`;
+  } else {
+    gapClause =
+      " The available coverage map found no measured tests for this change.";
+  }
   return `Changing ${changedCount} ${filesWord} puts ${reach} downstream ${
     reach === 1 ? "file" : "files"
   } in scope (${direct} direct, ${transitive} transitive).${gapClause}`;
 }
 
 /**
- * The blast-radius headline: a risk gauge, four signal tiles, and a one-line
+ * The blast-radius headline: a structural-impact gauge, four signal tiles, and a one-line
  * plain-English verdict — replacing the old centred-number card + flat stat
  * grid so the result reads as a conclusion, not a row of figures.
  */
-export function BlastRadiusHeader({ result, changedFiles = [] }: BlastRadiusHeaderProps) {
-  const b = band(result.overall_risk_score);
+export function BlastRadiusHeader({
+  result,
+  changedFiles = [],
+}: BlastRadiusHeaderProps) {
+  const b = band(result.structural_impact_band);
   const tiles: Tile[] = [
     {
-      label: "Direct risks",
+      label: "Changed files scored",
       value: result.direct_risks.length,
       icon: <AlertTriangle className="h-5 w-5" />,
       tone: "text-[var(--color-error)]",
@@ -197,13 +233,18 @@ export function BlastRadiusHeader({ result, changedFiles = [] }: BlastRadiusHead
   return (
     <div className={cn("rounded-xl border p-4 sm:p-5", b.ring)}>
       <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
-        <RiskGauge score={result.overall_risk_score} />
+        <StructuralImpactGauge
+          score={result.structural_impact_score}
+          impactBand={result.structural_impact_band}
+        />
 
         <div className="min-w-0 flex-1 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <span className={cn("text-sm font-semibold", b.text)}>{b.label}</span>
+            <span className={cn("text-sm font-semibold", b.text)}>
+              {b.label}
+            </span>
             <span className="text-xs text-[var(--color-text-tertiary)]">
-              · blast radius of this change
+              · uncalibrated structural heuristic, not breakage probability
             </span>
           </div>
           <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">

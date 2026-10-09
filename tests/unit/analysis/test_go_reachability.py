@@ -184,7 +184,11 @@ class TestGoNeverFlagPatterns:
         assert self._matches("common/doc.go")
 
     def test_magefile(self):
-        assert self._matches("magefile.go")
+        # A build file by type (``code_origin``), not a glob.
+        from repowise.core.analysis.dead_code.constants import never_flag_path
+
+        assert never_flag_path("magefile.go")
+        assert never_flag_path("build/magefile.go")
 
     def test_generated_code(self):
         assert self._matches("api/v1/types.pb.go")

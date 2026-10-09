@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..models import (
     CoverageFile,
@@ -23,6 +23,9 @@ from ..models import (
     HealthFinding,
     HealthSnapshot,
 )
+
+if TYPE_CHECKING:
+    from repowise.core.analysis.health.coverage.discovery import CoverageProvenance
 
 
 class AnalysisIndexStore(ABC):
@@ -166,7 +169,11 @@ class AnalysisIndexStore(ABC):
 
     @abstractmethod
     async def save_health_metrics(
-        self, repository_id: str, metrics: list[Any]
+        self,
+        repository_id: str,
+        metrics: list[Any],
+        *,
+        analyzed_commit: str | None = None,
     ) -> None: ...
 
     @abstractmethod
@@ -218,6 +225,10 @@ class AnalysisIndexStore(ABC):
         worst_performer_score: float | None,
         per_file_scores: dict[str, float] | None = None,
         per_file_deductions: dict[str, float] | None = None,
+        structure_average: float | None = None,
+        history_average: float | None = None,
+        production_average: float | None = None,
+        maintainability_average: float | None = None,
         taken_at: datetime | None = None,
     ) -> HealthSnapshot: ...
 
@@ -238,6 +249,7 @@ class AnalysisIndexStore(ABC):
         *,
         source_format: str,
         ingested_commit_sha: str | None = None,
+        provenance: CoverageProvenance | None = None,
     ) -> None: ...
 
     @abstractmethod

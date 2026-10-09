@@ -28,7 +28,7 @@ export function useFileCardHost(repoId?: string) {
         (repoId
           ? {
               file: fileEntityPath(`/repos/${repoId}`, next.file_path),
-              graph: `/repos/${repoId}/architecture?view=graph&node=${encodeURIComponent(next.file_path)}`,
+              graph: `/repos/${repoId}/architecture?view=files&node=${encodeURIComponent(next.file_path)}`,
               // `?file=` was read by nothing in the docs surface, so this
               // button silently opened the repo overview — a different file's
               // prose, looking exactly like the link had worked. The reader is

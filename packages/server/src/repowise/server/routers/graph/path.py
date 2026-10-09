@@ -10,11 +10,17 @@ from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.server.deps import get_db_session
 from repowise.server.routers.graph._common import with_repo
+from repowise.server.schemas import DependencyPathResponse
 
 router = APIRouter()
 
 
-@router.get("/{repo_id}/path")
+@router.get(
+    "/{repo_id}/path",
+    response_model=DependencyPathResponse,
+    # ``visual_context`` is only built when no path exists.
+    response_model_exclude_unset=True,
+)
 async def dependency_path(
     repo_id: str,
     source: str = Query(..., alias="from", description="Source node ID"),

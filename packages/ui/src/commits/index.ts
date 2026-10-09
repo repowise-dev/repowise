@@ -2,6 +2,7 @@ export * from "./code-evolution-chart";
 export * from "./commits-lede";
 export * from "./commit-table";
 export * from "./commit-detail-card";
+export * from "./commit-health-table";
 export * from "./risk-driver-breakdown";
 export * from "./priority-badge";
 export * from "./credibility-strip";

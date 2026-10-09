@@ -99,7 +99,7 @@ async def test_search_collapses_restatements_of_one_decision(session, setup_mcp)
             setup_mcp,
             id_=f"restate{n}",
             title=f"Zebrafish caching, phrasing {n}",
-            commits=["deadbeef"],
+            commits=["deadbeef" * 5],
             confidence=0.9 - n / 100,
         )
 
@@ -116,8 +116,20 @@ async def test_search_keeps_records_citing_different_commits_apart(session, setu
     """The key is the cited evidence, so two real decisions must not merge."""
     from repowise.server.mcp_server import get_why
 
-    await _seed(session, setup_mcp, id_="ev1", title="Zebrafish caching one", commits=["aaa"])
-    await _seed(session, setup_mcp, id_="ev2", title="Zebrafish caching two", commits=["bbb"])
+    await _seed(
+        session,
+        setup_mcp,
+        id_="ev1",
+        title="Zebrafish caching one",
+        commits=["a" * 40],
+    )
+    await _seed(
+        session,
+        setup_mcp,
+        id_="ev2",
+        title="Zebrafish caching two",
+        commits=["b" * 40],
+    )
 
     result = await get_why("why zebrafish caching")
     served = {d["id"] for d in result["decisions"]}
@@ -325,3 +337,72 @@ async def test_status_breaks_ties_without_gating(session, setup_mcp):
     ids = [d["id"] for d in result["decisions"]]
 
     assert ids.index("strong-proposed") < ids.index("weak-active"), ids
+
+
+@pytest.mark.asyncio
+async def test_decisions_dropped_by_the_cap_stay_recoverable_with_their_bodies(
+    session, setup_mcp, tmp_path
+):
+    """The records past the cap are banked whole, not as a list of ids.
+
+    Search mode ranks wide and serves three. What it does with the rest is the
+    reason the projection is built for the whole surviving pool rather than for
+    the three: every dropped record is written to the omission store with its
+    decision body, its rationale and the evidence annotation already attached,
+    so ``repowise expand`` answers the follow-up without a second search.
+
+    Capping the pool before the projection would make that document a list of
+    titles, and nothing else here would notice. This pins what recovery is
+    worth so that trade has to be made deliberately.
+    """
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.core.distill.store import OmissionStore
+    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server.tool_why import _MAX_SEARCH_DECISIONS
+
+    # ``default_store_path`` walks up for an existing ``.repowise/`` and falls
+    # back to the user's home, so without this both the collector under test
+    # and the read below land in the developer's real store.
+    (tmp_path / ".repowise").mkdir(exist_ok=True)
+    mcp_mod._repo_path = str(tmp_path)
+
+    total = 9
+    for n in range(total):
+        await _seed(
+            session,
+            setup_mcp,
+            id_=f"zeb{n}",
+            title=f"Zebrafish caching strategy variant {n}",
+            decision=f"body of decision zeb{n}",
+            rationale=f"rationale of decision zeb{n}",
+            # Distinct cited evidence, so the restatement collapse keeps them
+            # apart and the cap is what does the dropping.
+            commits=[f"{n:040x}"],
+            confidence=0.9 - n / 100,
+        )
+
+    result = await get_why("why the zebrafish caching strategy variant")
+
+    served = [d["id"] for d in result["decisions"]]
+    assert len(served) == _MAX_SEARCH_DECISIONS, served
+    # ``>=``: the shared fixture corpus is free to grow a record that also
+    # clears the floor. What matters is that the whole pool was counted.
+    assert result["decisions_total"] >= total
+
+    refs = result["_meta"]["omitted"]["refs"]
+    assert refs, "a dropped decision must leave a recovery reference"
+    with OmissionStore.open_default(tmp_path) as store:
+        banked = "".join(store.get(ref) or "" for ref in refs)
+
+    for decision_id in (f"zeb{n}" for n in range(total)):
+        if decision_id in served:
+            continue
+        assert f"body of decision {decision_id}" in banked, decision_id
+        assert f"rationale of decision {decision_id}" in banked, decision_id
+        # Per record, not as a total: the annotation also stamps provenance on
+        # lineage rows, so a count over the whole document would pass on one
+        # well-connected record.
+        start = banked.index(f'"id": "{decision_id}"')
+        nxt = banked.find('"id": "', start + 1)
+        row = banked[start : nxt if nxt != -1 else len(banked)]
+        assert '"provenance"' in row, decision_id

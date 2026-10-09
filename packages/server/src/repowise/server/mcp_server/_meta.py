@@ -18,11 +18,48 @@ Rules of thumb baked into the hint generators:
 
 from __future__ import annotations
 
+import json
+import os
+import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-MCP_CONTRACT_VERSION = 1
+from repowise.core.index_scope import (
+    CANONICAL_INDEX_SCOPE_PROJECTION,
+    INDEX_SCOPE_ENV,
+    compact_index_scope,
+    index_scope_fingerprint,
+    load_index_scope,
+)
+from repowise.server.mcp_server._rounding import round_float
+
+# 2: index_scope carries the compact projection on routine responses. The key
+# and its version field are unchanged, so a consumer reading the old shape has
+# no way to notice from index_scope itself — the envelope version is where a
+# wire-shape change is announced. REPOWISE_MCP_INDEX_SCOPE=full restores it.
+# 3: the lean envelope. Diagnostics (this version, timing, budget accounting,
+# an uncapped completeness block, a complete index_scope digest, savings) leave
+# routine responses; get_overview and REPOWISE_MCP_DEBUG_META=1 keep them.
+MCP_CONTRACT_VERSION = 3
+
+#: Restores the diagnostic ``_meta`` fields on every response, for diagnosis.
+DEBUG_META_ENV = "REPOWISE_MCP_DEBUG_META"
+
+#: Called once per session, so it is where the whole envelope is worth its bytes.
+_FULL_META_TOOLS = frozenset({"get_overview"})
+
+
+def full_meta(tool: str | None = None) -> bool:
+    """Whether *tool*'s response keeps the diagnostic ``_meta`` fields.
+
+    Read per call, like the scope switch, so a client-spawned server picks a
+    change up without a restart.
+    """
+    if tool in _FULL_META_TOOLS:
+        return True
+    return os.environ.get(DEBUG_META_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 # Only warn about age when we have no other signal AND the index is genuinely
 # old. A short threshold here would nag on every call and train the agent to
@@ -99,6 +136,50 @@ def read_state_sync_commit(local_path: str | None) -> str | None:
         return None
     commit = data.get("last_sync_commit")
     return commit if isinstance(commit, str) and commit else None
+
+
+def read_index_scope(local_path: str | None) -> dict[str, Any] | None:
+    """Read the canonical persisted scope, or a conservative legacy projection."""
+    if not local_path:
+        return None
+    return load_index_scope(local_path)
+
+
+def _canonical_scope_requested() -> bool:
+    """Whether the environment asks for the whole scope on every response.
+
+    The compatibility window, for a reader that parses the full object and has
+    no way yet to ask for it by name. Read per call, so turning it on does not
+    need a restart of a server a client spawned.
+    """
+    return (
+        os.environ.get(INDEX_SCOPE_ENV, "").strip().lower()
+        == CANONICAL_INDEX_SCOPE_PROJECTION
+    )
+
+
+def _full_scope_hint() -> str:
+    """The call that returns the whole scope, as this server is running.
+
+    In workspace mode ``get_overview()`` returns the repo listing and carries
+    no scope at all, so a digest pointing there would send an agent somewhere
+    the rest of the answer is not. The argument is named rather than filled in
+    because the alias belongs to the caller's own request, not to the
+    repository row this envelope was built from.
+    """
+    from repowise.server.mcp_server import _state
+
+    if getattr(_state, "_registry", None) is not None:
+        return "get_overview(repo=...)"
+    return "get_overview()"
+
+
+def index_scope_for_response(local_path: str | None) -> dict[str, Any] | None:
+    """The scope an ordinary response carries: the digest, unless asked."""
+    scope = read_index_scope(local_path)
+    if scope is None or _canonical_scope_requested():
+        return scope
+    return compact_index_scope(scope, full_hint=_full_scope_hint())
 
 
 def resolve_indexed_commit(head_commit: str | None, local_path: str | None) -> str | None:
@@ -196,6 +277,197 @@ def targets_hit_by_changes(targets: list[str], changed: frozenset[str]) -> bool:
     return False
 
 
+# local_path -> (monotonic read time, dirty paths or None). Short-lived so a
+# burst of tool calls shares one ``git status`` while a fresh edit still shows;
+# a failed read is kept longer so a slow repo is not re-asked every call.
+_dirty_paths_cache: dict[str, tuple[float, frozenset[str] | None]] = {}
+_DIRTY_PATHS_TTL_S = 3.0
+_DIRTY_PATHS_FAILED_TTL_S = 60.0
+_DIRTY_PATHS_CACHE_MAX = 32
+# Runs inline on the event loop from build_meta, so the bound is tight; a slow
+# repo times out once and reads as "not evaluated" for the failed TTL.
+_DIRTY_PATHS_TIMEOUT_S = 0.5
+_UNTRACKED_DIR_FILE_CAP = 200
+
+
+def _working_tree_dirty_paths(local_path: str) -> frozenset[str] | None:
+    """Paths with staged, unstaged or untracked changes; ``None`` when unknown.
+
+    An untracked directory is reported once, with a trailing ``/``. Paths are
+    git-root relative; the ``.git`` gate below makes that root ``local_path``.
+    """
+    now = time.monotonic()
+    hit = _dirty_paths_cache.get(local_path)
+    if hit is not None:
+        ttl = _DIRTY_PATHS_TTL_S if hit[1] is not None else _DIRTY_PATHS_FAILED_TTL_S
+        if now - hit[0] < ttl:
+            return hit[1]
+    dirty: frozenset[str] | None = None
+    # Only at a repository root: ``git -C`` on a plain directory would answer
+    # for whatever repository happens to enclose it.
+    if (Path(local_path) / ".git").exists():
+        try:
+            import subprocess
+
+            res = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    local_path,
+                    "--no-pager",
+                    "status",
+                    "--porcelain",
+                    "-z",
+                    "--untracked-files=normal",
+                ],
+                capture_output=True,
+                timeout=_DIRTY_PATHS_TIMEOUT_S,
+                stdin=subprocess.DEVNULL,
+            )
+            if res.returncode == 0:
+                entries = res.stdout.decode("utf-8", errors="replace").split("\0")
+                paths: set[str] = set()
+                i = 0
+                while i < len(entries):
+                    entry = entries[i]
+                    i += 1
+                    if len(entry) < 4:
+                        continue
+                    paths.add(entry[3:])
+                    if entry[0] in "RC" and i < len(entries):
+                        # The rename or copy source follows; it is gone or
+                        # changed in the working tree too.
+                        paths.add(entries[i])
+                        i += 1
+                dirty = frozenset(paths)
+        except Exception:
+            dirty = None
+    if len(_dirty_paths_cache) >= _DIRTY_PATHS_CACHE_MAX:
+        _dirty_paths_cache.clear()
+    _dirty_paths_cache[local_path] = (now, dirty)
+    return dirty
+
+
+def _working_tree_record(local_path: str) -> tuple[frozenset[str], float] | None:
+    """Paths the last ``update --working-tree`` indexed, and when state.json was written."""
+    state_path = Path(local_path) / ".repowise" / "state.json"
+    try:
+        paths = json.loads(state_path.read_text(encoding="utf-8")).get("working_tree_paths")
+        written = state_path.stat().st_mtime
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(paths, list):
+        return None
+    return frozenset(_fold(p) for p in paths if isinstance(p, str)), written
+
+
+def _fold(path: str) -> str:
+    # Case-insensitive filesystems: a target and git's spelling may differ in case.
+    return path.casefold() if sys.platform in ("win32", "darwin") else path
+
+
+def _indexed_from_working_tree(
+    local_path: str, path: str, record: tuple[frozenset[str], float] | None
+) -> bool:
+    # Only paths are recorded, so the state.json write time stands in for the
+    # run's. Ceiling: a later commit-anchored update rewrites state.json and
+    # would cover a re-edit made in between; recording per-path stamps at
+    # update time lifts it.
+    if record is None:
+        return False
+    target = Path(local_path) / path
+    if path.endswith("/"):
+        # An untracked directory: its own mtime misses edits to files inside,
+        # so it is covered only when every file under it is.
+        from itertools import islice
+
+        from repowise.core.fs_walk import iter_glob
+
+        try:
+            files = [
+                f
+                for f in islice(iter_glob(target, "*"), _UNTRACKED_DIR_FILE_CAP + 1)
+                if f.is_file()
+            ]
+        except OSError:
+            return False
+        if len(files) > _UNTRACKED_DIR_FILE_CAP:
+            # Too large to check inline; stays marked rather than guessed covered.
+            return False
+        return bool(files) and all(
+            _indexed_from_working_tree(local_path, f.relative_to(local_path).as_posix(), record)
+            for f in files
+        )
+    if _fold(path) not in record[0]:
+        return False
+    # A deleted file has no mtime; its directory's changes when it goes.
+    probe = target if target.exists() else target.parent
+    try:
+        return probe.stat().st_mtime <= record[1]
+    except OSError:
+        return False
+
+
+def uncommitted_targets(local_path: str | None, targets: list[str] | None) -> list[str]:
+    """Served targets whose uncommitted edits the index has not seen.
+
+    Empty when git cannot answer: that is "not evaluated", never an error.
+    """
+    if not local_path or not targets:
+        return []
+    dirty = _working_tree_dirty_paths(local_path)
+    if not dirty:
+        return []
+    record = _working_tree_record(local_path)
+    folded = [(d, _fold(d)) for d in dirty]
+    out: list[str] = []
+    for raw in targets:
+        path = _normalize_target_path(raw)
+        if not path or path in out:
+            continue
+        key = _fold(path)
+        if any(
+            (fd == key or fd.startswith(key + "/") or (fd.endswith("/") and key.startswith(fd)))
+            and not _indexed_from_working_tree(local_path, d, record)
+            for d, fd in folded
+        ):
+            out.append(path)
+    return out
+
+
+def reverted_targets(local_path: str | None, targets: list[str] | None) -> list[str]:
+    """Served targets indexed from working-tree edits that are no longer there.
+
+    A reverted edit leaves git status clean while the index still holds it.
+    Only meaningful while HEAD equals the indexed commit; the caller checks.
+    """
+    if not local_path or not targets:
+        return []
+    record = _working_tree_record(local_path)
+    if not record or not record[0]:
+        return []
+    dirty = _working_tree_dirty_paths(local_path)
+    if dirty is None:
+        return []
+    dirty_keys = {_fold(d) for d in dirty}
+
+    def _still_dirty(rec: str) -> bool:
+        return rec in dirty_keys or any(d.endswith("/") and rec.startswith(d) for d in dirty_keys)
+
+    out: list[str] = []
+    for raw in targets:
+        path = _normalize_target_path(raw)
+        if not path or path in out:
+            continue
+        key = _fold(path)
+        if any(
+            (rec == key or rec.startswith(key + "/")) and not _still_dirty(rec)
+            for rec in record[0]
+        ):
+            out.append(path)
+    return out
+
+
 def freshness_from_repo(repository: Any | None, targets: list[str] | None = None) -> dict[str, Any]:
     """Return a minimal freshness dict for the given Repository row.
 
@@ -237,13 +509,17 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
         commit), so absence means "not evaluated", never "false". Emitting the
         false case matters downstream: a field that is only ever present as
         ``true`` makes every consumer-side rate read 100%.
+      * ``working_tree_dirty``: count of served targets with uncommitted edits
+        no ``repowise update --working-tree`` has indexed; those also set
+        ``stale_warning`` when nothing else has. A served file indexed from
+        uncommitted edits that were since reverted sets ``stale_warning`` alone.
 
     Defensive throughout: any missing piece is dropped rather than raised so
     an upstream change to the Repository model can never poison a tool result.
     """
     if repository is None:
         return {}
-    out: dict[str, Any] = {"contract_version": MCP_CONTRACT_VERSION}
+    out: dict[str, Any] = {"contract_version": MCP_CONTRACT_VERSION} if full_meta() else {}
 
     updated_at = getattr(repository, "updated_at", None)
     age_days: int | None = None
@@ -306,6 +582,25 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
             "results may be stale. Run `repowise update`."
         )
 
+    # Freshness above is commit-anchored, so an uncommitted edit to a served
+    # file would otherwise read as current. Served targets only: a dirty tree
+    # elsewhere is no reason to warn.
+    if targets:
+        modified = uncommitted_targets(local_path, targets)
+        if modified:
+            out["working_tree_dirty"] = len(modified)
+            out.setdefault(
+                "stale_warning",
+                "A file this response serves has uncommitted edits: source reads are live, "
+                "but graph and index facts for it predate the edit. "
+                "Run `repowise update --working-tree`.",
+            )
+        elif live_full and live_full == indexed_full and reverted_targets(local_path, targets):
+            out["stale_warning"] = (
+                "A file this response serves was indexed from uncommitted edits that are "
+                "no longer in the working tree. Run `repowise update --working-tree`."
+            )
+
     return out
 
 
@@ -327,9 +622,15 @@ def build_meta(
     serves) to scope ``stale_warning`` to actually-affected content — see
     :func:`freshness_from_repo`.
 
+    ``index_scope`` carries the compact projection (the run mode, the
+    provenance, the git tier, one word for whether the index is whole, and a
+    fingerprint identifying the canonical object), and only when that word is
+    not ``complete``. See :func:`build_meta_with_full_scope` for the calls that are
+    worth the whole thing.
+
     Stable shape:
       {
-        "timing_ms":       float,  # tool wall-time (omitted if None)
+        "timing_ms":       float,  # tool wall-time (REPOWISE_MCP_DEBUG_META only)
         "hint":            str,    # short follow-up suggestion (omitted if None)
         "cached":          bool,   # only included when True
         "index_age_days":  int,    # days since last `repowise update`
@@ -338,19 +639,59 @@ def build_meta(
         ...extras
       }
     """
-    out: dict[str, Any] = {"contract_version": MCP_CONTRACT_VERSION}
-    if timing_ms is not None:
-        out["timing_ms"] = round(float(timing_ms), 2)
+    full = full_meta()
+    out: dict[str, Any] = {"contract_version": MCP_CONTRACT_VERSION} if full else {}
+    if timing_ms is not None and full:
+        # Through the shared quantizer, not ``round(..., 2)``. A wall-clock
+        # duration is a float like any other on this wire, and two decimal
+        # places is not the same rule the rest of the payload follows: a
+        # 1077.85 ms measurement survives ``round`` but the significant-digit
+        # rule wants 1078.0, so the field tripped the no-raw-doubles guard
+        # whenever the run happened to land off an integer. ``round_float``
+        # returns None for a non-finite measurement, which is not valid JSON,
+        # so the key is omitted rather than emitted as null.
+        rounded_ms = round_float(float(timing_ms))
+        if rounded_ms is not None:
+            out["timing_ms"] = rounded_ms
     if hint:
         out["hint"] = hint
     if cached:
         out["cached"] = True
     if repository is not None:
         out.update(freshness_from_repo(repository, targets=targets))
+        scope = index_scope_for_response(getattr(repository, "local_path", None))
+        # A complete digest restates the default; only a gap is news.
+        if scope is not None and (
+            full or _canonical_scope_requested() or scope.get("status") != "complete"
+        ):
+            out["index_scope"] = scope
     out.update(_embedder_meta())
+    out.update(_release_meta())
     if extra:
         out.update(extra)
     return out
+
+
+def build_meta_with_full_scope(**kwargs: Any) -> dict[str, Any]:
+    """:func:`build_meta` for an orientation call: the whole ``index_scope``.
+
+    A separate function rather than a parameter on ``build_meta``, which has
+    68 call sites that all want the digest and one that wants this. A knob
+    every caller must read past to learn it does not apply to them belongs
+    beside the one caller it does.
+    """
+    meta = {"contract_version": MCP_CONTRACT_VERSION, **build_meta(**kwargs)}
+    repository = kwargs.get("repository")
+    if repository is not None:
+        scope = read_index_scope(getattr(repository, "local_path", None))
+        if scope is not None:
+            # The fingerprint is what makes a held copy checkable against a
+            # later digest, so the copy being held has to carry it too.
+            meta["index_scope"] = {
+                **scope,
+                "fingerprint": index_scope_fingerprint(scope),
+            }
+    return meta
 
 
 def persisted_analysis_meta(
@@ -373,7 +714,8 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
     raw_meta = result.get("_meta")
     meta = raw_meta if isinstance(raw_meta, dict) else {}
     result["_meta"] = meta
-    meta.setdefault("contract_version", MCP_CONTRACT_VERSION)
+    if full_meta():
+        meta.setdefault("contract_version", MCP_CONTRACT_VERSION)
     if evidence_kind:
         meta.setdefault("evidence_kind", evidence_kind)
     if evidence_kind == "structural":
@@ -381,13 +723,20 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
     elif evidence_kind == "generated":
         meta.setdefault("existing_verified_code", False)
 
-    state: dict[str, bool] = {}
+    state: dict[str, Any] = {}
     combined = {**result, **meta}
-    if any(
-        value and (key == "degraded" or key.endswith("_degraded"))
-        for key, value in combined.items()
-    ):
+    # The bool is deliberately coarse. Carry the values behind it, not just the
+    # key names: the producers already hold the answer -- a synthesis reason
+    # string, the list of retrieval legs that broke -- and naming only the key
+    # would discard it.
+    degraded_by = {
+        key: value
+        for key, value in sorted(combined.items())
+        if value and (key == "degraded" or key.endswith("_degraded"))
+    }
+    if degraded_by:
         state["degraded"] = True
+        state["degraded_reasons"] = degraded_by
     if any(
         value and (key == "partial" or key.endswith("_partial")) for key, value in combined.items()
     ):
@@ -403,6 +752,29 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
             state = {**existing, **state}
         meta["state"] = state
     return result
+
+
+def semantic_search_state() -> bool | None:
+    """Whether retrieval has a real vector leg. ``None`` when never evaluated.
+
+    Three-valued on purpose, and the third value is the point: a signal that only
+    ever reports ``False`` cannot be told apart, by anything aggregating it, from
+    one this version does not report at all. That is exactly the trap
+    ``embedder_degraded`` was written to avoid, and it bites harder here, because
+    the population this measures - keyless installs, where nothing is broken and
+    retrieval is simply full-text-only - is the larger one.
+
+    Kept beside :func:`_embedder_meta` and read by it, so the response and the
+    telemetry can never disagree about the same install.
+    """
+    from repowise.server.mcp_server import _state
+
+    status = getattr(_state, "_embedder_status", None)
+    if not status:
+        return None
+    if status.get("degraded") or getattr(_state, "_vector_store_errors", None):
+        return False
+    return status.get("active") != "mock"
 
 
 def _embedder_meta() -> dict[str, Any]:
@@ -423,7 +795,12 @@ def _embedder_meta() -> dict[str, Any]:
     is broken and nothing was misconfigured, so it is not flagged as degraded;
     but retrieval really is full-text-only, and a caller that assumes semantic
     matching is running will misread a lexical miss as "not in the codebase".
-    ``semantic_search: false`` says so once per response without crying wolf.
+    ``semantic_search: false`` says so once per response without crying wolf. The
+    healthy case stays silent on the wire, because ``embedder_degraded: False``
+    with no ``embedder`` key already says it and a second key on every response of
+    every tool would be paid for in the caller's token budget to tell it something
+    it can already see. Telemetry needs the third state named rather than
+    inferred, so it reads :func:`semantic_search_state` directly instead.
     """
     # Lazy import: `_state` is a sibling module; importing it at call-time keeps
     # `_meta` free of any package import-ordering coupling.
@@ -434,7 +811,8 @@ def _embedder_meta() -> dict[str, Any]:
         # Embedder never initialised, so there is nothing to report either way.
         # Absence means "not evaluated", distinct from an explicit ``false``.
         return {}
-    if not status.get("degraded"):
+    store_errors = getattr(_state, "_vector_store_errors", None) or {}
+    if not status.get("degraded") and not store_errors:
         if status.get("active") == "mock":
             return {"embedder": "mock", "embedder_degraded": False, "semantic_search": False}
         return {"embedder_degraded": False}
@@ -443,24 +821,36 @@ def _embedder_meta() -> dict[str, Any]:
         "embedder_degraded": True,
         "semantic_search": False,
     }
-    reason = status.get("reason")
+    reason = status.get("reason") or " ".join(store_errors.values())
     if reason:
         out["embedder_warning"] = reason
     return out
 
 
-def context_hint(targets: list[str], compact: bool, include: set[str] | None = None) -> str | None:
-    """Hint for `get_context` callers.
+def _release_meta() -> dict[str, Any]:
+    """Name a newer repowise release once per process, in the first response
+    after the lifespan's poller sees it.
 
-    Conservative: only fires when the call shape suggests the agent could
-    have used a cheaper tool, AND the suggestion is unambiguously safe.
+    The stdio server never re-checks its own currency otherwise, and a client
+    that spawned it weeks ago keeps talking to that version until something
+    says so. One key, one time: repeating it on every call would charge the
+    caller's token budget for a fact it already has. A newer version seen
+    later in the same process is announced again, once.
     """
-    if not targets:
-        return None
-    # If caller requested source and got a large symbol, nudge toward Read with offset
-    if include and "source" in include and len(targets) == 1:
-        return None  # source mode provides its own truncation info
-    return None
+    from repowise.server.mcp_server import _state
+
+    check = getattr(_state, "_release_check", None)
+    if check is None or not check.update_available or not check.latest_version:
+        return {}
+    if check.latest_version == _state._release_announced:
+        return {}
+    _state._release_announced = check.latest_version
+    return {
+        "newer_release": (
+            f"repowise {check.latest_version} is available, this server runs "
+            f"{check.current_version}; upgrade and restart the MCP server"
+        )
+    }
 
 
 def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
@@ -484,6 +874,35 @@ EXHAUSTIVE_SWEEP_HINT = (
     "For an exhaustive sweep of every literal usage — before a rename, say — "
     "Grep the name; that is the one job this surface does not do."
 )
+
+# Appended to a get_answer hint when the answer graded low and the index is
+# behind live HEAD; the one place holding both signals says what to do.
+INDEX_BEHIND_LOW_CONFIDENCE_HINT = (
+    "The index is behind HEAD, so run `repowise update` and ask again before "
+    "trusting a low-confidence answer."
+)
+
+
+def completeness_line(*, bodies: int = 0, files: int = 0) -> str | None:
+    """One sentence naming the whole units this response already served.
+
+    Only ever counts complete units. A sliced body or a partial range is not a
+    unit, so the callers filter before they count and this returns ``None`` when
+    nothing whole was served.
+    """
+    bodies = max(0, int(bodies))
+    files = max(0, int(files))
+    if not bodies and not files:
+        return None
+    parts: list[str] = []
+    if bodies:
+        noun = "symbol body" if bodies == 1 else "symbol bodies"
+        parts.append(f"{bodies} {noun} served whole from live source")
+    if files:
+        noun = "file" if files == 1 else "files"
+        parts.append(f"{files} {noun} served whole")
+    closing = "do not re-open it." if bodies + files == 1 else "do not re-open them."
+    return f"Complete: {' and '.join(parts)}; {closing}"
 
 
 def answer_hint(
@@ -535,5 +954,8 @@ def answer_hint(
             "rates the ranked hits; start from the first one."
         )
     if confidence == "low":
-        return "Low confidence — Read the listed fallback_targets to verify before answering."
+        return (
+            "Low confidence. Read the top evidence row or candidate_files to "
+            "verify before answering."
+        )
     return None

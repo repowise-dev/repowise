@@ -1,237 +1,295 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Link2 } from "lucide-react";
+import { getTranslations } from "next-intl/server";
 import type { ExtractionDiagnostics } from "@repowise-dev/api-client/types";
-import { PageShell, EmptyState } from "@repowise-dev/ui/shared";
+import { PageShell } from "@repowise-dev/ui/shared";
 import { PageLede } from "@repowise-dev/ui/shared/page-lede";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
-import { ContractLinksTable } from "@repowise-dev/ui/workspace/contract-links-table";
+import { groupOrphanProviders } from "@repowise-dev/ui/workspace/contract-facts";
+import { MAX_PROMPT_ROWS } from "@repowise-dev/ui/workspace/contract-ai-prompt";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import {
   getWorkspace,
   getWorkspaceContracts,
   getWorkspaceDiagnostics,
 } from "@/lib/api/workspace";
-import { ContractFilters } from "./contract-filters";
+import { BreakingChangesSection } from "./breaking-changes-section";
+import { ContractDrawerProvider } from "./contract-drawer-host";
+import { ContractListControls, ContractListPager } from "./contract-filters";
+import { contractsListHref, type ContractListFilters } from "./contract-href";
 import { ContractsTable } from "./contracts-table";
+import { LinksSection } from "./links-table";
+import { NeedsAttention } from "./needs-attention";
 
-export const metadata: Metadata = { title: "Contracts" };
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("contracts");
+  return { title: t("title") };
+}
 
 export const revalidate = 30;
 
-/** Rows the table draws. The server caps at 1,000; this is the page's own
- *  window and it is always reported against the filtered total below. */
-const ROW_WINDOW = 200;
+/** The minimal translator shape the copy helpers below need; next-intl's `t` fits. */
+type Translator = (key: string, values?: Record<string, string | number>) => string;
+
+/** Rows per page of the full list. The server caps a page at 1,000. */
+const PAGE_SIZE = 100;
 
 type Props = {
-  searchParams: Promise<{ type?: string; repo?: string; role?: string }>;
+  searchParams: Promise<{
+    type?: string;
+    repo?: string;
+    role?: string;
+    linked?: string;
+    q?: string;
+    page?: string;
+    contract?: string;
+    file?: string;
+  }>;
 };
 
 /**
- * Contracts detected across the workspace, and which of them matched.
+ * Contracts detected across the workspace, which of them matched, and which
+ * need a look.
  *
- * The four `MetricCard`s this replaces could not be restyled into a ribbon,
- * because three of them were counting the wrong things. "Total Contracts" and
- * "Unmatched" were both derived from the contract rows, which arrive filtered
- * *and* paginated — so "Unmatched" was computed over one page of 200 and
- * reported as a workspace figure, and it moved whenever a filter changed. "By
- * Type" was arithmetically identical to "Total Contracts", since the sum of a
- * breakdown is the thing it breaks down.
+ * The figures come from `/api/workspace/diagnostics`, which knows the
+ * workspace-wide denominators, and deliberately do not move when the list is
+ * filtered. The list pages on the server, so every contract is reachable and
+ * the count beside it is the count of what the filters return.
  *
- * The figures come from `/api/workspace/diagnostics` now, which is the
- * endpoint that already knows the denominators: how many providers and
- * consumers extraction found, how many linked, and why the rest did not. Those
- * are workspace-wide and deliberately do not move when the table is filtered.
+ * `?contract=&repo=&file=` opens the drawer on load (the System Map links here
+ * that way). While it is present `repo` names the drawer's contract, not a list
+ * filter, so a deep link never lands on a list narrowed by accident.
  */
 export default async function ContractsPage({ searchParams }: Props) {
-  const { type, repo, role } = await searchParams;
+  const t = await getTranslations("contracts");
+  const sp = await searchParams;
+  const deepLink =
+    sp.contract && sp.repo && sp.file
+      ? { contract_id: sp.contract, repo: sp.repo, file_path: sp.file }
+      : null;
+  const filters: ContractListFilters = {
+    type: sp.type || undefined,
+    repo: deepLink ? undefined : sp.repo || undefined,
+    role: sp.role || undefined,
+    linked: sp.linked === "yes" || sp.linked === "no" ? sp.linked : undefined,
+    // A contract link without a file (an edge ref) cannot name one declaration,
+    // so it lands on the list searched for that id instead.
+    q: sp.q?.trim() || (!deepLink && sp.contract) || undefined,
+  };
+  const page = Math.max(1, Number.parseInt(sp.page ?? "1", 10) || 1);
 
   const [ct, diag, ws] = await Promise.allSettled([
     getWorkspaceContracts({
-      contract_type: type || undefined,
-      repo: repo || undefined,
-      role: role || undefined,
-      limit: ROW_WINDOW,
+      contract_type: filters.type,
+      repo: filters.repo,
+      role: filters.role,
+      q: filters.q,
+      ...(filters.linked ? { linked: filters.linked === "yes" } : {}),
+      // The links section fetches its own; resending them on every page turn
+      // was most of this request.
+      include_links: false,
+      limit: PAGE_SIZE,
+      offset: (page - 1) * PAGE_SIZE,
     }),
-    getWorkspaceDiagnostics(),
-    getWorkspace(),
+    // Workspace-wide and unchanged by the filters, so a page turn or a search
+    // reuses them instead of refetching.
+    getWorkspaceDiagnostics({ next: { revalidate: 30 } }),
+    getWorkspace({ next: { revalidate: 30 } }),
   ]);
 
   const data = ct.status === "fulfilled" ? ct.value : null;
   const diagnostics = diag.status === "fulfilled" ? diag.value : null;
   const workspace = ws.status === "fulfilled" ? ws.value : null;
   const repos = workspace?.repos.map((r) => r.alias) ?? [];
-  // The workspace-wide breakdown, not `data.by_type`: that one is counted
-  // after the filters run, so picking a type would leave the select holding
-  // only the type already picked.
+  // The workspace-wide breakdown, not `data.by_type`: that one is counted after
+  // the filters run, so picking a type would leave only the type already picked.
   const byType = workspace?.contract_summary?.by_type ?? null;
+  const workspaceTotal = byType ? Object.values(byType).reduce((a, b) => a + b, 0) : null;
+  const repoIds: Record<string, string> = {};
+  for (const r of workspace?.repos ?? []) {
+    if (r.repo_id) repoIds[r.alias] = r.repo_id;
+  }
 
   const rows = data?.contracts ?? [];
-  const links = data?.links ?? [];
-  const filtered = Boolean(type || repo || role);
+  const total = data?.total_contracts ?? 0;
+  const filtered = Boolean(filters.type || filters.repo || filters.role || filters.linked || filters.q);
 
+  // The lede carries matched links, so the ribbon does not repeat it.
   const ribbon: RibbonStat[] = [
     {
-      label: "Providers",
-      value: diagnostics ? formatNumber(diagnostics.total_providers) : "—",
-      sub: "routes, topics and tables published",
+      label: t("ribbon.providers"),
+      value: diagnostics ? formatNumber(diagnostics.total_providers) : "",
+      sub: t("ribbon.providersSub"),
     },
     {
-      label: "Consumers",
-      value: diagnostics ? formatNumber(diagnostics.total_consumers) : "—",
-      sub: "call sites resolved to a contract",
+      label: t("ribbon.consumers"),
+      value: diagnostics ? formatNumber(diagnostics.total_consumers) : "",
+      sub: t("ribbon.consumersSub"),
     },
     {
-      label: "Matched links",
-      value: diagnostics ? formatNumber(diagnostics.total_links) : "—",
-      sub: "provider joined to consumer",
+      label: t("ribbon.unmatched"),
+      value: diagnostics ? formatNumber(diagnostics.unmatched_consumers.length) : "",
+      sub: unmatchedReasonSub(t, diagnostics),
     },
     {
-      label: "Unmatched consumers",
-      value: diagnostics ? formatNumber(diagnostics.unmatched_consumers.length) : "—",
-      sub: unmatchedReasonSub(diagnostics),
+      label: t("ribbon.orphans"),
+      value: diagnostics ? formatNumber(diagnostics.orphan_providers.length) : "",
+      sub: t("ribbon.orphansSub"),
     },
     {
-      label: "Unused providers",
-      value: diagnostics ? formatNumber(diagnostics.orphan_providers.length) : "—",
-      sub: "nothing in the workspace calls them",
-    },
-    {
-      // Extraction reporting on its own recall. The denominator is calls a
-      // dialect located, so this is honest about what it covers and silent
-      // about calls nothing recognised — it is not total recall.
-      label: "HTTP calls resolved",
+      // Extraction reporting on its own recall: the denominator is calls a
+      // dialect located, so it says nothing about calls nothing recognised.
+      label: t("ribbon.httpResolved"),
       value:
         diagnostics?.http_consumer_coverage != null
           ? `${Math.floor(diagnostics.http_consumer_coverage * 100)}%`
-          : "—",
+          : "",
       sub: diagnostics?.http_consumers_unresolved
-        ? `${formatNumber(diagnostics.http_consumers_unresolved)} located but not resolvable`
-        : "of the client calls extraction located",
+        ? t("ribbon.httpUnresolved", {
+            count: formatNumber(diagnostics.http_consumers_unresolved),
+          })
+        : t("ribbon.httpSub"),
     },
   ];
 
   return (
     <PageShell
-      title="Contracts"
+      title={t("title")}
       icon={<Link2 className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
-      description="Routes, topics and tables one repository publishes and another consumes."
+      description={t("description")}
     >
       <PageLede
-        label="Matched links"
-        value={diagnostics ? formatNumber(diagnostics.total_links) : "—"}
-        unit="provider to consumer"
+        label={t("links.title")}
+        value={diagnostics ? formatNumber(diagnostics.total_links) : t("ledeUnknown")}
+        unit={t("ledeUnit")}
         layout="beside"
       >
         {diagnostics ? (
           <>
-            <p>
-              Extraction found {formatNumber(diagnostics.total_providers)} providers and{" "}
-              {formatNumber(diagnostics.total_consumers)} consumers across the workspace, and
-              joined {formatNumber(diagnostics.total_links)} of them into cross-repo links. A
-              link means a call site was resolved to the code that serves it, not that the two
-              were declared against a shared schema.
-            </p>
-            <p>
-              {formatNumber(diagnostics.orphan_providers.length)} providers have no caller in
-              this workspace. Read that against extraction&rsquo;s own coverage rather than on
-              its own: an endpoint looks unused both when nothing calls it and when the call
-              was written in a form this analysis could not follow.
-              {diagnostics.http_consumers_unresolved > 0 ? (
-                <>
-                  {" "}
-                  {formatNumber(diagnostics.http_consumers_unresolved)} HTTP client calls were
-                  located here but could not be resolved to an endpoint, so some of those
-                  providers are called by code this page cannot yet name.
-                </>
-              ) : null}
-            </p>
+            <p>{t("ledeLinkLine1")}</p>
+            <p>{t("ledeLinkLine2", { attention: t("attention.title") })}</p>
           </>
         ) : (
-          <p>
-            Extraction diagnostics are not available, so the totals below cannot be shown.
-            Run a workspace sync to rebuild them.
-          </p>
+          <p>{t("ledeNoDiagnostics")}</p>
         )}
       </PageLede>
 
       <StatRibbon stats={ribbon} />
 
-      {links.length > 0 && (
-        <OverviewSection
-          title="Matched links"
-          description={
-            filtered
-              ? "Links matching the current filter, provider on the left and consumer on the right."
-              : "Every provider joined to the consumer that calls it, with the confidence of the match."
-          }
-        >
-          <ContractLinksTable links={links} />
-        </OverviewSection>
-      )}
+      <ContractDrawerProvider repoIds={repoIds} initial={deepLink}>
+        <BreakingChangesSection repoIds={repoIds} />
 
-      <OverviewSection
-        title="All detected contracts"
-        description={tableDescription(rows.length, data?.total_contracts ?? 0, filtered)}
-        action={<ContractFilters repos={repos} byType={byType} />}
-      >
-        {rows.length === 0 ? (
-          <EmptyState
-            className="p-6"
-            title={filtered ? "No contracts match this filter" : "No contracts detected"}
-            description={
-              filtered
-                ? "Clear a filter to widen the search."
-                : "Contracts are detected during a workspace sync, by reading the routes each repository serves and the calls the others make."
-            }
-          />
-        ) : (
-          <ContractsTable contracts={rows} />
-        )}
-      </OverviewSection>
+        {diagnostics ? (
+          <OverviewSection title={t("attention.title")}>
+            <NeedsAttention
+              unmatched={diagnostics.unmatched_consumers}
+              // Counts plus a prompt's worth of rows per group, not all 1,000+.
+              orphanGroups={groupOrphanProviders(diagnostics.orphan_providers, MAX_PROMPT_ROWS)}
+            />
+          </OverviewSection>
+        ) : null}
+
+        <LinksSection type={filters.type} repo={filters.repo} q={filters.q} />
+
+        <OverviewSection
+          id="all-contracts"
+          title={t("list.title")}
+          description={data ? listDescription(t, total, workspaceTotal, filtered) : undefined}
+        >
+          <ContractListControls filters={filters} repos={repos} byType={byType} />
+          {rows.length === 0 ? (
+            // One quiet sentence, like every other state with nothing in it.
+            <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
+              {!data
+                ? t("list.loadFailed")
+                : total > 0
+                  ? t.rich("list.pagePastEnd", {
+                      page: formatNumber(page),
+                      total,
+                      first: (chunks) => (
+                        <Link
+                          href={contractsListHref({ ...filters, page: 1 })}
+                          className="text-[var(--color-accent-primary)] hover:underline"
+                        >
+                          {chunks}
+                        </Link>
+                      ),
+                    })
+                  : filtered
+                    ? t("list.noMatch")
+                    : t("list.noneDetected")}
+            </p>
+          ) : (
+            <>
+              <ContractsTable contracts={rows} showType={!filters.type} />
+              <ContractListPager
+                filters={filters}
+                page={page}
+                pageSize={PAGE_SIZE}
+                shown={rows.length}
+                total={total}
+              />
+            </>
+          )}
+        </OverviewSection>
+      </ContractDrawerProvider>
 
       <p className="text-xs text-[var(--color-text-tertiary)]">
-        Contracts are matched on path. Two routes that share a path are one contract here, so a
-        repository can appear against a contract it declares for its own use.{" "}
-        <Link
-          href="/workspace/system-map"
-          className="text-[var(--color-accent-primary)] hover:underline"
-        >
-          See how they connect
-        </Link>
-        .
+        {t.rich("footer.note", {
+          link: (chunks) => (
+            <Link
+              href="/workspace/system-map"
+              className="text-[var(--color-accent-primary)] hover:underline"
+            >
+              {chunks}
+            </Link>
+          ),
+        })}
       </p>
     </PageShell>
   );
 }
 
-/**
- * Say the bound. The endpoint pages the rows but reports the unpaged total, so
- * without this the heading claims a number the table does not draw.
- */
-function tableDescription(shown: number, total: number, filtered: boolean): string {
-  const scope = filtered ? "matching the current filter" : "detected across the workspace";
-  if (total === 0) return `Every contract ${scope}.`;
-  if (shown >= total) {
-    return `All ${formatNumber(total)} ${total === 1 ? "contract" : "contracts"} ${scope}. One contract can be declared in several places, so a name may repeat.`;
+/** Say exactly what the list holds against the workspace it came from. */
+function listDescription(
+  t: Translator,
+  total: number,
+  workspaceTotal: number | null,
+  filtered: boolean,
+): string {
+  if (!filtered) {
+    return t("list.description", { total, pageSize: PAGE_SIZE });
   }
-  return `Showing ${formatNumber(shown)} of ${formatNumber(total)} contracts ${scope}. One contract can be declared in several places, so a name may repeat.`;
+  return workspaceTotal != null
+    ? t("list.filteredOf", { total, workspaceTotal })
+    : t("list.filtered", { total });
 }
 
+/**
+ * The unmatched-reason short labels. The reason codes come from the system
+ * graph; the prose in `@repowise-dev/ui` stays English, so the label the ribbon
+ * shows is named here instead.
+ */
+const REASON_KEYS: Record<string, string> = {
+  no_provider: "reasons.no_provider",
+  unlinked: "reasons.unlinked",
+  internal_only: "reasons.internal_only",
+  external_host: "reasons.external_host",
+};
+
 /** Name why consumers went unmatched, since the count alone invites the wrong read. */
-function unmatchedReasonSub(diagnostics: ExtractionDiagnostics | null): string {
+function unmatchedReasonSub(
+  t: Translator,
+  diagnostics: ExtractionDiagnostics | null,
+): string {
   if (!diagnostics) return "";
   const reasons = Object.entries(diagnostics.unmatched_by_reason ?? {})
     .filter(([, n]) => n > 0)
     .sort((a, b) => b[1] - a[1]);
-  if (reasons.length === 0) return "every consumer matched a provider";
-  return reasons.map(([reason, n]) => `${n} ${REASON_LABEL[reason] ?? reason}`).join(", ");
+  if (reasons.length === 0) return t("reasons.everyMatched");
+  return reasons
+    .map(([reason, n]) => `${n} ${t(REASON_KEYS[reason] ?? "reasons.unknown")}`)
+    .join(", ");
 }
-
-const REASON_LABEL: Record<string, string> = {
-  no_provider: "no provider found",
-  internal_only: "internal to one repo",
-  external_host: "external host",
-  unlinked: "unlinked",
-};

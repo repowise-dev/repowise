@@ -29,6 +29,7 @@ const COST_TABLE_EXACT: Record<string, [number, number]> = {
   "claude-opus-4-6": [0.005, 0.025],
   "claude-sonnet-4-6": [0.003, 0.015],
   "claude-haiku-4-5": [0.001, 0.005],
+  "claude-haiku-5-5": [0.0001, 0.0005],
   "deepseek-v4-flash": [0.00014, 0.00028],
   "deepseek-v4-pro": [0.00174, 0.00348],
 };
@@ -286,7 +287,7 @@ export function QuickActions({
             onClick={() => handleClick(primary)}
           >
             <PrimaryIcon
-              className={`h-3.5 w-3.5 ${loading === primary.key ? "animate-spin" : ""}`}
+              className={`h-3.5 w-3.5 ${loading === primary.key ? "motion-safe:animate-spin" : ""}`}
             />
             {primary.label}
           </Button>
@@ -325,7 +326,7 @@ export function QuickActions({
                           action.destructive
                             ? "text-[var(--color-warning)]"
                             : "text-[var(--color-text-tertiary)]"
-                        } ${loading === action.key ? "animate-spin" : ""}`}
+                        } ${loading === action.key ? "motion-safe:animate-spin" : ""}`}
                       />
                       <span className="min-w-0">
                         <span className="block text-xs font-medium text-[var(--color-text-primary)]">
@@ -363,7 +364,7 @@ export function QuickActions({
                 disabled={loading !== null}
                 onClick={() => handleClick(action)}
               >
-                <Icon className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
+                <Icon className={`h-3.5 w-3.5 ${isLoading ? "motion-safe:animate-spin" : ""}`} />
                 {action.label}
               </Button>
             );

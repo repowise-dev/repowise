@@ -1,12 +1,14 @@
 "use client";
 
 import type { DirectRiskEntry } from "@repowise-dev/types/blast-radius";
+import { AskAboutThis } from "../chat/ask-about-this";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
-import { riskInk } from "../health/tokens";
 
 interface DirectRisksTableProps {
   rows: DirectRiskEntry[];
 }
+
+type DisplayDirectRisk = DirectRiskEntry & { structuralShare: number };
 
 /** A 0–1 value rendered as a labelled mini-bar so rows scan visually. */
 function MiniBar({
@@ -27,52 +29,70 @@ function MiniBar({
           style={{ width: `${pct}%`, background: color }}
         />
       </div>
-      <span className="w-10 shrink-0 text-right tabular-nums text-[var(--color-text-secondary)]">
+      <span className="w-12 shrink-0 text-right tabular-nums text-[var(--color-text-secondary)]">
         {display}
       </span>
     </div>
   );
 }
 
-const COLUMNS: ResponsiveColumn<DirectRiskEntry>[] = [
+const COLUMNS: ResponsiveColumn<DisplayDirectRisk>[] = [
   {
     key: "path",
     header: "File",
     render: (r) => (
-      <span
-        className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-secondary)]"
-        title={r.path}
-      >
-        {r.path}
+      <span className="flex min-w-0 items-center gap-1">
+        <span
+          className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-secondary)]"
+          title={r.path}
+        >
+          {r.path}
+        </span>
+        <AskAboutThis
+          context={{
+            kind: "blast-radius",
+            label: r.path,
+            target: r.path,
+            targetKind: "path",
+          }}
+          question={`What breaks if I change ${r.path}, and which dependents deserve the closest review?`}
+          label={`Ask about ${r.path}`}
+          className="h-6 w-6"
+        />
       </span>
     ),
   },
   {
-    key: "risk_score",
-    header: "Risk (0–10)",
+    key: "structural_score",
+    header: "Structural weight (raw)",
     headerClassName: "w-[28%]",
     render: (r) => (
       <MiniBar
-        value01={r.risk_score}
-        color={riskInk(r.risk_score)}
-        display={(r.risk_score * 10).toFixed(1)}
+        value01={r.structuralShare}
+        color="var(--color-accent-secondary)"
+        display={r.structural_score.toFixed(4)}
       />
     ),
-    mobileRender: (r) => (r.risk_score * 10).toFixed(1),
+    mobileRender: (r) => r.structural_score.toFixed(4),
   },
   {
     key: "temporal_hotspot",
-    header: "Temporal hotspot",
+    header: "Temporal hotspot (bar: rank)",
     headerClassName: "w-[24%]",
     priority: 2,
+    // The bar reads churn_percentile: temporal_hotspot is an unbounded churn
+    // sum whose median is already above 1.0, so a [0,1] bar pinned most rows
+    // full. The raw sum stays as the printed figure, without the *10 that
+    // made it look like a 0-10 score when it can exceed 40. The ?? 0 is for a
+    // server predating the field, where undefined would render width: NaN%.
     render: (r) => (
       <MiniBar
-        value01={r.temporal_hotspot}
+        value01={r.churn_percentile ?? 0}
         color="var(--color-accent-secondary)"
-        display={(r.temporal_hotspot * 10).toFixed(1)}
+        display={r.temporal_hotspot.toFixed(1)}
       />
     ),
-    mobileRender: (r) => (r.temporal_hotspot * 10).toFixed(1),
+    mobileRender: (r) => r.temporal_hotspot.toFixed(1),
   },
   {
     key: "centrality",
@@ -91,18 +111,24 @@ const COLUMNS: ResponsiveColumn<DirectRiskEntry>[] = [
 ];
 
 /**
- * Direct dependents of the changed files, sorted by risk. Each numeric column
- * is an inline mini-bar (risk health-banded, hotspot/centrality neutral) so the
- * heaviest rows pop without reading every figure.
+ * Changed files sorted by raw structural weight. The bar is relative to the
+ * strongest file in this change; the displayed value remains the unbounded raw
+ * pagerank-weighted heuristic and is never presented as a 0–10 risk score.
  */
 export function DirectRisksTable({ rows }: DirectRisksTableProps) {
-  const sorted = [...rows].sort((a, b) => b.risk_score - a.risk_score);
+  const max = rows.reduce((value, row) => Math.max(value, row.structural_score), 0);
+  const sorted: DisplayDirectRisk[] = rows
+    .map((row) => ({
+      ...row,
+      structuralShare: max > 0 ? row.structural_score / max : 0,
+    }))
+    .sort((a, b) => b.structural_score - a.structural_score);
   return (
     <ResponsiveTable
       columns={COLUMNS}
       rows={sorted}
       rowKey={(r) => r.path}
-      caption="Direct risks for the changed files"
+      caption="Structural weights for the changed files"
       bare
     />
   );

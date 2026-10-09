@@ -1,13 +1,17 @@
-import { apiGet, apiPost, apiPatch } from "./client";
+import { apiGet, apiPost, apiPatch, apiPut } from "./client";
 import type {
   DecisionCreate,
   DecisionEvidence,
   DecisionEvidenceResponse,
   DecisionCounts,
   DecisionGraph,
+  DecisionLaneCounts,
+  DecisionLaneFilter,
   DecisionLineageEntry,
   DecisionLineageResponse,
   DecisionRecordResponse,
+  DecisionSettings,
+  DecisionSettingsUpdate,
   DecisionStatusUpdate,
 } from "./types";
 
@@ -19,6 +23,12 @@ export async function listDecisions(
     tag?: string;
     module?: string;
     include_proposed?: boolean;
+    /**
+     * Review lane. `candidates` are records nobody has accepted; `governing`
+     * is what still binds. Applied after the page is fetched on the server,
+     * because a lane is a join and not a column.
+     */
+    lane?: DecisionLaneFilter;
     limit?: number;
     offset?: number;
     /**
@@ -45,6 +55,22 @@ export async function getDecisionCounts(
   },
 ): Promise<DecisionCounts> {
   return apiGet<DecisionCounts>(`/api/repos/${repoId}/decisions/counts`, opts);
+}
+
+/**
+ * Counts per review lane, from a scan of the acceptance join.
+ *
+ * Not interchangeable with {@link getDecisionCounts}, which groups the status
+ * column. That column is the projection kept in step for readers that predate
+ * the acceptance split, so its `active` and this one's `active` answer
+ * different questions.
+ */
+export async function getDecisionLaneCounts(
+  repoId: string,
+): Promise<DecisionLaneCounts> {
+  return apiGet<DecisionLaneCounts>(
+    `/api/repos/${repoId}/decisions/lane-counts`,
+  );
 }
 
 export async function getDecision(
@@ -96,4 +122,15 @@ export async function getDecisionLineage(
 
 export async function getDecisionGraph(repoId: string): Promise<DecisionGraph> {
   return apiGet<DecisionGraph>(`/api/repos/${repoId}/decisions/graph`);
+}
+
+export async function getDecisionSettings(repoId: string): Promise<DecisionSettings> {
+  return apiGet<DecisionSettings>(`/api/repos/${repoId}/decisions/settings`);
+}
+
+export async function updateDecisionSettings(
+  repoId: string,
+  update: DecisionSettingsUpdate,
+): Promise<DecisionSettings> {
+  return apiPut<DecisionSettings>(`/api/repos/${repoId}/decisions/settings`, update);
 }

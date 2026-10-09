@@ -3,22 +3,26 @@
 import { GraphCommunityPanel as GraphCommunityPanelShell } from "@repowise-dev/ui/graph/graph-community-panel";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { useCommunityDetail } from "@/lib/hooks/use-graph";
-import type { CommunityDetail } from "@repowise-dev/types/graph";
+import type { CommunityDetail, GraphPopulation } from "@repowise-dev/types/graph";
 
 interface GraphCommunityPanelWrapperProps {
   repoId: string;
   communityId: number;
+  population?: GraphPopulation | undefined;
   onClose: () => void;
-  onExpandOnCanvas?: (() => void) | undefined;
+  onEnterCommunity?: (() => void) | undefined;
+  onNeighborSelect?: ((communityId: number) => void) | undefined;
 }
 
 export function GraphCommunityPanel({
   repoId,
   communityId,
+  population,
   onClose,
-  onExpandOnCanvas,
+  onEnterCommunity,
+  onNeighborSelect,
 }: GraphCommunityPanelWrapperProps) {
-  const { community, isLoading } = useCommunityDetail(repoId, communityId);
+  const { community, isLoading } = useCommunityDetail(repoId, communityId, population);
 
   return (
     <GraphCommunityPanelShell
@@ -26,8 +30,16 @@ export function GraphCommunityPanel({
       community={community as CommunityDetail | null | undefined}
       isLoading={isLoading}
       onClose={onClose}
-      onExpandOnCanvas={onExpandOnCanvas}
+      onEnterCommunity={onEnterCommunity}
+      onNeighborSelect={onNeighborSelect}
       memberHref={(path) => fileEntityPath(`/repos/${repoId}`, path)}
+      // Code Health's triage map takes `?file=` and opens on that row, so a hot
+      // member gets an exact destination rather than a repo-wide page.
+      healthHrefFor={(path) =>
+        `/repos/${repoId}/code-health?tab=triage&file=${encodeURIComponent(path)}`
+      }
+      deadCodeHref={`/repos/${repoId}/code-health?tab=dead-code`}
+      codeHealthHref={`/repos/${repoId}/code-health`}
     />
   );
 }

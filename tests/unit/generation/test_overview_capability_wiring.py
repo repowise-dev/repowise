@@ -19,8 +19,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import networkx as nx
 from structlog.testing import capture_logs
 
+from repowise.core.generation.kg_context import KnowledgeGraphContext
 from repowise.core.generation.page_generator.levels import (
     build_level6_coros,
     build_level8_coros,
@@ -53,7 +55,15 @@ class BlastRadius:
 
 #: What the structural side independently arrived at. "Blast radius" is named
 #: by both; "Change risk" is in the documents only.
-MODULE_GROUPS = [SimpleNamespace(display="Blast Radius Evaluation", label="", key="src")]
+MODULE_GROUPS = [
+    SimpleNamespace(
+        display="Blast Radius Evaluation",
+        label="",
+        key="src",
+        file_paths=("src/blast_radius.py",),
+        context_paths=(),
+    )
+]
 
 
 class _Store:
@@ -162,6 +172,7 @@ def _run(
         graph_builder=SimpleNamespace(
             community_info=lambda: {},
             execution_flows=lambda: SimpleNamespace(flows=[]),
+            graph=nx.DiGraph,
         ),
         pagerank={},
         betweenness={},
@@ -176,7 +187,7 @@ def _run(
         vector_store=store,
         tour_stops=(),
         layer_order=(),
-        kg_ctx=None,
+        kg_ctx=KnowledgeGraphContext(None),
         on_subphase=None,
         _emit=lambda page_id: True,
     )
@@ -216,6 +227,8 @@ async def test_a_community_label_does_not_corroborate(tmp_path):
                 display="Ledger Postings",
                 label="Change Risk and Ingestion Engine",
                 key="src/change_risk",
+                file_paths=(),
+                context_paths=(),
             )
         ],
     )
@@ -362,3 +375,26 @@ async def test_a_run_with_no_glossary_page_does_not_build_the_corpus(tmp_path):
 
     assert store.asked == []
     assert all(s.module_corroboration == () for s in run.gen.onboarding_signals)
+
+
+async def test_the_overview_is_handed_the_repositorys_own_prose(tmp_path):
+    """The front page's only natural-language input, wired at the level.
+
+    Structure keeps every path and count; this supplies the words. Without it
+    the payload is entirely structural and nothing in the prompt says what the
+    product is for.
+    """
+    run = _run(tmp_path)
+    await build_level6_coros(run)
+
+    digest = run.gen.overview_kwargs["prose_digest"]
+    assert "## Blast radius" in digest
+    assert "Blast radius is the set of files a change can reach" in digest
+
+
+async def test_a_repository_with_no_path_still_generates_an_overview(tmp_path):
+    """``repo_path`` is optional on the run, and an absent one is not a crash."""
+    run = _run(tmp_path)
+    run.repo_path = None
+    assert await build_level6_coros(run)
+    assert run.gen.overview_kwargs["prose_digest"] == ""

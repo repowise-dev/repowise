@@ -20,6 +20,7 @@ from repowise.core.analysis.execution_graph import (
     is_walkable_execution_edge,
 )
 from repowise.core.ids import file_path_of
+from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
 
 log = structlog.get_logger(__name__)
 
@@ -288,8 +289,14 @@ def _get_call_successors(
     low_confidence: Counter = Counter()
     excluded = 0
     for _, target, d in graph.out_edges(node_id, data=True):
+        edge_type = d.get("edge_type")
+        # Mentions (references, type_use, …) are not execution edges. Skip them
+        # without counting — confidence_filtered means a walkable-type successor
+        # failed the origin/confidence floor, not "this edge is the wrong kind".
+        if edge_type not in EXECUTION_EDGE_TYPES:
+            continue
         if not is_walkable_execution_edge(
-            d.get("edge_type"), d.get("resolution_origin"), d.get("confidence")
+            edge_type, d.get("resolution_origin"), d.get("confidence")
         ):
             low_confidence[d.get("resolution_origin") or "unlabelled"] += 1
             continue

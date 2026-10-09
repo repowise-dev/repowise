@@ -391,3 +391,27 @@ def test_bad_co_change_json_tolerated():
     attach_related_pages(pages, import_edges=[("a.py", "b.py")], git_meta_map=git_meta)
 
     assert [r["reason"] for r in _related(pages[0])] == ["imports"]
+
+
+def test_malformed_co_change_records_do_not_raise():
+    """The column is untrusted: a bare string, a missing path, and a
+    non-numeric weight must each drop their record rather than raise."""
+    pages = [_make_page("file_page", "a.py"), _make_page("file_page", "b.py")]
+    git_meta = {
+        "a.py": {
+            "co_change_partners_json": json.dumps(
+                [
+                    "b.py",
+                    {"co_change_count": 5},
+                    {"file_path": "b.py", "co_change_count": "many"},
+                    {"file_path": "b.py", "co_change_count": 4},
+                ]
+            )
+        }
+    }
+
+    attach_related_pages(pages, git_meta_map=git_meta)
+
+    rel = _related(pages[0])
+    assert [r["target_page_id"] for r in rel] == ["file_page:b.py"]
+    assert rel[0]["weight"] == 4.0

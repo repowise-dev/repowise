@@ -145,7 +145,7 @@ Code-health KPIs, lowest-scoring files, refactoring targets, or trends
 
 ### `/repowise:risk`
 
-Defect-risk score for a commit or `base..head` range (`repowise risk`).
+Repo-relative review percentile/classification with a supporting diff-shape score (`repowise risk`).
 
 ---
 

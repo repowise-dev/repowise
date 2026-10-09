@@ -68,3 +68,33 @@ class TestRubyParser:
         fi = _make_file_info("ruby_pkg/calculator.rb", "ruby")
         result = parser.parse_file(fi, RUBY_SOURCE)
         assert result.parse_errors == []
+
+
+RUBY_TWIN_SOURCE = b"""\
+class Pool
+  def drain(conn)
+    conn.close(true)
+    close(conn)
+    close(conn.close(false))
+  end
+
+  def close(x)
+  end
+end
+"""
+
+
+class TestRubyReceiverlessTwin:
+    """``(call method: arguments:)`` leaves ``receiver`` unconstrained, so it
+    also matches ``conn.close(true)``. That copy folds into the member call as
+    its bare-name fallback; ``close(x)`` stays."""
+
+    def test_a_member_call_arrives_once_with_its_receiver(self, parser: ASTParser) -> None:
+        fi = _make_file_info("ruby_pkg/pool.rb", "ruby")
+        result = parser.parse_file(fi, RUBY_TWIN_SOURCE)
+        sites = sorted(
+            ((c.line, c.receiver_name) for c in result.calls if c.target_name == "close"),
+            key=lambda s: (s[0], s[1] or ""),
+        )
+        assert sites == [(3, "conn"), (4, None), (5, None), (5, "conn")]
+        assert all(c.bare_name_fallback for c in result.calls if c.receiver_name == "conn")

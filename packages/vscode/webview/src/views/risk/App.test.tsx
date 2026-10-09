@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  cleanup,
+} from "@testing-library/react";
 import { App } from "./App";
 import type { WebviewHost } from "../../runtime/rpc";
 import type {
@@ -20,6 +26,14 @@ const REPORT: RiskRangeReport = {
       percentile: 74,
       files: [{ path: "src/core.ts", churn: 40, fix_pressure: 5.5 }],
     },
+    risk_authority: {
+      authoritative_for: "live_change_review",
+      primary_fields: ["risk_percentile", "classification"],
+      primary_basis: "benchmarked_population_relative",
+      fallback_field: "fallback_band",
+      fallback_basis: "absolute_model_score_band",
+      score_role: "supporting_diff_shape_signal",
+    },
     score: 7.4,
     score_measures: "diff size and spread; not where the change lands",
     score_unit: "per-commit",
@@ -28,15 +42,136 @@ const REPORT: RiskRangeReport = {
     classification: "Elevated",
     fallback_band: null,
     is_fix: false,
-    features: { la: 120, ld: 30, nf: 6, nd: 2, ns: 1, entropy: 2.31, exp: null },
+    features: {
+      la: 120,
+      ld: 30,
+      nf: 6,
+      nd: 2,
+      ns: 1,
+      entropy: 2.31,
+      exp: null,
+    },
     drivers: [
       { feature: "la", value: 120, contribution: 1.8, label: "Lines added" },
-      { feature: "exp", value: null, contribution: -0.5, label: "Author experience" },
+      {
+        feature: "exp",
+        value: null,
+        contribution: -0.5,
+        label: "Author experience",
+      },
     ],
   },
+  patchCoverage: null,
 };
 
-const REPO: RepoInit = { id: "r1", name: "repo", headCommit: null, defaultBranch: "main" };
+const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
+  patch_coverage_pct: 66.66,
+  covered_line_count: 2,
+  coverable_line_count: 3,
+  threshold: null,
+  min_coverable_lines: null,
+  gate: "not_set",
+  file_counts: {
+    measured: 1,
+    not_in_report: 1,
+    no_line_data: 0,
+    no_coverable_changes: 0,
+    out_of_scope: 0,
+  },
+  files: [
+    {
+      file_path: "src/core.ts",
+      status: "measured",
+      changed_line_count: 5,
+      coverable_line_count: 3,
+      covered_line_count: 2,
+      patch_coverage_pct: 66.66,
+      uncovered_ranges: [
+        [3, 3],
+        [7, 9],
+      ],
+      branch_taken: 0,
+      branch_total: 0,
+      partial_ranges: [],
+      risk: {
+        fix_pressure: 2,
+        dependents: 5,
+        hotspot: true,
+        bug_magnet: false,
+        basis: "git_and_index",
+        risky: true,
+        reasons: ["hotspot"],
+      },
+      hints: [
+        {
+          range: [3, 3],
+          symbol: "boot",
+          tests: ["src/core.test.ts"],
+          basis: "per_test",
+          total: 1,
+        },
+      ],
+    },
+    {
+      file_path: "src/new.ts",
+      status: "not_in_report",
+      changed_line_count: 4,
+      coverable_line_count: 0,
+      covered_line_count: 0,
+      patch_coverage_pct: null,
+      uncovered_ranges: [],
+      branch_taken: 0,
+      branch_total: 0,
+      partial_ranges: [],
+      risk: null,
+      hints: null,
+    },
+  ],
+  risky: {
+    file_count: 1,
+    covered_line_count: 2,
+    coverable_line_count: 3,
+    patch_coverage_pct: 66.66,
+    threshold: null,
+    gate: "not_set",
+  },
+  project: null,
+  branches: null,
+  scope: {
+    label: "coverage.xml",
+    source_formats: ["cobertura"],
+    reports: ["coverage.xml"],
+    report_path_count: 10,
+    unmatched_report_path_count: 0,
+    measured_commit: "abcdef1234567890",
+    mapping_partial: false,
+    freshness: "stale",
+    ignored_file_count: 0,
+    config_errors: [],
+    branch_data: "none",
+  },
+  path_gates: [
+    {
+      name: "web-app",
+      paths: ["/src/"],
+      threshold: 80,
+      informational: false,
+      measured_file_count: 1,
+      unmeasured_file_count: 0,
+      covered_line_count: 2,
+      coverable_line_count: 3,
+      patch_coverage_pct: 66.66,
+      gate: "fail",
+    },
+  ],
+};
+
+const REPO: RepoInit = {
+  id: "r1",
+  name: "repo",
+  headCommit: null,
+  defaultBranch: "main",
+};
 
 /** A clean tree: nothing changed, so no impact sections render. */
 const CLEAN_IMPACT: ChangeImpactReport = {
@@ -56,8 +191,24 @@ const IMPACT: ChangeImpactReport = {
   scope: "branch",
   blast: {
     direct_risks: [
-      { path: "src/a.ts", risk_score: 0.3, temporal_hotspot: 0.1, centrality: 0.8 },
-      { path: "src/b.ts", risk_score: 0.82, temporal_hotspot: 0.9, centrality: 0.1 },
+      {
+        path: "src/a.ts",
+        structural_score: 0.3,
+        risk_score: 0.3,
+        temporal_hotspot: 0.1,
+        churn_percentile: 0.35,
+        is_hotspot: false,
+        centrality: 0.8,
+      },
+      {
+        path: "src/b.ts",
+        structural_score: 0.82,
+        risk_score: 0.82,
+        temporal_hotspot: 0.9,
+        churn_percentile: 0.95,
+        is_hotspot: true,
+        centrality: 0.1,
+      },
     ],
     transitive_affected: [{ path: "src/consumer.ts", depth: 1 }],
     cochange_warnings: [
@@ -65,7 +216,89 @@ const IMPACT: ChangeImpactReport = {
     ],
     recommended_reviewers: [],
     test_gaps: ["src/b.ts"],
+    test_impact: {
+      recommendations: [
+        {
+          test_id: "src/a.test.ts::covers_a",
+          test_file: "src/a.test.ts",
+          repository_id: "r1",
+          repository: "repo",
+          basis: "measured",
+          bases: ["measured"],
+          source_files: ["src/a.ts"],
+          evidence: [
+            {
+              basis: "measured",
+              source_file: "src/a.ts",
+              via: "coverage-map",
+              source_format: "istanbul",
+            },
+          ],
+        },
+      ],
+      recommendations_total: 1,
+      recommendations_emitted: 1,
+      recommendations_truncated: false,
+      recommendations_omitted: 0,
+      recommendations_by_primary_basis: { measured: 1, inferred: 0 },
+      files: [],
+      files_total: 2,
+      files_without_measured_tests: ["src/b.ts"],
+      unknown_files: ["src/b.ts"],
+      coverage: {
+        status: "partial",
+        reason: "coverage_map_matches_only_part_of_change",
+        map_present: true,
+        pair_count: 1,
+        test_count: 1,
+        source_file_count: 1,
+        changed_files_total: 2,
+        changed_files_with_measured_tests: 1,
+        changed_files_without_measured_tests: 1,
+        ingested_at: null,
+        source_format: "istanbul",
+        freshness: {
+          status: "unknown",
+          reason: "coverage_or_index_commit_unavailable",
+          ingested_commit: null,
+          indexed_commit: null,
+        },
+      },
+      inference: {
+        status: "available",
+        reason: null,
+        changed_files_total: 2,
+        changed_files_with_candidates: 0,
+        candidates_before_dedup: 0,
+      },
+      analysis: {
+        status: "partial",
+        stale: false,
+        partial: true,
+        degraded: false,
+        basis_categories: ["measured"],
+      },
+    },
+    structural_impact_score: 5.6,
+    structural_impact_band: "moderate",
+    structural_impact_scale: {
+      field: "structural_impact_score",
+      kind: "heuristic_structural_score",
+      unit: "normalized_points",
+      range: { minimum: 0, maximum: 10 },
+      measures: "indexed structural exposure",
+      deterministic: true,
+      calibration: { status: "uncalibrated", source: null },
+      authoritative_for_change_review: false,
+      runtime_breakage_probability: false,
+    },
     overall_risk_score: 5.6,
+    overall_risk_score_compatibility: {
+      deprecated: true,
+      replacement: "structural_impact_score",
+      equivalent_value: true,
+      historical_meaning: "uncalibrated 0-10 structural blast-radius heuristic",
+    },
   },
   reviewers: [
     {
@@ -92,7 +325,9 @@ function makeHost(
     api: {
       riskRange,
       changeImpact,
-      getSettings: vi.fn().mockResolvedValue({ "changeIntel.cochangeMinScore": 4 }),
+      getSettings: vi
+        .fn()
+        .mockResolvedValue({ "changeIntel.cochangeMinScore": 4 }),
     } as unknown as WebviewHost["api"],
     onInit: () => () => {},
     onRefresh: () => () => {},
@@ -117,7 +352,14 @@ describe("risk App", () => {
 
   it("leads with the repo-relative ranking and keeps the raw score secondary", async () => {
     const riskRange = vi.fn().mockResolvedValue(REPORT);
-    render(<App host={makeHost(riskRange)} repo={REPO} params={{}} refreshToken={0} />);
+    render(
+      <App
+        host={makeHost(riskRange)}
+        repo={REPO}
+        params={{}}
+        refreshToken={0}
+      />,
+    );
 
     expect(await screen.findByText("Elevated")).toBeTruthy();
     expect(screen.getByText("88th percentile")).toBeTruthy();
@@ -131,7 +373,14 @@ describe("risk App", () => {
 
   it("refetches when Run again is clicked", async () => {
     const riskRange = vi.fn().mockResolvedValue(REPORT);
-    render(<App host={makeHost(riskRange)} repo={REPO} params={{}} refreshToken={0} />);
+    render(
+      <App
+        host={makeHost(riskRange)}
+        repo={REPO}
+        params={{}}
+        refreshToken={0}
+      />,
+    );
 
     await screen.findByText("Elevated");
     expect(riskRange).toHaveBeenCalledTimes(1);
@@ -144,15 +393,22 @@ describe("risk App", () => {
     const riskRange = vi.fn().mockResolvedValue(REPORT);
     const changeImpact = vi.fn().mockResolvedValue(IMPACT);
     render(
-      <App host={makeHost(riskRange, changeImpact)} repo={REPO} params={{}} refreshToken={0} />,
+      <App
+        host={makeHost(riskRange, changeImpact)}
+        repo={REPO}
+        params={{}}
+        refreshToken={0}
+      />,
     );
 
     expect(await screen.findByText("Downstream of your changes")).toBeTruthy();
     // Paths render as split dir/name spans, so match on the file name.
     expect(screen.getByText("consumer.ts")).toBeTruthy();
     expect(screen.getByText("Usually changes together")).toBeTruthy();
-    expect(screen.getByText("a.test.ts")).toBeTruthy();
-    expect(screen.getByText("Changed without a test")).toBeTruthy();
+    expect(screen.getAllByText("a.test.ts").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Test impact")).toBeTruthy();
+    expect(screen.getByText("measured · repo")).toBeTruthy();
+    expect(screen.getByText("no test evidence")).toBeTruthy();
     expect(screen.getByText("Ada Lovelace")).toBeTruthy();
   });
 
@@ -190,12 +446,18 @@ describe("risk App", () => {
       />,
     );
 
-    expect(await screen.findByText("Riskiest files in this change")).toBeTruthy();
+    expect(
+      await screen.findByText("Highest structural weight in this change"),
+    ).toBeTruthy();
     expect(screen.getByText("hotspot")).toBeTruthy();
-    const bars = screen.getAllByTitle("Risk relative to the riskiest file in this change");
+    const bars = screen.getAllByTitle(
+      "Structural weight relative to the strongest file in this change",
+    );
     expect(bars).toHaveLength(2);
     // Sorted riskiest first: b.ts (0.82) gets the full bar, a.ts a partial one.
-    expect((bars[0]!.firstElementChild as HTMLElement).style.width).toBe("100%");
+    expect((bars[0]!.firstElementChild as HTMLElement).style.width).toBe(
+      "100%",
+    );
 
     // b.ts also appears in the test-gap card; the riskiest row renders first.
     fireEvent.click(screen.getAllByTitle("Open src/b.ts")[0]!);
@@ -208,12 +470,20 @@ describe("risk App", () => {
     const scrollIntoView = vi.fn();
     Element.prototype.scrollIntoView = scrollIntoView;
     render(
-      <App host={makeHost(riskRange, changeImpact)} repo={REPO} params={{}} refreshToken={0} />,
+      <App
+        host={makeHost(riskRange, changeImpact)}
+        repo={REPO}
+        params={{}}
+        refreshToken={0}
+      />,
     );
 
-    expect(await screen.findByText("may affect 1 downstream file")).toBeTruthy();
+    expect(
+      await screen.findByText("may affect 1 downstream file"),
+    ).toBeTruthy();
     expect(screen.getByText("1 co-change partner untouched")).toBeTruthy();
-    expect(screen.getByText("1 changed file has no associated test")).toBeTruthy();
+    expect(screen.getByText("test analysis partial")).toBeTruthy();
+    expect(screen.getByText("1 test recommendation")).toBeTruthy();
 
     fireEvent.click(screen.getByText("may affect 1 downstream file"));
     expect(scrollIntoView).toHaveBeenCalled();
@@ -221,17 +491,99 @@ describe("risk App", () => {
 
   it("renders no verdict chips on a clean tree", async () => {
     const riskRange = vi.fn().mockResolvedValue(REPORT);
-    render(<App host={makeHost(riskRange)} repo={REPO} params={{}} refreshToken={0} />);
+    render(
+      <App
+        host={makeHost(riskRange)}
+        repo={REPO}
+        params={{}}
+        refreshToken={0}
+      />,
+    );
 
     await screen.findByText("Elevated");
     expect(screen.queryByText(/downstream file/)).toBeNull();
     expect(screen.queryByText(/untouched/)).toBeNull();
-    expect(screen.queryByText(/associated test/)).toBeNull();
+    expect(screen.queryByText(/test recommendation/)).toBeNull();
+  });
+
+  // The summary's own wording, ordering and risk labels are pinned by its
+  // component test in packages/ui; this only checks the view wires it up.
+  it("shows the range's patch coverage and opens a listed file", async () => {
+    const riskRange = vi
+      .fn()
+      .mockResolvedValue({ ...REPORT, patchCoverage: PATCH_COVERAGE });
+    const openFile = vi.fn();
+    render(
+      <App
+        host={makeHost(riskRange, undefined, { openFile })}
+        repo={REPO}
+        params={{}}
+        refreshToken={0}
+      />,
+    );
+
+    // Each throws when absent: the figure, the path-scoped gates, the hint naming the test to extend.
+    await screen.findByText("66.6%");
+    screen.getByRole("list", { name: "Path-scoped gates" });
+    screen.getByText("src/core.test.ts");
+
+    fireEvent.click(screen.getByTitle("Open src/core.ts"));
+    expect(openFile).toHaveBeenCalledWith("src/core.ts");
+  });
+
+  it("shows no patch coverage when none was ingested", async () => {
+    const riskRange = vi.fn().mockResolvedValue(REPORT);
+    render(
+      <App
+        host={makeHost(riskRange)}
+        repo={REPO}
+        params={{}}
+        refreshToken={0}
+      />,
+    );
+
+    await screen.findByText("Elevated");
+    expect(screen.queryByText(/Patch coverage/)).toBeNull();
+  });
+
+  it("says unknown patch coverage in words, never 0%", async () => {
+    const riskRange = vi.fn().mockResolvedValue({
+      ...REPORT,
+      patchCoverage: {
+        ...PATCH_COVERAGE,
+        patch_coverage_pct: null,
+        covered_line_count: 0,
+        coverable_line_count: 0,
+        files: [PATCH_COVERAGE.files[1]],
+        scope: { ...PATCH_COVERAGE.scope, freshness: "current" },
+      },
+    });
+    render(
+      <App
+        host={makeHost(riskRange)}
+        repo={REPO}
+        params={{}}
+        refreshToken={0}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Patch coverage not measured"),
+    ).toBeTruthy();
+    expect(screen.queryByText("0.0%")).toBeNull();
+    expect(screen.queryByText(/not at this change's head/)).toBeNull();
   });
 
   it("shows a clean-tree empty state when nothing changed", async () => {
     const riskRange = vi.fn().mockResolvedValue(REPORT);
-    render(<App host={makeHost(riskRange)} repo={REPO} params={{}} refreshToken={0} />);
+    render(
+      <App
+        host={makeHost(riskRange)}
+        repo={REPO}
+        params={{}}
+        refreshToken={0}
+      />,
+    );
 
     expect(await screen.findByText("No pending changes")).toBeTruthy();
   });

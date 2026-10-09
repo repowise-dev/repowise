@@ -241,9 +241,32 @@ async def test_high_confidence_drops_retrieval_block(setup_mcp, monkeypatch):
 
     result = await get_answer("how does the beta module go function work")
     assert result["confidence"] == "high"
-    assert result["retrieval"] == []
-    assert result["fallback_targets"], "routing targets survive the diet"
+    assert "retrieval" not in result
+    assert result["citations"], "trust-bearing paths survive the projection"
+    assert result["_meta"]["projection"]["recovery"]["arguments"]["include"] == [
+        "evidence"
+    ]
     _assert_no_underscore_keys(result)
+
+
+@pytest.mark.asyncio
+async def test_a_hit_without_target_path_does_not_break_citations(setup_mcp, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, scores=(5.0, 4.0))
+    hydrate = answer_mod._hydrate_hits
+
+    async def _pathless_second(hits, ctx, *, scope=None):
+        hits = await hydrate(hits, ctx, scope=scope)
+        hits[1].pop("target_path")
+        return hits
+
+    monkeypatch.setattr(answer_mod, "_hydrate_hits", _pathless_second)
+    _patch_provider(monkeypatch, answer_mod, "The go() function drives it (pkg/beta/one.py).")
+
+    result = await get_answer("how does the beta module go function work")
+    assert "pkg/beta/one.py" in result["citations"]
 
 
 @pytest.mark.asyncio
@@ -279,9 +302,8 @@ async def test_non_dominant_synthesizes_with_evidence(setup_mcp, monkeypatch):
     assert result["confidence"] == "medium"
     assert result["answer"], "non-dominant retrieval now carries synthesized prose"
     assert result["best_guesses"]
-    for entry in result["retrieval"]:
-        assert "page_id" not in entry
-        assert entry.get("path")
+    assert "retrieval" not in result
+    assert all(entry.get("file") for entry in result["best_guesses"])
     _assert_no_underscore_keys(result)
 
 

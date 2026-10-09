@@ -5,21 +5,25 @@ from __future__ import annotations
 import contextlib
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.engine import _has_paired_test_file, _path_basenames
+from repowise.core.co_change import confidence_ratio, parse_partners
 from repowise.core.persistence.models import (
     GitMetadata,
     GraphNode,
     Repository,
 )
+from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
     is_excluded,
 )
+from repowise.server.repo_paths import normalize_target_path
 
 #: A file carrying this many counted bug fixes reads as bug-prone. Same trigger
 #: the PR bot uses for prior defects, so the two surfaces agree on "a lot".
@@ -296,13 +300,27 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
             text(
                 "SELECT kind, severity, snippet FROM security_findings "
                 "WHERE repository_id = :repo_id AND file_path = :fp "
-                "ORDER BY severity DESC, kind"
+                # Ranked, not alphabetical: text order puts ``high`` last.
+                "ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'med' THEN 1 ELSE 2 END, kind"
             ),
             {"repo_id": repo_id, "fp": target},
         )
         return [{"kind": r[0], "severity": r[1], "snippet": r[2]} for r in rows.all()]
     except Exception:
         return []
+
+
+def _co_change_direction(conf_ab: float | None, conf_ba: float | None) -> str:
+    """Which side of a pair leads, where ``a`` is the target and ``b`` the partner.
+
+    A higher ``conf_ab`` means the target seldom changes without the partner, so
+    the target is the antecedent. Equal confidences, or an index written before
+    the two commit totals were recorded, stay ``undirected`` rather than having
+    a lead broken arbitrarily.
+    """
+    if conf_ab is None or conf_ba is None or conf_ab == conf_ba:
+        return "undirected"
+    return "a_to_b" if conf_ab > conf_ba else "b_to_a"
 
 
 def _build_co_changes(
@@ -316,25 +334,25 @@ def _build_co_changes(
     The strength field is emitted as ``weight``, not ``count``: the stored value
     is a recency-decayed sum (``exp(-age_days / tau)`` per shared commit), so it
     is fractional. Named ``count`` it read as "5.52 co-changes" to every agent.
+
+    ``conf_ab`` and ``conf_ba`` are the two directional confidences behind
+    ``direction``, omitted when the commit totals are unknown.
     """
-    partners = json.loads(meta.co_change_partners_json)
-    partners_sorted = sorted(
-        partners,
-        key=lambda p: p.get("co_change_count", p.get("count", 0)) or 0,
-        reverse=True,
-    )
+    partners_sorted = parse_partners(meta.co_change_partners_json)
     relation_types = structural_related if isinstance(structural_related, dict) else {}
     related_paths = set(structural_related)
     rows = []
     for partner in partners_sorted:
-        path = partner.get("file_path", partner.get("path", ""))
+        path = partner.file_path
         types = sorted(relation_types.get(path, ()))
+        conf_ab = confidence_ratio(partner.support, partner.self_commits)
+        conf_ba = confidence_ratio(partner.support, partner.partner_commits)
         row = {
             "file_path": path,
-            "weight": partner.get("co_change_count", partner.get("count", 0)),
-            "last_co_change": partner.get("last_co_change"),
+            "weight": partner.weight,
+            "last_co_change": partner.last_co_change,
             "relationship_type": "co_change",
-            "direction": "undirected",
+            "direction": _co_change_direction(conf_ab, conf_ba),
             "evidence_kind": "historical",
             "provenance": "git_history",
             "has_structural_link": path in related_paths,
@@ -344,18 +362,21 @@ def _build_co_changes(
         }
         if types:
             row["structural_relationship_types"] = types
-        support = partner.get("frequency", partner.get("shared_commit_count"))
-        if support is not None:
-            row["support"] = support
+        if partner.support:
+            row["support"] = partner.support
+        if conf_ab is not None:
+            row["conf_ab"] = conf_ab
+        if conf_ba is not None:
+            row["conf_ba"] = conf_ba
         rows.append(row)
     population = filter_dicts_by_key(rows, "file_path", exclude_spec)
-    return population[:_RELATIONSHIP_LIMIT], len(population)
+    return population, len(population)
 
 
-def fix_annotation(meta: Any) -> dict | None:
-    """Counted fixes, their age, and the magnet flag, or ``None`` for silence.
+def fix_annotation(meta: Any, now: datetime | None = None) -> dict | None:
+    """The shared count/age/magnet fix block used by context and risk.
 
-    The compact form every fix-history surface shares, so the recency contract
+    Centralized so the two tools agree on the wire format and the age contract
     is enforced once: the ``bug_magnet`` flag rides on the age and is never
     emitted alone. ``bug_magnet`` is a claim about RECENT fix pressure, so with
     no timestamp to anchor it the same word would describe a file fixed four
@@ -371,8 +392,13 @@ def fix_annotation(meta: Any) -> dict | None:
     last_fix_at = getattr(meta, "last_fix_at", None)
     if isinstance(last_fix_at, datetime):
         # Rows are stored naive-UTC; compare on the same footing.
+        ref = (
+            datetime.now(UTC)
+            if now is None
+            else (now if now.tzinfo else now.replace(tzinfo=UTC))
+        )
         moment = last_fix_at if last_fix_at.tzinfo else last_fix_at.replace(tzinfo=UTC)
-        out["last_fix_days_ago"] = max(0, (datetime.now(UTC) - moment).days)
+        out["last_fix_days_ago"] = max(0, (ref - moment).days)
         if getattr(meta, "bug_magnet", False):
             out["bug_magnet"] = True
     return out
@@ -391,11 +417,11 @@ def _fix_clause(profile: dict | None) -> str:
     magnet = " (bug magnet)" if profile.get("bug_magnet") else ""
     return (
         f"{n} bug fix{'es' if n != 1 else ''} in 6mo, "
-        f"last {profile['last_fix_days_ago']}d ago{magnet}, "
+        f"last {profile['last_fix_days_ago']}d before the indexed commit{magnet}, "
     )
 
 
-def _defect_profile(meta: Any) -> dict | None:
+def _defect_profile(meta: Any, now: datetime | None = None) -> dict | None:
     """What this file's counted bug fixes say about it, or ``None`` for silence.
 
     Built from the fix-event rollup already loaded on the ``GitMetadata`` row,
@@ -412,7 +438,7 @@ def _defect_profile(meta: Any) -> dict | None:
     string repeated once per target is exactly the per-file cost the lean-MCP
     work went to some trouble to remove.
     """
-    profile = fix_annotation(meta)
+    profile = fix_annotation(meta, now=now)
     if profile is None:
         return None
     profile["window"] = "6 months"
@@ -451,6 +477,28 @@ def _load_commit_categories(meta: Any) -> dict:
     return categories
 
 
+def _unresolved_reason(target: str, lookup_path: str, repo_root: str | None) -> str:
+    """Why *target* names nothing this tool can score, in the caller's terms.
+
+    ``not_indexed`` and ``no_such_path`` are spelled as
+    ``get_health._unresolved_targets`` spells them. The other two are not
+    borrowed: ``get_health``'s ``no_such_module`` means "no module of that
+    name", and it resolves a directory to ``not_indexed`` — both would
+    prescribe a fix that cannot help here.
+    """
+    if target.startswith("module:"):
+        return "unsupported_target_kind"
+    try:
+        on_disk = Path(repo_root) / lookup_path if repo_root else Path(lookup_path)
+        if on_disk.is_dir():
+            return "directory"
+        if on_disk.exists():
+            return "not_indexed"
+    except (OSError, ValueError):
+        pass
+    return "no_such_path"
+
+
 async def _assess_one_target(
     session: AsyncSession,
     repository: Repository,
@@ -461,6 +509,9 @@ async def _assess_one_target(
     node_meta: dict[str, Any],
     exclude_spec: Any = None,
     team_size: int | None = None,
+    collector: OmissionCollector | None = None,
+    include_graph: bool = False,
+    as_of_ts: datetime | None = None,
 ) -> dict:
     """Assess risk for a single target file.
 
@@ -471,7 +522,10 @@ async def _assess_one_target(
     repo_id = repository.id
     result_data: dict[str, Any] = {"target": target}
 
-    dependency_population = _dependency_population(target, reverse_deps, node_meta, exclude_spec)
+    lookup_path = normalize_target_path(target, repo_root=repository.local_path)
+    dependency_population = _dependency_population(
+        lookup_path, reverse_deps, node_meta, exclude_spec
+    )
     dependents = dependency_population[:_RELATIONSHIP_LIMIT]
     # If both distances exist, protect one transitive row from a large direct
     # fan-in. Otherwise the totals would say transitive reach exists while the
@@ -540,15 +594,62 @@ async def _assess_one_target(
             },
         }
     )
+    cap_collection(
+        result_data,
+        "dependents",
+        dependency_population,
+        _RELATIONSHIP_LIMIT,
+        collector if include_graph else None,
+        emitted=dependents,
+        label=f"{target} :: dependents beyond cap={_RELATIONSHIP_LIMIT}",
+        preserve_counts=True,
+    )
+    cap_collection(
+        result_data,
+        "impact_surface",
+        sorted(dependency_population, key=lambda row: (-row["pagerank"], row["file_path"])),
+        3,
+        collector if include_graph else None,
+        emitted=impact_surface,
+        label=f"{target} :: impact_surface beyond cap=3",
+        preserve_counts=True,
+    )
 
+    # Callers reach get_risk with the file path in many forms — backslashes
+    # (Windows), a leading ``./``, a trailing separator, or a repo-absolute
+    # path — while git_metadata.file_path (and the graph node/edge ids) are
+    # stored POSIX-relative. Exact-string equality against the raw target made
+    # a row that exists look absent, and _assess_one_target then reported the
+    # indistinguishable "no git metadata available" card (hotspot_score=0,
+    # primary_owner=None, empty co_change_partners) — issue #1279. Normalize
+    # once and key every file-path lookup on it, but keep the response keyed by
+    # what the caller asked for.
     # Git metadata
     res = await session.execute(
         select(GitMetadata).where(
             GitMetadata.repository_id == repo_id,
-            GitMetadata.file_path == target,
+            GitMetadata.file_path == lookup_path,
         )
     )
     meta = res.scalar_one_or_none()
+
+    symbol_target = "::" in target
+    if meta is None and lookup_path not in node_meta and not symbol_target:
+        # Nothing below measured this target, so every numeric field would be
+        # a structural zero no reader could tell from a measured one. Name the
+        # miss and emit no counts.
+        #
+        # All three conditions are required. A graph node without a git row is
+        # a real target (a new file); a ``path::Symbol`` id is an accepted
+        # input shape here, so rejecting one is a different change.
+        return {
+            "target": target,
+            "resolved": False,
+            "unresolved_reason": _unresolved_reason(target, lookup_path, repository.local_path),
+            "risk_summary": (
+                f"{target} — not resolved to an indexed file; no risk signal was computed"
+            ),
+        }
 
     if meta is None:
         result_data["hotspot_score"] = 0.0
@@ -566,19 +667,21 @@ async def _assess_one_target(
         result_data["owner_pct"] = None
         result_data["trend"] = "unknown"
         result_data["risk_type"] = "high-coupling" if dep_count >= 5 else "unknown"
-        result_data["test_gap"] = await _check_test_gap(session, repo_id, target)
-        result_data["security_signals"] = await _get_security_signals(session, repo_id, target)
+        result_data["test_gap"] = await _check_test_gap(session, repo_id, lookup_path)
+        result_data["security_signals"] = await _get_security_signals(session, repo_id, lookup_path)
         result_data["risk_summary"] = f"{target} — no git metadata available"
         return result_data
 
     hotspot_score = meta.churn_percentile or 0.0
 
-    co_changes, co_changes_total = _build_co_changes(
-        meta, import_links.get(target, {}), exclude_spec
+    co_change_population, co_changes_total = _build_co_changes(
+        meta, import_links.get(lookup_path, {}), exclude_spec
     )
+    co_changes = co_change_population[:_RELATIONSHIP_LIMIT]
 
     owner = meta.primary_owner_name or "unknown"
     pct = meta.primary_owner_commit_pct or 0.0
+    line_pct = getattr(meta, "primary_owner_line_pct", None)
 
     # --- Risk velocity (trend) ---
     trend = _compute_trend(meta)
@@ -603,6 +706,15 @@ async def _assess_one_target(
     result_data["co_change_partners_total"] = co_changes_total
     result_data["co_change_partners_emitted"] = len(co_changes)
     result_data["co_change_partners_truncated"] = len(co_changes) < co_changes_total
+    cap_collection(
+        result_data,
+        "co_change_partners",
+        co_change_population,
+        _RELATIONSHIP_LIMIT,
+        collector,
+        label=f"{target} :: co_change_partners beyond cap={_RELATIONSHIP_LIMIT}",
+        preserve_counts=True,
+    )
     result_data["relationship_analysis"]["co_change"] = {
         "status": "available",
         "scope": "git_history",
@@ -610,6 +722,7 @@ async def _assess_one_target(
     }
     result_data["primary_owner"] = owner
     result_data["owner_pct"] = pct
+    result_data["owner_line_pct"] = line_pct
     result_data["recent_owner"] = getattr(meta, "recent_owner_name", None)
     result_data["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
     result_data["bus_factor"] = bus_factor
@@ -630,13 +743,13 @@ async def _assess_one_target(
     if merge_commit_count > 0:
         result_data["merge_commit_count_90d"] = merge_commit_count
 
-    defect_profile = _defect_profile(meta)
+    defect_profile = _defect_profile(meta, now=as_of_ts)
     if defect_profile is not None:
         result_data["defect_profile"] = defect_profile
 
     # C. Test gaps + security signals
-    result_data["test_gap"] = await _check_test_gap(session, repo_id, target)
-    result_data["security_signals"] = await _get_security_signals(session, repo_id, target)
+    result_data["test_gap"] = await _check_test_gap(session, repo_id, lookup_path)
+    result_data["security_signals"] = await _get_security_signals(session, repo_id, lookup_path)
 
     capped = getattr(meta, "commit_count_capped", False)
     capped_note = " (history truncated — actual count may be higher)" if capped else ""
@@ -655,8 +768,20 @@ async def _assess_one_target(
         f"{target} — {_fix_clause(defect_profile)}"
         f"hotspot score {hotspot_score:.0%} ({trend}), "
         f"{dep_count} direct dependents, {risk_type}, {change_pattern}, "
-        f"{co_changes_total} co-change partners, owned {pct:.0%} by {owner}"
+        f"{co_changes_total} co-change partners, {_owner_clause(owner, pct, line_pct)}"
         f"{bus_note}{capped_note}"
     )
 
     return result_data
+
+
+def _owner_clause(owner: str, commit_pct: float, line_pct: float | None) -> str:
+    """Name the owner with the share each figure actually measures.
+
+    With blame, the owner is the top author of current lines, which need not
+    be the top committer, so both shares are stated and neither is called the
+    other.
+    """
+    if line_pct is None:
+        return f"primary owner {owner} ({commit_pct:.0%} of commits)"
+    return f"{owner} wrote {line_pct:.0%} of current lines ({commit_pct:.0%} of commits)"

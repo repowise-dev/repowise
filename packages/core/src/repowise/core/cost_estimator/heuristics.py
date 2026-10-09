@@ -22,7 +22,6 @@ _TOKEN_HEURISTICS: dict[str, tuple[int, int]] = {
     "scc_page": (12_000, 4_000),
     "module_page": (45_000, 6_000),
     "repo_overview": (30_000, 5_000),
-    "architecture_diagram": (25_000, 5_000),
     "infra_page": (4_000, 2_000),
     "onboarding": (15_000, 3_500),
 }

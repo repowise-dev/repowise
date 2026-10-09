@@ -25,9 +25,13 @@ import { CodeHealthLede } from "@repowise-dev/ui/health/code-health-lede";
 import { TrendView } from "@repowise-dev/ui/health/trend-view";
 import { scoreTextColor } from "@repowise-dev/ui/health/tokens";
 import { OverviewSection } from "@repowise-dev/ui/overview";
-import type { HealthFileMetric } from "@repowise-dev/types/health";
+import { formatScore, type HealthFileMetric } from "@repowise-dev/types/health";
 import type { ViewProps } from "../../runtime/mount";
-import { useChurnLens, useDashboardData, type DashboardData } from "./useDashboardData";
+import {
+  useChurnLens,
+  useDashboardData,
+  type DashboardData,
+} from "./useDashboardData";
 import { DashboardError, DashboardSkeleton } from "./chrome";
 
 /**
@@ -130,6 +134,18 @@ function Dashboard({
             onSelectFile={(path) => host.openFile(path)}
             minHeight={MAP_HEIGHT}
             chrome="none"
+            scope={{
+              shown: mapFiles.shown,
+              eligible: mapFiles.eligible_total,
+              repository: mapFiles.repository_total,
+              cap: mapFiles.cap,
+              omitted: {
+                files: mapFiles.omitted.files,
+                performanceFiles: mapFiles.omitted.performance_files,
+                opportunities: mapFiles.omitted.opportunities,
+                observations: mapFiles.omitted.observations,
+              },
+            }}
           />
           <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
             {/* A key describing bands the field cannot be showing is worse
@@ -143,9 +159,6 @@ function Dashboard({
             ) : (
               <MapLegend overlay={overlay} loading={churnLoading} />
             )}
-            <span className="font-mono text-[10px] uppercase tracking-[0.12em] tabular-nums text-[var(--color-text-tertiary)]">
-              {mapFiles.total.toLocaleString()} files
-            </span>
           </div>
         </div>
       </OverviewSection>
@@ -219,7 +232,7 @@ function FocusedScore({ label, value }: { label: string; value: number | null })
         {label}
       </p>
       <p className={`font-mono text-[15px] tabular-nums ${tone}`}>
-        {value == null ? "-" : value.toFixed(1)}
+        {value == null ? "-" : formatScore(value)}
       </p>
     </div>
   );

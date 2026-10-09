@@ -127,6 +127,7 @@ export function SymbolDrawerWrapper({ symbol, repoId, onClose }: Props) {
         ...calls,
         pagerank_percentile: metrics?.pagerank_percentile ?? null,
         betweenness_percentile: metrics?.betweenness_percentile ?? null,
+        betweenness_scored: metrics?.betweenness_scored ?? true,
         community_label: metrics?.community_label ?? null,
         entry_point_score: metrics?.entry_point_score ?? null,
       },

@@ -33,6 +33,11 @@ export interface BuildFilePanelsOptions {
    */
   testsPanel?: ReactNode;
   /**
+   * Which of the repository's documents name this file, for the Doc tab.
+   * Host-wrapped for the same reason as `testsPanel`.
+   */
+  docReferencesPanel?: ReactNode;
+  /**
    * Router link, forwarded to every tab body that renders one.
    *
    * The tab bodies are server components and stay server components: a
@@ -69,6 +74,7 @@ export function buildFilePanels({
   coverageCodeHtml,
   healthPanel,
   testsPanel,
+  docReferencesPanel,
   LinkComponent,
 }: BuildFilePanelsOptions): Partial<Record<FilePageTab, ReactNode>> {
   const link = LinkComponent ? { LinkComponent } : {};
@@ -81,7 +87,13 @@ export function buildFilePanels({
         {...link}
       />
     ),
-    doc: <FileDocTab wikiPage={data.wiki_page} docSlot={docSlot} />,
+    doc: (
+      <FileDocTab
+        wikiPage={data.wiki_page}
+        docSlot={docSlot}
+        referencesPanel={docReferencesPanel}
+      />
+    ),
     health: healthPanel,
     history: (
       <FileHistoryTab
@@ -112,6 +124,7 @@ export function buildFilePanels({
       <FileCoverageTab
         coverage={data.coverage}
         coverageCodeHtml={coverageCodeHtml}
+        filePath={data.file_path}
         testsPanel={testsPanel}
       />
     ),

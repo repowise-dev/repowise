@@ -3,6 +3,8 @@ import {
   architectureToGraphology,
   hubNodeId,
   CORE_NODE_ID,
+  UNCLUSTERED_COMMUNITY_ID,
+  UNCLUSTERED_NODE_ID,
   mergeCommunitySlice,
   satelliteSizeFromPagerank,
 } from "../../src/graph/sigma/constellation-adapter";
@@ -59,14 +61,15 @@ describe("architectureToGraphology", () => {
     expect(g.hasNode(CORE_NODE_ID)).toBe(true);
   });
 
-  it("marks hubs with nodeType=hub, forceLabel, and an uppercase label", () => {
+  it("marks hubs with nodeType=hub, forceLabel, and the label in its own case", () => {
     const g = architectureToGraphology(
       makeArch([makeArchNode({ community_id: 0, label: "auth core" })]),
     );
     const attrs = g.getNodeAttributes(hubNodeId(0));
     expect(attrs.nodeType).toBe("hub");
     expect(attrs.forceLabel).toBe(true);
-    expect(attrs.label).toBe("AUTH CORE");
+    // Drawn under the disc in full, so it is not shouted to fit inside it.
+    expect(attrs.label).toBe("auth core");
     expect(attrs.memberCount).toBe(10);
   });
 
@@ -76,12 +79,12 @@ describe("architectureToGraphology", () => {
         makeArchNode({ community_id: 0, label: "", top_file: "src/payments/api.ts" }),
       ]),
     );
-    expect(fromFile.getNodeAttributes(hubNodeId(0)).label).toBe("PAYMENTS");
+    expect(fromFile.getNodeAttributes(hubNodeId(0)).label).toBe("payments");
 
     const fromId = architectureToGraphology(
       makeArch([makeArchNode({ community_id: 7, label: "", top_file: "" })]),
     );
-    expect(fromId.getNodeAttributes(hubNodeId(7)).label).toBe("COMMUNITY 7");
+    expect(fromId.getNodeAttributes(hubNodeId(7)).label).toBe("Community 7");
   });
 
   it("sizes hubs within the 14–32 sigma-unit range", () => {
@@ -98,23 +101,40 @@ describe("architectureToGraphology", () => {
     expect(big).toBeGreaterThan(small);
   });
 
-  it("builds cross-community edges with crossCommunity kind and clamped size", () => {
+  it("folds both directions of a pair into one edge weighted by their sum", () => {
     const g = architectureToGraphology(
       makeArch(
+        [makeArchNode({ community_id: 0 }), makeArchNode({ community_id: 1 })],
         [
-          makeArchNode({ community_id: 0 }),
-          makeArchNode({ community_id: 1 }),
+          { source: 0, target: 1, edge_count: 7 },
+          { source: 1, target: 0, edge_count: 3 },
         ],
-        [{ source: 0, target: 1, edge_count: 7 }],
       ),
     );
     expect(g.size).toBe(1);
-    const edgeKey = hubNodeId(0) + "→" + hubNodeId(1);
-    const attrs = g.getEdgeAttributes(edgeKey);
+    const attrs = g.getEdgeAttributes(g.edges()[0]!);
     expect(attrs.edgeKind).toBe("crossCommunity");
-    expect(attrs.size).toBeGreaterThanOrEqual(1.5);
-    expect(attrs.size).toBeLessThanOrEqual(2.5);
-    expect(attrs.edgeCount).toBe(7);
+    expect(attrs.edgeCount).toBe(10);
+    // The heaviest pair: full weight, the widest stroke.
+    expect(attrs.weight).toBe(1);
+    expect(attrs.size).toBeCloseTo(9.8);
+  });
+
+  it("prunes weak pairs but keeps each community's two strongest ties", () => {
+    const nodes = [0, 1, 2, 3].map((id) => makeArchNode({ community_id: id }));
+    const g = architectureToGraphology(
+      makeArch(nodes, [
+        { source: 0, target: 1, edge_count: 1000 },
+        { source: 0, target: 2, edge_count: 900 },
+        // Both under 8% of the heaviest, but community 3's two strongest ties.
+        { source: 1, target: 3, edge_count: 50 },
+        { source: 2, target: 3, edge_count: 6 },
+        // Under 8%, community 0's third tie and community 3's third: dropped.
+        { source: 0, target: 3, edge_count: 5 },
+      ]),
+    );
+    const pairs = g.edges().map((e) => g.extremities(e).map((n) => n.replace("__community__", "")).sort().join("-"));
+    expect(pairs.sort()).toEqual(["0-1", "0-2", "1-3", "2-3"]);
   });
 
   it("skips edges referencing dropped communities", () => {
@@ -322,5 +342,32 @@ describe("mergeCommunitySlice", () => {
     const g = baseGraph();
     const { satelliteIds } = mergeCommunitySlice(g, 42, makeSlice({ community_id: 42 }));
     expect(satelliteIds).toEqual([]);
+  });
+});
+
+describe("architectureToGraphology unclustered disc", () => {
+  it("draws the ungrouped files as one neutral hub outside the ranking", () => {
+    const arch: ArchitectureGraph = {
+      ...makeArch([makeArchNode({ community_id: 0 })]),
+      unclustered: { file_count: 72, files: ["README.md"] },
+    };
+    const g = architectureToGraphology(arch);
+    expect(g.hasNode(UNCLUSTERED_NODE_ID)).toBe(true);
+    expect(hubNodeId(UNCLUSTERED_COMMUNITY_ID)).toBe(UNCLUSTERED_NODE_ID);
+    const attrs = g.getNodeAttributes(UNCLUSTERED_NODE_ID);
+    expect(attrs.nodeType).toBe("hub");
+    expect(attrs.communityId).toBe(UNCLUSTERED_COMMUNITY_ID);
+    expect(attrs.memberCount).toBe(72);
+    // Past the outer ring, so the ranked hubs keep their positions.
+    const hub = g.getNodeAttributes(hubNodeId(0));
+    expect(Math.hypot(attrs.x, attrs.y)).toBeGreaterThan(Math.hypot(hub.x, hub.y));
+  });
+
+  it("draws nothing when there is nothing ungrouped", () => {
+    const g = architectureToGraphology({
+      ...makeArch([makeArchNode({ community_id: 0 })]),
+      unclustered: { file_count: 0, files: [] },
+    });
+    expect(g.hasNode(UNCLUSTERED_NODE_ID)).toBe(false);
   });
 });

@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Route, Loader2, X, ArrowRight, Search, ChevronDown } from "lucide-react";
+import { Route, X, ArrowRight, Search, ChevronDown } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { Button } from "../ui/button";
 import { useDebounce } from "../hooks/use-debounce";
 import type { GraphPath, NodeSearchResult } from "@repowise-dev/types/graph";
@@ -96,7 +97,7 @@ function NodeAutocomplete({
       />
       <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[var(--color-text-tertiary)]" />
       {showDropdown && displayResults.length > 0 && (
-        <div className="absolute top-full left-0 mt-1 w-full max-h-52 overflow-auto z-50 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] shadow-xl shadow-black/30 py-1">
+        <div className="absolute top-full left-0 mt-1 w-full max-h-52 overflow-auto z-[var(--z-dropdown)] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] shadow-xl shadow-black/30 py-1">
           {results.length === 0 && topNodes.length > 0 && (
             <div className="px-3 py-1 text-[10px] text-[var(--color-text-tertiary)] uppercase tracking-wider">
               Top files by importance
@@ -238,7 +239,7 @@ export function PathFinderPanel({
         }}
       >
         {loading ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <Spinner size="sm" />
         ) : (
           <Route className="h-3.5 w-3.5" />
         )}

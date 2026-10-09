@@ -27,6 +27,7 @@ from pathlib import PurePosixPath
 
 from repowise.core.ids import is_external
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.support_paths import DOC_DIR_TOKENS, EXAMPLE_DIR_TOKENS
 from repowise.core.test_paths import is_test_related_path
 
 # ---------------------------------------------------------------------------
@@ -46,6 +47,13 @@ _LAYER_HINTS: tuple[tuple[str, frozenset[str]], ...] = (
     ("Utility", frozenset({"utils", "helpers", "common", "shared", "tools", "util"})),
     ("Config", frozenset({"config", "constants", "env", "settings", "conf"})),
     ("Types", frozenset({"types", "interfaces", "schemas", "contracts", "dtos", "typings"})),
+)
+
+# The UI hint names a UI layer only for files that render one: a CLI's `ui/`
+# helpers or a Django `views/` package are not a frontend.
+_UI_LAYER = "UI"
+_UI_EXTENSIONS = frozenset(
+    {".tsx", ".jsx", ".vue", ".svelte", ".html", ".htm", ".css", ".scss", ".sass", ".less"}
 )
 
 # Layers that observe or support the runtime stack rather than participate in
@@ -98,37 +106,11 @@ for _tag, _hints in _LANG_REGISTRY.layer_dir_hints_by_language().items():
         _LANG_ROOT_HINTS[_tag] = _roots
 
 
-# Example/demo/benchmark directories: documentation-by-code and support
-# harnesses, not the system itself. Their files carry entry-style names
-# (main.go, index.js, decode.exs) by convention, so without demotion they
-# flood entry points and the tour on any repo that ships samples (express,
-# chi, …) or benchmarks (cargo's benches/, jason's bench/).
-_EXAMPLE_DIR_TOKENS = frozenset(
-    {
-        "examples", "_examples", "example", "samples", "sample", "demo", "demos",
-        "bench", "benches", "benchmarks",
-    }
-)
-
-
-# Documentation directories: sphinx/docusaurus/vitepress sites and runnable
-# doc snippets (libuv's docs/code/*/main.c, docfx template assets). Like the
-# example dirs above, their files carry entry-style names by convention but
-# document the system rather than being it.
-_DOC_DIR_TOKENS = frozenset({"docs", "doc", "website"})
-
-
-def is_support_path(path: str) -> bool:
-    """Whether *path* is support material (examples/benchmarks/docs sites).
-
-    Support files never seed or anchor a tour and never surface as entry
-    points — a reader orienting in the repo must land in the system itself,
-    not in its documentation or sample harnesses.
-    """
-    return any(
-        s.lower() in _EXAMPLE_DIR_TOKENS or s.lower() in _DOC_DIR_TOKENS
-        for s in PurePosixPath(path).parts[:-1]
-    )
+# The directory vocabularies and `is_support_path` live in `core.support_paths`
+# so `analysis` can ask the same question without importing `generation`. Only
+# the layer-inference use of the token sets stays here.
+_EXAMPLE_DIR_TOKENS = EXAMPLE_DIR_TOKENS
+_DOC_DIR_TOKENS = DOC_DIR_TOKENS
 
 
 # Build / CI / extension tooling directories: scripts, container definitions,
@@ -201,6 +183,18 @@ _CANONICAL_RANK_BY_KEY: dict[str, int] = {
 }
 
 
+_ADJACENT_KEYS: frozenset[str] = frozenset(layer_key(la) for la in ADJACENT_LAYERS)
+
+
+def is_adjacent_layer(layer: str) -> bool:
+    """True for a layer outside the architecture (tests), by name or ``layer:`` id.
+
+    The layer still partitions its files; surfaces that describe the
+    architecture leave it out.
+    """
+    return layer_key(layer) in _ADJACENT_KEYS
+
+
 def _is_pinned(layer: str) -> bool:
     return layer_key(layer) in _PINNED_KEYS
 
@@ -259,12 +253,13 @@ def infer_layer(path: str, language: str | None = None) -> str:
     suffix_hints = _LANG_SUFFIX_HINTS.get(lang)
     root_hints = _LANG_ROOT_HINTS.get(lang)
     original_segments = original_parts[:-1]
+    renders_ui = PurePosixPath(path).suffix.lower() in _UI_EXTENSIONS
 
     # Deepest directory first — the closest folder describes the file best.
     for i in range(len(segments) - 1, -1, -1):
         seg = segments[i]
         for layer_name, tokens in _LAYER_HINTS:
-            if seg in tokens:
+            if seg in tokens and (renders_ui or layer_name != _UI_LAYER):
                 return layer_name
         if token_hints and seg in token_hints:
             return token_hints[seg]

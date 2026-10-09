@@ -44,6 +44,15 @@ class TestHedgeMarkers:
         long_preamble = "The module handles ingestion. " * 40
         assert _answer_is_hedged(long_preamble + "However, the excerpts do not include the value.")
 
+    def test_evidence_that_names_no_answer_detected(self) -> None:
+        assert _answer_is_hedged("The evidence does not identify which caller sets it.")
+        assert _answer_is_hedged("The material does not show the retry count.")
+        assert _answer_is_hedged("The evidence does not specify which default ports it drops.")
+
+    def test_behaviour_described_with_the_same_verbs_not_hedged(self) -> None:
+        assert not _answer_is_hedged("The validator does not show an error on empty input.")
+        assert not _answer_is_hedged("The caller does not specify a timeout, so 5s applies.")
+
     def test_direct_answer_not_hedged(self) -> None:
         assert not _answer_is_hedged("The default is 2, set in git_indexer/_constants.py.")
 
@@ -440,7 +449,7 @@ async def test_value_question_uses_extraction_fast_path(setup_mcp, monkeypatch):
     assert "MIN_COUNT = 2" in result["answer"]
     assert "pkg/alpha/one.py:10" in result["answer"]
     assert result["citations"] == ["pkg/alpha/one.py"]
-    assert result["retrieval"] == []
+    assert "retrieval" not in result
 
 
 @pytest.mark.asyncio
@@ -740,6 +749,79 @@ async def test_anchor_qualified_miss_records_not_found():
     assert homonyms["qualified_miss"] == ["extract_all"]
     assert not homonyms["union"]  # a qualified miss must NOT fall back to a union
     assert all(not h.get("_symbol_anchored") for h in out)
+
+
+def _spy_repo_reads(monkeypatch) -> list[str]:
+    from repowise.server.mcp_server.tool_answer import symbols
+
+    reads: list[str] = []
+    real = symbols._read_repo_text
+
+    def _spy(repo_root, file_path):
+        reads.append(file_path)
+        return real(repo_root, file_path)
+
+    monkeypatch.setattr(symbols, "_read_repo_text", _spy)
+    return reads
+
+
+@pytest.mark.asyncio
+async def test_anchor_bare_homonym_union_drops_a_pathless_row(monkeypatch, tmp_path):
+    """A pathless def must not reach the bare-homonym union: it would be read
+    at an empty path and named in the reply as a file to open (#2346)."""
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    reads = _spy_repo_reads(monkeypatch)
+    rows = [
+        _Sym("extract_all", "a/x.py", parent_name="A", qualified_name="A.extract_all"),
+        _Sym("extract_all", "b/y.py", parent_name="B", qualified_name="B.extract_all"),
+        _Sym("extract_all", "", parent_name="C", qualified_name="C.extract_all"),
+    ]
+    hits = [{"target_path": "c/z.py", "score": 2.0}]
+    _, homonyms = await _anchor_symbol_hits(
+        _FakeSession(rows), "r", {"extract_all"}, hits, repo_root=tmp_path
+    )
+    assert {d["file_path"] for d in homonyms["union"]["extract_all"]} == {"a/x.py", "b/y.py"}
+    assert "" not in reads
+
+
+@pytest.mark.asyncio
+async def test_anchor_narrowed_union_drops_a_pathless_row(monkeypatch, tmp_path):
+    """Same guard on the narrowed branch: the qualifier matches several defs,
+    one of them pathless."""
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    reads = _spy_repo_reads(monkeypatch)
+    rows = [
+        _Sym("extract_all", "a/x.py", parent_name="Alpha", qualified_name="Alpha.extract_all"),
+        _Sym("extract_all", "a/w.py", parent_name="Alpha", qualified_name="Alpha.extract_all"),
+        _Sym("extract_all", "", parent_name="Alpha", qualified_name="Alpha.extract_all"),
+        _Sym("extract_all", "b/y.py", parent_name="Beta", qualified_name="Beta.extract_all"),
+    ]
+    hits = [{"target_path": "c/z.py", "score": 2.0}]
+    _, homonyms = await _anchor_symbol_hits(
+        _FakeSession(rows), "r", {"extract_all", "Alpha"}, hits, repo_root=tmp_path
+    )
+    assert {d["file_path"] for d in homonyms["union"]["extract_all"]} == {"a/x.py", "a/w.py"}
+    assert "" not in reads
+
+
+@pytest.mark.asyncio
+async def test_anchor_homonym_with_one_pathless_twin_anchors_the_real_def():
+    """Once the pathless row is dropped, the one def left is not a homonym: it
+    anchors like any single def instead of forming a union of one real body
+    and one empty path."""
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [
+        _Sym("extract_all", "a/x.py", parent_name="A", qualified_name="A.extract_all"),
+        _Sym("extract_all", "", parent_name="B", qualified_name="B.extract_all"),
+    ]
+    hits = [{"target_path": "c/z.py", "score": 2.0}]
+    out, homonyms = await _anchor_symbol_hits(_FakeSession(rows), "r", {"extract_all"}, hits)
+    assert not homonyms["union"]
+    assert out[0]["target_path"] == "a/x.py"
+    assert out[0]["_symbol_anchored"] is True
 
 
 @pytest.mark.asyncio
@@ -1138,11 +1220,10 @@ async def test_non_dominant_best_guesses_carry_candidate_excerpts(setup_mcp, mon
     top = result["best_guesses"][0]
     assert top["file"] == "pkg/alpha/one.py"
     assert top["why_relevant"]
-    # The content is in the response exactly once: dropped from the guess
-    # because retrieval carries the identical slab for the same file.
-    assert "excerpt" not in top
-    carried = [r.get("excerpt", "") for r in result["retrieval"]]
-    assert any(e.startswith("Page content for pkg/alpha/one.py") for e in carried)
+    # The content is in the response exactly once. The medium projection keeps
+    # the actionable best_guess and drops the duplicate retrieval row.
+    assert top["excerpt"].startswith("Page content for pkg/alpha/one.py")
+    assert "retrieval" not in result
     # The reply names the ambiguity and points at best_guesses to verify.
     assert "best_guesses" in result["note"]
     assert "ambiguous" in result["note"]

@@ -85,9 +85,9 @@ def _silence_when_machine_readable(ctx: Any, param: Any, value: str) -> str:
     a module that logs on import.
     """
     if value != "table":
-        from repowise.cli.helpers import silence_logs_for_machine_output
+        from repowise.cli.helpers import silence_logs_for_machine_output_until_close
 
-        silence_logs_for_machine_output()
+        silence_logs_for_machine_output_until_close()
     return value
 
 
@@ -121,9 +121,9 @@ def _silence_when_alias_selects_json(ctx: Any, param: Any, value: bool) -> bool:
     the one a legacy caller asked for.
     """
     if value:
-        from repowise.cli.helpers import silence_logs_for_machine_output
+        from repowise.cli.helpers import silence_logs_for_machine_output_until_close
 
-        silence_logs_for_machine_output()
+        silence_logs_for_machine_output_until_close()
     return value
 
 
@@ -222,3 +222,24 @@ __all__ = [
     "resolve_console_width",
     "resolve_format",
 ]
+
+
+def emit_refusal(code: str, message: str, fmt: str, **extra: Any) -> None:
+    """Report a refused operation and exit non-zero.
+
+    A ``--format json`` caller is owed a document on every exit, including this
+    one: raising a ``ClickException`` prints prose on the channel the caller is
+    parsing, and the difference between a refusal and a crash disappears.
+    """
+    import click
+
+    if fmt == "json":
+        emit_json({"error": code, "message": message, **extra})
+    else:
+        from rich.markup import escape
+
+        notices = notice_console(fmt)
+        notices.print(f"[red]{escape(message)}[/red]")
+        if extra.get("remedy"):
+            notices.print(f"[dim]{escape(str(extra['remedy']))}[/dim]")
+    raise click.exceptions.Exit(1)

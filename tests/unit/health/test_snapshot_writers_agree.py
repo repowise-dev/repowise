@@ -5,7 +5,7 @@ persister, the upgrade flow, the full-index pipeline, and the store wrapper
 that forwards to crud. A repo's history is whichever of those wrote it last.
 
 This has already gone wrong once here, with a different argument: four
-``HealthAnalyzer`` call sites of which only one passed ``module_map``, so a
+``HealthAnalyzer`` call sites of which only one passed ``community_label_map``, so a
 repo's module namespace flipped depending on which command last ran. The same
 shape applied to ``per_file_deductions`` would make a floored file's trend
 depth appear and disappear as the user alternated between ``repowise health``,
@@ -61,6 +61,9 @@ def test_every_writer_records_the_depth_as_well_as_the_score() -> None:
     missing = []
     for path, call in _snapshot_calls():
         kwargs = {kw.arg for kw in call.keywords}
+        # ``**fields`` is ``trends.snapshot_fields``, which carries both maps.
+        if None in kwargs:
+            continue
         if not {"per_file_scores", "per_file_deductions"} <= kwargs:
             missing.append(f"{path.name}:{call.lineno} passes {sorted(kwargs)}")
     assert not missing, "snapshot writers that would record a different history: " + "; ".join(

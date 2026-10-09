@@ -19,16 +19,66 @@ from repowise.server.mcp_server.tool_answer import synthesis as synthesis_module
 from repowise.server.mcp_server.tool_answer.answer import _degraded_payload
 from repowise.server.mcp_server.tool_answer.config import (
     _SYNTHESIS_MAX_TOKENS,
+    _SYNTHESIS_MAX_TOKENS_DEFAULT,
+    _SYNTHESIS_MAX_TOKENS_ENV,
+    _SYNTHESIS_REASONING_MAX_TOKENS,
+    _SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT,
     _SYNTHESIS_TEMPERATURE,
+    _synthesis_max_tokens,
 )
 from repowise.server.mcp_server.tool_answer.synthesis import (
     _FALLBACK_TIMEOUT_S,
     _MAX_TIMEOUT_S,
     _TIMEOUT_ENV,
     _synthesis_failure_note,
+    _synthesis_reasoning_and_budget,
     _synthesis_timeout,
     synthesize,
 )
+
+# --- synthesis token budget -------------------------------------------------
+#
+# REPOWISE_SYNTHESIS_MAX_TOKENS: the hardcoded 1024 was headroom for a
+# non-reasoning model (answers target ~550 tokens) but is the WHOLE allowance
+# for one that spends the same budget on hidden thinking before any answer
+# token — measured against nanbeige returning nothing at 1024, a correct
+# cited answer at 8192. See _empty_completion_note below for the failure
+# this override exists to escape.
+
+
+@pytest.fixture(autouse=True)
+def _no_max_tokens_override(monkeypatch):
+    monkeypatch.delenv(_SYNTHESIS_MAX_TOKENS_ENV, raising=False)
+
+
+def test_default_max_tokens_matches_the_documented_default():
+    assert _synthesis_max_tokens() == _SYNTHESIS_MAX_TOKENS_DEFAULT == 1024
+    assert _SYNTHESIS_MAX_TOKENS == _SYNTHESIS_MAX_TOKENS_DEFAULT  # process-start default
+
+
+@pytest.mark.parametrize("raw,expected", [("8192", 8192), ("2048", 2048), ("  4096  ", 4096)])
+def test_max_tokens_env_override_is_honoured(monkeypatch, raw, expected):
+    monkeypatch.setenv(_SYNTHESIS_MAX_TOKENS_ENV, raw)
+    assert _synthesis_max_tokens() == expected
+
+
+@pytest.mark.parametrize("bad", ["abc", "0", "-5", "3.5", ""])
+def test_unusable_max_tokens_override_keeps_the_default(monkeypatch, bad):
+    """An unparseable value must not zero out synthesis, matching the sibling
+    embed/vector-search timeout overrides."""
+    monkeypatch.setenv(_SYNTHESIS_MAX_TOKENS_ENV, bad)
+    assert _synthesis_max_tokens() == _SYNTHESIS_MAX_TOKENS_DEFAULT
+
+
+def test_the_degraded_message_advertises_the_override():
+    """The advice a reasoning-model user actually needs, not just "try a
+    different model" — see synthesis._empty_completion_note."""
+    note = synthesis_module._empty_completion_note(
+        _Provider(budget=180.0, name="ollama", model="nanbeige"),
+        SimpleNamespace(stop_reason="max_tokens"),
+    )
+    assert _SYNTHESIS_MAX_TOKENS_ENV in note
+    assert str(_SYNTHESIS_MAX_TOKENS) in note
 
 
 class _Provider:
@@ -86,7 +136,12 @@ def test_an_effectively_unbounded_override_is_clamped(monkeypatch, huge):
     assert _synthesis_timeout(_Provider(budget=180.0)) == _MAX_TIMEOUT_S
 
 
-@pytest.mark.parametrize("junk", ["abc", True, False, object(), -5, 0, float("nan")], ids=repr)
+# object()'s repr carries its address, which differs per xdist worker.
+@pytest.mark.parametrize(
+    "junk",
+    ["abc", True, False, object(), -5, 0, float("nan")],
+    ids=lambda v: "object()" if type(v) is object else repr(v),
+)
 def test_a_provider_declaring_junk_falls_back_instead_of_raising(junk):
     """The attribute belongs to a class that need not subclass BaseProvider.
 
@@ -413,6 +468,8 @@ async def test_both_failure_modes_return_the_same_payload_shape(reason):
         "fallback_targets",
         "retrieval",
         "candidates",
+        "candidate_files",
+        "_candidate_file_facts",
         "best_guesses",
         "next_action_hint",
         "note",
@@ -433,14 +490,14 @@ async def test_degraded_answer_describes_the_payload_instead_of_being_empty():
     """An empty ``answer`` beside working retrieval reads as a failed call.
 
     The field is the first thing a reader looks at, so leaving it blank while
-    ``retrieval``/``candidates`` are populated invites throwing the whole
+    ``retrieval``/``candidate_files`` are populated invites throwing the whole
     result away. It must name what survived and where to find it.
     """
     payload = await _payload()
     answer = payload["answer"]
     assert answer, "degraded answer must not be empty"
     assert "synthesis-failed" in answer, "the reason belongs in the visible field"
-    for field in ("retrieval", "fallback_targets", "candidates"):
+    for field in ("retrieval", "fallback_targets", "candidate_files"):
         assert field in answer, f"{field} is populated but never mentioned"
 
 
@@ -464,3 +521,118 @@ async def test_degraded_answer_does_not_promise_hits_it_does_not_have():
     assert answer
     assert "matched nothing" in answer
     assert "ranked hit" not in answer
+
+
+# --- reasoning effort and budget per model ---------------------------------
+#
+# gpt-5.6-luna on ``auto`` thinks at its default effort and returned empty
+# answers inside the 1024 cap. Synthesis asks it for ``low`` with headroom.
+
+
+def _openai(model: str):
+    return get_provider("openai", api_key="sk-test", model=model, with_rate_limiter=False)
+
+
+def test_auto_on_an_openai_reasoning_model_becomes_low_with_headroom():
+    mode, max_tokens = _synthesis_reasoning_and_budget(_openai("gpt-5.6-luna"), "auto")
+    assert mode == "low"
+    assert max_tokens == _SYNTHESIS_REASONING_MAX_TOKENS == _SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT
+
+
+@pytest.mark.parametrize("explicit", ["none", "medium", "high"])
+def test_an_explicit_reasoning_mode_is_kept(explicit):
+    mode, max_tokens = _synthesis_reasoning_and_budget(_openai("gpt-5.6-luna"), explicit)
+    assert mode == explicit
+    assert max_tokens == _SYNTHESIS_REASONING_MAX_TOKENS
+
+
+def test_a_non_reasoning_model_keeps_auto_and_the_cap():
+    assert _synthesis_reasoning_and_budget(_openai("gpt-4o"), "auto") == (
+        "auto",
+        _SYNTHESIS_MAX_TOKENS,
+    )
+
+
+def test_other_providers_keep_their_defaults():
+    anthropic = get_provider(
+        "anthropic", api_key="sk-test", model="claude-haiku-4-5", with_rate_limiter=False
+    )
+    assert _synthesis_reasoning_and_budget(anthropic, "auto") == ("auto", _SYNTHESIS_MAX_TOKENS)
+    assert _synthesis_reasoning_and_budget(_SlowProvider(0, 30.0), "auto") == (
+        "auto",
+        _SYNTHESIS_MAX_TOKENS,
+    )
+
+
+def test_max_tokens_helper_applies_the_env_override_to_the_reasoning_default(monkeypatch):
+    monkeypatch.setenv(_SYNTHESIS_MAX_TOKENS_ENV, "2000")
+    assert _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT) == 2000
+    monkeypatch.setenv(_SYNTHESIS_MAX_TOKENS_ENV, "junk")
+    assert (
+        _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT)
+        == _SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT
+    )
+
+
+async def test_the_reasoning_settings_reach_the_call():
+    class _Reasoner(_SlowProvider):
+        provider_name = "openai"
+
+        def supported_reasoning_modes(self):
+            return ("auto", "none", "low", "medium", "high", "xhigh")
+
+    class _BurnedBudget(_Reasoner):
+        async def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(content="", stop_reason="max_tokens")
+
+    provider = _Reasoner(duration=0, budget=30.0)
+    await synthesize(provider, "sys", "user")
+    assert provider.calls[0]["reasoning"] == "low"
+    assert provider.calls[0]["max_tokens"] == _SYNTHESIS_REASONING_MAX_TOKENS
+
+    _, note = await synthesize(_BurnedBudget(duration=0, budget=30.0), "sys", "user")
+    assert f"{_SYNTHESIS_REASONING_MAX_TOKENS}-token" in note
+
+
+async def test_synthesize_uses_the_resolved_reasoning_budget(monkeypatch):
+    """The env override lands in this module constant at import, so patching it
+    stands in for REPOWISE_SYNTHESIS_MAX_TOKENS on a reasoning model."""
+    monkeypatch.setattr(synthesis_module, "_SYNTHESIS_REASONING_MAX_TOKENS", 2000)
+
+    class _Reasoner(_SlowProvider):
+        provider_name = "openai"
+
+        def supported_reasoning_modes(self):
+            return ("auto", "low")
+
+    provider = _Reasoner(duration=0, budget=30.0)
+    await synthesize(provider, "sys", "user")
+    assert provider.calls[0]["max_tokens"] == 2000
+
+
+async def test_the_real_openai_provider_sends_low_effort_and_the_budget(monkeypatch):
+    """auto -> low must reach the Chat Completions request as reasoning_effort."""
+    provider = _openai("gpt-5.6-luna")
+    sent: dict = {}
+
+    async def _create(**kwargs):
+        sent.update(kwargs)
+        message = SimpleNamespace(content="answer", tool_calls=None)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message, finish_reason="stop")],
+            usage=SimpleNamespace(
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+                prompt_tokens_details=None,
+            ),
+            model="gpt-5.6-luna",
+        )
+
+    monkeypatch.setattr(provider._client.chat.completions, "create", _create)
+    answer, note = await synthesize(provider, "sys", "user")
+
+    assert note is None and answer == "answer"
+    assert sent["reasoning_effort"] == "low"
+    assert sent["max_completion_tokens"] == _SYNTHESIS_REASONING_MAX_TOKENS

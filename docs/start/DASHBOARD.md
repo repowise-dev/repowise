@@ -45,7 +45,7 @@ scratch.
 
 The landing view. Repo KPIs (files, symbols, entry points, dead exports, health
 averages), an attention panel that promotes whatever currently deserves it
-(declining health, a stale doc set, an alert-band file), a decisions timeline,
+(declining health, a stale doc set, an at-risk file), a decisions timeline,
 quick actions, and a live banner while an index or generation job is running.
 If a job is in flight, the progress and log stream here.
 
@@ -61,7 +61,11 @@ The generated wiki: a page tree on the left, the rendered page in the middle
 with mermaid diagrams, code blocks that link into the file views, a confidence
 badge, a freshness indicator, backlinks, and a regenerate action for a single
 page. A command palette (`⌘K` / `Ctrl+K`) jumps between pages. Reader personas
-re-filter prose for the audience you pick. You can attach human notes to a page,
+re-filter prose for the audience you pick. Module pages keep the material
+written for search and agents (the questions a page answers, its identifiers,
+public API and git signals) out of the body; the **Reference** tab above the
+page shows it, and a small History card beside the page summarises owners,
+hotspots and fix history. You can attach human notes to a page,
 and those notes survive regeneration.
 
 The sidebar auto-collapses to icons here so the page gets the width, and
@@ -70,34 +74,33 @@ restores when you leave.
 ### Present mode (the hidden one)
 
 Inside the docs header there is a **Present** button. It turns the wiki you
-already generated into a full-screen, keyboard-driven presentation. Nothing is
-generated for it: the deck is derived synchronously from the pages already
-loaded, so there is no LLM call, no network round trip, and no extra cost. The
-button only appears when the repo has a `repo_overview` page.
+already generated into a short, full-screen, keyboard-driven deck. Nothing is
+generated for it: the deck is built from the overview and a handful of module
+pages, fetched when you open it, so there is no LLM call and no extra cost. The
+button only appears when the repo has a `repo_overview` page. The state lives in
+the URL (`?present=deck`), so a deck link is shareable.
 
-The state lives in the URL (`?present=deck` or `?present=walkthrough`), so a
-particular mode is shareable.
+The deck tells one story in a fixed order:
 
-**Deck** is a slide view assembled in a fixed order: a title slide from the
-overview page, up to two architecture-diagram slides, up to five layer slides
-(prose on the left and the layer's mermaid diagram on the right when it has
-one), up to five module slides, a "where to start" slide built from the guided
-tour metadata, and a closing slide. Each slide carries a freshness dot and an
-"open in reader" link that drops you back into the docs view on that page.
+1. **Title**: the repository name and the overview's opening.
+2. **How it fits together**: the overview's architecture diagram, with the
+   sentence around it. A flowchart with no edges is skipped.
+3. **One slide per major part**: the largest top-level sections of the docs
+   tree (up to six, in tree order). Each shows the page's opening, its first
+   diagram beside it, and its step-named sections as a numbered list.
+4. **One flow, end to end**: a sequence diagram from those pages that no earlier
+   slide showed, when one exists.
+5. **Where to start reading**: each part's first recommended file, then the
+   guided tour's stops, grouped by why they matter. When some top-level
+   sections were left out, this slide says how many.
 
-**Walkthrough** is the guided-reading version of the same content: one step per
-guided-tour stop, each with a "why this matters" callout, a longer excerpt from
-the target page, and a reading-time estimate. A left rail tracks which steps
-you have finished and shows the total estimate. If the index has no guided tour,
-the walkthrough falls back to the deck's sections rather than showing an empty
-pane.
+Prose is cut on sentence boundaries only, and tables, lists and stat lines never
+become slide text, so older pages give a shorter deck, not a broken one. Every
+slide drawn from a page has an "Open in docs" link back to it, and a stale or
+outdated source page is marked.
 
 Keys while the overlay is open: `→` / `Space` / `PageDown` next, `←` / `PageUp`
-back, `Home` / `End` first and last, `Esc` to close. Deck and Walkthrough each
-keep their own position, so toggling between them does not lose your place.
-
-This is the fastest way to hand a repo to a new joiner: open Present, hit
-Walkthrough, and let the guided tour do the talking.
+back, `Home` / `End` first and last, `Esc` to close.
 
 ### Doc freshness
 
@@ -119,16 +122,26 @@ regenerating everything.
 
 <img src="../../.github/assets/dashboard/architecture-page.png" alt="Repowise dependency graph: detected communities laid out on the module map, sized by how much code each holds" width="100%" />
 
-Five views behind `?view=`:
+Four tabs, with the view in `?view=`:
 
-- **map** (default): the layered architecture map.
-- **explore**: the dependency-graph canvas with ELK layout, a context drawer
-  per node, a centrality leaderboard, and detected communities.
-- **deps**: the external dependency registry.
-- **symbols**: the symbol index, covered below.
-- **coupling**: change coupling, the files that keep changing together without
-  an import edge between them. This is the view that catches the coupling
-  static analysis cannot see.
+- **Map** (default): the dependency graph. A scope switcher in the header picks
+  the zoom: `?view=files` (default) draws every file grouped into its detected
+  community, with a band for each strong link between communities, and
+  `?view=communities` draws the communities alone. `?signal=dead` or
+  `?signal=hot` lights dead code or hot files on the graph, and `?module=` or
+  `?community=` narrows the file graph. Hover or select a file to see what it
+  imports and what imports it; a node's doc page opens in a rail beside the
+  canvas.
+- **Coupling** (`?view=coupling`): change coupling, the files that keep
+  changing together without an import edge between them. This is the view that
+  catches the coupling static analysis cannot see.
+- **Third-party** (`?view=packages`): the declared third-party dependency
+  registry.
+- **Symbols** (`?view=symbols`): the symbol index, covered below.
+
+Older links still work: `?view=map` and `?view=graph` open the communities
+view, `?view=explore` the files view, `?view=deps` Third-party, and
+`?view=layers` redirects to the Knowledge Graph.
 
 Index-only safe: all of it is computed from the parse and git history.
 
@@ -147,24 +160,35 @@ zoomed on one node. The older `/c4` and `/zoom` URLs redirect here.
 
 `/repos/<id>/code-health`
 
-**Answers:** which files are likely to break next, and why?
+**Answers:** which files have the strongest defect indicators, and why?
 
-<img src="../../.github/assets/dashboard/code-health.png" alt="Repowise code health: the three co-equal pillars, the alert/warning/healthy band distribution, KPI cards and the code health map" width="100%" />
+<img src="../../.github/assets/dashboard/code-health.png" alt="Repowise code health: the three co-equal pillars, the health band distribution, KPI cards and the code health map" width="100%" />
 
-Tabs behind `?tab=`:
+Tabs behind `?tab=` (the label shown, then the id):
 
-- **triage** (default): the health ring, the band distribution, the three
-  co-equal KPIs (defect risk, maintainability, performance), and the
-  lowest-scoring files.
-- **findings**: every marker finding, filterable by dimension and severity.
-- **hotspots**: churn-versus-complexity and churn-versus-bus-factor scatters,
-  with the refactor quadrant tinted.
-- **coverage**: ingested test coverage joined against risk, so untested
-  hotspots stand out.
-- **dead-code**: unreachable files, unused exports, and zombie packages, tiered
-  by confidence.
-- **impact**: blast radius for a file or a set of changed files.
-- **security**: the security findings table, by directory and by severity.
+- **Overview** (`triage`, default): a lede that leads with the defect score and
+  says what it means, then the code health map with its inspector. A lens
+  switcher recolors the same map by health, maintainability, performance, or
+  churn. Under the map sit the ranked hotspot table, sortable by bus
+  factor with a filter for single-owner files, and the score trend.
+- **Performance** (`performance`): the ranked performance opportunities, each a
+  cause with its steps and the raw observations as evidence.
+- **Findings** (`findings`): the fix-next queue of marker findings, filterable
+  by dimension and severity, with function-level panels.
+- **Tests** (`coverage`): ingested test coverage joined against risk, so
+  untested hotspots stand out.
+- **Dead code** (`dead-code`): unreachable files, unused exports, and zombie
+  packages, tiered by confidence.
+- **Doc drift** (`doc-drift`): documentation the code no longer supports.
+- **Security** (`security`): the security findings table, by directory and by
+  severity.
+- **Blast radius** (`impact`): blast radius for a file or a set of changed
+  files.
+
+Two header controls filter the Overview and Findings tabs: scope (all code or
+production only) and what the score counts (everything, or code shape only,
+which drops the git-derived half). Older links still
+work: `?tab=hotspots`, `heatmap`, `modules`, and `trend` land on Overview.
 
 Clicking any file opens the health drawer: its markers, its file signals
 (owners, churn, dependents), its score trend as a sparkline, and its **bug
@@ -230,9 +254,10 @@ anywhere.
 
 `/repos/<id>/commits`
 
-**Answers:** what has been happening in this repo, and how risky was it?
+**Answers:** what has been happening in this repo, and which changes deserve review?
 
-The commit table with a per-commit risk score, a risk distribution, a
+The commit table led by repo-relative review priority, a supporting diff-shape
+score distribution, a
 code-evolution chart, commit-category breakdowns, and AI-agent provenance
 badges plus their trend over time where the commits carry agent trailers. The
 risk model is documented in
@@ -315,7 +340,7 @@ These appear only when repowise is running over a multi-repo workspace. See
 | Key | Does |
 |---|---|
 | `⌘K` / `Ctrl+K` | Command palette (jump to a page, file, or symbol) |
-| `→` `Space` `PageDown` | Present mode: next slide or step |
+| `→` `Space` `PageDown` | Present mode: next slide |
 | `←` `PageUp` | Present mode: previous |
 | `Home` `End` | Present mode: first / last |
 | `Esc` | Close Present mode or the open drawer |

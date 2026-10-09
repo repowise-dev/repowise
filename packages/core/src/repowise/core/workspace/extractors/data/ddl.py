@@ -13,7 +13,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from ..base import ScanContext
-from .dialect import build_table_provider
+from .dialect import ALTER_CONFIDENCE, build_table_provider
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -58,6 +58,7 @@ class DdlDialect:
                 continue
             raw: str | None = None
             confidence = 0.85
+            schema = "create"
             if isinstance(stmt, exp.Create) and (stmt.kind or "").upper() in _CREATE_KINDS:
                 target = stmt.this
                 if isinstance(target, exp.Schema):
@@ -65,12 +66,13 @@ class DdlDialect:
                 raw = _qualified_name(target)
             elif isinstance(stmt, exp.Alter) and (stmt.args.get("kind") or "").upper() == "TABLE":
                 raw = _qualified_name(stmt.this)
-                confidence = 0.8
+                confidence = ALTER_CONFIDENCE
+                schema = "alter"
             if raw is None or raw in seen:
                 continue
             seen.add(raw)
             contract = build_table_provider(
-                ctx, table_raw=raw, framework="sql-ddl", confidence=confidence
+                ctx, table_raw=raw, framework="sql-ddl", confidence=confidence, schema=schema
             )
             if contract is not None:
                 out.append(contract)

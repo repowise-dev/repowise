@@ -9,17 +9,28 @@ import type {
   HealthFilesQuery,
   HealthFilesResponse,
   HealthFinding,
+  HealthMapFeed,
+  HealthMapQuery,
   HealthCoverageResponse,
   TestsReachingFile,
   HealthFileBreakdownResponse,
   HealthOverviewResponse,
   HealthTrendResponse,
+  PerformanceOpportunityDetail,
   PerformanceOpportunityPage,
+  PerformanceOpportunityQuery,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
+  ImpactEffortQuery,
+  ImpactEffortResponse,
+  HealthScope,
+  HealthCounts,
+  RelatedWorkResponse,
 } from "@repowise-dev/types/health";
+import type { FixFirstQueue, FixItem, FixScope } from "@repowise-dev/types/fix-first";
+import type { AgentPromptFlavor, AgentPromptResponse } from "@repowise-dev/types/agent-prompts";
 import type { Paginated } from "@repowise-dev/types";
-import { apiGet, apiPatch } from "./client";
+import { apiGet, apiPatch, apiPost } from "./client";
 
 export type {
   BiomarkerBreakdownRow,
@@ -38,25 +49,52 @@ export type {
   HealthFilesQuery,
   HealthFilesResponse,
   HealthFinding,
+  HealthMapFeed,
+  HealthMapModuleRollup,
+  HealthMapOmissions,
+  HealthMapPerformance,
+  HealthMapQuery,
+  HealthMapSelection,
   HealthModuleRow,
   HealthOverviewResponse,
+  HealthCounts,
+  HealthScope,
   HealthTrendResponse,
   HealthWorkItem,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
+  ImpactEffortPoint,
+  ImpactEffortQuery,
+  ImpactEffortResponse,
   ModuleCoverageRow,
+  PerformanceActionabilityState,
+  PerformanceExecutionContext,
+  PerformanceFacets,
+  PerformanceOpportunity,
+  PerformanceOpportunityConfidence,
+  PerformanceOpportunityDetail,
+  PerformanceOpportunityEvidence,
+  PerformanceOpportunityPage,
+  PerformanceOpportunityQuery,
+  PerformanceOpportunitySummary,
   RefactoringQuery,
   RefactoringTarget,
   RefactoringTargetsResponse,
+  RelatedWorkFile,
+  RelatedWorkItem,
+  RelatedWorkLens,
+  RelatedWorkResponse,
 } from "@repowise-dev/types/health";
 
 export async function getHealthOverview(
   repoId: string,
   limit = 25,
+  scope?: HealthScope,
+  counts?: HealthCounts,
 ): Promise<HealthOverviewResponse> {
   return apiGet<HealthOverviewResponse>(
     `/api/repos/${repoId}/health/overview`,
-    { limit },
+    { limit, scope, counts },
   );
 }
 
@@ -66,26 +104,53 @@ export async function listHealthFindings(
     biomarker_type?: string;
     file_path?: string;
     min_severity?: string;
+    /** Exact severities, comma-separated. Overrides `min_severity`. */
+    severity?: string;
     dimension?: string;
+    /** Also return performance and advisory, which no impact-ranked list holds. */
+    include_zero_impact?: boolean;
+    /** Comma-separated statuses, or `"all"`. Defaults to open work. */
+    status?: string;
     limit?: number;
+    scope?: HealthScope;
+    counts?: HealthCounts;
   },
 ): Promise<HealthFinding[]> {
   return apiGet<HealthFinding[]>(`/api/repos/${repoId}/health/findings`, opts);
 }
 
-export interface PerformanceOpportunityPageParams {
-  context?: "production_tooling" | "test" | "all";
-  limit?: number;
-  offset?: number;
-}
+/** The canonical query shape lives with the wire types. */
+export type PerformanceOpportunityPageParams = PerformanceOpportunityQuery;
 
 export async function getPerformanceOpportunities(
   repoId: string,
-  opts: PerformanceOpportunityPageParams = {},
+  opts: PerformanceOpportunityQuery = {},
 ): Promise<PerformanceOpportunityPage> {
   return apiGet<PerformanceOpportunityPage>(
     `/api/repos/${repoId}/health/performance-opportunities`,
-    { context: opts.context, limit: opts.limit, offset: opts.offset },
+    {
+      context: opts.context,
+      boundary: opts.boundary,
+      confidence: opts.confidence,
+      actionability: opts.actionability,
+      view: opts.view,
+      sort: opts.sort,
+      file_paths: opts.file_paths?.length ? opts.file_paths.join(",") : undefined,
+      limit: opts.limit,
+      offset: opts.offset,
+    },
+  );
+}
+
+/** One opportunity by its stable id, with bounded evidence. */
+export async function getPerformanceOpportunity(
+  repoId: string,
+  opportunityId: string,
+  opts: { evidenceLimit?: number; evidenceOffset?: number } = {},
+): Promise<PerformanceOpportunityDetail> {
+  return apiGet<PerformanceOpportunityDetail>(
+    `/api/repos/${repoId}/health/performance-opportunities/${encodeURIComponent(opportunityId)}`,
+    { evidence_limit: opts.evidenceLimit, evidence_offset: opts.evidenceOffset },
   );
 }
 
@@ -98,6 +163,25 @@ export async function getPerformanceOpportunityFindings(
     `/api/repos/${repoId}/health/performance-opportunities/${encodeURIComponent(opportunityId)}/findings`,
     { limit: opts.limit, offset: opts.offset },
   );
+}
+
+/**
+ * The bounded field the code-health map draws.
+ *
+ * Distinct from {@link listHealthFiles}, which is an inventory page: this one
+ * chooses its rows so the caller's selection and the repository's performance
+ * causes are guaranteed a node, and states what the cap left out.
+ */
+export async function getHealthMap(
+  repoId: string,
+  opts: HealthMapQuery = {},
+): Promise<HealthMapFeed> {
+  return apiGet<HealthMapFeed>(`/api/repos/${repoId}/health/map`, {
+    cap: opts.cap,
+    active: opts.active?.length ? opts.active.join(",") : undefined,
+    scope: opts.scope,
+    counts: opts.counts,
+  });
 }
 
 export async function listHealthFiles(
@@ -113,15 +197,20 @@ export async function listHealthFiles(
 export async function getHealthFileBreakdown(
   repoId: string,
   filePath: string,
+  counts?: HealthCounts,
 ): Promise<HealthFileBreakdownResponse> {
   return apiGet<HealthFileBreakdownResponse>(
     `/api/repos/${repoId}/health/files/breakdown`,
-    { file_path: filePath },
+    { file_path: filePath, counts },
   );
 }
 
-export async function getHealthTrend(repoId: string, limit = 20): Promise<HealthTrendResponse> {
-  return apiGet<HealthTrendResponse>(`/api/repos/${repoId}/health/trend`, { limit });
+export async function getHealthTrend(
+  repoId: string,
+  limit = 20,
+  scope?: HealthScope,
+): Promise<HealthTrendResponse> {
+  return apiGet<HealthTrendResponse>(`/api/repos/${repoId}/health/trend`, { limit, scope });
 }
 
 export async function updateFindingStatus(
@@ -170,6 +259,20 @@ export async function getHealthWorkQueue(
   );
 }
 
+/**
+ * Every file the work queue's filters keep, placed by effort and recoverable
+ * health. Takes the queue's own filters so the plane and the list agree.
+ */
+export async function getHealthImpactEffort(
+  repoId: string,
+  opts?: ImpactEffortQuery,
+): Promise<ImpactEffortResponse> {
+  return apiGet<ImpactEffortResponse>(
+    `/api/repos/${repoId}/health/impact-effort`,
+    opts as Record<string, string | number | boolean | undefined>,
+  );
+}
+
 /** @deprecated Use getHealthWorkQueue; the response is file triage, not plans. */
 export const getRefactoringTargets = getHealthWorkQueue;
 
@@ -181,4 +284,52 @@ export async function getChurnComplexity(
     `/api/repos/${repoId}/health/churn-complexity`,
     opts,
   );
+}
+
+/**
+ * Fix first: the ranked queue core builds, its lead, and what each eligibility
+ * rule excluded. `scope: "all"` keeps test files in the queue.
+ */
+export async function getFixFirst(
+  repoId: string,
+  opts: { limit?: number; scope?: FixScope } = {},
+): Promise<FixFirstQueue> {
+  return apiGet<FixFirstQueue>(`/api/repos/${repoId}/health/fix-first`, {
+    limit: opts.limit,
+    scope: opts.scope,
+  });
+}
+
+/** One Fix-first item by its stable id, wherever it ranks. */
+export async function getFixFirstItem(
+  repoId: string,
+  fixId: string,
+  opts: { scope?: FixScope } = {},
+): Promise<FixItem> {
+  return apiGet<FixItem>(
+    `/api/repos/${repoId}/health/fix-first/${encodeURIComponent(fixId)}`,
+    { scope: opts.scope },
+  );
+}
+
+/** One Fix-first item as the prompt an agent starts from, rendered by core for `flavor`. */
+export async function getFixFirstItemPrompt(
+  repoId: string,
+  fixId: string,
+  opts: { flavor?: AgentPromptFlavor; scope?: FixScope } = {},
+): Promise<AgentPromptResponse> {
+  return apiGet<AgentPromptResponse>(
+    `/api/repos/${repoId}/health/fix-first/${encodeURIComponent(fixId)}/prompt`,
+    { flavor: opts.flavor, scope: opts.scope },
+  );
+}
+
+/** What every other lens holds for these files (1 to 200, repo-relative). */
+export async function getRelatedWork(
+  repoId: string,
+  filePaths: string[],
+): Promise<RelatedWorkResponse> {
+  return apiPost<RelatedWorkResponse>(`/api/repos/${repoId}/health/related-work`, {
+    file_paths: filePaths,
+  });
 }

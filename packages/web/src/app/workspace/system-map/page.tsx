@@ -1,23 +1,34 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Waypoints, Boxes, ArrowLeftRight, Share2, Zap, AlertTriangle, ShieldAlert, Gauge } from "lucide-react";
+import { useTranslations } from "next-intl";
+import { Waypoints } from "lucide-react";
 import {
   SystemMap,
-  SystemMapBlastPanel,
-  SystemMapBreakingPanel,
-  SystemMapConformancePanel,
+  SYSTEM_MAP_CANVAS_HEIGHT,
+  SystemMapFindings,
+  SystemMapLensControl,
+  SystemMapLensResults,
+  buildArchitectureOverlay,
   buildBlastRadiusOverlay,
   buildBreakingChangeOverlay,
   buildConformanceOverlay,
-  buildArchitectureOverlay,
+  selectionRepo,
+  type ContractRef,
   type RepoHealth,
+  type SegmentOption,
+  type SystemMapLens,
   type SystemMapSelection,
 } from "@repowise-dev/ui/workspace/system-map";
-import type { NodeArchitectureRole } from "@/lib/api/types";
-import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
+import { PageShell } from "@repowise-dev/ui/shared/page-shell";
+import { PageLede } from "@repowise-dev/ui/shared/page-lede";
+import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
+import { OverviewSection } from "@repowise-dev/ui/overview/section";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
+import type { NodeArchitectureRole, SystemGraph, ConformanceReport } from "@/lib/api/types";
 import {
   useWorkspaceSystemGraph,
   useWorkspaceGraph,
@@ -26,14 +37,38 @@ import {
   useWorkspaceConformance,
   useWorkspaceArchitecture,
 } from "@/lib/hooks/use-workspace";
+import { useRepoContracts } from "./use-repo-contracts";
+
+const LENSES: readonly SystemMapLens[] = ["none", "blast", "breaking", "conformance", "core"];
+
+/** The minimal translator shape the copy helpers below need; next-intl's `t` fits. */
+type Translator = (key: string, values?: Record<string, string | number>) => string;
+
+function contractHref(ref: ContractRef): string {
+  const params = new URLSearchParams({ contract: ref.contract_id, repo: ref.repo });
+  if (ref.file_path) params.set("file", ref.file_path);
+  return `/workspace/contracts?${params.toString()}`;
+}
+
+function contractsHref(repo: string): string {
+  return `/workspace/contracts?${new URLSearchParams({ repo }).toString()}`;
+}
 
 export default function SystemMapPage() {
+  const t = useTranslations("systemMap");
   const router = useRouter();
   const searchParams = useSearchParams();
+
+  // One wave above the fold: the graph, repo health, and the three small
+  // reports the lede, the lens counts and "Needs attention" all read. Blast
+  // radius and per-repo contracts are fetched only when asked for.
   const { data: graph, isLoading, error } = useWorkspaceSystemGraph();
   const { data: repoGraph } = useWorkspaceGraph();
+  const { data: architecture, error: architectureError } = useWorkspaceArchitecture();
+  const { data: conformance, error: conformanceError } = useWorkspaceConformance();
+  const { data: breaking, error: breakingError } = useWorkspaceBreakingChanges();
 
-  // Selection lives in the URL so a service or seam you found can be linked to.
+  // Selection, lens and blast target live in the URL, so a view can be linked to.
   const selection = useMemo<SystemMapSelection>(() => {
     const node = searchParams.get("node");
     if (node) return { type: "node", id: node };
@@ -41,47 +76,72 @@ export default function SystemMapPage() {
     if (edge) return { type: "edge", id: edge };
     return null;
   }, [searchParams]);
+  const lensOptions = useMemo(
+    () =>
+      lensOptionsFor(t, graph, breaking, conformance, architecture, {
+        breaking: Boolean(breakingError),
+        conformance: Boolean(conformanceError),
+        architecture: Boolean(architectureError),
+      }),
+    [
+      t,
+      graph,
+      breaking,
+      conformance,
+      architecture,
+      breakingError,
+      conformanceError,
+      architectureError,
+    ],
+  );
+  // A lens from the URL that cannot act here (0 findings, or its report
+  // failed) reads as no lens, rather than a checked option nobody can reach.
+  const lensParam = searchParams.get("lens") as SystemMapLens | null;
+  const lens: SystemMapLens =
+    lensParam && LENSES.includes(lensParam) && !lensOptions.find((o) => o.value === lensParam)?.disabledReason
+      ? lensParam
+      : "none";
+  const blastTarget = lens === "blast" ? searchParams.get("from") : null;
 
-  const onSelectionChange = useCallback(
-    (next: SystemMapSelection) => {
+  const replaceParams = useCallback(
+    (edit: (p: URLSearchParams) => void) => {
       const params = new URLSearchParams(searchParams.toString());
-      params.delete("node");
-      params.delete("edge");
-      if (next) params.set(next.type, next.id);
+      edit(params);
       const query = params.toString();
-      // `replace`, not `push`: clicking around a diagram should not build a
-      // back-button history of every node you glanced at.
+      // `replace`, not `push`: exploring a diagram should not fill the back button.
       router.replace(query ? `?${query}` : "/workspace/system-map", { scroll: false });
     },
     [router, searchParams],
   );
 
-  // Blast-radius target. Driven by a page-level picker (and re-targetable from
-  // the impacted panel) so the map component stays unchanged — the ripple rides
-  // its existing `overlay` prop.
-  const [blastTarget, setBlastTarget] = useState<string | null>(null);
+  const onSelectionChange = useCallback(
+    (next: SystemMapSelection) =>
+      replaceParams((p) => {
+        p.delete("node");
+        p.delete("edge");
+        if (next) p.set(next.type, next.id);
+      }),
+    [replaceParams],
+  );
+
+  const setLens = useCallback(
+    (next: SystemMapLens, from?: string | null) =>
+      replaceParams((p) => {
+        if (next === "none") p.delete("lens");
+        else p.set("lens", next);
+        if (next === "blast" && from !== undefined) {
+          if (from) p.set("from", from);
+          else p.delete("from");
+        } else if (next !== "blast") p.delete("from");
+      }),
+    [replaceParams],
+  );
+
   const [includeBehavioral, setIncludeBehavioral] = useState(true);
-  const { data: blast, isLoading: blastLoading } = useWorkspaceBlastRadius(blastTarget, {
-    includeBehavioral,
-  });
+  const { data: blast, isLoading: blastLoading, error: blastError } = useWorkspaceBlastRadius(blastTarget, { includeBehavioral });
 
-  // Breaking-change guard. Lazy-fetched the first time it's toggled on; its
-  // at-risk badges ride the map's overlay prop when no blast target is focused.
-  const [showBreaking, setShowBreaking] = useState(false);
-  const { data: breaking, isLoading: breakingLoading } =
-    useWorkspaceBreakingChanges(showBreaking);
-
-  // Architecture conformance. Lazy-fetched on toggle; violation/cycle badges ride
-  // the same overlay prop when no blast target or breaking-change view is active.
-  const [showConformance, setShowConformance] = useState(false);
-  const { data: conformance, isLoading: conformanceLoading } =
-    useWorkspaceConformance(showConformance);
-
-  // Architecture metrics. Always fetched (cheap, deterministic): it feeds the
-  // score stat and the per-service role shown in the inspector. The cyclic-core
-  // highlight is an opt-in overlay toggle.
-  const { data: architecture } = useWorkspaceArchitecture();
-  const [showArchitecture, setShowArchitecture] = useState(false);
+  const focusRepo = useMemo(() => selectionRepo(graph, selection), [graph, selection]);
+  const { data: repoContracts, isLoading: repoContractsLoading } = useRepoContracts(focusRepo);
 
   const roleByNodeId = useMemo<Map<string, NodeArchitectureRole>>(() => {
     const m = new Map<string, NodeArchitectureRole>();
@@ -89,247 +149,306 @@ export default function SystemMapPage() {
     return m;
   }, [architecture]);
 
-  // Join repo health (from the repo-level graph) onto service nodes by alias.
-  // The map keys health by `SystemNode.repo`; the repo graph's node `name` is
-  // the repo alias.
-  const healthByRepo = useMemo<Map<string, RepoHealth>>(() => {
-    const m = new Map<string, RepoHealth>();
+  // Repo health by alias; the repo graph's node `name` is the alias.
+  const { healthByRepo, repoIdByAlias } = useMemo(() => {
+    const health = new Map<string, RepoHealth>();
+    const ids = new Map<string, string>();
     for (const n of repoGraph?.nodes ?? []) {
-      m.set(n.name, { score: n.health_score, source: n.health_score_source });
+      health.set(n.name, { score: n.health_score, source: n.health_score_source });
+      ids.set(n.name, n.repo_id);
     }
-    return m;
+    return { healthByRepo: health, repoIdByAlias: ids };
   }, [repoGraph]);
 
-  // A blast-radius selection focuses the map (dim + ripple) and takes precedence;
-  // otherwise the breaking-change overlay badges the at-risk seams additively.
   const overlay = useMemo(() => {
     if (!graph) return undefined;
-    if (blast) return buildBlastRadiusOverlay(graph, blast);
-    if (showConformance && conformance) return buildConformanceOverlay(graph, conformance);
-    if (showBreaking && breaking) return buildBreakingChangeOverlay(graph, breaking);
-    if (showArchitecture && architecture) return buildArchitectureOverlay(graph, architecture);
+    if (lens === "blast" && blast) return buildBlastRadiusOverlay(graph, blast);
+    if (lens === "breaking" && breaking) return buildBreakingChangeOverlay(graph, breaking);
+    if (lens === "conformance" && conformance) return buildConformanceOverlay(graph, conformance);
+    if (lens === "core" && architecture) {
+      // Nodes already name their role; a "core" badge would say it twice.
+      const { nodeBadges: _named, ...core } = buildArchitectureOverlay(graph, architecture);
+      return core;
+    }
     return undefined;
-  }, [graph, blast, showBreaking, breaking, showConformance, conformance, showArchitecture, architecture]);
+  }, [graph, lens, blast, breaking, conformance, architecture]);
 
-  // Contract ids are `<type>::<method>::<path>`, and the Contracts page filters
-  // by type, not by id. Carry the type across so the drill-down lands on the
-  // right family instead of on an unfiltered list.
-  const openContract = useCallback(
-    (contractId: string) => {
-      const type = contractId.split("::")[0];
-      router.push(type ? `/workspace/contracts?type=${encodeURIComponent(type)}` : "/workspace/contracts");
-    },
-    [router],
+  const drawer = useMemo(
+    () => ({
+      repoContracts,
+      repoContractsLoading,
+      cycles: conformance?.cycles ?? [],
+      contractHref,
+      contractsHref,
+      repoHref: (alias: string) => {
+        const id = repoIdByAlias.get(alias);
+        return id ? `/repos/${id}/overview` : null;
+      },
+      coChangesHref: "/workspace/co-changes",
+      LinkComponent: Link,
+      onShowBlastRadius: (id: string) => setLens("blast", id),
+    }),
+    [repoContracts, repoContractsLoading, conformance, repoIdByAlias, setLens],
   );
 
-  const diag = graph?.diagnostics;
-  const serviceCount = graph?.nodes.length ?? 0;
-  const edgeCount = graph?.edges.length ?? 0;
-
   return (
-    <div className="p-5 sm:p-8 space-y-6 max-w-[1400px]">
-      <div>
-        <div className="flex items-center gap-2.5 mb-1">
-          <Waypoints className="h-6 w-6 text-[var(--color-accent-primary)]" />
-          <h1 className="text-2xl font-semibold text-[var(--color-text-primary)]">
-            System Map
-          </h1>
-        </div>
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          A live diagram of your services and the typed relationships between
-          them, derived from code on every update.
-        </p>
-      </div>
+    <PageShell
+      title={t("title")}
+      icon={<Waypoints className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
+      description={t("description")}
+      maxWidth="wide"
+    >
+      {graph && (
+        <Lede graph={graph} architecture={architecture} conformance={conformance} t={t} />
+      )}
+      {graph && <StatRibbon stats={ribbon(t, graph, architecture)} LinkComponent={Link} />}
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <MetricCard
-          label="Architecture score"
-          value={architecture ? `${architecture.score.toFixed(1)} / 10` : "—"}
-          description={
-            architecture
-              ? `${architecture.propagation_cost_pct.toFixed(1)}% propagation cost`
-              : "Coupling + core roll-up"
-          }
-          icon={<Gauge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
-        />
-        <MetricCard
-          label="Services"
-          value={isLoading ? "—" : serviceCount}
-          icon={<Boxes className="h-4 w-4" />}
-        />
-        <MetricCard
-          label="Relationships"
-          value={isLoading ? "—" : edgeCount}
-          icon={<Share2 className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
-        />
-        <MetricCard
-          label="Providers / Consumers"
-          value={diag ? `${diag.total_providers} / ${diag.total_consumers}` : "—"}
-          icon={<ArrowLeftRight className="h-4 w-4 text-[var(--color-success)]" />}
-        />
-        <MetricCard
-          label="Orphans / Weak links"
-          value={diag ? `${diag.orphan_providers.length} / ${diag.weak_link_count}` : "—"}
-          description="Providers with no consumer; low-confidence links"
-          icon={<Share2 className="h-4 w-4 text-[var(--color-warning)]" />}
-        />
-      </div>
-
-      {/* Blast-radius controls: pick a service to see what breaks downstream. */}
-      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-4 py-2.5">
-        <span className="inline-flex items-center gap-1.5 text-sm font-medium text-[var(--color-text-primary)]">
-          <Zap className="h-4 w-4 text-[var(--color-accent-primary)]" />
-          Blast radius
-        </span>
-        <select
-          aria-label="Blast-radius source service"
-          className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-canvas)] px-2 py-1 text-sm text-[var(--color-text-primary)]"
-          value={blastTarget ?? ""}
-          onChange={(e) => setBlastTarget(e.target.value || null)}
-          disabled={!graph || serviceCount === 0}
-        >
-          <option value="">Select a service…</option>
-          {(graph?.nodes ?? [])
-            .slice()
-            .sort((a, b) => a.id.localeCompare(b.id))
-            .map((n) => (
-              <option key={n.id} value={n.id}>
-                {n.service_path ? `${n.repo} · ${n.name}` : n.name}
-              </option>
-            ))}
-        </select>
-        <label className="inline-flex items-center gap-1.5 text-sm text-[var(--color-text-secondary)]">
-          <input
-            type="checkbox"
-            checked={includeBehavioral}
-            onChange={(e) => setIncludeBehavioral(e.target.checked)}
-          />
-          Include co-change
-        </label>
-        <button
-          type="button"
-          onClick={() => {
-            setShowArchitecture((v) => !v);
-            if (!showArchitecture) {
-              setShowBreaking(false);
-              setShowConformance(false);
-            }
-          }}
-          aria-pressed={showArchitecture}
-          className={`ml-auto inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm ${
-            showArchitecture
-              ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
-              : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-          }`}
-          title="Highlight the cyclic architectural core"
-        >
-          <Gauge className="h-4 w-4" />
-          Core
-          {showArchitecture && architecture && architecture.core_size > 0 && (
-            <span className="font-semibold">· {architecture.core_size}</span>
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setShowConformance((v) => !v);
-            if (!showConformance) {
-              setShowBreaking(false);
-              setShowArchitecture(false);
-            }
-          }}
-          aria-pressed={showConformance}
-          className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm ${
-            showConformance
-              ? "border-[var(--color-risk-high)] text-[var(--color-risk-high)]"
-              : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-          }`}
-        >
-          <ShieldAlert className="h-4 w-4" />
-          Conformance
-          {showConformance && conformance && conformance.violation_count > 0 && (
-            <span className="font-semibold">· {conformance.violation_count}</span>
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setShowBreaking((v) => !v);
-            if (!showBreaking) {
-              setShowConformance(false);
-              setShowArchitecture(false);
-            }
-          }}
-          aria-pressed={showBreaking}
-          className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm ${
-            showBreaking
-              ? "border-[var(--color-risk-high)] text-[var(--color-risk-high)]"
-              : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-          }`}
-        >
-          <AlertTriangle className="h-4 w-4" />
-          Breaking changes
-          {showBreaking && breaking && breaking.breaking_count > 0 && (
-            <span className="font-semibold">· {breaking.breaking_count}</span>
-          )}
-        </button>
-        {blastTarget && (
-          <button
-            type="button"
-            onClick={() => setBlastTarget(null)}
-            className="text-sm text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-          >
-            Clear
-          </button>
-        )}
-      </div>
-
-      <div className="rounded-lg overflow-hidden border border-[var(--color-border-default)] h-[calc(100vh-360px)] min-h-[560px]">
+      <OverviewSection title={t("section.title")} description={t("section.description")}>
         {isLoading ? (
-          <div className="p-4 h-full">
-            <Skeleton className="h-full w-full" />
+          // Same rows as the loaded map: lens, filters, legend, then the canvas.
+          <div className="flex flex-col gap-3" aria-hidden>
+            <Skeleton className="h-8 w-[480px] max-w-full" />
+            <Skeleton className="h-8 w-[640px] max-w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className={`w-full rounded-lg ${SYSTEM_MAP_CANVAS_HEIGHT}`} />
           </div>
         ) : (
           <SystemMap
             graph={graph}
             error={error ?? null}
             healthByRepo={healthByRepo}
-            {...(overlay ? { overlay } : {})}
             roleByNodeId={roleByNodeId}
+            {...(overlay ? { overlay } : {})}
             selection={selection}
             onSelectionChange={onSelectionChange}
-            onOpenContract={openContract}
-            rail={
-              blast || showBreaking || showConformance ? (
-                <>
-                  <SystemMapBlastPanel
-                    result={blast}
-                    loading={blastLoading}
-                    onSelectTarget={setBlastTarget}
-                    onClear={() => setBlastTarget(null)}
-                  />
-                  {showBreaking && (
-                    <SystemMapBreakingPanel
-                      report={breaking}
-                      loading={breakingLoading}
-                      onSelectNode={setBlastTarget}
-                      onClear={() => setShowBreaking(false)}
-                    />
-                  )}
-                  {showConformance && (
-                    <SystemMapConformancePanel
-                      report={conformance}
-                      loading={conformanceLoading}
-                      onSelectNode={setBlastTarget}
-                      onClear={() => setShowConformance(false)}
-                    />
-                  )}
-                </>
-              ) : null
+            drawer={drawer}
+            toolbar={
+              <SystemMapLensControl
+                value={lens}
+                options={lensOptions}
+                onChange={(next) => setLens(next, next === "blast" ? (selection?.type === "node" ? selection.id : null) : undefined)}
+                nodes={graph?.nodes ?? []}
+                blastTarget={blastTarget}
+                onBlastTargetChange={(id) => setLens("blast", id)}
+                includeBehavioral={includeBehavioral}
+                onIncludeBehavioralChange={setIncludeBehavioral}
+              />
             }
           />
         )}
-      </div>
-    </div>
+      </OverviewSection>
+
+      {graph && (
+        <SystemMapLensResults
+          lens={lens}
+          graph={graph}
+          selection={selection}
+          onSelect={onSelectionChange}
+          blastTarget={blastTarget}
+          blast={blast}
+          blastLoading={blastLoading}
+          blastError={Boolean(blastError)}
+          includeBehavioral={includeBehavioral}
+          breaking={breaking}
+          conformance={conformance}
+          architecture={architecture}
+          conformanceHref="/workspace/conformance"
+          LinkComponent={Link}
+        />
+      )}
+
+      {graph && (
+        <SystemMapFindings
+          graph={graph}
+          conformance={conformance}
+          breaking={breaking}
+          diagnostics={graph.diagnostics}
+          conformanceError={Boolean(conformanceError)}
+          breakingError={Boolean(breakingError)}
+          onSelect={onSelectionChange}
+          onLensChange={(next) => setLens(next)}
+          unmatchedHref="/workspace/contracts?role=consumer&linked=no"
+          conformanceHref="/workspace/conformance"
+          LinkComponent={Link}
+        />
+      )}
+    </PageShell>
   );
+}
+
+/** Counts and disabled reasons for each lens, from data already on the page. */
+function lensOptionsFor(
+  t: Translator,
+  graph: SystemGraph | null,
+  breaking: ReturnType<typeof useWorkspaceBreakingChanges>["data"],
+  conformance: ConformanceReport | null,
+  architecture: ReturnType<typeof useWorkspaceArchitecture>["data"],
+  failed: { breaking: boolean; conformance: boolean; architecture: boolean },
+): SegmentOption<SystemMapLens>[] {
+  const hasEdges = (graph?.edges.length ?? 0) > 0;
+  const breakingTotal = breaking ? breaking.breaking_count + breaking.warning_count : 0;
+  const findings = conformance ? conformance.violation_count + (conformance.total_cycles ?? conformance.cycle_count) : 0;
+  return [
+    { value: "none", label: t("lens.none.label"), hint: t("lens.none.hint") },
+    {
+      value: "blast",
+      label: t("lens.blast.label"),
+      hint: t("lens.blast.hint"),
+      disabledReason: hasEdges ? undefined : t("lens.blast.disabled"),
+    },
+    {
+      value: "breaking",
+      label: t("lens.breaking.label"),
+      count: breaking ? String(breakingTotal) : undefined,
+      disabledReason: failed.breaking
+        ? t("lens.breaking.disabledFailed")
+        : !breaking
+        ? t("lens.breaking.disabledLoading")
+        : !breaking.generated_at
+          ? t("lens.breaking.disabledNotRun")
+          : breakingTotal === 0
+            ? t("lens.breaking.disabledNone")
+            : undefined,
+    },
+    {
+      value: "conformance",
+      label: t("lens.conformance.label"),
+      count: conformance ? String(findings) : undefined,
+      hint: t("lens.conformance.hint"),
+      disabledReason: failed.conformance
+        ? t("lens.conformance.disabledFailed")
+        : !conformance
+        ? t("lens.conformance.disabledLoading")
+        : !conformance.generated_at
+          ? t("lens.conformance.disabledNotRun")
+          : findings === 0
+            ? t("lens.conformance.disabledNone")
+            : undefined,
+    },
+    {
+      value: "core",
+      label: t("lens.core.label"),
+      count: architecture ? String(architecture.core_size) : undefined,
+      hint: t("lens.core.hint"),
+      disabledReason: failed.architecture
+        ? t("lens.core.disabledFailed")
+        : !architecture
+          ? t("lens.core.disabledLoading")
+          : architecture.core_size === 0 && architecture.roles.length === 0
+            ? t("lens.core.disabledNone")
+            : undefined,
+    },
+  ];
+}
+
+function Lede({
+  graph,
+  architecture,
+  conformance,
+  t,
+}: {
+  graph: SystemGraph;
+  architecture: ReturnType<typeof useWorkspaceArchitecture>["data"];
+  conformance: ConformanceReport | null;
+  t: Translator;
+}) {
+  const name = (id: string) => graph.nodes.find((n) => n.id === id)?.name ?? id;
+  const repos = new Set(graph.nodes.map((n) => n.repo)).size;
+  const structural = graph.edges.filter((e) => e.structural).length;
+  const behavioral = graph.edges.length - structural;
+  const cycles = conformance?.cycles ?? [];
+  const totalCycles = conformance ? (conformance.total_cycles ?? conformance.cycle_count) : 0;
+  const first = cycles[0];
+
+  return (
+    <PageLede
+      label={t("lede.label")}
+      labelHint={t("lede.labelHint")}
+      value={architecture ? architecture.score.toFixed(1) : "–"}
+      unit={t("lede.unit")}
+      layout="beside"
+    >
+      <p>
+        {t("lede.counts", {
+          services: graph.nodes.length,
+          repos,
+          relationships: graph.edges.length,
+          structural,
+          behavioral,
+        })}
+      </p>
+      {first ? (
+        <p>
+          <span className="font-medium text-[var(--color-text-primary)]">
+            {t("lede.cycleDepend", { names: first.nodes.map(name).join(", ") })}
+          </span>
+          {t("lede.cycleTail")}{" "}
+          {totalCycles > 1
+            ? t("lede.cycleMore", { count: totalCycles - 1 })
+            : t("lede.cycleOne")}
+        </p>
+      ) : conformance?.generated_at ? (
+        <p>{t("lede.noCycles")}</p>
+      ) : null}
+      {architecture && (
+        <p>
+          {t("lede.reachAndScore", {
+            pct: architecture.propagation_cost_pct.toFixed(1),
+            core:
+              architecture.core_size > 0
+                ? t("lede.coreForms", { count: architecture.core_size })
+                : t("lede.noCore"),
+          })}
+        </p>
+      )}
+    </PageLede>
+  );
+}
+
+function ribbon(
+  t: Translator,
+  graph: SystemGraph,
+  architecture: ReturnType<typeof useWorkspaceArchitecture>["data"],
+): RibbonStat[] {
+  const diag = graph.diagnostics;
+  const repos = new Set(graph.nodes.map((n) => n.repo)).size;
+  const structural = graph.edges.filter((e) => e.structural).length;
+  return [
+    {
+      label: t("ribbon.services"),
+      value: formatNumber(graph.nodes.length),
+      sub: t("ribbon.servicesSub", { count: repos }),
+    },
+    {
+      label: t("ribbon.relationships"),
+      value: formatNumber(graph.edges.length),
+      sub: t("ribbon.relationshipsSub", {
+        structural,
+        behavioral: graph.edges.length - structural,
+      }),
+    },
+    {
+      label: t("ribbon.propagationCost"),
+      value: architecture ? `${architecture.propagation_cost_pct.toFixed(1)}%` : "–",
+      sub: t("ribbon.propagationCostSub"),
+      hint: t("ribbon.propagationCostHint"),
+    },
+    {
+      label: t("ribbon.contractLinks"),
+      value: diag ? formatNumber(diag.total_links) : "–",
+      sub: diag
+        ? t("ribbon.contractLinksSub", {
+            providers: formatNumber(diag.total_providers),
+            consumers: formatNumber(diag.total_consumers),
+          })
+        : undefined,
+      hint: t("ribbon.contractLinksHint"),
+    },
+    {
+      label: t("ribbon.unmatched"),
+      value: diag ? formatNumber(diag.unmatched_consumers.length) : "–",
+      sub: t("ribbon.unmatchedSub"),
+      hint: t("ribbon.unmatchedHint"),
+    },
+  ];
 }

@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from repowise.core.generation.models import STUB_FALLBACK_ERROR
 from repowise.core.persistence import create_engine, create_session_factory, get_session
-from repowise.core.persistence.crud import upsert_page, upsert_repository
+from repowise.core.persistence.crud import load_prior_pages, upsert_page, upsert_repository
 from repowise.core.persistence.crud.pages import upsert_pages_from_generated
 from repowise.core.persistence.database import init_db
 from repowise.core.persistence.models import Page, PageVersion
@@ -237,6 +237,17 @@ async def test_stub_is_still_written_when_the_page_is_new(session_factory):
             await session.execute(select(Page).where(Page.id == "module_page:src/new"))
         ).scalar_one()
         assert page.provider_name == "template"
+
+
+async def test_stub_is_not_reused_as_a_completed_model_page(session_factory):
+    async with get_session(session_factory) as session:
+        repo = await upsert_repository(session, name="demo", local_path="/demo")
+        await upsert_pages_from_generated(session, [_stub("module_page:src/retry")], repo.id)
+
+    async with get_session(session_factory) as session:
+        prior = await load_prior_pages(session, repo.id)
+
+    assert "module_page:src/retry" not in prior
 
 
 async def test_stub_members_do_not_retire_the_page_whose_generation_failed(

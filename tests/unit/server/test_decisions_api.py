@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import delete
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
@@ -39,7 +40,9 @@ async def _seed_decision(
             title=title,
             status=status,
             context="Need zero-config storage for CI.",
-            decision="Use aiosqlite in-memory DBs.",
+            # Varies with the title: identity is the evidence, so two
+            # titles over one body and one file are one decision.
+            decision=f"Use aiosqlite in-memory DBs, for {title}.",
             rationale="Fast, no external deps.",
             affected_modules=["packages/core"],
             affected_files=["packages/core/src/repowise/core/persistence/database.py"],
@@ -86,8 +89,16 @@ async def _seed_lineage(session_factory, repo_id: str, old_id: str, new_id: str)
 
 
 async def _seed_code_link(session_factory, repo_id: str, decision_id: str) -> None:
-    """Insert a DecisionNodeLink row directly."""
+    """State this repository's whole code graph as one link.
+
+    Creating a decision now mirrors its scope into the graph, so every seeded
+    decision brings links of its own. Clearing first is what lets the caller
+    assert on an exact edge count.
+    """
     async with get_session(session_factory) as session:
+        await session.execute(
+            delete(DecisionNodeLink).where(DecisionNodeLink.repository_id == repo_id)
+        )
         session.add(
             DecisionNodeLink(
                 repository_id=repo_id,

@@ -6,14 +6,16 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import click
 from rich.console import Console
 
+from repowise.cli.errors import reasoned_error
 from repowise.cli.output import resolve_console_width
 from repowise.core.reasoning import (
     ReasoningMode,
@@ -21,7 +23,7 @@ from repowise.core.reasoning import (
 from repowise.core.reasoning import (
     resolve_reasoning as resolve_core_reasoning,
 )
-from repowise.core.repo_config import CONFIG_FILENAME, load_repo_config
+from repowise.core.repo_config import CONFIG_FILENAME, RepoConfigError, load_repo_config
 
 # Update lock — coordinates concurrent `repowise update` invocations and lets
 # the augment hook suppress stale-wiki warnings while a refresh is in flight.
@@ -43,6 +45,11 @@ from repowise.core.update_lock import (
     try_acquire_update_lock as try_acquire_update_lock,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 T = TypeVar("T")
 
 # Width is pinned only when the stream is not a terminal — see
@@ -50,6 +57,17 @@ T = TypeVar("T")
 # and ellipsises the very paths an agent needs to act on.
 console = Console(width=resolve_console_width(sys.stdout))
 err_console = Console(stderr=True, width=resolve_console_width(sys.stderr))
+
+
+def warn(text: str) -> None:
+    """Print a warning to stderr with the shared yellow ``Warning:`` prefix.
+
+    Every CLI warning funnels through this helper so warnings render on the
+    same ``err_console`` stream (never stdout) and use one ``[yellow]Warning:[/yellow]``
+    spelling instead of hand-synced copies scattered across commands.
+    """
+    err_console.print(f"[yellow]Warning:[/yellow] {text}")
+
 
 STATE_FILENAME = "state.json"
 REPOWISE_DIR = ".repowise"
@@ -71,35 +89,85 @@ def _clean_flag(value: str | None) -> bool:
 # Logging / structlog helpers
 # ---------------------------------------------------------------------------
 
+MACHINE_OUTPUT_LOGGER_NAMES = ("httpx", "httpcore", "repowise.core", "repowise.server")
 
-def silence_logs_for_machine_output() -> None:
-    """Suppress info/debug log output when stdout is machine-readable (JSON/md).
+@contextlib.contextmanager
+def silence_logs_for_machine_output():
+    """Suppress info/debug log output while stdout is machine-readable (JSON/md).
 
     Structlog and stdlib loggers write to stdout by default. When a command
     emits JSON or Markdown, those lines corrupt the output for downstream
     consumers (e.g. ``repowise health --format json | jq .kpis``).
 
-    Call this at the top of any command that supports ``--format json`` or
-    ``--format md`` before the ingestion pipeline starts.
+    Context manager, not a bare call: logger levels and the structlog
+    wrapper class are process-global with no other owner, so a caller that
+    forgot to restore them would permanently silence its own process — the
+    case that mattered in practice was a test session, where the mutation
+    outlived the test that made it and broke unrelated caplog assertions
+    later in the same run (see #1976).
+
+    Use as:
+
+        with silence_logs_for_machine_output():
+            emit_json_or_markdown(...)
     """
     import logging
 
-    logging.getLogger("httpx").setLevel(logging.ERROR)
-    logging.getLogger("httpcore").setLevel(logging.ERROR)
-    for _name in ("repowise.core", "repowise.server"):
-        logging.getLogger(_name).setLevel(logging.ERROR)
+    loggers = [logging.getLogger(name) for name in MACHINE_OUTPUT_LOGGER_NAMES]
+    previous_levels = [logger.level for logger in loggers]
+
+    previous_structlog_config: dict[str, Any] | None = None
     try:
         import structlog
 
-        # cache_logger_on_first_use=False is required: module-level
-        # ``structlog.get_logger`` calls snapshot the logger before configure()
-        # runs and would bypass this filter without it.
-        structlog.configure(
-            wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR),
-            cache_logger_on_first_use=False,
-        )
+        previous_structlog_config = dict(structlog.get_config())
     except ImportError:
         pass
+
+    try:
+        for logger in loggers:
+            logger.setLevel(logging.ERROR)
+        if previous_structlog_config is not None:
+            import structlog
+
+            # cache_logger_on_first_use=False is required: module-level
+            # ``structlog.get_logger`` calls snapshot the logger before
+            # configure() runs and would bypass this filter without it.
+            structlog.configure(
+                wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR),
+                cache_logger_on_first_use=False,
+            )
+        yield
+    finally:
+        for logger, level in zip(loggers, previous_levels, strict=True):
+            logger.setLevel(level)
+        if previous_structlog_config is not None:
+            import structlog
+
+            structlog.configure(**previous_structlog_config)
+
+def silence_logs_for_machine_output_until_close() -> None:
+    """Enter ``silence_logs_for_machine_output`` and restore it when the
+    current click command finishes.
+
+    ``silence_logs_for_machine_output`` is a context manager because it must
+    always restore what it mutates — but not every call site has a single
+    lexical block to wrap it around. An option callback (see the ``--format``
+    and ``--json`` callbacks in ``output.py``) returns before the command body
+    even starts running, so a ``with`` block there would restore the levels
+    before the command does any work. Re-indenting an entire command
+    function's body under one ``with`` is also a large, easy-to-get-wrong
+    diff at call sites deep inside long functions.
+
+    Solved the same way ``update_cmd`` already solves it for restoring
+    ``console.file``: register the undo against click's context instead of a
+    lexical scope, so it fires when the command finishes regardless of how
+    much code runs in between or where the call sits.
+    """
+    ctx = click.get_current_context()
+    cm = silence_logs_for_machine_output()
+    cm.__enter__()
+    ctx.call_on_close(lambda: cm.__exit__(None, None, None))
 
 
 # ---------------------------------------------------------------------------
@@ -108,8 +176,24 @@ def silence_logs_for_machine_output() -> None:
 
 
 def run_async(coro: Any) -> Any:
-    """Run an async coroutine from synchronous Click code."""
-    return asyncio.run(coro)
+    """Run an async coroutine from synchronous Click code.
+
+    Each call is its own event loop, and a command runs one LLM provider
+    through several of them. The provider's SDK client pools connections on
+    the loop that opened them, so they are closed here, before that loop goes
+    away: left pooled, they print ``Task exception was never retrieved ...
+    Event loop is closed`` from a later step (issue #2946). With no such
+    provider alive there is nothing to close.
+    """
+    from repowise.core.providers.llm.base import close_provider_clients
+
+    async def _run() -> Any:
+        try:
+            return await coro
+        finally:
+            await close_provider_clients()
+
+    return asyncio.run(_run())
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +281,47 @@ def get_db_url_for_repo(repo_path: Path) -> str:
     from repowise.core.persistence.database import resolve_db_url
 
     return resolve_db_url(repo_path)
+
+
+@contextlib.asynccontextmanager
+async def repo_index_session(
+    root: Path, *, reconcile: bool = True
+) -> AsyncIterator[tuple[AsyncSession, str] | None]:
+    """Open the repo-local store, yielding ``(session, repo_id)`` or ``None``.
+
+    A scoring or scanning command must never fail because the index is absent,
+    stale or locked, so every storage error yields ``None`` instead.
+    ``reconcile=False`` skips the schema reconcile, so a caller that only reads
+    writes nothing to the store.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.database import has_db_store
+
+    # The configured store, which may live outside the repo (REPOWISE_DB_URL).
+    if not has_db_store(root):
+        yield None
+        return
+    # The stack keeps the session open across the yield and disposes the engine
+    # on the way out, whether the caller left the block or raised inside it.
+    async with contextlib.AsyncExitStack() as stack:
+        opened: tuple[AsyncSession, str] | None = None
+        try:
+            url = get_db_url_for_repo(root)
+            if reconcile:
+                await reconcile_schema_best_effort(url)
+            engine = create_engine(url)
+            stack.push_async_callback(engine.dispose)
+            factory = create_session_factory(engine)
+            session = await stack.enter_async_context(get_session(factory))
+            repo = await get_repository_by_path(session, str(root))
+            if repo is not None:
+                opened = (session, repo.id)
+        except (SQLAlchemyError, OSError, LookupError):
+            opened = None
+        yield opened
 
 
 #: Busy timeout for the reconcile's own connection. The engine default is 30s,
@@ -487,12 +612,14 @@ def _pending_commit_still_ahead(
         return False
     import subprocess
 
+    if as_commit_id(indexed_head) is None or as_commit_id(pending_head) is None:
+        return False
     try:
         # ``indexed_head`` is an ancestor of ``pending_head`` => pending is
         # newer than what we indexed and worth keeping. A non-zero exit
         # (including an unresolvable pending commit) means "not ahead".
         result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", indexed_head, pending_head],
+            ["git", "merge-base", "--is-ancestor", "--end-of-options", indexed_head, pending_head],
             cwd=str(repo_path),
             capture_output=True,
             timeout=10,
@@ -565,6 +692,22 @@ def rotate_update_log_if_needed(repo_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+_COMMIT_ID_RE = re.compile(r"[0-9a-fA-F]{7,40}")
+
+
+def as_commit_id(value: object) -> str | None:
+    """*value* when it is a full or abbreviated hex commit id, else ``None``.
+
+    Commit ids read back from ``.repowise/state.json`` (or a file beside it)
+    can be edited by anyone who can commit that file, so they are checked
+    before they reach a ``git`` argument list, where a leading ``-`` would be
+    read as an option.
+    """
+    if isinstance(value, str) and _COMMIT_ID_RE.fullmatch(value):
+        return value
+    return None
+
+
 def get_head_commit(repo_path: Path) -> str | None:
     """Return the HEAD commit SHA or ``None`` if not a git repo.
 
@@ -581,8 +724,8 @@ def head_commit_ts(repo_path: Path) -> float | None:
     """Committer timestamp of the repo's HEAD, or None when git is unavailable.
 
     Anchors the periodic idle-file health re-score gate (#728) to repo time
-    rather than wall clock, so the cadence is deterministic under
-    ``REPOWISE_GIT_WINDOW_ANCHOR`` and correct for historical checkouts.
+    rather than wall clock, the same anchor the git history windows use, so
+    the cadence is deterministic and correct for historical checkouts.
 
     Shared with ``init`` so a fresh index can stamp ``last_full_rescore_at`` in
     the same units the gate reads it back in.
@@ -605,8 +748,19 @@ def head_commit_ts(repo_path: Path) -> float | None:
 
 
 def load_config(repo_path: Path) -> dict[str, Any]:
-    """Load ``.repowise/config.yaml`` or return an empty dict if absent."""
-    return load_repo_config(repo_path)
+    """Load ``.repowise/config.yaml`` or return an empty dict if absent.
+
+    A broken config is surfaced as a warning (to stderr, so ``--format json``
+    stays parseable) and degrades to an empty dict rather than crashing the
+    command or silently using defaults — issue #852: configuration errors must
+    be visible, not swallowed. Callers keep their current behaviour either
+    way; the warning is the fix.
+    """
+    try:
+        return load_repo_config(repo_path)
+    except RepoConfigError as exc:
+        err_console.print(f"[yellow]Warning:[/yellow] {exc}")
+        return {}
 
 
 def resolve_reasoning(
@@ -617,7 +771,7 @@ def resolve_reasoning(
     try:
         return resolve_core_reasoning(reasoning, config)
     except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise reasoned_error(str(exc), reason="invalid_reasoning") from exc
 
 
 def resolve_max_file_pages(
@@ -693,8 +847,8 @@ def _persist_provider_key(repo_path: Path, provider: str) -> None:
         try:
             save_repo_env_key(repo_path, env_var, value)
         except (OSError, ValueError) as exc:
-            err_console.print(
-                f"[yellow]Warning:[/yellow] could not save {env_var} to "
+            warn(
+                f"could not save {env_var} to "
                 f".repowise/.env ({exc}). The index is complete, but "
                 f"`repowise mcp` will need {env_var} in its environment."
             )
@@ -743,6 +897,11 @@ def save_config(
     existing["embedder"] = embedder
     if embedding_model:
         existing["embedding_model"] = embedding_model
+    else:
+        # No model was resolved this run: dropping the key beats leaving a
+        # stale one that names a different provider's model, or one this
+        # embedder was not actually built with (#2627).
+        existing.pop("embedding_model", None)
     if exclude_patterns is not None:
         existing["exclude_patterns"] = exclude_patterns
     if commit_limit is not None:
@@ -784,8 +943,19 @@ def save_config_partial(
     keyword arguments. ``None`` values are skipped so callers can forward
     optional flags without clobbering existing keys.
 
-    No scalar-only fallback like :func:`save_config`: it would silently drop
-    ``exclude_patterns``, and PyYAML is a hard dependency anyway.
+    ``embedding_model`` is the one exception to "None is skipped": passed
+    explicitly as ``None``, it clears any pinned model instead of leaving it
+    alone, because that is the caller saying the model changed (or is no
+    longer known) for whatever embedder this call names. Merely *omitting*
+    ``embedding_model`` is not the same claim, so it does not clear anything
+    on its own -- ``reindex_cmd`` calls this after every reindex with only
+    ``embedder=``, having never had a model to pass, and a bare ``in extra``
+    check on ``embedder`` used to read that silence as "no model" and wipe a
+    real pin on every routine reindex (#2627, caught in review on the fix
+    itself). Distinguishing "not passed" from "passed as ``None``" needs the
+    raw ``extra`` dict, since a keyword default cannot do it: ``in extra``
+    only reports that once, but ``get`` cannot tell the two shapes apart
+    afterwards.
     """
     import yaml  # type: ignore[import-untyped]
 
@@ -795,13 +965,16 @@ def save_config_partial(
     if commit_limit is not None:
         updates["commit_limit"] = commit_limit
     updates.update({k: v for k, v in extra.items() if v is not None})
-    if not updates:
+    clear_embedding_model = "embedding_model" in extra and extra["embedding_model"] is None
+    if not updates and not clear_embedding_model:
         return
 
     ensure_repowise_dir(repo_path)
     config_path = get_repowise_dir(repo_path) / CONFIG_FILENAME
     existing = load_config(repo_path)
     existing.update(updates)
+    if clear_embedding_model:
+        existing.pop("embedding_model", None)
 
     config_path.write_text(
         yaml.dump(existing, default_flow_style=False, sort_keys=False),
@@ -878,8 +1051,8 @@ def resolve_provider(
     """Resolve a provider instance from CLI flags or environment variables.
 
     Resolution order:
-      1. Explicit ``--provider`` flag
-      2. ``REPOWISE_PROVIDER`` env var
+      1. Explicit ``--provider`` / ``--model`` flag
+      2. ``REPOWISE_PROVIDER`` / ``REPOWISE_MODEL`` env var
       3. ``.repowise/config.yaml`` (written by ``repowise init``)
       4. Auto-detect from API key env vars
     """
@@ -905,6 +1078,9 @@ def resolve_provider(
 
     if provider_name is None and cfg.get("provider"):
         provider_name = cfg["provider"]
+
+    if model is None:
+        model = (os.environ.get("REPOWISE_MODEL") or "").strip() or None
 
     # Honor the config model regardless of how the provider was resolved (#416).
     if model is None and cfg.get("model"):
@@ -946,14 +1122,10 @@ def resolve_provider(
             # as a raw traceback that escaped every caller's handler —
             # OLLAMA_BASE_URL=http://localhost:abc makes httpx raise
             # InvalidURL, which killed `init` outright.
-            # Imported here, not at module scope: the telemetry spool imports
-            # this module back for the global config dir.
-            from repowise.cli.platform import telemetry
-
-            telemetry.add_command_outcome(failure_reason="provider_setup_failed")
-            raise click.ClickException(
+            raise reasoned_error(
                 f"Could not set up the {name} provider: {exc}. Check its "
-                "settings in your environment and .repowise/config.yaml."
+                "settings in your environment and .repowise/config.yaml.",
+                reason="provider_setup_failed",
             ) from exc
 
     if provider_name is not None:
@@ -961,7 +1133,7 @@ def resolve_provider(
         warnings = validate_provider_config(provider_name)
         if warnings:
             for warning in warnings:
-                err_console.print(f"[yellow]Warning:[/yellow] {warning}")
+                warn(warning)
             # For explicit provider requests, we still try to create it
             # The provider constructor will fail if the API key is actually required
 
@@ -975,10 +1147,9 @@ def resolve_provider(
         if provider_credentials_present(candidate):
             return _build(candidate)
 
-    from repowise.cli.platform import telemetry
-
-    telemetry.add_command_outcome(failure_reason="no_provider_configured")
-    raise click.ClickException(
+    # Not fatal on every path: `init` catches this and renders a template wiki
+    # instead, so the reason must not be recorded until it ends a command.
+    raise reasoned_error(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
         "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / "
         "OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY / DEEPSEEK_API_KEY / "
@@ -986,8 +1157,64 @@ def resolve_provider(
         "REPOWISE_PROVIDER=claude_cli to use an "
         "authenticated Claude Code subscription, REPOWISE_PROVIDER=codex_cli to use "
         "an authenticated Codex CLI subscription, or REPOWISE_PROVIDER=opencode "
-        "to use opencode."
+        "to use opencode.",
+        reason="no_provider_configured",
     )
+
+
+def resolve_explicit_provider_or_prompt(
+    provider_name: str | None,
+    model: str | None,
+    repo_path: Path,
+    *,
+    interactive: bool,
+    save_key: bool = True,
+) -> Any:
+    """Resolve an explicit provider, onboarding missing credentials in a TTY.
+
+    ``resolve_provider`` stays non-interactive because hooks, CI, and library
+    callers must never block on stdin. ``init`` can opt into this wrapper when
+    it has a real terminal: a missing explicit provider key gets the same
+    inline setup as the provider picker, and an explicit OpenAI provider also
+    gets the endpoint question used by local gateways.
+    """
+    from repowise.cli.ui.provider_selection import interactive_provider_credentials
+
+    if interactive and provider_name == "openai":
+        # A pty can report TTY while stdin is not readable. Let the normal
+        # resolution below produce the actionable provider error instead of
+        # replacing it with Abort.
+        with contextlib.suppress(EOFError, click.Abort):
+            interactive_provider_credentials(
+                console,
+                provider_name,
+                repo_path=repo_path,
+                save_key=save_key,
+            )
+
+        return resolve_provider(provider_name, model, repo_path=repo_path)
+
+    try:
+        return resolve_provider(provider_name, model, repo_path=repo_path)
+    except click.ClickException as original_error:
+        if not interactive or provider_name is None:
+            raise
+
+        try:
+            configured = interactive_provider_credentials(
+                console,
+                provider_name,
+                repo_path=repo_path,
+                save_key=save_key,
+            )
+        except (EOFError, click.Abort):
+            # A pty can report TTY while stdin is not readable. Preserve the
+            # actionable provider error instead of replacing it with Abort.
+            raise original_error from None
+
+        if not configured:
+            raise original_error
+        return resolve_provider(provider_name, model, repo_path=repo_path)
 
 
 def resolve_provider_or_prompt(
@@ -1243,6 +1470,31 @@ class CommandTarget:
         if entry is None:
             return None
         return (self.ws_root / entry.path).resolve()
+
+    def single_repo_path(self) -> Path:
+        """The one repository to read, narrowing workspace mode to a repo.
+
+        ``--repo <alias>`` resolves to ``mode="workspace"`` with ``repo_path``
+        left ``None``, so a command that reads ``repo_path`` directly refuses
+        every ``--repo`` call it advertises. Three commands already hand-roll
+        this narrowing (``dead-code``, ``health``, ``costs``); this is where it
+        belongs, beside :meth:`primary_path` and :meth:`resolve_repo_alias`.
+
+        Raises ``click.ClickException`` when the alias is unknown or the
+        workspace declares no primary.
+        """
+        if not self.is_workspace:
+            assert self.repo_path is not None
+            return self.repo_path
+        if self.repo_filter is not None:
+            picked = self.resolve_repo_alias(self.repo_filter)
+            if picked is None:
+                raise click.ClickException(f"Unknown repo alias: {self.repo_filter}")
+            return picked
+        primary = self.primary_path()
+        if primary is None:
+            raise click.ClickException("Workspace has no primary repo configured.")
+        return primary
 
     # ------------------------------------------------------------------
     # Notice rendering — every command should call this so users always

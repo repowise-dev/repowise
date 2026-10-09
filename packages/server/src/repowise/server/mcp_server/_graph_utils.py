@@ -57,6 +57,13 @@ def community_cohesion(node: GraphNode) -> float:
     return float(meta.get("cohesion", 0.0) or 0.0)
 
 
+def community_conductance(node: GraphNode) -> float | None:
+    """Conductance from community_meta_json; ``None`` on an older index."""
+    meta = parse_community_meta(node)
+    value = meta.get("conductance")
+    return float(value) if value is not None else None
+
+
 def entry_point_score(node: GraphNode) -> float:
     """Extract entry_point_score from community_meta_json (symbol nodes only)."""
     meta = parse_community_meta(node)

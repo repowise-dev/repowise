@@ -13,6 +13,7 @@ import { listJobs } from "@/lib/api/jobs";
 import { analyzeDeadCode } from "@/lib/api/dead-code";
 import { GenerationProgressWrapper } from "@/components/jobs/generation-progress-wrapper";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { useTranslations } from "next-intl";
 
 interface Props {
   repoId: string;
@@ -40,7 +41,17 @@ export function QuickActionsWrapper({
   lastResyncAt,
   variant,
 }: Props) {
+  const t = useTranslations("dashboard");
   const router = useRouter();
+  /** Action labels in the active locale, for toast copy. */
+  const actionLabel = (key: QuickActionKey): string =>
+    key === "sync"
+      ? t("quickActions.sync")
+      : key === "resync"
+        ? t("quickActions.resync")
+        : key === "dead-code"
+          ? t("quickActions.deadCode")
+          : labelFor(key);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   // Which action started the job on screen, so its completion can be reported
   // and refreshed in its own terms rather than as a generic doc generation.
@@ -77,8 +88,8 @@ export function QuickActionsWrapper({
     setActiveJobId(null);
     setActiveKey(null);
     if (key === "dead-code") {
-      if (status === "completed") toast.success("Dead code scan finished");
-      else if (status === "failed") toast.error("Dead code scan failed");
+      if (status === "completed") toast.success(t("quickActions.deadCodeFinished"));
+      else if (status === "failed") toast.error(t("quickActions.deadCodeFailed"));
     }
     // This page is server-rendered: without a refresh the "Dead Exports" tile
     // the scan exists to move keeps showing its pre-scan number, and the same
@@ -91,15 +102,23 @@ export function QuickActionsWrapper({
       if (key === "sync") {
         const job = await syncRepo(repoId);
         startWatching(job.id, key);
-        toast.info(`Sync started${repoName ? ` — ${repoName}` : ""}`);
+        toast.info(
+          t("quickActions.syncStarted", {
+            name: repoName ? ` — ${repoName}` : "",
+          }),
+        );
       } else if (key === "resync") {
         const job = await fullResyncRepo(repoId);
         startWatching(job.id, key);
-        toast.info(`Full resync started${repoName ? ` — ${repoName}` : ""}`);
+        toast.info(
+          t("quickActions.resyncStarted", {
+            name: repoName ? ` — ${repoName}` : "",
+          }),
+        );
       } else if (key === "dead-code") {
         const { job_id } = await analyzeDeadCode(repoId);
         startWatching(job_id, key);
-        toast.info("Dead code analysis started");
+        toast.info(t("quickActions.deadCodeStarted"));
       }
     } catch (e) {
       const msg = toFriendlyMessage(e);
@@ -113,16 +132,16 @@ export function QuickActionsWrapper({
           if (inflight) {
             // Someone else's job: watch it, but do not claim it as this action.
             startWatching(inflight.id, null);
-            toast.info(
-              "Showing progress for the in-flight job. Cancel it from the panel to start a new one.",
-            );
+            toast.info(t("quickActions.inFlight"));
             return;
           }
         } catch {
           // fall through
         }
       }
-      toast.error(`${labelFor(key)} failed`, { description: msg });
+      toast.error(t("quickActions.actionFailed", { action: actionLabel(key) }), {
+        description: msg,
+      });
     }
   }
 

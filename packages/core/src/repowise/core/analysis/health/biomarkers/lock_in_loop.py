@@ -36,7 +36,7 @@ class LockInLoopDetector:
                     function_name=hit.function,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={},
+                    details=hit.loop_facts(),
                     reason=(
                         "a lock is acquired every loop iteration; hoist the "
                         "lock outside the loop or batch the critical section"

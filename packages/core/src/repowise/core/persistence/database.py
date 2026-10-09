@@ -12,12 +12,13 @@ Call init_db() once at startup to create all tables and the FTS index.
 from __future__ import annotations
 
 import os
+import sqlite3
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import structlog
-from sqlalchemy import event, inspect
+from sqlalchemy import String, event, inspect, literal
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -25,7 +26,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool, StaticPool
-from sqlalchemy.schema import CreateIndex
+from sqlalchemy.schema import CreateIndex, CreateTable
 from sqlalchemy.sql import text
 
 from .models import Base
@@ -43,14 +44,27 @@ log = structlog.get_logger(__name__)
 # for large repos. SQLite blocks (doesn't busy-loop) so this is cheap.
 _SQLITE_BUSY_TIMEOUT_MS = 30000
 
+# Page cache per connection, in KiB (negative = size, not pages). The 2 MiB
+# default makes every insert into a large index miss: writing 1.8M graph edges
+# (random-uuid primary key plus the unique edge key) took 77s at the default
+# and 44s at 64 MiB in raw sqlite3. The cache fills only as pages are touched,
+# so a small store pays nothing for the ceiling.
+_SQLITE_CACHE_KIB = 65536
+
 
 def _sqlite_pragmas(busy_timeout_ms: int) -> tuple[tuple[str, str], ...]:
-    """Return the pragma list to apply to a SQLite connection."""
+    """Return the pragma list to apply to a SQLite connection.
+
+    ``busy_timeout`` leads so that every pragma and statement after it on this
+    connection inherits the retry window, rather than the window arriving only
+    once the connection is most of the way set up.
+    """
     return (
+        ("busy_timeout", str(busy_timeout_ms)),
         ("journal_mode", "WAL"),
         ("synchronous", "NORMAL"),
-        ("busy_timeout", str(busy_timeout_ms)),
         ("foreign_keys", "ON"),
+        ("cache_size", str(-_SQLITE_CACHE_KIB)),
     )
 
 
@@ -65,8 +79,59 @@ def _make_pragma_listener(busy_timeout_ms: int):
     (issue #326).
     """
 
+    # Log the first failed switch per engine, not every connection: this engine
+    # uses NullPool, so it reconnects per checkout and a store that cannot take
+    # WAL would otherwise emit a warning per query. Behaviour does not depend on
+    # this flag - every connection still attempts the switch.
+    warned = False
+
+    def _set_journal_mode_wal(cursor: object) -> None:
+        """Re-issue the WAL switch, but never let it fail the connection.
+
+        The re-issue is defensive: WAL persists in the file, so a store this
+        repowise created is already in WAL and the pragma is a no-op that
+        cannot contend. It exists only for a store written by an older
+        repowise, by ``alembic``, or on a filesystem that refused the first
+        switch - and there it can legitimately fail:
+
+        * a concurrent writer holds the brief exclusive lock the transition
+          needs, and SQLite does NOT route that lock through the busy handler,
+          so it returns SQLITE_BUSY immediately however large ``busy_timeout``
+          is;
+        * the store or its directory is read-only, giving "attempt to write a
+          readonly database".
+
+        None of those stop the connection being useful. The store keeps the
+        journal mode it already has and every query still runs, so the failure
+        is swallowed here and left to surface on a statement that actually
+        needs the write. What shipped before raised out of the ``connect``
+        event and took out the whole connection at open time, including reads
+        that would have succeeded.
+
+        Deliberately not retried. The listener runs on the event-loop thread
+        under SQLAlchemy's greenlet bridge, so sleeping here blocks the loop -
+        and when the writer is another task in this same process, that stops it
+        reaching the COMMIT the retry is waiting on. The next connection tries
+        again at no cost instead.
+        """
+        nonlocal warned
+        try:
+            # journal_mode returns the new mode and must be queried, not
+            # assigned, because in :memory: databases it silently
+            # downgrades to MEMORY.
+            cursor.execute("PRAGMA journal_mode=WAL")  # type: ignore[attr-defined]
+        except sqlite3.OperationalError as exc:
+            if not warned:
+                warned = True
+                log.warning(
+                    "sqlite: could not switch the store to WAL (%s). Continuing "
+                    "in its current journal mode; concurrent reads may block on "
+                    "writes until a later connection switches it.",
+                    exc,
+                )
+
     def _apply_sqlite_pragmas(dbapi_connection: object, _connection_record: object) -> None:
-        """Apply WAL, busy_timeout, and FK pragmas on every new SQLite connection.
+        """Apply busy_timeout, WAL, and FK pragmas on every new SQLite connection.
 
         Registered as a ``connect`` event listener so it runs once per physical
         connection, including the first one opened after the engine is created and
@@ -78,8 +143,9 @@ def _make_pragma_listener(busy_timeout_ms: int):
         cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
         try:
             for name, value in _sqlite_pragmas(busy_timeout_ms):
-                # journal_mode returns the new mode and must be queried, not assigned,
-                # because in :memory: databases it silently downgrades to MEMORY.
+                if name == "journal_mode":
+                    _set_journal_mode_wal(cursor)
+                    continue
                 cursor.execute(f"PRAGMA {name}={value}")
         finally:
             cursor.close()
@@ -171,6 +237,23 @@ def resolve_db_url(repo_path: str | Path | None = None) -> str:
     return _default_db_url(repo_path)
 
 
+def has_db_store(repo_path: str | Path | None = None) -> bool:
+    """Whether :func:`resolve_db_url` has a store that already exists.
+
+    A configured database counts as existing. It is shared, it is migrated on
+    its own schedule, and the repo-local file it replaces is absent by design,
+    so a caller that gates on the file alone skips every write under one.
+
+    The filesystem defaults count only when the file is really there, which is
+    what keeps a caller from conjuring an empty database where none existed.
+    """
+    if get_configured_db_url() is not None:
+        return True
+    if repo_path is None:
+        return False
+    return (Path(repo_path) / ".repowise" / "wiki.db").is_file()
+
+
 def create_engine(
     url: str | None = None,
     *,
@@ -179,6 +262,7 @@ def create_engine(
     # Pass use_static_pool=True explicitly when creating in-memory test engines.
     use_static_pool: bool = False,
     busy_timeout_ms: int | None = None,
+    short_lived: bool = True,
 ) -> AsyncEngine:
     """Create an AsyncEngine for the given database URL.
 
@@ -191,6 +275,25 @@ def create_engine(
                          small value for best-effort secondary writers that must
                          never stall the primary writer (issue #326). Ignored
                          for non-SQLite backends.
+        short_lived:     Whether this engine is created, used, and disposed
+                         within a single call (the pattern almost every caller
+                         follows: one CLI command, one workspace update, one
+                         background task). Defaults to True, which uses
+                         NullPool for PostgreSQL — one connection per checkout,
+                         closed on dispose, so a short-lived engine can never
+                         hold more than a single Postgres server slot, and an
+                         engine that outlives its creating event loop can never
+                         hand back a dead pooled connection to a later one
+                         (issue #2062's failure class). Pass False only for an
+                         engine stored for a process's lifetime and reused
+                         across many requests — currently just the FastAPI app
+                         and the MCP server — where SQLAlchemy's pooled
+                         AsyncAdaptedQueuePool is the correct choice and
+                         NullPool would open a fresh connection per request.
+                         Ignored for SQLite, which already always uses
+                         NullPool (or StaticPool for :memory:) regardless of
+                         this flag — SQLite has no equivalent long-lived-pool
+                         need since ``aiosqlite`` connections are cheap.
     """
     db_url = get_db_url(url)
     is_sqlite = db_url.startswith("sqlite")
@@ -207,8 +310,21 @@ def create_engine(
         else:
             kwargs["poolclass"] = NullPool
     else:
-        # PostgreSQL — asyncpg handles its own connection pool
+        # PostgreSQL. SQLAlchemy pools these connections with
+        # AsyncAdaptedQueuePool by default — asyncpg does NOT provide its own
+        # pool here (that only happens if something calls asyncpg.create_pool,
+        # which nothing in this codebase does). Every create_engine() call in
+        # this codebase except the long-lived server/MCP engines is
+        # short-lived (create, use, dispose within one async function), so
+        # there's no reuse to gain from pooling and every pooled-but-idle
+        # connection is a Postgres server slot held for no benefit — or,
+        # worse, one that survives past a closed event loop and gets handed
+        # to a later, unrelated caller (#2062's failure class). NullPool caps
+        # a short-lived engine's footprint at exactly one connection instead
+        # of up to 15 (pool_size=5 + max_overflow=10) sitting idle.
         kwargs["pool_pre_ping"] = True
+        if short_lived:
+            kwargs["poolclass"] = NullPool
 
     engine = create_async_engine(db_url, **kwargs)
     if is_sqlite:
@@ -242,7 +358,7 @@ async def get_session(
             raise
 
 
-def _column_default_sql(column: object) -> str | None:
+def _column_default_sql(column: object, dialect: object) -> str | None:
     """Return a SQL literal/expression suitable for an ADD COLUMN DEFAULT.
 
     Prefers ``server_default`` (the DDL-level default that the migration
@@ -266,7 +382,15 @@ def _column_default_sql(column: object) -> str | None:
         arg = getattr(py_default, "arg", None)
         if arg is not None and not callable(arg):
             if isinstance(arg, bool):
-                return "1" if arg else "0"
+                # Boolean literals are dialect-specific: SQLite accepts 0/1,
+                # while PostgreSQL requires false/true for BOOLEAN columns.
+                # Compile the typed value instead of treating bool as int.
+                return str(
+                    literal(arg, type_=column.type).compile(  # type: ignore[attr-defined]
+                        dialect=dialect,
+                        compile_kwargs={"literal_binds": True},
+                    )
+                )
             if isinstance(arg, (int, float)):
                 return str(arg)
             if isinstance(arg, str):
@@ -289,12 +413,103 @@ def _add_column_ddl(column: object, dialect: object) -> str:
         f'"{column.name}"',  # type: ignore[attr-defined]
         column.type.compile(dialect=dialect),  # type: ignore[attr-defined]
     ]
-    default_sql = _column_default_sql(column)
+    default_sql = _column_default_sql(column, dialect)
     if default_sql is not None:
         parts.append(f"DEFAULT {default_sql}")
     if not column.nullable:  # type: ignore[attr-defined]
         parts.append("NOT NULL")
     return " ".join(parts)
+
+
+def _split_blame_line_shares(connection: object) -> int:
+    from repowise.core.persistence.crud.git import split_blame_line_shares
+
+    return split_blame_line_shares(connection)  # type: ignore[arg-type]
+
+
+#: One-time data fixes that must run when the reconciler adds a column, for
+#: rows the new column changes the meaning of. Alembic runs the same step in
+#: the column's migration for managed Postgres. Keyed ``table.column``.
+_DATA_STEPS_ON_ADD: dict[str, Callable[[object], object]] = {
+    "git_metadata.primary_owner_line_pct": _split_blame_line_shares,
+}
+
+
+def _run_data_step(step: Callable[[object], object], connection: object) -> None:
+    """Run a data step for its effect. Its return value (a row count, often 0)
+    is not a statement, so it must never reach ``connection.execute``."""
+    step(connection)
+
+
+#: Tables a SQLite store rebuilds when a column the model now allows NULL in is
+#: still NOT NULL on disk: SQLite cannot relax a constraint in place, and the
+#: additive reconciler below never does. Leaf tables only, since nothing may
+#: reference a table that is copied, dropped and renamed. Each holds derived
+#: rows, so an interrupted rebuild costs a recompute, never source data.
+_SQLITE_REBUILD_FOR_NULLABLE: frozenset[str] = frozenset({"health_file_metrics"})
+
+
+def _relax_not_null(connection: object, table: object) -> None:
+    """Rebuild *table* from the model if a now-nullable column is NOT NULL.
+
+    SQLite's documented procedure: create the new shape under a staging name,
+    copy the shared columns, drop the old table, rename, recreate indexes.
+    """
+    live = {c["name"]: c for c in inspect(connection).get_columns(table.name)}  # type: ignore[attr-defined]
+    columns = [c for c in table.columns if c.name in live]  # type: ignore[attr-defined]
+    if not any(c.nullable and not live[c.name]["nullable"] for c in columns):
+        return
+    name = table.name  # type: ignore[attr-defined]
+    staging = f"_rebuild_{name}"
+    dialect = connection.dialect  # type: ignore[attr-defined]
+    ddl = str(CreateTable(table).compile(dialect=dialect))  # type: ignore[arg-type]
+    quoted = dialect.identifier_preparer.quote(name)
+    ddl = ddl.replace(f"CREATE TABLE {quoted} ", f'CREATE TABLE "{staging}" ', 1)
+    shared = ", ".join(f'"{c.name}"' for c in columns)
+    run = connection.execute  # type: ignore[attr-defined]
+    run(text(f'DROP TABLE IF EXISTS "{staging}"'))
+    run(text(ddl))
+    run(text(f'INSERT INTO "{staging}" ({shared}) SELECT {shared} FROM "{name}"'))
+    run(text(f'DROP TABLE "{name}"'))
+    run(text(f'ALTER TABLE "{staging}" RENAME TO "{name}"'))
+    # Indexes went with the old table. Not a per-row loop: one per declared index.
+    for index in table.indexes:  # type: ignore[attr-defined]
+        run(CreateIndex(index))
+    log.info("schema_table_rebuilt_for_nullable", table=name)
+
+
+def _is_widened(model_type: object, live_type: object) -> bool:
+    """True when the model's string column is longer than the live one."""
+    if not isinstance(model_type, String) or not isinstance(live_type, String):
+        return False
+    live_length = live_type.length
+    if live_length is None:
+        return False
+    return model_type.length is None or model_type.length > live_length
+
+
+def _loosen_postgres_columns(table: object, live: dict[str, dict], dialect: object) -> list:
+    """``(label, ALTER)`` pairs bringing live PostgreSQL columns up to the model.
+
+    Only ever loosens: drops a NOT NULL the model no longer declares and widens
+    a VARCHAR the model made longer or unbounded. Both are catalog-only changes
+    on PostgreSQL and match what migrations 0062, 0064, 0086 and 0094 do, so a
+    database that never ran Alembic (the Docker image's path) still accepts
+    what the current code writes. Tightening stays an explicit migration.
+    """
+    statements = []
+    for column in table.columns:  # type: ignore[attr-defined]
+        found = live.get(column.name)
+        if found is None:
+            continue
+        what = f"{table.name}.{column.name}:loosen"  # type: ignore[attr-defined]
+        target = f'ALTER TABLE "{table.name}" ALTER COLUMN "{column.name}"'  # type: ignore[attr-defined]
+        if _is_widened(column.type, found["type"]):
+            kind = column.type.compile(dialect=dialect)
+            statements.append((what, text(f"{target} TYPE {kind}")))
+        if column.nullable and not found["nullable"]:
+            statements.append((what, text(f"{target} DROP NOT NULL")))
+    return statements
 
 
 def _reconcile_schema(connection: object) -> None:
@@ -314,11 +529,16 @@ def _reconcile_schema(connection: object) -> None:
     that follows the additive-only convention is picked up automatically
     on the next ``init_db`` call — no per-migration code required here.
 
+    Existing columns are only ever loosened: on PostgreSQL a NOT NULL the
+    model dropped is dropped and a VARCHAR the model widened is widened in
+    place; on SQLite the tables in ``_SQLITE_REBUILD_FOR_NULLABLE`` are rebuilt
+    for nullability, and VARCHAR length is not enforced there.
+
     Limitations (intentional — these need explicit migrations):
-      * column **removals**, **renames**, or **type changes** are NOT
-        reconciled (SQLite can't ALTER COLUMN safely anyway);
-      * **constraint changes** (UNIQUE, CHECK, FK) on existing columns
-        are NOT reconciled;
+      * column **removals**, **renames**, and narrowing or cross-kind **type
+        changes** are NOT reconciled (SQLite can't ALTER COLUMN safely anyway);
+      * **constraint changes** (UNIQUE, CHECK, FK) and new NOT NULLs on
+        existing columns are NOT reconciled;
       * Postgres extensions / functions (e.g. pgvector) are NOT created
         here — those still belong in Alembic migrations.
 
@@ -357,9 +577,11 @@ def _reconcile_schema(connection: object) -> None:
         # ``build`` renders the statement as well as running it, because
         # compiling a column's type can fail on its own and that failure has
         # to strand no more than compiling it successfully and failing to
-        # execute it would.
+        # execute it would. A data step runs itself and returns None.
         try:
-            connection.execute(build())  # type: ignore[attr-defined]
+            statement = build()
+            if statement is not None:
+                connection.execute(statement)  # type: ignore[attr-defined]
         except Exception as exc:  # re-raised below, once the walk is done
             if not continue_past_failure:
                 raise
@@ -383,16 +605,31 @@ def _reconcile_schema(connection: object) -> None:
         # nullability. We deliberately do NOT enforce FK constraints on
         # back-filled columns: SQLite can't add an enforced FK after the
         # fact, and write-time enforcement is sufficient for our purposes.
-        db_cols = {c["name"] for c in inspector.get_columns(table.name)}
+        db_cols = {c["name"]: c for c in inspector.get_columns(table.name)}
+        if dialect.name == "postgresql":  # type: ignore[attr-defined]
+            for what, statement in _loosen_postgres_columns(table, db_cols, dialect):
+                _run(what, lambda statement=statement: statement)
         for column in table.columns:
             if column.name in db_cols:
                 continue
+            what = f"{table.name}.{column.name}"
             _run(
-                f"{table.name}.{column.name}",
+                what,
                 lambda table=table, column=column: text(
-                    f'ALTER TABLE "{table.name}" ADD COLUMN '
-                    f"{_add_column_ddl(column, dialect)}"
+                    f'ALTER TABLE "{table.name}" ADD COLUMN {_add_column_ddl(column, dialect)}'
                 ),
+            )
+            data_step = _DATA_STEPS_ON_ADD.get(what)
+            if data_step is not None and not any(name == what for name, _ in failures):
+                _run(f"{what}:data", lambda data_step=data_step: _run_data_step(data_step, connection))
+
+        # --- Nullability (SQLite only) -----------------------------------
+        # After the columns, so the copy carries every one of them, and before
+        # the indexes, which the rebuild recreates itself.
+        if continue_past_failure and table.name in _SQLITE_REBUILD_FOR_NULLABLE:
+            _run(
+                f"{table.name}:nullable",
+                lambda table=table: _relax_not_null(connection, table),
             )
 
         # --- Indexes ---------------------------------------------------

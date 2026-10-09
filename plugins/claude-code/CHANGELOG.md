@@ -2,6 +2,176 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## Unreleased
+
+### Changed
+- Lens no longer approves its own MCP lookups. It registers no `tool.check`
+  hook, so `get_context`, `get_change_risk`, `get_why` and `get_answer` calls
+  from Lens ask Claude Code's permission like any other MCP call. The README's
+  Permissions section lists the four allow rules that let them run without a
+  prompt.
+- Each command's `allowed-tools` now names the exact `repowise` commands it
+  runs (for example `Bash(repowise health:*)`) in place of any Bash command.
+  `/repowise:init` no longer pre-approves `Write`, and asks with
+  `AskUserQuestion`.
+- `/repowise:init` no longer reads provider key variables from the
+  environment; `repowise init` detects a configured key itself.
+- The plugin README lists what Lens runs, reads, fetches and submits, and the
+  manifest carries the directory listing fields and an icon.
+
+## 0.55.0
+
+### Added
+- Lens, a Claude Code mod that ships in the plugin (`hooks/lens/lens.js`,
+  registered through the `modules` entry in `hooks.json`). It shows the index
+  to the person at the keyboard: setup, freshness and savings rows above the
+  prompt, the file's caller and contributor counts in the spinner, margin notes
+  under Edit and Write repeating what the augment hook flagged, a row under
+  Bash output `repowise distill` shortened, a `get_change_risk` review beneath
+  Claude's answer after a turn that edits files (with `Run tests`, `Why` and
+  `Details` buttons), and a `/lens` pane with Flow (a dashboard of each turn
+  with Repowise), a map of the repo lit by Claude's turn with its story under
+  it, an Ask tab (`get_why` or `get_answer`) and a session recap. After a compaction it offers
+  a `Brief Claude` button. In the desktop app the map draws as SVG.
+- Six `userConfig` toggles: `lens_margin`, `lens_squeeze`, `lens_review` and
+  `lens_flow` (on by default), and `lens_pane_autoopen` and `lens_map_health`
+  (off).
+- Lens needs Claude Code 2.1.287 or later. Older versions, and sessions where
+  mods are switched off, load the rest of the plugin unchanged. Lens never
+  denies, holds or rewrites Claude's tool calls. It approves only its own
+  read-only calls to this plugin's MCP server (`get_context`,
+  `get_change_risk`, `get_why`, `get_answer`), and sends Claude nothing
+  without a button press. Ask questions that do not start with "why" go to
+  `get_answer`, which may use the model your repo configures. See
+  [docs/agent/LENS.md](../../docs/agent/LENS.md) and its
+  [footprint](../../docs/agent/LENS.md#footprint).
+
+### Changed
+- The `code-health` skill leads a "what should I refactor?" answer with the
+  `fix_first` queue and opens an item with `get_health(fix_id=...)` for its
+  steps and the tests to run.
+- The `ask` command follows the `candidate_files` that `get_answer` now
+  returns at every confidence. The `context` command and the
+  `codebase-exploration` skill note that a symbol row without a `symbol_id` is
+  addressed as `path::name`.
+- No MCP tool was added, removed or renamed, and `hooks.json` still mirrors the
+  augment matcher in `claude_config.py`.
+
+### Fixed
+- The `security` command passed `--output json` to history scans; the flag is
+  `--format json`.
+
+## 0.54.0
+
+### Changed
+- The `coverage` command documents gating a change in CI with
+  `repowise coverage check`: the report, threshold and output-format options,
+  and the report formats the parser reads (Go cover profiles, JaCoCo and
+  repowise JSON joined LCOV, Cobertura, Clover and coverage.py).
+- The `impacted-tests` command documents `--format args` and `--runner`, and
+  that the selection answers `:all` whenever it is not certain.
+- No MCP tool was added, removed or renamed, and `hooks.json` still mirrors the
+  global augment matcher. The new coverage re-ingest hook is opt-in and
+  repository-local, written by the CLI, so the plugin does not ship it.
+
+## 0.53.0
+
+### Changed
+- Version bump only. No command, skill or hook changed this cycle: the server
+  still lists the same 18 tools, every tool named in a command or skill is one
+  of them, no CLI flag a command documents changed, and `hooks.json` still
+  mirrors the augment matcher in `claude_config.py`.
+
+## 0.52.0
+
+### Changed
+- The `decision` command reflects what acceptance now requires. A record whose
+  body only restates its own title can no longer be confirmed, so the command
+  tells the caller to state a reason rather than leaving it to be discovered at
+  `confirm` time. It documents `--kind agreement` for a working agreement — a
+  rule about how the work is conducted, which names no file and is not checked
+  against the code — and `--evidence-commit`, which ties a record to the commit
+  the choice was made in and is what stops the same commit being asked about
+  twice.
+- The command no longer claims a fixed source count. Capture sources are
+  individually switchable and transcript mining is now off unless a repository
+  turns it on, so it points at `repowise decision source list` instead.
+- No tool-surface change this cycle: the server still lists the same 18 tools,
+  every tool named in a command or skill is one of them, and `hooks.json` still
+  mirrors the shared augment matcher in `claude_config.py`. The shell
+  `PostToolUse` entry the new decision capture prompt needs is installed by
+  `repowise decision config capture-prompt --on`, deliberately not by the
+  plugin, so the measured narrowing of the shared matcher is not reversed.
+
+## 0.51.0
+
+### Fixed
+- The `reindex` command documented `--batch-size` as defaulting to 20. The CLI
+  default is 32, and the flag now rejects values below 1 rather than accepting
+  them and failing later.
+
+### Changed
+- No tool-surface change this cycle: every tool named in a command or skill is
+  one the server still lists, and `hooks.json` still mirrors `claude_config.py`.
+  `set_finding_status` remains live and deliberately unreferenced, since it
+  mutates.
+
+## 0.50.0
+
+### Changed
+- The `health` command documents `--scope all|production` and
+  `--counts everything|code_shape`, the two controls that say what a score is
+  counting, and names the five absolute bands (Excellent / Good / Fair / Needs
+  work / At risk) so a summary uses the product's words rather than its own. It
+  also says that roughly half a score is change history, and that a
+  `history_drag` decline is not a regression in the code.
+- The `init` command documents `--hook / --no-hook`. The post-commit hook is
+  installed by default now, and `--no-editor-setup` keeps it off along with
+  every other write outside `.repowise/`.
+- No hook change this cycle: `hooks.json` still mirrors `claude_config.py`, and
+  every tool named in a command or skill is one the server lists.
+  `set_finding_status` is live and deliberately unreferenced: it mutates, so it
+  is opt-in rather than part of the default surface.
+
+## 0.49.0
+
+### Changed
+- Version bump only. No command, skill or doc change this cycle.
+
+## 0.48.0
+
+### Changed
+- Version bump only. No command, skill or doc change this cycle: the CLI flags
+  each command names are unchanged, `hooks.json` still mirrors
+  `claude_config.py`, and every tool named in a command or skill is one the
+  server lists. `generate_refactoring_code` is live and deliberately unreferenced.
+
+## 0.47.0
+
+### Changed
+- The `change-review` skill leads with `get_change_risk`'s `directive` and
+  `health_delta` — what the change made worse — before the percentile and the
+  diff-shape drivers, matching the reordered response (#1980). It also names
+  `directive.status: unknown` alongside `warning` as the "matched no files"
+  signal, and distinguishes the per-change directive from `get_risk`'s per-file
+  one.
+- No hook change this cycle: `hooks.json` still mirrors `claude_config.py`, and
+  every tool named in a command or skill is one the server lists.
+
+## 0.46.0
+
+### Changed
+- The `change-review` skill reads `directive.may_break` and
+  `directive.may_break_tests`. `get_risk` renamed both fields: the old names
+  asserted a certainty the structural heuristic behind them does not have
+  (#1892).
+- `/repowise:risk`, `/repowise:impacted-tests`, `/repowise:security` and the
+  plugin README state the public risk scale the way the tool now reports it,
+  and describe fix density as ranked against commits rather than against
+  individual files (#1891, #1914).
+- No hook change this cycle: `hooks.json` still mirrors `claude_config.py`, and
+  every tool named in a command or skill is one the server lists.
+
 ## 0.45.0
 
 ### Changed

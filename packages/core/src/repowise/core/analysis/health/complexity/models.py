@@ -7,6 +7,11 @@ the health engine; see the per-class docstrings for the downstream reader.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..asserts.oracle_reach import OracleReach
+    from ..perf.loop_facts import LoopFacts
 
 
 @dataclass
@@ -41,6 +46,16 @@ class FunctionComplexity:
     # ``primitive_obsession``. Counted via the tree-sitter ``parameters``
     # field; 0 when the language lacks an explicit list or extraction fails.
     param_count: int = 0
+    # Of those, the ones that declare a type, and the ones among them declared
+    # as a scalar or a string; untyped parameters are in neither. With the two
+    # flags below, read only by ``primitive_obsession``. ``complexity/signature.py``.
+    typed_param_count: int = 0
+    primitive_param_count: int = 0
+    # A constructor, by node kind, conventional name, or its type's name.
+    is_constructor: bool = False
+    # The parameter list is set by another declaration (an override, an
+    # interface or trait implementation, a native binding).
+    signature_fixed: bool = False
     # Per-condition boolean-operator counts collected during the walk.
     # Empty when no branch/loop carries compound boolean expressions.
     complex_conditions: list[ConditionComplexity] = None  # type: ignore[assignment]
@@ -49,6 +64,67 @@ class FunctionComplexity:
     # ``LanguageNodeMap`` opts into assertion detection (``assert_kinds`` /
     # ``assert_call_kinds``). Consumed by the test-quality biomarkers.
     assertion_blocks: list[tuple[int, int, int]] = None  # type: ignore[assignment]
+    # Every assertion statement in the body, runs or not. Same per-language
+    # opt-in as ``assertion_blocks``.
+    assertion_count: int = 0
+    # Mock verifications in the body, counted apart from ``assertion_count``.
+    # Why they are separate: ``asserts/lexicon.py``.
+    verification_count: int = 0
+    # ``raise`` / ``throw`` statements this body checks with, taken from the
+    # node map's ``raise_kinds`` -- which is a CFG-terminator mapping, so it is
+    # Rust's ``?`` there rather than a throw; harmless while the reader ships
+    # four languages, load-bearing if that widens. 0 for a language with no
+    # assertion opt-in, like the counts above. Excludes an abstract stub
+    # (``asserts/lexicon.STUB_EXCEPTIONS``), a bare re-raise, and anything in a
+    # nested function or lambda: a callable handed to the code under test to
+    # make *it* fail is not this body's oracle. A
+    # hand-rolled oracle -- ``if (!ok) throw new Error(...)`` -- fails its test
+    # exactly as an assertion does, but no assertion vocabulary names it. Kept
+    # in its own field rather than folded into ``assertion_count`` because that
+    # count is calibrated and this one is not: only ``assertion_free_test`` and
+    # the oracle resolution behind it read this, and both read it as a
+    # boolean. Counted wherever the traversal reaches one rather than at block
+    # level, so an unbraced ``if (x) throw ...`` guard is seen.
+    raise_count: int = 0
+    # Mock-setup statements in the body, decorators included. 0 for a language
+    # with no entry in ``analysis/health/mocks/lexicon.py``.
+    mock_setup_count: int = 0
+    # True when this function is a test case its framework would run, as
+    # opposed to a helper or fixture beside it. ``complexity/test_case.py``.
+    is_test_case: bool = False
+    # Every name called in this function's body, lowercased, **including**
+    # nested function bodies -- where it parts company with the counts above,
+    # which stop at one. A function nested inside an already-collected one is
+    # never collected as an entry of its own, so stopping would attribute its
+    # calls to nobody. Empty for a language with no assertion
+    # vocabulary row, because it rides on that traversal. It answers one
+    # question: did this function hand its work to something else in the file?
+    called_names: frozenset[str] = frozenset()
+    # The subset of ``called_names`` whose call site carried no receiver.
+    # ``checkOk()`` is in it, ``harness.checkOk()`` is not. Read only by the
+    # cross-file oracle pass, which pairs a name with a file-scoped call edge:
+    # a qualified call names a method on something else that happens to share
+    # the name, and pairing it with the file's edge would let one delegating
+    # test license every same-named call beside it. It widened with
+    # ``called_names``, so a name may now come from a nested body -- which is
+    # a suppression path, and means a registered-but-never-invoked callback
+    # contributes. In the direction that lane already errs.
+    bare_called_names: frozenset[str] = frozenset()
+    # CCN points of the largest top-level ``switch`` / ``match`` / same-subject
+    # ``if`` chain, over ``ccn``, to two decimals. Near 1.0 the function is
+    # one dispatch on one value. At ``DISPATCH_SHARE`` and above the size and
+    # complexity markers judge the function outside it. ``complexity/dispatch.py``.
+    dispatch_share: float = 0.0
+    # CCN points inside that dispatch's heaviest arm, its own case point not
+    # counted: a switch of one-line cases has 0.
+    dispatch_arm: int = 0
+    # True when the declaration is marked deprecated or the body's top level
+    # issues a deprecation warning. ``complexity/deprecation.py``.
+    deprecated: bool = False
+    # 1-indexed (start, end) lines of the first block that reaches
+    # ``max_nesting``, when the function nests at all: the concrete place to
+    # start flattening it. ``cyclomatic._walk_function_body``.
+    deepest_block: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         if self.complex_conditions is None:
@@ -67,11 +143,14 @@ class CohesionGroup:
     by the Extract Class refactoring detector — when a class has
     ``lcom4 >= 2`` each group is a candidate extracted class. ``methods``
     and ``fields`` are stable-sorted (by first appearance / name) so the
-    same class yields the same split across runs.
+    same class yields the same split across runs. ``calls`` are the members
+    the cluster only calls (a base-class, abstract or trait-provided method):
+    a use of the class, not state of its own.
     """
 
     methods: list[str]
     fields: list[str]
+    calls: tuple[str, ...] = ()
 
 
 @dataclass
@@ -113,6 +192,9 @@ class ClassComplexity:
     # safety valve. A cohesive Extract Class split raises the worst split
     # class's TCC toward ``1``; the enrich self-check reads it before/after.
     tcc: float = 1.0
+    # Every method is fixed by a contract the class implements (a Rust
+    # ``impl Trait for T``): none can move out, and cohesion is not scored.
+    contract_impl: bool = False
 
 
 @dataclass(frozen=True)
@@ -120,7 +202,7 @@ class ErrorHandlingHit:
     """One error-handling anti-pattern occurrence in a file.
 
     Collected by the walker's whole-tree pass (see
-    ``_collect_error_handling``) and consumed by the ``error_handling``
+    ``complexity.error_handling._eh_visit``) and consumed by the ``error_handling``
     biomarker. ``kind`` is one of:
 
     - ``swallowed_catch`` — a catch/except whose body has no real handling
@@ -132,7 +214,8 @@ class ErrorHandlingHit:
       the BaseException-only interrupts), regardless of body.
     - ``unsafe_unwrap`` — Rust ``.unwrap()`` / ``.expect()`` /
       ``.unwrap_unchecked()`` calls (latent panic-on-error). Suppressed inside
-      ``#[test]`` / ``#[cfg(test)]`` items.
+      ``#[test]`` / ``#[cfg(test)]`` items and where the call provably cannot
+      panic (a guarded receiver, a ``write!`` into a ``String``).
     - ``panic_macro`` — Rust ``panic!`` / ``unreachable!`` / ``todo!`` /
       ``unimplemented!`` macros (unconditional abort). Suppressed inside tests.
     - ``go_swallow`` — Go empty ``if err != nil {}`` block, or a trailing
@@ -141,6 +224,10 @@ class ErrorHandlingHit:
 
     kind: str
     line: int  # 1-indexed
+    # Rust only: the idiomatic invariant assertion this hit is (``lock_poison``,
+    # ``thread_join``, ``invariant_expect``, ``unreachable``), see
+    # ``complexity.rust_unwrap``. ``None`` for a plain occurrence.
+    idiom: str | None = None
 
 
 @dataclass(frozen=True)
@@ -221,6 +308,21 @@ class PerfHit:
     # proof is unavailable (no dialect, guard trip, non-convergence) or the loop
     # genuinely carries a dependence. The biomarker sharpens its message when set.
     promoted: bool = False
+    # What the innermost enclosing loop proves (same-function hits only).
+    loop: LoopFacts | None = None
+    # 1-indexed header line of the innermost data-dependent loop the hit runs
+    # in (for a cross-function hit, the loop around the call site); 0 when none.
+    loop_line: int = 0
+    # Distinct direct callers of the enclosing function, set only on the
+    # centrality-gated ``hot_path_sync_io`` hit; 0 everywhere else.
+    callers: int = 0
+
+    def loop_facts(self) -> dict[str, Any]:
+        """Loop facts for ``details``; absent when unset so old findings are unchanged."""
+        facts = self.loop.as_details() if self.loop is not None else {}
+        if self.loop_line:
+            facts["loop_line"] = self.loop_line
+        return facts
 
 
 @dataclass(frozen=True)
@@ -266,6 +368,11 @@ class PerfFnFacts:
     nested_loop_line: int = 0
     blocking_sink_kind: str | None = None
     blocking_sink_line: int = 0
+    # ``(call_line, facts)`` for loop-nested calls whose loop settles a fact, so a
+    # cross-function hit reports the trip count and chunking of the loop that pays it.
+    loop_call_facts: tuple[tuple[int, LoopFacts], ...] = ()
+    # ``(call_line, loop header line)`` for the same loop-nested calls.
+    loop_call_lines: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass
@@ -295,6 +402,11 @@ class FileComplexity:
     # function holds a bare (non-loop) I/O sink. Empty when the language opts
     # out of the perf pass. Consumed by ``perf.crossfn``, not by a biomarker.
     perf_fn_facts: list[PerfFnFacts] = field(default_factory=list)
+    # Test cases here whose call edges reach a function that asserts, keyed
+    # by the test's 1-indexed start line. Filled by a graph pre-pass after the
+    # walk (``asserts.oracle_reach``), never by the walker, so a cached walk
+    # neither carries nor stores one. Read by ``assertion_free_test``.
+    cross_file_oracles: dict[int, OracleReach] = field(default_factory=dict)
     # True when the file carries co-located tests that the filename/dir
     # heuristic cannot see — e.g. Rust ``#[cfg(test)] mod tests`` blocks,
     # which live inside the source file itself. OR'd into ``has_test_file``
@@ -302,3 +414,14 @@ class FileComplexity:
     # flips a file from "untested" to "tested", so it can silence a finding
     # but never invent one.
     has_inline_tests: bool = False
+    # 1-indexed ``(start_line, end_line)`` spans of Rust test-only code: a
+    # ``#[cfg(test)]``-gated ``mod``/``impl`` (whole span, including any
+    # undecorated helper fns nested inside it) or a directly ``#[test]`` /
+    # ``#[tokio::test]`` / ``#[rstest]``-marked ``fn``. Computed once from the
+    # SAME parsed tree ``walk_file`` already builds — no extra parse. Rust-only
+    # (empty for every other language); the Phase-7b centrality gate
+    # (``perf.gated.collect_centrality_gated``) uses it to keep a
+    # ``PerfFnFacts.func_start`` line from ever emitting a ``hot_path_sync_io``
+    # / ``nested_loop_quadratic`` hit for inline test code the file-level
+    # ``is_test`` heuristic can't see.
+    rust_test_line_ranges: tuple[tuple[int, int], ...] = field(default_factory=tuple)

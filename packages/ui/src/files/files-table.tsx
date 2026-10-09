@@ -27,15 +27,7 @@ interface FilesTableProps {
 const ROW_HEIGHT = 44;
 const OVERSCAN = 8;
 
-/**
- * The health figure's colour, from the same function the treemap tiles use.
- *
- * This banded at 7 while `healthInk` bands at 8, so the 7.x files — and there
- * are a lot of them — read green in this column, green in the map's tooltip and
- * amber on the tile the tooltip was attached to. Three vocabularies for one
- * number on one page. Match the mark you sit next to; every other mark on this
- * page is on the canonical bands.
- */
+/** The health figure's colour, from the same function the treemap tiles use. */
 function scoreInk(score: number | null): string {
   return score == null ? "var(--color-text-tertiary)" : healthInk(score);
 }
@@ -89,6 +81,15 @@ function SortHeader({
 // overflows — the first column is always `minmax(0,1fr)` so paths truncate.
 const GRID =
   "grid grid-cols-[minmax(0,1fr)_auto_56px] sm:grid-cols-[minmax(0,1fr)_92px_64px_64px] md:grid-cols-[minmax(0,1fr)_100px_84px_72px_64px_72px] items-center gap-2 px-3 sm:px-4";
+
+/** A row's line coverage; an older server sends only the deprecated `coverage_pct`. */
+export function lineCoverage(f: FileRow): number | null {
+  return f.line_coverage_pct ?? f.coverage_pct;
+}
+
+function formatCoverage(pct: number | null): string {
+  return pct != null ? `${Math.round(pct)}%` : "—";
+}
 
 export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesTableProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -234,7 +235,7 @@ export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesT
 
                     {/* Coverage */}
                     <span className="hidden justify-end tabular-nums text-[var(--color-text-secondary)] md:flex">
-                      {f.coverage_pct != null ? `${Math.round(f.coverage_pct)}%` : "—"}
+                      {formatCoverage(lineCoverage(f))}
                     </span>
                   </a>
                 );

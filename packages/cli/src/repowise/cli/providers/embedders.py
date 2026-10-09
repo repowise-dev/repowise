@@ -6,7 +6,11 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
-from repowise.cli.providers.keys import embedder_key_env_vars, resolve_embedder_api_key
+from repowise.cli.providers.keys import (
+    embedder_key_env_vars,
+    global_config_embedder,
+    resolve_embedder_api_key,
+)
 
 
 def _embedder_kwargs(embedder_name: str, repo_path: Any = None) -> dict[str, Any]:
@@ -55,12 +59,16 @@ def resolve_embedding_model(embedder_name: str) -> str | None:
 
 
 def resolve_embedder(embedder_flag: str | None, env: Mapping[str, str] | None = None) -> str:
-    """Auto-detect embedder from env vars, or use the flag value.
+    """Auto-detect the embedder backend, or use the flag value.
 
     *env* layers a repo's persisted ``.repowise/.env`` under the process
     environment for callers that must not merge it into ``os.environ``. The
     process still wins on every key, so an exported variable keeps overriding
     the file, exactly as ``load_dotenv``'s non-overwriting merge did.
+
+    ``~/.repowise/config.yaml``'s ``embedder`` is the last tier, below every
+    environment source and above the keyless fallback. See
+    :func:`~repowise.cli.providers.keys.global_config_embedder`.
     """
     if embedder_flag:
         return embedder_flag
@@ -81,7 +89,7 @@ def resolve_embedder(embedder_flag: str | None, env: Mapping[str, str] | None = 
         return "ollama"
     if _get("EDENAI_API_KEY"):
         return "edenai"
-    return "mock"
+    return global_config_embedder() or "mock"
 
 
 def pin_names_an_embedder(pinned_embedder: Any) -> bool:
@@ -116,6 +124,21 @@ def embedder_was_requested(embedder_flag: str | None, pinned_embedder: Any = Non
     )
 
 
+def template_run_embedder(embedder_name_resolved: str, embedder_was_requested: bool) -> str:
+    """The embedder a template-only run actually embeds with.
+
+    That mode is sold as "no key, no spend", and :func:`resolve_embedder` infers
+    a hosted embedder from any LLM key in the environment — right for a run
+    already paying a model, wrong for one that promised nothing. So a hosted
+    embedder is used only when the user named it.
+
+    Shared because ``init`` has to predict this answer before the pipeline, to
+    build the run's vector store with the backend generation will actually use.
+    """
+    hosted = embedder_name_resolved not in ("mock", "ollama")
+    return "mock" if hosted and not embedder_was_requested else embedder_name_resolved
+
+
 def resolve_embedder_for_repo(repo_path: Any) -> str:
     """Return the embedder that can read *repo_path*'s vector store.
 
@@ -148,10 +171,17 @@ def resolve_embedder_for_repo(repo_path: Any) -> str:
     # ``os.environ``: a workspace resolves several repos in one process, and a
     # merge is first-writer-wins, so the first repo's key would silently answer
     # for every sibling afterwards.
-    try:
-        from repowise.core.repo_config import load_repo_env
+    from repowise.core.repo_config import RepoConfigError, load_repo_env
 
+    try:
         overlay = load_repo_env(repo_path)
+    except RepoConfigError as exc:
+        # A broken .env must surface — the embedder it pins would silently
+        # fall back to detection (issue #852).
+        from repowise.cli.helpers import err_console
+
+        err_console.print(f"[yellow]Warning:[/yellow] {exc}")
+        overlay = {}
     except Exception:
         overlay = {}
     return resolve_embedder(None, overlay)

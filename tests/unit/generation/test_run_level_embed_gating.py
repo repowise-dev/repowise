@@ -59,6 +59,7 @@ def _fake_run(store) -> SimpleNamespace:
         on_page_ready=None,
         vector_store=store,
         completed_page_summaries={},
+        timings=None,
     )
 
 
@@ -92,3 +93,34 @@ def test_ephemeral_store_still_embeds_reused_pages() -> None:
     embedded = _run_level(store)
     assert "fresh.py" in embedded
     assert "reused.py" in embedded
+
+
+class _FailingStore:
+    persists_across_runs = True
+
+    async def embed_batch(self, items):
+        raise AttributeError("module 'lancedb' has no attribute 'connect_async'")
+
+
+def test_a_failed_embed_is_counted_on_the_generator() -> None:
+    """Callers read the count to refuse calling semantic search healthy.
+
+    A warning string alone left init and update exiting 0 with a semantic
+    index that held none of the pages.
+    """
+    warnings: list[str] = []
+    gen = SimpleNamespace(embed_failed_pages=0)
+
+    async def _go():
+        async def fresh():
+            return _page("fresh.py")
+
+        run = _fake_run(_FailingStore())
+        run.gen = gen
+        run.on_warning = warnings.append
+        await _GenerationRun.run_level(run, [("p1", fresh())], level=2)
+
+    asyncio.run(_go())
+
+    assert gen.embed_failed_pages == 1
+    assert warnings and "Embedding failed for 1 page(s)" in warnings[0]

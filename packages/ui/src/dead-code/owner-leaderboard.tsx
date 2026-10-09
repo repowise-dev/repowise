@@ -6,7 +6,7 @@ import { cn } from "../lib/cn";
 
 export interface OwnerLeaderboardFinding {
   primary_owner: string | null;
-  lines: number;
+  lines: number | null;
   safe_to_delete?: boolean;
 }
 
@@ -38,7 +38,7 @@ export function OwnerLeaderboard({
       if (safeOnly && !f.safe_to_delete) continue;
       const owner = f.primary_owner?.trim() || "Unowned";
       const prev = map.get(owner) ?? { lines: 0, count: 0 };
-      prev.lines += Number.isFinite(f.lines) ? f.lines : 0;
+      prev.lines += f.lines ?? 0;
       prev.count += 1;
       map.set(owner, prev);
     }

@@ -19,8 +19,11 @@ from __future__ import annotations
 
 from sqlalchemy import or_, select
 
+from repowise.core.ingestion.symbol_identity import base_symbol_id, id_segment_name
 from repowise.core.persistence.models import WikiSymbol
 from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
+from repowise.core.support_paths import is_support_path
+from repowise.core.test_paths import is_test_path
 
 # Separators used between name segments AFTER the file path.
 NAME_SEPARATORS = (".", "::", "/")
@@ -92,11 +95,67 @@ def symbol_id_variants(symbol_id: str) -> list[str]:
 
 
 def bare_name(name: str) -> str:
-    """Return the last name segment regardless of separator style."""
+    """Return the last name segment regardless of separator style.
+
+    An overload or generic-arity discriminator (``notNull#1``, ``IFoo`1``) is
+    part of the id, never of the name, so it is dropped.
+    """
     tail = name
     for sep in NAME_SEPARATORS:
         tail = tail.rsplit(sep, 1)[-1]
-    return tail
+    return id_segment_name(tail)
+
+
+# Kinds a bare name most likely means, best first; everything else (variables,
+# constants, fields) ranks after methods.
+_KIND_RANK = {
+    "class": 0,
+    "struct": 0,
+    "enum": 0,
+    "interface": 1,
+    "trait": 1,
+    "type_alias": 1,
+    "function": 2,
+    "method": 3,
+}
+_OTHER_KIND_RANK = 4
+
+
+def _dotted(name: str) -> str:
+    for sep in NAME_SEPARATORS[1:]:
+        name = name.replace(sep, ".")
+    return name
+
+
+def symbol_rank_key(
+    query: str,
+    *,
+    name: str | None,
+    qualified_name: str | None,
+    kind: str | None,
+    path: str | None,
+    language: str | None = None,
+    centrality: float = 0.0,
+) -> tuple:
+    """Sort key (ascending) for symbols competing for one name, best first.
+
+    Exact case, then exact name, then kind (class > interface > function >
+    method > variable), then code over test/docs/examples paths, then file
+    centrality, then the shorter path. Shared by every surface that picks
+    among same-named symbols, so they agree on which one a name means.
+    """
+    q = _dotted(query.strip())
+    names = (name or "", _dotted(qualified_name or ""))
+    path = path or ""
+    return (
+        q not in names,
+        q.lower() not in {n.lower() for n in names},
+        _KIND_RANK.get(kind or "", _OTHER_KIND_RANK),
+        is_test_path(path, language) or is_support_path(path),
+        -(centrality or 0.0),
+        len(path),
+        path,
+    )
 
 
 def order_candidates(rows: list[WikiSymbol], queried_file_path: str | None) -> list[WikiSymbol]:
@@ -142,14 +201,27 @@ async def resolve_symbol_rows(session, repo_id: str, symbol_id: str) -> list[Wik
     """
     file_path, name = parse_symbol_id(symbol_id)
 
-    # 1. Exact symbol_id — try every separator variant.
+    # 1. Exact symbol_id — try every separator variant. The same query also
+    #    reads the members of an overload set the id names, which carry a
+    #    discriminator (``Validate.java::Validate::notNull`` -> ``notNull#1``,
+    #    ``notNull#2``); they answer only when no row matches exactly.
+    variants = symbol_id_variants(symbol_id)
     res = await session.execute(
         select(WikiSymbol).where(
             WikiSymbol.repository_id == repo_id,
-            WikiSymbol.symbol_id.in_(symbol_id_variants(symbol_id)),
+            or_(
+                WikiSymbol.symbol_id.in_(variants),
+                *(
+                    WikiSymbol.symbol_id.like(f"{escape_like(sid)}#%", escape=LIKE_ESCAPE)
+                    for sid in variants
+                ),
+            ),
         )
     )
-    rows = list(res.scalars().all())
+    found = list(res.scalars().all())
+    rows = [row for row in found if row.symbol_id in variants] or [
+        row for row in found if base_symbol_id(row.symbol_id) in variants
+    ]
     if rows:
         return order_candidates(rows, file_path)
 

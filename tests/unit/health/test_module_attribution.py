@@ -106,7 +106,7 @@ def test_windows_separators_resolve_to_the_same_module():
     assert _module_for("packages\\core\\src\\thing.py", roots) == "packages/core"
 
 
-def _analyze(tmp_path, *, module_map):
+def _analyze(tmp_path, *, community_label_map):
     """Run the real analyzer over a two-package tree and return {path: module}."""
     from repowise.core.analysis.health import HealthAnalyzer
     from repowise.core.ingestion.parser import parse_file
@@ -127,7 +127,9 @@ def _analyze(tmp_path, *, module_map):
         parse_file(f, (tmp_path / f.path).read_bytes())
         for f in FileTraverser(tmp_path).traverse()
     ]
-    report = HealthAnalyzer(None, parsed_files=parsed, module_map=module_map).analyze()
+    report = HealthAnalyzer(
+        None, parsed_files=parsed, community_label_map=community_label_map
+    ).analyze()
     return {m.file_path: m.module for m in report.metrics}
 
 
@@ -137,7 +139,7 @@ def test_the_engine_wires_real_package_roots_through_to_the_metric(tmp_path):
     The helpers can be right while the call site still reads the old value, so
     this asserts on what the analyzer actually writes.
     """
-    modules = _analyze(tmp_path, module_map=None)
+    modules = _analyze(tmp_path, community_label_map=None)
     assert modules["packages/core/thing.py"] == "packages/core"
     assert modules["packages/ui/widget.py"] == "packages/ui"
 
@@ -247,7 +249,7 @@ def test_every_analyzer_call_site_supplies_a_repo_root():
 def test_a_community_map_can_no_longer_change_the_answer(tmp_path):
     """The regression that motivated this, as an executable invariant.
 
-    Only the full-index path ever passed a ``module_map``; the incremental,
+    Only the full-index path ever passed a ``community_label_map``; the incremental,
     re-score and ``repowise health`` paths did not, so a row's namespace
     depended on which one last wrote it. Supplying a hostile map must now be
     inert — this is what makes the four paths agree.
@@ -256,4 +258,25 @@ def test_a_community_map_can_no_longer_change_the_answer(tmp_path):
         "packages/core/thing.py": "tests/unit",
         "packages/ui/widget.py": "repowise/distill (7)",
     }
-    assert _analyze(tmp_path, module_map=poisoned) == _analyze(tmp_path, module_map=None)
+    assert _analyze(tmp_path, community_label_map=poisoned) == _analyze(
+        tmp_path, community_label_map=None
+    )
+
+
+def test_module_is_always_a_path_never_a_community_label():
+    """Why the dashboard no longer strips a `` (N)`` suffix off ``module``.
+
+    Community detection appends that suffix when two clusters collide on a
+    label, and the rollups used to sanitize it because ``module`` once carried
+    those labels. ``_module_for`` returns a path segment or ``None``, so the
+    suffix cannot reach the column and the sanitizer had nothing left to strip.
+    """
+    roots = {"packages/core", "packages/ui"}
+    for path in (
+        "packages/core/src/thing.py",
+        "packages/ui/src/thing.ts",
+        "docs/guide.md",
+        "README.md",
+    ):
+        module = _module_for(path, roots)
+        assert module is None or path.startswith(module + "/")

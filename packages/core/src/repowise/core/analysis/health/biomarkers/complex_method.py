@@ -1,11 +1,13 @@
 """Complex Method — high cyclomatic complexity.
 
 Flags functions with CCN ≥ 9. A conservative threshold for the boundary
-between "ok" and "complex".
+between "ok" and "complex". A function that is mostly one dispatch on one
+value is judged on the CCN outside it (``complexity/dispatch.py``).
 """
 
 from __future__ import annotations
 
+from ..complexity.dispatch import judged_ccn
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -16,18 +18,19 @@ class ComplexMethodDetector:
 
     _CCN_THRESHOLD = 9
 
+    @classmethod
+    def severity_for(cls, ccn: int, nloc: int) -> Severity | None:
+        """The severity a function of this shape earns, ``None`` below the bar."""
+        if ccn < cls._CCN_THRESHOLD:
+            return None
+        return Severity.CRITICAL if ccn >= 25 else Severity.HIGH if ccn >= 15 else Severity.MEDIUM
+
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
-        for fn in ctx.function_metrics.values():
-            if fn.ccn < self._CCN_THRESHOLD:
+        for fn in ctx.all_functions:
+            severity = self.severity_for(judged_ccn(fn), fn.nloc)
+            if severity is None:
                 continue
-            severity = (
-                Severity.CRITICAL
-                if fn.ccn >= 25
-                else Severity.HIGH
-                if fn.ccn >= 15
-                else Severity.MEDIUM
-            )
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
@@ -39,6 +42,7 @@ class ComplexMethodDetector:
                         "ccn": fn.ccn,
                         "cognitive": fn.cognitive,
                         "nloc": fn.nloc,
+                        "dispatch_share": fn.dispatch_share,
                     },
                     reason=f"{fn.name} has cyclomatic complexity {fn.ccn}",
                 )

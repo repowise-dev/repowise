@@ -164,7 +164,7 @@ def test_forward_files_attach_to_correction():
         _tool_call("Edit", {"file_path": "C:\\Users\\x\\repo\\adapter.py"}),
     ]
     (candidate,) = mine_events(events, REPO_PREFIX)
-    assert candidate.files == ["C:\\Users\\x\\repo\\adapter.py"]
+    assert candidate.files == ["adapter.py"]
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +183,27 @@ def test_choice_near_file_activity_is_candidate():
     (candidate,) = mine_events(events, REPO_PREFIX)
     assert candidate.kind == "explicit_choice"
     assert candidate.quotes == [CHOICE_TEXT]
-    assert candidate.files == ["C:\\Users\\x\\repo\\staging.py"]
+    assert candidate.files == ["staging.py"]
+
+
+def test_a_choice_touching_only_another_checkout_is_dropped():
+    """An out-of-repo path is not a scope, so it cannot carry the gate."""
+    events = [
+        _tool_call("Write", {"file_path": "C:\\Users\\x\\other\\staging.py"}),
+        _tool_result("t1", {"ok": True}),
+        Event(kind="assistant", cwd=CWD, session_id="sess-1", text=CHOICE_TEXT),
+    ]
+    assert mine_events(events, REPO_PREFIX) == []
+
+
+def test_a_correction_keeps_only_the_files_inside_the_repository():
+    events = [
+        _user("No, keep the parser in the adapter module, don't inline it"),
+        _tool_call("Edit", {"file_path": "C:\\Users\\x\\repo\\a.py"}, "t1"),
+        _tool_call("Edit", {"file_path": "C:\\Users\\x\\elsewhere\\b.py"}, "t2"),
+    ]
+    (candidate,) = mine_events(events, REPO_PREFIX)
+    assert candidate.files == ["a.py"]
 
 
 def test_choice_with_no_files_anywhere_is_dropped():
@@ -345,8 +365,63 @@ def test_candidate_hash_is_content_stable():
 
 
 def test_session_mining_enabled_parsing():
-    assert session_mining_enabled(None) is True
-    assert session_mining_enabled({}) is True
+    # The lane ships off, so an absent or unreadable `decisions:` block means
+    # no transcript is read until somebody asks for it.
+    assert session_mining_enabled(None) is False
+    assert session_mining_enabled({}) is False
+    assert session_mining_enabled({"decisions": "garbage"}) is False
+    assert session_mining_enabled({"decisions": {"sources": {"session": True}}}) is True
     assert session_mining_enabled({"decisions": {"session_mining": True}}) is True
     assert session_mining_enabled({"decisions": {"session_mining": False}}) is False
-    assert session_mining_enabled({"decisions": "garbage"}) is True
+
+
+# ---------------------------------------------------------------------------
+# edited-above-read ordering
+# ---------------------------------------------------------------------------
+
+EDIT_TOOLS = frozenset({"Edit", "Write"})
+
+
+def test_edited_files_lead_the_files_the_session_only_read():
+    events = [
+        _tool_call("Read", {"file_path": "a/read.py"}, "t1"),
+        _tool_call("Edit", {"file_path": "a/edit.py"}, "t2"),
+        _user("no, always keep the loader separate because the parser reuses it"),
+    ]
+    # The lead sentence trips the correction gate and falls through to the
+    # choice gate, so both candidates carry the same window.
+    candidates = mine_events(events, REPO_PREFIX, edit_tools=EDIT_TOOLS)
+    assert candidates
+    for candidate in candidates:
+        assert candidate.files == ["a/edit.py", "a/read.py"]
+
+
+def test_without_an_edit_vocabulary_the_order_is_left_alone():
+    """An adapter that declares none must not have its files reordered."""
+    events = [
+        _tool_call("Read", {"file_path": "a/read.py"}, "t1"),
+        _tool_call("Edit", {"file_path": "a/edit.py"}, "t2"),
+        _user("no, always keep the loader separate because the parser reuses it"),
+    ]
+    candidates = mine_events(events, REPO_PREFIX)
+    assert candidates
+    for candidate in candidates:
+        assert candidate.files == ["a/read.py", "a/edit.py"]
+
+
+def test_a_candidates_own_edit_leads_however_long_the_session_runs_on():
+    """The rank is what this candidate saw, not the session's last few touches."""
+    events = [
+        _tool_call("Read", {"file_path": "a/looked.py"}, "t1"),
+        _tool_call("Edit", {"file_path": "a/decided.py"}, "t2"),
+        _user("no, always keep the loader separate because the parser reuses it"),
+    ]
+    events += [_tool_call("Edit", {"file_path": f"z/later{i}.py"}, f"t{i + 10}") for i in range(12)]
+    candidates = mine_events(events, REPO_PREFIX, edit_tools=EDIT_TOOLS)
+    assert candidates
+    for candidate in candidates:
+        # Files edited after the candidate attach to it on purpose, so the
+        # read is last rather than second; what matters is that the file being
+        # changed when the decision landed still leads.
+        assert candidate.files[0] == "a/decided.py"
+        assert candidate.files[-1] == "a/looked.py"

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from repowise.server.mcp_server import _meta
 
 
-def test_build_meta_carries_contract_and_index_identity(tmp_path, monkeypatch):
+def test_build_meta_carries_index_identity_without_diagnostics(tmp_path, monkeypatch):
     indexed = "a" * 40
     monkeypatch.setattr(_meta, "read_live_head", lambda _path: indexed)
     repository = SimpleNamespace(
@@ -16,12 +16,18 @@ def test_build_meta_carries_contract_and_index_identity(tmp_path, monkeypatch):
         head_commit=indexed,
     )
 
-    meta = _meta.build_meta(repository=repository, targets=["src/a.py"])
+    meta = _meta.build_meta(repository=repository, targets=["src/a.py"], timing_ms=5.0)
 
-    assert meta["contract_version"] == _meta.MCP_CONTRACT_VERSION
+    assert "contract_version" not in meta
+    assert "timing_ms" not in meta
     assert meta["indexed_commit"] == indexed[:12]
     assert meta["live_head"] == indexed[:12]
     assert meta["index_behind"] is False
+
+    monkeypatch.setenv(_meta.DEBUG_META_ENV, "1")
+    debug = _meta.build_meta(repository=repository, targets=["src/a.py"], timing_ms=5.0)
+    assert debug["contract_version"] == _meta.MCP_CONTRACT_VERSION
+    assert debug["timing_ms"] == 5.0
 
 
 def test_shared_boundary_surfaces_degraded_partial_and_truncated_states():
@@ -38,9 +44,22 @@ def test_shared_boundary_surfaces_degraded_partial_and_truncated_states():
 
     assert result["_meta"]["state"] == {
         "degraded": True,
+        # The umbrella bool cannot say which capability failed, so the reasons
+        # behind it travel with it: the synthesis reason and the broken legs,
+        # not just the names of the keys holding them.
+        "degraded_reasons": {
+            "degraded": "no-provider",
+            "retrieval_degraded": ["vector"],
+        },
         "partial": True,
         "truncated": True,
     }
+
+
+def test_degraded_reasons_are_absent_when_nothing_degraded():
+    result = _meta.finalize_trust_envelope({"_meta": {"members_truncated": 2}})
+
+    assert result["_meta"]["state"] == {"truncated": True}
 
 
 def test_persisted_analysis_metadata_omits_unknowns_and_preserves_commits():

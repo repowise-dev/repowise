@@ -1,0 +1,183 @@
+{
+  "directive": {
+    "status": "unknown",
+    "headline": "Nothing new in what was compared, but part of the change was not analysed.",
+    "reasons": [
+      "1 changed file were not analysed, so this is not a clean bill."
+    ],
+    "next_actions": [
+      "Run: tests/test_requests.py tests/test_utils.py",
+      "Review the skipped files by hand; they were not compared."
+    ]
+  },
+  "health_delta": {
+    "status": "partial",
+    "explanation": "Compared 1 of 2 changed files; 1 were not analysed.",
+    "basis": "both_sides_analyzed",
+    "introduced": 0,
+    "worsened": 0,
+    "resolved": 0,
+    "by_dimension": {},
+    "by_severity": {},
+    "scope": {
+      "changed": 2,
+      "eligible": 1,
+      "analyzed": 1,
+      "skipped": 1,
+      "failed": 0
+    },
+    "top_findings": [],
+    "findings_total": 0,
+    "findings_emitted": 0,
+    "base": {
+      "ref": "HEAD",
+      "sha": "3bb56ba566ce783ebdc4e61929522fd1648c2527",
+      "kind": "commit"
+    },
+    "head": {
+      "ref": "WORKTREE",
+      "sha": "",
+      "kind": "working_tree"
+    },
+    "analyzer": {
+      "analyzer_version": 38,
+      "rules_fingerprint": "2f1b53b61c545f3ce5e44371e52b0428f710f8cee6f8d8547f8ca5c474e864fd",
+      "performance_model_version": 3
+    },
+    "skipped": {
+      "total": 1,
+      "by_reason": {
+        "unsupported_language": 1
+      }
+    },
+    "limits": [
+      "Both sides are analysed over the changed files only, so cross-file detectors (duplication, cross-function performance) see no wider context."
+    ]
+  },
+  "ref": "working tree",
+  "working_tree": true,
+  "fix_history": {
+    "available": true,
+    "density": 1.14,
+    "percentile": 72.5,
+    "files": [
+      {
+        "path": "src/requests/utils.py",
+        "churn": 2,
+        "fix_pressure": 2.28
+      },
+      {
+        "path": "tox.ini",
+        "churn": 2,
+        "fix_pressure": 0.0
+      }
+    ],
+    "overlap": {
+      "files": [
+        {
+          "file_path": "src/requests/utils.py",
+          "fix_count": 1,
+          "overlapping_lines": 0,
+          "changed_lines": 1,
+          "share_of_change": 0.333,
+          "last_fix_days_ago": 186
+        }
+      ],
+      "truncated": false,
+      "total_fixes": 1,
+      "files_with_fixes": 1,
+      "changed_lines_in_fixed_files": 1,
+      "line_overlap": "approximate",
+      "summary": "1 past bug-fix commit(s) touched 1 of the changed file(s). Line overlap is approximate (past ranges are numbered on their own parent commit); the per-file counts are not."
+    }
+  },
+  "risk_percentile": 40.2,
+  "review_priority": "moderate",
+  "classification": "Typical",
+  "exclude_patterns": [],
+  "is_fix": false,
+  "impacted_tests": {
+    "status": "inferred",
+    "basis": "inferred",
+    "map_present": false,
+    "tests_to_run": [
+      "tests/test_requests.py",
+      "tests/test_utils.py"
+    ],
+    "tests_to_run_kind": "test_file",
+    "total": 2,
+    "truncated": false,
+    "line_coverage": {
+      "untested_changes": [],
+      "stale_test_candidates": [],
+      "covered": [],
+      "no_coverage_data": []
+    },
+    "summary": "2 test file(s) reach the changed files in the graph. Inferred from the dependency graph, not measured. For the line-precise answer build the map with `coverage run --contexts=test` then `repowise coverage add`."
+  },
+  "branch_overlap": {
+    "base": "origin/main",
+    "current": "main",
+    "branches": [
+      {
+        "branch": "origin/3.0",
+        "ahead": 234,
+        "behind": 1206,
+        "last_commit": "2018-06-14",
+        "files": [
+          {
+            "file": "tox.ini",
+            "basis": "same file"
+          }
+        ]
+      },
+      {
+        "branch": "origin/proposed/3.0.0",
+        "ahead": 161,
+        "behind": 1206,
+        "last_commit": "2018-03-08",
+        "files": [
+          {
+            "file": "tox.ini",
+            "basis": "same file"
+          }
+        ]
+      }
+    ],
+    "scanned": 6,
+    "total": 6,
+    "truncated": false,
+    "summary": "2 of 6 open branches (6 exist) edit files this change also edits."
+  },
+  "diff_shape": "Diff shape: bigger than 40% of this repo's recent commits. Size and spread, not danger. Mechanics: get_change_risk(include=['diagnostics']).",
+  "_meta": {
+    "contract_version": 2,
+    "timing_ms": 2135.0,
+    "index_age_days": 49,
+    "indexed_commit": "4ed3d1b3204c",
+    "live_head": "3bb56ba566ce",
+    "index_behind": true,
+    "index_scope": {
+      "version": 1,
+      "projection": "compact",
+      "run_mode": "standard",
+      "content_provenance": "template",
+      "git_tier": "full",
+      "status": "unknown",
+      "fingerprint": "118fda63ca3a",
+      "full": "get_overview()"
+    },
+    "embedder": "mock",
+    "embedder_degraded": false,
+    "semantic_search": false,
+    "source": "live_git",
+    "response_budget": {
+      "limit_chars": 24000,
+      "tier": "default",
+      "serialized_chars": 3661
+    },
+    "completeness": {
+      "capped": false
+    }
+  }
+}

@@ -53,6 +53,9 @@ async def run_generation(
     only_page_ids: set[str] | None = None,
     preserved_page_ids: set[str] | None = None,
     test_run: bool = False,
+    selection_out: dict[str, Any] | None = None,
+    persisted_page_ids: set[str] | None = None,
+    stats_out: dict[str, int] | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -69,6 +72,13 @@ async def run_generation(
     ``preserved_page_ids`` is an out-parameter filled by a ``resume`` run with
     the ids it skipped because a prior run already wrote them. Persistence
     needs it to keep those pages out of the stale sweep.
+
+    ``persisted_page_ids`` (ids with a stored page row) narrows what a
+    ``resume`` run treats as already done; see ``PageGenerator.generate_all``.
+
+    ``stats_out`` is filled with ``embed_failed_pages``: how many pages this
+    run failed to embed, so a caller can refuse to call semantic search
+    healthy after a failed write.
 
     ``test_run`` limits generation to the top 10 files by PageRank, so a quick
     validation run can exercise the whole generation path without paying for a
@@ -93,7 +103,7 @@ async def run_generation(
     # Falls back to defaults when the pipeline entry point did not thread one through.
     base_config = generation_config if generation_config is not None else GenerationConfig()
     config = replace(base_config, max_concurrency=concurrency)
-    assembler = ContextAssembler(config)
+    assembler = ContextAssembler(config, repo_path=repo_path)
 
     # Test-run: limit to top 10 files by PageRank for a fast validation run.
     # Applied here rather than only in the orchestrator so it works whether the
@@ -101,9 +111,7 @@ async def run_generation(
     # separate phase (init's generate_docs=False flow) — the flag's documented
     # purpose is to cap the *generation* work, and this is where that happens.
     if test_run:
-        parsed_files = limit_to_top_pagerank(
-            parsed_files, graph_builder, n=TEST_RUN_FILE_LIMIT
-        )
+        parsed_files = limit_to_top_pagerank(parsed_files, graph_builder, n=TEST_RUN_FILE_LIMIT)
         if progress:
             progress.on_message("warning", f"Test run: limiting to {len(parsed_files)} files")
 
@@ -169,6 +177,14 @@ async def run_generation(
         if progress:
             progress.on_phase_start(name, total)
 
+    def on_warning(text: str) -> None:
+        """Surface a generation-time degradation through the progress callback
+        so it lands in the run's warnings (persisted as ``degraded``), not
+        only in structlog — the CLI pins structlog to ERROR unless -v, so a
+        log-only warning is invisible on the path that matters (issue #1369)."""
+        if progress:
+            progress.on_message("warning", text)
+
     generator = PageGenerator(
         llm_client,
         assembler,
@@ -179,6 +195,9 @@ async def run_generation(
         repo_path=repo_path,
     )
 
+    # The recorder carries the run's shared totals table; generation's own
+    # sub-spans write into it so they sit beside the top-level phases rather
+    # than in a second table nothing reads.
     generated_pages = await generator.generate_all(
         parsed_files,
         source_map,
@@ -200,7 +219,23 @@ async def run_generation(
         kg_data=kg_data,
         only_page_ids=only_page_ids,
         preserved_page_ids=preserved_page_ids,
+        timings=getattr(progress, "table", None),
+        on_warning=on_warning,
+        persisted_page_ids=persisted_page_ids,
     )
+    if stats_out is not None:
+        stats_out["embed_failed_pages"] = generator.embed_failed_pages
+    selection = getattr(generator, "selection", None)
+    if selection_out is not None and selection is not None:
+        selection_out.update(
+            eligible=selection.eligible_file_pages,
+            effective_cap=selection.effective_file_page_cap,
+            # A resumed run may reuse already-persisted file pages rather than
+            # returning them in ``generated_pages``.  Selection is the durable
+            # contract: after a successful phase every selected file has a page.
+            generated=len(selection.file_page_paths),
+        )
+        selection_out["omitted"] = max(0, selection_out["eligible"] - selection_out["generated"])
 
     # Onboarding summary — count generated slots and surface which ones
     # were gated out so the user can see the curated collection's state.
