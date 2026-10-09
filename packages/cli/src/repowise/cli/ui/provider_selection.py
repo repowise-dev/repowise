@@ -35,11 +35,13 @@ from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
 # ---------------------------------------------------------------------------
 # Provider metadata, read from the provider specs. Flag-only providers (mock)
-# are not offered; spec order is the table order, gemini first = default.
+# are not offered; rows follow ``picker_rank`` (gemini first = default).
 # ---------------------------------------------------------------------------
 
 _PICKER_SPECS: dict[str, ProviderSpec] = {
-    name: spec for name, spec in PROVIDER_SPECS.items() if spec.selectable
+    spec.name: spec
+    for spec in sorted(PROVIDER_SPECS.values(), key=lambda s: s.picker_rank or 0)
+    if spec.picker_rank is not None
 }
 _PROVIDER_DEFAULTS: dict[str, str] = {
     name: spec.default_model for name, spec in _PICKER_SPECS.items()

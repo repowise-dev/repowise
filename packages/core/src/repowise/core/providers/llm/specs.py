@@ -65,8 +65,9 @@ class ProviderSpec:
     autodetect_rank: int | None = None
     #: The agent slug whose CLI this provider drives.
     agent: str | None = None
-    #: Offered in pickers and catalogs. ``False`` means flag-only.
-    selectable: bool = True
+    #: Row in the init picker, whose first ready row is the default.
+    #: ``None`` means flag-only: left out of the picker and the server catalog.
+    picker_rank: int | None = None
     #: Short dim note beside the name in the init picker.
     note: str = ""
     #: Where to get a key (or the runtime) when the provider is not set up.
@@ -107,6 +108,7 @@ _LLM = "repowise.core.providers.llm"
 _SPECS: tuple[ProviderSpec, ...] = (
     ProviderSpec(
         name="gemini",
+        picker_rank=0,
         impl=f"{_LLM}.gemini:GeminiProvider",
         label="Google Gemini",
         default_model="gemini-3.5-flash-lite",
@@ -121,6 +123,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="anthropic",
+        picker_rank=2,
         impl=f"{_LLM}.anthropic:AnthropicProvider",
         label="Anthropic",
         default_model="claude-haiku-5-5",
@@ -134,6 +137,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="openai",
+        picker_rank=1,
         impl=f"{_LLM}.openai:OpenAIProvider",
         label="OpenAI",
         default_model="gpt-5.6-luna",
@@ -147,6 +151,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="openrouter",
+        picker_rank=10,
         impl=f"{_LLM}.openrouter:OpenRouterProvider",
         label="OpenRouter",
         default_model="google/gemini-3.5-flash-lite",
@@ -164,6 +169,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="deepseek",
+        picker_rank=3,
         impl=f"{_LLM}.deepseek:DeepSeekProvider",
         label="DeepSeek",
         default_model="deepseek-v4-flash",
@@ -177,6 +183,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="kimi",
+        picker_rank=4,
         impl=f"{_LLM}.kimi:KimiProvider",
         label="Kimi",
         default_model="kimi-for-coding",
@@ -190,6 +197,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="edenai",
+        picker_rank=5,
         impl=f"{_LLM}.edenai:EdenAIProvider",
         label="Eden AI",
         default_model="mistral/mistral-small-latest",
@@ -210,6 +218,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="ollama",
+        picker_rank=9,
         impl=f"{_LLM}.ollama:OllamaProvider",
         label="Ollama (Local)",
         default_model="qwen3.5:4b",
@@ -225,6 +234,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="litellm",
+        picker_rank=11,
         impl=f"{_LLM}.litellm:LiteLLMProvider",
         label="LiteLLM",
         default_model="groq/llama-3.1-70b-versatile",
@@ -239,6 +249,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="claude_cli",
+        picker_rank=7,
         impl=f"{_LLM}.claude_cli:ClaudeCliProvider",
         label="Claude Code (Local CLI)",
         default_model="claude_cli/claude-haiku-5-5",
@@ -257,6 +268,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="codex_cli",
+        picker_rank=6,
         impl=f"{_LLM}.codex_cli:CodexCliProvider",
         label="Codex (Local CLI)",
         default_model="codex_cli/default",
@@ -271,6 +283,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="opencode",
+        picker_rank=8,
         impl=f"{_LLM}.opencode:OpenCodeProvider",
         label="OpenCode (Local CLI)",
         default_model="opencode/default",
@@ -288,7 +301,6 @@ _SPECS: tuple[ProviderSpec, ...] = (
         label="Mock",
         default_model="mock",
         keyless=True,
-        selectable=False,
     ),
 )
 

@@ -502,3 +502,23 @@ def test_custom_gateway_no_save_key_still_persists_endpoint(
     env_text = (tmp_path / ".repowise" / ".env").read_text(encoding="utf-8")
     assert "OPENAI_BASE_URL=http://localhost:20128/v1" in env_text
     assert "OPENAI_API_KEY" not in env_text
+
+
+def test_picker_rows_keep_their_order() -> None:
+    """Row numbers and the pre-selected default (first ready row) follow this
+    order, so reordering the provider specs must not move them."""
+    assert provider_selection._PROVIDER_CHOICES == (
+        "gemini",
+        "openai",
+        "openai_compatible",
+        "anthropic",
+        "deepseek",
+        "kimi",
+        "edenai",
+        "codex_cli",
+        "claude_cli",
+        "opencode",
+        "ollama",
+        "openrouter",
+        "litellm",
+    )

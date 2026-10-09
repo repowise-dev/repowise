@@ -52,7 +52,7 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "setup_hint": spec.setup_hint,
     }
     for spec in PROVIDER_SPECS.values()
-    if spec.selectable
+    if spec.picker_rank is not None
 ]
 
 _CATALOG_BY_ID = {p["id"]: p for p in PROVIDER_CATALOG}
