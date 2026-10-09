@@ -1074,6 +1074,34 @@ class TestSecretPrecision:
         assert self._kinds(source, "src/client.tsx") == set()
 
     @pytest.mark.parametrize(
+        ("path", "source"),
+        [
+            ("src/Conn.kt", 'const val DISCOVERY_TOKEN = "discoveryToken"\n'),
+            ("src/Conn.kt", 'const val KEY_STORE_PASSWORD = "keystorePassword"\n'),
+            ("src/tokens.ts", "export const LANGUAGE_SERVER_WS_ADDRESS_TOKEN = 'LANGUAGE_SERVER_WS_ADDRESS_TOKEN';\n"),
+            ("src/AuthScheme.kt", 'const val MASKED_PASSWORD = "**************"\n'),
+            ("src/Auth.kt", 'val bearerToken = "Bearer ${auth.token.tokenValue}"\n'),
+            ("src/auth.ts", 'const token = "Basic ${btoa(user)}";\n'),
+            ("README.md", '--spring.datasource.password="DB PASSWORD"\n'),
+            ("README.md", 'DB_PASSWORD="YOUR DB PASSWORD"\n'),
+        ],
+    )
+    def test_additional_placeholders_are_not_secrets(self, path: str, source: str) -> None:
+        assert self._kinds(source, path) == set()
+
+    @pytest.mark.parametrize(
+        ("source", "kind"),
+        [
+            ('TOKEN = "xQzRmWpLkVnBtYcH"\n', "hardcoded_secret"),
+            ('TOKEN = "Bearer eyJhbGciOiJIUzI1NiJ9abc"\n', "hardcoded_secret"),
+            ('const val API_TOKEN = "productionAccessKey"\n', "hardcoded_secret"),
+            ('password="Tr0ub4dor 3xyz"\n', "hardcoded_password"),
+        ],
+    )
+    def test_credential_like_values_still_fire(self, source: str, kind: str) -> None:
+        assert self._kinds(source) == {kind}
+
+    @pytest.mark.parametrize(
         "source",
         [
             'TOKEN = "sk-live-9f8a7b6c5d4e"\n',

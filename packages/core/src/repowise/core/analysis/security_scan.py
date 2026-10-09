@@ -84,6 +84,8 @@ def _is_valid_credential_value(val: str) -> bool:
     v = val.lower().strip()
     if v.startswith("<") or _ANGLE_SLOT.search(v) or v in _CREDENTIAL_EXACT_PLACEHOLDERS:
         return False
+    if len(set(v)) == 1 and not v.isalnum():
+        return False
     return not any(p in v for p in _CREDENTIAL_SUBSTRING_PLACEHOLDERS)
 
 
@@ -358,21 +360,38 @@ _KEYWORD_KINDS: frozenset[str] = frozenset({"hardcoded_password", "hardcoded_sec
 # is a key's or marker's name, a constant holding its own name, and a template
 # placeholder or shell substitution is filled in when it runs; none of them is a
 # credential. Letters only: a digit or capital makes it look like a key.
-_KEY_NAME_VALUE = re.compile(r"[a-z]+(?:[_-][a-z]+)+|[a-z_]*_[a-z_]*")
 _TEMPLATE_VALUE = re.compile(r"\{\{.*\}\}|\$\{[^}]*\}|\$\(.*\)")
+_SCHEME_TEMPLATE_VALUE = re.compile(
+    r"(?i:(?:bearer|basic|token))\s+(?:\{\{.*\}\}|\$\{[^}]*\}|\$\(.*\))"
+)
+_OWN_NAME_VALUE = re.compile(r"[A-Za-z_-]+")
+_KEY_NAME_VALUE = re.compile(r"[a-z]+(?:[_-][a-z]+)+|[a-z_]*_[a-z_]*")
 
 
-def _is_secret_value(kind: str, val: str) -> bool:
+def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
     """True when *val*, captured by a *kind* pattern, looks like a real credential."""
     if not _is_valid_credential_value(val):
         return False
     if kind not in _KEYWORD_KINDS:
         return True
-    if kind == "hardcoded_secret" and _KEY_NAME_VALUE.fullmatch(val):
-        return False
     value = val.strip()
+    if kind == "hardcoded_secret" and _KEY_NAME_VALUE.fullmatch(value):
+        return False
+    normalized_name = re.sub(r"[_-]", "", name).lower()
+    normalized_value = re.sub(r"[_-]", "", value).lower()
+    if (
+        _OWN_NAME_VALUE.fullmatch(value)
+        and normalized_name
+        and (normalized_name == normalized_value or normalized_name.endswith(normalized_value))
+    ):
+        return False
     # A leading ``--`` is a CSS custom property or a CLI flag, not a key.
-    return not (_TEMPLATE_VALUE.fullmatch(value) or _is_plain_word(value) or value.startswith("--"))
+    return not (
+        _TEMPLATE_VALUE.fullmatch(value)
+        or _SCHEME_TEMPLATE_VALUE.fullmatch(value)
+        or _is_plain_word(value)
+        or value.startswith("--")
+    )
 
 
 def _is_plain_word(value: str) -> bool:
@@ -381,8 +400,14 @@ def _is_plain_word(value: str) -> bool:
     Bounded, because a long run of letters in mixed or single case is as random
     as any key.
     """
-    single_case = value.islower() or value.isupper() or value.istitle()
-    return value.isalpha() and single_case and len(value) <= 20
+    words = value.split(" ")
+    single_case = all(word.islower() or word.isupper() or word.istitle() for word in words)
+    return (
+        1 <= len(words) <= 4
+        and all(word.isalpha() for word in words)
+        and single_case
+        and len(value) <= 20
+    )
 
 
 def _redaction(val: str) -> str:
@@ -783,9 +808,14 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 # Vendor key shapes are real wherever they sit, comments included.
                 match = pattern.search(line)
             if match:
-                value = line[slice(*_value_span(kind, match, line))] if match.groups() else ""
+                value_span = _value_span(kind, match, line) if match.groups() else (0, 0)
+                value = line[slice(*value_span)] if match.groups() else ""
                 if kind in SECRET_KINDS:
-                    if not _is_secret_value(kind, value):
+                    assignment = re.search(
+                        r"([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*['\"]?$", line[: value_span[0]]
+                    )
+                    name = assignment.group(1) if assignment else ""
+                    if not _is_secret_value(kind, value, name):
                         continue
                     if is_low_sev_file:
                         severity = "low"
