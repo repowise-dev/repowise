@@ -312,6 +312,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
           <RefactoringBoard
             opportunities={opportunities}
             summary={summary}
+            facets={data?.facets}
             structuralOpportunities={structural?.items}
             serverState={serverState}
             onServerStateChange={(change) => {

@@ -99,11 +99,12 @@ export interface RefactoringBoardProps {
   opportunities: RefactoringOpportunity[];
   /** The repository rollup the endpoint returns. Feeds the lede. */
   summary?: RefactoringOpportunityRollup | null | undefined;
+  /** The page's facet counts, which the lede's filter chips count. */
+  facets?: Record<string, Record<string, number>> | null | undefined;
   /** Bounded structural head for Start here, already filtered to lead types. */
   structuralOpportunities?: RefactoringOpportunity[] | undefined;
   serverState: RefactoringBoardServerState;
   onServerStateChange: (change: Partial<RefactoringBoardServerState>) => void;
-  indexedFileCount?: number | undefined;
   onOpen?: ((opportunity: RefactoringOpportunity) => void) | undefined;
   onAiPrompt?: ((opportunity: RefactoringOpportunity) => void) | undefined;
   onStatusChange?:
@@ -125,10 +126,10 @@ export interface RefactoringBoardProps {
 export function RefactoringBoard({
   opportunities,
   summary,
+  facets,
   structuralOpportunities,
   serverState,
   onServerStateChange,
-  indexedFileCount,
   onOpen,
   onAiPrompt,
   onStatusChange,
@@ -178,7 +179,15 @@ export function RefactoringBoard({
   return (
     <div className="space-y-10">
       {showLede ? (
-        <RefactoringLede summary={summary} indexedFileCount={indexedFileCount} />
+        <RefactoringLede
+          summary={summary}
+          facets={facets}
+          quickWinsActive={serverState.effort === "S"}
+          onQuickWins={() =>
+            onServerStateChange({ effort: serverState.effort === "S" ? null : "S", offset: 0 })
+          }
+          onStructural={onSeeStructural}
+        />
       ) : null}
 
       {showLede && (structuralOpportunities?.length ?? 0) > 0 ? (
