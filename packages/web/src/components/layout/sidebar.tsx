@@ -456,7 +456,7 @@ export function Sidebar({
           version were unreachable without expanding first. */}
       {isIconOnly ? (
         <div className="flex flex-col items-center gap-1 border-t border-[var(--color-border-default)] py-1.5">
-          <LanguageSwitcher />
+          <LanguageSwitcher compact />
           <ThemeToggle compact />
         </div>
       ) : (

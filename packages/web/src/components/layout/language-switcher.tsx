@@ -40,10 +40,12 @@ const SHORT_LABEL: Record<Locale, string> = {
 };
 
 export interface LanguageSwitcherProps {
+  /** Globe only, for the 56px collapsed sidebar where the mark does not fit. */
+  compact?: boolean;
   className?: string;
 }
 
-export function LanguageSwitcher({ className }: LanguageSwitcherProps) {
+export function LanguageSwitcher({ compact, className }: LanguageSwitcherProps) {
   const [open, setOpen] = React.useState(false);
   const active = useLocale() as Locale;
   const t = useTranslations("language");
@@ -106,7 +108,7 @@ export function LanguageSwitcher({ className }: LanguageSwitcherProps) {
           )}
         >
           <Globe className="h-3.5 w-3.5 shrink-0" aria-hidden />
-          <span>{SHORT_LABEL[active]}</span>
+          {!compact && <span lang={active}>{SHORT_LABEL[active]}</span>}
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" side="top" className="w-44 p-1">
