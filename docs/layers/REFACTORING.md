@@ -220,6 +220,10 @@ Most plans answer a health finding, so per-path marker rules in
   object's fields the span assigns directly, under `new_symbol`. A span that uses `this`
   outside a class, or writes fields of a Go value receiver, is a judgment call
   (`receiver_unbound`, `receiver_copy_written`).
+- An Extract Method plan writes out the new helper's header and the line that
+  replaces the span, in the file's language, with parameter types where the code
+  declares them. Plan detail shows both with a copy button. Where the code names
+  no helper or type, the text reads `<name>` or `<type>` for you to fill in.
 - Move Method never targets a class the method only instantiates, or an ancestor of
   its own class.
 - Split File works on any language with call resolution and suggests a split only

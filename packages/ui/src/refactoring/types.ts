@@ -8,6 +8,8 @@
  */
 
 import type {
+  ExtractCallSite,
+  ExtractSlot,
   GeneratedCode,
   RefactoringPlan,
   RefactoringType,
@@ -172,6 +174,14 @@ export interface ExtractMethodPlan {
   assigns: string[] | null;
   /** Why the helper cannot share the receiver as it is (a judgment call). */
   receiver_hazard: "receiver_unbound" | "receiver_copy_written" | null;
+  /** Typed parameters and outputs; empty for a plan stored before them. */
+  typed_params: ExtractSlot[];
+  typed_returns: ExtractSlot[];
+  /** The helper's header in the file's language, and the statement replacing
+   *  the span. Null when the helper's form is unknown or the plan predates it.
+   *  `<name>` / `<type>` are placeholders to fill. */
+  signature_text: string | null;
+  call_site: ExtractCallSite | null;
 }
 
 const RECEIVER_HAZARDS = ["receiver_unbound", "receiver_copy_written"] as const;
@@ -195,12 +205,27 @@ export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
     uses_receiver: typeof sym.uses_receiver === "boolean" ? sym.uses_receiver : null,
     assigns: Array.isArray(sym.assigns) ? (sym.assigns as string[]) : null,
     receiver_hazard: RECEIVER_HAZARDS.find((h) => h === p.receiver_hazard) ?? null,
+    typed_params: Array.isArray(sym.params) ? (sym.params as ExtractSlot[]) : [],
+    typed_returns: Array.isArray(sym.returns) ? (sym.returns as ExtractSlot[]) : [],
+    signature_text: typeof sym.signature_text === "string" ? sym.signature_text : null,
+    call_site: callSite(p.call_site),
   };
 }
 
-/** The helper an extraction proposes, as one line: `async name(a, b) -> c`. */
+function callSite(raw: unknown): ExtractCallSite | null {
+  const rec = (raw ?? null) as Record<string, unknown> | null;
+  return rec && typeof rec.new_text === "string" && rec.replace_span && typeof rec.replace_span === "object"
+    ? (rec as unknown as ExtractCallSite)
+    : null;
+}
+
+/** The placeholder a plan with no anchored name uses in its texts. */
+export const HELPER_NAME_PLACEHOLDER = "<name>";
+
+/** The helper an extraction proposes, as one line: `async name(a, b) -> c`.
+ *  For a plan stored before the server rendered `signature_text`. */
 export function extractMethodSignature(em: ExtractMethodPlan): string {
-  const name = em.suggested_name ?? "helper";
+  const name = em.suggested_name ?? HELPER_NAME_PLACEHOLDER;
   const returns = em.returns.length ? ` -> ${em.returns.join(", ")}` : "";
   return `${em.needs_async ? "async " : ""}${name}(${em.params.join(", ")})${returns}`;
 }

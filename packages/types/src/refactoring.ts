@@ -79,6 +79,24 @@ export interface PlanCoChangePartner {
   commits: number;
 }
 
+/** An Extract Method helper parameter's role: ``inout`` when the helper also
+ *  returns the value's new state. Mirrors ``refactoring.render.PARAM_MODES``. */
+export type ExtractParamMode = "in" | "inout";
+
+/** One helper parameter or output, with its declared type (null: unknown). */
+export interface ExtractSlot {
+  name: string;
+  type: string | null;
+  mode?: ExtractParamMode;
+}
+
+/** The statement that replaces an Extract Method span. Spec text for whoever
+ *  applies the plan; Repowise never applies it. */
+export interface ExtractCallSite {
+  replace_span: { start: number; end: number };
+  new_text: string;
+}
+
 export interface RefactoringPlan {
   id: string;
   refactoring_type: RefactoringType | string;

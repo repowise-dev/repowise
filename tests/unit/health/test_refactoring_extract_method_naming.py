@@ -37,7 +37,9 @@ def _functions(language: str, ext: str, src: str):
 
 
 def _names(src: str, language: str = "python", ext: str = "py") -> list[tuple[str, str | None]]:
-    """``(function, suggested_name)`` per plan, every function flagged."""
+    """``(function, suggested_name)`` per plan, every function flagged. The
+    name is read before the private form (Python's ``_``), which
+    ``test_extract_method_render`` pins."""
     fns = _functions(language, ext, src)
     ctx = RefactoringContext(
         file_path=f"m.{ext}",
@@ -47,7 +49,11 @@ def _names(src: str, language: str = "python", ext: str = "py") -> list[tuple[st
         function_analyses=fns,
     )
     plans = sorted(ExtractMethodDetector().detect(ctx), key=lambda s: s.line_start or 0)
-    return [(s.target_symbol, s.plan["suggested_name"]) for s in plans]
+    return [(s.target_symbol, _starting_name(s.plan["suggested_name"], language)) for s in plans]
+
+
+def _starting_name(name: str | None, language: str) -> str | None:
+    return name.removeprefix("_") if name and language == "python" else name
 
 
 def _name(src: str, language: str = "python", ext: str = "py") -> str | None:

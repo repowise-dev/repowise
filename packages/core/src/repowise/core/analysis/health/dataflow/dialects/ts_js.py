@@ -68,6 +68,7 @@ class TsJsDefUseDialect(BaseDefUseDialect):
     language = "typescript"
     member_access_kinds = frozenset({"member_expression"})
     receiver_write_kinds = _ASSIGN_KINDS | _AUG_KINDS | _UPDATE_KINDS
+    type_holder_kinds = frozenset({"required_parameter", "optional_parameter", "variable_declarator"})
     keyword_kinds = frozenset()  # object-property keys are not variable reads.
     # ``shorthand_property_identifier`` is an object-literal read (``{ days }``
     # reads the local ``days``). Its ``_pattern`` twin is the destructuring

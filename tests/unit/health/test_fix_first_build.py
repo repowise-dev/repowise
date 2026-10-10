@@ -98,7 +98,9 @@ def test_text_quotes_the_stored_numbers() -> None:
     )
     assert ("size", "CCN 44, 50 lines, nests 4 deep") in [(f.label, f.value) for f in core.facts]
     assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
-    assert core.action.steps[1].text == "Extract lines 40-41 of run into a helper"
+    assert core.action.steps[1].text == (
+        "Extract lines 40-41 of run into <name>(); name it for what the lines do"
+    )
     # The model's credit is the gain, with one decimal; the builder does not re-judge it.
     assert (core.gain.value, core.gain.text) == (2.0, "+2.0 health on this file")
     assert core.source.plan_ids == ("refac2_big", "refac2_tiny")

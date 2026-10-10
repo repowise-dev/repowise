@@ -91,9 +91,9 @@ describe("extract_method suggested_name reaches the rendered prompt", () => {
     expect(prompt).not.toContain("a clearly named helper");
   });
 
-  it("keeps the generic fallback for a plan stored before names were computed", () => {
+  it("asks the agent to fill the name placeholder when no name was anchored", () => {
     const prompt = buildRefactoringPlanPrompt({ plan: methodPlan(null) });
-    expect(prompt).toContain("a clearly named helper");
+    expect(prompt).toContain("`<name>` (name it for what the lines do)");
     expect(extractMethodPlan(methodPlan(null)).suggested_name).toBeNull();
   });
 

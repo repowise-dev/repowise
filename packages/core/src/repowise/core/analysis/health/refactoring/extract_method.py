@@ -64,6 +64,14 @@ Plan shape (open dict, no migration):
   ``needs_async`` stays for stored rows and their readers. ``plan.receiver_hazard`` is set only when the
   receiver cannot be shared as it is (``_receiver_hazard``), which makes the
   step a judgment call.
+- ``new_symbol`` also carries ``params`` (``[{"name", "type", "mode": "in" |
+  "inout"}]``, the receiver left out of a method's) and ``returns``
+  (``[{"name", "type"}]``), each type read off the name's declaration (None
+  without one), and ``signature_text``, the helper's header in the file's
+  language; ``plan.call_site`` = ``{"replace_span": {"start", "end"},
+  "new_text": str}`` is the statement replacing the span (``render``). Both
+  texts are None when ``kind`` is. A missing name reads ``<name>`` in them,
+  and ``suggested_name`` is in the language's private form (Python ``_x``).
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` -- the size and
   complexity (code lines, decision points) the residual method sheds.
 - ``blast_radius`` = ``{"scope": "local"}`` -- extraction is local (a new
@@ -90,6 +98,7 @@ from ..dataflow import find_extractions, get_defuse_dialect
 from ..effort import effort_bucket
 from ..perf.dialects import PERF_DIALECTS
 from ..scoring import severity_deduction
+from . import render
 from .helper_naming import ScopeNames, helper_name, out_value_name
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, register
@@ -97,7 +106,7 @@ from .registry import RefactoringDetector, register
 if TYPE_CHECKING:
     from ..complexity.languages import LanguageNodeMap
     from ..dataflow import Extraction, FunctionAnalysis
-    from ..dataflow.dialects.base import Receiver
+    from ..dataflow.dialects.base import BaseDefUseDialect, Receiver
     from ..models import Severity
 
 # The function-level structural biomarkers this detector answers. A function is
@@ -161,6 +170,15 @@ class ExtractMethodDetector(RefactoringDetector):
             if best is None:
                 continue
             impact, share, source = self._impact_for(analysis, best, matched)
+            name = render.helper_name(
+                ctx.language,
+                names.claim(
+                    analysis,
+                    helper_name(analysis, best, lmap, ctx.language, names.imports(fn_node)),
+                ),
+            )
+            symbol = _symbol_fields(best, receiver)
+            call_site = _render_fields(analysis, best, dialect, ctx.language, name, symbol)
             out.append(
                 RefactoringSuggestion(
                     refactoring_type=self.name,
@@ -172,14 +190,10 @@ class ExtractMethodDetector(RefactoringDetector):
                         "span": {"start": best.start_line, "end": best.end_line},
                         "params": list(best.params),
                         "returns": list(best.returns),
-                        "suggested_name": names.claim(
-                            analysis,
-                            helper_name(
-                                analysis, best, lmap, ctx.language, names.imports(analysis.fn_node)
-                            ),
-                        ),
+                        "suggested_name": name,
                         **_async_fields(analysis, best, lmap, ctx.language),
-                        **_symbol_fields(best, receiver),
+                        **symbol,
+                        **call_site,
                     },
                     evidence={
                         "slice_nloc": best.slice_nloc,
@@ -307,6 +321,83 @@ def _symbol_fields(extraction: Extraction, receiver: Receiver | None) -> dict[st
     if hazard:
         fields["receiver_hazard"] = hazard
     return fields
+
+
+def _render_fields(
+    analysis: FunctionAnalysis,
+    extraction: Extraction,
+    dialect: BaseDefUseDialect | None,
+    language: str | None,
+    name: str | None,
+    symbol: dict[str, Any],
+) -> dict[str, Any]:
+    """Add the typed ``params`` / ``returns`` and the rendered
+    ``signature_text`` to ``symbol["new_symbol"]``, and return ``call_site``
+    (``render``). Types are read off the retained tree at each name's
+    declaration, only for this plan's few names; ``signature_text`` and
+    ``call_site`` are None when the helper's form is unknown."""
+    new_symbol = symbol["new_symbol"]
+    types = _declared_types(analysis, extraction, dialect)
+    # A method reaches its instance through the receiver, not an argument.
+    own = new_symbol["receiver"] if new_symbol["kind"] == "method" else None
+    params = tuple(render.Slot(p, types.get(p)) for p in extraction.params if p != own)
+    returns = tuple(render.Slot(r, types.get(r)) for r in extraction.returns)
+    declared, rebound = _out_binding(analysis, extraction)
+    fn_node = analysis.fn_node
+    shape = render.HelperShape(
+        language=language or "",
+        name=name,
+        kind=new_symbol["kind"],
+        is_async=extraction.needs_async,
+        params=params,
+        returns=returns,
+        receiver=new_symbol["receiver"],
+        receiver_decl=dialect.receiver_decl(fn_node) if dialect and fn_node else None,
+        out_declared=declared,
+        out_rebound=rebound,
+    )
+    texts = render.render(shape)
+    new_symbol["params"] = render.symbol_params(params, returns)
+    new_symbol["returns"] = [{"name": r.name, "type": r.type} for r in returns]
+    new_symbol["signature_text"] = texts[0] if texts else None
+    span = {"start": extraction.start_line, "end": extraction.end_line}
+    return {"call_site": {"replace_span": span, "new_text": texts[1]} if texts else None}
+
+
+def _declared_types(
+    analysis: FunctionAnalysis, extraction: Extraction, dialect: BaseDefUseDialect | None
+) -> dict[str, str]:
+    """Each IN / OUT name's declared type, from its latest typed write at or
+    before the span's end (a parameter, a typed declaration)."""
+    fn_node = analysis.fn_node
+    wanted = set(extraction.params) | set(extraction.returns)
+    if dialect is None or fn_node is None or not wanted:
+        return {}
+    found: dict[str, str] = {}
+    for d in reversed(analysis.def_use.definitions):
+        if d.var not in wanted or d.var in found or d.line > extraction.end_line:
+            continue
+        row = d.line - 1
+        node = fn_node.descendant_for_point_range((row, d.column), (row, d.column + len(d.var)))
+        if node is not None and node.text == d.var.encode():
+            typ = dialect.declared_type(node)
+            if typ:
+                found[d.var] = typ
+    return found
+
+
+def _out_binding(analysis: FunctionAnalysis, extraction: Extraction) -> tuple[bool, bool]:
+    """Whether the span's output is declared in it (the call must declare it:
+    an in-span declaration, or no write before the span), and whether it is
+    written again after it."""
+    if not extraction.returns:
+        return False, False
+    out, s, e = extraction.returns[0], extraction.start_line, extraction.end_line
+    writes = [d for d in analysis.def_use.definitions if d.var == out]
+    declared = any(s <= d.line <= e and d.declares for d in writes) or not any(
+        d.line < s for d in writes
+    )
+    return declared, any(d.line > e for d in writes)
 
 
 def _receiver_hazard(

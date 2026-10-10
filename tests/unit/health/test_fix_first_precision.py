@@ -577,5 +577,5 @@ def test_a_span_that_awaits_is_extracted_into_an_awaited_async_helper() -> None:
         "async load_rows(db) -> rows, awaited at the call site"
     )
     assert text.signature(None, ["db"], [], is_async=True) == (
-        "an async helper taking (db), awaited at the call site"
+        "async <name>(db), awaited at the call site; name it for what the lines do"
     )

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import posixpath
 
+from ..refactoring.render import brief
+
 TITLE_MAX = 90
 
 #: What the finding says about the code, completing "<subject> ...". The
@@ -338,15 +340,11 @@ def history_fact(marker: str, details: dict, function: str | None = None) -> str
 def signature(
     name: str | None, params: list[str], returns: list[str], *, is_async: bool = False
 ) -> str:
-    """``compute_x(a, b) -> c``; a long parameter list is cut with its count.
-    A span that awaits becomes ``async compute_x(...)``, awaited where it was."""
-    shown = ", ".join(params[:4]) + (f", +{len(params) - 4} more" if len(params) > 4 else "")
-    helper = "an async helper" if is_async else "a helper"
-    out = f"{name}({shown})" if name else helper + (f" taking ({shown})" if params else "")
-    out += f" -> {', '.join(returns[:3])}" if returns else ""
-    if not is_async:
-        return out
-    return f"{'async ' if name else ''}{out}, awaited at the call site"
+    """``_load(path) -> config``, as the plan's renderer phrases it
+    (``refactoring.render.brief``); a helper with no name reads ``<name>(...)``
+    and asks the reader to name it."""
+    out = brief(name, params, returns, is_async=is_async)
+    return out if name else f"{out}; name it for what the lines do"
 
 
 def first_sentence(text: str) -> str:

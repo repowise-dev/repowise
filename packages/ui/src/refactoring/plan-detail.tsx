@@ -1,6 +1,8 @@
 "use client";
 
 import { ArrowRight, CornerDownRight, FilePlus2, Layers, Scissors } from "lucide-react";
+import { getLanguageFromPath } from "../c4/panels/CodeViewer";
+import { HighlightedCodeBlock } from "../shared/code-block";
 import { ProvenancePathList } from "../shared/provenance-path-list";
 import {
   blastFiles,
@@ -430,6 +432,7 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
     const lines = em.span ? em.span.end - em.span.start + 1 : 0;
     const ccn = Number(plan.evidence?.ccn_removed ?? 0);
     const sig = extractMethodSignature(em);
+    const codeLanguage = getLanguageFromPath(plan.file_path);
     return (
       <div className="space-y-3">
         {hideIntro ? null : (
@@ -462,12 +465,39 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
         ) : null}
 
         <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5">
-          <div className="mb-1.5 text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
-            Inferred signature
-          </div>
-          <code className="block break-all font-mono text-xs text-[var(--color-text-primary)]">
-            {sig}
-          </code>
+          {em.signature_text && em.call_site ? (
+            <>
+              <HighlightedCodeBlock
+                code={em.signature_text}
+                language={codeLanguage}
+                label="New helper"
+                compact
+                className="my-0"
+              />
+              <HighlightedCodeBlock
+                code={em.call_site.new_text}
+                language={codeLanguage}
+                label={`Replaces lines ${em.call_site.replace_span.start}–${em.call_site.replace_span.end}`}
+                compact
+                className="mb-0 mt-2"
+              />
+              {/<(name|type)>/.test(em.signature_text + em.call_site.new_text) ? (
+                <p className="mt-2 text-2xs text-[var(--color-text-tertiary)]">
+                  Replace {"<name>"} with a name for what the lines do, and any {"<type>"} with the
+                  value's type.
+                </p>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <div className="mb-1.5 text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
+                Inferred signature
+              </div>
+              <code className="block break-all font-mono text-xs text-[var(--color-text-primary)]">
+                {sig}
+              </code>
+            </>
+          )}
           <div className="mt-2 flex flex-wrap gap-3 text-2xs text-[var(--color-text-tertiary)]">
             <span>
               In (params):{" "}

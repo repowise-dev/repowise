@@ -101,6 +101,7 @@ class RustDefUseDialect(BaseDefUseDialect):
     language = "rust"
     member_access_kinds = frozenset({"field_expression"})
     receiver_write_kinds = _ASSIGN_KINDS | _AUG_KINDS
+    type_holder_kinds = frozenset({"parameter", "let_declaration"})
     keyword_kinds = frozenset()  # struct-literal field names are not reads.
     # ``self`` is its own node type in tree-sitter-rust, not an ``identifier``;
     # without it here every ``self.field`` read would drop its receiver (Go and
@@ -149,6 +150,14 @@ class RustDefUseDialect(BaseDefUseDialect):
                 continue
             self._targets(child.child_by_field_name("pattern"), out, sink)
         return tuple(out)
+
+    def receiver_decl(self, fn_node: Node) -> str | None:
+        """The ``self_parameter`` as written (``&self``, ``&mut self``, ``self``)."""
+        params = fn_node.child_by_field_name("parameters")
+        found = next(
+            (c for c in params.named_children if c.type == "self_parameter"), None
+        ) if params is not None else None
+        return (found.text or b"").decode("utf-8", "replace") if found is not None else None
 
     def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """``self`` when the signature takes it (``self_parameter``)."""

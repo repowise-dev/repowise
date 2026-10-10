@@ -120,7 +120,11 @@ def test_python_span_writing_self_fields_is_a_method_and_names_them():
 def test_python_plan_carries_new_symbol():
     plans = {p.plan["span"]["start"]: p for p in _plans("python", "py", _PY)}
     (plan,) = plans.values()
-    sym = plan.plan["new_symbol"]
+    sym = {
+        k: v
+        for k, v in plan.plan["new_symbol"].items()
+        if k not in ("params", "returns", "signature_text")
+    }
     if plan.plan["span"]["start"] >= 12:
         assert sym == {
             "kind": "method",

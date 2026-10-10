@@ -52,7 +52,8 @@ For Extract Method:
   span; never one already taken in the helper's scope; else absent), and
   whether the span awaits, so the helper is async and its call awaited. An
   awaiting plan adds ``"async_host": bool``, False when the enclosing function
-  is not async.
+  is not async. ``new_symbol`` and ``call_site`` carry the helper's typed
+  parameters, its header and its call, written out (``extract_method``).
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` — the size and
   complexity (code lines, decision points) the residual method sheds.
 - ``blast_radius`` = ``{"scope": "local"}`` — the one type whose blast radius is

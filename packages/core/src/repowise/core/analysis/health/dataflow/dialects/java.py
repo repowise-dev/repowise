@@ -55,6 +55,10 @@ class JavaDefUseDialect(BaseDefUseDialect):
     language = "java"
     member_access_kinds = frozenset({"field_access"})
     receiver_write_kinds = _ASSIGN_KINDS | _UPDATE_KINDS
+    type_holder_kinds = frozenset(
+        {"formal_parameter", "local_variable_declaration", "enhanced_for_statement"}
+    )
+    type_wrapper_kinds = frozenset({"variable_declarator"})
     keyword_kinds = frozenset()  # Java has no keyword arguments.
 
     def _is_scope_boundary(self, node: Node) -> bool:

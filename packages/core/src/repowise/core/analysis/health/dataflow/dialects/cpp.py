@@ -84,6 +84,10 @@ class CppDefUseDialect(BaseDefUseDialect):
     member_access_kinds = frozenset({_FIELD_EXPRESSION})
     receiver_write_kinds = _ASSIGN_KINDS | _UPDATE_KINDS
     keyword_kinds = frozenset()  # C++ has no keyword arguments.
+    type_holder_kinds = frozenset(
+        {"parameter_declaration", "optional_parameter_declaration", "declaration"}
+    )
+    type_wrapper_kinds = frozenset({"init_declarator", "pointer_declarator", "reference_declarator"})
 
     def _is_scope_boundary(self, node: Node) -> bool:
         return node.type in _SCOPE_BOUNDARIES
@@ -129,6 +133,21 @@ class CppDefUseDialect(BaseDefUseDialect):
             if name_node is not None:
                 out.append(self._occ(name_node))
         return tuple(out)
+
+    def _declarator_token(self, node: Node) -> str:
+        """``*`` for a pointer declarator, ``&`` / ``&&`` for a reference."""
+        if node.type == "init_declarator" or not node.children:
+            return ""
+        return (node.children[0].text or b"").decode("utf-8", "replace")
+
+    def _type_prefix(self, holder: Node, typ: Node) -> str:
+        """``const`` / ``volatile`` written before the type."""
+        quals = [
+            (c.text or b"").decode("utf-8", "replace")
+            for c in holder.named_children
+            if c.type == "type_qualifier" and c.end_byte <= typ.start_byte
+        ]
+        return "".join(q + " " for q in quals)
 
     def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """``this`` for a member function defined in its class (a bare name

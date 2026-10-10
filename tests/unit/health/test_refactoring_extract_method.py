@@ -585,6 +585,7 @@ def test_detector_emits_suggestion_for_flagged_function():
         "suggested_name",
         "needs_async",
         "new_symbol",
+        "call_site",
     }
     assert s.plan["needs_async"] is False
     # A module-level function: the helper is a plain function too.
@@ -594,7 +595,11 @@ def test_detector_emits_suggestion_for_flagged_function():
         "receiver": None,
         "uses_receiver": False,
         "assigns": [],
+        "params": s.plan["new_symbol"]["params"],
+        "returns": s.plan["new_symbol"]["returns"],
+        "signature_text": s.plan["new_symbol"]["signature_text"],
     }
+    assert s.plan["call_site"]["replace_span"] == s.plan["span"]
     assert set(s.plan["span"]) == {"start", "end"}
     assert set(s.evidence) == {"slice_nloc", "ccn_removed"}
     # A categorical claim, not a count: extraction is local, so there is nothing
@@ -615,7 +620,8 @@ def test_plan_carries_a_computed_name_not_a_hardcoded_none():
     # The slice's single OUT value is ``average``, so the span is by
     # construction the code that computes it.
     assert s.plan["returns"] == ["average"]
-    assert s.plan["suggested_name"] == "compute_average"
+    # In Python's private form.
+    assert s.plan["suggested_name"] == "_compute_average"
 
 
 class _Extraction:
@@ -697,7 +703,7 @@ def test_suggested_name_keeps_the_out_values_own_casing():
 @pytest.mark.parametrize(
     ("language", "expected"),
     [
-        ("python", "compute_average"),
+        ("python", "_compute_average"),
         ("rust", "compute_average"),
         ("cpp", "compute_average"),
         ("java", "computeAverage"),

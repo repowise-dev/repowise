@@ -40,6 +40,9 @@ class Definition:
     block_id: int
     index: int
     line: int  # 1-indexed
+    #: Where on ``line`` the written name starts (0-indexed), so the write's
+    #: node can be found again in the retained tree.
+    column: int = 0
     #: Where on ``line`` a declared name starts to exist; see ``Occurrence``.
     declared_at: int | None = None
     #: The write declares the name (``Occurrence.declares``).
@@ -101,6 +104,7 @@ def compute_def_use(
             block_id=block_id,
             index=counter,
             line=occ.line,
+            column=occ.column,
             declared_at=occ.declared_at,
             declares=occ.declares,
         )
