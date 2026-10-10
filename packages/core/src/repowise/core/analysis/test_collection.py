@@ -144,6 +144,7 @@ def plan_scopes(
     *cancelled* is polled between file reads, so an abandoned selection stops
     reading the checkout.
     """
+    from ..test_paths import is_test_related_path
     from .fixture_readers import with_fixture_readers
     from .selection_scopes import (
         is_manifest,
@@ -151,7 +152,7 @@ def plan_scopes(
         needs_namers,
         trigger_scopes,
     )
-    from .test_selection import file_namers, is_runnable_test
+    from .test_selection import file_namers, is_code_file
 
     paths = [*change.files, *change.deleted]
     # A file that runs everything anyway makes every namer search moot.
@@ -160,8 +161,10 @@ def plan_scopes(
     namers: dict[str, list[str]] = {}
     if asked:
         namers = file_namers(asked, _scan_texts(checkout, asked, cancelled), is_manifest)
-        tests = [p for p in checkout.tracked if is_runnable_test(p, checkout.roots)]
-        namers = with_fixture_readers(namers, tests, checkout.read, checkout.holding)
+        code = [p for p in checkout.tracked if is_code_file(p)]
+        test_code = [p for p in code if is_test_related_path(p)]
+        other = [p for p in code if not is_test_related_path(p)]
+        namers = with_fixture_readers(namers, test_code, other, checkout.read, checkout.holding)
     scopes = trigger_scopes(paths, checkout.tracked, namers, config)
     routes = sorted({r for scope in scopes.values() for r in scope.routes} - set(paths))
     return Plan(namers, scopes, routes)

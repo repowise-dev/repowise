@@ -57,7 +57,8 @@ from .test_selection import (
 # Non-test namers past this many run everything. Set from the walk's cost, not
 # from how useful the subset is: 170 namers (630 routes) walk in about 6 s on a
 # 20k-file repository, inside the agent tools' 30 s budget. Ceiling: past it a
-# full run is the answer; caching the walk per index is the upgrade.
+# full run is the answer; bounding the walk by a time budget instead of a count
+# is the upgrade.
 MAX_NAMERS = 200
 
 _JVM = (".java", ".kt", ".kts", ".scala", ".groovy")

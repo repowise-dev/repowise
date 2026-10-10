@@ -61,11 +61,11 @@ def mentions(text: str, name: str) -> list[str | None]:
 
 def any_may_mean(written: Iterable[str | None], target: str) -> bool:
     """Whether any mention reduced by :func:`mentions` can mean *target*."""
-    path = target.casefold()
+    path = target.lower()
     for mention in written:
         if mention is None:
             return True
-        tail = mention.casefold()
+        tail = mention.lower()
         if tail == path or path.endswith(f"/{tail}") or tail.endswith(f"/{path}"):
             return True
     return False

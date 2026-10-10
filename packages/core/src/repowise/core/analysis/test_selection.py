@@ -382,9 +382,9 @@ def _named_in(
     from .namer_paths import any_may_mean, mentions
 
     out: list[str] = []
-    folded = text.casefold()
+    folded = text.lower()
     for name, same in by_name.items():
-        if name.casefold() not in folded:
+        if name.lower() not in folded:
             continue
         written = mentions(text, name) if exact and any(exact(f) for f in same) else None
         out += [
