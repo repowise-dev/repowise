@@ -28,6 +28,18 @@ def _sym(name: str, *, path: str, sig: str, start: int = 10, end: int = 20, kind
     }
 
 
+def _method(cls: str, name: str, *, path: str, sig: str, start: int = 10, end: int = 20):
+    """A method, whose id carries its class: ``<path>::<Class>::<method>``."""
+    return {
+        "id": f"{path}::{cls}::{name}",
+        "name": name,
+        "kind": "method",
+        "signature": sig,
+        "start_line": start,
+        "end_line": end,
+    }
+
+
 def _file(path: str, symbols: list[dict]) -> dict:
     return {"file_info": {"path": path}, "symbols": symbols}
 
@@ -66,8 +78,8 @@ def _compute(base, head, *, calls=(), changed=("app/a.py",), ranges=None, **kwar
 def test_symbol_index_accepts_both_artifact_and_live_shapes():
     rows = [_file("app/a.py", [_sym("run", path="app/a.py", sig="run(x)")])]
     live = [_live_file("app/a.py", [_sym("run", path="app/a.py", sig="run(x)")])]
-    assert symbol_index(rows)["app/a.py"]["run"].signature == "run(x)"
-    assert symbol_index(live)["app/a.py"]["run"].signature == "run(x)"
+    assert symbol_index(rows)["app/a.py"]["app/a.py::run"].signature == "run(x)"
+    assert symbol_index(live)["app/a.py"]["app/a.py::run"].signature == "run(x)"
 
 
 def test_symbol_index_drops_uninteresting_kinds():
@@ -80,7 +92,25 @@ def test_symbol_index_drops_uninteresting_kinds():
             ],
         )
     ]
-    assert set(symbol_index(rows)["app/a.py"]) == {"run"}
+    assert set(symbol_index(rows)["app/a.py"]) == {"app/a.py::run"}
+
+
+def test_symbol_index_keeps_every_same_named_method():
+    # Keying by bare name would keep only the last `login`, so a change to the
+    # first one could never be seen.
+    rows = [
+        _file(
+            "service.py",
+            [
+                _method("AuthService", "login", path="service.py", sig="def login(user, pw)"),
+                _method("SSOService", "login", path="service.py", sig="def login(token)"),
+            ],
+        )
+    ]
+    indexed = symbol_index(rows)["service.py"]
+    assert set(indexed) == {"service.py::AuthService::login", "service.py::SSOService::login"}
+    assert indexed["service.py::AuthService::login"].signature == "def login(user, pw)"
+    assert indexed["service.py::SSOService::login"].signature == "def login(token)"
 
 
 def test_caller_index_reads_calls_edges_only():
@@ -149,6 +179,80 @@ def test_removed_symbol_with_outside_caller_is_breaking():
     assert kinds["gone"] == "removed"
     assert kinds["kept"] == "added"
     assert [c.name for c in impact.breaking] == ["gone"]
+
+
+def test_signature_change_reports_the_same_named_method_it_belongs_to():
+    # Two classes, both with `login`. Only AuthService's changes, so only that
+    # id may be reported -- and against its own callers.
+    auth = _method("AuthService", "login", path="service.py", sig="def login(user, pw)")
+    sso = _method(
+        "SSOService", "login", path="service.py", sig="def login(token)", start=30, end=40
+    )
+    edited = _method("AuthService", "login", path="service.py", sig="def login(user, pw, mfa)")
+    base = [_file("service.py", [auth, sso])]
+    head = [_file("service.py", [edited, sso])]
+
+    impact = _compute(
+        base,
+        head,
+        changed=("service.py",),
+        calls=[("app/b.py::main", "service.py::AuthService::login")],
+    )
+
+    assert [c.change for c in impact.changes] == ["signature"]
+    change = impact.changes[0]
+    assert change.symbol_id == "service.py::AuthService::login"
+    assert change.name == "login"
+    assert change.outside_callers == ["app/b.py::main"]
+    assert [c.symbol_id for c in impact.breaking] == ["service.py::AuthService::login"]
+
+
+def test_removing_one_same_named_method_leaves_the_other_alone():
+    # Deleting SSOService.login must not diff AuthService.login against it: the
+    # surviving method is unchanged, so nothing at all is reported for it.
+    auth = _method("AuthService", "login", path="service.py", sig="def login(user, pw)")
+    sso = _method(
+        "SSOService", "login", path="service.py", sig="def login(token)", start=30, end=40
+    )
+    base = [_file("service.py", [auth, sso])]
+    head = [_file("service.py", [auth])]
+
+    impact = _compute(
+        base,
+        head,
+        changed=("service.py",),
+        calls=[("app/b.py::main", "service.py::SSOService::login")],
+    )
+
+    assert [(c.symbol_id, c.change) for c in impact.changes] == [
+        ("service.py::SSOService::login", "removed")
+    ]
+    assert impact.changes[0].name == "login"
+    assert [c.symbol_id for c in impact.breaking] == ["service.py::SSOService::login"]
+
+
+def test_a_method_moved_between_classes_reads_removed_and_added():
+    # Its callers point at the old id, so a move is a removal plus an addition
+    # rather than an edit to whichever method now answers to the bare name.
+    base = [
+        _file(
+            "service.py",
+            [_method("AuthService", "login", path="service.py", sig="def login(user, pw)")],
+        )
+    ]
+    head = [
+        _file(
+            "service.py",
+            [_method("SSOService", "login", path="service.py", sig="def login(user, pw)")],
+        )
+    ]
+
+    impact = _compute(base, head, changed=("service.py",))
+
+    assert [(c.symbol_id, c.change) for c in impact.changes] == [
+        ("service.py::AuthService::login", "removed"),
+        ("service.py::SSOService::login", "added"),
+    ]
 
 
 def test_body_change_needs_an_added_line_and_never_breaks():
