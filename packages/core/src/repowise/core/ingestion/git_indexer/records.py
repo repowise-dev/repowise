@@ -644,18 +644,15 @@ def _history_tier_files(repo_path: Path, paths: Iterable[str]) -> set[str]:
         in_blocked_dir,
     )
 
-    # Per parent directory, so N files under one output-named dir list it once.
-    blocked_parent: dict[str, bool] = {}
+    output_dirs: dict[Path, bool] = {}  # one listing per output-named dir
 
     def _keep(file_path: str) -> bool:
-        parent, _, name = file_path.rpartition("/")
+        name = file_path.rsplit("/", 1)[-1]
         if Path(name).suffix.lower() in _BLOCKED_EXTENSIONS:
             return False
         if _BLOCKED_FILENAME_SPEC.match_file(name):
             return False
-        if parent not in blocked_parent:
-            blocked_parent[parent] = in_blocked_dir(file_path, repo_path)
-        if blocked_parent[parent]:
+        if in_blocked_dir(file_path, repo_path, output_dirs):
             return False
         return not _is_binary(repo_path / file_path)
 

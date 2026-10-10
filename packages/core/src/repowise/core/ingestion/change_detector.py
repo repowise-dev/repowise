@@ -169,13 +169,14 @@ class ChangeDetector:
             return []
 
         results: list[FileDiff] = []
+        output_dirs: dict[Path, bool] = {}  # one listing per output-named dir
         try:
             head_commit = repo.head.commit
             # ``None`` as the diff target means "the working tree", so this
             # covers staged and unstaged changes in one pass.
             for item in head_commit.diff(None):
                 path = (item.b_path or item.a_path or "").replace("\\", "/")
-                if not is_candidate_source_path(path, self.repo_path):
+                if not is_candidate_source_path(path, self.repo_path, output_dirs):
                     continue
                 results.append(self._file_diff_from_item(item))
             untracked = list(repo.untracked_files)
@@ -185,7 +186,7 @@ class ChangeDetector:
 
         for rel_path in untracked:
             path = rel_path.replace("\\", "/")
-            if not is_candidate_source_path(path, self.repo_path):
+            if not is_candidate_source_path(path, self.repo_path, output_dirs):
                 continue
             abs_path = self.repo_path / path
             if not abs_path.is_file():
@@ -607,8 +608,9 @@ def has_working_tree_changes(repo_path: Path) -> bool:
         changed = (
             item.b_path or item.a_path or "" for item in repo.head.commit.diff(None)
         )
+        output_dirs: dict[Path, bool] = {}
         return any(
-            is_candidate_source_path(p.replace("\\", "/"), repo_path)
+            is_candidate_source_path(p.replace("\\", "/"), repo_path, output_dirs)
             for p in (*changed, *repo.untracked_files)
         )
     except Exception as exc:

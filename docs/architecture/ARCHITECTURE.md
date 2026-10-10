@@ -394,8 +394,12 @@ priority order:
    patterns passed at runtime from `--exclude/-x` CLI flags or
    `repo.settings["exclude_patterns"]` (set via Web UI or REST API PATCH). Applied
    to both directory pruning (entire subtree skipped) and individual file filtering.
-5. Hardcoded blocklist (`node_modules`, `.git`, `__pycache__`, `dist`, `build`,
-   `*.lock`, `*.min.js`, generated protobuf files, etc.)
+5. Hardcoded blocklist (`node_modules`, `.git`, `__pycache__`, `vendor`,
+   `*.lock`, `*.min.js`, generated protobuf files, etc.). `build`, `coverage`,
+   `dist` and `target` are pruned only when the directory itself holds no
+   hand-written source file (JavaScript, C/C++ and data formats do not count,
+   since builds emit them), so a source package with one of those names is
+   indexed and a committed bundle is not
 6. Auto-detection of generated files (files with `// Code generated` headers)
 7. Binary files (detected by null bytes in first 8KB)
 8. Files over `max_file_size_kb` (default: 500KB)

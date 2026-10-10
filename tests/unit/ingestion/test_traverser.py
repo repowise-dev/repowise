@@ -1482,8 +1482,9 @@ class TestPackageScanPruning:
 
     def test_a_committed_build_dir_is_excluded_too(self, tmp_path: Path) -> None:
         """Not just gitignored trees. A ``dist`` holding only bundles is an
-        output root, so the traverser never indexes it even when it is committed — and a directory
-        nothing indexes must not name the package's language."""
+        output root, so the traverser never indexes it even when it is
+        committed, and a directory nothing indexes must not name the package's
+        language."""
         pkg = self._pkg(tmp_path, "node_modules/\n")  # dist/ deliberately tracked
         dist = pkg / "dist"
         dist.mkdir()

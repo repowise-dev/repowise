@@ -321,8 +321,10 @@ _SKIP_GENERATED_CHECK: frozenset[str] = _LANG_REGISTRY.unparseable_data_language
 #: package, a ``build`` route). Pruned unless the directory itself holds a
 #: hand-written source file: output roots hold bundles, objects and reports
 #: directly and keep any copied source a level deeper (``build/lib/``,
-#: ``target/generated-sources/``). Ceiling: a source package whose files all
-#: sit in subdirectories stays pruned; the upgrade is a user re-include rule.
+#: ``target/generated-sources/``). Ceiling: a package holding only JavaScript
+#: or C directly, or whose files all sit in subdirectories, stays pruned, and
+#: no ignore file can re-include a pruned directory yet. A ``package.json`` is
+#: no evidence: bundlers write one beside their output.
 _OUTPUT_DIR_NAMES: frozenset[str] = frozenset({"build", "coverage", "dist", "target"})
 
 #: Languages a build or report writes (bundles, generated C, HTML reports),
@@ -1366,24 +1368,42 @@ def is_output_dir(abs_dir: Path) -> bool:
         return False
 
 
-def in_blocked_dir(rel_path: str, repo_root: Path | None) -> bool:
+def in_blocked_dir(
+    rel_path: str, repo_root: Path | None, cache: dict[Path, bool] | None = None
+) -> bool:
     """Whether a directory on *rel_path* (POSIX, repo-relative) is blocklisted.
 
     With no *repo_root* there is nothing to list, so every output-shaped name
-    counts as output, the conservative answer.
+    counts as output, the conservative answer. A caller checking many paths
+    passes one *cache* for the batch, so each output-named directory is listed
+    once. A hand-written file directly in a directory cached as output lists
+    it again, since that file may be what makes it source; build output never
+    has such a name, so a burst of it stays cached.
     """
-    dirs = rel_path.split("/")[:-1]
+    *dirs, name = rel_path.split("/")
     for depth, part in enumerate(dirs, 1):
         if part in _BLOCKED_DIRS:
             return True
-        if part in _OUTPUT_DIR_NAMES and (
-            repo_root is None or is_output_dir(repo_root.joinpath(*dirs[:depth]))
+        if part not in _OUTPUT_DIR_NAMES:
+            continue
+        if repo_root is None:
+            return True
+        abs_dir = repo_root.joinpath(*dirs[:depth])
+        cached = None if cache is None else cache.get(abs_dir)
+        if cached is None or (
+            cached and depth == len(dirs) and _is_handwritten_source_name(name)
         ):
+            cached = is_output_dir(abs_dir)
+            if cache is not None:
+                cache[abs_dir] = cached
+        if cached:
             return True
     return False
 
 
-def is_candidate_source_path(rel_path: str, repo_root: Path | None = None) -> bool:
+def is_candidate_source_path(
+    rel_path: str, repo_root: Path | None = None, cache: dict[Path, bool] | None = None
+) -> bool:
     """Whether *rel_path* is shaped like a file this repo would index.
 
     Path-shape only: the directory blocklist, the blocked extensions/filename
@@ -1391,7 +1411,8 @@ def is_candidate_source_path(rel_path: str, repo_root: Path | None = None) -> bo
     binary/size/generated checks, so a ``True`` answer means "worth handing to
     the pipeline", never "will be indexed". :class:`FileTraverser` still
     applies the full test on the files it walks. The only disk access is the
-    output-directory listing of :func:`in_blocked_dir`, given *repo_root*.
+    output-directory listing of :func:`in_blocked_dir`, given *repo_root*
+    (and memoized in *cache* when given).
 
     It serves the change sources that only see a path: the working-tree diff
     and the file watcher.
@@ -1403,7 +1424,7 @@ def is_candidate_source_path(rel_path: str, repo_root: Path | None = None) -> bo
     parts = Path(posix).parts
     if not parts:
         return False
-    if in_blocked_dir(posix, repo_root):
+    if in_blocked_dir(posix, repo_root, cache):
         return False
 
     name = parts[-1]
