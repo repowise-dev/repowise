@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from repowise.core.analysis.health.fix_first import FIX_EXCLUSIONS, build_fix_first
 from tests.unit.health.fix_first_rows import (
     FINDINGS,
@@ -368,3 +370,77 @@ def test_an_item_no_test_reaches_says_to_pin_its_behaviour_first() -> None:
     queue = _build(validate=lambda *_: {"prerequisite": first})
     walk = next(i for i in queue.items if i.target.file_path == "src/plain.py")
     assert (walk.verify.basis, walk.verify.prerequisite) == ("unknown", first)
+
+
+def _staged_plans(count: int = 3, orchestrator: dict | None = None) -> list:
+    plans = copy.deepcopy(PLANS)
+    stage = {k: v for k, v in plans[0]["plan"].items() if k != "stages"}
+    plans[0]["plan"]["stages"] = [copy.deepcopy(stage) for _ in range(count)]
+    plans[0]["plan"]["orchestrator"] = (
+        {"ccn_before": 44, "ccn_after": 9} if orchestrator is None else orchestrator
+    )
+    return plans
+
+
+def test_a_staged_lead_plan_names_its_helpers_and_stage_one() -> None:
+    core = next(i for i in _build(plans=_staged_plans()).items if i.kind == "refactor")
+    assert core.title == "Split run into 3 helpers (+1 more step)"
+    assert core.action.steps[0].text == (
+        "Stage 1 of 3: Extract lines 20-35 of run into sum_rows(rows, limit) -> total "
+        "(the plan splits run into 3 helpers, CCN 44 -> 9)"
+    )
+    # Only the staged plan's step says so; the plan's next step reads as before.
+    assert core.action.steps[1].text == (
+        "Extract lines 40-41 of run into <name>(); name it for what the lines do"
+    )
+
+
+def test_a_staged_plan_without_its_complexity_figures_leaves_them_out() -> None:
+    core = next(
+        i for i in _build(plans=_staged_plans(2, orchestrator={})).items if i.kind == "refactor"
+    )
+    assert core.action.steps[0].text.endswith("(the plan splits run into 2 helpers)")
+
+
+def test_a_finding_borrowing_a_staged_span_says_it_is_staged() -> None:
+    plans = _staged_plans()
+    plans[0].update(file_path="src/core.py", target_symbol="src/core.py::run")
+    lone = _build(plans=plans, refactoring=[], performance=[]).lead
+    assert lone.action.steps[0].text == (
+        "Stage 1 of 3: Extract lines 20-35 of run into sum_rows(rows, limit) -> total "
+        "(the plan splits run into 3 helpers, CCN 44 -> 9)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("stages", "orchestrator"),
+    [
+        ("not a list", {"ccn_before": 44, "ccn_after": 9}),
+        ([None, 3, "x"], {"ccn_before": 44, "ccn_after": 9}),
+        ([{"span": {"start": 20, "end": 35}}], {"ccn_before": 44, "ccn_after": 9}),
+        ([{"span": {"start": 20}}, {"span": None}], {"ccn_before": 44}),
+        ([{"span": {"start": 20, "end": 35}}, {"span": {"start": 36, "end": 40}}], "bad"),
+        ([{"span": {"start": 20, "end": 35}}, {"span": {"start": 36, "end": 40}}], {"ccn_after": 9}),
+        ([{"span": {"start": "20", "end": "35"}}, {"span": {"start": "a", "end": "b"}}], {}),
+        ([{"span": {"start": True, "end": True}}, {"span": {"start": 36, "end": 40}}], {}),
+        ([{"span": {"start": 1.5, "end": 9.0}}, {"span": {"start": 36, "end": 40}}], {}),
+    ],
+)
+def test_malformed_stages_never_crash_or_say_one_helper(stages, orchestrator) -> None:
+    plans = copy.deepcopy(PLANS)
+    plans[0]["plan"].update(stages=stages, orchestrator=orchestrator)
+    core = next(i for i in _build(plans=plans).items if i.kind == "refactor")
+    step = core.action.steps[0].text
+    assert "into 1 helpers" not in step and "into 1 helpers" not in core.title
+    if step.startswith("Stage 1 of 2"):
+        assert step.endswith("(the plan splits run into 2 helpers)")
+    else:
+        assert step == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
+
+
+def test_an_unstaged_plan_reads_as_before() -> None:
+    core = next(i for i in _build().items if i.kind == "refactor")
+    assert core.title == (
+        "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 into sum_rows"
+    )
+    assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
