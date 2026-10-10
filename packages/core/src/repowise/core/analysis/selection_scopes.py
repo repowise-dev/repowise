@@ -149,6 +149,11 @@ def needs_namers(path: str, config: TestSelectionConfig) -> bool:
     return _ecosystem(path) is not None or (full_run_reason(path) is None and _is_asset(path))
 
 
+def is_manifest(path: str) -> bool:
+    """A manifest, lockfile or runner config: nothing includes it, so its namers write its path."""
+    return _ecosystem(path) is not None
+
+
 def keeps_full_run(path: str, config: TestSelectionConfig) -> bool:
     """Whether *path* runs everything whatever names it, so no namer search can help."""
     if full_run_reason(path, config.full_run_on) is None:

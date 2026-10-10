@@ -145,6 +145,7 @@ def plan_scopes(
     reading the checkout.
     """
     from .selection_scopes import (
+        is_manifest,
         keeps_full_run,
         needs_namers,
         trigger_scopes,
@@ -157,7 +158,7 @@ def plan_scopes(
     asked = [] if blocked else [p for p in paths if needs_namers(p, config)]
     namers: dict[str, list[str]] = {}
     if asked:
-        namers = file_namers(asked, _scan_texts(checkout, asked, cancelled))
+        namers = file_namers(asked, _scan_texts(checkout, asked, cancelled), is_manifest)
     scopes = trigger_scopes(paths, checkout.tracked, namers, config)
     routes = sorted({r for scope in scopes.values() for r in scope.routes} - set(paths))
     return Plan(namers, scopes, routes)

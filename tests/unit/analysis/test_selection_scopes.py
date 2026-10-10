@@ -208,11 +208,20 @@ def test_file_namers_lists_every_file_naming_one() -> None:
         ("web/src/more.ts", '"layout.css"\n'),
     ]
     files = ["web/src/styles/layout.css", "other/layout.css"]
+    # An asset may be included by another asset, so its name alone names it.
     assert file_namers(files, sources)["other/layout.css"] == [
         "web/src/app.ts",
         "src/other.py",
         "web/src/more.ts",
     ]
+    # A manifest is named only where a written directory can lead to it.
+    manifests = ["web/package.json", "other/package.json"]
+    code = [("web/src/app.ts", "import p from '../package.json'"), ("x.py", '"package.json"')]
+    exact = file_namers(manifests, code, lambda f: f.endswith("package.json"))
+    assert exact == {
+        "web/package.json": ["web/src/app.ts", "x.py"],
+        "other/package.json": ["x.py"],
+    }
 
 
 def test_a_js_package_manifest_runs_its_tests_and_those_reaching_its_code() -> None:
@@ -344,7 +353,7 @@ def test_plan_scopes_names_the_same_files_from_git_grep_as_from_reading_them(tmp
         "web/src/app.test.ts",
         "web/src/app.ts",
     ]
-    # "data.md" holds "a.md", so the file naming docs/data.md names docs/a.md too.
+    # "data.md" holds "a.md": a doc keeps name-only matching, so both are named.
     assert grepped.namers["docs/a.md"][-1] == "tools/data.py"
     assert grepped.namers["docs/data.md"][-1] == "tools/data.py"
 
