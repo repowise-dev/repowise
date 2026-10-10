@@ -18,9 +18,11 @@ from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import (
     analyze_file,
     find_extractions,
-    function_is_async,
 )
-from repowise.core.analysis.health.refactoring.extract_method import ExtractMethodDetector
+from repowise.core.analysis.health.refactoring.extract_method import (
+    ExtractMethodDetector,
+    host_is_async,
+)
 from repowise.core.analysis.health.refactoring.models import (
     RefactoringContext,
     RefactoringSuggestion,
@@ -263,7 +265,7 @@ def test_cpp_co_await_needs_async_in_a_host_that_cannot_say_so():
     flags = {(x.start_line, x.end_line): x.needs_async for x in find_extractions(fn, lmap)}
     assert _spans_within(flags, 3, 10) == {True}
     assert _spans_within(flags, 11, 18) == {False}
-    assert function_is_async(fn.fn_node, lmap) is False
+    assert host_is_async(fn.fn_node, lmap, "cpp") is False
 
 
 @pytest.mark.parametrize(
@@ -271,15 +273,40 @@ def test_cpp_co_await_needs_async_in_a_host_that_cannot_say_so():
     [
         ("python", "py", "async def f():\n    pass\n", True),
         ("python", "py", "def f():\n    pass\n", False),
+        ("python", "py", "@retry(3)\nasync def f():\n    pass\n", True),
+        ("python", "py", "class C:\n    async def f(self):\n        pass\n", True),
+        ("python", "py", "class C:\n    def f(self):\n        pass\n", False),
         ("typescript", "ts", "async function f() { return 1; }", True),
         ("typescript", "ts", "function f() { return 1; }", False),
+        ("typescript", "ts", "class C { async f() { return 1; } }", True),
+        ("typescript", "ts", "class C { f() { return 1; } }", False),
         ("rust", "rs", "async fn f() -> i32 { 1 }", True),
         ("rust", "rs", "fn f() -> i32 { let b = async { 1 }; 1 }", False),
+        ("rust", "rs", "impl S { pub async unsafe fn f(&self) -> i32 { 1 } }", True),
+        ("rust", "rs", "impl S { pub unsafe fn f(&self) -> i32 { 1 } }", False),
     ],
 )
-def test_function_is_async_reads_the_declaration_not_the_body(language, ext, src, expected):
+def test_host_is_async_reads_the_declaration_not_the_body(language, ext, src, expected):
     fn = _functions(language, ext, src)[0]
-    assert function_is_async(fn.fn_node, get_language_map(language)) is expected
+    assert host_is_async(fn.fn_node, get_language_map(language), language) is expected
+
+
+@pytest.mark.parametrize("host", ["async fn load", "fn load"])
+def test_rust_await_inside_an_async_block_does_not_suspend_the_host(host: str):
+    src = _RUST.replace(
+        "total += session.count(r).await;",
+        "total += 1;\n            let f = async { session.flush().await };",
+    ).replace("async fn load", host)
+    assert set(_flags("rust", "rs", src).values()) == {False}
+
+
+def test_cpp_spans_holding_co_yield_or_co_return_are_refused():
+    src = _CPP.replace("total -= 1;", "co_yield total;")
+    fn = _functions("cpp", "cpp", src)[0]
+    spans = [(x.start_line, x.end_line) for x in find_extractions(fn, get_language_map("cpp"))]
+    assert spans, "the plain half should still be offered"
+    assert not any(s <= 8 <= e for s, e in spans)  # co_yield
+    assert not any(s <= 19 <= e for s, e in spans)  # co_return
 
 
 def _step(plan: dict) -> RefactoringSuggestion:

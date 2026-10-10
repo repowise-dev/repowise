@@ -75,7 +75,8 @@ from ..biomarkers.large_method import LargeMethodDetector
 from ..complexity.cyclomatic import _is_boolean_operator
 from ..complexity.languages import get_language_map
 from ..complexity.nloc import is_string_stmt
-from ..dataflow import find_extractions, function_is_async
+from ..dataflow import find_extractions
+from ..perf.dialects import PERF_DIALECTS
 from ..scoring import severity_deduction
 from .models import RefactoringContext, RefactoringSuggestion
 from .naming import join_identifier, split_words
@@ -178,7 +179,7 @@ class ExtractMethodDetector(RefactoringDetector):
                         "params": list(best.params),
                         "returns": list(best.returns),
                         "suggested_name": self._suggested_name(analysis, best, ctx.language),
-                        **_async_fields(analysis, best, lmap),
+                        **_async_fields(analysis, best, lmap, ctx.language),
                     },
                     evidence={
                         "slice_nloc": best.slice_nloc,
@@ -307,15 +308,26 @@ def recovered_share(
 
 
 def _async_fields(
-    analysis: FunctionAnalysis, extraction: Extraction, lmap: LanguageNodeMap
+    analysis: FunctionAnalysis,
+    extraction: Extraction,
+    lmap: LanguageNodeMap,
+    language: str | None,
 ) -> dict[str, bool]:
     """``needs_async`` always; ``async_host`` only for an awaiting span, False
-    when the function holding it is not declared async (a C++ coroutine, a
-    Rust ``.await`` inside an ``async`` block of a plain ``fn``), where no
-    async helper can be written in its place."""
+    when the function holding it is not declared async (a C++ coroutine),
+    where no async helper can be written in its place."""
     if not extraction.needs_async:
         return {"needs_async": False}
-    return {"needs_async": True, "async_host": function_is_async(analysis.fn_node, lmap)}
+    return {"needs_async": True, "async_host": host_is_async(analysis.fn_node, lmap, language)}
+
+
+def host_is_async(fn_node: Any, lmap: LanguageNodeMap, language: str | None) -> bool:
+    """Whether *fn_node* is declared async, by the perf pass's own test: a
+    dedicated async node kind, else the language's perf dialect."""
+    if fn_node.type in lmap.async_function_kinds:
+        return True
+    dialect = PERF_DIALECTS.get(language or "")
+    return dialect is not None and dialect.is_async_fn(fn_node)
 
 
 def _worth_extracting(

@@ -233,7 +233,7 @@ def _find_extractions_reference(analysis, lmap):
                     jump_kinds,
                     scope_kinds,
                     _exit_macros(lmap),
-                    lmap.await_kinds,
+                    (lmap.await_kinds, lmap.await_scope_kinds),
                 )
                 if has_jump or decisions < _MIN_CCN_REMOVED:
                     continue

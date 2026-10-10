@@ -165,8 +165,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
             await_prefix = [0]
             for st in stmts:
                 d, jmp, awaits = _span_metrics(
-                    [st], decision_kinds, jump_kinds, scope_kinds, _exit_macros(lmap),
-                    lmap.await_kinds,
+                    [st], decision_kinds, jump_kinds, scope_kinds, _exit_macros(lmap), _awaits(lmap)
                 )
                 dec_prefix.append(dec_prefix[-1] + d)
                 jump_prefix.append(jump_prefix[-1] + (1 if jmp else 0))
@@ -227,27 +226,6 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                     )
                 )
     return _sorted(out)
-
-
-def function_is_async(fn_node: Node, lmap: LanguageNodeMap) -> bool:
-    """True when *fn_node* is declared async, so an awaiting helper fits in it.
-
-    The marker is a dedicated node kind (``lmap.async_function_kinds``) or an
-    ``async`` token on the declaration itself or one of its modifier children
-    (Python and TS/JS ``async``, Rust ``function_modifiers``). The body is not
-    searched: an ``async`` token there belongs to a nested statement.
-    """
-    if fn_node.type in lmap.async_function_kinds:
-        return True
-    body = fn_node.child_by_field_name("body")
-    for child in fn_node.children:
-        if child.type == "async":
-            return True
-        if (body is None or child.id != body.id) and any(
-            grand.type == "async" for grand in child.children
-        ):
-            return True
-    return False
 
 
 def _tail_is_block_value(
@@ -865,6 +843,11 @@ def _exit_macros(lmap: LanguageNodeMap) -> tuple[frozenset[str], frozenset[str]]
     return lmap.exit_macro_kinds, lmap.exit_macro_names
 
 
+def _awaits(lmap: LanguageNodeMap) -> tuple[frozenset[str], frozenset[str]]:
+    """The await tokens, and the nodes that own the awaits inside them."""
+    return lmap.await_kinds, lmap.await_scope_kinds
+
+
 def _is_jump(
     node: Node,
     jump_kinds: frozenset[str],
@@ -887,26 +870,29 @@ def _span_metrics(
     decision_kinds: frozenset[str],
     jump_kinds: frozenset[str],
     scope_kinds: frozenset[str],
-    exit_macros: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset()),
-    await_kinds: frozenset[str] = frozenset(),
+    exit_macros: tuple[frozenset[str], frozenset[str]],
+    awaits: tuple[frozenset[str], frozenset[str]],
 ) -> tuple[int, bool, bool]:
     """Decision-point count, jump presence and await presence within *span*
     (nested scopes are not descended into). A macro named in *exit_macros*
-    counts as a jump."""
+    counts as a jump; an await under one of *awaits*' scope kinds (``async``
+    blocks) does not suspend the function, so it does not count."""
+    await_kinds, await_scope_kinds = awaits
     decisions = 0
     has_jump = False
     has_await = False
     for root in span:
-        stack: list[Node] = [root]
+        stack: list[tuple[Node, bool]] = [(root, True)]
         while stack:
-            node = stack.pop()
+            node, counts_await = stack.pop()
             t = node.type
             has_jump = has_jump or _is_jump(node, jump_kinds, exit_macros)
-            has_await = has_await or t in await_kinds
+            has_await = has_await or (counts_await and t in await_kinds)
             if t in decision_kinds:
                 decisions += 1
+            counts_await = counts_await and t not in await_scope_kinds
             for child in node.children:
                 if child.type in scope_kinds:
                     continue
-                stack.append(child)
+                stack.append((child, counts_await))
     return decisions, has_jump, has_await

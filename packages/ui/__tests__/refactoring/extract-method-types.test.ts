@@ -61,6 +61,11 @@ describe("extract_method plan accessors", () => {
       plan: { span: { start: 30, end: 48 }, params: [], returns: [], needs_async: true },
     });
     expect(extractMethodPlan(awaiting).needs_async).toBe(true);
+    expect(extractMethodPlan(awaiting).async_host).toBeNull();
+    const blocked = extractMethodPlanFixture({
+      plan: { span: { start: 30, end: 48 }, params: [], returns: [], needs_async: true, async_host: false },
+    });
+    expect(extractMethodPlan(blocked).async_host).toBe(false);
     expect(planSynopsis(awaiting)).toBe("Extract 19 lines into an async helper");
   });
 

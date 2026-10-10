@@ -158,6 +158,9 @@ export interface ExtractMethodPlan {
   suggested_name: string | null;
   /** The span awaits: the helper is async and its call site awaited. */
   needs_async: boolean;
+  /** For an awaiting span: false when the enclosing function is not async, so
+   *  the step is a judgment call. Null when the plan does not say. */
+  async_host: boolean | null;
 }
 
 export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
@@ -173,6 +176,7 @@ export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
     returns: Array.isArray(p.returns) ? (p.returns as string[]) : [],
     suggested_name: typeof p.suggested_name === "string" ? p.suggested_name : null,
     needs_async: p.needs_async === true,
+    async_host: typeof p.async_host === "boolean" ? p.async_host : null,
   };
 }
 

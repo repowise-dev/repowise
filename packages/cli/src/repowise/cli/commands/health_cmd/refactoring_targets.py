@@ -568,6 +568,10 @@ def _render_unattached_md(plans: list[dict]) -> None:
             click.echo(line)
 
 
+# An Extract Method span that awaits lifts into an async helper.
+_ASYNC_NOTE = "async helper, call awaited"
+
+
 def _plan_detail_console(p: dict) -> list[str]:
     """The type-specific detail for one step, as console lines.
 
@@ -617,7 +621,7 @@ def _plan_detail_console(p: dict) -> list[str]:
         )
         out.append(
             f"    [dim]in:[/dim] {params}    [dim]out:[/dim] {returns}"
-            + ("    [dim]async helper, call awaited[/dim]" if pl.get("needs_async") else "")
+            + (f"    [dim]{_ASYNC_NOTE}[/dim]" if pl.get("needs_async") else "")
         )
     elif kind == "move_method":
         to_file = pl.get("to_file")
@@ -690,7 +694,7 @@ def _plan_detail_md(p: dict) -> list[str]:
             f"    - extract lines {span.get('start')}-{span.get('end')} "
             f"({ev.get('slice_nloc')} lines, -{ev.get('ccn_removed')} CCN)  ·  "
             f"in: {params}  ·  out: {returns}"
-            + ("  ·  async helper, call awaited" if pl.get("needs_async") else "")
+            + (f"  ·  {_ASYNC_NOTE}" if pl.get("needs_async") else "")
         )
     elif kind == "move_method":
         dest = pl.get("to_class")

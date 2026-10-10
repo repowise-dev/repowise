@@ -252,7 +252,12 @@ class LanguageNodeMap:
     #     ``.await``, C++ ``co_await``). Matched on the anonymous keyword token,
     #     which every form carries. A span holding one lifts into a helper that
     #     must itself be async, with its call site awaited.
+    #   * ``await_scope_kinds`` -- nodes that own the awaits inside them (Rust
+    #     ``async { }``): awaiting there suspends the block's future, not the
+    #     function, so the await scan stops at them. Nested functions and
+    #     lambdas (async closures among them) are skipped already.
     await_kinds: frozenset[str] = frozenset()
+    await_scope_kinds: frozenset[str] = frozenset()
     exit_macro_kinds: frozenset[str] = frozenset()
     exit_macro_names: frozenset[str] = frozenset()
     #   * ``statement_wrapper_kinds`` -- statement node(s) that merely wrap the
@@ -606,6 +611,7 @@ _RUST = LanguageNodeMap(
     break_kinds=frozenset({"break_expression"}),
     continue_kinds=frozenset({"continue_expression"}),
     await_kinds=frozenset({"await"}),
+    await_scope_kinds=frozenset({"async_block"}),
     # Rust parses every statement-position control-flow expression inside an
     # ``expression_statement``; the CFG builder unwraps it to classify the real
     # node, and the slicer uses this as the expression-oriented marker for
@@ -766,10 +772,12 @@ _CPP = LanguageNodeMap(
     local_decl_kinds=frozenset({"declaration"}),
     if_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"compound_statement"}),
-    return_kinds=frozenset({"return_statement"}),
+    # ``co_return`` / ``co_yield`` leave a coroutine like ``return`` / ``yield``.
+    return_kinds=frozenset({"return_statement", "co_return_statement"}),
     raise_kinds=frozenset({"throw_statement"}),
     break_kinds=frozenset({"break_statement"}),
     continue_kinds=frozenset({"continue_statement"}),
+    yield_kinds=frozenset({"co_yield_statement"}),
     # A coroutine carries no ``async`` token, so a span holding one is never
     # offered as a mechanical extraction.
     await_kinds=frozenset({"co_await"}),

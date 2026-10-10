@@ -484,6 +484,12 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
               </span>
             </span>
           </div>
+          {em.async_host === false ? (
+            <p className="mt-2 text-2xs text-[var(--color-text-tertiary)]">
+              Judgment call: the span awaits, but the function holding it is not declared
+              async, so an async helper cannot be written in its place.
+            </p>
+          ) : null}
         </div>
       </div>
     );
