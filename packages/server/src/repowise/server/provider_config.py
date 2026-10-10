@@ -237,6 +237,14 @@ def _get_base_url_for_provider(
     return None
 
 
+def _provider_configured(provider_id: str, repo_env: dict[str, str] | None = None) -> bool:
+    """Whether chat can build ``provider_id``: it needs no key or has one."""
+    catalog = _CATALOG_BY_ID.get(provider_id)
+    if catalog is None:
+        return False
+    return not catalog["requires_key"] or bool(_get_key_for_provider(provider_id, repo_env))
+
+
 def _resolve_active_for_repo(
     repo_id: str | None,
     repo_cfg: dict[str, Any],
@@ -285,7 +293,7 @@ def _resolve_active_for_repo(
 
     # 5. Auto-detect
     for p in PROVIDER_CATALOG:
-        if _get_key_for_provider(p["id"], repo_env) or not p["requires_key"]:
+        if _provider_configured(p["id"], repo_env):
             return _with_default(p["id"], None)
 
     return None, None
@@ -307,8 +315,7 @@ def list_provider_status(
 
     providers = []
     for p in PROVIDER_CATALOG:
-        has_key = bool(_get_key_for_provider(p["id"], repo_env))
-        configured = has_key or not p["requires_key"]
+        configured = _provider_configured(p["id"], repo_env)
         models = list(p["models"])
         # Surface a configured-but-not-cataloged model (e.g. a local LiteLLM
         # alias like ``gemma4``) so the picker can display the active choice.
@@ -361,6 +368,19 @@ def get_active_provider(
     """Return (provider_id, model) for the active provider, optionally per-repo."""
     repo_cfg, repo_env = _load_repo_context(repo_path)
     return _resolve_active_for_repo(repo_id, repo_cfg, repo_env)
+
+
+def get_configured_active_provider(
+    repo_id: str | None = None,
+    repo_path: str | Path | None = None,
+) -> tuple[str | None, str | None]:
+    """Like :func:`get_active_provider`, but ``(None, None)`` when the resolved
+    provider still needs a key, so a caller can show setup instead of a 400."""
+    repo_cfg, repo_env = _load_repo_context(repo_path)
+    provider_id, model = _resolve_active_for_repo(repo_id, repo_cfg, repo_env)
+    if provider_id is None or not _provider_configured(provider_id, repo_env):
+        return None, None
+    return provider_id, model
 
 
 def set_active_provider(

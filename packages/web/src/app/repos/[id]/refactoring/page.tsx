@@ -66,6 +66,7 @@ import {
 } from "@/lib/api/refactoring";
 import { getFileContent } from "@/lib/api/files";
 import { getRelatedWork, relatedWorkHref } from "@/lib/api/related-work";
+import { providerSetupHref } from "@/lib/utils/page-href";
 
 const TYPE_VALUES = ["all", "structural", ...TYPE_ORDER] as const;
 type TypeFilter = (typeof TYPE_VALUES)[number];
@@ -212,9 +213,10 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
     [repoId, mutate],
   );
 
-  // Opt-in code generation. Enabled only when the repo's config turns it on (a
-  // local-`serve` capability); the settings call 404s on hosted backends, which
-  // simply leaves the action hidden.
+  // Opt-in code generation (a local-`serve` capability). The action shows only
+  // when the switch is on and a model resolves; otherwise the plan drawer shows
+  // the switch, with a setup link when no model is configured. The settings
+  // call 404s on hosted backends, which hides both.
   const { data: settings, mutate: mutateSettings } = useSWR<RefactoringSettings>(
     `refactoring-settings:${repoId}`,
     () => getRefactoringSettings(repoId),
@@ -222,10 +224,10 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   );
   const onGenerateCode = useMemo(
     () =>
-      settings?.enabled
+      settings?.enabled && settings.provider
         ? (plan: RefactoringPlan) => generateRefactoringCode(repoId, plan.id)
         : undefined,
-    [settings?.enabled, repoId],
+    [settings?.enabled, settings?.provider, repoId],
   );
   const modelSetting = useMemo(
     () =>
@@ -237,10 +239,10 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
                 revalidate: false,
               });
             },
-            setupHref: `${prefix}/settings#provider`,
+            setupHref: providerSetupHref(repoId),
           }
         : undefined,
-    [settings, mutateSettings, repoId, prefix],
+    [settings, mutateSettings, repoId],
   );
 
   const facetCounts = data?.facets?.lead_type ?? {};

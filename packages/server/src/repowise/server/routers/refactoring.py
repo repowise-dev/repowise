@@ -243,10 +243,11 @@ class RefactoringSettingsUpdate(BaseModel):
 def _read_refactoring_settings(
     config: dict[str, Any], repo_id: str, repo_path: Path
 ) -> RefactoringSettings:
+    """The switch from ``config`` plus the model chat would build, or none."""
     from repowise.core.analysis.health.refactoring.llm import llm_enrichment_enabled
-    from repowise.server.provider_config import get_active_provider
+    from repowise.server.provider_config import get_configured_active_provider
 
-    provider, model = get_active_provider(repo_id=repo_id, repo_path=repo_path)
+    provider, model = get_configured_active_provider(repo_id=repo_id, repo_path=repo_path)
     return RefactoringSettings(
         enabled=llm_enrichment_enabled(config), provider=provider, model=model
     )

@@ -737,6 +737,21 @@ async def test_settings_round_trip_shows_chat_model_and_no_secret(
     assert got.json()["enabled"] is False
 
 
+@pytest.mark.usefixtures("_isolated_provider_store")
+async def test_settings_reports_no_provider_when_its_key_is_missing(
+    client: AsyncClient, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider chat could not build reads as none, so the UI offers setup."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    repo = await create_test_repo(client)
+    repo_dir = Path(repo["local_path"])
+    (repo_dir / ".repowise").mkdir(exist_ok=True)
+    (repo_dir / ".repowise" / "config.yaml").write_text("provider: anthropic\n", encoding="utf-8")
+
+    resp = await client.get(f"/api/repos/{repo['id']}/refactoring/settings")
+    assert resp.json() == {"enabled": False, "provider": None, "model": None}
+
+
 async def test_settings_unknown_repo_404(client: AsyncClient, app) -> None:
     resp = await client.get("/api/repos/does-not-exist/refactoring/settings")
     assert resp.status_code == 404

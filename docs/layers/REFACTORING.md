@@ -137,11 +137,11 @@ after production files.
 ## Code generation
 
 Code generation is **off by default**, only runs when you ask for it, and never
-runs during indexing. Turn it on with the "Use your configured model to name helpers
-and draft code" switch on the repository's Settings page or in an open plan, or with
-`refactoring.llm.enabled: true`. The switch names the provider and model it will use,
-which is the one chat uses, so there is nothing else to configure. The CLI flag is
-itself an explicit request and does not read that setting.
+runs during indexing. Turn it on with the code-generation switch on the repo
+Settings page or in an open plan, or with `refactoring.llm.enabled: true`. The
+switch names the provider and model it will use, so there is nothing else to
+configure. The CLI flag is itself an explicit request and does not read that
+setting.
 
 You can ask from three places:
 
@@ -160,9 +160,10 @@ remaining function's complexity dropped. Results are cached by a hash of plan,
 source and model, so an unchanged plan is not paid for twice. Nothing is applied
 to your files.
 
-It uses the same provider and model as chat. With generation disabled, the MCP
-tool returns the plan with `generation.available: false` and the REST endpoint
-returns `403`. With no key, MCP returns `error: "no_provider"`.
+The CLI uses the provider configured for page generation; the web and MCP use the
+chat model. With generation disabled, the MCP tool returns the plan with
+`generation.available: false` and the REST endpoint returns `403`. With no key,
+MCP returns `error: "no_provider"`.
 
 ## Configuration
 

@@ -372,3 +372,13 @@ def test_list_provider_status_never_returns_key_material(clean_env, tmp_path):
         }
         assert "key" not in provider
         assert "api_key" not in provider
+
+
+def test_configured_active_provider_needs_the_key_chat_needs(clean_env, tmp_path):
+    """A configured provider without its key is reported as none, not as usable."""
+    repo = _make_repo(tmp_path / "repo", config="provider: anthropic\nmodel: claude-x\n")
+    assert pc.get_active_provider(repo_path=repo) == ("anthropic", "claude-x")
+    assert pc.get_configured_active_provider(repo_path=repo) == (None, None)
+
+    _make_repo(repo, env="ANTHROPIC_API_KEY=sk-ant-test\n")
+    assert pc.get_configured_active_provider(repo_path=repo) == ("anthropic", "claude-x")

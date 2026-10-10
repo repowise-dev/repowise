@@ -301,3 +301,22 @@ describe("RefactoringDrawer code generation", () => {
     expect(screen.queryByRole("switch")).toBeNull();
   });
 });
+
+describe("RefactoringDrawer with no model configured", () => {
+  it("shows the setup hint, not a generate action", () => {
+    render(
+      <RefactoringDrawer
+        plan={PLAN}
+        open
+        onOpenChange={() => {}}
+        modelSetting={{
+          value: { enabled: true, provider: null, model: null },
+          onToggle: async () => {},
+          setupHref: "/repos/r1/settings#provider",
+        }}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "Set one up" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Generate code" })).toBeNull();
+  });
+});
