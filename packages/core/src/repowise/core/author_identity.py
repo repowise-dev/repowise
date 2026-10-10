@@ -1,16 +1,14 @@
 """Author-identity canonicalization shared across the ingestion + serving paths.
 
-GitHub stamps commits made through its web UI, squash-merges and PR merges with
-a synthetic *noreply* address instead of the author's real email:
-``NNN+login@users.noreply.github.com`` (numeric-id prefixed) or the older
-``login@users.noreply.github.com`` form. The numeric id and the exact shape
-vary between commits, so the same person fans out into several contributor
+Forges stamp web-UI commits and merges with a synthetic *noreply* address
+instead of the author's real email (GitHub's ``NNN+login@users.noreply.github.com``
+or the older ``login@...``), so one person fans out into several contributor
 buckets whenever identity is keyed on the raw email.
 
 :func:`canonicalize_author_email` folds every noreply variant for a login onto
-one stable key so those buckets collapse. The GitHub *system* author
-``noreply@github.com`` (stamped on some merge commits) is left untouched on
-purpose — it stays its own bucket and is never merged into a human contributor.
+one stable key so those buckets collapse. Which addresses fold and which
+authors are automation is read from ``repowise.core.forges``; system authors
+such as ``noreply@github.com`` stay their own bucket, never merged into a person.
 
 :func:`build_identity_resolver` goes further across a whole repo's authors,
 merging emails into people by union-find over a few evidence edges (see its
@@ -20,40 +18,14 @@ email match is guarded and can be rolled back.
 
 from __future__ import annotations
 
-import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from functools import lru_cache
 from typing import Literal
 
+from repowise.core import forges
+
 IdentityKind = Literal["human", "agent", "bot"]
-
-_NOREPLY_DOMAIN = "@users.noreply.github.com"
-
-# ``NNN+login@users.noreply.github.com`` or the older ``login@...`` form.
-# The numeric id and the prefix are optional; the login is everything before
-# the ``@`` (minus the ``NNN+`` id). Case-insensitive to match git's casing.
-_GH_NOREPLY_RE = re.compile(
-    r"^(?:\d+\+)?(?P<login>[^@\s+]+)@users\.noreply\.github\.com$",
-    re.IGNORECASE,
-)
-
-# Automation, excluded from people counts. Either an explicit bot marker or a
-# service name matched in full, so "Netlify Johnson" stays a person.
-_BOT_NAME_RE = re.compile(
-    r"(\[bot\]"
-    r"|^bot$"
-    r"|[-_ ]bot$"
-    r"|^(dependabot|renovate(bot)?|greenkeeper|snyk([-_ ]bot)?|imgbot|"
-    r"github[-_ ]?actions|semantic[-_ ]release|allcontributors|codecov|mergify|"
-    r"pre[-_ ]commit[-_ ]ci|netlify|vercel)$)",
-    re.IGNORECASE,
-)
-_BOT_EMAIL_RE = re.compile(
-    r"(\[bot\]@|@bots\.noreply\.github\.com|^(actions@github\.com|"
-    r"noreply@github\.com)$)",
-    re.IGNORECASE,
-)
 
 # A noreply login this generic names a machine or a shared account, not a
 # person, so it never bridges to a real email by display name. Human first
@@ -71,22 +43,22 @@ _LOCAL_HOST_LABELS = frozenset({"local", "localdomain", "localhost", "lan", "hom
 
 
 def canonicalize_author_email(email: str | None) -> str | None:
-    """Return a stable identity email, folding GitHub noreply variants.
+    """Return a stable identity email, folding a forge's noreply variants.
 
     ``NNN+login@users.noreply.github.com`` and ``login@users.noreply.github.com``
-    both collapse to ``login@users.noreply.github.com`` (lower-cased) so every
-    noreply variant of one login shares a key. Any other address — including the
-    ``noreply@github.com`` system author — is returned lower-cased and otherwise
-    unchanged. ``None``/empty passes through unchanged so callers can keep their
-    existing "no email → fall back to name" handling.
+    both collapse to ``login@users.noreply.github.com``; any other address is
+    returned lower-cased (see ``forges.canonical_email``). ``None``/empty passes
+    through unchanged so callers can keep their existing "no email → fall back
+    to name" handling.
     """
     if not email:
         return email
-    lowered = email.strip().lower()
-    m = _GH_NOREPLY_RE.match(lowered)
-    if m:
-        return f"{m.group('login')}{_NOREPLY_DOMAIN}"
-    return lowered
+    return forges.canonical_email(email)
+
+
+def is_noreply(email: str | None) -> bool:
+    """Whether *email* is a forge's synthetic noreply address for a login."""
+    return forges.noreply_login(email) is not None
 
 
 def author_identity_key(author_name: str | None, author_email: str | None) -> str:
@@ -111,7 +83,7 @@ def _identity(name: str | None, email: str | None) -> tuple[IdentityKind, str | 
     agent = agent_from_identity(name, email)
     if agent:
         return "agent", agent
-    if (name and _BOT_NAME_RE.search(name)) or (email and _BOT_EMAIL_RE.search(email)):
+    if forges.is_bot(name, email):
         return "bot", None
     return "human", None
 
@@ -247,9 +219,10 @@ def build_identity_resolver(
     Guardrails, since a false merge is worse than a split: the same display
     name alone never joins two real emails; a node whose names point E3/E5 at
     two different real emails takes neither; bots take no E3-E5 edge; and an
-    identity that would hold two different noreply logins has its E3-E5 edges
-    rolled back. (Numeric ids are not compared on their own: E2 already folds
-    one login's re-issued ids, and two logins are caught by login.)
+    identity that would hold two different noreply addresses has its E3-E5
+    edges rolled back. (E2 already folds one GitHub login's re-issued ids, so
+    two GitHub nodes are two logins; GitLab keeps the id, so the same login on
+    two ids or hosts is two nodes, possibly two accounts.)
 
     ``evidence`` pairs (``Co-authored-by`` trailers) never create a node or an
     edge: they only add their name to the display-name tally of an identity
@@ -271,9 +244,9 @@ def build_identity_resolver(
         kind_votes[node][obs_kind] += 1
         if agent:
             agent_votes[node][agent] += 1
-        m = _GH_NOREPLY_RE.match((email or "").strip().lower())
-        if m:
-            logins[node] = m.group("login")
+        noreply = forges.noreply_login(email)
+        if noreply:
+            logins[node] = noreply[1]
     # A node is automation when most of its observations say so (a tie stays
     # human); an agent/bot tie goes to the more specific agent.
     auto_kinds: dict[str, IdentityKind] = {}
@@ -332,7 +305,7 @@ def build_identity_resolver(
     uf = merge(soft)
     conflicted = set()
     for nodes in uf.groups():
-        if len({logins[n] for n in nodes if n in logins}) > 1:
+        if sum(n in logins for n in nodes) > 1:
             conflicted.add(uf.find(nodes[0]))
     if conflicted:
         uf = merge([(a, b) for a, b in soft if uf.find(a) not in conflicted])
