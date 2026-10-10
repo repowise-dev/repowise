@@ -185,8 +185,11 @@ class ExtractMethodDetector(RefactoringDetector):
             markers = {getattr(f, "biomarker_type", "") for f in matched}
             fn_node = analysis.fn_node
             receiver = dialect.receiver(fn_node, lmap) if dialect and fn_node else None
-            best = _choose(analysis, find_extractions(analysis, lmap, receiver), markers)
-            staged = _staged(analysis, best, lmap, receiver, ctx.language, markers)
+            # The slicer's per-block walk, read again by a staged plan.
+            prefixes: dict[int, Any] = {}
+            candidates = find_extractions(analysis, lmap, receiver, prefixes)
+            best = _choose(analysis, candidates, markers)
+            staged = _staged(analysis, best, lmap, receiver, ctx.language, markers, prefixes)
             if staged is not None:
                 out.append(
                     self._staged_suggestion(ctx, analysis, staged, matched, names, receiver)
@@ -355,6 +358,7 @@ def _staged(
     receiver: Receiver | None,
     language: str | None,
     markers: set[str],
+    prefixes: dict[int, Any] | None = None,
 ) -> StagePlan | None:
     """The staged split, when the function is too complex for one helper and
     the split lifts at least twice what the best single span does (several
@@ -364,7 +368,7 @@ def _staged(
     max_returns = render.staged_outputs(language)
     if max_returns is None or analysis.ccn < _STAGE_MIN_CCN:
         return None
-    plan = find_stages(analysis, lmap, receiver, max_returns=max_returns)
+    plan = find_stages(analysis, lmap, receiver, max_returns=max_returns, prefixes=prefixes)
     if not plan.stages or (best is not None and plan.ccn_removed < 2 * best.ccn_removed):
         return None
     if not all(_worth_extracting(analysis, x, markers) for x in plan.stages):

@@ -62,12 +62,11 @@ from .slice import (
     _hoisted_bindings,
     _identifiers,
     _infer_in_out,
-    _outs_definitely_assigned,
+    _Prefix,
     _reads_observing,
     _receiver_facts,
     _scan_for,
-    _span_kinds,
-    _span_metrics,
+    _stmt_assigns,
     _unwrap_container,
     _var_lines,
 )
@@ -80,7 +79,6 @@ if TYPE_CHECKING:
     from .analyze import FunctionAnalysis
     from .defuse import FunctionDefUse
     from .dialects.base import Receiver
-    from .slice import _Prefix, _Scan
 
 STAGE_MAX_CCN = 10
 STAGE_MAX_NLOC = 60
@@ -135,25 +133,25 @@ def find_stages(
     receiver: Receiver | None = None,
     *,
     max_returns: int = 3,
+    prefixes: dict[int, _Prefix] | None = None,
 ) -> StagePlan:
     """The staged split of *analysis*, or a :class:`StagePlan` with only a
     ``reason`` when none composes. *max_returns* caps a stage's outputs (a
-    language whose call cannot unpack a tuple passes 1)."""
+    language whose call cannot unpack a tuple passes 1). *prefixes* are the
+    per-block statement metrics :func:`slice.find_extractions` already
+    walked; a block missing from them is walked here."""
     fn_node = analysis.fn_node
     if fn_node is None or fn_node.has_error:
         return StagePlan(reason="no_tree")
     body = fn_node.child_by_field_name("body")
     if body is None:
         return StagePlan(reason="no_tree")
-    scan = _scan_for(lmap, receiver, fn_node)
-    # Only an exit from the function, or a yield, cannot cross into a helper.
-    stage_scan = scan._replace(jumps=lmap.return_kinds | lmap.yield_kinds, kinds=None)
-    stage_scan = stage_scan._replace(kinds=_span_kinds(stage_scan))
-    block = _effective_block(_unwrap_container(body, lmap.block_kinds), stage_scan, lmap)
-    code = _code(block)
+    blocks = _Blocks(analysis, lmap, receiver, prefixes if prefixes is not None else {})
+    block = _effective_block(_unwrap_container(body, lmap.block_kinds), blocks, lmap)
+    code, pre = blocks.code(block)
     if len(code) < 2:
         return StagePlan(reason="one_statement")
-    cutter = _Cutter(analysis, lmap, receiver, block, code, stage_scan, max_returns)
+    cutter = _Cutter(analysis, lmap, receiver, block, code, pre, max_returns)
     stages = cutter.cut()
     if len(stages) < 2:
         return StagePlan(reason="fewer_than_two_stages")
@@ -165,21 +163,54 @@ def find_stages(
     return StagePlan(stages=stages, context=context, imports=imports, moved_imports=moved)
 
 
-def _code(block: Node) -> list[Node]:
-    """The block's statements, without comments or a leading docstring."""
-    out = [c for c in block.named_children if not is_comment(c)]
-    if out and is_string_stmt(out[0]):
-        out = out[1:]
+class _Blocks:
+    """Each block's code statements and their prefix sums, read from the
+    slicer's walk (*prefixes*) and walked only for a block it skipped."""
+
+    def __init__(
+        self,
+        analysis: FunctionAnalysis,
+        lmap: LanguageNodeMap,
+        receiver: Receiver | None,
+        prefixes: dict[int, _Prefix],
+    ) -> None:
+        self.analysis, self.lmap, self.prefixes = analysis, lmap, prefixes
+        self.scan = _scan_for(lmap, receiver, analysis.fn_node)
+
+    def code(self, block: Node) -> tuple[list[Node], _Prefix]:
+        """The block's statements without comments or a leading docstring,
+        and their metrics as prefix sums."""
+        named = block.named_children
+        keep = [k for k, c in enumerate(named) if not is_comment(c)]
+        if keep and is_string_stmt(named[keep[0]]):
+            keep = keep[1:]
+        full = self.prefixes.get(block.id)
+        if full is None:
+            lines = _function_lines(self.analysis.fn_node)
+            full = self.prefixes[block.id] = _block_prefix(named, self.scan, lines, self.lmap)
+        return [named[k] for k in keep], _select(full, keep)
+
+
+def _select(pre: _Prefix, keep: list[int]) -> _Prefix:
+    """*pre* over the statements at *keep* only."""
+    out = _Prefix([0], [0], [0], [0], [0], [0], [], [0])
+    sums = ("decisions", "jumps", "awaits", "nested", "code", "receiver", "exits")
+    for k in keep:
+        for name in sums:
+            series = getattr(out, name)
+            full = getattr(pre, name)
+            series.append(series[-1] + full[k + 1] - full[k])
+        out.assigns.append(pre.assigns[k])
     return out
 
 
-def _effective_block(block: Node, scan: _Scan, lmap: LanguageNodeMap) -> Node:
+def _effective_block(block: Node, blocks: _Blocks, lmap: LanguageNodeMap) -> Node:
     """*block*, or the body of the ``try`` / ``with`` wrapper holding most of
     its decision points, repeatedly."""
     wrappers = lmap.try_kinds | lmap.with_kinds
     while True:
-        code = _code(block)
-        per = [_span_metrics([st], scan).decisions for st in code]
+        code, pre = blocks.code(block)
+        per = [pre.decisions[k + 1] - pre.decisions[k] for k in range(len(code))]
         total = sum(per)
         if not total:
             return block
@@ -188,7 +219,7 @@ def _effective_block(block: Node, scan: _Scan, lmap: LanguageNodeMap) -> Node:
         if inner is None:
             return block
         inner = _unwrap_container(inner, lmap.block_kinds)
-        if _span_metrics(_code(inner), scan).decisions < _WRAPPER_SHARE * total:
+        if blocks.code(inner)[1].decisions[-1] < _WRAPPER_SHARE * total:
             return block
         block = inner
 
@@ -203,7 +234,7 @@ class _Cutter:
         receiver: Receiver | None,
         block: Node,
         code: list[Node],
-        scan: _Scan,
+        pre: _Prefix,
         max_returns: int,
     ) -> None:
         self.lmap, self.receiver, self.block, self.code = lmap, receiver, block, code
@@ -215,7 +246,8 @@ class _Cutter:
         self.decl_lines = _declaration_lines(def_use)
         self.shared = _closure_state(def_use, self.def_lines, self.use_lines)
         self.reads = _reads_observing(analysis, self.def_lines)
-        self.pre: _Prefix = _block_prefix(code, scan, _function_lines(analysis.fn_node), lmap)
+        self.pre = pre
+        self._assigns: dict[tuple[int, str], bool] = {}
         self.cut_cost = _cut_costs(code)
         self.banners = [c == 0 for c in self.cut_cost]
         self.timer_pairs = _timer_pairs(code)
@@ -278,7 +310,7 @@ class _Cutter:
             self.def_lines, self.use_lines, s, e, self.declared_first, reads=self.reads
         )
         returns = self._own_bindings_dropped(span, s, e, returns)
-        params = self._with_inouts(span, s, params, returns)
+        params = self._with_inouts(i, j, s, params, returns)
         if params is None or len(returns) > self.max_returns:
             return None
         bound = self.assigned.before(s)
@@ -309,7 +341,7 @@ class _Cutter:
             return False
         if self._sum(pre.code, i, j) < _MIN_SLICE_NLOC:
             return False
-        if self._sum(pre.jumps, i, j) or self._sum(pre.nested, i, j):
+        if self._sum(pre.exits, i, j) or self._sum(pre.nested, i, j):
             return False
         return not any((i <= a <= j) != (i <= b <= j) for a, b in self.timer_pairs)
 
@@ -355,19 +387,30 @@ class _Cutter:
         )
 
     def _with_inouts(
-        self, span: list[Node], s: int, params: tuple[str, ...], returns: tuple[str, ...]
+        self, i: int, j: int, s: int, params: tuple[str, ...], returns: tuple[str, ...]
     ) -> tuple[str, ...] | None:
         """*params* plus each output some path does not write, which the stage
         must then take in to hand back; None when such an output has no value
         before the stage."""
         extra = []
         for var in returns:
-            if var in params or _outs_definitely_assigned(span, (var,), self.def_lines, self.lmap):
+            if var in params or any(self._writes(k, var) for k in range(i, j + 1)):
                 continue
             if not any(ln < s for ln in self.def_lines.get(var, ())):
                 return None
             extra.append(var)
         return tuple(sorted((*params, *extra))) if extra else params
+
+
+    def _writes(self, k: int, var: str) -> bool:
+        """Whether statement *k* writes *var* on every path through it (the
+        slicer's proof), once per statement and name: a run proves it when any
+        of its statements does."""
+        key = (k, var)
+        if key not in self._assigns:
+            defs = self.def_lines.get(var, [])
+            self._assigns[key] = _stmt_assigns(self.code[k], var, defs, self.lmap)
+        return self._assigns[key]
 
 
 def _timer_pairs(code: list[Node]) -> list[tuple[int, int]]:

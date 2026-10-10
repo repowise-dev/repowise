@@ -114,6 +114,10 @@ class _Scan(NamedTuple):
     receiver: Receiver | None = None
     # Built from the fields above by :func:`_scan_for`; derived when absent.
     kinds: FactKinds | None = None
+    #: What leaves the function itself (``return``); a raise does not, for a
+    #: staged plan's helper, which re-raises it unchanged.
+    exits: frozenset[str] = frozenset()
+    yields: frozenset[str] = frozenset()
 
 
 class _Metrics(NamedTuple):
@@ -124,6 +128,8 @@ class _Metrics(NamedTuple):
     awaits: bool
     receiver_use: bool = False
     receiver_assigns: frozenset[str] = frozenset()
+    #: Function exits and yields (``_Scan.exits``, exit macros, ``yield``).
+    exits: int = 0
 
 
 class _Prefix(NamedTuple):
@@ -137,10 +143,14 @@ class _Prefix(NamedTuple):
     code: list[int]
     receiver: list[int]
     assigns: list[frozenset[str]]
+    exits: list[int]
 
 
 def find_extractions(
-    analysis: FunctionAnalysis, lmap: LanguageNodeMap, receiver: Receiver | None = None
+    analysis: FunctionAnalysis,
+    lmap: LanguageNodeMap,
+    receiver: Receiver | None = None,
+    prefixes: dict[int, _Prefix] | None = None,
 ) -> list[Extraction]:
     """Return safe Extract Method candidates for *analysis*, best first.
 
@@ -148,6 +158,8 @@ def find_extractions(
     then earliest -- a deterministic order. Empty when the function has no AST
     node retained or no span clears the extractability gates. *receiver* is
     the function's instance (``DefUseDialect.receiver``), None when unknown.
+    *prefixes*, when given, receives each walked block's :class:`_Prefix` by
+    block id, so a staged plan reads them instead of walking again.
     """
     fn_node = analysis.fn_node
     if fn_node is None:
@@ -201,6 +213,8 @@ def find_extractions(
         )
         if n >= _MIN_STMTS:
             pre = _block_prefix(stmts, scan, lines, lmap)
+            if prefixes is not None:
+                prefixes[block.id] = pre
         for i in range(n):
             for j in range(i, n):
                 evaluated += 1
@@ -399,6 +413,8 @@ def _scan_for(lmap: LanguageNodeMap, receiver: Receiver | None, fn_node: Node) -
         awaits=_awaits(lmap),
         lambdas=lmap.lambda_kinds,
         receiver=receiver,
+        exits=lmap.return_kinds,
+        yields=lmap.yield_kinds,
     )
     return scan._replace(kinds=_span_kinds(scan))
 
@@ -411,7 +427,7 @@ def _block_prefix(
     statements and its jump bit the OR, and re-walking per span made the
     candidate loop O(n^2 * subtree). The named-nested-function check rides
     the same sums for the same reason."""
-    pre = _Prefix([0], [0], [0], [0], [0], [0], [])
+    pre = _Prefix([0], [0], [0], [0], [0], [0], [], [0])
     for st in stmts:
         m = _span_metrics([st], scan)
         pre.decisions.append(pre.decisions[-1] + m.decisions)
@@ -421,6 +437,7 @@ def _block_prefix(
         pre.code.append(pre.code[-1] + _stmts_nloc([st], lines))
         pre.receiver.append(pre.receiver[-1] + m.receiver_use)
         pre.assigns.append(m.receiver_assigns)
+        pre.exits.append(pre.exits[-1] + m.exits)
     return pre
 
 
@@ -1276,7 +1293,9 @@ def _span_kinds(scan: _Scan) -> FactKinds:
     return FactKinds(
         decisions=scan.decisions,
         jumps=scan.jumps,
+        exits=scan.exits,
         exit_macros=scan.exit_macros,
+        yields=scan.yields,
         awaits=await_kinds,
         await_scopes=await_scope_kinds,
         lambdas=scan.lambdas,
@@ -1307,6 +1326,7 @@ def _span_metrics(span: list[Node], scan: _Scan) -> _Metrics:
         tally.awaits,
         sink.uses if sink else False,
         frozenset(sink.assigns) if sink else frozenset(),
+        tally.exits + tally.yields,
     )
 
 
