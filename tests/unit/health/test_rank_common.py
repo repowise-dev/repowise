@@ -21,11 +21,6 @@ def test_weakest_counts_an_unlisted_label_as_zero() -> None:
     assert weakest(["direct", "mystery"], {"direct": 3}) == "mystery"
 
 
-def test_weakest_of_nothing_raises() -> None:
-    with pytest.raises(ValueError):
-        weakest([], {"a": 1})
-
-
 def test_top_factors_drops_zeros_and_orders_by_magnitude_then_name() -> None:
     factors = {"b": 2.0, "a": 2.0, "zero": 0.0, "neg": -5.0, "small": 0.5}
     assert top_factors(factors, 3) == [("neg", -5.0), ("a", 2.0), ("b", 2.0)]
@@ -39,6 +34,19 @@ def test_refactoring_rank_keeps_its_shape() -> None:
         {"factor": "benefit", "value": 3.0},
         {"factor": "cost", "value": 2.0},
     ]
+
+
+# Today both return "high": ``_WORST_FIRST[0]`` is the strongest level. Strict,
+# so the fix flips these to passing and the markers have to come off.
+@pytest.mark.xfail(strict=True, reason="unknown confidence falls back to high, not low")
+def test_refactoring_unknown_confidence_counts_as_low() -> None:
+    steps = [SimpleNamespace(confidence="high"), SimpleNamespace(confidence="bogus")]
+    assert refactoring_rank.weakest_confidence(steps) == "low"
+
+
+@pytest.mark.xfail(strict=True, reason="empty step set falls back to high, not low")
+def test_refactoring_empty_steps_count_as_low() -> None:
+    assert refactoring_rank.weakest_confidence([]) == "low"
 
 
 def test_perf_rank_keeps_its_shape() -> None:

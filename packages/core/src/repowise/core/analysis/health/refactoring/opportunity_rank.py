@@ -35,7 +35,7 @@ from typing import Any
 
 from repowise.core.code_origin import ship_rank
 
-from ..rank_common import top_factors, weakest
+from ..rank_common import top_factors
 from .models import CONFIDENCE_LEVELS, RefactoringSuggestion
 from .recommendations import EFFORT_COST, detector_native_benefit, priority_score
 from .recommendations import surface_confidence_risk as _surface_confidence_risk
@@ -50,7 +50,6 @@ MECHANICAL_SHARE_WEIGHT = 0.5
 # Worst first, off the package's one confidence vocabulary rather than a
 # second hand-written tuple that could drift from it.
 _WORST_FIRST = tuple(reversed(CONFIDENCE_LEVELS))
-_STRENGTH = {level: rank for rank, level in enumerate(CONFIDENCE_LEVELS)}
 
 
 def weakest_confidence(steps: Sequence[RefactoringSuggestion]) -> str:
@@ -62,12 +61,12 @@ def weakest_confidence(steps: Sequence[RefactoringSuggestion]) -> str:
     its fallback sits *below* ``low``, so letting it through would have made
     adding an uninterpretable step reduce an opportunity's risk.
     """
-    fallback = _WORST_FIRST[0]
+    weakest = _WORST_FIRST[0]
     if not steps:
-        return fallback
-    return weakest(
-        (step.confidence if step.confidence in _STRENGTH else fallback for step in steps),
-        _STRENGTH,
+        return weakest
+    return max(
+        (step.confidence if step.confidence in _WORST_FIRST else weakest for step in steps),
+        key=_WORST_FIRST.index,
     )
 
 
