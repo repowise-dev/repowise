@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from math import log2
 from typing import Any
 
+from ..rank_common import top_factors, weakest
 from ..rows import detail_map, field
 from ..worth import cost_proof, lead_reason
 from .actionability import EXPECTED_REASONS
@@ -184,7 +185,7 @@ def weakest_provenance(provenances: set[str]) -> str:
     points where :func:`dominant_marker` is a ``min`` on negated points. They
     read alike and mean the opposite; that is intentional.
     """
-    return min(provenances, key=lambda value: (PROVENANCE_POINTS.get(value, 0), value))
+    return weakest(provenances, PROVENANCE_POINTS)
 
 
 def amplification(marker: str) -> str:
@@ -283,13 +284,9 @@ def why_ranked(factors: dict[str, int], values: dict[str, Any], limit: int = 3) 
     reword never churns anything. Zero-point terms explain nothing and are
     dropped, so fewer than ``limit`` entries is a normal answer.
     """
-    ranked = sorted(
-        ((name, points) for name, points in factors.items() if points),
-        key=lambda item: (-item[1], item[0]),
-    )
     return tuple(
         {"factor": name, "value": values.get(name), "points": points}
-        for name, points in ranked[:limit]
+        for name, points in top_factors(factors, limit)
     )
 
 
