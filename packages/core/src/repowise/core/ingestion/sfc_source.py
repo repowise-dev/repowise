@@ -30,7 +30,7 @@ Only the *region-location* step differs per language, so it lives behind
 :data:`_LOCATORS`; the blanking, fencing, caching and offset invariants are
 shared. Adding a markup language means adding a :class:`Locator`, not a second
 copy of the walker: grammar-backed for Svelte and Vue, byte-scanned for
-Razor, which has no usable tree-sitter grammar (see the ``razor`` locator).
+Razor and Astro, which have no usable tree-sitter grammar (see their locators).
 
 Binding forms are deliberately skipped rather than kept: Svelte's
 ``{#each items as item}`` and ``{#await}`` heads, and Vue's ``v-for="item in
@@ -112,13 +112,15 @@ _SPACE = 0x20
 _SEMICOLON = 0x3B
 _OPEN_BRACE = 0x7B
 _CLOSE_BRACE = 0x7D
+_CLOSE_ANGLE = 0x3E
 _DOUBLE_QUOTE = 0x22
 _SINGLE_QUOTE = 0x27
 
 # Only a byte the scan pointed at *and* that is a real delimiter is ever
 # rewritten to ``;`` — never a byte that turned out to be part of a kept
-# expression. Svelte fences with braces, Vue with attribute quotes.
-_FENCE_BYTES = frozenset({_OPEN_BRACE, _CLOSE_BRACE, _DOUBLE_QUOTE, _SINGLE_QUOTE})
+# expression. Svelte fences with braces, Vue with attribute quotes, Astro with
+# the ``>`` of a script's opening tag.
+_FENCE_BYTES = frozenset({_OPEN_BRACE, _CLOSE_BRACE, _DOUBLE_QUOTE, _SINGLE_QUOTE, _CLOSE_ANGLE})
 
 
 class SfcScan(NamedTuple):
@@ -146,7 +148,7 @@ class Locator(NamedTuple):
 
     Two shapes are supported. A **grammar-backed** locator (Svelte, Vue)
     parses the file with a tree-sitter markup grammar and ``visit`` walks
-    every node. A **byte-scanned** locator (Razor) has ``grammar_module`` /
+    every node. A **byte-scanned** locator (Razor, Astro) has ``grammar_module`` /
     ``visit`` left as None and ``byte_scan`` instead walks the raw bytes;
     there is no usable ``tree-sitter-razor`` on PyPI, and an HTML grammar
     actively mis-parses Razor (``List<Order>`` reads as an HTML element).
@@ -161,7 +163,7 @@ class Locator(NamedTuple):
     # Maps a raw markup tag name to the component name it instantiates, or
     # None when the tag is not a user component.
     component_name: Callable[[str], str | None] | None = None
-    # Byte-scanned locators (Razor): called once with the raw source bytes;
+    # Byte-scanned locators (Razor, Astro): called once with the raw source bytes;
     # appends ``(start, end)`` spans / terminator offsets / ``(name, line)``
     # component tags to ``state`` exactly like a grammar walk would.
     byte_scan: Callable[[bytes, dict], None] | None = None
@@ -555,7 +557,7 @@ def _razor_byte_scan(source: bytes, state: dict) -> None:
     # Skip any ``<`` inside a C# region or a Razor comment: ``List<Order>`` is
     # a generic type argument, ``a < b`` is a comparison, and a commented-out
     # tag renders nothing. HTML comments are jumped over for the same reason.
-    _byte_scan_tags(source, 0, [*state["spans"], *comments], _razor_component_name, state)
+    _byte_scan_tags(source, [*state["spans"], *comments], _razor_component_name, state)
 
 
 _MARKUP_TAG = re.compile(rb"<(?:!--|([\w.]+))")
@@ -563,12 +565,12 @@ _MARKUP_TAG = re.compile(rb"<(?:!--|([\w.]+))")
 
 def _byte_scan_tags(
     source: bytes,
-    pos: int,
     hidden: list[tuple[int, int]],
     name_of: Callable[[str], str | None],
     state: dict,
 ) -> None:
-    """Record ``(name, line)`` for each component tag from ``pos`` on, skipping ``hidden`` and HTML comments."""
+    """Record ``(name, line)`` for each component tag, skipping ``hidden`` and HTML comments."""
+    pos = 0
     while (tag := _MARKUP_TAG.search(source, pos)) is not None:
         pos = tag.end()
         if any(start <= tag.start() < end for start, end in hidden):
@@ -625,7 +627,7 @@ _ASTRO_CLOSE = {
     b"script": re.compile(rb"</script\s*>", re.IGNORECASE),
     b"style": re.compile(rb"</style\s*>", re.IGNORECASE),
 }
-_ASTRO_SCRIPT_TYPE = re.compile(rb"""(?<![\w-])type\s*=\s*["']?([^"'\s>]+)""", re.IGNORECASE)
+_ASTRO_SCRIPT_TYPE = re.compile(rb"""(?<![\w.-])type\s*=(?!=)\s*["']?([^"'\s>]+)""", re.IGNORECASE)
 # A ``<script>`` with any other ``type`` (``application/ld+json``) holds data.
 _ASTRO_JS_TYPES = frozenset(
     {b"module", b"text/javascript", b"application/javascript", b"text/typescript"}
@@ -650,7 +652,7 @@ def _astro_byte_scan(source: bytes, state: dict) -> None:
 
     # shortcut: a TS generic inside a markup {expr} (``Array<Foo>``) reads as a
     # <Foo> tag; fine until a false component edge shows up in a real repo.
-    _byte_scan_tags(source, markup_start, hidden, _astro_component_name, state)
+    _byte_scan_tags(source, [*state["spans"], *hidden], _astro_component_name, state)
 
 
 def _astro_record_scripts(source: bytes, pos: int, state: dict) -> list[tuple[int, int]]:
@@ -675,6 +677,7 @@ def _astro_record_scripts(source: bytes, pos: int, state: dict) -> list[tuple[in
         end = close_match.start() if close_match else len(source)
         if _astro_is_js_script(tag, attrs):
             state["spans"].append((opener.end(), end))
+            state["terminators"].append(opener.end() - 1)
         hidden.append((opener.start(), end))
         pos = close_match.end() if close_match else end
     return hidden
@@ -774,7 +777,7 @@ def _cached_scan(language: str, source: bytes) -> SfcScan:
     locator = _LOCATORS[language]
     state: dict = {"spans": [], "terminators": [], "tags": []}
 
-    # Byte-scanned locator (Razor): no markup grammar exists, so the raw
+    # Byte-scanned locator (Razor, Astro): no markup grammar exists, so the raw
     # bytes are scanned directly. There is no tree to carry a parse-error
     # flag, and a byte scan cannot mis-parse, so ``has_error`` stays False.
     if locator.byte_scan is not None:

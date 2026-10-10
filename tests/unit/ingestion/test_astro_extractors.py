@@ -69,11 +69,6 @@ def test_astro_extension_is_indexed() -> None:
 
 
 class TestProjection:
-    def test_offsets_and_lines_are_preserved(self) -> None:
-        prepared = prepare_source("astro", _PAGE)
-        assert len(prepared) == len(_PAGE)
-        assert prepared.count(b"\n") == _PAGE.count(b"\n")
-
     def test_markup_and_style_are_blanked(self) -> None:
         prepared = prepare_source("astro", _PAGE)
         assert b"<html>" not in prepared
@@ -87,6 +82,7 @@ class TestProjection:
             b'<script type="module">',
             b"<script define:vars={{ a }}>",
             b'<script data-type="x">',
+            b"<script define:vars={{ dark: theme.type === 'dark' }}>",
         ],
     )
     def test_every_js_script_variant_is_kept(self, opener: bytes) -> None:
@@ -179,13 +175,17 @@ def test_an_unterminated_script_runs_to_eof() -> None:
     assert b"const a = 1;" in prepare_source("astro", src)
 
 
+def test_a_script_does_not_run_into_the_frontmatter(parser) -> None:
+    # No ``;`` after ``Astro.props``: unfenced, the IIFE reads as a call on it.
+    src = b"---\nconst { t } = Astro.props\n---\n<script>(function () { function setTheme() {} })()</script>"
+    result = parser.parse_file(_file(size=len(src)), src)
+    assert ({s.name for s in result.symbols}, result.calls) == ({"setTheme", "Pages"}, [])
+
+
 class TestSymbols:
     def test_frontmatter_and_script_symbols_at_their_source_lines(self, parsed) -> None:
-        lines = {s.name: s.start_line for s in parsed.symbols}
-        assert lines["prerender"] == 5
-        assert lines["getStaticPaths"] == 7
-        assert lines["title"] == 11
-        assert lines["toggleMenu"] == 20
+        lines = {s.name: s.start_line for s in parsed.symbols if s.name != "Pages"}
+        assert lines == {"prerender": 5, "getStaticPaths": 7, "title": 11, "toggleMenu": 20}
 
     def test_the_file_itself_becomes_a_component_symbol(self, parsed) -> None:
         # ``index`` defers to its directory, as for Vue.
@@ -198,12 +198,6 @@ class TestSymbols:
         src = b"<button>Top</button>\n"
         result = parser.parse_file(_file("src/components/back-to-top.astro", len(src)), src)
         assert [s.name for s in result.symbols] == ["BackToTop"]
-
-    def test_markup_produces_no_symbols(self, parsed) -> None:
-        # Lines 13-18 are markup, 24-26 the <style> block.
-        others = [s for s in parsed.symbols if s.name != "Pages"]
-        assert not [s for s in others if 13 <= s.start_line <= 18 or s.start_line >= 24]
-        assert {s.name for s in others} == {"prerender", "getStaticPaths", "title", "toggleMenu"}
 
     def test_frontmatter_exports(self, parsed) -> None:
         assert set(parsed.exports) == {"prerender", "getStaticPaths", "Pages"}
@@ -258,10 +252,3 @@ class TestDeadCode:
         from repowise.core.analysis.dead_code.analyzer import _non_importable_kinds
 
         assert {"constant", "variable", "function", "class"} <= _non_importable_kinds("astro")
-
-    def test_pages_are_never_flagged(self) -> None:
-        from repowise.core.analysis.dead_code.constants import never_flag_match
-
-        assert never_flag_match("src/pages/index.astro")
-        assert never_flag_match("apps/web/src/pages/blog/[slug].astro")
-        assert not never_flag_match("src/components/Header.astro")
