@@ -187,7 +187,7 @@ Opt-in blocks: `full_doc`, `ownership` (primary owner, bus factor, contributor c
 | `results` | Ranked hits. Symbol hits: `type: "symbol"`, `symbol_id`, `name`, `kind`, `path`, `start_line`, `end_line`, `signature`, `next: "get_symbol"`. File hits: `type: "file"`, `page_id`, `path`, `title`, `next: "get_context"`. Concept hits: wiki pages with `page_type`, `path` when the page names a file, `relevance_score`, `snippet`, `sources` |
 | `path` | The repo-relative file a row names, openable as is. Absent when the row names no file (a module page's group key, an onboarding slot, the repo overview); never a page id |
 | `file` | Deprecated alias of `path` on symbol and file hits (and on a `symbol_spotlight` page). Removed in the next minor release |
-| `target_path` | On a page hit, kept only where it is not the same string as `path`: a page with no `path` keeps its group key, slot or repo name here. Where it is dropped, `page_id` stays |
+| `target_path` | On a page hit, kept only where it is not the same string as `path`: a page with no `path` keeps its group key, slot or repo name here. `page_id` is dropped too when `page_type:path` rebuilds it |
 | `symbols` | On a symbol hit outside `symbol` mode: up to five other matching symbols in the same file, as `name:line`, then a `+N more` entry counting the rest. Those matches share the row instead of taking slots of their own |
 | `sources` | The retrievers that found a concept hit: `fts`, `vector`, or both. A hit found by `fts` alone has no semantic agreement |
 | `candidates` | Up to `limit` distinct openable file paths, best first |
