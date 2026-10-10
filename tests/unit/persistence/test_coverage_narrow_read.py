@@ -198,6 +198,117 @@ async def test_batched_read_on_an_empty_request_does_not_query(
     assert await _tests_covering_many(async_session, per_test_repo.id, {}) == {}
 
 
+async def test_the_in_clause_chunk_is_under_the_sqlite_parameter_cap():
+    """The piece size must stay below what the driver will actually accept.
+
+    SQLite's SQLITE_LIMIT_VARIABLE_NUMBER is 32766 on 3.32+, and one bound
+    parameter over it is an OperationalError rather than a slow query. Pinning the
+    relationship means a later bump to the chunk size cannot silently cross the cap
+    on the machine that runs the suite.
+    """
+    import sqlite3
+
+    from repowise.core.persistence.batches import _IN_CLAUSE_CHUNK
+
+    cap = sqlite3.connect(":memory:").getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    assert cap > _IN_CLAUSE_CHUNK, (
+        f"chunk of {_IN_CLAUSE_CHUNK} is at or over SQLite's {cap} bound-parameter cap"
+    )
+    # The batched read binds the repository id as well as the paths.
+    assert cap >= _IN_CLAUSE_CHUNK + 1
+
+
+async def test_batched_read_survives_a_path_list_over_the_sqlite_parameter_cap(
+    async_session, tmp_path, monkeypatch
+) -> None:
+    """A change set wider than SQLite's bound-parameter cap still returns every file.
+
+    This is the regression the previous body had: it put every path in one ``IN``
+    list, so past the cap the whole read raised ``OperationalError: too many SQL
+    variables`` instead of returning anything.
+
+    The chunk size is lowered for this test so the cap is crossed with a handful of
+    files. Building a real 32767-path repository allocates more rows than a unit
+    test should, and the boundary being exercised -- more paths than one statement
+    may bind -- is identical either way.
+    """
+    from repowise.core.persistence import batches
+
+    small = 4
+    monkeypatch.setattr(batches, "_IN_CLAUSE_CHUNK", small)
+
+    r = await upsert_repository(async_session, name="wide", local_path=str(tmp_path))
+    # Several pieces, so the read is split rather than issued whole. With the real
+    # chunk size this is the 32766+ path change set the bot flagged.
+    total = small * 5 + 3
+    # Only some files have rows, so the result also proves an empty bucket survives
+    # a chunk the file is not in.
+    covered = {
+        f"src/f{i:05d}.py": [i % 40 + 1, i % 40 + 2]
+        for i in range(0, total, 3)
+    }
+    await save_test_coverage(
+        async_session,
+        r.id,
+        [
+            TestCoverage(test_id=f"t{i}", file_path=path, covered_lines=lines)
+            for i, (path, lines) in enumerate(sorted(covered.items()))
+        ],
+        source_format="coverage.py",
+    )
+    await async_session.commit()
+
+    wanted = {f"src/f{i:05d}.py": None for i in range(total)}
+    batched = await _tests_covering_many(async_session, r.id, wanted)
+
+    # Every requested path is answered, spanning all the pieces.
+    assert set(batched) == set(wanted)
+    assert len(batched) > small
+    # Files with rows come back, and the ones straddling the boundary are intact.
+    for path in covered:
+        assert [row["test_id"] for row in batched[path]] == [
+            row["test_id"] for row in await _tests_covering(async_session, r.id, path)
+        ]
+    # A file with no rows, in the last chunk, is still present and empty.
+    assert batched[f"src/f{total - 1:05d}.py"] == []
+
+
+async def test_batched_read_chunk_boundary_keeps_a_line_filtered_result(
+    async_session, tmp_path
+) -> None:
+    """The line filter still applies inside a chunk, not just on a small set."""
+    from repowise.core.persistence.batches import _IN_CLAUSE_CHUNK
+
+    r = await upsert_repository(async_session, name="widefilter", local_path=str(tmp_path))
+    total = _IN_CLAUSE_CHUNK + 3
+    await save_test_coverage(
+        async_session,
+        r.id,
+        [
+            TestCoverage(
+                test_id=f"t{i}", file_path=f"src/g{i:05d}.py", covered_lines=[1, 2, 3]
+            )
+            for i in range(total)
+        ],
+        source_format="coverage.py",
+    )
+    await async_session.commit()
+
+    # Ask for line 3 on every file: the whole set is requested, so it spans chunks.
+    wanted = {f"src/g{i:05d}.py": {3} for i in range(total)}
+    batched = await _tests_covering_many(async_session, r.id, wanted)
+
+    assert len(batched) == total
+    assert all(rows for rows in batched.values())
+    assert all(row["covered_lines"] == [3] for rows in batched.values() for row in rows)
+
+    # And a line nothing covers drops the row in the wide case too.
+    misses = {f"src/g{i:05d}.py": {99} for i in range(total)}
+    assert await _tests_covering_many(async_session, r.id, misses) == {
+        path: [] for path in misses
+    }
+
+
 async def test_summary_reports_mapping_partial_when_ingest_was_fragment(
     async_session, tmp_path
 ) -> None:

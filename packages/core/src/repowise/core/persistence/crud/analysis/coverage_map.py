@@ -20,6 +20,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...batches import chunked
 from ...models import TestCoverageEntry, _new_uuid
 from .._shared import _BATCH_SIZE
 
@@ -187,9 +188,15 @@ async def tests_covering_many(
     The per-file :func:`tests_covering` in a loop is one round trip per file, and
     the callers that walk a changed set (impact, missing-test signal, test
     collection) pay that per file on every request. This performs the same
-    selection with one ``source_file IN (...)`` query and then applies each
-    file's filter in memory, so the answers are identical to calling
+    selection with a ``source_file IN (...)`` query and then applies each file's
+    filter in memory, so the answers are identical to calling
     :func:`tests_covering` once per file.
+
+    The ``IN`` list goes through :func:`~repowise.core.persistence.batches.chunked`
+    rather than being issued whole: SQLite caps bound parameters per statement,
+    and a wide change set is exactly the case that reaches the cap. The pieces are
+    issued in order and appended per file, so a file's bucket holds its rows in
+    the same order a single query would have returned them.
 
     ``source_files`` maps a path to its ``lines`` argument: the set of changed
     lines to intersect with, or ``None`` for every test that touches the file.
@@ -200,30 +207,31 @@ async def tests_covering_many(
     out: dict[str, list[dict[str, Any]]] = {path: [] for path in source_files}
     if not source_files:
         return out
-    result = await session.execute(
-        select(TestCoverageEntry).where(
-            TestCoverageEntry.repository_id == repository_id,
-            TestCoverageEntry.source_file.in_(sorted(source_files)),
+    for piece in chunked(sorted(source_files)):
+        result = await session.execute(
+            select(TestCoverageEntry).where(
+                TestCoverageEntry.repository_id == repository_id,
+                TestCoverageEntry.source_file.in_(piece),
+            )
         )
-    )
-    for row in result.scalars().all():
-        covered = _decode_lines(row)
-        lines = source_files.get(row.source_file)
-        if lines is not None:
-            hit = sorted(lines.intersection(covered))
-            if not hit:
-                continue
-            covered_out = hit
-        else:
-            covered_out = covered
-        out[row.source_file].append(
-            {
-                "test_id": row.test_id,
-                "test_file": row.test_file,
-                "covered_lines": covered_out,
-                "source_format": row.source_format,
-            }
-        )
+        for row in result.scalars().all():
+            covered = _decode_lines(row)
+            lines = source_files.get(row.source_file)
+            if lines is not None:
+                hit = sorted(lines.intersection(covered))
+                if not hit:
+                    continue
+                covered_out = hit
+            else:
+                covered_out = covered
+            out[row.source_file].append(
+                {
+                    "test_id": row.test_id,
+                    "test_file": row.test_file,
+                    "covered_lines": covered_out,
+                    "source_format": row.source_format,
+                }
+            )
     return out
 
 
