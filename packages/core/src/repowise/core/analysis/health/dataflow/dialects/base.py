@@ -290,30 +290,10 @@ class BaseDefUseDialect:
         """
         whole = (node.start_point, node.end_point)
         scopes: _Scopes = {name: [whole] for name in self._closure_bound_names(node)}
-        head_writes: list[Occurrence] = []
-        outer: set[str] = set()
-        head = getattr(self, "_head", None)
-        stack = list(node.named_children)
-        while stack:
-            cur = stack.pop()
-            if self._is_scope_boundary(cur):
-                continue
-            if cur.type in self.outer_decl_kinds:
-                outer |= {occ.name for occ in _leaf_names(cur, self.identifier_kinds)}
-            elif cur.type in lmap.loop_kinds and head is not None:
-                defs: list[Occurrence] = []
-                head(cur, lmap, defs, [])
-                for d in defs:
-                    if d.declares:
-                        scopes.setdefault(d.name, []).append((cur.start_point, cur.end_point))
-                    else:
-                        head_writes.append(d)
-            elif cur.type in lmap.local_decl_kinds:
-                scope = (cur.start_point, _enclosing_end(cur, lmap))
-                for w in writes:
-                    if w.declares and cur.start_point <= _pos(w) <= cur.end_point:
-                        scopes.setdefault(w.name, []).append(scope)
-            stack.extend(cur.named_children)
+        loops, decls, outer = self._closure_parts(node, lmap)
+        head_writes = self._loop_binder_scopes(loops, lmap, scopes)
+        for decl in decls:
+            _add_declaration_scope(decl, writes, lmap, scopes)
         if not self.closure_writes_outer:
             for w in (*writes, *head_writes):
                 if w.name not in outer:
@@ -322,6 +302,47 @@ class BaseDefUseDialect:
         for name in outer:
             scopes.pop(name, None)
         return scopes, head_writes
+
+    def _closure_parts(
+        self, node: Node, lmap: LanguageNodeMap
+    ) -> tuple[list[Node], list[Node], set[str]]:
+        """The loops and declaration statements of nested scope *node* (deeper
+        scopes not entered), and the names it declares outer."""
+        loops: list[Node] = []
+        decls: list[Node] = []
+        outer: set[str] = set()
+        stack = list(node.named_children)
+        while stack:
+            cur = stack.pop()
+            if self._is_scope_boundary(cur):
+                continue
+            if cur.type in self.outer_decl_kinds:
+                outer |= {occ.name for occ in _leaf_names(cur, self.identifier_kinds)}
+            elif cur.type in lmap.loop_kinds:
+                loops.append(cur)
+            elif cur.type in lmap.local_decl_kinds:
+                decls.append(cur)
+            stack.extend(cur.named_children)
+        return loops, decls, outer
+
+    def _loop_binder_scopes(
+        self, loops: list[Node], lmap: LanguageNodeMap, scopes: _Scopes
+    ) -> list[Occurrence]:
+        """Scope each loop's own binders to the loop; return the header's
+        assignments to names it does not bind (TS ``for (x of xs)``)."""
+        head = getattr(self, "_head", None)
+        if head is None:
+            return []
+        head_writes: list[Occurrence] = []
+        for loop in loops:
+            defs: list[Occurrence] = []
+            head(loop, lmap, defs, [])
+            for d in defs:
+                if d.declares:
+                    scopes.setdefault(d.name, []).append((loop.start_point, loop.end_point))
+                else:
+                    head_writes.append(d)
+        return head_writes
 
     def _closure_bound_names(self, node: Node) -> set[str]:
         """Names a nested scope binds as its own parameters.
@@ -422,6 +443,16 @@ def _pos(occ: Occurrence) -> tuple[int, int]:
 def _covered(occ: Occurrence, scopes: _Scopes) -> bool:
     """True when a closure-local binding is in scope at *occ*."""
     return any(lo <= _pos(occ) <= hi for lo, hi in scopes.get(occ.name, ()))
+
+
+def _add_declaration_scope(
+    decl: Node, writes: list[Occurrence], lmap: LanguageNodeMap, scopes: _Scopes
+) -> None:
+    """Scope the names *decl* binds from the declaration to its block's end."""
+    scope = (decl.start_point, _enclosing_end(decl, lmap))
+    for w in writes:
+        if w.declares and decl.start_point <= _pos(w) <= decl.end_point:
+            scopes.setdefault(w.name, []).append(scope)
 
 
 def _enclosing_end(node: Node, lmap: LanguageNodeMap) -> tuple[int, int]:

@@ -86,26 +86,30 @@ class GoDefUseDialect(BaseDefUseDialect):
     ) -> None:
         if node.type in lmap.loop_kinds:  # for_statement: range / clause / cond
             for child in node.named_children:
-                t = child.type
-                if t in lmap.block_kinds:
-                    continue  # the body lives in successor blocks
-                if t == _RANGE_CLAUSE:
-                    start = len(defs)
-                    self._targets(child.child_by_field_name("left"), defs, uses)
-                    if any(tok.type == ":=" for tok in child.children):
-                        self._loop_scoped(defs, start)
-                    self._process(child.child_by_field_name("right"), defs, uses)
-                elif t == _FOR_CLAUSE:
-                    self._process(child.child_by_field_name("initializer"), defs, uses)
-                    self._process(child.child_by_field_name("condition"), defs, uses)
-                    self._process(child.child_by_field_name("update"), defs, uses)
-                else:  # bare condition (while-style ``for cond {}``)
-                    self._process(child, defs, uses)
-        elif node.type in lmap.branch_kinds:  # if_statement: init + condition
+                if child.type not in lmap.block_kinds:  # the body is in successor blocks
+                    self._loop_clause(child, defs, uses)
+            return
+        if node.type in lmap.branch_kinds:  # if_statement: init + condition
             self._process(node.child_by_field_name("initializer"), defs, uses)
             self._process(node.child_by_field_name("condition"), defs, uses)
-        else:
-            self._process(node, defs, uses)
+            return
+        self._process(node, defs, uses)
+
+    def _loop_clause(self, child: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
+        """One header child of a ``for``: a range clause, a three-part clause,
+        or a bare condition (while-style ``for cond {}``)."""
+        if child.type == _RANGE_CLAUSE:
+            start = len(defs)
+            self._targets(child.child_by_field_name("left"), defs, uses)
+            if any(tok.type == ":=" for tok in child.children):
+                self._loop_scoped(defs, start)
+            self._process(child.child_by_field_name("right"), defs, uses)
+            return
+        if child.type == _FOR_CLAUSE:
+            for field_name in ("initializer", "condition", "update"):
+                self._process(child.child_by_field_name(field_name), defs, uses)
+            return
+        self._process(child, defs, uses)
 
     # -- the unified expression / statement walk ------------------------------
 
