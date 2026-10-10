@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { listDeadCode } from "@repowise-dev/api-client/dead-code";
+import { getDeadCodeSummary, listDeadCode } from "@repowise-dev/api-client/dead-code";
 import type { DeadCodeFindingResponse } from "@repowise-dev/api-client/types";
 import {
   baseName,
@@ -9,6 +9,7 @@ import {
 } from "./shared";
 
 const FINDINGS_KEY = "deadcode:findings";
+const SUMMARY_KEY = "deadcode:summary";
 
 /** Confidence tiers, most-confident first, with their inclusive lower bounds. */
 const TIERS: Array<{ key: string; label: string; min: number }> = [
@@ -28,10 +29,21 @@ export class DeadCodeTreeProvider extends RepowiseTreeProvider {
   protected readonly name = "Dead Code";
 
   protected async loadRoots(repoId: string): Promise<RepoTreeNode[]> {
-    const findings = await this.cached(FINDINGS_KEY, () =>
-      listDeadCode(repoId, { limit: 500 }),
-    );
-    if (findings.length === 0) return [this.messageNode("No dead code")];
+    const [findings, summary] = await Promise.all([
+      this.cached(FINDINGS_KEY, () => listDeadCode(repoId, { limit: 500 })),
+      this.cached(SUMMARY_KEY, () => getDeadCodeSummary(repoId)),
+    ]);
+    if (findings.length === 0) {
+      // No findings only means "clean" once an analysis has actually run.
+      return [
+        summary.analyzed_at
+          ? this.messageNode(
+              "No dead code",
+              new vscode.ThemeIcon("pass", new vscode.ThemeColor("testing.iconPassed")),
+            )
+          : this.messageNode("Not analysed yet"),
+      ];
+    }
 
     const roots: RepoTreeNode[] = [];
     for (const tier of TIERS) {

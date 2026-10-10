@@ -60,6 +60,8 @@ export const InternalCommands = {
   handPlanToClaudeCode: "repowise.handPlanToClaudeCode",
   /** The one-time "publish to repowise.dev" prompt; fired after setup succeeds. */
   offerPublish: "repowise.offerPublish",
+  /** Re-asks every Repowise tree; bound to the "Retry" row of a failed load. */
+  retryTrees: "repowise.retryTrees",
 } as const;
 
 /**

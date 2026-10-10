@@ -1,6 +1,14 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import type { RepowiseContext } from "../../core/context";
+import { InternalCommands } from "../../constants";
+
+/** Providers behind a mounted view, so a failed row can re-ask all of them. */
+const mountedProviders = new Set<RepowiseTreeProvider>();
+
+export function retryMountedTrees(): void {
+  for (const provider of mountedProviders) provider.refresh();
+}
 
 /**
  * One node in a Repowise activity-bar tree. Providers build a plain node tree
@@ -162,11 +170,14 @@ export abstract class RepowiseTreeProvider
   }
 
   /** A friendly single leaf for empty results ("No findings", etc). */
-  protected messageNode(label: string, icon = "info"): RepoTreeNode {
+  protected messageNode(
+    label: string,
+    icon: string | vscode.ThemeIcon = "info",
+  ): RepoTreeNode {
     return {
       key: `msg:${label}`,
       label,
-      icon: new vscode.ThemeIcon(icon),
+      icon: typeof icon === "string" ? new vscode.ThemeIcon(icon) : icon,
       collapsibleState: vscode.TreeItemCollapsibleState.None,
     };
   }
@@ -183,8 +194,10 @@ export function errorNode(): RepoTreeNode {
   return {
     key: "error",
     label: "Could not load (see log)",
+    description: "Click to retry",
     icon: new vscode.ThemeIcon("warning"),
     collapsibleState: vscode.TreeItemCollapsibleState.None,
+    command: { command: InternalCommands.retryTrees, title: "Retry" },
   };
 }
 
@@ -201,9 +214,11 @@ export function mountView(
   const treeView = vscode.window.createTreeView(viewId, {
     treeDataProvider: provider,
   });
+  mountedProviders.add(provider);
   const subs: vscode.Disposable[] = [
     treeView,
     provider,
+    new vscode.Disposable(() => mountedProviders.delete(provider)),
     provider.onDidChangeBadge((badge) => {
       treeView.badge = badge;
     }),
