@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import warnings
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -607,7 +608,11 @@ def _reconcile_schema(connection: object) -> None:
         # nullability. We deliberately do NOT enforce FK constraints on
         # back-filled columns: SQLite can't add an enforced FK after the
         # fact, and write-time enforcement is sufficient for our purposes.
-        db_cols = {c["name"]: c for c in inspector.get_columns(table.name)}
+        # The Alembic-only pgvector column triggers an unknown-type warning.
+        with warnings.catch_warnings():
+            if dialect.name == "postgresql":  # type: ignore[attr-defined]
+                warnings.filterwarnings("ignore", message="Did not recognize type 'vector'")
+            db_cols = {c["name"]: c for c in inspector.get_columns(table.name)}
         if dialect.name == "postgresql":  # type: ignore[attr-defined]
             for what, statement in _loosen_postgres_columns(table, db_cols, dialect):
                 _run(what, lambda statement=statement: statement)
