@@ -22,7 +22,12 @@ from repowise.server.mcp_server.tool_answer.answer import (
     _trim_served_payload,
 )
 from repowise.server.mcp_server.tool_answer.retrieval import _CANDIDATE_LIMIT
-from repowise.server.mcp_server.tool_search import _drop_derivable_page_ids
+from repowise.server.mcp_server.tool_search import (
+    _assign_confidence,
+    _drop_derivable_confidence,
+    _drop_derivable_page_ids,
+    _slim_served_rows,
+)
 
 # ---------------------------------------------------------------------------
 # search_codebase.results[].page_id — derivable from two of its own siblings
@@ -225,3 +230,127 @@ def test_truncation_keys_present_when_something_was_dropped():
     out = truncate_to_budget({"targets": targets, "_meta": {}}, char_budget=2_000)
     assert out["truncated"] is True
     assert out["dropped_targets"] or out["dropped_symbols"]
+
+
+# ---------------------------------------------------------------------------
+# search_codebase.results[] — one location per row
+# ---------------------------------------------------------------------------
+
+
+def _row(page_type, target, title, **extra):
+    row = {
+        "page_id": f"{page_type}:{target}",
+        "page_type": page_type,
+        "target_path": target,
+        "title": title,
+        "sources": ["fts"],
+        **extra,
+    }
+    return row
+
+
+def _keyless(monkeypatch, value=False):
+    monkeypatch.setattr(
+        "repowise.server.mcp_server.tool_search.semantic_search_state", lambda: value
+    )
+
+
+def test_file_page_row_keeps_only_path(monkeypatch):
+    _keyless(monkeypatch)
+    (row,) = _slim_served_rows([_row("file_page", "src/a.py", "File: src/a.py")])
+    assert row["path"] == "src/a.py"
+    assert not {"page_id", "title", "file", "target_path", "sources"} & row.keys()
+
+
+def test_symbol_page_row_keeps_path_and_symbol_id(monkeypatch):
+    _keyless(monkeypatch)
+    row = _row(
+        "symbol_spotlight",
+        "src/a.py::f",
+        "Symbol: src/a.py::f",
+        symbol_id="src/a.py::f",
+        file="src/a.py",
+    )
+    row["target_path"] = "src/a.py"
+    row["page_id"] = "symbol_spotlight:src/a.py::f"
+    (row,) = _slim_served_rows([row])
+    assert row["path"] == "src/a.py" and row["symbol_id"] == "src/a.py::f"
+    assert not {"page_id", "title", "file"} & row.keys()
+
+
+def test_prose_titles_and_unrebuildable_ids_stay(monkeypatch):
+    _keyless(monkeypatch)
+    module = _row("module_page", "pkg/cmd", "The command layer")
+    edited = _row("file_page", "src/b.py", "Why b.py exists")
+    unloaded = {"page_id": "file_page:x.py", "page_type": "file_page", "target_path": ""}
+    _slim_served_rows([module, edited, unloaded])
+    # A module page has no ``path``; its id rebuilds from ``target_path``, which stays.
+    assert module["title"] == "The command layer" and module["target_path"] == "pkg/cmd"
+    assert edited["title"] == "Why b.py exists" and "page_id" not in edited
+    assert unloaded["page_id"] == "file_page:x.py"
+
+
+def test_localized_structural_title_is_dropped_per_repo_language(monkeypatch):
+    _keyless(monkeypatch)
+    de = _row("file_page", "src/a.py", "Datei: src/a.py", repo="de-repo")
+    en = _row("file_page", "src/a.py", "File: src/a.py", repo="en-repo")
+    wrong = _row("file_page", "src/a.py", "Datei: src/a.py", repo="en-repo")
+    _slim_served_rows([de, en, wrong], {"de-repo": "de", "en-repo": "en"})
+    assert "title" not in de and "title" not in en
+    assert wrong["title"] == "Datei: src/a.py"
+
+
+def test_sources_dropped_only_when_fts_only_and_keyless(monkeypatch):
+    _keyless(monkeypatch, False)
+    fts, sym, both = (
+        _row("file_page", "a.py", "A", sources=["fts"]),
+        _row("file_page", "b.py", "B", sources=["symbol"]),
+        _row("file_page", "c.py", "C", sources=["fts", "vector"]),
+    )
+    _slim_served_rows([fts, sym, both])
+    assert "sources" not in fts
+    assert sym["sources"] == ["symbol"] and both["sources"] == ["fts", "vector"]
+
+    for state in (True, None):
+        _keyless(monkeypatch, state)
+        (kept,) = _slim_served_rows([_row("file_page", "d.py", "D", sources=["fts"])])
+        assert kept["sources"] == ["fts"]
+
+
+# -- confidence_score -------------------------------------------------------
+
+
+def _scored(*scores: float) -> list[dict]:
+    rows = [{"relevance_score": score} for score in scores]
+    _assign_confidence(rows, "relevance_score", "confidence_score")
+    return rows
+
+
+def test_a_confidence_that_is_relevance_over_top_is_dropped() -> None:
+    rows = _drop_derivable_confidence(_scored(18.08, 14.75, 0.43))
+    assert all("confidence_score" not in row for row in rows)
+    assert [row["relevance_score"] for row in rows] == [18.08, 14.75, 0.43]
+
+
+def test_a_capped_row_keeps_its_confidence() -> None:
+    capped, plain = _scored(0.45, 0.3)
+    capped["relation"] = "related, not the named symbol"
+    capped["confidence_score"] = 0.45
+    _drop_derivable_confidence([capped, plain])
+    assert capped["confidence_score"] == 0.45
+    assert "confidence_score" not in plain
+
+
+def test_a_confidence_that_differs_from_the_derivation_is_kept() -> None:
+    rows = _scored(10.0, 5.0)
+    rows[1]["confidence_score"] = 0.9
+    _drop_derivable_confidence(rows)
+    assert rows[1]["confidence_score"] == 0.9
+    assert "confidence_score" not in rows[0]
+
+
+def test_nothing_is_dropped_when_there_is_no_positive_top_score() -> None:
+    rows = _scored(0, 0)
+    _drop_derivable_confidence(rows)
+    assert [row["confidence_score"] for row in rows] == [0.0, 0.0]
+    assert _drop_derivable_confidence([]) == []

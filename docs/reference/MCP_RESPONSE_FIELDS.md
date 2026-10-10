@@ -184,12 +184,11 @@ Opt-in blocks: `full_doc`, `ownership` (primary owner, bus factor, contributor c
 
 | Field | Meaning |
 |-------|---------|
-| `results` | Ranked hits. Symbol hits: `type: "symbol"`, `symbol_id`, `name`, `kind`, `path`, `start_line`, `end_line`, `signature`, `next: "get_symbol"`. File hits: `type: "file"`, `page_id`, `path`, `title`, `next: "get_context"`. Concept hits: wiki pages with `page_type`, `path` when the page names a file, `relevance_score`, `snippet`, `sources` |
+| `results` | Ranked hits. Symbol hits: `type: "symbol"`, `symbol_id`, `name`, `kind`, `path`, `start_line`, `end_line`, `signature`, `next: "get_symbol"`. File hits: `type: "file"`, `page_id`, `path`, `title`, `next: "get_context"`. Concept hits: wiki pages with `page_type`, `path` when the page names a file, `symbol_id` on a symbol page, `relevance_score`, `snippet`. `page_id` and `title` are left off a row that can rebuild them: the id is `{page_type}:{symbol_id or path}`, and a structural title is `File: <path>` / `Symbol: <symbol_id>` in the repo's page language. Prose titles (module, onboarding, overview) stay. `confidence_score` (`relevance_score` over the top row's, to 2 places) is left off a row where that rebuilds it; a row capped under it (it carries `relation`) and every row of a workspace search (`repo="all"`) keep it |
 | `path` | The repo-relative file a row names, openable as is. Absent when the row names no file (a module page's group key, an onboarding slot, the repo overview); never a page id |
-| `file` | Deprecated alias of `path` on symbol and file hits (and on a `symbol_spotlight` page). Removed in the next minor release |
 | `target_path` | On a page hit, kept only where it is not the same string as `path`: a page with no `path` keeps its group key, slot or repo name here. Where it is dropped, `page_id` stays |
 | `symbols` | On a symbol hit outside `symbol` mode: up to five other matching symbols in the same file, as `name:line`, then a `+N more` entry counting the rest. Those matches share the row instead of taking slots of their own |
-| `sources` | The retrievers that found a concept hit: `fts`, `vector`, or both. A hit found by `fts` alone has no semantic agreement |
+| `sources` | The retrievers that found a concept hit: `fts`, `vector`, `symbol` or a combination. Omitted when it would be `["fts"]` and `_meta.semantic_search` is `false`, since the reply already says retrieval is full-text-only |
 | `candidates` | Up to `limit` distinct openable file paths, best first |
 
 Outside `mode="symbol"`, `limit` caps distinct files: hits are collapsed to one row per file, best row first, and the freed slots go to the next pages, then the next symbols. This includes concept mode, where a file page and a `symbol_spotlight` page of the same file are one row. `mode="symbol"` keeps one row per symbol, so overloads in one file each list.

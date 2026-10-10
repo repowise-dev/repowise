@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.generation.structural_labels import is_structural_title
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     GitMetadata,
@@ -48,7 +49,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
 from repowise.server.mcp_server._line_hits import attach_line_hits
-from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
+from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT, semantic_search_state
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import (
     FILE_ROW_TYPES,
@@ -567,12 +568,60 @@ def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
     as ``"file_page:"`` and kept its id.
     """
     for item in results:
-        target = item.get("target_path") or item.get("path", "")
+        # A symbol page's id ends in ``::Symbol`` and ``_attach_paths`` moved that
+        # half into ``symbol_id``, so ``target_path`` is only its file.
+        target = (
+            item.get("symbol_id")
+            if item.get("page_type") == "symbol_spotlight"
+            else None
+        ) or item.get("target_path") or item.get("path", "")
         derived = f"{item.get('page_type', '')}:{target}"
         # A row for a file with no page has an id that names no page.
         if item.get("page_id") == derived or item.get("page_type") == PAGELESS_FILE:
             item.pop("page_id", None)
     return results
+
+
+def _page_language(ctx) -> str:
+    """The language *ctx*'s structural page titles were generated in."""
+    try:
+        from repowise.core.repo_config import load_repo_config
+
+        return str(load_repo_config(ctx.path).get("language") or "en")
+    except Exception:
+        return "en"
+
+
+def _slim_served_rows(
+    rows: list[dict], languages: dict[str | None, str] | None = None
+) -> list[dict]:
+    """The last step before a search reply leaves: one location per row.
+
+    ``path`` (plus ``symbol_id`` on symbol rows) is the row's only location, so
+    ``file``, a ``page_id`` that rebuilds from them, and a ``title`` that is just
+    the structural label wrapped around them are all dropped. Each is dropped
+    only where the caller can provably rebuild it. ``sources: ["fts"]`` goes when
+    the reply's own ``_meta.semantic_search`` already says retrieval is
+    full-text-only; an index with embeddings is unchanged.
+
+    *languages* maps a row's ``repo`` alias (``None`` for a single-repo reply) to
+    the language its titles were generated in.
+    """
+    add_row_paths(rows)
+    _drop_derivable_page_ids(rows)
+    fts_only = semantic_search_state() is False
+    for row in rows:
+        target = row.get("symbol_id") or row.get("path")
+        if target and is_structural_title(
+            (languages or {}).get(row.get("repo"), "en"),
+            row.get("page_type", ""),
+            target,
+            row.get("title"),
+        ):
+            row.pop("title", None)
+        if fts_only and row.get("sources") == ["fts"]:
+            row.pop("sources", None)
+    return rows
 
 
 def _serve_snippets(results: list[dict]) -> None:
@@ -650,6 +699,27 @@ def _assign_confidence(output: list[dict], score_key: str, target_key: str) -> N
     for item in output:
         raw = item.get(score_key) or 0
         item[target_key] = round(raw / max_score, 2) if max_score > 0 else 0.0
+
+
+def _drop_derivable_confidence(rows: list[dict]) -> list[dict]:
+    """Drop ``confidence_score`` where the caller can rebuild it (in place).
+
+    ``_assign_confidence`` sets it to ``round(relevance_score / top, 2)``, so on
+    a single-repo reply it restates ``relevance_score`` on a 0-1 scale. A row
+    that carries ``relation`` was capped under that value and keeps its score,
+    as does every row of a reply whose top score is not positive (nothing to
+    divide by). A federated reply never comes through here: its confidence is
+    ranked on the fused RRF score, which the row does not carry.
+    """
+    top = max((row.get("relevance_score") or 0 for row in rows), default=0)
+    if top <= 0:
+        return rows
+    for row in rows:
+        if "relation" in row:
+            continue
+        if row.get("confidence_score") == round((row.get("relevance_score") or 0) / top, 2):
+            row.pop("confidence_score", None)
+    return rows
 
 
 async def _wait_for_vector_store(ctx) -> None:
@@ -879,8 +949,7 @@ async def _federated_search(
     if candidates := file_candidates(all_results, limit=limit):
         response["candidates"] = candidates
     # Last, so nothing above has to know the field is on its way out.
-    add_row_paths(output)
-    _drop_derivable_page_ids(output)
+    _slim_served_rows(output, {ctx.alias: _page_language(ctx) for ctx in contexts})
     _serve_snippets(output)
     return response
 
@@ -1185,8 +1254,10 @@ async def _structured_search(
         response["grep_hint"] = grep_hint
     # Last, so nothing above has to know the field is on its way out. Paths
     # first, so a page whose target_path is dropped keeps its page_id.
-    add_row_paths(results)
-    _drop_derivable_page_ids(results)
+    _slim_served_rows(
+        results,
+        {(ctx.alias if multi else None): _page_language(ctx) for ctx in contexts},
+    )
     _serve_snippets(results)
     return response
 
@@ -1380,7 +1451,7 @@ async def search_codebase(
     await attach_line_hits(response, query, resolved_mode, names, repo)
     attach_ignored_arguments(response, ignored)
     # Last, so nothing above has to know the field is on its way out.
-    add_row_paths(output)
-    _drop_derivable_page_ids(output)
+    _slim_served_rows(output, {None: _page_language(ctx)})
+    _drop_derivable_confidence(output)
     _serve_snippets(output)
     return response

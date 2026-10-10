@@ -147,7 +147,6 @@ def _search_files(result: dict[str, Any]) -> list[str]:
             continue
         hit = (
             item.get("path")
-            or item.get("file")
             or item.get("target_path")
             or item.get("symbol_id")
         )

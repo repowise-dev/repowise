@@ -48,7 +48,7 @@ SYMBOL_HIT = {
     "symbol_id": "packages/cli/src/repowise/cli/output.py::resolve_console_width",
     "name": "resolve_console_width",
     "kind": "function",
-    "file": "packages/cli/src/repowise/cli/output.py",
+    "path": "packages/cli/src/repowise/cli/output.py",
     "start_line": 44,
     "end_line": 72,
     "signature": "def resolve_console_width(stream) -> int | None",
@@ -62,7 +62,7 @@ FILE_HIT = {
     "type": "file",
     "page_id": "file:packages/cli/src/repowise/cli/helpers.py",
     "title": "File: packages/cli/src/repowise/cli/helpers.py",
-    "file": "packages/cli/src/repowise/cli/helpers.py",
+    "path": "packages/cli/src/repowise/cli/helpers.py",
     "score": 140.0,
     "next": "get_context",
 }
@@ -280,29 +280,27 @@ def test_page_results_keep_exactly_the_payload_this_command_always_emitted():
         assert dropped not in json.dumps(out["results"]), f"{dropped} survived the trim"
 
 
-def test_a_symbol_spotlight_hit_carries_the_openable_file_beside_its_page_id():
-    """``target_path`` on a symbol_spotlight is ``a.py::Foo`` — a page id, not
-    something a reader can open — which is why the tool attaches ``file``."""
-    hit = {**PAGE_HIT, "page_type": "symbol_spotlight",
-           "target_path": "packages/cli/src/repowise/cli/output.py::resolve_console_width",
-           "file": "packages/cli/src/repowise/cli/output.py"}
-    row = project({"results": [hit]}, "q", multi=False)["results"][0]
+def test_a_slimmed_row_still_gets_a_title_from_its_location():
+    """The server drops a structural title; the table still shows one."""
+    page = {"page_type": "file_page", "path": "a/b.py", "relevance_score": 1.0, "snippet": ""}
+    spotlight = {**page, "page_type": "symbol_spotlight", "symbol_id": "a/b.py::f"}
+    rows = project({"results": [page, spotlight]}, "q", multi=False)["results"]
 
-    assert row["path"].endswith("::resolve_console_width"), "the payload changed shape"
-    assert row["file"] == "packages/cli/src/repowise/cli/output.py"
+    assert [(r["title"], r["path"]) for r in rows] == [("a/b.py", "a/b.py"), ("a/b.py::f", "a/b.py")]
+    assert not any("file" in r for r in rows)
 
 
 @pytest.mark.parametrize(
     "hit",
     [
-        {**SYMBOL_HIT, "path": "served/sym.py", "file": "old/sym.py"},
-        {**FILE_HIT, "path": "served/file.py", "file": "old/file.py"},
+        {**SYMBOL_HIT, "path": "served/sym.py"},
+        {**FILE_HIT, "path": "served/file.py"},
         {**PAGE_HIT, "path": "served/page.py", "target_path": "old/page.py"},
     ],
     ids=["symbol", "file", "page"],
 )
 def test_every_row_kind_prefers_the_served_path(hit):
-    """``file`` and ``target_path`` are transition aliases of ``path``."""
+    """``target_path`` is a transition alias of ``path``."""
     row = project({"results": [hit]}, "q", multi=False)["results"][0]
     assert row["path"].startswith("served/")
 

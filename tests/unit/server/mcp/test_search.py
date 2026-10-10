@@ -732,7 +732,7 @@ class TestSymbolSearch:
         assert top["symbol_id"] == "src/auth/service.py::AuthService"
         assert top["name"] == "AuthService"
         assert top["kind"] == "class"
-        assert top["file"] == "src/auth/service.py"
+        assert top["path"] == "src/auth/service.py"
         assert top["start_line"] == 10
         assert top["end_line"] == 100
         assert top["next"] == "get_symbol"
@@ -812,7 +812,7 @@ class TestSymbolSearch:
         from repowise.server.mcp_server import search_codebase
 
         result = await search_codebase("AuthService", mode="symbol")
-        assert not any(r["file"] == "src/auth/service.py" for r in result["results"])
+        assert not any(r["path"] == "src/auth/service.py" for r in result["results"])
 
 
 class TestPathSearch:
@@ -824,7 +824,7 @@ class TestPathSearch:
 
         result = await search_codebase("src/auth/service.py", mode="path")
         assert result["mode"] == "path"
-        files = [r["file"] for r in result["results"]]
+        files = [r["path"] for r in result["results"]]
         assert "src/auth/service.py" in files
         top = result["results"][0]
         assert top["type"] == "file"
@@ -836,7 +836,7 @@ class TestPathSearch:
 
         result = await search_codebase("src/db/models.py")
         assert result["mode"] == "path"
-        assert any(r["file"] == "src/db/models.py" for r in result["results"])
+        assert any(r["path"] == "src/db/models.py" for r in result["results"])
 
 
 class TestHybridSearch:
@@ -1446,9 +1446,9 @@ class TestSearchCandidates:
         hit = result["results"][0]
         assert hit["path"] == "api/client.go"
         assert "target_path" not in hit  # same string as path
-        assert hit["file"] == "api/client.go"  # alias for one minor release
+        assert hit["path"] == "api/client.go"
         assert hit["symbol_id"] == "api/client.go::HTTP"
-        assert hit["file"] == "api/client.go"
+        assert hit["path"] == "api/client.go"
         assert result["candidates"] == [{"path": "api/client.go"}]
 
     @pytest.mark.asyncio
@@ -1754,7 +1754,7 @@ class TestDistinctFileWindow:
         await session.commit()
 
         res = await search_codebase("widget", mode="hybrid", limit=3)
-        files = [r["file"] for r in res["results"]]
+        files = [r["path"] for r in res["results"]]
         assert len(files) == 3 and len(set(files)) == 3
         # The exact name still leads, carrying its same-file sibling.
         lead = res["results"][0]
@@ -1773,7 +1773,7 @@ class TestDistinctFileWindow:
         assert ids[:2] == ["src/widget/core.py::Box.widget", "src/widget/core.py::widget"]
         assert all("symbols" not in r for r in res["results"])
         # Symbol rows serve path, with file as the transition alias.
-        assert all(r["path"] == r["file"] == "src/widget/core.py" for r in res["results"][:2])
+        assert all(r["path"] == "src/widget/core.py" and "file" not in r for r in res["results"][:2])
 
     @pytest.mark.asyncio
     async def test_concept_window_serves_one_row_per_file(self, setup_mcp):
@@ -2036,7 +2036,7 @@ class TestPathModeWithWords:
         result = await search_codebase(
             "services/_hotkey_pynput.py register hotkey", mode="path"
         )
-        assert [r["file"] for r in result["results"]] == ["services/_hotkey_pynput.py"]
+        assert [r["path"] for r in result["results"]] == ["services/_hotkey_pynput.py"]
 
 
 class TestSymbolModeExactOnly:

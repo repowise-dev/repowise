@@ -98,15 +98,16 @@ def add_row_paths(rows: list[dict]) -> list[dict]:
 
     The last step before a search response leaves. A row naming no file (a
     module page's group key, an onboarding slot) gets no ``path`` at all.
-    Transition aliases until the next minor release: ``file`` stays where it
-    was, and a page's ``target_path`` stays only where it is not the same
-    string as ``path``.
+    ``path`` is the one place a row names its file, so the deprecated ``file``
+    alias is removed here once ``path`` has been read from it, and a page's
+    ``target_path`` stays only where it is not the same string as ``path``.
     """
     for row in rows:
         path = hit_file_path(row)
         if not path:
             continue
         row["path"] = path
+        row.pop("file", None)
         if row.get("page_type") and row.get("target_path") == path:
             del row["target_path"]
     return rows

@@ -92,10 +92,13 @@ class TestAddRowPaths:
         unloaded = _page("file_page", "")
         add_row_paths([symbol, file_row, file_page, spotlight, module, unloaded])
 
-        assert symbol["path"] == symbol["file"] == "a.py"
-        assert file_row["path"] == file_row["file"] == "b.py"
+        assert symbol["path"] == "a.py"
+        assert "file" not in symbol
+        assert file_row["path"] == "b.py"
+        assert "file" not in file_row
         assert file_page == {"page_type": "file_page", "path": "c.py"}
-        assert spotlight["path"] == spotlight["file"] == "d.py"
+        assert spotlight["path"] == "d.py"
+        assert "file" not in spotlight
         assert "target_path" not in spotlight
         # Pathless rows keep their key in target_path and get no path.
         assert module == _page("module_page", "pkg/cmd")

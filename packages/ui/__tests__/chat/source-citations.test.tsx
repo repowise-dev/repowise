@@ -137,13 +137,48 @@ describe("extractSources", () => {
     }
   });
 
-  it("omits confidence when the server sends no confidence_score", () => {
+  it("rebuilds the confidence the server omits from relevance_score over the top score", () => {
     const sources = extractSources(
-      [searchCall([{ page_id: "file_page:a.py", title: "a.py", relevance_score: 9.1 }])],
+      [
+        searchCall([
+          { page_id: "file_page:a.py", title: "a.py", relevance_score: 9.1 },
+          { page_id: "file_page:b.py", title: "b.py", relevance_score: 4.55 },
+          { page_id: "file_page:c.py", title: "c.py", relevance_score: 0.91 },
+        ]),
+      ],
       "repo1",
     );
 
-    // Badge hides rather than falling back to the unbounded raw score.
+    // Normalized against the top row, never the unbounded raw score.
+    expect(sources.map((s) => s.confidence)).toEqual([1, 0.5, 0.1]);
+  });
+
+  it("keeps a confidence_score the server did send over the rebuilt one", () => {
+    const sources = extractSources(
+      [
+        searchCall([
+          { page_id: "file_page:a.py", title: "a.py", relevance_score: 0.45 },
+          {
+            page_id: "file_page:b.py",
+            title: "b.py",
+            relevance_score: 0.3,
+            confidence_score: 0.3,
+            relation: "related, not the named symbol",
+          },
+        ]),
+      ],
+      "repo1",
+    );
+
+    expect(sources.map((s) => s.confidence)).toEqual([1, 0.3]);
+  });
+
+  it("omits confidence when the row has neither score", () => {
+    const sources = extractSources(
+      [searchCall([{ page_id: "file_page:a.py", title: "a.py" }])],
+      "repo1",
+    );
+
     expect(sources[0]?.confidence).toBeUndefined();
   });
 
@@ -157,6 +192,42 @@ describe("extractSources", () => {
 
     expect(sources).toHaveLength(1);
     expect(sources[0]?.pageId).toBe("file_page:src/auth.py");
+    expect(sources[0]?.targetPath).toBe("src/auth.py");
+  });
+
+  it("cites a slimmed file row that has only page_type and path", () => {
+    // No page_id, no target_path and no structural title: the file name stands in.
+    const sources = extractSources(
+      [searchCall([{ page_type: "file_page", path: "src/auth.py" }])],
+      "repo1",
+    );
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.pageId).toBe("file_page:src/auth.py");
+    expect(sources[0]?.title).toBe("auth.py");
+  });
+
+  it("rebuilds a symbol page's id from symbol_id, not its file", () => {
+    const sources = extractSources(
+      [
+        searchCall([
+          {
+            page_type: "symbol_spotlight",
+            symbol_id: "src/auth.py::login",
+            path: "src/auth.py",
+          },
+          { page_type: "file_page", path: "src/auth.py" },
+        ]),
+      ],
+      "repo1",
+    );
+
+    // The symbol page and its file page are two distinct citations.
+    expect(sources.map((s) => s.pageId)).toEqual([
+      "symbol_spotlight:src/auth.py::login",
+      "file_page:src/auth.py",
+    ]);
+    expect(sources[0]?.title).toBe("src/auth.py::login");
     expect(sources[0]?.targetPath).toBe("src/auth.py");
   });
 
