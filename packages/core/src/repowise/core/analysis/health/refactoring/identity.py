@@ -171,9 +171,13 @@ def _extract_method_kernel(suggestion: Any, file_path: str) -> RefactoringKernel
     The span itself is line-based, so only its length participates. Two spans in
     one function that agree on signature and length collide; :func:`assign_public_ids`
     breaks that tie deterministically rather than letting the ids merge.
+
+    A staged plan's top-level signature is only its first stage's, so it also
+    carries its stage count and each stage's span length: a different split is
+    a different plan. A single-span plan's kernel is unchanged.
     """
     plan = _plan_of(suggestion)
-    return (
+    kernel: RefactoringKernel = (
         "extract_method",
         file_path,
         field(suggestion, "target_symbol") or "",
@@ -181,6 +185,14 @@ def _extract_method_kernel(suggestion: Any, file_path: str) -> RefactoringKernel
         tuple(str(name) for name in (plan.get("returns") or [])),
         _span_length(suggestion),
     )
+    stages = [s for s in plan.get("stages") or [] if isinstance(s, dict)]
+    if not stages:
+        return kernel
+    lengths = tuple(
+        (s.get("span") or {}).get("end", 0) - (s.get("span") or {}).get("start", 0)
+        for s in stages
+    )
+    return (*kernel, len(stages), lengths)
 
 
 def _move_method_kernel(suggestion: Any, file_path: str) -> RefactoringKernel:
