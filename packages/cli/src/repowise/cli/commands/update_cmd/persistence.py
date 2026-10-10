@@ -1583,9 +1583,12 @@ def _run_full_health_rescore(
     # Share the rebuild path with the incremental update so both produce the
     # same graph (same parser, same framework-aware synthetic edges).
     with timed(timings, "rebuild"):
+        # Sources too: the framework-edge pass reads them, and a file it cannot
+        # read makes test selection keep every test under its conftests.
         parsed_files, _source_map, graph_builder, _repo_structure, _file_count = _build_repo_graph(
             repo_path,
             exclude_patterns,
+            collect_sources=True,
             include_submodules=bool(state.get("include_submodules", False)),
             include_nested_repos=bool(state.get("include_nested_repos", False)),
         )

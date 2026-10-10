@@ -68,7 +68,8 @@ def build_repo_graph(
 
     Files that fail to read/parse are skipped and reported as a count rather than
     swallowed silently. ``source_map`` is populated only when ``collect_sources``
-    is set (the re-score path doesn't need the raw bytes).
+    is set; every path that persists the graph sets it, since the framework-edge
+pass reads the sources.
 
     ``timings`` is the run's shared :class:`PhaseTimings` table; each step
     below records into it under a ``rebuild.*`` name. ``None`` records nothing.

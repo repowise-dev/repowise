@@ -39,8 +39,6 @@ def test_patching_or_lazily_importing_from_an_autouse_fixture_is_import_time_onl
         def _isolate(monkeypatch):
             import app.store as store
             monkeypatch.setattr(store, "_cache", None)
-            if hasattr(store, "_other"):
-                monkeypatch.delattr(store, "_other")
         """
     )
     assert use.run_all is None
@@ -58,6 +56,8 @@ def test_patching_or_lazily_importing_from_an_autouse_fixture_is_import_time_onl
         'x = f"{store.NAME}"',
         "x = store.LEVEL > 3",
         "store._other = None",
+        'if hasattr(store, "_other"):\n                pass',
+        'monkeypatch.delattr(store, "_other")',
     ],
 )
 def test_reading_a_module_value_in_an_autouse_fixture_keeps_every_test(line: str) -> None:

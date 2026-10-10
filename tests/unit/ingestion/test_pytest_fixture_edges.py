@@ -56,7 +56,12 @@ def _build(repo: Path, roots=None) -> nx.DiGraph:
     for p in path_set:
         stem_map.setdefault(Path(p).stem.lower(), []).append(p)
     ctx = ResolverContext(
-        path_set=path_set, stem_map=stem_map, graph=graph, repo_path=repo, pytest_roots=roots
+        path_set=path_set,
+        stem_map=stem_map,
+        graph=graph,
+        repo_path=repo,
+        pytest_roots=roots,
+        source_map={rel: (repo / rel).read_bytes() for rel in parsed},
     )
     add_framework_edges(graph, parsed, ctx, [])
     return graph
@@ -611,6 +616,14 @@ class TestUnrecordedRequests:
             "class TestX:\n    pytestmark = [MARK]\n\n    def test_x(self):\n        pass\n",
             "import pytest\n\n\n@pytest.mark.parametrize('a', [pytest.param(1, "
             "marks=pytest.mark.usefixtures('db'))])\ndef test_x(a):\n    pass\n",
+            # A mark kept in a variable, and the other ways to ask at run time.
+            "import pytest\n\nneeds_db = pytest.mark.usefixtures('db')\n\n\n"
+            "@needs_db\ndef test_x():\n    pass\n",
+            "def test_x(request):\n    request.node.add_marker('m')\n",
+            "def test_x(request):\n    assert 'db' in request.fixturenames\n",
+            "def test_x(request):\n    gfv = request.getfixturevalue\n    gfv('db')\n",
+            "import pytest\n\npytestmark = pytest.mark.usefixtures(*names())\n\n\n"
+            "def test_x():\n    pass\n",
         ],
     )
     def test_a_hidden_request_marks_its_own_edge(self, tmp_path: Path, body: str) -> None:
@@ -668,3 +681,47 @@ class TestUnrecordedRequests:
         (tests / "check_api.py").write_text("def test_api(db):\n    assert db\n")
         graph = _build(tmp_path, roots)
         assert ("tests/check_api.py::test_api", "tests/conftest.py::db") in _bound(graph)
+
+
+def test_a_camel_case_test_is_linked(tmp_path: Path) -> None:
+    """pytest's default `python_functions` is the prefix `test`, so `testFoo` is collected."""
+    (tmp_path / "conftest.py").write_text(
+        "import pytest\n\n\n@pytest.fixture\ndef db():\n    return 1\n"
+    )
+    (tmp_path / "test_api.py").write_text("def testGet(db):\n    assert db\n")
+    assert ("test_api.py::testGet", "conftest.py::db") in _bound(_build(tmp_path))
+
+
+def test_unreadable_test_text_and_unheld_helpers_count_as_hidden(tmp_path: Path) -> None:
+    from repowise.core.ingestion.framework_edges.pytest_edges import (
+        _add_fixture_injection_edges,
+    )
+
+    parser = ASTParser()
+    files = {
+        "tests/conftest.py": b"import pytest\n\n\n@pytest.fixture\ndef db():\n    return 1\n",
+        "tests/test_a.py": b"def test_a(db):\n    assert db\n",
+        "helpers.py": b"x = 1\n",
+    }
+    parsed = {}
+    for rel, data in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_bytes(data)
+        parsed[rel] = parser.parse_file(_file_info(rel, str(tmp_path / rel)), data)
+    def text(path: str) -> str | None:
+        return files[path].decode()
+
+    def unreadable(path: str) -> str | None:
+        return None if path == "tests/test_a.py" else text(path)
+
+    graph = _build(tmp_path)
+    graph["tests/test_a.py"]["tests/conftest.py"]["hint_source"] = "pytest_conftest"
+    _add_fixture_injection_edges(graph, parsed, tmp_path, unreadable, None, text)
+    hint = graph["tests/test_a.py"]["tests/conftest.py"]["hint_source"]
+    assert hint == "pytest_conftest_unrecorded"
+
+    graph = _build(tmp_path)
+    graph["tests/test_a.py"]["tests/conftest.py"]["hint_source"] = "pytest_conftest"
+    _add_fixture_injection_edges(graph, parsed, tmp_path, text, None, lambda p: None)
+    hint = graph["tests/test_a.py"]["tests/conftest.py"]["hint_source"]
+    assert hint == "pytest_conftest_unrecorded"

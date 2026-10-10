@@ -48,6 +48,8 @@ PYTEST_CONFIG_NAMES: frozenset[str] = frozenset(name for name, _ in PYTEST_CONFI
 _PRECEDENCE = {name: rank for rank, (name, _) in enumerate(PYTEST_CONFIG_SECTIONS)}
 # pytest's own ``python_files`` default.
 DEFAULT_PYTHON_FILES: tuple[str, ...] = ("test_*.py", "*_test.py")
+# pytest's own ``python_functions`` default: a name prefix, so ``testFoo`` counts.
+DEFAULT_PYTHON_FUNCTIONS: tuple[str, ...] = ("test",)
 
 
 class PytestConfigUnreadableError(ValueError):
@@ -181,7 +183,7 @@ def pytest_roots(
                 tuple(v.strip("/").removeprefix("./") or "." for v in _words(o.get("testpaths"))),
                 _words(o.get("python_files")),
                 bool(_words(o.get("usefixtures")))
-                or _words(o.get("python_functions")) not in ((), ("test",)),
+                or _words(o.get("python_functions")) not in ((), DEFAULT_PYTHON_FUNCTIONS),
             )
             for key, (_, o) in chosen.items()
         },

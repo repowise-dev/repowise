@@ -12,23 +12,29 @@ with a literal name. Test selection reads these edges to find every test that
 uses a fixture, and trusts them only when the stamp shows all of these forms
 were recorded. A request no edge can record (a computed name, a test inherited
 from a base class declared elsewhere, a class-level ``pytestmark``, marks inside
-``pytest.param``, a parametrize call in a hook, a config ``usefixtures`` or
-``python_functions``, a helper asking for a fixture) is stamped
+``pytest.param``, a parametrize call in a hook, any other code use of a
+request name such as an aliased mark, ``add_marker`` or ``fixturenames``, a
+config ``usefixtures`` or ``python_functions``, a helper asking for a fixture,
+a file whose text is not available) is stamped
 :data:`UNRECORDED_HINT` on the conftest edges it could reach, and selection
 keeps every test under those conftests.
 """
 
 from __future__ import annotations
 
+import io
 import re
+import tokenize
+from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...pytest_roots import DEFAULT_PYTHON_FUNCTIONS
 from ..resolvers import ResolverContext
-from ..source_text import source_text
+from ..source_text import decode_source, source_text
 from ..type_names import strip_type_arguments
 from .base import (
     DetectionContext,
@@ -59,8 +65,13 @@ _PYTESTMARK_RE = re.compile(r"^pytestmark\b[^\n]*(?:\n[ \t)\]][^\n]*)*", re.MULT
 _USEFIXTURES_CALL_RE = re.compile(r"usefixtures\(([^)]*)\)")
 # The name is captured only when it is a literal alone in the call.
 _GETFIXTUREVALUE_RE = re.compile(r"""getfixturevalue\(\s*(?:["'](\w+)["']\s*(?=\)))?""")
-# A call on a request object, as code outside the tests makes one.
-_HELPER_REQUEST_RE = re.compile(r"\.getfixturevalue\(")
+# Names through which code can ask for a fixture. A use of one that is not a
+# form this module records (a literal decorator, a module ``pytestmark``, a
+# literal ``getfixturevalue`` call in a test or fixture) hides a request.
+_REQUEST_NAMES = frozenset(
+    {"usefixtures", "getfixturevalue", "add_marker", "applymarker", "fixturenames",
+     "lazy_fixture", "fixture_ref"}
+)
 _AUTOUSE_KWARG_RE = re.compile(r"^autouse\s*=\s*(.+)$")
 _INDIRECT_KWARG_RE = re.compile(r"^indirect\s*=")
 _LITERAL_RE = re.compile(r"""(["'])\w+\1""")
@@ -402,12 +413,33 @@ def _module_usefixtures(text: str) -> tuple[list[str], bool]:
     unknown = False
     for mark in _PYTESTMARK_RE.findall(text):
         for call in _USEFIXTURES_CALL_RE.findall(mark):
-            for arg in _call_arguments(f"({call})"):
+            args = _call_arguments(f"({call})")
+            # `usefixtures(*names())` stops the capture early and parses to nothing.
+            unknown = unknown or (bool(call.strip()) and not args)
+            for arg in args:
                 if _LITERAL_RE.fullmatch(arg):
                     names.append(arg[1:-1])
                 else:
                     unknown = True
     return names, unknown
+
+
+def _request_name_uses(text: str) -> Counter[str] | None:
+    """How often code (not strings or comments) uses each of :data:`_REQUEST_NAMES`.
+
+    ``None`` when the text does not tokenize, which hides whatever it holds.
+    A substring check first, so the lexer runs only on the few files that
+    mention one.
+    """
+    if not any(name in text for name in _REQUEST_NAMES):
+        return Counter()
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
+        return Counter(
+            t.string for t in tokens if t.type == tokenize.NAME and t.string in _REQUEST_NAMES
+        )
+    except (tokenize.TokenError, SyntaxError):
+        return None
 
 
 def _hidden_request(text: str) -> str | None:
@@ -443,6 +475,7 @@ def _add_fixture_injection_edges(
     repo_path: Path | None = None,
     read: Callable[[str], str | None] | None = None,
     roots: PytestRoots | None = None,
+    helper_text: Callable[[str], str | None] | None = None,
 ) -> int:
     """Link each test and fixture to every fixture it asks for by name.
 
@@ -451,7 +484,9 @@ def _add_fixture_injection_edges(
     else is searched, so a plugin-provided fixture stays unclaimed instead of
     being bound to a same-named local one. A fixture asking for its own name
     (an override) gets the next one out. *read* returns a file's text, for the
-    forms only the text shows; *roots* say which files pytest collects.
+    forms only the text shows; *roots* say which files pytest collects;
+    *helper_text* returns the text of any other Python file from the bytes
+    ingestion already holds (``None`` when it does not hold it).
 
     A request no edge can record is stamped on the requester's conftest edges
     instead (:data:`UNRECORDED_HINT`, see :func:`_stamp_unrecorded`).
@@ -479,9 +514,12 @@ def _add_fixture_injection_edges(
         is_conftest = Path(path).name == "conftest.py"
         collected = roots.may_collect_name(path) if roots else bool(_TEST_FILE_RE.search(path))
         if not (is_conftest or collected):
-            # Code a test calls may ask for a fixture by name, for whichever test calls it.
-            text = read(path) if read is not None else None
-            everywhere = everywhere or bool(text and _HELPER_REQUEST_RE.search(text))
+            # Code a test calls may ask for a fixture by name, for whichever test
+            # calls it. Read from the bytes ingestion holds, never from disk: a
+            # file missing there is not known to be free of requests.
+            text = helper_text(path) if helper_text is not None else None
+            uses = None if text is None else _request_name_uses(text)
+            everywhere = everywhere or uses is None or bool(uses)
             continue
         added, hidden, anywhere = _link_file(graph, path, parsed, conftests, class_globs, read)
         count += added
@@ -558,6 +596,14 @@ def _link_file(
     marks = {c: _decorator_requests(classes[c].decorators) for c in inherited if c in classes}
     hidden = hidden or any(r.unknown for r in marks.values())
 
+    # Decorator uses of `usefixtures` this file records (the computed ones are
+    # flagged by `_decorator_requests` itself).
+    recorded = Counter(
+        "usefixtures"
+        for sym in parsed.symbols
+        for dec in sym.decorators
+        if _USEFIXTURES_RE.match(dec.strip())
+    )
     count = 0
     tests = []
     for sym in parsed.symbols:
@@ -569,7 +615,7 @@ def _link_file(
             names = _requested_fixtures(sym, own_requests.supplied) + own_requests.requested
             count += link(sym, names)
             continue
-        if is_conftest or not sym.name.startswith("test_"):
+        if is_conftest or not sym.name.startswith(DEFAULT_PYTHON_FUNCTIONS):
             continue
         if sym.parent_name and sym.parent_name not in collected | inherited:
             continue
@@ -581,12 +627,16 @@ def _link_file(
 
     text = read(path) if read is not None else None
     everywhere = False
-    if not text:
-        return count, hidden, everywhere
+    if text is None:
+        # Unread, the file may hold any request form.
+        return count, True, everywhere
     hidden = hidden or _hidden_request(text) is not None
-    if tests and "pytestmark" in text:
+    if "pytestmark" in text:
         module_marks, unknown = _module_usefixtures(text)
         hidden = hidden or unknown
+        recorded["usefixtures"] += sum(
+            len(_USEFIXTURES_CALL_RE.findall(m)) for m in _PYTESTMARK_RE.findall(text)
+        )
         for sym in tests:
             count += link(sym, module_marks)
     if "getfixturevalue" in text:
@@ -595,19 +645,34 @@ def _link_file(
         for sym, name in runtime:
             if sym in tests or sym.id in fixture_ids:
                 count += link(sym, [name])
+                recorded["getfixturevalue"] += 1
             else:
                 # A helper asking for a fixture serves whichever test calls it.
                 everywhere = True
+    # Any other use (an alias, a mark stored in a variable, `add_marker`,
+    # `request.fixturenames`, a lazy-fixture plugin) is a request no edge records.
+    uses = _request_name_uses(text)
+    hidden = hidden or uses is None or any(n > recorded[name] for name, n in uses.items())
     return count, hidden, everywhere
 
 
 def _source_reader(ctx: ResolverContext) -> Callable[[str], str | None]:
-    """Text of an indexed file, from the bytes ingestion already read."""
+    """Text of an indexed file, from the bytes ingestion already read, else from disk."""
 
     def read(path: str) -> str | None:
         if ctx.repo_path is None and path not in (ctx.source_map or {}):
             return None
         return source_text(path, (ctx.repo_path or Path()) / path, ctx.source_map)
+
+    return read
+
+
+def _held_text(ctx: ResolverContext) -> Callable[[str], str | None]:
+    """Text of an indexed file from the bytes ingestion already read only; ``None`` if not held."""
+
+    def read(path: str) -> str | None:
+        data = (ctx.source_map or {}).get(path)
+        return None if data is None else decode_source(data)
 
     return read
 
@@ -626,7 +691,12 @@ class _FixtureInjectionHandler:
         path_set: set[str],
     ) -> int:
         return _add_fixture_injection_edges(
-            graph, parsed_files, ctx.repo_path, _source_reader(ctx), ctx.pytest_roots
+            graph,
+            parsed_files,
+            ctx.repo_path,
+            _source_reader(ctx),
+            ctx.pytest_roots,
+            _held_text(ctx),
         )
 
 

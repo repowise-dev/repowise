@@ -18,7 +18,7 @@ through its imports can break a test through either:
    working fails there as well.
 2. **What the conftest does with the module.** A fixture, a hook or
    module-level code that names something from a module on the route, in any
-   way but as the target of an attribute patch in an autouse fixture or hook,
+   way but as the ``setattr`` target in an autouse fixture or hook,
    can change what a test sees: calling it, reading a constant, comparing,
    iterating or formatting it all do. An autouse fixture, a ``pytest_*`` hook,
    module-level code (class bodies included) and a fixture or hook defined in
@@ -68,9 +68,10 @@ from ..ingestion.languages.python_modules import module_parts
 from .test_reachability import _in_clause
 from .test_selection import is_runnable_test, scope_kind
 
-# Calls whose first argument is the object an attribute is patched on or probed:
+# The call whose first argument is the object an attribute is patched on:
 # naming a module there in an autouse fixture is caught by the import check.
-_TARGET_CALLS = frozenset({"setattr", "delattr", "hasattr"})
+# Probing (`hasattr`) or removing (`delattr`) depends on the module, so counts.
+_TARGET_CALLS = frozenset({"setattr"})
 _DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 
