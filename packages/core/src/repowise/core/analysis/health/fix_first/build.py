@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import functools
 import math
+import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -961,7 +962,10 @@ def _perf_step_text(step: Mapping[str, Any], path: str) -> str:
     says the name is not followed by it again."""
     action = step.get("action") or ""
     name = text.scope_name(step.get("symbol"), path)
-    if not name or name.rsplit(".", 1)[-1] in action:
+    # A whole word that is not an attribute: ``get`` is not named by a quoted
+    # ``session.get`` call, nor by ``getattr``.
+    short = name.rsplit(".", 1)[-1] if name else ""
+    if not name or re.search(rf"(?<![\w.]){re.escape(short)}(?!\w)", action):
         return action
     return f"{action} ({name})"
 

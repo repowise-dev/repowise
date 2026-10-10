@@ -555,3 +555,12 @@ def test_a_rust_panic_path_is_no_fix_first_candidate() -> None:
     assert queue.items == () and queue.totals.excluded["low_value_kind"] == 2
     swallowed = {**rows[0], "file_path": "src/a.py", "details": {"kind": "swallowed_catch"}}
     assert [i.target.file_path for i in _queue([swallowed]).items] == ["src/a.py"]
+
+
+def test_a_perf_step_names_its_function_unless_the_action_already_does() -> None:
+    from repowise.core.analysis.health.fix_first.build import _perf_step_text
+
+    quoted = {"action": "Batch the per-row session.get calls", "symbol": "src/db.py::Store.get"}
+    assert _perf_step_text(quoted, "src/db.py") == f"{quoted['action']} (Store.get)"
+    named = {"action": "Pass every key to get at once", "symbol": "src/db.py::Store.get"}
+    assert _perf_step_text(named, "src/db.py") == named["action"]
