@@ -115,11 +115,17 @@ export function ChatInterface({
     ...(selectedProvider ? { provider: selectedProvider } : {}),
     ...(selectedModel ? { model: selectedModel } : {}),
   }), [pageContext, selectedModel, selectedProvider, sendMessage]);
+  // Read through a ref so the callback keeps its identity while tokens stream;
+  // otherwise every memoised turn re-renders on each token.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
   const retryMessage = useCallback((message: ChatUIMessage) => {
-    const index = messages.findIndex((candidate) => candidate.id === message.id);
-    const previousUser = messages.slice(0, index).reverse().find((candidate) => candidate.role === "user");
+    if (message.role === "user") return sendWithConversationModel(message.text);
+    const all = messagesRef.current;
+    const index = all.findIndex((candidate) => candidate.id === message.id);
+    const previousUser = all.slice(0, index).reverse().find((candidate) => candidate.role === "user");
     if (previousUser) return sendWithConversationModel(previousUser.text);
-  }, [messages, sendWithConversationModel]);
+  }, [sendWithConversationModel]);
   const editAndResend = useCallback(async (message: ChatUIMessage, text: string) => {
     if (!conversationId || !message.serverId) return;
     const fork = await forkConversation(repoId, conversationId, { beforeMessageId: message.serverId });

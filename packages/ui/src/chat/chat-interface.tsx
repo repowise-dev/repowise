@@ -433,9 +433,18 @@ export function ChatInterface({
               {error && lastMessage?.role !== "assistant" && (
                 // The newest answer carries its own error and Retry; this is
                 // only for a failure before any answer turn exists.
-                <div role="alert" className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+                <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-[var(--color-text-secondary)]">
                   <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-error)]" />
                   <span className="min-w-0 [overflow-wrap:anywhere]">{error}</span>
+                  {onRetry && lastMessage && (
+                    <button
+                      type="button"
+                      onClick={() => void onRetry(lastMessage)}
+                      className="inline-flex h-8 items-center rounded-md px-2 text-xs font-medium hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                    >
+                      Retry
+                    </button>
+                  )}
                 </div>
               )}
             </div>
