@@ -38,6 +38,9 @@
   --color-bg-inset: var(--vscode-input-background, var(--vscode-editor-background));
   --color-bg-inset-on-overlay: var(--vscode-input-background, var(--vscode-editor-background));
   --color-bg-wash-hover: var(--vscode-list-hoverBackground);
+  /* Selected rows and chips follow list selection; inactive when unfocused. */
+  --color-bg-selected: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-activeSelectionBackground));
+  --color-bg-selected-hover: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground));
   --color-border-default: var(--vscode-panel-border, var(--vscode-widget-border, currentColor));
   --color-text-primary: var(--vscode-foreground);
   --color-text-secondary: var(--vscode-descriptionForeground, var(--vscode-foreground));

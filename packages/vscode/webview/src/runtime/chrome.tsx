@@ -70,7 +70,7 @@ export function PanelChrome({ view, host }: { view: PanelViewId; host: WebviewHo
         className={
           "ml-auto shrink-0 rounded-md p-1.5 transition-colors " +
           (view === "settings"
-            ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+            ? "bg-[var(--color-bg-selected)] text-[var(--color-text-primary)]"
             : "text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-surface)] hover:text-[var(--color-text-primary)]")
         }
       >
@@ -100,7 +100,7 @@ function Tab({
       className={
         "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors " +
         (active
-          ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+          ? "relative bg-[var(--color-bg-selected)] text-[var(--color-text-primary)] after:absolute after:inset-x-1.5 after:-bottom-1 after:h-0.5 after:rounded-full after:bg-[var(--color-accent-primary)]"
           : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-surface)] hover:text-[var(--color-text-primary)]")
       }
     >

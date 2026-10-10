@@ -29,6 +29,7 @@ import {
   Sun,
   Wrench,
 } from "lucide-react";
+import { EmptyState } from "@repowise-dev/ui/shared";
 import { scoreTextColor } from "@repowise-dev/ui/health/tokens";
 import { formatScore } from "@repowise-dev/types/health";
 import type {
@@ -265,7 +266,7 @@ function Footer({ host }: { host: WebviewHost }) {
             aria-label={label}
             className={
               pref === value
-                ? "rounded-md bg-[var(--color-accent-primary)] p-1 text-[var(--color-text-on-accent)]"
+                ? "rounded-md bg-[var(--color-bg-selected)] p-1 text-[var(--color-text-primary)]"
                 : "rounded-md p-1 text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)]"
             }
           >
@@ -342,9 +343,11 @@ function Hero({
           ) : null}
         </>
       ) : (
-        <p className="mt-3 text-xs text-[var(--color-text-secondary)]">
-          No health data yet. Scores appear after the first full index.
-        </p>
+        <EmptyState
+          size="compact"
+          title="No health data yet"
+          description="Scores appear after the first full index."
+        />
       )}
     </section>
   );

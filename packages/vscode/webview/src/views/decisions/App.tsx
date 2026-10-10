@@ -189,7 +189,7 @@ export function App({ host, refreshToken }: ViewProps<"decisions">) {
                 className={
                   "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors " +
                   (on
-                    ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                    ? "border-[var(--color-border-hover)] bg-[var(--color-bg-selected)] text-[var(--color-text-primary)]"
                     : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)]")
                 }
               >
