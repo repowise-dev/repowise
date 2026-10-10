@@ -19,6 +19,7 @@ from repowise.core.analysis.test_reachability import (
     ReachDistance,
     call_graph_from_db,
     call_graph_from_graph,
+    hub_files,
     imported_names_by_test,
     reach_into_symbols,
 )
@@ -28,7 +29,7 @@ from repowise.core.persistence.crud.graph import (
     batch_upsert_graph_edges,
     get_all_graph_edges,
 )
-from repowise.core.persistence.models import GraphEdge, GraphNode
+from repowise.core.persistence.models import GraphEdge, GraphMetric, GraphNode
 from tests.unit.persistence.helpers import insert_repo
 
 
@@ -423,3 +424,157 @@ async def test_a_seed_that_calls_another_seed_does_not_shorten_its_distance(asyn
     )
     assert found["src/io.py::load"] == {"tests/test_load.py": ReachDistance(1, 1)}
     assert found["src/io.py::parse"] == {"tests/test_load.py": ReachDistance(2, 1)}
+
+
+async def _fan_in(session, repo_id, fan_in):
+    for path, degree in fan_in.items():
+        session.add(GraphMetric(repository_id=repo_id, node_id=path, in_degree=degree))
+    await session.flush()
+
+
+async def test_hubs_are_files_with_high_or_top_share_fan_in(async_session):
+    repo = await insert_repo(async_session)
+    files = {f"src/m{i:03}.py": 2 for i in range(200)}
+    files |= {"src/top.py": 20, "src/wide.py": 51, "src/unused.py": 0}
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={**dict.fromkeys(files, False), "tests/test_a.py": True, "external:os": False},
+        edges=[],
+    )
+    await _fan_in(async_session, repo.id, {**files, "tests/test_a.py": 90, "external:os": 900})
+    # Above the fan-in bar, or the top 1% of the repository's own files; never
+    # a test or a third-party module.
+    assert await hub_files(async_session, repo.id) == {"src/top.py", "src/wide.py"}
+
+
+def _via(test, middle, target):
+    return [
+        (test, f"{test}::test_it", "defines"),
+        (middle, f"{middle}::m", "defines"),
+        (target, f"{target}::run", "defines"),
+        (f"{test}::test_it", f"{middle}::m", "calls"),
+        (f"{middle}::m", f"{target}::run", "calls"),
+    ]
+
+
+async def test_a_test_reaching_a_file_only_through_a_hub_is_dropped(async_session):
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={
+            "tests/test_app.py": True,
+            "tests/test_helper.py": True,
+            "src/app.py": False,
+            "src/helper.py": False,
+            "src/a.py": False,
+        },
+        edges=[
+            *_via("tests/test_app.py", "src/app.py", "src/a.py"),
+            *_via("tests/test_helper.py", "src/helper.py", "src/a.py"),
+        ],
+    )
+    both = await by_tier(async_session, repo.id, ["src/a.py"])
+    assert set(both["src/a.py"].tests) == {"tests/test_app.py", "tests/test_helper.py"}
+    gated = await by_tier(async_session, repo.id, ["src/a.py"], avoid={"src/app.py"})
+    assert gated["src/a.py"].tests == ["tests/test_helper.py"]
+    assert gated["src/a.py"].total == 1
+
+
+async def test_a_hub_still_carries_reach_into_its_own_symbols(async_session):
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/test_hub.py": True, "src/hub.py": False},
+        edges=[
+            ("tests/test_hub.py", "tests/test_hub.py::test_it", "defines"),
+            ("tests/test_hub.py::test_it", "src/hub.py::outer", "calls"),
+            ("src/hub.py::outer", "src/hub.py::inner", "calls"),
+        ],
+    )
+    found = await reach_into_symbols(
+        async_session, repo.id, ["src/hub.py::inner"], {"tests/test_hub.py"}, avoid={"src/hub.py"}
+    )
+    assert found == {"src/hub.py::inner": {"tests/test_hub.py": ReachDistance(2, 1)}}
+
+
+async def test_a_hub_plan_lists_only_tests_reaching_the_changed_symbol(async_session):
+    """Most of a suite reaches a hub through some other symbol of it; only reach
+    into the symbol a plan changes validates the plan. With none, the plan has no
+    command and asks for a characterization test first. (A test named for the
+    file would stay: ``test_walk.py`` validates any change to ``walk.py``.)"""
+    from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
+    from repowise.core.analysis.health.refactoring.recommendations import (
+        hydrate_recommendations,
+    )
+
+    repo = await insert_repo(async_session)
+    nodes = {"tests/test_bystander.py": True, "tests/test_runner.py": True, "src/walk.py": False}
+    for path, is_test in nodes.items():
+        async_session.add(
+            GraphNode(repository_id=repo.id, node_id=path, node_type="file", is_test=is_test)
+        )
+    for name, start, end in (("walk", 1, 20), ("other", 30, 40), ("lonely", 50, 60)):
+        async_session.add(
+            GraphNode(
+                repository_id=repo.id,
+                node_id=f"src/walk.py::{name}",
+                node_type="symbol",
+                file_path="src/walk.py",
+                start_line=start,
+                end_line=end,
+            )
+        )
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={},
+        edges=[
+            ("src/walk.py", "src/walk.py::walk", "defines"),
+            ("src/walk.py", "src/walk.py::other", "defines"),
+            ("src/walk.py", "src/walk.py::lonely", "defines"),
+            ("tests/test_runner.py", "tests/test_runner.py::test_it", "defines"),
+            ("tests/test_bystander.py", "tests/test_bystander.py::test_it", "defines"),
+            ("tests/test_runner.py::test_it", "src/walk.py::walk", "calls"),
+            ("tests/test_bystander.py::test_it", "src/walk.py::other", "calls"),
+        ],
+    )
+    await _fan_in(async_session, repo.id, {"src/walk.py": 60})
+
+    def plan(symbol, start, end):
+        return RefactoringSuggestion(
+            refactoring_type="extract_method",
+            file_path="src/walk.py",
+            target_symbol=symbol,
+            line_start=start,
+            line_end=end,
+            plan={},
+            evidence={},
+            impact_delta=1.0,
+            effort_bucket="M",
+            blast_radius={},
+            confidence="high",
+            source_biomarker="long_function",
+        )
+
+    walked, lonely = sorted(
+        (
+            item.validation
+            for item in await hydrate_recommendations(
+                async_session, repo.id, [plan("walk", 1, 20), plan("lonely", 50, 60)]
+            )
+        ),
+        key=lambda validation: validation.total,
+        reverse=True,
+    )
+    assert walked.tests == ["tests/test_runner.py"]
+    assert walked.total == 1
+    assert walked.prerequisite is None
+    assert lonely.basis == "unknown"
+    assert lonely.tests == []
+    assert lonely.commands == []
+    assert lonely.prerequisite == (
+        "No test reaches this; add a characterization test for `lonely` before the edit."
+    )

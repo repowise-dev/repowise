@@ -272,7 +272,9 @@ async def test_one_id_returns_the_cause_its_plan_and_its_rank_rationale(
     assert result["confidence"] == "high"
     assert result["fix"]["safety"] == "advisory"
     assert [step["order"] for step in result["plan_steps"]] == [1, 2, 3, 4, 5]
-    assert result["validation"]["commands"]
+    # No test reaches the fixture's code: no command, and the plan says so.
+    assert result["validation"]["commands"] == []
+    assert "add a characterization test" in result["validation"]["prerequisite"]
     assert result["facets"]["leverage"] == "shared"
     assert result["why_ranked"]
     assert len(json.dumps(result)) <= 20_000

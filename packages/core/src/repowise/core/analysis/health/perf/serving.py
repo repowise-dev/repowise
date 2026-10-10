@@ -429,7 +429,7 @@ def plan_brief(plan: dict[str, Any] | None) -> dict[str, Any]:
     if not plan:
         return {}
     validation = plan.get("validation") or {}
-    keys = ("basis", "via", "total", "tests", "reasons", "commands")
+    keys = ("basis", "via", "total", "tests", "reasons", "commands", "prerequisite")
     return {
         "validation": {key: validation.get(key) for key in keys},
         "plan_steps": plan.get("steps", []),

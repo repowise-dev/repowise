@@ -40,6 +40,9 @@ export interface RecommendationValidation {
   /** Why each shown test is listed where it is ("calls walk_file", "covers lines
    *  94-208"), keyed by test id. Absent on a payload from an older server. */
   reasons?: Record<string, string>;
+  /** Set when no test reaches the change: the step to take before the edit.
+   *  Absent on a payload from an older server. */
+  prerequisite?: string | null;
 }
 
 export interface RefactoringPlan {

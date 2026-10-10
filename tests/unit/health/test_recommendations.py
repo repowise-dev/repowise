@@ -415,11 +415,26 @@ def test_tests_in_a_language_with_no_known_runner_suggest_no_command() -> None:
     assert plan.commands == []
 
 
-def test_python_and_js_plans_keep_their_default_commands() -> None:
-    python = build_validation_plan(_plan("target", file_path="a/b.py"), {}, {})
-    assert python.commands == ["pytest"]
-    typescript = build_validation_plan(_plan("target", file_path="web/app.ts"), {}, {})
-    assert typescript.commands == ["npm test", "npm run type-check"]
+def test_a_plan_no_test_reaches_has_no_command_and_asks_for_a_characterization_test() -> None:
+    """A bare ``pytest`` or ``npm test`` ran a whole suite as if it guarded the change."""
+    for path in ("a/b.py", "web/app.ts"):
+        plan = build_validation_plan(_plan("target", file_path=path), {}, {})
+        assert plan.basis == "unknown"
+        assert plan.commands == [], path
+        assert plan.prerequisite == (
+            "No test reaches this; add a characterization test for `target` before the edit."
+        )
+        assert plan.as_dict()["prerequisite"] == plan.prerequisite
+    # A target that is not a symbol name is named by its file.
+    split = build_validation_plan(_plan("core.py -> 3 files", rtype="split_file"), {}, {})
+    assert "characterization test for `core.py` before" in split.prerequisite
+
+
+def test_a_reached_plan_carries_no_prerequisite() -> None:
+    reached = ReachedBy(["tests/test_b.py"], "call-graph", 1, ("tests/test_b.py",))
+    plan = build_validation_plan(_plan("target", file_path="a/b.py"), {}, {"a/b.py": reached})
+    assert plan.prerequisite is None
+    assert plan.commands == ["pytest tests/test_b.py"]
 
 
 def test_an_untruncated_test_list_keeps_the_precise_command() -> None:
@@ -534,6 +549,8 @@ def test_tests_that_call_the_changed_symbol_lead_the_list_with_reasons() -> None
         _walker_plan(), {}, _walker_reached(), evidence=_walker_evidence()
     )
     assert validation.tests == [
+        # Named for the file: the test someone wrote for it leads.
+        "tests/health/test_walker.py",
         # Calls walk_file directly, more of its functions first.
         "tests/health/test_walks_a_lot.py",
         "tests/health/test_assertions.py",
@@ -541,8 +558,7 @@ def test_tests_that_call_the_changed_symbol_lead_the_list_with_reasons() -> None
         "tests/health/test_imports_it.py",
         # Two calls away from walk_file.
         "tests/health/test_two_hops.py",
-        # Reaches the file only, the named test before the bystander.
-        "tests/health/test_walker.py",
+        # Reaches the file only.
         "tests/health/test_bystander.py",
         # Test support runs nothing on its own, however close it is.
         "tests/health/conftest.py",
@@ -585,8 +601,8 @@ def test_the_cap_keeps_the_strongest_evidence_and_reasons_follow_it() -> None:
         _walker_plan(), {}, _walker_reached(), evidence=_walker_evidence(), test_limit=2
     )
     assert validation.tests == [
+        "tests/health/test_walker.py",
         "tests/health/test_walks_a_lot.py",
-        "tests/health/test_assertions.py",
     ]
     assert list(validation.reasons) == validation.tests
     assert validation.total == len(_WALKER_TESTS)
@@ -632,5 +648,37 @@ def test_a_test_file_the_plan_edits_is_listed_as_edited() -> None:
         "tests/test_user.py": ReachedBy(["tests/test_user.py"], "import-graph", 1),
     }
     validation = build_validation_plan(plan, {}, inferred)
-    assert validation.tests == ["tests/test_user.py", "tests/test_core.py"]
+    # The test named for the file leads; the edited one follows.
+    assert validation.tests == ["tests/test_core.py", "tests/test_user.py"]
     assert validation.reasons["tests/test_user.py"] == "edited by this plan"
+
+
+def test_a_same_stem_test_leads_the_attention_plan() -> None:
+    """``_health_items`` in ``services/attention.py``: the golden test written for
+    the file stays first, ahead of tests that only share its directory."""
+    path = "packages/server/src/repowise/server/services/attention.py"
+    tests = [
+        "tests/unit/server/test_alerts.py",
+        "tests/unit/server/test_overview_attention.py",
+        "tests/unit/server/test_attention_golden.py",
+        "tests/unit/cli/test_far_away.py",
+    ]
+    reached = ReachedBy(tests, "call-graph", len(tests), tuple(tests))
+    for order_tests in (True, False):
+        plan = build_validation_plan(
+            _plan("_health_items", rtype="extract_method", file_path=path),
+            {},
+            {path: reached},
+            order_tests=order_tests,
+        )
+        assert plan.tests[0] == "tests/unit/server/test_attention_golden.py", order_tests
+        assert plan.tests[-1] == "tests/unit/cli/test_far_away.py", order_tests
+
+
+def test_a_qualified_spec_name_counts_as_same_stem() -> None:
+    path = "src/agents/run/attempt.ts"
+    tests = ["src/other/zz.test.ts", "src/agents/run/attempt.spawn-workspace.test.ts"]
+    reached = ReachedBy(tests, "call-graph", 2, tuple(tests))
+    plan = build_validation_plan(_plan("run", file_path=path), {}, {path: reached})
+    assert plan.tests[0] == "src/agents/run/attempt.spawn-workspace.test.ts"
+    assert plan.reasons[plan.tests[0]] == "named for attempt.ts"

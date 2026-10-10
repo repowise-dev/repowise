@@ -55,6 +55,17 @@ filters for type, confidence and effort. A plan's drawer explains its rank, show
 the tests that reach the code and the command to run them, and can export the
 structured plan for an agent. The page never edits code or runs tests on its own.
 
+A plan's tests (`validation`) come in this order: measured coverage of the
+changed lines, then tests named for the file (also with a qualifier, such as
+`test_loader_golden.py` or `loader.retry.test.ts`), then tests in a mirroring
+directory, then the call graph, nearest first. A test that reaches the file only
+through a hub, a module with a fan-in above 50 or in the top 1% of the
+repository's files by fan-in, is left out. For a file that is itself a hub, only
+tests that reach or import the changed symbol count. Commands always name test
+files. When no test reaches the change, the plan has no command and
+`validation.prerequisite` says to add a characterization test for the symbol
+before the edit.
+
 ## Reading the results
 
 A **plan** is one detector's output for one target. An **opportunity** is one

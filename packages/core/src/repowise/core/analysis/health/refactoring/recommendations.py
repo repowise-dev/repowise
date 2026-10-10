@@ -26,6 +26,7 @@ from repowise.core.analysis.test_reachability import (
     ReachDistance,
     ReachedBy,
     cached_test_files,
+    hub_files,
     imported_names_by_test,
     rank_tests,
     reach_into_symbols,
@@ -295,6 +296,8 @@ class ValidationPlan:
     targets: list[ValidationTarget] = field(default_factory=list)
     # Why each shown test is listed where it is, keyed by test id.
     reasons: dict[str, str] = field(default_factory=dict)
+    # What to do before the edit when no test reaches the change.
+    prerequisite: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -308,6 +311,7 @@ class ValidationPlan:
             "commands": self.commands,
             "targets": [target.as_dict() for target in self.targets],
             "reasons": self.reasons,
+            "prerequisite": self.prerequisite,
         }
 
 
@@ -321,11 +325,13 @@ class ValidationEvidence:
     ``symbols`` is each file's symbol ids with their line spans, ``symbol_reach``
     how close each test gets to a symbol, and ``imports`` the names each test
     imports from a file. Empty, the order falls back to name and directory.
+    ``hubs`` are the files whose own reach is too broad to list (:func:`_hub_tests`).
     """
 
     symbols: Mapping[str, Sequence[SymbolSpan]] = field(default_factory=dict)
     symbol_reach: Mapping[str, Mapping[str, ReachDistance]] = field(default_factory=dict)
     imports: Mapping[str, Mapping[str, frozenset[str]]] = field(default_factory=dict)
+    hubs: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,6 +341,8 @@ class ValidationInputs:
     measured: Mapping[str, list[dict[str, Any]]]
     inferred: Mapping[str, ReachedBy]
     test_files: set[str]
+    # Files the reach walks do not pass through (:func:`hub_files`).
+    hubs: frozenset[str] = frozenset()
 
 
 def target_symbol_ids(
@@ -390,6 +398,62 @@ _is_support = functools.lru_cache(maxsize=8192)(is_test_support_path)
 RankedTest = tuple[tuple[int, ...], str]
 
 
+@dataclass(frozen=True, slots=True)
+class _Target:
+    """What a test's path is compared against: the file's name and directories."""
+
+    name: str
+    stem: str
+    named_for: frozenset[str]
+    dirs: list[str]
+
+    @classmethod
+    def of(cls, file_path: str) -> _Target:
+        name = file_path.rsplit("/", 1)[-1]
+        return cls(
+            name, name.split(".", 1)[0], paired_test_names(file_path), file_path.split("/")[:-1]
+        )
+
+    def named(self, path: str) -> bool:
+        """A test named for the file, also with a qualifier: ``test_attention_golden.py``
+        for ``attention.py``, ``attempt.spawn-workspace.test.ts`` for ``attempt.ts``."""
+        test = path.rsplit("/", 1)[-1]
+        return (
+            test in self.named_for
+            or test.startswith(f"test_{self.stem}_")
+            or (test.startswith(f"{self.stem}.") and (".test." in test or ".spec." in test))
+        )
+
+    def shared(self, path: str) -> list[str]:
+        test_dirs = set(path.split("/")[:-1])
+        return [segment for segment in self.dirs if segment in test_dirs]
+
+
+def _near_key(path: str, hits: set[int], named: bool, shared: list[str]) -> tuple[int, ...]:
+    """Measured coverage of the changed lines, then a test named for the file,
+    then one mirroring its directories. Graph distance only breaks ties after."""
+    return (
+        int(_is_support(path)),
+        0 if hits else 1,
+        -len(hits),
+        0 if named else 1,
+        -len(shared),
+    )
+
+
+def _rank_by_name(
+    file_path: str, labels: set[str], covered: Mapping[str, set[int]]
+) -> dict[str, RankedTest]:
+    """:func:`_rank_target_tests` without the graph evidence a rank-only pass skips."""
+    target = _Target.of(file_path)
+    out: dict[str, RankedTest] = {}
+    for label in labels:
+        path = label.split("::", 1)[0]
+        hits = covered.get(label) or set()
+        out[label] = (_near_key(path, hits, target.named(path), target.shared(path)), "")
+    return out
+
+
 def _test_reason(
     *,
     name: str,
@@ -440,16 +504,16 @@ def _rank_target_tests(
 ) -> dict[str, RankedTest]:
     """Each test's sort key and reason for one target file.
 
-    Most direct evidence first: measured coverage of the changed lines, then a
-    test naming the changed symbol (a direct call or an import of it), then
-    fewer call hops to it, then more of the test's functions at that distance,
-    then a test named for the file, then directory overlap. Test support (a
-    helper module) runs nothing on its own, so it goes last; a ``conftest.py``
-    was already replaced by the tests under it (:func:`_expand_scopes`).
+    Measured coverage of the changed lines first, then a test named for the
+    file, then directory overlap (:func:`_near_key`); within those, a test
+    naming the changed symbol (a direct call or an import of it), then fewer
+    call hops to it, then more of the test's functions at that distance. Test
+    support (a helper module) runs nothing on its own, so it goes last; a
+    ``conftest.py`` was already replaced by the tests under it
+    (:func:`_expand_scopes`).
     """
-    name = file_path.rsplit("/", 1)[-1]
-    named_for = paired_test_names(file_path)
-    target_dirs = file_path.split("/")[:-1]
+    target = _Target.of(file_path)
+    name = target.name
     file_reach = reached.reach if reached is not None and reached.reach else {}
     imports = evidence.imports.get(file_path, {})
     out: dict[str, RankedTest] = {}
@@ -488,21 +552,16 @@ def _rank_target_tests(
             callers = reach.callers
         else:
             distance, callers = (_IMPORT_ONLY if imported is not None else _NO_PATH), 0
-        test_dirs = set(path.split("/")[:-1])
-        shared = [segment for segment in target_dirs if segment in test_dirs]
-        named = path.rsplit("/", 1)[-1] in named_for
+        shared = target.shared(path)
+        named = target.named(path)
         references = (
             edited or named_import is not None or (nearest is not None and nearest[0] == 1)
         )
         key = (
-            int(_is_support(path)),
-            0 if hits else 1,
-            -len(hits),
+            *_near_key(path, hits, named, shared),
             0 if references else 1,
             distance,
             -callers,
-            0 if named else 1,
-            -len(shared),
         )
         out[label] = (
             key,
@@ -522,7 +581,7 @@ def _rank_target_tests(
     return out
 
 
-def _commands(tests: list[str], files: list[str], *, total: int | None = None) -> list[str]:
+def _commands(tests: list[str], *, total: int | None = None) -> list[str]:
     """A command that runs at least everything the plan says validates it.
 
     When the displayed list is capped, enumerating only the shown tests would
@@ -530,9 +589,11 @@ def _commands(tests: list[str], files: list[str], *, total: int | None = None) -
     selection widens to the files those tests live in: bounded by file count
     rather than test count, and never narrower than the evidence.
 
-    An empty list means the plan has no command to suggest. Nothing here looks
-    at the repository's tooling, so a language other than Python or JS/TS gets
-    none in place of a guess that would fail when run.
+    An empty list means the plan has no command to suggest. Every command names
+    its tests: with none found, a bare ``pytest`` or ``npm test`` would run a
+    whole suite as if it guarded the change. Nothing here looks at the
+    repository's tooling, so a language other than Python or JS/TS gets none in
+    place of a guess that would fail when run.
     """
     if total is not None and total > len(tests):
         tests = sorted({test.split("::", 1)[0] for test in tests})
@@ -545,13 +606,15 @@ def _commands(tests: list[str], files: list[str], *, total: int | None = None) -
         commands.append("pytest " + " ".join(python_tests))
     if js_tests:
         commands.append("npm test -- " + " ".join(js_tests))
-    if commands:
-        return commands
-    if any(path.endswith(".py") for path in files):
-        return ["pytest"]
-    if any(path.endswith((".ts", ".tsx", ".js", ".jsx")) for path in files):
-        return ["npm test", "npm run type-check"]
-    return []
+    return commands
+
+
+def _characterization_step(suggestion: RefactoringSuggestion) -> str:
+    """The step before an edit no test reaches: pin today's behaviour first."""
+    symbol = suggestion.target_symbol
+    if not symbol or not symbol.replace(".", "_").isidentifier():
+        symbol = suggestion.file_path.rsplit("/", 1)[-1]
+    return f"No test reaches this; add a characterization test for `{symbol}` before the edit."
 
 
 def _line_ranges(suggestion: RefactoringSuggestion) -> dict[str, set[int] | None]:
@@ -594,6 +657,24 @@ def _measured_labels(rows: list[dict[str, Any]], lines: set[int] | None) -> set[
     return set(_measured_hits(rows, lines))
 
 
+def _hub_tests(
+    file_path: str, symbol_ids: Sequence[str], evidence: ValidationEvidence
+) -> set[str] | None:
+    """For a hub file, the tests that reach or import the symbols the plan changes.
+
+    Most of the suite reaches a hub through some other symbol of it, so its
+    file-level reach says nothing about this change. ``None`` keeps that reach:
+    the file is no hub, or the plan names no symbol in it.
+    """
+    if file_path not in evidence.hubs or not symbol_ids:
+        return None
+    names = {_symbol_label(symbol).split(".", 1)[0] for symbol in symbol_ids}
+    imported = evidence.imports.get(file_path, {})
+    return {
+        test for symbol in symbol_ids for test in evidence.symbol_reach.get(symbol, {})
+    } | {test for test, imports in imported.items() if imports & names}
+
+
 def _validation_target(
     file_path: str,
     lines: set[int] | None,
@@ -601,6 +682,7 @@ def _validation_target(
     inferred: Mapping[str, ReachedBy],
     cap: int,
     rank: Callable[[set[str], Mapping[str, set[int]], ReachedBy | None], dict[str, RankedTest]],
+    keep: set[str] | None = None,
 ) -> tuple[ValidationTarget, set[str], bool, dict[str, RankedTest]]:
     covered = _measured_hits(measured.get(file_path, []), lines)
     labels = set(covered)
@@ -619,6 +701,15 @@ def _validation_target(
         identities_complete = (
             reached is None or reached.all_tests is not None or total == len(labels)
         )
+        if keep is not None and reached is not None:
+            target = _Target.of(file_path)
+            labels = {
+                label
+                for label in labels
+                if (path := label.split("::", 1)[0]) in keep or target.named(path)
+            }
+            basis, via = ("inferred", via) if labels else ("unknown", None)
+            total, identities_complete = len(labels), True
     ranked = rank(labels, covered, reached)
     ordered = sorted(labels, key=lambda label: (ranked[label][0], label))
     return (
@@ -673,8 +764,8 @@ def build_validation_plan(
             span: set[int] | None = lines,
         ) -> dict[str, RankedTest]:
             if not order_tests:
-                # A rank-only pass needs the evidence basis, not the order.
-                return {label: ((), "") for label in labels}
+                # A rank-only pass reads no graph evidence; name and directory still order.
+                return _rank_by_name(path, labels, covered)
             return _rank_target_tests(
                 path,
                 span,
@@ -687,7 +778,13 @@ def build_validation_plan(
             )
 
         target, labels, target_complete, ranked = _validation_target(
-            file_path, lines, measured, inferred, cap, rank
+            file_path,
+            lines,
+            measured,
+            inferred,
+            cap,
+            rank,
+            _hub_tests(file_path, symbols[file_path], facts),
         )
         by_file[file_path] = labels
         for test, scored in ranked.items():
@@ -723,9 +820,10 @@ def build_validation_plan(
         truncated=aggregate_total > len(ordered_tests[:cap]),
         affected_files=files,
         affected_symbols=affected_symbols(suggestion),
-        commands=_commands(ordered_tests[:cap], files, total=aggregate_total),
+        commands=_commands(ordered_tests[:cap], total=aggregate_total),
         targets=target_rows,
         reasons={test: best[test][1] for test in ordered_tests[:cap]} if order_tests else {},
+        prerequisite=None if ordered_tests else _characterization_step(suggestion),
     )
 
 
@@ -1000,7 +1098,7 @@ async def _validation_plans(
         inputs = await _validation_inputs(session, repository_id, suggestions, target_files)
     evidence = (
         await _validation_evidence(
-            session, repository_id, suggestions, target_files, inputs.test_files
+            session, repository_id, suggestions, target_files, inputs.test_files, inputs.hubs
         )
         if detailed
         else None
@@ -1039,9 +1137,12 @@ async def _validation_inputs(
             if not _measured_labels(measured.get(file_path, []), lines):
                 unanswered.add(file_path)
     test_files = await cached_test_files(session, repository_id)
+    # A test that reaches the file only through a hub tests the hub; it is not
+    # listed, and with nothing else the plan says no test reaches it.
+    hubs = await hub_files(session, repository_id)
     inferred = (
         await tests_reaching_by_tier(
-            session, repository_id, sorted(unanswered), test_files=test_files
+            session, repository_id, sorted(unanswered), test_files=test_files, avoid=hubs
         )
         if unanswered
         else {}
@@ -1052,7 +1153,9 @@ async def _validation_inputs(
     inferred = {
         path: _expand_scopes(path, reached, test_files) for path, reached in inferred.items()
     }
-    return ValidationInputs(measured=measured, inferred=inferred, test_files=test_files)
+    return ValidationInputs(
+        measured=measured, inferred=inferred, test_files=test_files, hubs=hubs
+    )
 
 
 def _expand_scopes(path: str, reached: ReachedBy, test_files: set[str]) -> ReachedBy:
@@ -1087,6 +1190,7 @@ async def _validation_evidence(
     suggestions: Sequence[RefactoringSuggestion],
     target_files: Sequence[str],
     test_files: set[str],
+    hubs: frozenset[str] = frozenset(),
 ) -> ValidationEvidence:
     """Symbol spans, symbol-level reach and test imports for every plan at once.
 
@@ -1116,8 +1220,11 @@ async def _validation_evidence(
     }
     return ValidationEvidence(
         symbols=spans,
-        symbol_reach=await reach_into_symbols(session, repository_id, symbol_ids, test_files),
+        symbol_reach=await reach_into_symbols(
+            session, repository_id, symbol_ids, test_files, avoid=hubs
+        ),
         imports=await imported_names_by_test(session, repository_id, target_files, test_files),
+        hubs=hubs,
     )
 
 
