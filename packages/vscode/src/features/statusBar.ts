@@ -38,14 +38,14 @@ export function registerStatusBar(ctx: RepowiseContext): vscode.Disposable {
       // A stale lockfile reports the same way as no server: it is not
       // running, and the click affordance starts it.
       case "server-down":
-        item.text = "$(circle-slash) Repowise";
+        item.text = "$(circle-slash) Repowise: offline";
         item.tooltip = "Local server not running. Click to start.";
         item.command = Commands.startServer;
         item.backgroundColor = undefined;
         break;
 
       case "connecting":
-        item.text = "$(sync~spin) Repowise";
+        item.text = "$(sync~spin) Repowise: starting";
         item.tooltip = "Starting local server";
         item.command = undefined;
         item.backgroundColor = undefined;
@@ -70,7 +70,7 @@ export function registerStatusBar(ctx: RepowiseContext): vscode.Disposable {
       }
 
       case "version-low":
-        item.text = "$(warning) Repowise";
+        item.text = "$(warning) Repowise: update needed";
         item.tooltip =
           "Server version below the minimum this extension supports. Update the repowise package.";
         item.command = Commands.checkSetup;

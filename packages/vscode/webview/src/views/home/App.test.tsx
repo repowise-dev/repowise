@@ -75,10 +75,10 @@ describe("Home sidebar", () => {
     const { host, openView } = makeHost();
     renderApp(host);
 
-    fireEvent.click(await screen.findByText("Health Dashboard"));
+    fireEvent.click(await screen.findByText("Code Health"));
     expect(openView).toHaveBeenCalledWith("health");
 
-    fireEvent.click(screen.getByText("Branch Risk"));
+    fireEvent.click(screen.getByText("Change Risk"));
     expect(openView).toHaveBeenCalledWith("risk");
   });
 
@@ -118,11 +118,11 @@ describe("Home sidebar", () => {
     renderApp(host);
     await screen.findByText("7.4");
 
-    fireEvent.click(screen.getByTitle("Dark"));
+    fireEvent.click(screen.getByTitle("Dark theme"));
     expect(setTheme).toHaveBeenCalledWith("dark");
     expect(document.documentElement.classList.contains("dark")).toBe(true);
 
-    fireEvent.click(screen.getByTitle("Light"));
+    fireEvent.click(screen.getByTitle("Light theme"));
     expect(setTheme).toHaveBeenCalledWith("light");
     expect(document.documentElement.classList.contains("dark")).toBe(false);
   });

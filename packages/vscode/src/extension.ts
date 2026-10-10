@@ -134,7 +134,7 @@ async function checkSetup(ctx: RepowiseContext): Promise<void> {
           .map((c) => c.name)
           .join(", ") || "see log";
       const choice = await vscode.window.showWarningMessage(
-        `Repowise setup has ${failed.length} issue(s): ${summary}.`,
+        `Repowise setup has ${failed.length} ${failed.length === 1 ? "issue" : "issues"}: ${summary}.`,
         "Show Log",
       );
       if (choice === "Show Log") ctx.log.show();

@@ -55,9 +55,9 @@ export class HealthTreeProvider extends RepowiseTreeProvider {
   private fileNode(row: HealthFileMetric): RepoTreeNode {
     const tooltip = new vscode.MarkdownString();
     tooltip.appendMarkdown(`\`${row.file_path}\`\n\n`);
-    tooltip.appendMarkdown(`- Code health: ${score(row.defect_score ?? row.score)}\n`);
-    tooltip.appendMarkdown(`- Maintainability: ${score(row.maintainability_score)}\n`);
-    tooltip.appendMarkdown(`- Performance: ${score(row.performance_score)}\n`);
+    tooltip.appendMarkdown(`- Code health: ${score(row.defect_score ?? row.score)} / 10\n`);
+    tooltip.appendMarkdown(`- Maintainability: ${score(row.maintainability_score)} / 10\n`);
+    tooltip.appendMarkdown(`- Performance: ${score(row.performance_score)} / 10\n`);
     return {
       key: `file:${row.file_path}`,
       label: baseName(row.file_path),

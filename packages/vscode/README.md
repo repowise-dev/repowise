@@ -83,10 +83,10 @@ Nothing polls, nothing scans in the background, and nothing interrupts you. Data
 |---|---|
 | Repowise: Set Up This Repository | Build the index for this workspace |
 | Repowise: Analyze Change Risk | Score your change and see what it touches, what is missing, and who should review |
-| Repowise: Show Health Dashboard | Open the health overview |
-| Repowise: Show Architecture Map | Open the architecture view |
-| Repowise: Show Knowledge Graph | Open the dependency graph |
-| Repowise: Show Decision Timeline | Browse mined architectural decisions |
+| Repowise: Open Code Health | Open the health overview |
+| Repowise: Open Architecture | Open the architecture view |
+| Repowise: Open Knowledge Graph | Open the dependency graph |
+| Repowise: Open Decisions | Browse mined architectural decisions |
 | Repowise: Open Docs for This File | Open the generated docs for the active file |
 | Repowise: Update Index | Sync the index with your latest commits |
 | Repowise: Configure MCP for this Workspace | Write `.vscode/mcp.json` for MCP clients |

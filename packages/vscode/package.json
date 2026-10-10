@@ -225,25 +225,25 @@
       },
       {
         "command": "repowise.showHealthDashboard",
-        "title": "Show Health Dashboard",
+        "title": "Open Code Health",
         "category": "Repowise",
         "icon": "$(dashboard)"
       },
       {
         "command": "repowise.showArchitecture",
-        "title": "Show Architecture Map",
+        "title": "Open Architecture",
         "category": "Repowise",
         "icon": "$(layers)"
       },
       {
         "command": "repowise.showKnowledgeGraph",
-        "title": "Show Knowledge Graph",
+        "title": "Open Knowledge Graph",
         "category": "Repowise",
         "icon": "$(type-hierarchy)"
       },
       {
         "command": "repowise.showDecisionTimeline",
-        "title": "Show Decision Timeline",
+        "title": "Open Decisions",
         "category": "Repowise",
         "icon": "$(milestone)"
       },
@@ -515,7 +515,7 @@
           {
             "id": "firstInsight",
             "title": "See your first insight",
-            "description": "Open the health dashboard for a first look at your repository.\n[Show Health Dashboard](command:repowise.showHealthDashboard)",
+            "description": "Open Code Health for a first look at your repository.\n[Open Code Health](command:repowise.showHealthDashboard)",
             "media": {
               "markdown": "media/walkthrough/first-insight.md"
             },
