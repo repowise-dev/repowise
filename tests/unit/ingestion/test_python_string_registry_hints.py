@@ -10,17 +10,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from repowise.core.ingestion.dynamic_hints.base import DynamicEdge
 from repowise.core.ingestion.dynamic_hints.python_imports import (
+    ModuleStringResolver,
     PythonDynamicHints,
     python_dynamic_refs,
 )
+from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.languages.python_modules import build_python_module_index
 
 
 def _refs(files: dict[str, str], rel: str) -> dict[str, tuple[str, ...]]:
     blobs = {path: src.encode() for path, src in files.items()}
-    index = build_python_module_index(blobs)
-    return python_dynamic_refs(rel, blobs[rel], index, lambda path: blobs.get(path, b""))
+    resolver = ModuleStringResolver(
+        build_python_module_index(blobs), lambda path: blobs.get(path, b"")
+    )
+    return python_dynamic_refs(rel, blobs[rel], resolver)
 
 
 _CLI = {
@@ -176,3 +181,77 @@ def test_extractor_reads_attached_source_map_before_disk(tmp_path: Path) -> None
             ("status_command",),
         )
     ]
+
+
+def test_templated_import_in_a_comment_or_docstring_adds_nothing() -> None:
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/plugins/__init__.py": "",
+        "pkg/plugins/a.py": "",
+        "pkg/loader.py": (
+            '"""Loads plugins with import_module(f"pkg.plugins.{name}")."""\n'
+            "import importlib\n"
+            "def load(name):\n"
+            '    # importlib.import_module(f"pkg.plugins.{name}")\n'
+            "    return name\n"
+        ),
+    }
+    assert _refs(files, "pkg/loader.py") == {}
+
+
+def test_wide_or_one_segment_template_links_the_package_only() -> None:
+    plugins = {f"pkg/plugins/p{i}.py": "" for i in range(51)}
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/plugins/__init__.py": "",
+        **plugins,
+        "pkg/loader.py": (
+            "import importlib\n"
+            "def load(name):\n"
+            '    importlib.import_module(f"pkg.plugins.{name}")\n'
+            '    importlib.import_module(f"pkg.{name}")\n'
+        ),
+    }
+    assert _refs(files, "pkg/loader.py") == {
+        "pkg/plugins/__init__.py": (),
+        "pkg/__init__.py": (),
+    }
+
+
+def _hint(source: str, target: str, names: tuple[str, ...] = ()) -> DynamicEdge:
+    return DynamicEdge(source, target, "dynamic_uses", "python_dynamic_import", imported_names=names)
+
+
+def _builder_with_import(names: list[str]) -> GraphBuilder:
+    builder = GraphBuilder()
+    graph = builder._graph
+    graph.add_node("a.py")
+    graph.add_node("b.py")
+    graph.add_edge("a.py", "b.py", edge_type="imports", imported_names=names)
+    return builder
+
+
+def test_hint_on_an_imported_pair_keeps_the_import_and_unions_names() -> None:
+    builder = _builder_with_import(["Foo"])
+    builder.add_dynamic_edges([_hint("a.py", "b.py", ("app",))])
+    data = builder._graph.get_edge_data("a.py", "b.py")
+    assert data["edge_type"] == "imports"
+    assert data["imported_names"] == ["Foo", "app"]
+    assert "dynamic_hint" not in data
+
+
+def test_whole_module_hint_on_an_imported_pair_is_kept_as_a_flag() -> None:
+    builder = _builder_with_import(["Foo"])
+    builder.add_dynamic_edges([_hint("a.py", "b.py")])
+    data = builder._graph.get_edge_data("a.py", "b.py")
+    assert (data["edge_type"], data["imported_names"]) == ("imports", ["Foo"])
+    assert data["dynamic_hint"] == "python_dynamic_import"
+
+
+def test_second_hint_on_a_pair_merges_and_whole_module_wins() -> None:
+    builder = GraphBuilder()
+    builder._graph.add_node("a.py")
+    builder.add_dynamic_edges([_hint("a.py", "b.py", ("x",)), _hint("a.py", "b.py", ("y",))])
+    assert builder._graph.get_edge_data("a.py", "b.py")["imported_names"] == ["x", "y"]
+    builder.add_dynamic_edges([_hint("a.py", "b.py")])
+    assert "imported_names" not in builder._graph.get_edge_data("a.py", "b.py")

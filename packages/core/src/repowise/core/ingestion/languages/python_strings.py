@@ -3,8 +3,8 @@
 Python names code by dotted string as often as by ``import`` (entry-point
 tables, plugin registries, lazy command tables). Both the dynamic-import hints
 (graph edges) and dead-code analysis (finding filters) read those strings, so
-the "only strings that run" filter and the "module defines this name" check
-live here once.
+the "only strings that run" filter, the "module defines this name" check and
+the dynamic-load markers live here once.
 """
 
 from __future__ import annotations
@@ -15,6 +15,20 @@ import tokenize
 from pathlib import PurePosixPath
 
 from .registry import REGISTRY
+
+#: Source tokens that mark a Python file as loading modules by name at run time.
+#: Substrings, so ``importlib`` also covers ``importlib.import_module``.
+PY_DYNAMIC_LOAD_MARKERS: tuple[str, ...] = (
+    "importlib",
+    "import_module",
+    "__import__",
+    "import_string",  # Werkzeug / Flask / Django utilities
+    "load_entry_point",
+    "entry_points(",  # importlib.metadata plugin discovery
+    "pkgutil",
+    "pkg_resources",
+    "lazy_subcommands",  # lazy click group keyword: {"name": "pkg.mod.attr"}
+)
 
 
 def is_python(path: str) -> bool:

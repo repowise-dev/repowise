@@ -95,6 +95,9 @@ _KNOWN: dict[str, int] = {
     _PREFIX + "dynamic_hints/swift.py": 1,
     # Splits an import statement's package path, not a type reference.
     _PREFIX + "languages/jvm_same_package.py": 1,
+    # Splits a module-path string (`"pkg.mod.Name"`) into the module it loads
+    # and the attribute it reads; the head is a module path, not a qualifier.
+    _PREFIX + "dynamic_hints/python_imports.py": 1,
     # Qualifies a PHP name against its `use` alias (the HEAD segment) and
     # splits an FQN into the namespace it indexes by and the class: it asks
     # which namespace, the opposite end from the shared helper.

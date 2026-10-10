@@ -17,11 +17,35 @@ from ...co_change import (
     canonical_pair,
     parse_partners,
 )
+from ..models import FILE_DEPENDENCY_EDGE_TYPES, is_dynamic_edge
 from ..resolvers import ResolverContext
 from ..resolvers.go import read_go_module_path, read_go_modules
 from ._stem import build_stem_map
 
 log = structlog.get_logger(__name__)
+
+
+def _merge_dynamic_hint(existing: dict, hint) -> None:
+    """Fold a dynamic hint into the file edge already joining the same two files.
+
+    The graph holds one edge per pair, and hints run after static resolution,
+    so replacing the edge would drop what the import said (its type, the names
+    it binds). Names are unioned instead. A whole-module hint (no names) on a
+    static edge is kept as ``dynamic_hint`` so dead code still treats every
+    public member as reached. ``dynamic_hint`` lives on the live graph only:
+    persisted rows keep the static type and the unioned names (upgrade path: a
+    column, if a rehydrated graph ever runs the export rescue).
+    """
+    if is_dynamic_edge(existing.get("edge_type")):
+        # Two hints on one pair: a whole-module reach absorbs a named one.
+        if not hint.imported_names or not existing.get("imported_names"):
+            existing.pop("imported_names", None)
+            return
+    elif not hint.imported_names:
+        existing["dynamic_hint"] = hint.hint_source
+        return
+    names = existing.get("imported_names") or []
+    existing["imported_names"] = names + [n for n in hint.imported_names if n not in names]
 
 
 class EdgesMixin:
@@ -150,6 +174,10 @@ class EdgesMixin:
             # a real `dynamic_*` edge.
             sub_type = e.edge_type
             graph_edge_type = sub_type if sub_type.startswith("dynamic") else f"dynamic_{sub_type}"
+            existing = self._graph.get_edge_data(e.source, e.target)
+            if existing is not None and existing.get("edge_type") in FILE_DEPENDENCY_EDGE_TYPES:
+                _merge_dynamic_hint(existing, e)
+                continue
             names = {"imported_names": list(e.imported_names)} if e.imported_names else {}
             self._graph.add_edge(
                 e.source,

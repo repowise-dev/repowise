@@ -35,10 +35,11 @@ or docstring loads nothing). Three shapes are read:
   event name, next to a package called ``agent`` without a ``start``, adds
   nothing.
 * **Templated loads** (``import_module(f"pkg.plugins.{name}")`` or
-  ``import_module("pkg.plugins." + name)``) in gated non-test files: every
-  module matching the template, where each hole is one name segment. The
-  template must start with a literal segment, so an all-hole ``f"{a}.{b}"``
-  adds nothing.
+  ``import_module("pkg.plugins." + name)``) in gated non-test code: every
+  module matching the template, where each hole is one name segment. A
+  template that starts with a hole adds nothing; one with a single-segment
+  prefix or more than :data:`_TEMPLATE_FANOUT_CAP` matches links the package
+  only. A call in a comment or docstring is skipped.
 
 The mechanism is repo-agnostic: plugin registries, ``importlib`` loaders,
 entry-point dispatch tables and lazy CLI groups all reduce to these shapes.
@@ -53,23 +54,12 @@ from pathlib import Path
 
 from ...test_paths import is_test_related_path
 from ..languages.python_modules import build_python_module_index
-from ..languages.python_strings import defines_top_level, live_text
+from ..languages.python_strings import PY_DYNAMIC_LOAD_MARKERS, defines_top_level, live_text
 from .base import DynamicEdge, DynamicHintExtractor
 
-# Tokens that signal a file performs runtime module loading. Dotted strings
-# only produce edges from files that contain at least one of these, so plain
-# dotted strings elsewhere never create spurious reachability.
-_DYNAMIC_IMPORT_MARKERS: tuple[bytes, ...] = (
-    b"importlib",
-    b"import_module",
-    b"__import__",
-    b"import_string",  # Werkzeug / Flask / Django utilities
-    b"load_entry_point",
-    b"entry_points(",  # importlib.metadata plugin discovery
-    b"pkgutil",
-    b"pkg_resources",
-    b"lazy_subcommands",  # lazy click group keyword: {"name": "pkg.mod.attr"}
-)
+# Dotted strings only produce edges from files that load modules at run time,
+# so plain dotted strings elsewhere never create spurious reachability.
+_DYNAMIC_IMPORT_MARKERS = tuple(m.encode("ascii") for m in PY_DYNAMIC_LOAD_MARKERS)
 
 # A quoted dotted path of two or more segments (``"pkg.sub.mod"``).
 _DOTTED_STRING_RE = re.compile(rb"""['"]([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)+)['"]""")
@@ -87,6 +77,10 @@ _TEMPLATE_LOAD_RE = re.compile(
 )
 _HOLE_RE = re.compile(r"\{[^{}]*\}")
 _SEGMENT = r"[a-zA-Z_]\w*"
+_DOTTED_PREFIX_RE = re.compile(rf"{_SEGMENT}(?:\.{_SEGMENT})*")
+
+# Most modules one templated load may link before it links the package only.
+_TEMPLATE_FANOUT_CAP = 50
 
 # Top-level import statements, parenthesised continuation included.
 _TOP_IMPORT_RE = re.compile(rb"^(?:from[ \t]+[\w.]+[ \t]+)?import[ \t]+(\([^)]*\)|[^\n]*)", re.M)
@@ -109,16 +103,56 @@ def _add_ref(refs: _Refs, target: str, name: str | None) -> None:
     refs[target] = tuple(sorted({*refs.get(target, ()), name}))
 
 
-def _has_attr(blob: bytes, name: str) -> bool:
-    """Whether a module defines, imports or lazily serves *name* at top level."""
-    if defines_top_level(blob, name) or defines_top_level(blob, "__getattr__"):
-        return True
-    word = re.compile(rb"\b" + re.escape(name.encode("ascii")) + rb"\b")
-    return any(word.search(m.group(1)) for m in _TOP_IMPORT_RE.finditer(blob))
+class ModuleStringResolver:
+    """Resolves module-path strings against one repo's modules.
+
+    *source_of* returns a module file's bytes, read only to check that an
+    attribute reference names something the module has. Attribute checks and
+    template expansions are memoised, so one instance serves a whole repo.
+    """
+
+    def __init__(self, module_index: dict[str, str], source_of: Callable[[str], bytes]) -> None:
+        self.module_index = module_index
+        self._source_of = source_of
+        self._attrs: dict[tuple[str, str], bool] = {}
+        self._templates: dict[str, list[str]] = {}
+
+    def has_attr(self, target: str, name: str) -> bool:
+        """Whether a module defines, imports or lazily serves *name* at top level."""
+        key = (target, name)
+        if key not in self._attrs:
+            blob = self._source_of(target)
+            word = re.compile(rb"\b" + re.escape(name.encode("ascii")) + rb"\b")
+            self._attrs[key] = (
+                defines_top_level(blob, name)
+                or defines_top_level(blob, "__getattr__")
+                or any(word.search(m.group(1)) for m in _TOP_IMPORT_RE.finditer(blob))
+            )
+        return self._attrs[key]
+
+    def template_targets(self, template: str) -> list[str]:
+        """Files of every module matching a load template; each hole is one segment."""
+        if template not in self._templates:
+            self._templates[template] = self._expand(template)
+        return self._templates[template]
+
+    def _expand(self, template: str) -> list[str]:
+        prefix = _HOLE_RE.split(template, maxsplit=1)[0].rstrip(".")
+        if not _DOTTED_PREFIX_RE.fullmatch(prefix):
+            return []  # starts with a hole: would match any module
+        pattern = re.compile(_SEGMENT.join(re.escape(part) for part in _HOLE_RE.split(template)))
+        matched = [path for dotted, path in self.module_index.items() if pattern.fullmatch(dotted)]
+        # Ceiling: a one-segment prefix or a wide match reads as a plugin
+        # directory, not a short table, so only the package is linked. Upgrade
+        # path: resolve the hole's values when the source spells them out.
+        if "." not in prefix or len(matched) > _TEMPLATE_FANOUT_CAP:
+            package = self.module_index.get(prefix, "")
+            return [package] if package.endswith(_INIT_NAMES) else []
+        return matched
 
 
 def _string_refs(
-    text: bytes, module_index: dict[str, str], *, gated: bool, members: bool
+    text: bytes, module_index: dict[str, str], *, gated: bool, runtime: bool
 ) -> list[_Ref]:
     """Unverified ``(target, attr)`` references the quoted strings in *text* make."""
     found: list[_Ref] = []
@@ -128,8 +162,9 @@ def _string_refs(
             if module in module_index:
                 found.append((module_index[module], None, m.start()))
                 continue
+            # A module path and the attribute it reads, not a type's qualifier.
             parent, _, attr = module.rpartition(".")
-            if members and parent in module_index:
+            if runtime and parent in module_index:
                 found.append((module_index[parent], attr, m.start()))
     relative: list[tuple[str, str, int]] = []
     for m in _ATTR_STRING_RE.finditer(text) if _ATTR_TAIL_RE.search(text) else ():
@@ -157,58 +192,45 @@ def _string_refs(
     return found
 
 
-def _maybe_not_code(blob: bytes, starts: list[int]) -> bool:
-    """Whether a string at *starts* may sit in a comment or docstring.
+def _maybe_not_code(blob: bytes, triples: list[int], start: int) -> bool:
+    """Whether the text at *start* may sit in a comment or a triple-quoted string.
 
-    Cheap and conservative: a match after ``#`` on its line or inside a
-    triple-quoted block says yes, and only then is the file tokenized, which
-    on large files costs far more than the scan.
+    Cheap and conservative: a ``#`` earlier on the line, or an odd count of
+    triple quotes before it (*triples* holds their offsets), says yes.
     """
-    triples = [m.start() for m in _TRIPLE_QUOTE_RE.finditer(blob)]
-    for start in starts:
-        line_start = blob.rfind(b"\n", 0, start) + 1
-        if bisect(triples, start) % 2 or b"#" in blob[line_start:start]:
-            return True
-    return False
+    line_start = blob.rfind(b"\n", 0, start) + 1
+    return bool(bisect(triples, start) % 2) or b"#" in blob[line_start:start]
 
 
-def _template_targets(template: str, module_index: dict[str, str]) -> list[str]:
-    """Files of every module matching a load template; each hole is one segment."""
-    if not re.match(_SEGMENT + r"\.", template):
-        return []  # starts with a hole: would match any module
-    pattern = re.compile(_SEGMENT.join(re.escape(part) for part in _HOLE_RE.split(template)))
-    # Linear in modules, but run only per templated load call (a handful per repo).
-    return [path for dotted, path in module_index.items() if pattern.fullmatch(dotted)]
-
-
-def python_dynamic_refs(
-    rel: str,
-    blob: bytes,
-    module_index: dict[str, str],
-    source_of: Callable[[str], bytes],
-) -> _Refs:
+def python_dynamic_refs(rel: str, blob: bytes, resolver: ModuleStringResolver) -> _Refs:
     """Modules the source *blob* of *rel* names by string, as ``{target: names}``.
 
-    *source_of* returns a target file's bytes, read only to check that an
-    attribute reference names something the module has. Pure over its inputs,
-    so a caller holding source bytes needs no filesystem.
+    Pure over its inputs, so a caller holding source bytes needs no filesystem.
     """
     gated = any(marker in blob for marker in _DYNAMIC_IMPORT_MARKERS)
     if not (gated or _ATTR_TAIL_RE.search(blob)):
         return {}
-    members = not is_test_related_path(rel)
+    # A loader outside tests; in a test a member path is a patch target.
+    runtime = not is_test_related_path(rel)
+    index = resolver.module_index
+    triples = [m.start() for m in _TRIPLE_QUOTE_RE.finditer(blob)]
     refs: _Refs = {}
-    found = _string_refs(blob, module_index, gated=gated, members=members)
-    if found and _maybe_not_code(blob, [start for _, _, start in found]):
-        found = _string_refs(live_text(rel, blob), module_index, gated=gated, members=members)
+    found = _string_refs(blob, index, gated=gated, runtime=runtime)
+    # Tokenize, which costs far more than the scan, only when a match may sit
+    # in a comment or docstring.
+    if any(_maybe_not_code(blob, triples, start) for _, _, start in found):
+        found = _string_refs(live_text(rel, blob), index, gated=gated, runtime=runtime)
     for target, attr, _ in found:
-        if attr is None or _has_attr(source_of(target), attr):
+        if attr is None or resolver.has_attr(target, attr):
             _add_ref(refs, target, attr)
-    if gated and members:
-        # Raw text: f-strings are not plain string tokens on newer Pythons.
+    if gated and runtime:
+        # Raw text, since f-strings are not plain string tokens on newer
+        # Pythons; a call in a comment or docstring is skipped by position.
         for m in _TEMPLATE_LOAD_RE.finditer(blob):
+            if _maybe_not_code(blob, triples, m.start()):
+                continue
             body = m.group(2) or m.group(4) + b"{}"
-            for target in _template_targets(body.decode("ascii"), module_index):
+            for target in resolver.template_targets(body.decode("ascii")):
                 _add_ref(refs, target, None)
     refs.pop(rel, None)
     return refs
@@ -233,23 +255,15 @@ class PythonDynamicHints(DynamicHintExtractor):
         if not module_index:
             return []
 
-        targets: dict[str, bytes] = {}
-
-        def source_of(target: str) -> bytes:
-            if target not in targets:
-                try:
-                    targets[target] = self._source_bytes(repo_root / target, target)
-                except OSError:
-                    targets[target] = b""
-            return targets[target]
-
+        resolver = ModuleStringResolver(
+            module_index, lambda target: self._source_bytes(repo_root / target, target)
+        )
         edges: list[DynamicEdge] = []
         for abs_path, rel in rel_by_abs.items():
-            try:
-                blob = self._source_bytes(abs_path, rel)
-            except OSError:
+            blob = self._source_bytes(abs_path, rel)
+            if not blob:
                 continue
-            refs = python_dynamic_refs(rel, blob, module_index, source_of)
+            refs = python_dynamic_refs(rel, blob, resolver)
             for target, names in sorted(refs.items()):
                 edges.append(
                     DynamicEdge(

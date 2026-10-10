@@ -414,3 +414,35 @@ def test_dynamic_use_edge_marks_target_file_live() -> None:
     g.add_edge("pkg/registry.py", "pkg/ollama.py", edge_type="dynamic_uses")
 
     assert "OllamaProvider" not in _unused_export_names(g)
+
+
+def test_whole_module_hint_folded_into_an_import_marks_target_file_live() -> None:
+    """A whole-module hint on a pair that also has a static import keeps the
+    import edge and its names, and still keeps every public export live."""
+    g = nx.DiGraph()
+    for path in ("pkg/registry.py", "pkg/ollama.py"):
+        g.add_node(path, node_type="file", language="python", is_test=False, is_entry_point=False)
+    for name in ("OllamaProvider", "app"):
+        sym = f"pkg/ollama.py::{name}"
+        g.add_node(
+            sym,
+            node_type="symbol",
+            kind="class",
+            name=name,
+            visibility="public",
+            decorators=[],
+            start_line=1,
+            end_line=20,
+            file_path="pkg/ollama.py",
+            language="python",
+        )
+        g.add_edge("pkg/ollama.py", sym, edge_type="defines")
+    g.add_edge(
+        "pkg/registry.py",
+        "pkg/ollama.py",
+        edge_type="imports",
+        imported_names=["OllamaProvider"],
+        dynamic_hint="python_dynamic_import",
+    )
+
+    assert not {"OllamaProvider", "app"} & _unused_export_names(g)

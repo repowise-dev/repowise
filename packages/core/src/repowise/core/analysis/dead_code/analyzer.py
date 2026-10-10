@@ -1463,10 +1463,11 @@ class DeadCodeAnalyzer:
         # member of the file. Only these two: ``dynamic_imports`` means the
         # module is loaded, which a plain import edge does not rescue either.
         # A framework edge that names its exports (a Lambda handler) rescues
-        # only those, through the importer check below.
+        # only those, through the importer check below. ``dynamic_hint`` is a
+        # whole-module dynamic use folded into a static edge on the same pair.
         if any(
-            edge.get("edge_type") in ("dynamic_uses", "framework")
-            and not edge.get("imported_names")
+            (edge.get("edge_type") in ("dynamic_uses", "framework") and not edge.get("imported_names"))
+            or edge.get("dynamic_hint")
             for edge in (
                 self.graph.get_edge_data(pred, node, {}) for pred in self.graph.predecessors(node)
             )

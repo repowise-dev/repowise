@@ -48,10 +48,14 @@ class DynamicHintExtractor(ABC):
     def extract(self, repo_root: Path) -> list[DynamicEdge]: ...
 
     def _source_bytes(self, abs_path: Path, rel: str) -> bytes:
-        """*rel*'s bytes from the attached source map, else from disk (may raise OSError)."""
-        if self._source_map is not None and rel in self._source_map:
-            return self._source_map[rel]
-        return abs_path.read_bytes()
+        """*rel*'s bytes from the attached source map, else from disk; ``b""`` if neither."""
+        # Same contract as ``ingestion.source_text.source_bytes``; collapse into it once both exist.
+        if self._source_map is not None and (data := self._source_map.get(rel)) is not None:
+            return data
+        try:
+            return abs_path.read_bytes()
+        except OSError:
+            return b""
 
     def _rglob(self, root: Path, pattern: str) -> Iterator[Path]:
         """Pruned replacement for :py:meth:`pathlib.Path.rglob`.
