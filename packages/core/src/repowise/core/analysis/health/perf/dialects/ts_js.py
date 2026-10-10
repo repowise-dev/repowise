@@ -147,23 +147,69 @@ def _is_data_projection(node: Node) -> bool:
     return node.type == "member_expression" and prop is not None and prop.text == b"data"
 
 
-def _module_number_constant(name: bytes, node: Node) -> bool:
-    """``const NAME = 5`` at the top of *node*'s file, exported or not."""
-    root = node
-    while root.parent is not None:
-        root = root.parent
+_TS_FUNCTION_KINDS = frozenset(
+    {
+        "function_declaration", "function_expression", "arrow_function", "method_definition",
+        "generator_function_declaration", "generator_function",
+    }
+)
+
+
+def _ts_walk(node: Node):
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(current.children)
+
+
+def _declares(scope: Node, name: bytes) -> bool:
+    """Whether a declarator, parameter or import anywhere in *scope* binds *name*."""
+    for node in _ts_walk(scope):
+        if node.type == "variable_declarator":
+            key = node.child_by_field_name("name")
+            if key is not None and key.text == name:
+                return True
+        elif node.type == "identifier" and node.text == name and node.parent is not None:
+            parent = node.parent
+            if parent.type in ("formal_parameters", "required_parameter", "optional_parameter"):
+                return True
+            if parent.type == "arrow_function" and parent.child_by_field_name("parameter") == node:
+                return True
+    return False
+
+
+def _top_level_number_const(root: Node, name: bytes) -> bool:
+    """``const NAME = 5`` as the only top-level binding of NAME, exported or not."""
+    found: list[Node] = []
     for stmt in root.children:
         decl = stmt.child_by_field_name("declaration") if stmt.type == "export_statement" else stmt
-        if decl is None or decl.type != "lexical_declaration" or decl.children[0].type != "const":
+        if decl is None:
             continue
-        for declarator in decl.named_children:
-            if declarator.type != "variable_declarator":
-                continue
-            key = declarator.child_by_field_name("name")
-            if key is not None and key.text == name:
-                value = declarator.child_by_field_name("value")
-                return value is not None and value.type == "number"
-    return False
+        if decl.type in ("lexical_declaration", "variable_declaration"):
+            found += [
+                (decl, d) for d in decl.named_children
+                if d.type == "variable_declarator"
+                and (key := d.child_by_field_name("name")) is not None and key.text == name
+            ]
+        elif decl.type != "expression_statement" and _declares(decl, name):
+            return False  # a function, class or import binds it too
+    if len(found) != 1:
+        return False
+    decl, declarator = found[0]
+    value = declarator.child_by_field_name("value")
+    return decl.children[0].type == "const" and value is not None and value.type == "number"
+
+
+def _module_number_constant(name: bytes, node: Node) -> bool:
+    """``const NAME = 5`` at the top of *node*'s file, with no enclosing function
+    binding NAME again (a parameter or a local of the same name shadows it)."""
+    cur = node.parent
+    while cur is not None and cur.parent is not None:
+        if cur.type in _TS_FUNCTION_KINDS and _declares(cur, name):
+            return False
+        cur = cur.parent
+    return cur is not None and _top_level_number_const(cur, name)
 
 
 def _slice_is_bounded(call: Node) -> bool:

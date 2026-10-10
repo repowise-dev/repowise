@@ -143,6 +143,21 @@ def test_magnitude_slice_named_constant_bounded():
         # Never bound in this module.
         b"from config import NUM_USERS\nasync def f(session):\n"
         b"    for i in range(NUM_USERS):\n        await session.execute(select(i))\n",
+        # Rebound later in the module.
+        b"MAX = 5\nMAX = load()\nasync def f(session):\n    for i in range(MAX):\n"
+        b"        await session.execute(select(i))\n",
+        # Augmented.
+        b"MAX = 5\nMAX += extra()\nasync def f(session):\n    for i in range(MAX):\n"
+        b"        await session.execute(select(i))\n",
+        # Written through ``global`` by some function.
+        b"MAX = 5\ndef grow(n):\n    global MAX\n    MAX = n\nasync def f(session):\n"
+        b"    for i in range(MAX):\n        await session.execute(select(i))\n",
+        # Shadowed by a local of the loop's function.
+        b"MAX = 5\nasync def f(session):\n    MAX = count_rows()\n    for i in range(MAX):\n"
+        b"        await session.execute(select(i))\n",
+        # Shadowed by a parameter.
+        b"MAX = 5\nasync def f(session, MAX):\n    for i in range(MAX):\n"
+        b"        await session.execute(select(i))\n",
     ],
 )
 def test_capitals_alone_never_prove_a_loop_bounded(src):

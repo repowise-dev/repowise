@@ -461,3 +461,30 @@ async function f(items, LIMIT) {
 """
     hits = _io_hits(src)
     assert hits[0].loop is None or hits[0].loop.magnitude == "unknown"
+
+
+def test_an_inner_binding_shadows_the_file_constant():
+    src = """
+const PAGE = 5;
+async function f(items, rows) {
+  const PAGE = rows.length;
+  for (const x of items.slice(0, PAGE)) {
+    await prisma.post.deleteMany({ where: { userId: x.id } });
+  }
+}
+"""
+    hits = _io_hits(src)
+    assert hits[0].loop is None or hits[0].loop.magnitude == "unknown"
+
+
+def test_a_parameter_shadows_the_file_constant():
+    src = """
+const PAGE = 5;
+async function f(items, PAGE) {
+  for (const x of items.slice(0, PAGE)) {
+    await prisma.post.deleteMany({ where: { userId: x.id } });
+  }
+}
+"""
+    hits = _io_hits(src)
+    assert hits[0].loop is None or hits[0].loop.magnitude == "unknown"

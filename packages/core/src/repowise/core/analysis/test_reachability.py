@@ -301,6 +301,8 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
         except (TypeError, ValueError):
             call_lines = []
         edge_rows.append((src, dst, edge_type, origin, call_lines))
+    # No spawn lines here: test reachability reads only forward/reverse, never
+    # first-hop sites, ``spawn_only`` or roles, and a spawned callee is still reached.
     return ExecutionGraphIndex(edge_rows=edge_rows)
 
 

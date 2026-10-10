@@ -82,6 +82,29 @@ async def grouped(xs):
             tg.create_task(step(x))
 
 
+async def tg_param(tg, x):
+    tg.create_task(step(x))
+
+
+async def iterated(xs):
+    tasks = []
+    for x in xs:
+        tasks.append(asyncio.create_task(step(x)))
+    for t in tasks:
+        await t
+
+
+async def returned(xs):
+    tasks = [asyncio.create_task(step(x)) for x in xs]
+    return tasks
+
+
+class Runner:
+    async def joined(self, xs):
+        tasks = [asyncio.create_task(step(x)) for x in xs]
+        await self._join(tasks)
+
+
 async def step(x):
     return x
 """
@@ -124,6 +147,12 @@ def test_only_a_task_nobody_waits_for_is_spawned(tmp_path: Path) -> None:
     assert calls[("awaited_inline", "step")] is False
     assert calls[("gathered", "step")] is False
     assert calls[("grouped", "step")] is False
+    # A receiver not proven to be asyncio may be a group someone waits for.
+    assert calls[("tg_param", "step")] is False
+    # A container read in any way but adding and removing: its tasks are waited.
+    assert calls[("iterated", "step")] is False
+    assert calls[("returned", "step")] is False
+    assert calls[("joined", "step")] is False
 
 
 def test_a_spawned_call_site_never_resolves_as_a_call_its_caller_makes(tmp_path: Path) -> None:
