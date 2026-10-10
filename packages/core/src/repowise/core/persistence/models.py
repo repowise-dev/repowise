@@ -291,7 +291,8 @@ class GraphNode(Base):
     # Dead-code exempt: reached from outside the graph. Every entry point is one.
     is_reachability_root: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     # Why a test file runs with every selected subset (it walks the source tree
-    # or runs the project in a child process); NULL for every other node.
+    # or runs the project in a child process). "" on a test checked and found
+    # ordinary; NULL on a test never checked (an older index) and on non-tests.
     always_run_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     pagerank: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     betweenness: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)

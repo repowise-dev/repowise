@@ -520,6 +520,7 @@ async def _run_ingestion(
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
     )
+    graph_builder.console_scripts = traverser.console_script_names
 
     loop = asyncio.get_running_loop()
 

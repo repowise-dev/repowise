@@ -451,6 +451,11 @@ class FileTraverser:
         return self._console_script_tables().names
 
     @property
+    def console_script_names(self) -> frozenset[str]:
+        """Launcher names the repo's ``pyproject.toml`` files declare, read once per walk."""
+        return self._console_script_tables().names
+
+    @property
     def _console_script_modules(self) -> frozenset[str]:
         return self._console_script_tables().modules
 

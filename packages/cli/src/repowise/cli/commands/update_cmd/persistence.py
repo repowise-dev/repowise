@@ -1668,8 +1668,13 @@ def parser_changed(repo_path: Path) -> bool:
     row with the running ``parser_fingerprint()``. An unstamped row, or a store
     that cannot be read, is **not** a change, for the reason
     :func:`health_analyzer_changed` gives: the next commit's widen stamps it.
+
+    Also true when a test file was never checked for walking the source tree
+    (an index built before that check): selection would run everything until
+    the re-parse stamps it, so a quiet repo must not take the shortcut.
     """
     from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.analysis.test_reachability import unscanned_test_files
     from repowise.core.ingestion.parse_cache import parser_fingerprint
     from repowise.core.persistence import (
         create_engine,
@@ -1678,22 +1683,25 @@ def parser_changed(repo_path: Path) -> bool:
         get_session,
     )
 
-    async def _stored() -> str | None:
+    async def _stored() -> tuple[str | None, bool]:
         engine = create_engine(get_db_url_for_repo(repo_path))
         try:
             sf = create_session_factory(engine)
             async with get_session(sf) as session:
                 repo = await get_repository_by_path(session, str(repo_path))
-                return repo.graph_edges_parser_fingerprint if repo is not None else None
+                if repo is None:
+                    return None, False
+                unscanned = bool(await unscanned_test_files(session, repo.id))
+                return repo.graph_edges_parser_fingerprint, unscanned
         finally:
             await engine.dispose()
 
     try:
-        stored = run_async(_stored())
+        stored, unscanned = run_async(_stored())
     except Exception as exc:
         log.debug("parser_change_check_failed", error=str(exc))
         return False
-    return stored is not None and stored != parser_fingerprint()
+    return unscanned or (stored is not None and stored != parser_fingerprint())
 
 
 def health_analyzer_changed(state: dict) -> bool:

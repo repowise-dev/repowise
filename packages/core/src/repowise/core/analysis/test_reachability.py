@@ -453,9 +453,29 @@ async def always_run_test_files(session: AsyncSession, repo_id: str) -> dict[str
         select(GraphNode.node_id, GraphNode.always_run_reason).where(
             GraphNode.repository_id == repo_id,
             GraphNode.always_run_reason.is_not(None),
+            GraphNode.always_run_reason != "",
         )
     )
     return {node_id: reason for node_id, reason in res.all()}
+
+
+async def unscanned_test_files(session: AsyncSession, repo_id: str) -> set[str]:
+    """Judged test files the indexer never stamped (an index built before the check).
+
+    A stamped test holds ``""`` when it is ordinary, so ``NULL`` means unknown,
+    not "nothing found": such a test may walk the tree unseen.
+    """
+    from ..ingestion.always_run import is_judged_test
+
+    res = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "file",
+            GraphNode.is_test == True,  # noqa: E712
+            GraphNode.always_run_reason.is_(None),
+        )
+    )
+    return {node_id for (node_id,) in res.all() if is_judged_test(node_id)}
 
 
 async def dependency_path(
@@ -464,7 +484,10 @@ async def dependency_path(
     """The shortest file-dependency route from *source* to any of *targets*, ends included.
 
     ``[]`` when none is found within *max_depth* hops. Breadth-first, one ``IN``
-    query per level, the shape the reaching walks use.
+    query per level, over the same edges the import walk follows
+    (``FILE_DEPENDENCY_EDGE_TYPES``, every resolution origin). Ceiling: a test
+    found through the call walk alone may have no such route; following call
+    edges with ``UNRELIABLE_CALL_ORIGINS`` excluded is the upgrade path.
     """
     goals = set(targets)
     parent: dict[str, str | None] = {source: None}

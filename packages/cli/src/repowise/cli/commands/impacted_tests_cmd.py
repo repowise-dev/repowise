@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 import click
+import structlog
 from rich.table import Table
 
 from repowise.cli.ci import (
@@ -58,6 +59,8 @@ from repowise.core.analysis.test_selection import RUNNERS
 
 if TYPE_CHECKING:
     from repowise.core.pytest_roots import PytestRoots
+
+log = structlog.get_logger(__name__)
 
 # The whole reverse-import closure: a test importing a module that imports the
 # changed file runs it too. No depth limit: the walk ends when no node gains a
@@ -253,21 +256,35 @@ async def _explain_route(session, repo_id: str, test: str, change, out: dict) ->
         out["explain_route"] = await dependency_path(
             session, repo_id, test.split("::", 1)[0], changed
         )
-    except Exception:
-        out["explain_route"] = []  # the explanation still stands without its route
+    except Exception as exc:  # the explanation still stands without its route
+        log.debug("explain_route_failed", test=test, error=str(exc))
+        out["explain_route"] = []
 
 
 async def _place_tests(session, repo_id: str, out: dict) -> None:
     """Record the tests the graph can see into, and those the indexer found it cannot."""
-    from repowise.core.analysis.test_reachability import always_run_test_files, placed_test_files
+    from repowise.core.analysis.test_reachability import (
+        always_run_test_files,
+        placed_test_files,
+        unscanned_test_files,
+    )
 
     if out["graph_error"] is not None:
         return
     try:
         out["placed_tests"] = await placed_test_files(session, repo_id)
         out["always_run_tests"] = await always_run_test_files(session, repo_id)
+        unscanned = sorted(await unscanned_test_files(session, repo_id) & out["placed_tests"])
     except Exception as exc:
         out["graph_error"] = f"{type(exc).__name__}: {exc}"
+        return
+    # An index older than the check cannot say which tests walk the tree, so
+    # it is out of date like any other; unplaced tests run anyway.
+    if unscanned and out["index_problem"] is None:
+        out["index_problem"] = (
+            f"The index has not checked {len(unscanned)} test file(s) for walking the source "
+            f"tree or running the project (e.g. {unscanned[0]}); run `repowise update`."
+        )
 
 
 def _indexed_commit(repo_path, row_commit: str | None, out: dict) -> None:
@@ -655,10 +672,10 @@ def _render(result: dict, fmt: str, runner: str = "auto", explain: str | None = 
 
 def _explanation(result: dict, test: str) -> dict:
     """``--explain``: the selection's own record for *test*, plus the route behind it."""
-    from repowise.core.analysis.test_selection import explain_test
+    from repowise.core.analysis.test_selection import explain_test, selected_by_change
 
     selected, lines = explain_test(result["selection"], test)
-    route = result["explain_route"] if selected else []
+    route = result["explain_route"] if selected_by_change(result["selection"], test) else []
     if len(route) > 1:
         lines.append("Route: " + " -> ".join(route))
     return {"test": test, "selected": selected, "lines": lines, "route": route}

@@ -136,6 +136,7 @@ def build_repo_graph(
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
     )
+    graph_builder.console_scripts = traverser.console_script_names
     # Carry the walk's skip record to the dead-code analyzer. This report is
     # persisted repo-wide, so an update that could not see the skipped source
     # files would re-derive and write back the verdicts init had clamped.

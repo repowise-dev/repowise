@@ -1087,7 +1087,7 @@ in the config. `--format json` adds `indexed_commit`, `map_current` and a
 per-file `selected.basis`: `full-run`, `no-tests-needed`, `test-tree`,
 `test-package`, `conftest`, `helper-importers`, `deleted-test`, `coverage`,
 `changed-test`, `call-graph`, `import-graph`, `filename-pattern`, `unknown`,
-or `none` (no index), and a per-test `selected.why`: the changed file and
+or `none` (no index), and a per-test `selected.why`: the first changed file and
 evidence that selected it, or why it runs with every subset. When it runs everything:
 [CI](../start/CI.md#selecting-the-tests-a-change-needs).
 

@@ -42,7 +42,15 @@ async def _index(root: Path, head_commit: str) -> None:
     async with async_sessionmaker(engine, expire_on_commit=False)() as session:
         session.add(Repository(id="r1", name="r", local_path=local_path, head_commit=head_commit))
         for path, is_test in (("src/a.py", False), ("src/b.py", False), ("tests/test_a.py", True)):
-            node = GraphNode(repository_id="r1", node_id=path, node_type="file", is_test=is_test)
+            # A test the indexer checked and found ordinary carries "".
+            reason = "" if is_test else None
+            node = GraphNode(
+                repository_id="r1",
+                node_id=path,
+                node_type="file",
+                is_test=is_test,
+                always_run_reason=reason,
+            )
             session.add(node)
         session.add(
             GraphEdge(
@@ -303,7 +311,15 @@ async def _add_to_index(root: Path, test: str, source: str) -> None:
     db = root / ".repowise" / "wiki.db"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db.as_posix()}")
     async with async_sessionmaker(engine, expire_on_commit=False)() as session:
-        session.add(GraphNode(repository_id="r1", node_id=test, node_type="file", is_test=True))
+        session.add(
+            GraphNode(
+                repository_id="r1",
+                node_id=test,
+                node_type="file",
+                is_test=True,
+                always_run_reason="",
+            )
+        )
         session.add(
             GraphEdge(
                 repository_id="r1", source_node_id=test, target_node_id=source, edge_type="imports"
@@ -332,7 +348,7 @@ def test_only_files_whose_imports_moved_since_the_index_add_their_tests(
     assert result.stdout == expected
 
 
-def _add_test(repo, path: str, imports: str, reason: str | None = None) -> None:
+def _add_test(repo, path: str, imports: str, reason: str | None = "") -> None:
     """Land test *path* on main, index it there importing *imports*, rebase the change."""
     from sqlalchemy import update
 
@@ -380,6 +396,16 @@ def test_a_test_the_indexer_found_walking_the_tree_runs_with_every_subset(repo) 
         "1 test file(s) that list source files or run the project in a child process run with "
         "every selection (e.g. tests/test_lint.py: it lists and reads files under a source "
         "directory)." in _err(result)
+    )
+
+
+def test_an_index_that_never_checked_its_tests_runs_everything(repo) -> None:
+    _add_test(repo, "tests/test_b.py", "src/b.py", reason=None)
+    result = _run(repo, "main...feat", "--format", "args")
+    assert result.stdout == ":all\n"
+    assert (
+        "The index has not checked 1 test file(s) for walking the source tree or running "
+        "the project (e.g. tests/test_b.py); run `repowise update`." in _err(result)
     )
 
 

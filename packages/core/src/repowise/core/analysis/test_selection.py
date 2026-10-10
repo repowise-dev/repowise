@@ -496,6 +496,7 @@ def select_tests(inp: SelectionInput) -> Selection:
 
 
 _UNPLACED_REASON = "the graph has no edge from it into the repository's code"
+_EVERY_SUBSET = "runs with every subset: "
 
 
 def _always_running(inp: SelectionInput) -> dict[str, str]:
@@ -504,17 +505,21 @@ def _always_running(inp: SelectionInput) -> dict[str, str]:
     A detected test the checkout no longer has is left out, like any test.
     """
     known = set(inp.known_tests)
-    out = {t: f"runs with every subset: {_UNPLACED_REASON}" for t in inp.unplaced_tests}
+    out = {t: f"{_EVERY_SUBSET}{_UNPLACED_REASON}" for t in inp.unplaced_tests}
     for test, reason in sorted(inp.always_run_tests.items()):
         if not known or test in known:
-            out[test] = f"runs with every subset: {reason}"
+            out[test] = f"{_EVERY_SUBSET}{reason}"
     return out
 
 
 def _why(
     code: list[str], per_file: Mapping[str, tuple[list[_TestRef], str]], ev: _Evidence
 ) -> dict[str, str]:
-    """``{test file: the first changed file that selected it, and the evidence}``."""
+    """``{test file: the first changed file that selected it, and the evidence}``.
+
+    Only the first: a test several changed files reach names the first of them
+    in sorted order.
+    """
     out: dict[str, str] = {}
     for path in code:
         tests, basis = per_file[path]
@@ -525,6 +530,12 @@ def _why(
                 via = "coverage" if test_file in covered else vias.get(test_file, basis)
                 out[test_file] = f"{path} changed ({via})"
     return out
+
+
+def selected_by_change(selection: Selection, test: str) -> bool:
+    """Whether a changed file (not a rule) put *test* in the selection."""
+    why = selection.why.get(test.split("::", 1)[0])
+    return bool(why) and not why.startswith(_EVERY_SUBSET)
 
 
 def explain_test(selection: Selection, test: str) -> tuple[bool, list[str]]:

@@ -65,6 +65,9 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # warmups that scan file text read it instead of re-opening every
         # file. Empty means "not supplied": every reader falls back to disk.
         self._source_map: dict[str, bytes] = {}
+        # Launcher names the traverser read from pyproject.toml; set by the
+        # pipelines that walk the repo, empty for a builder fed files directly.
+        self.console_scripts: frozenset[str] = frozenset()
         self._built = False
         # Resolver-built DotNetProjectIndex, stashed by build() for the
         # dynamic-hints phase to reuse (see build()).
@@ -411,7 +414,9 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         from ..always_run import stamp_always_run
 
         try:
-            stamp_always_run(self._graph, self._parsed_files, self._source_map)
+            stamp_always_run(
+                self._graph, self._parsed_files, self._source_map, self.console_scripts
+            )
         except Exception as exc:  # a detector bug must not fail the index
             log.warning("always_run_detection_failed", error=str(exc))
 
