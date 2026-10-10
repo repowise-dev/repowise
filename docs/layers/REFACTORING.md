@@ -104,15 +104,8 @@ in the code anchors one. A Split File or Extract Class plan with an unnamed grou
 is held as `needs_design`, like a cycle: it is not a step and never reaches Fix
 first. Code only moves within a language family, so Java, Kotlin and Scala are
 separate. A callback is named after the call it is passed to. An Extract Method
-helper is named, in order, from a `timed(..., "label")` stage label on the span, a
-short banner comment directly above it, or its single output value as
-`compute_<value>`. The `compute_` form is used only for a span with no outside
-effects: one that awaits, calls something for its effect (printing, logging, I/O),
-calls a method on an object it did not create, or writes, deletes or increments
-through a name it did not create gets no `compute_` name, and no banner name that
-promises a value (`build_`, `get_`). Names follow the file's casing, and a name
-already taken where the helper lands (a function, an assigned name or an import in
-the same class or module, or a parameter or local of the function it comes from) is
+helper is named from a stage label, a banner comment, or `compute_<value>` when the
+span has no outside effects. A name already taken where the helper lands is
 dropped, so a `null` name means you name the helper.
 
 An empty list means no detector found work that clears its gates. It does not mean
@@ -190,8 +183,8 @@ Most plans answer a health finding, so per-path marker rules in
   generated code comes back as a diff.
 - Extract Method offers a span only when it can show the extraction keeps behavior
   (every returned value written on every path, no state carried across loop
-  iterations, no local a closure shares crossing the span's edge). Spans it
-  cannot prove are dropped, so it under-reports by design.
+  iterations, no local a closure shares across the span's edge). Spans it cannot
+  prove are dropped, so it under-reports by design.
 - Extract Method skips spans too small to matter and spans that would carry the
   original finding into the helper. A component whose branching is mostly in its
   markup gets no extraction.

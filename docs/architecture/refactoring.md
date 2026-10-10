@@ -32,11 +32,9 @@ feature-envy distance, MFAS for cycles, Newman modularity for decomposition.
 `impact_delta` credits the share of the source finding the plan removes; for
 Extract Method that is `ccn_removed / ccn`, `slice_nloc / nloc`, or the larger of
 the two for `brain_method`, capped at 1. `naming.py` returns `null` when no fact
-anchors a name. Extract Method's `helper_naming.py` tries a `timed()` label, a
-banner comment, then `compute_<out>` for an effect-free span (`dataflow/effects.py`
-decides effects, erring towards "effectful"), and drops any name already taken in
-the helper's scope: functions, assigned names and imports there, and the host's
-own parameters and locals.
+anchors a name. Extract Method's `helper_naming.py` names a helper from a `timed()`
+label, a banner comment, or `compute_<out>` for an effect-free span, and drops any
+name already taken in scope.
 
 Plan ids come from `identity.py`: a `refac<version>_` prefix over a per-type stable
 kernel. Bumping the version re-mints ids; a held id from an older version reports
