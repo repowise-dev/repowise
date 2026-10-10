@@ -20,7 +20,7 @@ from typing import Any
 import networkx as nx
 import structlog
 
-from ..cohesion import is_cohesion_edge
+from ..cohesion import cannot_close_cycle
 from ..models import SYMBOL_USE_EDGE_TYPES, TEMPORAL_EDGE_TYPES
 
 log = structlog.get_logger(__name__)
@@ -131,8 +131,8 @@ class MetricsMixin:
             return sub
 
     def cycle_subgraph(self) -> nx.DiGraph:
-        """Return :meth:`file_subgraph` minus cohesion, type-only and ``dynamic_uses`` edges,
-        for cycle detection.
+        """Return :meth:`file_subgraph` minus the edges no runtime cycle runs
+        through (:func:`~repowise.core.ingestion.cohesion.cannot_close_cycle`).
 
         A cohesion edge records that two files are one compilation unit — Go
         package siblings, JVM same-package classes, C# partial fragments, a C++
@@ -143,10 +143,12 @@ class MetricsMixin:
         A ``dynamic_uses`` edge is a hint match, not a resolved dependency — the
         .NET extractor among others links every file declaring a type of a given
         short name, so two unrelated same-named classes in different projects
-        form a false two-file cycle (#2886). Excluded here and in
-        ``refactoring.graph_signals._is_cycle_edge``, which must agree: this
-        method feeds the wiki SCC pages and the repo-overview cycle list, that
-        one feeds ``break_cycle`` plans.
+        form a false two-file cycle (#2886). Type-only and deferred
+        (function-local) imports never run at module load, so they cannot make
+        one either. The predicate is shared with
+        ``refactoring.graph_signals._is_cycle_edge``: this method feeds the wiki
+        SCC pages and the repo-overview cycle list, that one feeds
+        ``break_cycle`` plans.
 
         Kept separate from :meth:`file_subgraph` deliberately: PageRank,
         betweenness and the degree kernels must keep seeing cohesion edges,
@@ -160,11 +162,7 @@ class MetricsMixin:
         """
         return self._file_edge_view(
             "_cycle_subgraph_cache",
-            lambda base, u, v, d: (
-                is_cohesion_edge(d)
-                or d.get("type_only") is True
-                or d.get("edge_type") == "dynamic_uses"
-            ),
+            lambda base, u, v, d: cannot_close_cycle(d),
         )
 
     def centrality_subgraph(self) -> nx.DiGraph:

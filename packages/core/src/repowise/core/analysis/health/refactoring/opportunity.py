@@ -27,6 +27,12 @@ across files *and* co-changed. The rest still appears, attached to the file's
 opportunity as the supporting evidence it always was, never as an instruction.
 Nothing is deleted: the plans remain plans, addressable by id.
 
+**A cycle is advisory, not a step.** A ``break_cycle`` plan says which edge to
+cut but not which symbols cross it or how to move them, and on audited repos
+none of the cycles it named were worth cutting. It rides along as evidence the
+same way, so it is never a numbered step, never leads, and never reaches Fix
+first; the plan stays in the plan inventory.
+
 **A finding is recovered once.** A step names the findings its own target
 answers: the source biomarker's findings whose span it covers, and for a
 named finding only the one on the same symbol. Two steps answering one
@@ -46,6 +52,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...finding_registry import excluded_types
+from ..refactoring_summary import ADVISORY_TYPES
 from ..rows import field
 from .extract_helper import ACTIVE_CO_CHANGE
 from .identity import REFACTORING_MODEL_VERSION, assign_public_ids, stable_id
@@ -71,6 +78,7 @@ _OPPORTUNITY_PREFIX = "refop"
 
 # Owned by the performance layer end to end - see the module docstring.
 EXCLUDED_TYPES = frozenset({"performance_fix"})
+
 
 # Execution order. Lower runs first. Structural steps relocate symbols, so they
 # precede the local extractions that would otherwise be re-grouped by them;
@@ -234,6 +242,8 @@ def is_standalone_clone(suggestion: RefactoringSuggestion) -> bool:
 
 
 def _is_step(suggestion: RefactoringSuggestion) -> bool:
+    if suggestion.refactoring_type in ADVISORY_TYPES:
+        return False
     if suggestion.refactoring_type == "extract_helper":
         return is_standalone_clone(suggestion)
     return True
@@ -545,6 +555,16 @@ def compose_opportunities(
     return composed
 
 
+def claimed_plan_ids(opportunities: Iterable[RefactoringOpportunity]) -> set[str]:
+    """Plan ids an opportunity carries, as a step or as evidence. A plan outside
+    this set is unattached: still a plan, in no file's work."""
+    return {
+        item.plan_id
+        for opportunity in opportunities
+        for item in (*opportunity.steps, *opportunity.evidence)
+    }
+
+
 def opportunity_status(
     opportunity: RefactoringOpportunity, plan_status: Mapping[str, str]
 ) -> str:
@@ -581,11 +601,13 @@ def roll_up_status(step_states: Iterable[str]) -> str:
 
 
 __all__ = [
+    "ADVISORY_TYPES",
     "EXCLUDED_TYPES",
     "STEP_ORDER",
     "OpportunityEvidence",
     "OpportunityStep",
     "RefactoringOpportunity",
+    "claimed_plan_ids",
     "compose_opportunities",
     "is_standalone_clone",
     "opportunity_kernel",

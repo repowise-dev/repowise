@@ -221,7 +221,13 @@ def _summary_payload(
     opportunities: list[OpportunityModel],
     statuses: dict[str, str],
     lead_details: dict[str, Any] | None,
+    plan_ids: set[str],
 ) -> dict[str, Any]:
+    """The rollup. ``plans_total`` is the plan inventory behind it, split into
+    steps, evidence and plans in no opportunity, so the plan and opportunity
+    counts reconcile."""
+    from ....analysis.health.refactoring.opportunity import claimed_plan_ids
+
     by_type: dict[str, int] = {}
     by_effort: dict[str, int] = {}
     by_confidence: dict[str, int] = {}
@@ -248,6 +254,9 @@ def _summary_payload(
         "steps_total": mechanical + judgment,
         "mechanical_steps_total": mechanical,
         "judgment_steps_total": judgment,
+        "plans_total": len(plan_ids),
+        "evidence_total": sum(len(item.evidence) for item in opportunities),
+        "unattached_plans_total": len(plan_ids - claimed_plan_ids(opportunities)),
         "by_lead_type": by_type,
         "by_effort": by_effort,
         "by_confidence": by_confidence,
@@ -423,6 +432,7 @@ async def finalize_refactoring_opportunities(
         opportunities,
         statuses=statuses,
         lead_details=lead_details,
+        plan_ids={row.public_id for row in live_plans if row.public_id},
         analyzed_commit=analyzed_commit,
     )
     return sum(1 for state in statuses.values() if state != "resolved")
@@ -511,12 +521,13 @@ async def _write_summary(
     *,
     statuses: dict[str, str],
     lead_details: dict[str, Any] | None,
+    plan_ids: set[str],
     analyzed_commit: str | None,
 ) -> None:
     from ....analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 
     payload = json.dumps(
-        _summary_payload(opportunities, statuses, lead_details), separators=(",", ":")
+        _summary_payload(opportunities, statuses, lead_details, plan_ids), separators=(",", ":")
     )
     row = await session.get(RefactoringSummary, repository_id)
     if row is None:

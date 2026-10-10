@@ -268,6 +268,8 @@ class Import:
     # Rust ``mod child;``: declares the child module, uses nothing from it.
     is_module_declaration: bool = False
     type_only: bool = False  # True when the statement is purely type-level (e.g. TypeScript import type)
+    # Inside a function or lambda body: runs on first call, not at module load.
+    deferred: bool = False
 
     @property
     def local_names(self) -> list[str]:
@@ -636,6 +638,22 @@ def is_dynamic_edge(edge_type: str | None) -> bool:
     future ``dynamically_*`` type would match by accident.
     """
     return edge_type is not None and edge_type.startswith("dynamic_")
+
+
+def combine_load_kinds(
+    first: tuple[bool, bool], second: tuple[bool, bool]
+) -> tuple[bool, bool]:
+    """``(type_only, deferred)`` for two imports of one target folded together.
+
+    Each side is runtime ``R`` (neither flag), type-only ``T`` or deferred
+    ``D``; the result is the one that runs earliest::
+
+        T + T -> T      T + D -> D      D + T -> D
+        D + D -> D      D + R -> R      R + D -> R      T + R -> R
+    """
+    type_only = first[0] and second[0]
+    deferred = not type_only and any(first) and any(second)
+    return type_only, deferred
 
 
 @dataclass

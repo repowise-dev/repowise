@@ -344,6 +344,12 @@ export interface RefactoringRollupAvailable {
   steps_total: number;
   mechanical_steps_total: number;
   judgment_steps_total: number;
+  /** The plan inventory: steps + evidence + unattached. Absent on older indexes. */
+  plans_total?: number;
+  /** Plans carried as evidence (demoted clones, advisory cycles), not steps. */
+  evidence_total?: number;
+  /** Plans no opportunity carries; listed only in the plan inventory. */
+  unattached_plans_total?: number;
   by_lead_type: Record<string, number>;
   by_effort: Record<string, number>;
   by_confidence: Record<string, number>;

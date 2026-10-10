@@ -96,6 +96,9 @@ def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
     type_only = edge_data.get("type_only")
     if type_only is not None:
         existing.type_only = bool(type_only)
+    deferred = edge_data.get("deferred")
+    if deferred is not None:
+        existing.deferred = bool(deferred)
     confidence = edge_data.get("confidence")
     if confidence is not None:
         # Keep the max on collision, mirroring the in-memory resolver
@@ -123,6 +126,7 @@ def _edge_values(repository_id: str, e: dict) -> dict:
         "resolution_origin": e.get("resolution_origin"),
         "call_lines_json": e.get("call_lines_json", "[]"),
         "type_only": bool(e.get("type_only", False)),
+        "deferred": bool(e.get("deferred", False)),
     }
 
 
@@ -534,6 +538,7 @@ async def get_all_graph_edges(
                 "resolution_origin": row.resolution_origin,
                 "call_lines": call_lines,
                 "type_only": bool(row.type_only),
+                "deferred": bool(row.deferred),
             }
         )
     return edges

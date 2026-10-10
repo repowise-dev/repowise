@@ -78,9 +78,12 @@ def test_markdown_renders_both_plans_as_opportunity_steps(capsys):
     assert "## Break Cycle plans" not in text
     # Every step says which kind of change it is, and keeps its own detail.
     assert "move_method **C.envious**" in text and "`T (t.py)`" in text
-    assert "break_cycle **cycle[2]: b.py->a.py**" in text
-    assert "invert b.py -> a.py" in text
     assert "judgment" in text
+    # A cycle is advisory: never a numbered step, still listed with its cut.
+    assert "break_cycle **cycle[2]: b.py->a.py**" not in text
+    assert "## Unattached observations" in text
+    assert "- **cycle[2]: b.py->a.py** (a.py)" in text
+    assert "invert b.py -> a.py" in text
 
 
 def test_markdown_states_the_unknown_primary_problem_rather_than_denying_it(capsys):
@@ -95,7 +98,9 @@ def test_json_carries_the_opportunities_beside_the_plans(capsys):
     _render_refactoring_targets([], [], [_move_method(), _break_cycle()], fmt="json")
     out = json.loads(capsys.readouterr().out)
     opportunities = out["refactoring_opportunities"]
-    assert {o["file_path"] for o in opportunities} == {"a.py", "c.py"}
+    # The cycle-only file publishes no opportunity; its plan stays listed.
+    assert {o["file_path"] for o in opportunities} == {"c.py"}
+    assert "break_cycle" in {p["refactoring_type"] for p in out["refactoring_plans"]}
     assert all(o["opportunity_id"].startswith("refop") for o in opportunities)
     # The step ids are the plan ids, so the CLI and the server address one thing.
     step_ids = [s["plan_id"] for o in opportunities for s in o["steps"]]

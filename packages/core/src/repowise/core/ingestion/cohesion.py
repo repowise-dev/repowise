@@ -106,3 +106,20 @@ def withdraw_declaration_hint(data: dict[str, Any]) -> None:
 def is_cohesion_edge(data: Any) -> bool:
     """True if *data* — a graph edge's attribute dict — is a cohesion edge."""
     return data.get("hint_source") in COHESION_HINTS
+
+
+def cannot_close_cycle(data: Any) -> bool:
+    """True if *data* is an edge no runtime import cycle can run through.
+
+    The one predicate both cycle definitions share (``cycle_subgraph`` and
+    ``refactoring.graph_signals``): cohesion edges, type-only imports, deferred
+    (function-local) imports, and ``dynamic_uses`` hints, which match a type by
+    short name rather than resolve a dependency (#2886). The edges stay in the
+    graph for reachability and centrality.
+    """
+    return (
+        is_cohesion_edge(data)
+        or bool(data.get("type_only"))
+        or bool(data.get("deferred"))
+        or data.get("edge_type") == "dynamic_uses"
+    )

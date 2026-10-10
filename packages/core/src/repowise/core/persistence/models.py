@@ -414,6 +414,12 @@ class GraphEdge(Base):
     type_only: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
     )
+    # True when every import along the edge sits in a function body (a lazy
+    # import), so it runs on first call, not at module load. Skipped by cycle
+    # detection and persisted for the same reason as ``type_only``.
+    deferred: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )

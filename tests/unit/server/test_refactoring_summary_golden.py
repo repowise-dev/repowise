@@ -44,7 +44,7 @@ def test_summary_counts_and_threshold_edges() -> None:
             {"type": "split_file", "count": 1},
         ],
         "files_total": 5,
-        "structural_total": 4,
+        "structural_total": 3,  # break_cycle is advisory: counted in by_type only
         "performance_total": 1,
         "small_effort_total": 3,
         "health_recovery_total": 6,
@@ -68,9 +68,9 @@ def test_summary_of_nothing() -> None:
 
 
 def test_structural_lens() -> None:
+    # break_cycle is advisory: evidence on an opportunity, never a structural lead.
     assert set(refactoring._STRUCTURAL_TYPES) == {
         "split_file",
-        "break_cycle",
         "extract_class",
         "move_method",
     }

@@ -138,6 +138,59 @@ def test_a_high_signal_clone_is_a_step_not_evidence() -> None:
     assert opportunity.evidence == ()
 
 
+def cycle(**kwargs) -> RefactoringSuggestion:
+    return plan(
+        "break_cycle",
+        "cycle[2]: svc/api.py->svc/orders.py",
+        plan={"cut_edges": [{"from": "svc/api.py", "to": "svc/orders.py"}]},
+        evidence={"cycle_size": 2},
+        impact_delta=0.0,
+        source_biomarker="",
+        **kwargs,
+    )
+
+
+def test_a_cycle_is_evidence_never_a_step_or_the_lead() -> None:
+    """Break Cycle is advisory: it rides on the file's work, never leads it,
+    so Fix first and the default scope, which read steps, never see it."""
+    opportunity = compose_opportunities([cycle(), plan("extract_method")])[0]
+    assert [step.refactoring_type for step in opportunity.steps] == ["extract_method"]
+    assert opportunity.lead_refactoring_type == "extract_method"
+    assert [item.refactoring_type for item in opportunity.evidence] == ["break_cycle"]
+
+
+def test_a_file_with_only_a_cycle_publishes_nothing() -> None:
+    assert compose_opportunities([cycle()]) == []
+
+
+@pytest.mark.usefixtures("dry_violation_shown")
+def test_plan_inventory_is_steps_plus_evidence_plus_unattached() -> None:
+    """The rollup's plan counts reconcile with the opportunities they fold into."""
+    from repowise.core.analysis.health.refactoring.identity import assign_public_ids
+    from repowise.core.analysis.health.refactoring.opportunity import claimed_plan_ids
+    from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
+        _summary_payload,
+    )
+
+    rows = [
+        plan("extract_method"),
+        cycle(),
+        clone(intra=True, co_change=0),
+        cycle(file_path="svc/only_cycle.py"),
+    ]
+    opportunities = compose_opportunities(rows)
+    plan_ids = set(assign_public_ids(rows))
+    summary = _summary_payload(opportunities, {}, None, plan_ids)
+    steps = sum(item.step_count for item in opportunities)
+    assert summary["evidence_total"] == 2  # the cycle and the clone in orders.py
+    assert summary["unattached_plans_total"] == 1  # the cycle-only file
+    assert summary["plans_total"] == 4
+    assert summary["plans_total"] == (
+        steps + summary["evidence_total"] + summary["unattached_plans_total"]
+    )
+    assert len(plan_ids - claimed_plan_ids(opportunities)) == 1
+
+
 # --------------------------------------------------------------------------
 # ordering
 # --------------------------------------------------------------------------

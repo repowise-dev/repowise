@@ -13,6 +13,7 @@ import structlog
 from tree_sitter import Node
 
 from .extractors import node_text
+from .extractors.bindings.ts_js import is_type_only_ts_js_import
 from .lang_helpers.elixir import (
     _elixir_call_is_definitional,
     _elixir_is_template_definition,
@@ -81,6 +82,7 @@ __all__ = [
     "_rust_head_type_identifier",
     "_rust_shadowed_by_type_param",
     "_ts_nested_object_method_owner",
+    "import_load_kind",
     "prepare_objectivec_source",
     "prepare_pascal_source",
 ]
@@ -167,6 +169,90 @@ def _has_callable_ancestor(
             return True
         ancestor = ancestor.parent
     return False
+
+
+# Scopes whose body runs when called, not when the module loads. Its own set,
+# not ``symbol_node_types``: a TS ``lexical_declaration`` is a symbol kind, yet
+# ``const m = await import("./m")`` at the top level still runs at load.
+_TS_JS_FUNCTION_SCOPES = frozenset(
+    {
+        "function_declaration",
+        "generator_function_declaration",
+        "function_expression",
+        "generator_function",
+        "function",
+        "arrow_function",
+        "method_definition",
+    }
+)
+_LOAD_DEFERRING_SCOPES: dict[str, frozenset[str]] = {
+    "python": frozenset({"function_definition", "lambda"}),
+    **dict.fromkeys(("typescript", "javascript", "svelte", "vue"), _TS_JS_FUNCTION_SCOPES),
+}
+# Statements that can be ``import type`` / ``export type``; only these are
+# asked, since a ``require`` assignment may bind a variable named ``type``.
+_TS_TYPE_STATEMENTS = frozenset({"import_statement", "export_statement"})
+# ``typeof import("./m")`` and its kin: erased before anything runs.
+_TS_TYPE_POSITIONS = frozenset(
+    {"type_query", "type_annotation", "type_alias_declaration", "interface_declaration"}
+)
+
+
+def _is_type_checking_flag(condition: Node | None, src: str) -> bool:
+    """``TYPE_CHECKING`` or ``<module>.TYPE_CHECKING``, matched on the node.
+
+    Ceiling: anything else is runtime, so ``not``/``and``/``or``, parentheses
+    and an alias (``from typing import TYPE_CHECKING as TC``) are missed on
+    the safe side: the import stays a runtime edge.
+    """
+    if condition is None:
+        return False
+    if condition.type == "attribute":
+        condition = condition.child_by_field_name("attribute")
+    return (
+        condition is not None
+        and condition.type == "identifier"
+        and node_text(condition, src) == "TYPE_CHECKING"
+    )
+
+
+def _is_type_checking_branch(node: Node, child: Node, src: str) -> bool:
+    """``child`` is the body of ``if``/``elif TYPE_CHECKING:``, not an ``else``."""
+    if node.type not in ("if_statement", "elif_clause"):
+        return False
+    if child != node.child_by_field_name("consequence"):
+        return False
+    return _is_type_checking_flag(node.child_by_field_name("condition"), src)
+
+
+def import_load_kind(stmt_node: Node, language: str, src: str) -> tuple[bool, bool]:
+    """``(type_only, deferred)`` for an import, from the statement and where it sits.
+
+    Type-only: ``import type`` / ``export type`` (TS), under ``if
+    TYPE_CHECKING:`` (Python), or in a type position such as ``typeof
+    import()`` (TS), so it never runs. Deferred: inside a function or lambda
+    body, so it runs on first call rather than at module load, the usual way to
+    break an import cycle on purpose. Type-only wins when both hold. Reads the
+    statement and its ancestor chain only.
+    """
+    scopes = _LOAD_DEFERRING_SCOPES.get(language)
+    if scopes is None:
+        return False, False
+    if stmt_node.type in _TS_TYPE_STATEMENTS and is_type_only_ts_js_import(stmt_node, src):
+        return True, False
+    deferred = False
+    child, node = stmt_node, stmt_node.parent
+    while node is not None:
+        if node.type in scopes:
+            deferred = True
+        elif (
+            _is_type_checking_branch(node, child, src)
+            if language == "python"
+            else node.type in _TS_TYPE_POSITIONS
+        ):
+            return True, False
+        child, node = node, node.parent
+    return False, deferred
 
 
 def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:

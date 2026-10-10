@@ -125,6 +125,8 @@ class RehydrateMixin:
                 edge_attrs["supplied_props"] = frozenset(supplied_props)
             if edge.get("type_only"):
                 edge_attrs["type_only"] = True
+            if edge.get("deferred"):
+                edge_attrs["deferred"] = True
             graph.add_edge(source, target, **edge_attrs)
             edge_count += 1
 

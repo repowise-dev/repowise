@@ -23,7 +23,7 @@ is a separate, on-request step that does use an LLM
 | **Extract Method** | A line span to lift out of a long or complex function, with the helper's parameters and return value. |
 | **Extract Helper** | Every occurrence of a duplicated block and where the shared helper belongs. |
 | **Move Method** | A method that uses another class more than its own, and the class it belongs in. |
-| **Break Cycle** | The smallest set of import edges to invert to break a dependency cycle. |
+| **Break Cycle** | The smallest set of import edges to invert to break a runtime dependency cycle. Advisory: see below. |
 | **Split File** | The files an oversized module splits into, which symbols go where, and the import edits in each dependent. |
 | **Performance Fix** | One shared change for a performance problem, with the affected call sites and caller-to-sink paths. |
 
@@ -78,6 +78,21 @@ extractions qualify) or `judgment`, with the facts behind the call. When an
 earlier step moves a symbol to another file, the later step carries
 `relocated_by`: its stored location is where the symbol was before, so find it
 again before applying.
+
+Break Cycle is advisory. Its plan names edges to cut, not which symbols cross
+them or how to move them, so an opportunity carries it as `evidence` rather than
+as a numbered step: it never leads, and never reaches Fix first. The plan itself
+stays in the plan list. Cycles are found over runtime imports only: an import
+under `if TYPE_CHECKING:` or a TypeScript `import type` / `typeof import()` is
+type-only, and an import inside a function body is deferred (it runs on first
+call, the usual way to break a cycle on purpose). Neither closes a cycle. Only a
+plain `TYPE_CHECKING` or `module.TYPE_CHECKING` condition counts; a negated or
+aliased flag is read as a runtime import.
+
+Every plan is counted once: the rollup's `plans_total` is the steps, plus
+`evidence_total`, plus `unattached_plans_total` (plans in no opportunity, such as
+a file whose only plan is a cycle). The plan list's `structural_total` leaves
+Break Cycle out, matching the opportunities; `by_type` still counts it.
 
 Names are never invented. A suggested helper or file name is `null` when nothing
 in the code anchors one.

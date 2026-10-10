@@ -85,6 +85,7 @@ from .models import (
     ParsedFile,
     Symbol,
     TypeReference,
+    combine_load_kinds,
     compute_content_hash,
 )
 from .parser_helpers import (
@@ -120,6 +121,7 @@ from .parser_helpers import (
     _run_query,
     _rust_shadowed_by_type_param,
     _ts_nested_object_method_owner,
+    import_load_kind,
 )
 from .python_local_refs import extract_python_local_refs
 from .python_overload import is_python_overload as _is_python_overload
@@ -1201,12 +1203,7 @@ def _generic_import(
         or module_text.startswith("./")
         or module_text.startswith(("self::", "super::", "crate::"))
     )
-    type_only = False
-    if language in _TS_JS_LANGUAGES:
-        from .extractors.bindings.ts_js import is_type_only_ts_js_import
-
-        type_only = is_type_only_ts_js_import(stmt_node, src)
-
+    # ``type_only`` / ``deferred`` are set by the caller from ``import_load_kind``.
     return Import(
         raw_statement=raw,
         module_path=module_text,
@@ -1216,7 +1213,6 @@ def _generic_import(
         bindings=bindings,
         is_reexport=_is_reexport_import(stmt_node, raw, language),
         is_module_declaration=is_module_declaration,
-        type_only=type_only,
     )
 
 
@@ -1894,6 +1890,9 @@ class ASTParser:
         language = file_info.language
         imports: list[Import] = []
         seen_raws: set[str] = set()
+        # Statement key -> the Imports it produced, so a repeat folds its load
+        # kind into them rather than adding a duplicate.
+        seen_imports: dict[str, list[Import]] = {}
         seen_pascal_units: set[str] = set()
         seen_elixir_modules: set[str] = set()
 
@@ -1935,17 +1934,25 @@ class ASTParser:
             # each one binds.
             if language in _TS_JS_LANGUAGES and _is_dynamic_esm_import(stmt_node):
                 dedup_key = f"{raw}|at={stmt_node.start_byte}"
-            if dedup_key in seen_raws:
+            kind = import_load_kind(stmt_node, language, src)
+            if dedup_key in seen_imports:
+                # A lazy copy must not hide a load-time twin: runtime wins.
+                for imp in seen_imports[dedup_key]:
+                    imp.type_only, imp.deferred = combine_load_kinds(
+                        (imp.type_only, imp.deferred), kind
+                    )
                 continue
-            seen_raws.add(dedup_key)
+            seen_imports[dedup_key] = []
 
             module_text = _node_text(module_nodes[0], src).strip().strip("\"'` ")
             if not module_text:
                 continue
 
-            imports.extend(
-                _statement_imports(stmt_node, module_nodes[0], module_text, raw, language, src)
-            )
+            found = _statement_imports(stmt_node, module_nodes[0], module_text, raw, language, src)
+            for imp in found:
+                imp.type_only, imp.deferred = kind
+            seen_imports[dedup_key] = found
+            imports.extend(found)
 
         if language == "python":
             imports = expand_bare_relative_imports(imports)

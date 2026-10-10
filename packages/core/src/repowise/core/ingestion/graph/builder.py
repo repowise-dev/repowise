@@ -21,7 +21,7 @@ from ..cohesion import (
     withdraw_declaration_hint,
 )
 from ..languages.python_modules import dotted_module_for
-from ..models import ParsedFile
+from ..models import Import, ParsedFile, combine_load_kinds
 from ..resolvers import ResolverContext, resolve_import
 from ..resolvers.go import read_go_module_path, read_go_modules
 from ..symbol_identity import has_overload_identity
@@ -34,6 +34,19 @@ from ._serialize import SerializeMixin
 from ._stem import build_stem_map
 
 log = structlog.get_logger(__name__)
+
+
+def _merge_load_kind(data: dict[str, Any], imp: Import) -> None:
+    """Fold one more import into an edge's ``type_only`` / ``deferred`` marks,
+    by :func:`~repowise.core.ingestion.models.combine_load_kinds` (one
+    load-time import makes the edge a runtime one). ``deferred`` is stored
+    only when true."""
+    edge = (bool(data.get("type_only")), bool(data.get("deferred")))
+    data["type_only"], deferred = combine_load_kinds(edge, (imp.type_only, imp.deferred))
+    if deferred:
+        data["deferred"] = True
+    else:
+        data.pop("deferred", None)
 
 
 class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, RehydrateMixin):
@@ -491,16 +504,15 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                         self._graph[path][target]["imported_names"] = merged
                         if not imp.is_module_declaration:
                             withdraw_declaration_hint(self._graph[path][target])
-                        self._graph[path][target]["type_only"] = (
-                            bool(self._graph[path][target].get("type_only", False))
-                            and imp.type_only
-                        )
+                        _merge_load_kind(self._graph[path][target], imp)
                     else:
                         edge_attrs: dict[str, Any] = {
                             "edge_type": "imports",
                             "imported_names": list(imp.imported_names),
                             "type_only": imp.type_only,
                         }
+                        if imp.deferred:
+                            edge_attrs["deferred"] = True
                         # ``external:`` targets are excluded before the
                         # directory test, not after: an external node id has no
                         # directory, and a single-segment one such as

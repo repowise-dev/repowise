@@ -82,11 +82,11 @@ def _render_refactoring_targets(
     # contract speak. The type-grouped dump this replaced made type the
     # organizing principle, so a file needing a split and two extractions
     # appeared three times in three sections.
+    from repowise.core.analysis.health.refactoring.opportunity import claimed_plan_ids
+
     opportunities, _leads = _compose(findings, suggestions)
     plan_by_id = _plans_by_public_id(suggestions, ranked_plans)
-    claimed = {s.plan_id for o in opportunities for s in o.steps} | {
-        e.plan_id for o in opportunities for e in o.evidence
-    }
+    claimed = claimed_plan_ids(opportunities)
     unattached = [row for pid, row in plan_by_id.items() if pid not in claimed]
     rows = [_opportunity_row(o) for o in opportunities]
 
@@ -537,17 +537,17 @@ def _render_opportunities_md(opportunities: list[dict], plan_by_id: dict) -> Non
 def _render_unattached_console(plans: list[dict]) -> None:
     """Plans no opportunity claims.
 
-    A file whose only plans are demoted clones publishes no opportunity, so
-    without this the CLI would print a smaller number than the analyzer found
-    and call it the total. They are listed as observations, under their own
-    heading, rather than folded back in as work.
+    A file whose only plans are demoted clones or advisory cycles publishes no
+    opportunity, so without this the CLI would print a smaller number than the
+    analyzer found and call it the total. They are listed as observations,
+    under their own heading, rather than folded back in as work.
     """
     if not plans:
         return
     console.print(f"\n[bold]Unattached observations ({len(plans)})[/bold]")
     console.print(
-        "[dim]Real duplication, not ranked work: no file's opportunity is built "
-        "on them.[/dim]"
+        "[dim]Duplication and import cycles, not ranked work: no file's "
+        "opportunity is built on them.[/dim]"
     )
     for p in plans:
         console.print(f"\n[cyan]{p['target_symbol']}[/cyan] [dim]({p['file_path']})[/dim]")
@@ -560,7 +560,8 @@ def _render_unattached_md(plans: list[dict]) -> None:
         return
     click.echo("\n## Unattached observations\n")
     click.echo(
-        "Real duplication, not ranked work: no file's opportunity is built on them.\n"
+        "Duplication and import cycles, not ranked work: no file's opportunity is "
+        "built on them.\n"
     )
     for p in plans:
         click.echo(f"- **{p['target_symbol']}** ({p['file_path']})")

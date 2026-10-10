@@ -11,8 +11,14 @@ from typing import Any
 
 from repowise.core.analysis.health.rows import field
 
-#: The types the board groups under its "Structural" lens.
-STRUCTURAL_TYPES = frozenset({"split_file", "break_cycle", "extract_class", "move_method"})
+#: Plans an opportunity carries as evidence, never as a step: a cycle names
+#: edges to cut but not which symbols cross them.
+ADVISORY_TYPES = frozenset({"break_cycle"})
+
+#: The types the board groups under its "Structural" lens. Advisory types are
+#: left out so the plan chips agree with the opportunities, where they never
+#: lead; ``by_type`` still counts them.
+STRUCTURAL_TYPES = frozenset({"split_file", "extract_class", "move_method"})
 
 #: A plan recovers health at or above this ``impact_delta``.
 HEALTH_RECOVERY_MIN = 0.1
@@ -50,6 +56,7 @@ def summarize_plans(plans: Iterable[Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "ADVISORY_TYPES",
     "HEALTH_RECOVERY_MIN",
     "NEGLIGIBLE_HEALTH_BELOW",
     "STRUCTURAL_TYPES",

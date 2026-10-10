@@ -657,20 +657,24 @@ def _changed_file_edges(
     for u, v, data in graph.edges(data=True):
         if owner.get(u) not in reconcile:
             continue
-        edges.append(
-            {
-                "source_node_id": u,
-                "target_node_id": v,
-                "imported_names_json": json.dumps(data.get("imported_names", [])),
-                "edge_type": data.get("edge_type", "imports"),
-                "confidence": data.get("confidence", 1.0),
-                "hint_source": data.get("hint_source"),
-                "resolution_origin": data.get("resolution_origin"),
-                "call_lines_json": json.dumps(data.get("call_lines", [])),
-                "type_only": bool(data.get("type_only", False)),
-            }
-        )
+        edges.append(_edge_row(u, v, data))
     return sorted(reconcile), edges
+
+
+def _edge_row(source: str, target: str, data: dict) -> dict:
+    """One ``graph_edges`` payload from an in-memory edge; both writers use it."""
+    return {
+        "source_node_id": source,
+        "target_node_id": target,
+        "imported_names_json": json.dumps(data.get("imported_names", [])),
+        "edge_type": data.get("edge_type", "imports"),
+        "confidence": data.get("confidence", 1.0),
+        "hint_source": data.get("hint_source"),
+        "resolution_origin": data.get("resolution_origin"),
+        "call_lines_json": json.dumps(data.get("call_lines", [])),
+        "type_only": bool(data.get("type_only", False)),
+        "deferred": bool(data.get("deferred", False)),
+    }
 
 
 async def _edges_predate_cohesion(session: Any, repo_id: str, graph_builder: Any) -> bool:
@@ -1606,21 +1610,7 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
 
     # ---- Graph edges ---------------------------------------------------------
     graph = result.graph_builder.graph()
-    edges = []
-    for u, v, data in graph.edges(data=True):
-        edges.append(
-            {
-                "source_node_id": u,
-                "target_node_id": v,
-                "imported_names_json": json.dumps(data.get("imported_names", [])),
-                "edge_type": data.get("edge_type", "imports"),
-                "confidence": data.get("confidence", 1.0),
-                "hint_source": data.get("hint_source"),
-                "resolution_origin": data.get("resolution_origin"),
-                "call_lines_json": json.dumps(data.get("call_lines", [])),
-                "type_only": bool(data.get("type_only", False)),
-            }
-        )
+    edges = [_edge_row(u, v, data) for u, v, data in graph.edges(data=True)]
     if edges:
         await batch_upsert_graph_edges(session, repo_id, edges)
 
