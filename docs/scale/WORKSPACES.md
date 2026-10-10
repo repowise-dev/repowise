@@ -195,6 +195,11 @@ contracts:
   # Extra globs to skip (added to the built-in test/spec defaults).
   exclude_globs:
     - "generated/**"
+  # Root classes of typed C# HTTP clients (qualified names). A subclass that
+  # passes its base path up the constructor chain gets its calls linked under
+  # that path. Empty by default.
+  api_client_bases:
+    - "Acme.Http.ApiClient"
 ```
 
 Directories named `tests/`, `__tests__/`, and `__mocks__/` are excluded by name;
