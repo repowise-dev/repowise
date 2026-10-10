@@ -55,9 +55,11 @@ _TIER_WHY = {
 # walk takes a few hops; still nearer than an import closure).
 _DIRECT_VIAS = frozenset({"call-graph", "conftest-fixture"})
 
-#: Where pytest records the node ids that failed in its last run. Ceiling: a
-#: ``cache_dir`` moved in pytest's config is not followed, and no other runner's
-#: results are read; a runner's own results file is the upgrade.
+#: Where pytest records the node ids that failed in its last run. Its ids are
+#: relative to pytest's rootdir, so a rootdir other than the repository root
+#: matches nothing. Ceiling: a ``cache_dir`` moved in pytest's config is not
+#: followed, and no other runner's results are read; a runner's own results
+#: file is the upgrade.
 LAST_FAILED_PATH = ".pytest_cache/v/cache/lastfailed"
 
 
@@ -80,7 +82,7 @@ class RankedTest:
         if self.hops is not None:
             parts.append(f"{self.hops} hop(s)")
         if self.co_change:
-            parts.append(f"changed with the changed files in {self.co_change} commit(s)")
+            parts.append(f"{self.co_change} shared change(s) with the changed files")
         if self.failed:
             parts.append("failed in the last run")
         return "; ".join(parts)
@@ -113,17 +115,19 @@ def last_failed(text: str | None) -> frozenset[str]:
 def co_change_counts(
     changed: Collection[str], partners: Mapping[str, Sequence[Any]]
 ) -> dict[str, int]:
-    """``{file: commits it shared with any changed file}`` from stored partner lists.
+    """``{file: shared changes with the changed files}``, summed over each changed file.
 
     *partners* maps a file to its :class:`~repowise.core.co_change.CoChangePartner`
-    list. A pair recorded at both ends counts once; an index written before
-    the plain count was kept falls back to the rounded weight.
+    list. A pair recorded at both ends counts once. Ceiling: each file stores
+    only its 25 strongest partners, so a weaker pair recorded at neither end
+    counts 0.
     """
     changed = set(changed)
     pairs: dict[tuple[str, str], int] = {}
     for owner, records in partners.items():
         for p in records:
             if key := _pair(owner, p.file_path, changed):
+                # No plain count on an older index: its recency-decayed weight stands in.
                 pairs[key] = max(pairs.get(key, 0), p.support or round(p.weight))
     out: dict[str, int] = {}
     for (_, other), count in pairs.items():
@@ -221,7 +225,8 @@ def rank(
                 tier=tiers.get(path, "rest"),
                 hops=hops.get(path),
                 co_change=co_change.get(path, 0),
-                failed=test in failed or path in failed_files,
+                # A node id fails only on its own; another test in its file says nothing.
+                failed=test in failed or ("::" not in test and path in failed_files),
                 reach=reach.get(path, 0),
             )
         )
@@ -252,8 +257,9 @@ def rank_selection(
 ) -> list[RankedTest]:
     """``selection.tests`` in run order, then, given *everything* (the suite), the rest.
 
-    A file the selection runs only some node ids of stays in the rest, so the
-    whole-suite order still runs every test.
+    In a whole-suite order a file the selection runs only some node ids of is
+    run whole at its first id's place: pytest given ``a.py::t1 a.py`` runs t1
+    twice, and the file's other ids are not known here.
     """
     tiers = tiers_of(result, selection, line_matched, hops)
     common = {
@@ -265,8 +271,12 @@ def rank_selection(
     ranked = rank(selection.tests, tiers, **common)
     if everything is None:
         return ranked
-    whole = {t for t in selection.tests if "::" not in t}
-    return ranked + rank([t for t in everything if t not in whole], {}, **common)
+    head: dict[str, RankedTest] = {}
+    for r in ranked:
+        path = r.test.split("::", 1)[0]
+        head.setdefault(path, replace(r, test=path))
+    rest = rank([t for t in everything if t not in head], {}, **common)
+    return [*head.values(), *rest]
 
 
 def ordered(
@@ -279,8 +289,14 @@ def ordered(
     """
     tests = tuple(r.test for r in ranked)
     if not whole:
-        kept = set(selection.tests)
-        tests = tuple(t for t in tests if t in kept)
+        # A node id a whole-suite order folded into its file sorts at the file's place.
+        at: dict[str, int] = {}
+        for i, test in enumerate(tests):
+            at.setdefault(test, i)
+        last = len(at)
+        tests = tuple(
+            sorted(selection.tests, key=lambda t: at.get(t, at.get(t.split("::", 1)[0], last)))
+        )
     # Every selected file has an entry in ``tests``, so this keeps them all.
     files = tuple(dict.fromkeys(t.split("::", 1)[0] for t in tests))
     run_all = False if whole else selection.run_all

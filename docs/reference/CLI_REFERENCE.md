@@ -1090,9 +1090,19 @@ per-file `selected.basis`: `full-run`, `no-tests-needed`, `test-tree`,
 `test-package`, `conftest`, `helper-importers`, `deleted-test`, `coverage`,
 `changed-test`, `call-graph`, `import-graph`, `filename-pattern`, `unknown`,
 or `none` (no index), and a per-test `selected.why`: the first changed file and
-evidence that selected it, or why it runs with every subset, and `order` lists each test
-in run order with its `tier`, `hops`, `co_change` count and `failed_last_run`. When it runs everything:
+evidence that selected it, or why it runs with every subset. When it runs everything:
 [CI](../start/CI.md#selecting-the-tests-a-change-needs).
+
+**Run order.** `--format args` and `json` list the selected tests likeliest to fail
+first (`--format list` without `--prioritize` keeps the report's order). Tiers, in
+order: a test the change edits; one the per-test map runs on a changed line, then on
+a changed file; one whose calls, fixtures or direct import reach the change; one
+reaching it through other files; tests that run with every subset. Within a tier:
+fewer graph hops (when measured), more changes shared with the changed files, a
+failure in the last local pytest run (`.pytest_cache`, ids relative to the repository
+root), more changed files reached, then path. `--format json` lists each test under
+`order` with its `tier`, `hops`, `co_change` and `failed_last_run`. With
+`--prioritize`, a file selected only by some node ids runs whole at its place.
 
 ---
 

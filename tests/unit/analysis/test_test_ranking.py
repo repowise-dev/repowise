@@ -97,9 +97,13 @@ def test_within_a_tier_hops_then_co_change_then_failure_then_path() -> None:
     assert [r.test for r in ranked] == ["t/e.py", "t/d.py", "t/c.py", "t/a.py", "t/b.py"]
     assert ranked[1].reason == (
         "reaches a changed file through other files; 2 hop(s); "
-        "changed with the changed files in 3 commit(s)"
+        "3 shared change(s) with the changed files"
     )
     assert ranked[2].failed and ranked[2].reason.endswith("failed in the last run")
+    # A node id fails only on its own record, a whole file on any of its ids.
+    ids = ["t/c.py::test_y", "t/c.py::test_x", "t/c.py"]
+    by_test = {r.test: r.failed for r in rank(ids, tiers, failed={"t/c.py::test_x"})}
+    assert by_test == {"t/c.py::test_y": False, "t/c.py::test_x": True, "t/c.py": True}
     # Without hops, distance does not order; the rest of the keys still do.
     assert [r.test for r in rank(["t/b.py", "t/a.py"], tiers)] == ["t/a.py", "t/b.py"]
 
@@ -141,15 +145,16 @@ def test_a_whole_suite_order_keeps_every_test_and_partly_selected_files() -> Non
     ranked = rank_selection(
         result, selection, set(), Signals({"tests/test_d.py": 1}), everything=suite
     )
+    # pytest given ``a.py::t1 a.py`` runs t1 twice, so the partly selected file
+    # runs whole at its node id's place and not again in the tail.
     assert [r.test for r in ranked] == [
         "tests/test_b.py",
-        "tests/test_a.py::test_one",
-        "tests/test_d.py",
         "tests/test_a.py",
+        "tests/test_d.py",
         "tests/test_c.py",
     ]
     whole = ordered(selection, ranked, whole=True)
-    assert not whole.run_all and whole.test_files[:2] == ("tests/test_b.py", "tests/test_a.py")
+    assert not whole.run_all and whole.tests == tuple(r.test for r in ranked)
     subset = ordered(selection, ranked)
     assert subset.tests == ("tests/test_b.py", "tests/test_a.py::test_one")
     assert subset.test_files == ("tests/test_b.py", "tests/test_a.py")
