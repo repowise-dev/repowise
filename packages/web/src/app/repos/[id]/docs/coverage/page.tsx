@@ -6,6 +6,7 @@ import { ConfidenceVsFreshnessMatrix } from "@repowise-dev/ui/coverage/confidenc
 import { FreshnessTableWithRegenerate } from "@/components/coverage/freshness-table-wrapper";
 import type { DocPage } from "@repowise-dev/types/docs";
 import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
+import { ProportionBar } from "@repowise-dev/ui/shared/proportion-bar";
 import { listAllPages } from "@/lib/api/pages";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { getTranslations } from "next-intl/server";
@@ -96,22 +97,15 @@ export default async function CoveragePage({
           <p className="text-xs text-[var(--color-text-tertiary)] mb-1.5">
             {t("distribution")}
           </p>
-          <div className="h-3 rounded-full overflow-hidden flex">
-            <div className="bg-[var(--color-fresh)]" style={{ width: `${(fresh / pages.length) * 100}%` }} />
-            <div className="bg-[var(--color-stale)]" style={{ width: `${(stale / pages.length) * 100}%` }} />
-            <div className="bg-[var(--color-outdated)]" style={{ width: `${(outdated / pages.length) * 100}%` }} />
-          </div>
-          <div className="flex gap-4 mt-1.5 text-xs text-[var(--color-text-tertiary)]">
-            <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-[var(--color-fresh)]" /> {t("fresh")}
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-[var(--color-stale)]" /> {t("stale")}
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-[var(--color-outdated)]" /> {t("outdated")}
-            </span>
-          </div>
+          <ProportionBar
+            label={t("distribution")}
+            sort={false}
+            segments={[
+              { key: "fresh", label: t("fresh"), value: fresh, color: "var(--color-fresh)" },
+              { key: "stale", label: t("stale"), value: stale, color: "var(--color-stale)" },
+              { key: "outdated", label: t("outdated"), value: outdated, color: "var(--color-outdated)" },
+            ]}
+          />
         </div>
       )}
 

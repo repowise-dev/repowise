@@ -140,7 +140,7 @@ describe("CodeHealthLede: what the first screen shows", () => {
     const toggle = screen.getByText("Breakdown");
     const details = toggle.closest("details")!;
     expect(details.open).toBe(false);
-    expect(details.textContent).toContain("50% at risk");
+    expect(details.textContent).toContain("At risk50%");
     expect(details.textContent).toContain("comes from change history");
   });
 

@@ -13,7 +13,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { fileEntityPath } from "../shared/entity/routes";
 import { AllClearStat } from "../shared/empty-state";
 import { truncatePath } from "../lib/format";
-import { healthBand } from "../health/tokens";
+import { healthBand, SEVERITY_LABEL, SEVERITY_SEGMENT, type Severity } from "../health/tokens";
+import { ProportionBar } from "../shared/proportion-bar";
 import { formatScore } from "@repowise-dev/types/health";
 import { Sparkline } from "../health/sparkline";
 
@@ -75,13 +76,7 @@ interface HealthOverviewCardProps {
   className?: string;
 }
 
-const SEVERITY_ORDER = ["critical", "high", "medium", "low"] as const;
-const SEVERITY_COLOR: Record<string, string> = {
-  critical: "var(--color-error)",
-  high: "var(--color-accent-fill)",
-  medium: "var(--color-warning)",
-  low: "var(--color-text-tertiary)",
-};
+const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low"];
 
 function TrendChip({ delta }: { delta: number | null | undefined }) {
   if (delta == null || Math.abs(delta) < 0.05) return null;
@@ -110,12 +105,10 @@ function TrendChip({ delta }: { delta: number | null | undefined }) {
 function FindingsLine({
   href,
   segments,
-  total,
   count,
 }: {
   href: string;
-  segments: { key: string; count: number; color: string }[];
-  total: number;
+  segments: { key: Severity; count: number }[];
   count: number;
 }) {
   return (
@@ -127,18 +120,20 @@ function FindingsLine({
         <ShieldAlert className="h-3 w-3" />
         Open findings
       </span>
-      <span
-        className="flex h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[var(--color-bg-inset)]"
-        title={segments.map((s) => `${s.key}: ${s.count.toLocaleString()}`).join(" · ")}
-      >
-        {segments.map((s) => (
-          <span
-            key={s.key}
-            className="h-full"
-            style={{ width: `${(s.count / total) * 100}%`, background: s.color }}
-          />
-        ))}
-      </span>
+      <ProportionBar
+        className="flex-1"
+        label="Open findings by severity"
+        size="sm"
+        sort={false}
+        legend={false}
+        segments={segments.map((s) => ({
+          key: s.key,
+          label: SEVERITY_LABEL[s.key],
+          value: s.count,
+          detail: s.count.toLocaleString(),
+          color: SEVERITY_SEGMENT[s.key],
+        }))}
+      />
       <span className="shrink-0 tabular-nums text-[var(--color-text-secondary)]">
         {count.toLocaleString()}
       </span>
@@ -262,7 +257,6 @@ export function HealthOverviewCard({
   const severities = SEVERITY_ORDER.map((key) => ({
     key,
     count: data.severity_breakdown[key] ?? 0,
-    color: SEVERITY_COLOR[key]!,
   })).filter((s) => s.count > 0);
   const severityTotal = severities.reduce((s, x) => s + x.count, 0);
 
@@ -331,7 +325,6 @@ export function HealthOverviewCard({
                 <FindingsLine
                   href={`${reportHref}?tab=triage`}
                   segments={severities}
-                  total={severityTotal}
                   count={data.open_findings}
                 />
               ) : (

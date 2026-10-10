@@ -45,11 +45,12 @@ export const SEVERITY_CHIP: Record<Severity, string> = {
   low: "bg-[var(--color-text-tertiary)]/15 text-[var(--color-text-tertiary)] border border-[var(--color-text-tertiary)]/30",
 };
 
-export const SEVERITY_BAR: Record<Severity, string> = {
-  critical: "bg-[var(--color-error)]",
-  high: "bg-[var(--color-warning)]",
-  medium: "bg-[var(--color-caution)]",
-  low: "bg-[var(--color-text-tertiary)]",
+/** Segment fills for a severity split (ProportionBar `color`). */
+export const SEVERITY_SEGMENT: Record<Severity, string> = {
+  critical: "var(--color-error)",
+  high: "var(--color-warning)",
+  medium: "var(--color-caution)",
+  low: "var(--color-text-tertiary)",
 };
 
 /**
@@ -114,8 +115,8 @@ export const HEALTH_BAND_FILL: Record<HealthBand, string> = {
 };
 
 /**
- * Bar fills for the distribution. Good is the same green stepped down in
- * opacity, so it stays legible where it sits next to Excellent.
+ * Band fills. Good is the same green stepped down in opacity, so it stays
+ * legible where it sits next to Excellent.
  */
 export const HEALTH_BAND_BAR: Record<HealthBand, string> = {
   excellent: "bg-[var(--color-success)]",
@@ -123,6 +124,15 @@ export const HEALTH_BAND_BAR: Record<HealthBand, string> = {
   fair: "bg-[var(--color-caution)]",
   needs_work: "bg-[var(--color-warning)]",
   at_risk: "bg-[var(--color-error)]",
+};
+
+/** The same fills as CSS values, for a ProportionBar `color`. */
+export const HEALTH_BAND_SEGMENT: Record<HealthBand, string> = {
+  excellent: "var(--color-success)",
+  good: "color-mix(in srgb, var(--color-success) 55%, transparent)",
+  fair: "var(--color-caution)",
+  needs_work: "var(--color-warning)",
+  at_risk: "var(--color-error)",
 };
 
 /**

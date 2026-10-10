@@ -21,6 +21,7 @@ import type {
 } from "@repowise-dev/types/health";
 
 import { PageLede } from "../shared/page-lede";
+import { ProportionBar } from "../shared/proportion-bar";
 import { Sparkline } from "./sparkline";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { formatDate, formatDateTime, formatNumber } from "../lib/format";
@@ -42,10 +43,10 @@ const MIN_TREND_POINTS = 3;
 
 /** Band order for the split bar: worst first, matching how the tables list. */
 const BANDS = [
-  { key: "thin", label: "Thin", max: 30, bar: "bg-[var(--color-error)]" },
-  { key: "partial", label: "Partial", max: 60, bar: "bg-[var(--color-warning)]" },
-  { key: "solid", label: "Solid", max: 80, bar: "bg-[var(--color-caution)]" },
-  { key: "strong", label: "Strong", max: 101, bar: "bg-[var(--color-success)]" },
+  { key: "thin", label: "Thin", max: 30, color: "var(--color-error)" },
+  { key: "partial", label: "Partial", max: 60, color: "var(--color-warning)" },
+  { key: "solid", label: "Solid", max: 80, color: "var(--color-caution)" },
+  { key: "strong", label: "Strong", max: 101, color: "var(--color-success)" },
 ] as const;
 
 export function CoverageLede({
@@ -255,28 +256,20 @@ function CoverageTrend({ values }: { values: number[] }) {
 function BandSplit({
   split,
 }: {
-  split: { key: string; label: string; bar: string; pct: number }[];
+  split: { key: string; label: string; color: string; pct: number }[];
 }) {
   return (
-    <div className="space-y-1.5">
-      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
-        {split.map((b) => (
-          <div
-            key={b.key}
-            className={b.bar}
-            style={{ width: `${b.pct}%` }}
-            aria-label={`${b.label} ${b.pct}%`}
-          />
-        ))}
-      </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-[var(--color-text-tertiary)]">
-        {split.map((b) => (
-          <span key={b.key} className="inline-flex items-center gap-1 tabular-nums">
-            <span className={`inline-block h-1.5 w-1.5 rounded-full ${b.bar}`} />
-            {b.pct}% {b.label.toLowerCase()}
-          </span>
-        ))}
-      </div>
-    </div>
+    <ProportionBar
+      label="Coverable lines by coverage band"
+      size="sm"
+      sort={false}
+      segments={split.map((b) => ({
+        key: b.key,
+        label: b.label,
+        value: b.pct,
+        detail: `${b.pct}%`,
+        color: b.color,
+      }))}
+    />
   );
 }

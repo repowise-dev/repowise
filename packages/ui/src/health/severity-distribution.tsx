@@ -1,4 +1,5 @@
-import { SEVERITY_BAR, SEVERITY_LABEL, type Severity } from "./tokens";
+import { ProportionBar } from "../shared/proportion-bar";
+import { SEVERITY_LABEL, SEVERITY_SEGMENT, type Severity } from "./tokens";
 
 export interface SeverityBreakdown {
   critical: number;
@@ -28,36 +29,19 @@ export function SeverityDistribution({
       <p className="text-xs text-[var(--color-text-tertiary)]">No findings.</p>
     );
   }
-  const h = height === "sm" ? "h-1.5" : "h-2";
   return (
-    <div className="space-y-1.5">
-      <div
-        className={`flex w-full ${h} overflow-hidden rounded-full bg-[var(--color-bg-inset)]`}
-        title={ORDER.map((s) => `${SEVERITY_LABEL[s]} ${breakdown[s]}`).join(" · ")}
-      >
-        {ORDER.map((s) => {
-          const pct = (breakdown[s] / total) * 100;
-          if (pct === 0) return null;
-          return (
-            <div
-              key={s}
-              className={SEVERITY_BAR[s]}
-              style={{ width: `${pct}%` }}
-              aria-label={`${SEVERITY_LABEL[s]} ${breakdown[s]}`}
-            />
-          );
-        })}
-      </div>
-      {showCounts && (
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-[var(--color-text-tertiary)]">
-          {ORDER.map((s) => (
-            <span key={s} className="inline-flex items-center gap-1 tabular-nums">
-              <span className={`inline-block h-1.5 w-1.5 rounded-full ${SEVERITY_BAR[s]}`} />
-              {breakdown[s]} {SEVERITY_LABEL[s].toLowerCase()}
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
+    <ProportionBar
+      label="Findings by severity"
+      size={height}
+      sort={false}
+      legend={showCounts}
+      segments={ORDER.map((sev) => ({
+        key: sev,
+        label: SEVERITY_LABEL[sev],
+        value: breakdown[sev],
+        detail: breakdown[sev].toLocaleString(),
+        color: SEVERITY_SEGMENT[sev],
+      }))}
+    />
   );
 }
