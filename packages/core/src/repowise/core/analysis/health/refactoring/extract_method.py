@@ -388,7 +388,7 @@ def _staged_fields(
     context = staged.context if obj else ()
     imports = names.imports(analysis.fn_node)
     stages = []
-    for x, local_imports in zip(staged.stages, staged.imports, strict=True):
+    for x, reimports in zip(staged.stages, staged.imports, strict=True):
         name = render.private_name(
             language, names.claim(analysis, helper_name(analysis, x, lmap, language, imports))
         )
@@ -406,7 +406,7 @@ def _staged_fields(
             async_host=async_fields.get("async_host", True),
             leading=lead,
         )
-        _add_stage_notes(symbol["new_symbol"], lead, carried, local_imports)
+        _add_stage_notes(symbol["new_symbol"], lead, carried, reimports, staged.moved_imports)
         stages.append(
             {
                 "span": {"start": x.start_line, "end": x.end_line},
@@ -429,18 +429,26 @@ def _add_stage_notes(
     symbol: dict[str, Any],
     lead: tuple[render.Slot, ...],
     carried: list[str],
-    local_imports: tuple[str, ...],
+    reimports: tuple[str, ...],
+    moved: frozenset[str],
 ) -> None:
     """What a stage's texts cannot say: the values it reads off the parameter
-    object, and the function-local imports it must repeat."""
+    object, the function-local imports it must repeat, and which of those the
+    function no longer reads."""
     notes = list(symbol.get("notes") or [])
     if lead:
         reads = ", ".join(f"{lead[0].name}.{p}" for p in carried)
         notes.append(f"Read {', '.join(carried)} in the helper as {reads}.")
-    if local_imports:
+    if reimports:
         notes.append(
-            f"Import {', '.join(local_imports)} in the helper: the function imports "
-            f"{'it' if len(local_imports) == 1 else 'them'} inside its body."
+            f"Import {', '.join(reimports)} in the helper: the function imports "
+            f"{'it' if len(reimports) == 1 else 'them'} inside its body."
+        )
+    gone = [n for n in reimports if n in moved]
+    if gone:
+        notes.append(
+            f"Remove {', '.join(gone)} from the function's own import: nothing left in it "
+            "reads " + ("it." if len(gone) == 1 else "them.")
         )
     if notes:
         symbol["notes"] = notes
@@ -554,7 +562,11 @@ def _render_fields(
     params = leading + tuple(
         render.Slot(p, types.get(p), p in after) for p in extraction.params if p != own
     )
-    returns = tuple(render.Slot(r, types.get(r)) for r in extraction.returns)
+    # An output also passed in may come back unwritten; any other is written.
+    returns = tuple(
+        render.Slot(r, types.get(r) if r in extraction.params else render.definite_type(language, types.get(r)))
+        for r in extraction.returns
+    )
     declared, before, rebound = _out_binding(analysis, extraction, get_language_map(language or ""))
     fn_node = analysis.fn_node
     texts = render.render(
@@ -580,6 +592,7 @@ def _render_fields(
         "params": render.symbol_params(params, returns),
         "returns": [{"name": r.name, "type": r.type} for r in returns],
         "signature_text": texts.signature if texts else None,
+        "return_text": texts.returns if texts else None,
     }
     if texts and texts.notes:
         rendered["notes"] = list(texts.notes)

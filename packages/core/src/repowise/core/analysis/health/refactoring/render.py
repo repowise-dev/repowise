@@ -122,6 +122,8 @@ class Rendered(NamedTuple):
     signature: str
     call: str | None
     notes: tuple[str, ...]
+    #: The helper's last line handing its outputs back, None without outputs.
+    returns: str | None = None
 
 
 def private_name(language: str | None, name: str | None) -> str | None:
@@ -165,12 +167,39 @@ def render(shape: HelperShape) -> Rendered | None:
             "The function holding these lines is not async, so the call cannot await "
             "the helper where it stands."
         )
-        return Rendered(sig(shape), None, tuple(notes))
-    return Rendered(sig(shape), call(shape), tuple(notes))
+        return Rendered(sig(shape), None, tuple(notes), _return_line(shape, family))
+    return Rendered(sig(shape), call(shape), tuple(notes), _return_line(shape, family))
+
+
+def _return_line(s: HelperShape, family: str) -> str | None:
+    """``return a, b`` (Python), ``return a;`` (C family), a Rust tail ``a``."""
+    if not s.returns:
+        return None
+    names = ", ".join(r.name for r in s.returns)
+    if family == "rust":
+        return names
+    return f"return {names}" if family in ("python", "go") else f"return {names};"
+
+
+def definite_type(language: str | None, declared: str | None) -> str | None:
+    """*declared* without the ``undefined`` arm a TS / JS declaration carries
+    for before its first write: a helper whose output is written on every
+    path returns the value itself."""
+    if declared is None or _FAMILY.get(language or "") not in ("ts", "js"):
+        return declared
+    arms = [a.strip() for a in declared.split("|")]
+    kept = [a for a in arms if a != "undefined"]
+    return " | ".join(kept) if kept and len(kept) < len(arms) else declared
 
 
 def _notes(s: HelperShape, family: str) -> list[str]:
     out = []
+    if family == "ts":
+        untyped = [p.name for p in s.params if not p.type]
+        if untyped:
+            out.append(
+                f"Write the types of {', '.join(untyped)}: the code declares none for them."
+            )
     if family == "rust":
         unknown = [p.name for p in _rust_unsure(s)]
         if unknown:
@@ -435,7 +464,7 @@ def render_context(
 
 
 #: What the renderer adds to a stored plan, served on plan detail only.
-_DETAIL_SYMBOL_KEYS = ("params", "returns", "signature_text", "notes")
+_DETAIL_SYMBOL_KEYS = ("params", "returns", "signature_text", "return_text", "notes")
 #: A staged plan's stages, parameter object and residual sit on detail too.
 _DETAIL_PLAN_KEYS = ("call_site", "stages", "parameter_object", "orchestrator")
 
@@ -476,6 +505,7 @@ __all__ = [
     "Slot",
     "brief",
     "context_name",
+    "definite_type",
     "list_plan",
     "private_name",
     "render",

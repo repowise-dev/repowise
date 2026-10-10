@@ -217,7 +217,7 @@ def test_rust_borrows_a_value_the_host_reads_after_the_call():
         ),
         returns=(),
     )
-    sig, call, notes = render(shape)
+    sig, call, notes, _returns = render(shape)
     assert sig == "fn loadTotals(rows: &Vec<Row>, n: usize, cfg: <type>, tmp: String) {"
     assert call == "loadTotals(&rows, n, cfg, tmp);"
     assert notes == (

@@ -192,6 +192,7 @@ def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
             "params": _strs(plan.get("params")),
             "returns": _strs(plan.get("returns")),
             "signature_text": symbol.get("signature_text"),
+            "return_text": symbol.get("return_text"),
             "notes": _extract_notes(plan, symbol, is_async),
         },
         **({"call_site": plan["call_site"]} if _dict(plan.get("call_site")) else {}),

@@ -602,6 +602,7 @@ def test_detector_emits_suggestion_for_flagged_function():
         "params": s.plan["new_symbol"]["params"],
         "returns": s.plan["new_symbol"]["returns"],
         "signature_text": s.plan["new_symbol"]["signature_text"],
+        "return_text": "return average",
     }
     assert s.plan["call_site"]["replace_span"] == s.plan["span"]
     assert set(s.plan["span"]) == {"start", "end"}
