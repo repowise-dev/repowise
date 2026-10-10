@@ -197,18 +197,9 @@ contracts:
     - "generated/**"
 ```
 
-Test material is excluded, using the index's test classifier with one rule on top:
-a file is never dropped on a guess that could lose a real contract.
-
-- Anything inside a named test tree is excluded: `tests/`, `test/`, `__tests__/`,
-  `e2e/`, `src/test/java`, .NET `Foo.Tests/`.
-- Outside one, a source file is excluded by a test or support name (`*.test.ts`,
-  `*.spec.ts`, `*.e2e.ts`, `*_test.go`, `FooTest.java`, `test_*.py`, `conftest.py`) or
-  by sitting under `__mocks__/`. Under `src`, a Python `test_*.py` is scanned: it is
-  a module named for what it does unless pytest collects it.
-- Outside one, a non-source file (`openapi.yaml`, `.proto`, `.graphql`) is always
-  scanned, so `spec/openapi.yaml`, `testdata/openapi.yaml`, `Foo.Specs/openapi.yaml`
-  and `users.spec.yaml` keep their contracts.
+Test material is excluded using the index's test classifier, and a file is never
+dropped on a guess that could lose a real contract. Test trees and test-named source
+files are skipped; spec files such as `openapi.yaml` and `.proto` are always scanned.
 
 A route or topic that exists only in a test is a fixture, not a service contract.
 Calls to a literal
