@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -19,6 +20,12 @@ def _kinds(repo: Path) -> list[str]:
         return sorted(r[0] for r in db.execute("SELECT kind FROM read_snapshots"))
 
 
+def _payload(repo: Path, kind: str) -> dict:
+    with sqlite3.connect(repo / ".repowise" / "wiki.db") as db:
+        row = db.execute("SELECT payload_json FROM read_snapshots WHERE kind = ?", (kind,)).fetchone()
+    return json.loads(row[0])
+
+
 def test_index_writes_and_update_restores_the_snapshots(tmp_path: Path) -> None:
     from repowise.core.pipeline.full_index import index_repo_full
 
@@ -33,12 +40,15 @@ def test_index_writes_and_update_restores_the_snapshots(tmp_path: Path) -> None:
     (repo / ".repowise").mkdir()
 
     asyncio.run(index_repo_full(repo))
-    assert _kinds(repo) == ["actions", "fix_first"]
+    assert _kinds(repo) == ["actions", "fix_first", "fix_first_counts"]
+    counts = _payload(repo, "fix_first_counts")
 
     with sqlite3.connect(repo / ".repowise" / "wiki.db") as db:
         db.execute("DELETE FROM read_snapshots")
     refresh_read_snapshots(repo)
-    assert _kinds(repo) == ["actions", "fix_first"]
+    assert _kinds(repo) == ["actions", "fix_first", "fix_first_counts"]
+    # The restored item counts are the ones the index stored.
+    assert _payload(repo, "fix_first_counts") == counts
 
 
 def test_every_update_outcome_ends_in_one_helper() -> None:
