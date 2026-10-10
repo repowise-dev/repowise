@@ -26,16 +26,19 @@ name is left out where the language allows it (Python, TS / JS) and written
 ``<type>`` where it does not (Go, Java, Rust, C / C++); a missing name is
 ``<name>``. Both are placeholders the agent must replace.
 
-Ceilings: one output at most, as the slicer never offers more
-(``dataflow.slice._MAX_RETURNS``); C7's staged plans bring tuple returns. A
-C++ method defined out of line (``A::f``) has an unknown receiver, so it gets
-no texts and the header is never qualified.
+Ceilings: one output at most, except Python, where a staged plan's helper
+may hand back a tuple (``a, b = _stage(...)``). A staged plan's parameter
+object is written by :func:`render_context`. A C++ method defined out of line
+(``A::f``) has an unknown receiver, so it gets no texts and the header is
+never qualified.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal, NamedTuple, get_args
+
+from .naming import split_words
 
 ParamMode = Literal["in", "inout"]
 #: ``inout``: the helper takes the value and hands its new value back.
@@ -199,8 +202,10 @@ def _py_sig(s: HelperShape) -> str:
     params = [f"{p.name}: {p.type}" if p.type else p.name for p in s.params]
     if _method(s) and s.receiver:
         params.insert(0, s.receiver)
-    out = _out(s)
-    ret = f" -> {out.type}" if out and out.type else ""
+    types = [r.type for r in s.returns]
+    ret = ""
+    if types and all(types):
+        ret = f" -> {types[0]}" if len(types) == 1 else f" -> tuple[{', '.join(map(str, types))}]"
     head = f"{'async ' if s.is_async else ''}def {_name(s)}({', '.join(params)}){ret}:"
     return ("@classmethod\n" + head) if _method(s) and s.receiver == "cls" else head
 
@@ -208,8 +213,7 @@ def _py_sig(s: HelperShape) -> str:
 def _py_call(s: HelperShape) -> str:
     target = f"{s.receiver}." if _method(s) and s.receiver else ""
     expr = f"{'await ' if s.is_async else ''}{target}{_name(s)}({_args(s)})"
-    out = _out(s)
-    return f"{out.name} = {expr}" if out else expr
+    return f"{', '.join(r.name for r in s.returns)} = {expr}" if s.returns else expr
 
 
 # -- TypeScript / JavaScript -------------------------------------------------
@@ -375,8 +379,53 @@ _RENDERERS = {
 }
 
 
+# -- a staged plan's parameter object ------------------------------------------
+
+
+class ContextText(NamedTuple):
+    """The parameter object's declaration (None where the language needs
+    none), the statement building it before the first stage, and notes."""
+
+    declaration: str | None
+    construct: str
+    notes: tuple[str, ...]
+
+
+def context_name(language: str | None, host: str) -> str:
+    """``_PersistContext`` for host ``persist`` in Python, ``PersistContext``
+    in TS / JS: a type name, private where the language spells it."""
+    words = [*split_words(host.rsplit(".", 1)[-1]), "context"]
+    return private_name(language, "".join(w.capitalize() for w in words)) or "Context"
+
+
+def render_context(
+    language: str, name: str, var: str, fields: tuple[Slot, ...]
+) -> ContextText | None:
+    """The object carrying *fields* to every stage, or None for a language
+    without a staged renderer."""
+    family = _FAMILY.get(language)
+    if family == "python":
+        lines = [f"    {f.name}: {f.type or 'Any'}" for f in fields]
+        notes = ["Import dataclass from dataclasses."]
+        if any(f.type is None for f in fields):
+            notes.append("Import Any from typing, or write the fields' real types.")
+        construct = f"{var} = {name}({', '.join(f'{f.name}={f.name}' for f in fields)})"
+        head = ["@dataclass(frozen=True)", f"class {name}:"]
+        return ContextText("\n".join([*head, *lines]), construct, tuple(notes))
+    if family not in ("ts", "js"):
+        return None
+    names = ", ".join(f.name for f in fields)
+    if family == "js":
+        return ContextText(None, f"const {var} = {{ {names} }};", ())
+    lines = [f"  {f.name}: {f.type or TYPE_PLACEHOLDER};" for f in fields]
+    declaration = "\n".join([f"interface {name} {{", *lines, "}"])
+    return ContextText(declaration, f"const {var}: {name} = {{ {names} }};", ())
+
+
 #: What the renderer adds to a stored plan, served on plan detail only.
 _DETAIL_SYMBOL_KEYS = ("params", "returns", "signature_text", "notes")
+#: A staged plan's stages, parameter object and residual sit on detail too.
+_DETAIL_PLAN_KEYS = ("call_site", "stages", "parameter_object", "orchestrator")
 
 
 def list_plan(plan: dict) -> dict:
@@ -384,11 +433,11 @@ def list_plan(plan: dict) -> dict:
     list serves every plan, and an agent reads the texts on one plan's
     detail."""
     symbol = plan.get("new_symbol")
-    if "call_site" not in plan and not (
+    if not any(k in plan for k in _DETAIL_PLAN_KEYS) and not (
         isinstance(symbol, dict) and any(k in symbol for k in _DETAIL_SYMBOL_KEYS)
     ):
         return plan
-    out = {k: v for k, v in plan.items() if k != "call_site"}
+    out = {k: v for k, v in plan.items() if k not in _DETAIL_PLAN_KEYS}
     if isinstance(symbol, dict):
         out["new_symbol"] = {k: v for k, v in symbol.items() if k not in _DETAIL_SYMBOL_KEYS}
     return out
@@ -408,13 +457,16 @@ __all__ = [
     "NAME_PLACEHOLDER",
     "PARAM_MODES",
     "TYPE_PLACEHOLDER",
+    "ContextText",
     "HelperShape",
     "ParamMode",
     "Rendered",
     "Slot",
     "brief",
+    "context_name",
     "list_plan",
     "private_name",
     "render",
+    "render_context",
     "symbol_params",
 ]
