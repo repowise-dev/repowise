@@ -607,7 +607,7 @@ export type PerformanceOpportunityQuery = {
   offset?: number;
 };
 
-/** Why the default queue leaves a cause out (`opportunity_rank.DEFAULT_QUEUE_EXCLUSIONS`). */
+/** Why the default queue leaves a cause out (`queue.eligibility.DEFAULT_QUEUE_EXCLUSIONS`). */
 export type PerformanceQueueExclusion =
   | "test"
   | "tooling"

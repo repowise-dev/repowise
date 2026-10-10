@@ -22,8 +22,8 @@ from repowise.core.analysis.health.fix_first.text import perf_cost
 from repowise.core.analysis.health.queue.eligibility import (
     DEFAULT_QUEUE_PROOFS,
     DEFAULT_QUEUE_STATES,
+    perf_low_priority,
 )
-from repowise.core.analysis.health.queue.value import perf_low_priority
 from repowise.core.analysis.health.queue_rules import NULL_VALUE, Facet, FilterRule, SortKeys
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.worth import COST_PROOFS, LOW_PRIORITY_LABEL

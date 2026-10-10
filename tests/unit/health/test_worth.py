@@ -180,7 +180,7 @@ def test_findings_are_tiered_per_function_and_history_waits() -> None:
     ],
 )
 def test_a_perf_cause_leads_only_on_a_loop_that_grows(context, facets, expected) -> None:
-    from repowise.core.analysis.health.queue.value import perf_low_priority
+    from repowise.core.analysis.health.queue.eligibility import perf_low_priority
 
     row = {"execution_context": context, "biomarker_type": "io_in_loop",
            "details": {"facets": facets}}
@@ -203,7 +203,7 @@ def test_a_perf_cause_leads_only_on_a_loop_that_grows(context, facets, expected)
     ],
 )
 def test_a_perf_cause_is_judged_by_its_kind(marker, facets, expected) -> None:
-    from repowise.core.analysis.health.queue.value import perf_low_priority
+    from repowise.core.analysis.health.queue.eligibility import perf_low_priority
 
     row = {"execution_context": "production", "biomarker_type": marker,
            "details": {"facets": facets}}

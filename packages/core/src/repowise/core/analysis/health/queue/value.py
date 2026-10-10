@@ -10,15 +10,15 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..rows import field
-from ..worth import LOW_PRIORITY_LABEL, LowPriority, lead_reason, magnitude, perf_facets
+from ..worth import LOW_PRIORITY_LABEL, lead_reason, magnitude
 from .order import LEVEL_RANK
 
 #: Credited health gain cut points for value 1, 2 and 3.
 GAIN_CUTS = (0.5, 1.5, 3.0)
-#: Problem size, value 1 to 4, reads ``worth.SIZE_*``: health credit is
-#: calibrated per finding and saturates, so a function far past every bar
-#: would rank with a tidy one without them.
-#: A critical finding or a brain method is at least this size.
+#: A critical finding or a brain method is at least this size. Problem size
+#: (:func:`size_value`) reads ``worth.SIZE_*`` because health credit is
+#: calibrated per finding and saturates: a function far past every bar would
+#: rank with a tidy one on gain alone.
 SIZE_SEVERE = 2
 #: The highest value any unit reaches.
 VALUE_MAX = 4
@@ -65,15 +65,6 @@ def perf_value(row: Any, facets: Mapping[str, Any]) -> int:
     return value
 
 
-def perf_low_priority(row: Any) -> LowPriority | None:
-    """Why a performance cause can wait: it runs outside production code, or
-    :func:`worth.lead_reason` holds it back."""
-    context = field(row, "execution_context")
-    if context != "production":
-        return "unknown_context" if context in (None, "unknown") else "not_production"
-    return lead_reason(field(row, "biomarker_type"), perf_facets(row))
-
-
 def tier(value: int, confidence: str, ready: bool, low: str | None) -> tuple[str, str]:
     """The tier and its reason, from a value that leaves the hot-file bonus
     out: history orders items within a tier but never lifts one. A problem
@@ -93,7 +84,6 @@ __all__ = [
     "SIZE_SEVERE",
     "VALUE_MAX",
     "gain_value",
-    "perf_low_priority",
     "perf_value",
     "shape_value",
     "size_value",

@@ -11,13 +11,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, get_args
 
 from repowise.core.analysis.health.queue.eligibility import SCOPE_EXCLUSIONS
-from repowise.core.analysis.health.queue.order import (
-    DUE_TIERS,
-    EFFORT_RANK,
-    LEVEL_RANK,
-    TIER_RANK,
-    Tier,
-)
+from repowise.core.analysis.health.queue.order import DUE_TIERS, Tier
 from repowise.core.analysis.next_call import ActionCommand
 
 #: Bumped when ranking, eligibility or the item shape changes meaning.
@@ -284,8 +278,6 @@ class FixFirstQueue:
 
 
 __all__ = [
-    "DUE_TIERS",
-    "EFFORT_RANK",
     "FIX_EFFORTS",
     "FIX_EXCLUSIONS",
     "FIX_FACT_BASES",
@@ -296,9 +288,6 @@ __all__ = [
     "FIX_LEVELS",
     "FIX_SCOPES",
     "FIX_TIERS",
-    "LEVEL_RANK",
-    "SCOPE_EXCLUSIONS",
-    "TIER_RANK",
     "FixAction",
     "FixConfidence",
     "FixContext",

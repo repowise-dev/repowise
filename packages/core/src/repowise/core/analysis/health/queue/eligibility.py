@@ -22,8 +22,15 @@ from repowise.core.code_origin import path_origin
 from ..perf.actionability import EXPECTED_REASONS
 from ..perf.causal import code_context
 from ..rows import detail_map, field
-from ..worth import SIZE_MARKERS, cost_proof, dispatch_shaped, dormant
-from .value import perf_low_priority
+from ..worth import (
+    SIZE_MARKERS,
+    LowPriority,
+    cost_proof,
+    dispatch_shaped,
+    dormant,
+    lead_reason,
+    perf_facets,
+)
 
 Reason = Literal[
     "test",
@@ -377,8 +384,20 @@ def perf_queue_verdict(item: Any) -> Verdict:
 def perf_queue_counts(items: Iterable[Any]) -> dict[str, Any]:
     """The performance default queue's size and what it leaves out, by reason."""
     tally = Tally(DEFAULT_QUEUE_EXCLUSIONS)
-    queued = sum(not tally.add(perf_queue_verdict(item)) for item in items)
+    queued = 0
+    for item in items:
+        if not tally.add(perf_queue_verdict(item)):
+            queued += 1
     return {"total": queued, "excluded": tally.excluded}
+
+
+def perf_low_priority(row: Any) -> LowPriority | None:
+    """Why a performance cause can wait: it runs outside production code, or
+    :func:`worth.lead_reason` holds it back."""
+    context = field(row, "execution_context")
+    if context != "production":
+        return "unknown_context" if context in (None, "unknown") else "not_production"
+    return lead_reason(field(row, "biomarker_type"), perf_facets(row))
 
 
 def _has_plan(row: Any) -> bool:
@@ -441,6 +460,7 @@ __all__ = [
     "finding_verdict",
     "path_verdict",
     "perf_fix_verdict",
+    "perf_low_priority",
     "perf_queue_counts",
     "perf_queue_verdict",
     "perf_strategy_verdict",

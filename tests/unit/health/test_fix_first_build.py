@@ -252,3 +252,29 @@ def test_a_finding_item_takes_its_tests_from_the_validate_callback() -> None:
     assert walk.verify.basis == "inferred"
     assert [t.path for t in walk.verify.tests] == ["tests/test_plain.py::test_walk"]
     assert "call graph" in walk.verify.tests[0].reason
+
+
+def test_fix_first_counts_only_in_its_own_reasons() -> None:
+    """The shared tally takes any reason, so a ladder that grew one Fix first
+    does not report would surface here, not on the wire."""
+    moved = {**REFACTORING[0], "opportunity_id": "refop2_move", "file_path": "src/move.py",
+             "details": {"steps": [_step_kind("move_method")]}}
+    rows = {
+        "refactoring": [*REFACTORING, moved],
+        "performance": [
+            *PERFORMANCE,
+            _perf("perf2_cold", "c", intervention_symbol="src/repo.py::boot",
+                  actionability_state="expected", actionability_reason="cold_path"),
+            _perf("perf2_unmeasured", "u", intervention_symbol="src/repo.py::guess",
+                  details={"facets": {"loop_magnitude": "unknown"}}),
+        ],
+    }
+    for scope in ("production", "all"):
+        queue = _build(scope=scope, **rows)
+        assert set(queue.totals.excluded) == set(FIX_EXCLUSIONS)
+        assert queue.totals.excluded["kind_unaudited"] == 1
+
+
+def _step_kind(kind: str) -> dict:
+    return {"plan_id": "refac2_mv", "refactoring_type": kind, "target_symbol": "src/move.py::run",
+            "file_path": "src/move.py", "line_start": 5}

@@ -666,7 +666,8 @@ Index and update save the queue and the Do next list, so these surfaces open wit
 Fix first is built once in `analysis/health/fix_first/build.py` from stored rows
 and rendered unchanged by `get_health`, `repowise health`, the dashboard and the
 generated CLAUDE.md. Every excluded unit is counted in `totals.excluded` under one
-reason:
+reason. These reasons and the performance default queue's are decided in one place,
+`analysis/health/queue/`:
 
 | Reason | What it leaves out |
 |---|---|
@@ -680,7 +681,8 @@ reason:
 | `inherent_dispatch` | One dispatch holds 60% or more of the decision points (labels: 8 of 9 such rows rejected), unless a duplicate also sits in it |
 | `small_function` | Under 30 code lines and CCN 15 (on 67 labelled rows this cut drops 13 rejected and 4 accepted) |
 | `no_concrete_step` | No first edit with a file and line or a named group |
-| `low_value_kind` | Extract Class (0 of 14 accepted), Move Method (0 of 34), low cohesion (0 of 46), long method (0 of 10), long parameter lists (0 of 2) |
+| `low_value_kind` | Low cohesion (0 of 46 accepted), long method (0 of 10), long parameter lists (0 of 2) |
+| `kind_unaudited` | Plans led by Extract Class (0 of 14 accepted) or Move Method (0 of 34), kept to the full list until each passes a per-language audit |
 
 Order: value first (the larger of health recovered and size: CCN 20/40/80/150,
 lines 100/200/400/800, nesting 5/6/8, a critical or brain-method finding, one step

@@ -6,8 +6,11 @@ from repowise.core.analysis.health.queue.eligibility import (
     ELIGIBLE,
     Tally,
     Verdict,
+    finding_verdict,
+    path_verdict,
     perf_fix_verdict,
     refactor_verdict,
+    unit_verdict,
 )
 
 
@@ -91,3 +94,64 @@ def test_a_cause_group_asks_about_dead_code_only_once_it_is_worth_an_item() -> N
     assert not asked
     assert perf_fix_verdict([_cause()], contexts, unreachable)[0].reason == "unreachable"
     assert asked == [True]
+
+
+class _Shaped(_Facts):
+    def __init__(self, shape, *, dead=False, cloned=False):
+        self._shape, self._dead, self._cloned = shape, dead, cloned
+
+    def unreachable(self, path, symbol, line):
+        return self._dead
+
+    def shape(self, path, symbol):
+        return self._shape
+
+    def cloned(self, path, shape):
+        return self._cloned
+
+
+def test_path_verdict_reads_the_stored_origin_first_and_keeps_tests_on_ask() -> None:
+    assert path_verdict("src/app.py", False).eligible
+    assert path_verdict("src/app.py", False, origin="vendored").reason == "vendored"
+    assert path_verdict("tests/test_app.py", None).reason == "test"
+    assert path_verdict("src/app.py", True).reason == "test"
+    assert path_verdict("tests/test_app.py", None, keep_tests=True).eligible
+    assert path_verdict("examples/demo/run.py", None).reason == "docs_example"
+    assert path_verdict("scripts/build.py", None).reason == "tooling"
+    # A root-level file carries no evidence either way and stays in.
+    assert path_verdict("run.py", None).eligible
+
+
+def test_unit_verdict_ladder_order() -> None:
+    big = {"ccn": 60, "nloc": 300}
+    assert unit_verdict(_Shaped(big, dead=True), "a.py", "f", complexity=True).reason == (
+        "unreachable"
+    )
+    assert unit_verdict(_Shaped({**big, "deprecated": 1}), "a.py", "f", complexity=True).reason == (
+        "deprecated"
+    )
+    assert unit_verdict(_Shaped({**big, "gated_off": 1}), "a.py", "f", complexity=True).reason == (
+        "gated_off"
+    )
+    dispatch = {**big, "dispatch_pct": 90}
+    assert unit_verdict(_Shaped(dispatch), "a.py", "f", complexity=True).reason == (
+        "inherent_dispatch"
+    )
+    assert unit_verdict(_Shaped(dispatch, cloned=True), "a.py", "f", complexity=True).eligible
+    small = {"ccn": 5, "nloc": 10}
+    assert unit_verdict(_Shaped(small), "a.py", "f", complexity=True).reason == "small_function"
+    assert unit_verdict(_Shaped(small), "a.py", "f", complexity=False).eligible
+
+
+def test_finding_verdict_checks_kind_then_shape_then_a_first_edit() -> None:
+    finding = {"file_path": "a.py", "function_name": "f", "line_start": 3,
+               "biomarker_type": "complex_method"}
+    facts = _Shaped({"ccn": 60, "nloc": 300})
+    assert finding_verdict(finding, facts, lambda _f: True).eligible
+    assert finding_verdict(finding, facts, lambda _f: False).reason == "no_concrete_step"
+    low = {**finding, "biomarker_type": "low_cohesion"}
+    assert finding_verdict(low, facts, lambda _f: True).reason == "low_value_kind"
+    unwrap = {**finding, "biomarker_type": "error_handling", "details": {"kind": "panic_macro"}}
+    assert finding_verdict(unwrap, facts, lambda _f: True).reason == "low_value_kind"
+    small = _Shaped({"ccn": 5, "nloc": 10})
+    assert finding_verdict(finding, small, lambda _f: True).reason == "small_function"

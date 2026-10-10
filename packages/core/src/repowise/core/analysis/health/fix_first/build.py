@@ -66,11 +66,11 @@ from repowise.core.analysis.health.queue.eligibility import (
     finding_verdict,
     path_verdict,
     perf_fix_verdict,
+    perf_low_priority,
     refactor_verdict,
 )
 from repowise.core.analysis.health.queue.order import LEVEL_RANK, order
 from repowise.core.analysis.health.queue.value import (
-    perf_low_priority,
     perf_value,
     shape_value,
     size_value,
