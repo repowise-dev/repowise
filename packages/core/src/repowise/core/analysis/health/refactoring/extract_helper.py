@@ -48,9 +48,10 @@ from typing import Any
 from ....code_origin import is_migration_path, is_vendored_or_generated_path
 from ....test_paths import is_test_related_path
 from ..duplication.detector import clone_ranges, union_line_count
+from ..effort import effort_bucket
 from .language_family import same_language_family
 from .models import RefactoringContext, RefactoringSuggestion
-from .registry import RefactoringDetector, effort_bucket, register
+from .registry import RefactoringDetector, register
 
 # The biomarker this detector answers — the recovered impact is read off it.
 _SOURCE_BIOMARKER = "dry_violation"

@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.effort import EFFORT_ORDER
 from repowise.core.analysis.health.refactoring.recommendations import (
     apply_view,
     blast_size,
@@ -144,7 +145,7 @@ def _to_response(data: dict[str, Any]) -> RefactoringPlanResponse:
 
 
 _STRUCTURAL_TYPES = STRUCTURAL_TYPES
-_EFFORT_ORDER = {"S": 0, "M": 1, "L": 2, "XL": 3}
+_EFFORT_ORDER = {bucket: rank for rank, bucket in enumerate(EFFORT_ORDER)}
 
 
 def _summary(recommendations: list[Any]) -> RefactoringSummary:

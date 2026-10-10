@@ -57,6 +57,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...finding_registry import excluded_types
+from ..effort import EFFORT_ORDER
 from ..refactoring_summary import ADVISORY_TYPES, needs_design
 from ..rows import field
 from .extract_helper import ACTIVE_CO_CHANGE
@@ -106,8 +107,6 @@ _UNORDERED = len(STEP_ORDER)
 # finds a symbol by name - but a wrong *file* sends them looking in the wrong
 # place entirely.
 _RELOCATING_TYPES = frozenset({"split_file", "extract_class", "move_method"})
-
-_EFFORT_ORDER = ("S", "M", "L", "XL")
 
 # Evidence restates the plan's own signals; these three are read-model
 # additions the plan layer already publishes elsewhere.
@@ -296,8 +295,8 @@ def _aggregate_effort(steps: Sequence[OpportunityStep]) -> str:
     label no detector could emit. Total work enters the ranking through
     ``step_cost`` instead, where it belongs.
     """
-    present = [step.effort_bucket for step in steps if step.effort_bucket in _EFFORT_ORDER]
-    return max(present, key=_EFFORT_ORDER.index) if present else "M"
+    present = [step.effort_bucket for step in steps if step.effort_bucket in EFFORT_ORDER]
+    return max(present, key=EFFORT_ORDER.index) if present else "M"
 
 
 def opportunity_kernel(step_plan_ids: Sequence[str], file_path: str) -> tuple[Any, ...]:

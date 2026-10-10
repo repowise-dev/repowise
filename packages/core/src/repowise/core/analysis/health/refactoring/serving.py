@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from repowise.core.analysis.health import queue_rules
+from repowise.core.analysis.health.effort import EFFORT_ORDER
 from repowise.core.analysis.health.queue_rules import Facet, FilterRule, SortKeys
 from repowise.core.analysis.health.rows import detail_map, field
 
@@ -54,7 +55,6 @@ DEFAULT_SCOPE = "fix_first"
 _STATUSES = ("open", "acknowledged", "resolved", "false_positive")
 
 _CONFIDENCES = ("low", "medium", "high")
-_EFFORTS = ("S", "M", "L", "XL")
 _TYPES = (
     "break_cycle",
     "extract_class",
@@ -244,7 +244,7 @@ def parse_query(
             lead_types=admit_many("refactoring_type", lead_type, _TYPES),
             status=resolved_status,
             confidence=admit("confidence", confidence, _CONFIDENCES),
-            effort=admit("effort", effort, _EFFORTS),
+            effort=admit("effort", effort, EFFORT_ORDER),
             mechanical_only=bool(mechanical),
             addresses_primary=addresses_primary,
             # ``is not None``, not truthiness: an empty sequence is a scope that

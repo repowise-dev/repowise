@@ -65,9 +65,10 @@ from repowise.core.analysis.dead_code.contract_methods import is_contract_method
 from repowise.core.analysis.execution_graph import is_reliable_call_edge
 
 from ....test_paths import is_test_related_path
+from ..effort import effort_bucket
 from .language_family import same_language_family
 from .models import RefactoringContext, RefactoringSuggestion
-from .registry import RefactoringDetector, effort_bucket, register
+from .registry import RefactoringDetector, register
 
 # Distinct foreign members the method must access for the envy to be real
 # (a single shared call is incidental, not envy).

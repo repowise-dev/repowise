@@ -16,7 +16,6 @@ from dataclasses import replace
 
 import structlog
 
-from ..effort import effort_bucket as effort_bucket  # re-exported for the detectors
 from ..scoring import HISTORY_CATEGORY, biomarker_category, deduction_split, history_cap
 from .models import CONFIDENCE_LEVELS, RefactoringContext, RefactoringSuggestion
 

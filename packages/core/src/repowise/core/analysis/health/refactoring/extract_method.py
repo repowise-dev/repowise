@@ -76,11 +76,12 @@ from ..complexity.cyclomatic import _is_boolean_operator, is_markup
 from ..complexity.languages import get_language_map
 from ..complexity.nloc import is_string_stmt
 from ..dataflow import find_extractions
+from ..effort import effort_bucket
 from ..perf.dialects import PERF_DIALECTS
 from ..scoring import severity_deduction
 from .models import RefactoringContext, RefactoringSuggestion
 from .naming import join_identifier, split_words
-from .registry import RefactoringDetector, effort_bucket, register
+from .registry import RefactoringDetector, register
 
 if TYPE_CHECKING:
     from ..complexity.languages import LanguageNodeMap

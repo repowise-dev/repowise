@@ -7,9 +7,12 @@ a surface can import it without loading the refactoring detectors.
 
 from __future__ import annotations
 
-_CEILINGS: tuple[tuple[int, str], ...] = ((40, "S"), (150, "M"), (400, "L"))
+EFFORT_ORDER = ("S", "M", "L", "XL")
+"""The buckets, smallest first."""
 
-EFFORT_WEIGHT = {"S": 1, "M": 2, "L": 3, "XL": 5}
+_CEILINGS = tuple(zip((40, 150, 400), EFFORT_ORDER[:-1], strict=True))
+
+EFFORT_WEIGHT = dict(zip(EFFORT_ORDER, (1, 2, 3, 5), strict=True))
 """Each bucket's divisor in ``impact_per_effort``, and the order a ``max_effort`` cap reads."""
 
 
@@ -21,4 +24,4 @@ def effort_bucket(nloc: int) -> str:
     return "XL"
 
 
-__all__ = ["EFFORT_WEIGHT", "effort_bucket"]
+__all__ = ["EFFORT_ORDER", "EFFORT_WEIGHT", "effort_bucket"]

@@ -11,6 +11,8 @@ self-register via ``@register``), so ``detect_refactorings`` sees them.
 
 from __future__ import annotations
 
+from ..effort import effort_bucket
+
 # Importing the detector modules triggers their ``@register`` side effect.
 # Listed explicitly (and in a fixed order) so the registry is deterministic.
 from . import (
@@ -47,7 +49,6 @@ from .rank import rank_suggestions
 from .registry import (
     RefactoringDetector,
     detect_refactorings,
-    effort_bucket,
     register,
     registered_detectors,
 )

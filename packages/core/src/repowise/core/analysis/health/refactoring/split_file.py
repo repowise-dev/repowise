@@ -59,8 +59,9 @@ from repowise.core.analysis.execution_graph import is_reliable_call_edge
 from ....code_origin import is_migration_path, is_vendored_or_generated_path
 from ....test_paths import is_test_related_path
 from ...dead_code.file_reachability import BARREL_FILENAMES
+from ..effort import effort_bucket
 from .models import RefactoringContext, RefactoringSuggestion
-from .registry import RefactoringDetector, effort_bucket, register
+from .registry import RefactoringDetector, register
 
 # Edge weights over the intra-file symbol graph (see module docstring).
 _DIRECT_CALL_WEIGHT = 3.0
