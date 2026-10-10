@@ -1261,8 +1261,11 @@ def _pytest_args(selection: Selection) -> list[str]:
 
 def _go_args(selection: Selection) -> list[str]:
     go_tests = [f for f in selection.test_files if f.endswith("_test.go")]
-    dirs = {str(PurePosixPath(f).parent) for f in go_tests} | set(selection.packages)
-    return sorted("." if d == "." else f"./{d}" for d in dirs)
+    dirs = list(dict.fromkeys(str(PurePosixPath(f).parent) for f in go_tests))
+    for package in selection.packages:
+        if package not in dirs:
+            dirs.append(package)
+    return ["." if d == "." else f"./{d}" for d in dirs]
 
 
 def _jest_args(selection: Selection) -> list[str]:
