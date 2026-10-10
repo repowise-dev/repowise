@@ -166,6 +166,33 @@ describe("OpportunityDrawer reach, verification and code", () => {
     expect(screen.getByText(/A diff preview is drafted by a model on request/)).toBeTruthy();
   });
 
+  it("shows an extraction's slice under the helper's signature, not the whole function", async () => {
+    const readSource = vi.fn().mockResolvedValue(["def f():", "  a = 1", "  b = 2", "  c = 3", "  return c"].join(String.fromCharCode(10)));
+    const plan = {
+      ...PLAN,
+      line_start: 1,
+      line_end: 5,
+      plan: { span: { start: 2, end: 3 }, params: [], returns: ["b"], suggested_name: "_setup" },
+    } as RefactoringPlan;
+    render(
+      <OpportunityDrawer
+        detail={detail({
+          steps: [{ ...STEP, line_start: 1, line_end: 5 }],
+          steps_emitted: 1,
+          plans: [plan],
+        })}
+        open
+        onOpenChange={() => {}}
+        readSource={readSource}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show the code" }));
+    expect(screen.getByText("_setup() -> b")).toBeTruthy();
+    expect(await screen.findByText("a = 1", { exact: false })).toBeTruthy();
+    expect(screen.queryByText("def f():")).toBeNull();
+    expect(screen.queryByText("return c", { exact: false })).toBeNull();
+  });
+
   it("offers the model-drafted diff preview when the host turned generation on", () => {
     render(
       <OpportunityDrawer

@@ -37,7 +37,7 @@ import { CodeBlock } from "./plan-detail";
 import { SourceExcerpt } from "./source-excerpt";
 import { RelatedWork, type RelatedWorkSlotProps } from "../health/related-work";
 import { GenerateCodePanel } from "./generate-code-panel";
-import { extractHelperDetail } from "./types";
+import { extractHelperDetail, extractMethodPlan, extractMethodSignature } from "./types";
 import {
   ORDERING_NOTE,
   STATUS_LABEL,
@@ -610,7 +610,9 @@ function StepCard({
  * Closed by default: a drawer of seven open excerpts would bury the order of
  * the steps, which is the drawer's subject. The excerpt prefers the text the
  * stored plan carries (an extract-helper block); otherwise it reads the file
- * the way the file view does and cuts the step's span out of it.
+ * the way the file view does and cuts out the lines the step changes. For an
+ * extraction that is the slice, under the helper's proposed signature, not the
+ * whole function the step's span covers.
  */
 function StepCode({
   step,
@@ -625,7 +627,11 @@ function StepCode({
 }) {
   const [open, setOpen] = React.useState(false);
   const stored = plan ? extractHelperDetail(plan) : null;
-  const canRead = Boolean(readSource && step.line_start);
+  const extraction = plan?.refactoring_type === "extract_method" ? extractMethodPlan(plan) : null;
+  const slice = extraction?.span ?? null;
+  const start = slice?.start ?? step.line_start;
+  const end = slice?.end ?? step.line_end ?? step.line_start;
+  const canRead = Boolean(readSource && start);
   if (!stored?.snippet && !canRead && !plan) return null;
   return (
     <div className="mt-2">
@@ -639,13 +645,21 @@ function StepCode({
       </button>
       {open ? (
         <div className="mt-2 space-y-3">
+          {extraction && slice ? (
+            <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
+              Lines {slice.start} to {slice.end} become{" "}
+              <code className="break-all font-mono text-[var(--color-text-primary)]">
+                {extractMethodSignature(extraction)}
+              </code>
+            </p>
+          ) : null}
           {stored?.snippet ? (
             <CodeBlock code={stored.snippet} startLine={stored.snippetStartLine} />
           ) : canRead ? (
             <SourceExcerpt
               path={step.file_path}
-              start={step.line_start!}
-              end={step.line_end ?? step.line_start!}
+              start={start!}
+              end={end!}
               readSource={readSource!}
             />
           ) : null}

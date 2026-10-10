@@ -10,6 +10,7 @@ import {
   extractHelperDetail,
   extractHelperOccurrences,
   extractMethodPlan,
+  extractMethodSignature,
   helperSite,
   moveTarget,
   performancePlanDetail,
@@ -428,10 +429,7 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
     const em = extractMethodPlan(plan);
     const lines = em.span ? em.span.end - em.span.start + 1 : 0;
     const ccn = Number(plan.evidence?.ccn_removed ?? 0);
-    const helperName = em.suggested_name ?? "helper";
-    const sig = `${em.needs_async ? "async " : ""}${helperName}(${em.params.join(", ")})${
-      em.returns.length ? ` -> ${em.returns.join(", ")}` : ""
-    }`;
+    const sig = extractMethodSignature(em);
     return (
       <div className="space-y-3">
         {hideIntro ? null : (

@@ -180,6 +180,13 @@ export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
   };
 }
 
+/** The helper an extraction proposes, as one line: `async name(a, b) -> c`. */
+export function extractMethodSignature(em: ExtractMethodPlan): string {
+  const name = em.suggested_name ?? "helper";
+  const returns = em.returns.length ? ` -> ${em.returns.join(", ")}` : "";
+  return `${em.needs_async ? "async " : ""}${name}(${em.params.join(", ")})${returns}`;
+}
+
 export interface SplitGroup {
   name: string | null;
   symbols: string[];
