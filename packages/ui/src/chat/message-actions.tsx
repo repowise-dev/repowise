@@ -54,7 +54,7 @@ export function MessageActions({
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           aria-label="Edit message"
-          className="min-h-20 w-full resize-y rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-4 py-2.5 text-base leading-relaxed text-[var(--color-text-primary)] outline-none focus:border-[var(--color-border-hover)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="min-h-20 w-full resize-y rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-4 py-2.5 text-base leading-relaxed text-[var(--color-text-primary)] !outline-none focus:border-[var(--color-border-hover)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
         />
         <div className="flex justify-end gap-2">
           <button

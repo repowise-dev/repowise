@@ -97,7 +97,7 @@ export function ChatComposer({
             rows={1}
             className={cn(
               // 16px: smaller text makes iOS zoom the page on focus.
-              "min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-1 py-1 text-base leading-6 text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] disabled:opacity-60",
+              "min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-1 py-1 text-base leading-6 text-[var(--color-text-primary)] !outline-none placeholder:text-[var(--color-text-tertiary)] disabled:opacity-60",
               compact ? "max-h-24" : "max-h-36",
             )}
             style={{ scrollbarWidth: "none" }}

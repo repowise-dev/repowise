@@ -203,7 +203,11 @@ export function ChatInterface({
   const contextPresentation = getChatContextPresentation(context);
   const visibleSuggestions =
     suggestions ?? (context ? contextPresentation.suggestions : DEFAULT_SUGGESTIONS);
-  const composerPlaceholder = placeholder ?? contextPresentation.placeholder;
+  const composerPlaceholder =
+    placeholder ??
+    (isEmpty && context?.kind === "chat"
+      ? "Ask anything, or paste a file path"
+      : contextPresentation.placeholder);
   const lastMessage = messages[messages.length - 1];
   // An errored turn never carries follow-ups: the server sends them only on a
   // turn that completed and called a tool.
