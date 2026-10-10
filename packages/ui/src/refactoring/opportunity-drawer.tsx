@@ -37,6 +37,10 @@ import { CodeBlock } from "./plan-detail";
 import { SourceExcerpt } from "./source-excerpt";
 import { RelatedWork, type RelatedWorkSlotProps } from "../health/related-work";
 import { GenerateCodePanel } from "./generate-code-panel";
+import {
+  RefactoringModelToggle,
+  type RefactoringModelToggleProps,
+} from "./refactoring-settings-card";
 import { extractHelperDetail, extractMethodSignature, stepExcerptRange } from "./types";
 import {
   ORDERING_NOTE,
@@ -85,6 +89,8 @@ export interface OpportunityDrawerProps extends RelatedWorkSlotProps {
   readSource?: ((path: string) => Promise<string>) | undefined;
   /** Opt-in model drafting of one step's diff. Omit when generation is off. */
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  /** Offer the model switch inside steps when code generation is off. */
+  modelSetting?: RefactoringModelToggleProps | undefined;
 }
 
 export function OpportunityDrawer({
@@ -99,6 +105,7 @@ export function OpportunityDrawer({
   fileHref,
   readSource,
   onGenerateCode,
+  modelSetting,
   related,
   relatedWorkHref,
   onNavigate,
@@ -120,6 +127,7 @@ export function OpportunityDrawer({
             fileHref={fileHref}
             readSource={readSource}
             onGenerateCode={onGenerateCode}
+            modelSetting={modelSetting}
             related={related}
             relatedWorkHref={relatedWorkHref}
             onNavigate={onNavigate}
@@ -177,6 +185,7 @@ function DrawerBody({
   fileHref,
   readSource,
   onGenerateCode,
+  modelSetting,
   related,
   relatedWorkHref,
   onNavigate,
@@ -193,6 +202,7 @@ function DrawerBody({
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
   readSource?: ((path: string) => Promise<string>) | undefined;
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  modelSetting?: RefactoringModelToggleProps | undefined;
 } & RelatedWorkSlotProps) {
   const meta = typeMeta(detail.lead_refactoring_type || "");
   const plansById = React.useMemo(
@@ -356,6 +366,7 @@ function DrawerBody({
                 fileHref={fileHref}
                 readSource={readSource}
                 onGenerateCode={onGenerateCode}
+                modelSetting={modelSetting}
               />
             ))}
           </ol>
@@ -515,6 +526,7 @@ function StepCard({
   fileHref,
   readSource,
   onGenerateCode,
+  modelSetting,
 }: {
   step: OpportunityStep;
   index: number;
@@ -524,6 +536,7 @@ function StepCard({
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
   readSource?: ((path: string) => Promise<string>) | undefined;
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  modelSetting?: RefactoringModelToggleProps | undefined;
 }) {
   const meta = typeMeta(step.refactoring_type);
   const mechanical = step.applicability.classification === "mechanical";
@@ -601,7 +614,13 @@ function StepCard({
         </p>
       ) : null}
 
-      <StepCode step={step} plan={plan} readSource={readSource} onGenerateCode={onGenerateCode} />
+      <StepCode
+        step={step}
+        plan={plan}
+        readSource={readSource}
+        onGenerateCode={onGenerateCode}
+        modelSetting={modelSetting}
+      />
     </li>
   );
 }
@@ -621,11 +640,13 @@ function StepCode({
   plan,
   readSource,
   onGenerateCode,
+  modelSetting,
 }: {
   step: OpportunityStep;
   plan?: RefactoringPlan | undefined;
   readSource?: ((path: string) => Promise<string>) | undefined;
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  modelSetting?: RefactoringModelToggleProps | undefined;
 }) {
   const [open, setOpen] = React.useState(false);
   const stored = plan ? extractHelperDetail(plan) : null;
@@ -666,6 +687,8 @@ function StepCode({
           ) : null}
           {plan && onGenerateCode ? (
             <GenerateCodePanel plan={plan} onGenerate={onGenerateCode} />
+          ) : plan && modelSetting ? (
+            <RefactoringModelToggle {...modelSetting} />
           ) : plan ? (
             <p className="text-xs text-[var(--color-text-tertiary)]">
               A diff preview is drafted by a model on request. Code generation is off here.

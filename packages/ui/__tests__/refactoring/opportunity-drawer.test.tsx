@@ -235,6 +235,38 @@ describe("OpportunityDrawer reach, verification and code", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show the code" }));
     expect(screen.getByRole("button", { name: /Generate code/ })).toBeTruthy();
   });
+
+  it("shows the model toggle when modelSetting is passed and onGenerateCode is not", () => {
+    render(
+      <OpportunityDrawer
+        detail={detail({ steps: [STEP], steps_emitted: 1, plans: [PLAN] })}
+        open
+        onOpenChange={() => {}}
+        modelSetting={{
+          value: { enabled: false, provider: "anthropic", model: "claude-test" },
+          onToggle: vi.fn(),
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show the code" }));
+    expect(screen.getByRole("switch", { name: /name helpers and draft code/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Generate code/ })).toBeNull();
+    expect(screen.queryByText(/Code generation is off here/)).toBeNull();
+  });
+
+  it("shows the code generation off sentence when neither onGenerateCode nor modelSetting is passed", () => {
+    render(
+      <OpportunityDrawer
+        detail={detail({ steps: [STEP], steps_emitted: 1, plans: [PLAN] })}
+        open
+        onOpenChange={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show the code" }));
+    expect(screen.getByText(/Code generation is off here/)).toBeTruthy();
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Generate code/ })).toBeNull();
+  });
 });
 
 describe("RefactoringDrawer validation", () => {
