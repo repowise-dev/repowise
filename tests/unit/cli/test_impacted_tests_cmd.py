@@ -246,12 +246,12 @@ def test_an_index_that_disagrees_about_its_commit_runs_everything(repo) -> None:
 
 
 def test_a_graph_that_cannot_be_read_runs_everything(repo, monkeypatch) -> None:
-    from repowise.cli.commands import impacted_tests_cmd
+    from repowise.core.analysis import test_collection
 
     async def _broken(*_a, **_k):
         raise RuntimeError("edge table locked")
 
-    monkeypatch.setattr(impacted_tests_cmd, "_graph_candidates", _broken)
+    monkeypatch.setattr(test_collection, "_graph_candidates", _broken)
     result = _run(repo, "main...feat", "--format", "args")
     assert result.stdout == ":all\n"
     assert "The graph could not be read (RuntimeError: edge table locked)" in _err(result)

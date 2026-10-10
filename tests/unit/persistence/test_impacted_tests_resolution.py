@@ -1,6 +1,6 @@
 """The ``impacted-tests`` resolution path: changed lines -> impacted tests.
 
-Exercises :func:`_resolve_impacted` against a seeded ``test_coverage`` table so
+Exercises :func:`resolve_impacted` against a seeded ``test_coverage`` table so
 the honest outcomes are pinned and stay distinguishable: a coverage-backed hit,
 an inferred candidate when a changed file has no coverage rows (the import graph
 first, a filename-pattern guess second), and "unknown" when nothing knows of a
@@ -9,8 +9,9 @@ test. The diff parser and CRUD line-intersection are tested separately.
 
 from __future__ import annotations
 
-from repowise.cli.commands.impacted_tests_cmd import _empty_result, _resolve_impacted
 from repowise.core.analysis.health.coverage import TestCoverage
+from repowise.core.analysis.test_collection import empty_result as _empty_result
+from repowise.core.analysis.test_collection import resolve_impacted as _resolve_impacted
 from repowise.core.persistence.crud import save_test_coverage
 from tests.unit.persistence.helpers import insert_repo
 
@@ -276,12 +277,12 @@ async def test_coverage_adds_to_the_graph_and_never_replaces_it(async_session) -
 
 
 async def test_a_graph_read_failure_is_reported_not_swallowed(async_session, monkeypatch) -> None:
-    from repowise.cli.commands import impacted_tests_cmd
+    from repowise.core.analysis import test_collection
 
     async def _broken(*_a, **_k):
         raise RuntimeError("edge table locked")
 
-    monkeypatch.setattr(impacted_tests_cmd, "_graph_candidates", _broken)
+    monkeypatch.setattr(test_collection, "_graph_candidates", _broken)
     repo = await insert_repo(async_session)
     out = _empty_result(1)
     await _resolve_impacted(async_session, repo.id, {"src/a.py": {1}}, set(), out)
