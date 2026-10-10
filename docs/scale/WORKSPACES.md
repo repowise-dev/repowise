@@ -197,11 +197,12 @@ contracts:
     - "generated/**"
 ```
 
-Directories named `tests/`, `__tests__/`, and `__mocks__/` are excluded by name;
-`test/`, `spec/`, and `e2e/` are deliberately *not* excluded by directory, since those
-names double as legitimate product directories in some codebases. Regardless of
-directory, filenames matching `test_*.py`, `*_test.py`, `*_test.go`, `*.test.*`,
-`*.spec.*`, `*.e2e.*`, or `conftest.py` are always excluded: a route or topic that
+Test files and their fixtures, mocks and snapshots are excluded, decided by the same
+classifier that marks files as tests in the index: test trees (`tests/`, `test/`,
+`__tests__/`, `e2e/`, `src/test/java`, .NET `Foo.Tests/`), test-named source files in any
+language (`test_*.py`, `*_test.go`, `*.test.*`, `*.spec.*`, `*.e2e.*`, `FooTest.java`),
+`conftest.py`, and `__mocks__/`. A `spec/` directory is excluded only when its files
+look like tests, so an OpenAPI `spec/` is still scanned. A route or topic that
 exists only in a test is a fixture, not a service contract. Calls to a literal
 third-party host (Stripe, Formspree, ...) that is not a workspace service are
 excluded from matching and reported under the `external_host` diagnostics reason.

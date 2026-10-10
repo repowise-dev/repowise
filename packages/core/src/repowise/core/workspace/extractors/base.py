@@ -18,40 +18,10 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from repowise.core.ingestion.languages.registry import REGISTRY
+from repowise.core.test_paths import is_test_related_path
 
 if TYPE_CHECKING:
     from repowise.core.workspace.repo_index import RepoIndex
-
-# Path segments that mark a test/mock tree. A route handler or topic publisher
-# that exists only under one of these is a fixture, not a real service contract,
-# so it is excluded from contract extraction by default (configurable via the
-# workspace ``contracts.exclude_globs``). Kept to unambiguous test-only dir names:
-# singular ``test``/``spec``/``e2e`` are intentionally excluded because they
-# double as legitimate product directories (an OpenAPI ``spec/``, a ``test/``
-# feature). Test *files* under those dirs are still caught by the filename
-# patterns below.
-_TEST_DIR_SEGMENTS = frozenset({"tests", "__tests__", "__mocks__"})
-
-# .NET test projects are sibling directories named after the project under test
-# (``Foo.Tests/``, case-sensitive), not a ``tests/`` tree. Read from the language
-# registry so a suffix added there is excluded here too. ``.Specs`` is left out
-# for the reason ``spec/`` is above: it can hold real OpenAPI or proto contracts.
-_TEST_PROJECT_DIR_SUFFIXES = tuple(
-    suffix for suffix in REGISTRY.test_dir_suffixes() if suffix != ".Specs"
-)
-
-# Filename patterns that mark a test file regardless of directory.
-_TEST_FILE_PATTERNS = (
-    "test_*.py",
-    "*_test.py",
-    "*_test.go",
-    "*.test.*",
-    "*.spec.*",
-    "*.e2e.*",
-    "conftest.py",
-)
-
 
 # Repowise's own contract-extractor sources. Their docstrings and comments spell
 # out the syntax each dialect matches (``@app.get("/path")``, ``topic::orders``,
@@ -71,17 +41,6 @@ def line_at(content: str, offset: int) -> int:
     return content.count("\n", 0, offset) + 1
 
 
-def is_test_path(rel_path: str) -> bool:
-    """True when *rel_path* (POSIX) lives in a test tree or is a test file."""
-    parts = rel_path.split("/")
-    if any(
-        seg in _TEST_DIR_SEGMENTS or seg.endswith(_TEST_PROJECT_DIR_SUFFIXES) for seg in parts[:-1]
-    ):
-        return True
-    name = parts[-1]
-    return any(fnmatch(name, pat) for pat in _TEST_FILE_PATTERNS)
-
-
 def make_exclude_predicate(
     extra_globs: tuple[str, ...] = (),
     *,
@@ -89,7 +48,9 @@ def make_exclude_predicate(
 ) -> Callable[[str], bool]:
     """Build a ``rel_path -> bool`` skip predicate for contract extraction.
 
-    Skips the default test/spec trees (unless *exclude_tests* is False), the
+    Skips test material and its fixtures and mocks (unless *exclude_tests* is
+    False): a route handler or topic publisher that exists only there is a
+    fixture, not a real service contract. Also skips the
     extractors' own source tree (see :data:`_SELF_EXCLUDE_GLOBS`), plus any
     user-supplied ``extra_globs`` (matched against the full POSIX path and the
     bare filename).
@@ -97,7 +58,7 @@ def make_exclude_predicate(
     globs = _SELF_EXCLUDE_GLOBS + tuple(extra_globs)
 
     def skip(rel_path: str) -> bool:
-        if exclude_tests and is_test_path(rel_path):
+        if exclude_tests and is_test_related_path(rel_path):
             return True
         name = rel_path.rsplit("/", 1)[-1]
         return any(fnmatch(rel_path, g) or fnmatch(name, g) for g in globs)

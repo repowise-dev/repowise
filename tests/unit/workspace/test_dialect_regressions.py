@@ -133,15 +133,18 @@ class TestExtractorSelfExclusion:
         assert skip("Foo.Worker.Tests/OrderPlacedTests.cs")
         assert skip("src/Billing.Tests/Consumers/InvoiceConsumerTests.vb")
 
-    def test_a_dotnet_specs_project_is_still_scanned(self) -> None:
-        # Left in for the reason a `spec/` directory is: it can hold real
-        # OpenAPI or proto contracts.
+    def test_test_material_follows_the_shared_classifier(self) -> None:
+        # One answer with ingestion's is_test flag: SpecFlow `.Specs` projects,
+        # PascalCase suite folders, `.e2e.` helpers and colocated tests are
+        # skipped, while an OpenAPI `spec/` and a shipped `.Testing` library
+        # are still scanned.
         skip = make_exclude_predicate()
-        assert not skip("Foo.Specs/openapi.yaml")
-
-    def test_a_name_that_only_ends_like_a_test_project_is_still_scanned(self) -> None:
-        skip = make_exclude_predicate()
-        assert not skip("LoadTests/Runner.cs")
+        assert skip("Foo.Specs/Steps/OrderSteps.cs")
+        assert skip("LoadTests/Runner.cs")
+        assert skip("src/gateway/test-helpers.e2e.ts")
+        assert skip("src/api/client.test.ts")
+        assert skip("src/__mocks__/api.ts")
+        assert not skip("spec/openapi/users.yaml")
         assert not skip("src/Foo.Testing/Clients/OrdersClient.cs")
 
     def test_dotnet_test_projects_are_scanned_when_tests_are_included(self) -> None:
