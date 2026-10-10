@@ -82,7 +82,7 @@ interface CardSpec {
 const CARDS: CardSpec[] = [
   {
     view: "health",
-    title: "Health Dashboard",
+    title: "Code Health",
     icon: Activity,
     subtitle: (s) =>
       s?.health
@@ -91,7 +91,7 @@ const CARDS: CardSpec[] = [
   },
   {
     view: "architecture",
-    title: "Architecture Map",
+    title: "Architecture",
     icon: Layers,
     subtitle: () => "Modules and layers on one canvas",
   },
@@ -103,7 +103,7 @@ const CARDS: CardSpec[] = [
   },
   {
     view: "refactoring",
-    title: "Refactoring Plans",
+    title: "Refactoring",
     icon: Wrench,
     subtitle: (s) =>
       s?.counts.refactoringPlans != null
@@ -112,7 +112,7 @@ const CARDS: CardSpec[] = [
   },
   {
     view: "decisions",
-    title: "Decision Timeline",
+    title: "Decisions",
     icon: Scale,
     subtitle: (s) =>
       s?.counts.decisions != null
@@ -127,7 +127,7 @@ const CARDS: CardSpec[] = [
   },
   {
     view: "risk",
-    title: "Branch Risk",
+    title: "Change Risk",
     icon: GitBranch,
     subtitle: (_s, defaultBranch) => `Score this branch against ${defaultBranch ?? "main"}`,
   },
@@ -190,38 +190,28 @@ export function App({ host, repo, refreshToken }: ViewProps<"home">) {
       />
       <nav
         aria-label="Dashboards"
-        className="space-y-1.5 border-t border-[var(--color-border-default)] pt-3"
+        className="border-t border-[var(--color-border-default)] pt-3"
       >
         <p className="px-1 pb-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           Explore
         </p>
         {CARDS.map((card) => (
-          <LauncherCard
+          <LauncherRow
             key={card.view}
-            spec={card}
+            icon={card.icon}
+            title={card.title}
             subtitle={card.subtitle(summary, repo.defaultBranch)}
             onOpen={() => host.openView(card.view)}
           />
         ))}
+        <LauncherRow
+          icon={Settings2}
+          title="Settings"
+          subtitle="Toggle editor signals, server, and more"
+          muted
+          onOpen={() => host.openView("settings")}
+        />
       </nav>
-      <button
-        type="button"
-        onClick={() => host.openView("settings")}
-        className="group flex w-full items-center gap-3 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2.5 text-left transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)]"
-      >
-        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-bg-inset)] text-[var(--color-text-secondary)]">
-          <Settings2 className="h-4 w-4" />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-[13px] font-medium text-[var(--color-text-primary)]">
-            Settings
-          </span>
-          <span className="block text-[11px] leading-snug text-[var(--color-text-tertiary)]">
-            Toggle editor signals, server, and more
-          </span>
-        </span>
-        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100" />
-      </button>
       <Footer host={host} />
     </div>
   );
@@ -244,8 +234,8 @@ function Footer({ host }: { host: WebviewHost }) {
 
   const options: { value: ThemePreference; icon: ComponentType<{ className?: string }>; label: string }[] = [
     { value: "auto", icon: Monitor, label: "Follow editor theme" },
-    { value: "light", icon: Sun, label: "Light" },
-    { value: "dark", icon: Moon, label: "Dark" },
+    { value: "light", icon: Sun, label: "Light theme" },
+    { value: "dark", icon: Moon, label: "Dark theme" },
   ];
 
   return (
@@ -256,7 +246,7 @@ function Footer({ host }: { host: WebviewHost }) {
           alt=""
           className="h-4 w-4"
         />
-        <span className="text-[11px] font-semibold tracking-wide text-[var(--color-text-tertiary)]">
+        <span className="text-xs font-semibold tracking-wide text-[var(--color-text-tertiary)]">
           Repowise
         </span>
       </span>
@@ -272,6 +262,7 @@ function Footer({ host }: { host: WebviewHost }) {
             onClick={() => choose(value)}
             aria-pressed={pref === value}
             title={label}
+            aria-label={label}
             className={
               pref === value
                 ? "rounded-md bg-[var(--color-accent-primary)] p-1 text-[var(--color-text-on-accent)]"
@@ -308,11 +299,11 @@ function Hero({
   return (
     <section aria-label="Repository health" className="px-1 pt-1">
       <div className="flex items-center justify-between gap-2">
-        <p className="truncate text-[13px] font-semibold text-[var(--color-text-primary)]">
+        <p className="truncate text-xs font-semibold text-[var(--color-text-primary)]">
           {repoName}
         </p>
         {branch ? (
-          <span className="flex min-w-0 shrink items-center gap-1 text-[11px] text-[var(--color-text-tertiary)]">
+          <span className="flex min-w-0 shrink items-center gap-1 text-xs text-[var(--color-text-tertiary)]">
             <GitBranch className="h-3 w-3 shrink-0" />
             <span className="truncate font-mono">{branch}</span>
           </span>
@@ -320,7 +311,7 @@ function Hero({
       </div>
 
       {loading ? (
-        <div className="mt-3 space-y-2" aria-hidden>
+        <div className="mt-3 space-y-2" role="status" aria-label="Loading health score">
           <div className="h-9 w-24 animate-pulse rounded-md bg-[var(--color-bg-inset)]" />
           <div className="h-3 w-40 animate-pulse rounded bg-[var(--color-bg-inset)]" />
         </div>
@@ -334,7 +325,7 @@ function Hero({
             </span>
             <span className="pb-0.5 text-xs text-[var(--color-text-tertiary)]">/ 10</span>
           </div>
-          <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-[var(--color-text-secondary)]">
+          <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-[var(--color-text-secondary)]">
             <span>Average health</span>
             {hasHotspot ? (
               <>
@@ -458,11 +449,11 @@ function Freshness({
         type="button"
         onClick={onUpdate}
         disabled={updating}
-        title="Run an incremental index update"
+        title="Update the index with recent changes"
         className={
           stale && !updating
-            ? "flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--color-accent-primary)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--color-text-on-accent)] transition-opacity hover:opacity-90"
-            : "flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-60"
+            ? "flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--color-accent-primary)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-on-accent)] transition-opacity hover:opacity-90"
+            : "flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-60"
         }
       >
         <RefreshCw className={updating ? "h-3 w-3 animate-spin" : "h-3 w-3"} />
@@ -472,34 +463,38 @@ function Freshness({
   );
 }
 
-function LauncherCard({
-  spec,
+function LauncherRow({
+  icon: Icon,
+  title,
   subtitle,
+  muted,
   onOpen,
 }: {
-  spec: CardSpec;
+  icon: ComponentType<{ className?: string }>;
+  title: string;
   subtitle: string;
+  muted?: boolean;
   onOpen: () => void;
 }) {
-  const Icon = spec.icon;
   return (
     <button
       type="button"
       onClick={onOpen}
-      className="group flex w-full items-center gap-3 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2.5 text-left transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)]"
+      className="group flex w-full items-center gap-3 rounded-md border-b border-[var(--color-border-default)] px-2 py-2 text-left transition-colors last:border-b-0 hover:bg-[var(--color-bg-wash-hover)]"
     >
-      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]">
-        <Icon className="h-4 w-4" />
-      </span>
+      <Icon
+        className={
+          "h-4 w-4 shrink-0 " +
+          (muted ? "text-[var(--color-text-secondary)]" : "text-[var(--color-accent-primary)]")
+        }
+      />
       <span className="min-w-0 flex-1">
-        <span className="block text-[13px] font-medium text-[var(--color-text-primary)]">
-          {spec.title}
-        </span>
-        <span className="block text-[11px] leading-snug text-[var(--color-text-tertiary)]">
+        <span className="block text-xs font-medium text-[var(--color-text-primary)]">{title}</span>
+        <span className="block text-xs leading-snug text-[var(--color-text-tertiary)]">
           {subtitle}
         </span>
       </span>
-      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100" />
+      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
     </button>
   );
 }

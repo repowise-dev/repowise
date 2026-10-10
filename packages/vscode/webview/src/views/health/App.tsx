@@ -152,7 +152,7 @@ function Dashboard({
                 than no key: every node is the "no data" swatch when the churn
                 request failed, so say that instead. */}
             {churnFailed ? (
-              <span className="text-[11px] text-[var(--color-text-tertiary)]">
+              <span className="text-xs text-[var(--color-text-tertiary)]">
                 Could not load churn for this lens. The other lenses are
                 unaffected.
               </span>
