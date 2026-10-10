@@ -3,12 +3,11 @@
 /**
  * One Fix-first item: the change to make, where, why, and what it buys.
  *
- * Collapsed, it is two compact lines: tier and title, then file:line and gain;
- * a due item adds its first step. Expanded, it adds the why, effort,
- * confidence and risk, then the work
- * itself: the steps in order with which ones are mechanical, how to
- * verify the change, the history around the file (muted, never ranked on), and
- * the actions. Every word and number is the payload's; this component chooses
+ * Collapsed, it is two compact lines: tier and title, then file:line and
+ * gain; a due item adds its first step. Expanded, it adds the why, effort,
+ * confidence and risk, then the work itself: the steps in order with which
+ * ones are mechanical and what each writes, how to verify the change, the
+ * history around the file (muted, never ranked on), and the actions. Every word and number is the payload's; this component chooses
  * only where each one sits.
  */
 
@@ -20,6 +19,7 @@ import type { OpportunityStatus } from "@repowise-dev/types/refactoring";
 import { getLanguageFromPath } from "../../c4/panels/CodeViewer";
 import { HighlightedCodeBlock } from "../../shared/code-block";
 import { CommandLine } from "../../shared/command-line";
+import { PlaceholderHint } from "../../refactoring/placeholder-hint";
 import { AiPromptButton } from "../ai-prompt-button";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, STATUS_LABEL } from "../labels";
 import { TIER_LABEL, fixLocation, fixPlanLabel, tierReason } from "./scope";
@@ -273,6 +273,7 @@ function StepCode({ step }: { step: FixStep }) {
           className="mb-0 mt-2"
         />
       ) : null}
+      <PlaceholderHint texts={[step.signature ?? "", step.call ?? ""]} />
       {step.command ? <CommandLine command={step.command} /> : null}
     </>
   );
@@ -286,6 +287,7 @@ export function FixVerify({ item }: { item: Pick<FixItem, "verify"> }) {
       <h4 className={MICRO}>Verify</h4>
       {tests.length === 0 ? (
         <p className="mt-1.5 text-xs text-[var(--color-text-secondary)]">
+          {/* The fallback covers items stored before Verify named its prerequisite. */}
           {prerequisite ??
             "No guarding tests found. Write one that pins the current behaviour before changing it."}
         </p>

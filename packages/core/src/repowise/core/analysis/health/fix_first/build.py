@@ -503,10 +503,10 @@ def _refactor_step(
     path = step.get("file_path") or ""
     sym = text.short_symbol(step.get("target_symbol")) or text.basename(path)
     start, end = _span(plan)
+    body = _plan_body(plan)
     code: dict[str, str | None] = {}
     if kind == "extract_method":
-        code = _helper_code(_plan_body(plan))
-        body = _plan_body(plan)
+        code = _helper_code(body)
         into = text.signature(
             body.get("suggested_name"),
             list(body.get("params") or []),
@@ -518,7 +518,7 @@ def _refactor_step(
     elif kind == "extract_helper":
         line_text = f"Replace the duplicate in {sym} with a call to one shared helper"
     elif kind == "extract_class":
-        groups = [g for g in _plan_body(plan).get("groups") or [] if g.get("methods")]
+        groups = [g for g in body.get("groups") or [] if g.get("methods")]
         members = sorted(groups, key=lambda g: len(g["methods"]))[0]["methods"] if groups else []
         line_text = (
             f"Move {', '.join(members[:4])}"
@@ -528,7 +528,7 @@ def _refactor_step(
             else f"Move a cohesive group of {sym}'s methods into a new class"
         )
     elif kind == "split_file":
-        names = [g.get("name") for g in _plan_body(plan).get("groups") or [] if g.get("name")]
+        names = [g.get("name") for g in body.get("groups") or [] if g.get("name")]
         line_text = (
             f"Split {text.basename(path)} into {', '.join(names[:4])}"
             + (f" and {len(names) - 4} more" if len(names) > 4 else "")
@@ -544,9 +544,7 @@ def _refactor_step(
             else _uncut_cycle_text(path, plan)
         )
     elif kind == "move_method":
-        dest = _plan_body(plan).get("to_class") or text.basename(
-            _plan_body(plan).get("to_file") or ""
-        )
+        dest = body.get("to_class") or text.basename(body.get("to_file") or "")
         line_text = (
             f"Move {sym} to {dest}" if dest else f"Move {sym} to the class it uses most"
         )

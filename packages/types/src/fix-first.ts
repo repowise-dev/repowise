@@ -82,8 +82,6 @@ export interface FixFirstStep {
   line?: number;
   /** Only when the step edits a file other than the item's target. */
   file?: string;
-  /** The helper header the step writes, when the plan wrote one. */
-  text?: string;
 }
 
 export interface FixItem {
@@ -135,6 +133,7 @@ export interface FixItemCompact {
   confidence: FixLevel;
   /** Due items only (tier `now` or `next`). */
   first_step?: FixFirstStep;
+  /** The item's command, or the step to take first when no test reaches it. */
   verify?: { command?: string; prerequisite?: string };
   next_call: ActionCommand;
 }

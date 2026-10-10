@@ -39,6 +39,7 @@ def render_verify_lines(item: Mapping[str, Any]) -> str:
     verify = item["verify"]
     tests = verify["tests"]
     if not tests:
+        # The fallback covers items stored before Verify named its prerequisite.
         return verify.get("prerequisite") or (
             "No guarding tests found. Write a test that pins the current behaviour before you change anything."
         )

@@ -225,7 +225,8 @@ class FixItem:
     def _inline_plan(self) -> dict[str, Any]:
         """A due item's first edit and how to check it, so it can be started
         without the lookup. ``file`` only when the step edits another file,
-        ``line`` only when it names one."""
+        ``line`` only when it names one. ``verify`` is the item's: a step's
+        own, narrower command is on the step, in the full item."""
         out: dict[str, Any] = {}
         step = self.action.steps[0] if self.action.steps else None
         if step is not None:
@@ -234,12 +235,9 @@ class FixItem:
                 first["line"] = step.line
             if step.file_path != self.target.file_path:
                 first["file"] = step.file_path
-            if step.signature:
-                first["text"] = step.signature
             out["first_step"] = first
-        command = (step.command if step else None) or self.verify.command
-        if command:
-            out["verify"] = {"command": command}
+        if self.verify.command:
+            out["verify"] = {"command": self.verify.command}
         elif self.verify.prerequisite:
             out["verify"] = {"prerequisite": self.verify.prerequisite}
         return out

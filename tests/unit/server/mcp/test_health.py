@@ -1607,9 +1607,9 @@ async def test_fix_first_named_page_honours_limit_and_cursor(setup_mcp, health_d
 async def test_due_items_carry_their_first_step_once_and_only_in_the_head(
     setup_mcp, health_data, monkeypatch
 ):
-    """A due item's first step and verify ride on the compact item, the lead's
-    on ``lead`` only, and a page past the dashboard's five leaves the rest to
-    ``fix_id``."""
+    """The dashboard inlines a due lead's first step and verify on ``lead``
+    only; a named page inlines them on its first five other due items and
+    leaves the rest to ``fix_id``."""
     from dataclasses import replace
 
     from repowise.core.analysis.health.fix_first.model import FixStep
@@ -1644,8 +1644,9 @@ async def test_due_items_carry_their_first_step_once_and_only_in_the_head(
         "file": "src/other.py",
     }
     assert block["lead"]["verify"] == {"command": "pytest tests/test_run.py"}
-    assert not {"first_step", "verify"} & set(block["items"][0])
-    assert all("first_step" in item and "verify" in item for item in block["items"][1:])
+    assert not any({"first_step", "verify"} & set(item) for item in block["items"])
+    default = (await get_health(only=["fix_first"]))["fix_first"]["items"]
+    assert [("verify" in item) for item in default] == [False, *[True] * 4]
     page = (await get_health(only=["fix_first"], limit=25))["fix_first"]["items"]
     assert [("first_step" in item) for item in page] == [False, *[True] * 4, *[False] * 3]
 

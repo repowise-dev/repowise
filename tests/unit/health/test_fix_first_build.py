@@ -319,7 +319,8 @@ def test_a_step_names_its_own_command_only_when_it_differs() -> None:
     item = next(i for i in _build(performance=[perf]).items if i.kind == "perf_fix")
     assert item.verify.command == "pytest tests/test_a.py"
     assert [s.command for s in item.action.steps] == ["pytest tests/test_b.py", None]
-    assert item.compact()["verify"] == {"command": "pytest tests/test_b.py"}
+    # Inline, the item's command: a step's own, narrower one stays on the step.
+    assert item.compact()["verify"] == {"command": "pytest tests/test_a.py"}
 
 
 def test_an_extract_method_step_carries_the_helper_header_and_call() -> None:
@@ -332,7 +333,8 @@ def test_an_extract_method_step_carries_the_helper_header_and_call() -> None:
     assert (first.signature, first.call) == ("def _sum_rows(rows, limit):",
                                              "total = _sum_rows(rows, limit)")
     assert (second.signature, second.call) == (None, None)
-    assert core.compact()["first_step"]["text"] == "def _sum_rows(rows, limit):"
+    # The header is on the step, in the full item; the compact row names the edit only.
+    assert set(core.compact()["first_step"]) == {"action", "line"}
     # A finding with no plan of its own takes the same texts from the span it starts at.
     plans[0].update(file_path="src/core.py", target_symbol="src/core.py::run")
     lone = _build(plans=plans, refactoring=[], performance=[]).lead

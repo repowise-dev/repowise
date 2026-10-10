@@ -3,6 +3,7 @@
 import { ArrowRight, CornerDownRight, FilePlus2, Layers, Scissors } from "lucide-react";
 import { getLanguageFromPath } from "../c4/panels/CodeViewer";
 import { HighlightedCodeBlock } from "../shared/code-block";
+import { PlaceholderHint } from "./placeholder-hint";
 import { ProvenancePathList } from "../shared/provenance-path-list";
 import {
   blastFiles,
@@ -13,8 +14,6 @@ import {
   extractHelperOccurrences,
   extractMethodPlan,
   extractMethodSignature,
-  HELPER_NAME_PLACEHOLDER,
-  HELPER_TYPE_PLACEHOLDER,
   helperSite,
   moveTarget,
   performancePlanDetail,
@@ -490,14 +489,7 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
                   className="mb-0 mt-2"
                 />
               ) : null}
-              {[em.signature_text, em.call_site?.new_text ?? ""].some(
-                (t) => t.includes(HELPER_NAME_PLACEHOLDER) || t.includes(HELPER_TYPE_PLACEHOLDER),
-              ) ? (
-                <p className="mt-2 text-2xs text-[var(--color-text-tertiary)]">
-                  Replace {HELPER_NAME_PLACEHOLDER} with a name for what the lines do, and any{" "}
-                  {HELPER_TYPE_PLACEHOLDER} with the value's type.
-                </p>
-              ) : null}
+              <PlaceholderHint texts={[em.signature_text, em.call_site?.new_text ?? ""]} />
               {em.notes.map((note) => (
                 <p key={note} className="mt-2 text-2xs text-[var(--color-text-tertiary)]">
                   {note}

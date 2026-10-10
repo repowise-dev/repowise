@@ -152,8 +152,8 @@ describe("Fix first items", () => {
     const first = "No test reaches this; add a characterization test for `run` before the edit.";
     const step = {
       ...REFACTOR.action.steps[0]!,
-      signature: "def _compute_info(repo_path):",
-      call: "info = _compute_info(repo_path)",
+      signature: "def _<name>(repo_path):",
+      call: "info = _<name>(repo_path)",
       command: "pytest tests/unit/cli/test_repo_scanner.py",
     };
     const item: FixItem = {
@@ -167,7 +167,8 @@ describe("Fix first items", () => {
     // Open, the line gives way to the step itself, with what it writes and checks.
     expect(screen.getAllByText(step.text).length).toBe(1);
     expect(screen.getByText("New helper")).toBeTruthy();
-    expect(screen.getByText("info = _compute_info(repo_path)")).toBeTruthy();
+    expect(screen.getByText("info = _<name>(repo_path)")).toBeTruthy();
+    expect(screen.getByText(/with a name for what the lines do/)).toBeTruthy();
     expect(screen.getByText(step.command)).toBeTruthy();
     expect(screen.getByText(first)).toBeTruthy();
   });

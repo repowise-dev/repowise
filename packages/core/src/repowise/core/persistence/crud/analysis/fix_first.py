@@ -481,8 +481,10 @@ async def _finding_validator(
             evidence=inputs.evidence,
             order_tests=False,
         )
+        if plan.total:
+            return plan.as_dict()
         # No test found: unknown, with only the step to take before the edit.
-        return plan.as_dict() if plan.total else {"prerequisite": plan.prerequisite}
+        return {"prerequisite": plan.prerequisite} if plan.prerequisite else None
 
     return validate
 

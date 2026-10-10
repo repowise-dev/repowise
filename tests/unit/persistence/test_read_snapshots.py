@@ -252,6 +252,22 @@ def test_decode_inverts_asdict_over_every_item_kind() -> None:
     assert decode_or_none(FixFirstQueue, stored) == queue
 
 
+def test_a_queue_stored_before_steps_had_code_still_decodes() -> None:
+    """A snapshot written before steps carried their helper texts and command,
+    and Verify its prerequisite, reads those as absent until it is rewritten."""
+    queue = build_fix_first(metrics=METRICS, findings=FINDINGS, refactoring=REFACTORING,
+                            performance=PERFORMANCE, plans=PLANS, limit=None)
+    stored = json.loads(json.dumps(asdict(queue)))
+    for item in stored["items"]:
+        del item["verify"]["prerequisite"]
+        for step in item["action"]["steps"]:
+            for key in ("signature", "call", "command"):
+                del step[key]
+    decoded = decode_or_none(FixFirstQueue, stored)
+    assert decoded is not None and [i.id for i in decoded.items] == [i.id for i in queue.items]
+    assert all(s.command is None for i in decoded.items for s in i.action.steps)
+
+
 @dataclass(frozen=True)
 class Leaf:
     n: int
