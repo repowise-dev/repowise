@@ -299,7 +299,8 @@ describe("DeadCodeView", () => {
       ).not.toBeInTheDocument(),
     );
     expect(screen.queryByText("No dead code found")).not.toBeInTheDocument();
-    expect(screen.getByText("Every finding is resolved or set aside")).toBeInTheDocument();
+    // The row leaves and the resolved state arrives in separate renders.
+    expect(await screen.findByText("Every finding is resolved or set aside")).toBeInTheDocument();
 
     const undo = lastUndoAction();
     await undo.onClick();
