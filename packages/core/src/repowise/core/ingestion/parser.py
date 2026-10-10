@@ -1314,6 +1314,58 @@ def _is_reexport_import(stmt_node: Node, raw: str, language: str) -> bool:
     return language == "swift" and raw.startswith("@_exported")
 
 
+def _parse_tree(
+    lang: str, language: Language, grammar_tag: str, source: bytes
+) -> tuple[Node, list[str], str, Language]:
+    """``(root, parse errors, grammar tag, language)``; a JSX-bearing ``.ts`` retries as TSX."""
+    parser = Parser(language)
+    tree = parser.parse(source)
+    root = tree.root_node
+
+    parse_errors = _collect_error_nodes(root)
+
+    # Adaptive TSX grammar fallback: if a .ts file contains JSX markup,
+    # tree-sitter-typescript produces ERROR nodes. Re-parse using the TSX
+    # grammar ONLY IF:
+    #   1. Initial parse yielded error nodes (parse_errors is non-empty)
+    #   2. The file projects to TypeScript and is not already on tsx
+    #   3. Source contains JSX-specific closing tokens (b"/>" or b"</")
+    # A .vue render function may be written in JSX
+    # (``vnodes.push(<i class={c} />)``), which is the single TS parse
+    # failure across a 1,593-file .vue corpus. ``source`` here is the
+    # markup-blanked projection, so the template's own ``</`` and ``/>``
+    # are already spaces — the token test still keys on real JSX only.
+    # The swap is strictly safe: it only takes effect when TSX yields
+    # FEWER errors than the first parse.
+    if (
+        parse_errors
+        and lang in ("typescript", "vue")
+        and grammar_tag != "tsx"
+        and (b"/>" in source or b"</" in source)
+    ):
+        tsx_language = _get_language("tsx")
+        if tsx_language is not None:
+            tsx_tree = Parser(tsx_language).parse(source)
+            tsx_errors = _collect_error_nodes(tsx_tree.root_node)
+            if len(tsx_errors) < len(parse_errors):
+                tree = tsx_tree
+                root = tree.root_node
+                parse_errors = tsx_errors
+                # Both grammar_tag AND language must be reassigned.
+                # grammar_tag is consumed immediately below by
+                # the caller's _get_query(lang, language, grammar_tag), which
+                # appends tsx.scm to the base typescript.scm query.
+                # That append is what supplies the
+                # jsx_opening_element / jsx_self_closing_element captures
+                # that restore JSX component call-site edges.
+                # Reassigning only ``tree`` / ``root`` would fix parse
+                # errors but leave those edges missing — the dead-code
+                # false-positive would remain.
+                grammar_tag = "tsx"
+                language = tsx_language
+    return root, parse_errors, grammar_tag, language
+
+
 class ASTParser:
     """Unified AST parser — works for all languages via .scm query files.
 
@@ -1330,6 +1382,31 @@ class ASTParser:
 
     def __init__(self) -> None:
         pass
+
+    def parse_imports(self, file_info: FileInfo, source: bytes) -> list[Import]:
+        """Only *source*'s imports: :meth:`parse_file`'s grammar, query and import pass.
+
+        Symbols, calls and references are not extracted, which is most of a
+        parse. A language without a tree-sitter path takes the full parse.
+        """
+        lang = file_info.language
+        config = LANGUAGE_CONFIGS.get(lang)
+        grammar_tag = grammar_tag_for(lang, file_info.path)
+        language = _get_language(grammar_tag)
+        signature_file = lang == "fsharp" and file_info.path.endswith(".fsi")
+        if (
+            lang in SPECIAL_HANDLER_LANGUAGES
+            or config is None
+            or language is None
+            or signature_file
+        ):
+            return self.parse_file(file_info, source).imports
+        source = prepare_source(lang, source, path=file_info.path)
+        root, _, grammar_tag, language = _parse_tree(lang, language, grammar_tag, source)
+        query = self._get_query(lang, language, grammar_tag)
+        matches = _run_query(query, root) if query is not None else []
+        src = source.decode("utf-8", errors="replace")
+        return self._extract_imports(matches, config, file_info, src)
 
     def parse_file(self, file_info: FileInfo, source: bytes) -> ParsedFile:
         """Parse *source* bytes and return a fully populated ParsedFile."""
@@ -1397,52 +1474,8 @@ class ASTParser:
         original_source = source
         source = prepare_source(lang, source, path=file_info.path)
 
-        parser = Parser(language)
-        tree = parser.parse(source)
+        root, parse_errors, grammar_tag, language = _parse_tree(lang, language, grammar_tag, source)
         src = source.decode("utf-8", errors="replace")
-        root = tree.root_node
-
-        parse_errors = _collect_error_nodes(root)
-
-        # Adaptive TSX grammar fallback: if a .ts file contains JSX markup,
-        # tree-sitter-typescript produces ERROR nodes. Re-parse using the TSX
-        # grammar ONLY IF:
-        #   1. Initial parse yielded error nodes (parse_errors is non-empty)
-        #   2. The file projects to TypeScript and is not already on tsx
-        #   3. Source contains JSX-specific closing tokens (b"/>" or b"</")
-        # A .vue render function may be written in JSX
-        # (``vnodes.push(<i class={c} />)``), which is the single TS parse
-        # failure across a 1,593-file .vue corpus. ``source`` here is the
-        # markup-blanked projection, so the template's own ``</`` and ``/>``
-        # are already spaces — the token test still keys on real JSX only.
-        # The swap is strictly safe: it only takes effect when TSX yields
-        # FEWER errors than the first parse.
-        if (
-            parse_errors
-            and lang in ("typescript", "vue")
-            and grammar_tag != "tsx"
-            and (b"/>" in source or b"</" in source)
-        ):
-            tsx_language = _get_language("tsx")
-            if tsx_language is not None:
-                tsx_tree = Parser(tsx_language).parse(source)
-                tsx_errors = _collect_error_nodes(tsx_tree.root_node)
-                if len(tsx_errors) < len(parse_errors):
-                    tree = tsx_tree
-                    root = tree.root_node
-                    parse_errors = tsx_errors
-                    # Both grammar_tag AND language must be reassigned.
-                    # grammar_tag is consumed immediately below by
-                    # self._get_query(lang, language, grammar_tag), which
-                    # appends tsx.scm to the base typescript.scm query.
-                    # That append is what supplies the
-                    # jsx_opening_element / jsx_self_closing_element captures
-                    # that restore JSX component call-site edges.
-                    # Reassigning only ``tree`` / ``root`` would fix parse
-                    # errors but leave those edges missing — the dead-code
-                    # false-positive would remain.
-                    grammar_tag = "tsx"
-                    language = tsx_language
 
         query = self._get_query(lang, language, grammar_tag)
 

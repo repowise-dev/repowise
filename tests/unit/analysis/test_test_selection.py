@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.analysis.test_selection import (
+    MAX_INDEX_GAP,
     RUN_ALL,
     Selection,
     SelectionInput,
@@ -16,10 +17,12 @@ from repowise.core.analysis.test_selection import (
     doc_readers,
     format_args,
     is_runnable_test,
+    plan_gap,
     plugin_loader,
     resolve_runner,
     runner_args,
     select_tests,
+    with_rewired,
 )
 from repowise.core.pytest_roots import read_pytest_roots
 
@@ -347,7 +350,7 @@ def test_an_index_that_cannot_be_trusted_runs_everything(kwargs, start) -> None:
     assert any(r.startswith(start) for r in sel.reasons), sel.reasons
 
 
-def test_an_index_built_before_other_files_changed_runs_everything() -> None:
+def test_an_index_gap_no_one_traced_runs_everything() -> None:
     tiers = _tiers(inferred=[_inferred("src/a.py", "tests/test_a.py", "call-graph")])
     assert _select(["src/a.py"], tiers, index_gap=["README.md"]).run_all is False
     stale = _select(["src/a.py"], tiers, index_gap=["README.md", "src/b.py"])
@@ -358,6 +361,107 @@ def test_an_index_built_before_other_files_changed_runs_everything() -> None:
     unknown = _select(["src/a.py"], tiers, index_gap=None)
     assert unknown.run_all
     assert unknown.reasons[0].startswith("Cannot tell what changed since the index was built")
+
+
+# -- an index behind the base -------------------------------------------------
+
+
+def _behind(gap, inferred=(), **kwargs):
+    """src/a.py changed; the index predates *gap*, every candidate in it rewired."""
+    tiers = _tiers(inferred=[_inferred("src/a.py", "tests/test_a.py", "call-graph"), *inferred])
+    plan = plan_gap(gap, _NONE)
+    plan = with_rewired(plan, plan.candidates, kwargs.pop("indexed_files", ()))
+    return _select(["src/a.py"], tiers, index_gap=gap, gap=plan, **kwargs)
+
+
+def test_an_index_behind_the_base_adds_the_tests_reaching_the_gap() -> None:
+    sel = _behind(
+        ["src/b.py", "src/c.py", "README.md"],
+        inferred=[_inferred("src/b.py", "tests/test_b.py", "import-graph")],
+    )
+    assert sel.run_all is False
+    assert sel.test_files == ("tests/test_a.py", "tests/test_b.py")
+    # src/c.py has no test: it links none to the change, which is not a reason.
+    assert "The index predates 2 changed file(s) outside this change" in sel.reasons[0]
+
+
+@pytest.mark.parametrize(
+    ("path", "why"),
+    [
+        ("uv.lock", "uv.lock changed after the index was built (1 such): dependencies"),
+        ("web/tsconfig.json", "build or test configuration can change any test"),
+        (".repowise/config.yaml", "Repowise's configuration changed"),
+    ],
+)
+def test_configuration_changed_after_the_index_runs_everything(path, why) -> None:
+    sel = _behind(["src/b.py", path])
+    assert sel.run_all
+    assert why in sel.reasons[0]
+    assert plan_gap(["src/b.py", path], _NONE).candidates == ()
+
+
+def test_nothing_is_traced_when_the_change_runs_everything_anyway() -> None:
+    assert plan_gap(["src/b.py"], _NONE, ["uv.lock", "src/a.py"]).candidates == ()
+    assert plan_gap(["src/b.py"], _NONE, ["src/a.py"]).candidates == ("src/b.py",)
+
+
+@pytest.mark.parametrize("path", [".github/workflows/ci.yml", "tests/fixtures/user.json"])
+def test_ci_config_and_test_data_after_the_index_cannot_reach_the_change(path) -> None:
+    assert _behind([path]).run_all is False
+    assert plan_gap([path, "src/b.py", "ui/app.css"], _NONE).candidates == ("src/b.py",)
+
+
+def test_a_production_package_init_after_the_index_stands_for_its_modules() -> None:
+    files = ["pkg/__init__.py", "pkg/sub/x.py", "pkg/y.py", "other/z.py"]
+    plan = plan_gap(["pkg/__init__.py", "other/z.py"], _NONE)
+    assert with_rewired(plan, plan.candidates, files).targets == (
+        "other/z.py",
+        "pkg/__init__.py",
+        "pkg/sub/x.py",
+        "pkg/y.py",
+    )
+    # An __init__.py whose imports did not move stands for nothing.
+    assert with_rewired(plan, ["other/z.py"], files).targets == ("other/z.py",)
+    sel = _behind(
+        ["pkg/__init__.py"],
+        inferred=[_inferred("pkg/sub/x.py", "tests/test_x.py", "import-graph")],
+        indexed_files=files,
+    )
+    assert sel.run_all is False and "tests/test_x.py" in sel.test_files
+
+
+def test_a_gap_too_large_to_trace_runs_everything() -> None:
+    gap = [f"src/m{i}.py" for i in range(MAX_INDEX_GAP + 1)]
+    sel = _behind(gap)
+    assert sel.run_all
+    assert f"more than the {MAX_INDEX_GAP} worth tracing" in sel.reasons[0]
+    assert plan_gap(gap, _NONE).candidates == ()
+
+
+def test_a_test_deleted_after_the_index_is_not_a_stale_index() -> None:
+    sel = _behind(
+        ["src/b.py", "tests/test_b.py"],
+        inferred=[_inferred("src/b.py", "tests/test_b.py", "import-graph")],
+        missing=["tests/test_b.py"],
+    )
+    assert sel.run_all is False
+    assert sel.test_files == ("tests/test_a.py",)
+
+
+def test_a_gap_route_through_an_unimported_helper_runs_everything() -> None:
+    sel = _behind(
+        ["src/b.py"], inferred=[_inferred("src/b.py", "tests/helpers.py", "import-graph")]
+    )
+    assert sel.run_all
+    assert sel.reasons[0].startswith(
+        "Changed after the index was built: src/b.py is reached through the test helper"
+    )
+
+
+def test_the_inert_gap_reasons_name_real_full_run_groups() -> None:
+    from repowise.core.analysis.test_selection import _FULL_RUN_GROUPS, _GAP_INERT
+
+    assert {why for why, _ in _FULL_RUN_GROUPS} >= _GAP_INERT
 
 
 # -- the subset ---------------------------------------------------------------

@@ -19,8 +19,9 @@ is chosen when any of these hold:
    a route to it passes through a test helper no test imports, or any Python
    test helper while a conftest or pytest config loads plugins by name (its
    users are unknown);
-6. the index is missing, was built before other files changed, disagrees with
-   itself about its commit, or its graph could not be read;
+6. the index is missing, disagrees with itself about its commit, or its graph
+   could not be read; or the files changed between its commit and the base are
+   unknown, too many to trace, or include a manifest, lockfile or build config;
 7. the per-test map hit its stored row cap;
 8. a deleted code file has no known test, or a test the index names is
    missing from the checkout.
@@ -28,14 +29,15 @@ is chosen when any of these hold:
 Otherwise the subset is the covering tests, the tests the graph shows reaching
 the changed files (a changed test, the call graph, the import graph) and
 ``tests.always_run``, plus every test the graph cannot see into (not indexed,
-or with no resolved edge). A test package's ``__init__.py`` or a ``conftest.py``
-(changed, deleted, or on a route to a changed file) stands for every test under
-its directory. A helper module tests import stands for the tests that import
-it, directly or through other helpers (basis ``helper-importers``), which are the files that run it: Python runs the package file
-for each module in it, and pytest loads a conftest for each test at or below
-it. Only documentation (``docs/`` and the root README,
-CHANGELOG, LICENSE and the like, never code) that no code names is skipped
-without a test.
+or with no resolved edge), plus the tests reaching files whose imports moved
+between the indexed commit and the base (:func:`plan_gap`). A test package's
+``__init__.py`` or a ``conftest.py`` (changed, deleted, or on a route to a
+changed file) stands for every test under its directory. A helper module tests
+import stands for the tests that import it, directly or through other helpers
+(basis ``helper-importers``), which are the files that run it: Python runs the
+package file for each module in it, and pytest loads a conftest for each test
+at or below it. Only documentation (``docs/`` and the root README, CHANGELOG,
+LICENSE and the like, never code) that no code names is skipped without a test.
 
 :func:`runner_args` renders a selection as arguments for one test runner; a
 full run renders as the :data:`RUN_ALL` sentinel. pytest and go reject it as a
@@ -45,10 +47,11 @@ a pipeline must branch on the run-all flag rather than rely on the sentinel.
 
 from __future__ import annotations
 
+import functools
 import re
 import shlex
 from collections.abc import Collection, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -367,12 +370,17 @@ def is_runnable_test(path: str, roots: PytestRoots | None = None) -> bool:
     )
 
 
+@functools.lru_cache(maxsize=8)
+def _extra_spec(patterns: tuple[str, ...]) -> pathspec.PathSpec:
+    """``tests.full_run_on`` compiled once per pattern list, not once per path."""
+    return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+
+
 def full_run_reason(path: str, extra: Iterable[str] = ()) -> str | None:
     """Why a change to *path* can change any test, or ``None``."""
     specs = list(_DEFAULT_SPECS)
     if extra := tuple(extra):
-        spec = pathspec.PathSpec.from_lines("gitwildmatch", extra)
-        specs.append(("it matches tests.full_run_on", spec))
+        specs.append(("it matches tests.full_run_on", _extra_spec(extra)))
     for why, spec in specs:
         if spec.match_file(path):
             return why
@@ -422,6 +430,9 @@ class SelectionInput:
     doc_readers: Mapping[str, str] = field(default_factory=dict)
     plugin_loader: str | None = None
     unplaced_tests: Collection[str] = ()
+    # :func:`plan_gap` for *index_gap*, with the targets whose rows *tiers* also
+    # holds; None when the caller did not trace it, so any code there runs all.
+    gap: GapPlan | None = None
 
 
 @dataclass
@@ -444,18 +455,22 @@ def select_tests(inp: SelectionInput) -> Selection:
 
     evidence = _Evidence.of(inp, deleted)
     per_file, file_reasons = _tests_per_file(triage.code, evidence)
+    traced = bool(triage.code and inp.gap and inp.gap.targets)
+    gap_tests, route_reasons = (
+        _gap_route_tests(inp.gap.targets, paths, evidence) if traced else ([], [])
+    )
     if inp.index_available:
-        run_all += file_reasons
+        run_all += file_reasons + route_reasons
     basis = {**triage.basis, **{path: per_file[path][1] for path in triage.code}}
 
     # The graph cannot say what an unplaced test reaches, so it always runs.
     unplaced = [(t, t) for t in inp.unplaced_tests] if triage.code else []
     tests, test_files = _runnable(
-        [*(t for path in triage.code for t in per_file[path][0]), *unplaced]
+        [*(t for path in triage.code for t in per_file[path][0]), *gap_tests, *unplaced]
     )
     return Selection(
         run_all=bool(run_all),
-        reasons=tuple(run_all + _notes(inp, triage.skipped, bool(unplaced))),
+        reasons=tuple(run_all + _notes(inp, triage.skipped, bool(unplaced), traced)),
         tests=tests,
         test_files=test_files,
         packages=_go_packages(triage.code, deleted, inp.go_test_dirs),
@@ -507,7 +522,7 @@ def _index_reasons(inp: SelectionInput, *, has_code: bool) -> list[str]:
             "No index: nothing records which tests reach the changed code "
             "(run `repowise init`, or restore a cached .repowise directory)."
         ]
-    out = [inp.index_problem] if inp.index_problem else _gap_reasons(inp.index_gap)
+    out = [inp.index_problem] if inp.index_problem else _gap_reasons(inp)
     if inp.graph_error:
         out.append(
             f"The graph could not be read ({inp.graph_error}), so the tests reaching "
@@ -521,9 +536,15 @@ def _index_reasons(inp: SelectionInput, *, has_code: bool) -> list[str]:
     return out
 
 
-def _notes(inp: SelectionInput, skipped: list[str], unplaced: bool) -> list[str]:
+def _notes(inp: SelectionInput, skipped: list[str], unplaced: bool, traced: bool) -> list[str]:
     """Reasons that explain the selection without forcing a full run."""
     out = []
+    if traced:
+        rewired = len(inp.gap.rewired) if inp.gap else 0
+        out.append(
+            f"The index predates {rewired} changed file(s) outside this change; "
+            "the tests reaching them run too."
+        )
     if unplaced:
         out.append(
             f"{len(inp.unplaced_tests)} test file(s) the graph cannot see into run with "
@@ -551,13 +572,15 @@ def _go_packages(
     return tuple(sorted(dirs & set(go_test_dirs)))
 
 
-def _gap_reasons(index_gap: Collection[str] | None) -> list[str]:
-    if index_gap is None:
+def _gap_reasons(inp: SelectionInput) -> list[str]:
+    if inp.index_gap is None:
         return [
             "Cannot tell what changed since the index was built (its commit is not "
             "recorded, or not in this clone); run `repowise update` before selecting."
         ]
-    unseen = sorted(p for p in index_gap if not is_documentation(p))
+    if inp.gap is not None:
+        return list(inp.gap.reasons)
+    unseen = sorted(p for p in inp.index_gap if not is_documentation(p))
     if not unseen:
         return []
     return [
@@ -565,6 +588,127 @@ def _gap_reasons(index_gap: Collection[str] | None) -> list[str]:
         f"(e.g. {unseen[0]}), so its graph cannot see them; run `repowise update` "
         "before selecting."
     ]
+
+
+# Past this many files changed since the index was built, tracing them would
+# select nearly every test, so a full run is cheaper to decide. Ceiling: a file
+# count, not a measure of how much of the suite they reach.
+MAX_INDEX_GAP = 1000
+
+# Read by tests or CI, never imported, so they cannot add a route to a change.
+_GAP_INERT = frozenset({"CI configuration changed", "shared test data can change any test"})
+_HELPER_REASON = "a shared test helper can change any test"
+_GAP_TRACED = (None, "route", "package")
+
+
+def _gap_kind(path: str, config: TestSelectionConfig) -> str | None:
+    """``"route"``, ``"package"``, ``None`` (cannot reach a change), or a full-run reason."""
+    if is_documentation(path):
+        return None
+    why = full_run_reason(path, config.full_run_on)
+    if why == _PACKAGE_INIT_REASON:
+        return "package"
+    if why is None or why == _HELPER_REASON or (why in _GAP_INERT and is_code_file(path)):
+        return "route"
+    return None if why in _GAP_INERT else why
+
+
+@dataclass(frozen=True)
+class GapPlan:
+    """What the files changed between the indexed commit and the base mean for selection.
+
+    *reasons* say why they force a full run, if they do. Otherwise
+    *candidates* are the code files among them whose edges may have moved,
+    *packages* the production ``__init__.py`` files among those, and, once
+    :func:`with_rewired` has run, *rewired* the candidates whose edges did move
+    and *targets* the files whose tests join the selection.
+    """
+
+    reasons: tuple[str, ...] = ()
+    candidates: tuple[str, ...] = ()
+    packages: frozenset[str] = frozenset()
+    rewired: tuple[str, ...] = ()
+    targets: tuple[str, ...] = ()
+
+
+def plan_gap(
+    index_gap: Collection[str], config: TestSelectionConfig, change: Collection[str] = ()
+) -> GapPlan:
+    """Classify each file changed since the index was built, once.
+
+    Nothing is traced when a file in *change* already forces a full run.
+
+    A full run is forced when there are more than :data:`MAX_INDEX_GAP` of them
+    (documentation aside), or when one is configuration that decides how every
+    import resolves or what is built (a manifest, a lockfile, build or test
+    config, ``tests.full_run_on``). Data and prose import nothing, so only code
+    is a candidate.
+    """
+    from .import_drift import may_carry_edges
+
+    counted = sorted(p for p in index_gap if not is_documentation(p))
+    if len(counted) > MAX_INDEX_GAP:
+        return GapPlan(
+            reasons=(
+                f"The index predates {len(counted)} changed file(s) outside this change "
+                f"(e.g. {counted[0]}), more than the {MAX_INDEX_GAP} worth tracing; "
+                "run `repowise update` before selecting.",
+            )
+        )
+    kinds = {p: _gap_kind(p, config) for p in counted}
+    triggers = [(p, k) for p, k in kinds.items() if k not in _GAP_TRACED]
+    if triggers:
+        path, why = triggers[0]
+        return GapPlan(
+            reasons=(
+                f"{path} changed after the index was built ({len(triggers)} such): {why}; "
+                "run `repowise update` before selecting.",
+            )
+        )
+    if any(full_run_reason(p, config.full_run_on) for p in change):
+        return GapPlan()
+    candidates = tuple(p for p, k in kinds.items() if k is not None and may_carry_edges(p))
+    return GapPlan(
+        candidates=candidates,
+        packages=frozenset(p for p in candidates if kinds[p] == "package"),
+    )
+
+
+def with_rewired(
+    plan: GapPlan, rewired: Collection[str], indexed_files: Collection[str]
+) -> GapPlan:
+    """*plan* with the candidates whose edges moved, and the files standing for them.
+
+    A route the index cannot see from a test to the change must pass through a
+    rewired file: up to the first such file on it, every file kept its edges,
+    so the index has that part of the route. Selecting the tests that reach
+    each rewired file therefore covers every new route. A production
+    ``__init__.py`` runs for every module under its directory, an import the
+    graph does not record, so it stands for all of them. Ceiling: an unchanged
+    file whose import starts resolving to a file added since is not traced.
+    """
+    out = set(rewired)
+    for path in set(rewired) & plan.packages:
+        out.update(_files_under(path, indexed_files))
+    return replace(plan, rewired=tuple(sorted(rewired)), targets=tuple(sorted(out)))
+
+
+def _files_under(init: str, files: Collection[str]) -> list[str]:
+    parent = str(PurePosixPath(init).parent)
+    return [f for f in files if parent == "." or f.startswith(f"{parent}/")]
+
+
+def _gap_route_tests(
+    targets: Collection[str], paths: list[str], ev: _Evidence
+) -> tuple[list[_TestRef], list[str]]:
+    """The tests reaching each gap target, and run-all reasons found on those routes."""
+    tests: list[_TestRef] = []
+    reasons: list[str] = []
+    for path in sorted(set(targets) - set(paths)):
+        found, _, why = _file_tests(path, ev, route_only=True)
+        tests += found
+        reasons += [f"Changed after the index was built: {r}" for r in why]
+    return tests, reasons
 
 
 _TestRef = tuple[str, str | None]  # (test id or file, the file it lives in)
@@ -585,6 +729,7 @@ class _Evidence:
     deleted: frozenset[str]
     known_tests: tuple[str, ...]
     plugin_loader: str | None
+    gap: frozenset[str] = frozenset()
 
     @classmethod
     def of(cls, inp: SelectionInput, deleted: set[str]) -> _Evidence:
@@ -604,6 +749,7 @@ class _Evidence:
             deleted=frozenset(deleted),
             known_tests=tuple(inp.known_tests),
             plugin_loader=inp.plugin_loader,
+            gap=frozenset(inp.index_gap or ()),
         )
 
     def found(self, path: str) -> list[_TestRef]:
@@ -632,7 +778,8 @@ def _tests_per_file(
 
 
 def _stale_index_reasons(ev: _Evidence) -> list[str]:
-    stale = sorted(ev.missing - ev.deleted)
+    # A missing test that changed since the index was built was deleted then.
+    stale = sorted(ev.missing - ev.deleted - ev.gap)
     if not stale:
         return []
     return [
@@ -641,8 +788,14 @@ def _stale_index_reasons(ev: _Evidence) -> list[str]:
     ]
 
 
-def _file_tests(path: str, ev: _Evidence) -> tuple[list[_TestRef], str, list[str]]:
-    """One changed file's tests, the evidence behind them, and any run-all reasons."""
+def _file_tests(
+    path: str, ev: _Evidence, *, route_only: bool = False
+) -> tuple[list[_TestRef], str, list[str]]:
+    """One changed file's tests, the evidence behind them, and any run-all reasons.
+
+    With *route_only* the file only links tests to the change (it changed before
+    the base), so having no test of its own is not a reason.
+    """
     found = ev.found(path)
     tests = ev.present([*ev.covered.get(path, ()), *found])
     basis = _basis(path, ev.covered, ev.inferred, ev.unknown)
@@ -660,7 +813,7 @@ def _file_tests(path: str, ev: _Evidence) -> tuple[list[_TestRef], str, list[str
     # A deleted test needs no run of its own; the tests importing it do.
     if path in ev.deleted and is_runnable_test(path):
         basis = "deleted-test"
-    if not (tests or helpers or basis in _SELF_SUFFICIENT):
+    if not (route_only or tests or helpers or basis in _SELF_SUFFICIENT):
         reasons.append(_no_test_reason(path, basis, ev))
     return tests, basis, reasons
 

@@ -144,18 +144,31 @@ def test_no_index_runs_everything(repo) -> None:
     assert "No index" in _err(result)
 
 
-def test_an_index_behind_the_base_runs_everything(repo) -> None:
-    # main moves past the indexed commit, and the branch is rebased onto it.
+def _move_main(repo, files: dict[str, str]) -> None:
+    """main moves past the indexed commit, and the branch is rebased onto it."""
     _git(repo, "switch", "-q", "main")
-    _write(repo, {"src/b.py": "B = 2\n"})
-    _git(repo, "commit", "-qam", "main moves")
+    _write(repo, files)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "main moves")
     _git(repo, "switch", "-q", "feat")
     _git(repo, "rebase", "-q", "main")
+
+
+def test_an_index_behind_the_base_adds_the_tests_reaching_the_gap(repo) -> None:
+    # src/c.py was added since, so no test in the index reaches it.
+    _move_main(repo, {"src/b.py": "import os\n\nB = 2\n", "src/c.py": "C = 1\n"})
     result = _run(repo, "main...feat", "--format", "args")
-    assert result.stdout == ":all\n"
-    assert "The index predates 1 changed file(s) outside this change (e.g. src/b.py)" in (
+    assert result.stdout == "tests/test_a.py\n"
+    assert "The index predates 1 changed file(s) outside this change; the tests reaching" in (
         _err(result)
     )
+
+
+def test_a_lockfile_changed_after_the_index_runs_everything(repo) -> None:
+    _move_main(repo, {"src/b.py": "B = 2\n", "uv.lock": "lock\n"})
+    result = _run(repo, "main...feat", "--format", "args")
+    assert result.stdout == ":all\n"
+    assert "uv.lock changed after the index was built (1 such): dependencies" in _err(result)
 
 
 def test_in_ci_the_default_change_is_the_pull_requests(repo) -> None:
@@ -281,3 +294,39 @@ def test_a_changed_test_package_init_selects_the_tests_under_it(repo) -> None:
     assert data["run_all"] is False, data["reasons"]
     assert data["selected"]["basis"]["tests/__init__.py"] == "test-package"
     assert data["args"] == ["tests/test_a.py"]
+
+
+async def _add_to_index(root: Path, test: str, source: str) -> None:
+    """*test* imports *source* in the graph, and *source* has health metrics."""
+    from repowise.core.persistence.models import GraphEdge, GraphNode, HealthFileMetric
+
+    db = root / ".repowise" / "wiki.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db.as_posix()}")
+    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+        session.add(GraphNode(repository_id="r1", node_id=test, node_type="file", is_test=True))
+        session.add(
+            GraphEdge(
+                repository_id="r1", source_node_id=test, target_node_id=source, edge_type="imports"
+            )
+        )
+        session.add(HealthFileMetric(repository_id="r1", file_path=source))
+        await session.commit()
+    await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("b_after", "expected"),
+    [
+        ("B = 2\n", "tests/test_a.py\n"),
+        ("import os\n\nB = 2\n", "tests/test_a.py tests/test_b.py\n"),
+    ],
+)
+def test_only_files_whose_imports_moved_since_the_index_add_their_tests(
+    repo, b_after, expected
+) -> None:
+    _land_on_main(repo, {"tests/test_b.py": "from src.b import B\n\ndef test_b():\n    assert B\n"})
+    asyncio.run(_add_to_index(repo, "tests/test_b.py", "src/b.py"))
+    _move_main(repo, {"src/b.py": b_after})
+    result = _run(repo, "main...feat", "--format", "args", "--runner", "pytest")
+    assert result.exit_code == 0, result.output
+    assert result.stdout == expected

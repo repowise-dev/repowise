@@ -124,7 +124,7 @@ def impacted_tests_command(
         cannot_evaluate(fmt, exc.code, str(exc))
 
     checkout = _read_checkout(repo_path)
-    result = run_async(_collect(repo_path, change, checkout.roots))
+    result = run_async(_collect(repo_path, change, checkout.roots, config))
     result["diff"] = change.label
     if config is not None:
         result["selection"] = _select(repo_path, change, result, config, checkout)
@@ -173,8 +173,12 @@ def _read_checkout(repo_path) -> _Checkout:
     return _Checkout(tracked, texts, roots)
 
 
-async def _collect(repo_path, change, roots: PytestRoots | None = None) -> dict:
-    """Resolve the change's files to impacted tests + labelled fallbacks."""
+async def _collect(repo_path, change, roots: PytestRoots | None = None, config=None) -> dict:
+    """Resolve the change's files to impacted tests + labelled fallbacks.
+
+    With a selection *config*, files changed since the index was built are
+    walked too, so selection can add the tests reaching them.
+    """
     from repowise.core.persistence.crud import (
         get_health_metrics,
         get_repository,
@@ -203,8 +207,9 @@ async def _collect(repo_path, change, roots: PytestRoots | None = None) -> dict:
         # Repo file keys back the filename-pattern fallback (same source the
         # aggregate coverage ingest resolves against).
         repo_keys = {m.file_path for m in await get_health_metrics(session, repo_id)}
+        routes = [] if config is None else _gap_routes(repo_path, change, config, repo_keys, out)
         await _resolve_impacted(
-            session, repo_id, _query_lines(change, measured), repo_keys, out, roots
+            session, repo_id, _query_lines(change, measured), repo_keys, out, roots, routes
         )
         await _place_tests(session, repo_id, out)
 
@@ -239,6 +244,36 @@ def _indexed_commit(repo_path, row_commit: str | None, out: dict) -> None:
         )
         return
     out["indexed_commit"] = state or row_commit
+
+
+def _gap_routes(repo_path, change, config, repo_keys: set[str], out: dict) -> list[str]:
+    """Record the files changed since the indexed commit, and return those to walk.
+
+    Only files whose edges may have moved are walked: each candidate is read at
+    the indexed commit and at the base in one batch and compared.
+    """
+    from repowise.core.analysis.change_health.sources import read_blobs
+    from repowise.core.analysis.changed_lines import index_gap
+    from repowise.core.analysis.import_drift import edges_may_differ
+    from repowise.core.analysis.test_selection import plan_gap, with_rewired
+
+    out["index_gap"] = gap = index_gap(str(repo_path), out["indexed_commit"], change)
+    if gap is None:
+        return []
+    plan = plan_gap(gap, config, [*change.files, *change.deleted])
+    if plan.candidates:
+        old, new = out["indexed_commit"], change.base
+        specs = [(rev, p) for p in plan.candidates for rev in (old, new)]
+        blobs = read_blobs(str(repo_path), specs)
+        # Unreadable means nothing was compared, so every candidate may have moved.
+        rewired = [
+            p
+            for p in plan.candidates
+            if blobs is None or edges_may_differ(p, blobs.get((old, p)), blobs.get((new, p)))
+        ]
+        plan = with_rewired(plan, rewired, repo_keys)
+    out["gap"] = plan
+    return list(plan.targets)
 
 
 def _query_lines(change, measured: str | None) -> dict[str, set[int] | None]:
@@ -276,6 +311,8 @@ def _empty_result(changed_files: int) -> dict:
         "map_truncated": False,
         "indexed_commit": None,
         "index_problem": None,
+        "index_gap": None,
+        "gap": None,
         "graph_error": None,
         "placed_tests": None,
         "helper_importers": {},
@@ -293,6 +330,7 @@ async def _resolve_impacted(
     repo_keys: set[str],
     out: dict,
     roots: PytestRoots | None = None,
+    routes: tuple[str, ...] | list[str] = (),
 ) -> dict:
     """Classify each changed file: covered tests, inferred tests, or unknown.
 
@@ -302,6 +340,10 @@ async def _resolve_impacted(
     by line (a deleted file, or a map measured at another commit). Every file
     also asks the graph: coverage records what one run executed, so it adds to
     the graph's answer and never replaces it.
+
+    *routes* (files changed since the index was built) are looked up the same
+    way, by file, but only to report the tests reaching them: none is guessed
+    from its name or listed as unknown.
 
     Three tiers, and the output says which one answered for every file, because
     they are not interchangeable:
@@ -323,13 +365,16 @@ async def _resolve_impacted(
         Nothing said anything. Run the full suite.
     """
     from repowise.core.analysis.health.coverage import paired_test_file
-    from repowise.core.persistence.crud import tests_covering
+    from repowise.core.persistence.crud import tests_covering, tests_covering_files
 
     covered: dict[str, dict] = out["covered"]
     has_rows: set[str] = set()
-    graph_targets = sorted(changed)
-    for source_file, lines in sorted(changed.items()):
-        rows = await tests_covering(session, repo_id, source_file, lines=lines)
+    route_only = [r for r in routes if r not in changed]
+    graph_targets = sorted({*changed, *route_only})
+    by_file = {f: await tests_covering(session, repo_id, f, lines=ls) for f, ls in changed.items()}
+    if route_only and not out.get("map_empty"):
+        by_file.update(await tests_covering_files(session, repo_id, set(route_only)))
+    for source_file, rows in sorted(by_file.items()):
         for r in rows:
             has_rows.add(source_file)
             entry = covered.setdefault(
@@ -356,8 +401,8 @@ async def _resolve_impacted(
                 {"source_file": source_file, "test_file": t, "via": via} for t, via in found
             )
             continue
-        if source_file in has_rows:
-            continue  # coverage answered; a name-shaped guess adds nothing
+        if source_file in has_rows or source_file not in changed:
+            continue  # coverage answered, or a route; a name-shaped guess adds nothing
         guess = paired_test_file(source_file, repo_keys)
         if guess:
             out["inferred"].append(
@@ -469,7 +514,6 @@ def _with_importers(picks: dict[str, str], parents: dict[str, set[str]]) -> list
 
 def _select(repo_path, change, result: dict, config, checkout: _Checkout):
     """The run-all-or-subset decision for ``--format args`` / ``json``."""
-    from repowise.core.analysis.changed_lines import index_gap
     from repowise.core.analysis.test_selection import (
         SelectionInput,
         doc_readers,
@@ -499,7 +543,8 @@ def _select(repo_path, change, result: dict, config, checkout: _Checkout):
             label=change.label,
             map_current=result["map_current"],
             map_truncated=result["map_truncated"],
-            index_gap=index_gap(str(root), result["indexed_commit"], change),
+            index_gap=result["index_gap"],
+            gap=result["gap"],
             index_problem=result["index_problem"],
             graph_error=result["graph_error"],
             missing={f for f in named if not (root / f).is_file()},
