@@ -89,6 +89,12 @@ earlier step moves a symbol to another file, the later step carries
 `relocated_by`: its stored location is where the symbol was before, so find it
 again before applying.
 
+Plan detail also lists `risks`, one sentence each, to read before applying the
+plan: an accepted decision that governs the file, callers or importers of what
+the plan moves, a target nothing reaches (delete it instead), and recent commits
+on the same lines. A governed plan's steps are `judgment`, and its
+`blast_radius.co_change_partners` names the files that usually change with it.
+
 Break Cycle is advisory. Its plan names edges to cut, not which symbols cross
 them or how to move them, so an opportunity carries it as `evidence` rather than
 as a numbered step: it never leads, and never reaches Fix first. The plan itself

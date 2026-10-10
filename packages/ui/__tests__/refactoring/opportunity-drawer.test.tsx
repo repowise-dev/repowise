@@ -320,3 +320,28 @@ describe("RefactoringDrawer with no model configured", () => {
     expect(screen.queryByRole("button", { name: "Generate code" })).toBeNull();
   });
 });
+
+describe("RefactoringDrawer risks", () => {
+  it("lists each risk as one line before the change", () => {
+    const risks = [
+      {
+        kind: "decision",
+        text: 'Decision "Keep the writer inline" governs this file; check it allows this change first.',
+        ref: "dec1",
+      },
+      {
+        kind: "active_edit",
+        text: "Changed in 3 commits by 2 authors in the 14 days before the last index; check nobody is mid-change.",
+        ref: "abc123",
+      },
+    ] as const;
+    render(<RefactoringDrawer plan={{ ...PLAN, risks: [...risks] }} open onOpenChange={() => {}} />);
+    expect(screen.getByText("Before you start")).toBeTruthy();
+    for (const risk of risks) expect(screen.getByText(risk.text)).toBeTruthy();
+  });
+
+  it("renders no risk section when the plan carries none", () => {
+    render(<RefactoringDrawer plan={{ ...PLAN, risks: [] }} open onOpenChange={() => {}} />);
+    expect(screen.queryByText("Before you start")).toBeNull();
+  });
+});

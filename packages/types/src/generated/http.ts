@@ -2616,6 +2616,12 @@ export interface PatchCoverageTestHint {
   total: number;
 }
 
+export interface PlanRiskResponse {
+  kind: string;
+  text: string;
+  ref?: string | null;
+}
+
 /**
  * What the map is counting.
  *
@@ -2733,6 +2739,37 @@ export interface RefactoringOpportunityStatusResponse {
 export interface RefactoringOpportunityStatusUpdate {
   /** open | acknowledged | resolved | false_positive */
   status: string;
+}
+
+/**
+ * One plan read alone: what other layers say about its target. Lists stay
+ * on :class:`RefactoringPlanResponse` and never carry these.
+ */
+export interface RefactoringPlanDetailResponse {
+  id: string;
+  refactoring_type: string;
+  file_path: string;
+  target_symbol: string;
+  line_start?: number | null;
+  line_end?: number | null;
+  plan?: Record<string, unknown>;
+  evidence?: Record<string, unknown>;
+  impact_delta?: number;
+  effort_bucket?: string;
+  blast_radius?: Record<string, unknown>;
+  confidence?: string;
+  source_biomarker?: string;
+  benefit?: number;
+  leverage?: number;
+  cost?: number;
+  risk?: number;
+  rank_score?: number;
+  dependents?: number;
+  file_nloc?: number;
+  file_weighted_deficit?: number;
+  validation?: Record<string, unknown>;
+  governed_by?: string[];
+  risks?: PlanRiskResponse[];
 }
 
 /** Bounded product page; the legacy targets response remains unpaged. */

@@ -40,6 +40,7 @@ from repowise.core.analysis.test_reachability import (
 from repowise.core.code_origin import ship_rank
 from repowise.core.test_paths import is_test_support_path, names_test_for, paired_test_names
 
+from .annotations import PlanAnnotations, partner_rows
 from .models import RefactoringSuggestion
 
 RecommendationView = Literal["canonical", "file_spread"]
@@ -1016,6 +1017,9 @@ class Recommendation:
     validation: ValidationPlan
     # The reads a rank-only pass made, so detailing a page reuses them.
     inputs: ValidationInputs | None = field(default=None, repr=False, compare=False)
+    # What other layers say about the target (:mod:`.annotations`), stored at
+    # finalize and served on plan detail only.
+    annotations: PlanAnnotations | None = field(default=None, repr=False, compare=False)
 
     @property
     def id(self) -> str:
@@ -1050,13 +1054,22 @@ class Recommendation:
 
     def detail_dict(self) -> dict[str, Any]:
         """:meth:`as_dict` for one plan read alone: a step whose checks differ
-        from the plan's carries its ``verify``."""
+        from the plan's carries its ``verify``, and the plan carries its
+        ``governed_by``, ``risks`` and co-change partners."""
         payload = self.as_dict()
         steps = payload["plan"].get("steps")
         if isinstance(steps, list) and self.validation.step_verify:
             payload["plan"] = {
                 **payload["plan"],
                 "steps": steps_with_verify(steps, self.validation),
+            }
+        notes = self.annotations or PlanAnnotations()
+        payload["governed_by"] = list(notes.governed_by)
+        payload["risks"] = [risk.as_dict() for risk in notes.risks]
+        if notes.co_change_partners:
+            payload["blast_radius"] = {
+                **payload["blast_radius"],
+                "co_change_partners": partner_rows(notes.co_change_partners),
             }
         return payload
 
@@ -1075,6 +1088,7 @@ class Recommendation:
             "blast_radius": self.suggestion.blast_radius or {},
             "validation": self.validation.as_dict(),
             **({"step_verify": self.validation.step_verify} if self.validation.step_verify else {}),
+            **({"annotations": self.annotations.as_dict()} if self.annotations else {}),
         }
 
 
@@ -1116,6 +1130,7 @@ def stored_recommendation(row: Any) -> Recommendation | None:
     return Recommendation(
         suggestion=suggestion,
         validation=validation,
+        annotations=PlanAnnotations.from_dict(facts.get("annotations")),
         **{name: facts[name] for name in _RANK_FACTS},
     )
 

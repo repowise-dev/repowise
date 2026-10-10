@@ -7,6 +7,8 @@ is cleared, and the two responses must be identical.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select, update
@@ -186,6 +188,9 @@ async def test_one_plan_reads_its_stored_rank(
     _no_live_ranking(monkeypatch)
     for plan in listed:
         detail = (await client.get(f"/api/repos/{repo_id}/refactoring/{plan['id']}")).json()
+        # Detail adds what other layers say about the target; no decision here.
+        assert detail.pop("governed_by") == []
+        assert all(risk["kind"] != "decision" for risk in detail.pop("risks"))
         assert detail == plan
 
     # Code generation reads its plan the same way.
@@ -317,4 +322,68 @@ async def _ids(session, repo_id: str) -> list[str]:
                 .order_by(RefactoringSuggestion.file_path, RefactoringSuggestion.target_symbol)
             )
         ).scalars()
+    )
+
+
+async def test_an_accepted_decision_governs_the_plans_on_its_file(
+    client: AsyncClient, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.persistence.crud import bulk_upsert_decisions
+    from repowise.core.persistence.crud.authority import accept_decision
+    from repowise.core.persistence.models import DecisionRecord, RefactoringOpportunity
+
+    repo_id = await _seed_ranked(client, app)
+    async with app.state.session_factory() as session:
+        await bulk_upsert_decisions(
+            session,
+            repo_id,
+            [
+                {
+                    "title": "Keep the parser in one function",
+                    "decision": "Keep the parser in one function",
+                    "rationale": "profiling showed the call overhead",
+                    "source": "session",
+                    "status": "proposed",
+                    "affected_files": ["pkg/leaf.py"],
+                    "evidence_file": "pkg/leaf.py",
+                    "confidence": 0.9,
+                    "verification": "exact",
+                    "source_quote": "Keep the parser in one function",
+                }
+            ],
+        )
+        record = (
+            await session.execute(
+                select(DecisionRecord).where(DecisionRecord.repository_id == repo_id)
+            )
+        ).scalar_one()
+        await accept_decision(session, record, accepter="tester")
+        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await session.commit()
+        steps = [
+            step
+            for row in (
+                await session.execute(
+                    select(RefactoringOpportunity).where(
+                        RefactoringOpportunity.repository_id == repo_id
+                    )
+                )
+            ).scalars()
+            for step in json.loads(row.details_json or "{}").get("steps", [])
+        ]
+
+    _no_live_ranking(monkeypatch)
+    listed = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()["plans"]
+    for plan in listed:
+        assert "governed_by" not in plan and "risks" not in plan
+        detail = (await client.get(f"/api/repos/{repo_id}/refactoring/{plan['id']}")).json()
+        governed = plan["file_path"] == "pkg/leaf.py"
+        assert detail["governed_by"] == ([record.id] if governed else [])
+        decisions = [r for r in detail["risks"] if r["kind"] == "decision"]
+        assert [r["ref"] for r in decisions] == ([record.id] if governed else [])
+    leaf = [step for step in steps if step["file_path"] == "pkg/leaf.py"]
+    assert leaf and all(
+        step["applicability"]["classification"] == "judgment"
+        and "governed_by_decision" in step["applicability"]["reasons"]
+        for step in leaf
     )

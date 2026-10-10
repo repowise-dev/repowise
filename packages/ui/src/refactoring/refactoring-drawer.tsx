@@ -180,6 +180,28 @@ function DrawerBody({
         {contextSlot}
         <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">{meta.blurb}</p>
 
+        {plan.risks && plan.risks.length > 0 ? (
+          <section>
+            <h4 className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              Before you start
+            </h4>
+            <ul className="space-y-1">
+              {plan.risks.map((risk) => (
+                <li
+                  key={`${risk.kind}:${risk.ref ?? risk.text}`}
+                  className="flex items-start gap-2 text-sm text-[var(--color-text-secondary)]"
+                >
+                  <span
+                    className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-warning)]"
+                    aria-hidden
+                  />
+                  {risk.text}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
         <section>
           <h4 className="mb-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
             The change

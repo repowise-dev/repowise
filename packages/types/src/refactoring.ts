@@ -58,6 +58,27 @@ export interface StepVerify {
   coverage: StepVerifyCoverage;
 }
 
+/** What another layer says to check before applying a plan: a decision that
+ *  governs its file, consumers of what it moves, dead code it touches, or
+ *  recent commits on its lines. */
+export type PlanRiskKind = "decision" | "public_api" | "active_edit" | "dead_code";
+
+/** One sentence to read before applying the plan. `ref` is the decision id or
+ *  the newest commit sha, when the risk has one. */
+export interface PlanRisk {
+  kind: PlanRiskKind;
+  text: string;
+  ref: string | null;
+}
+
+/** A file that changed together with the plan's file, and how many commits
+ *  they shared in the history the index walked. On plan detail, in
+ *  `blast_radius.co_change_partners`. */
+export interface PlanCoChangePartner {
+  file_path: string;
+  commits: number;
+}
+
 export interface RefactoringPlan {
   id: string;
   refactoring_type: RefactoringType | string;
@@ -83,6 +104,10 @@ export interface RefactoringPlan {
   file_nloc?: number;
   file_weighted_deficit?: number;
   validation?: RecommendationValidation;
+  /** Plan detail only: ids of the accepted decisions governing the file. */
+  governed_by?: string[];
+  /** Plan detail only: what to check before applying it. */
+  risks?: PlanRisk[];
 }
 
 export interface RefactoringTypeCount {

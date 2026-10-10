@@ -38,6 +38,7 @@ JUDGMENT_REASONS = (
     "call_site_bindings_unproven",
     "changes_symbol_home",
     "detector_confidence_below_high",
+    "governed_by_decision",
     "inverts_imports_across_files",
     "needs_design",
     "receiver_copy_written",
@@ -182,8 +183,12 @@ _JUDGMENT_BY_TYPE: dict[str, tuple[str, ...]] = {
 }
 
 
-def classify_step(suggestion: RefactoringSuggestion) -> StepApplicability:
-    """Whether *suggestion* is safe to automate, and the facts behind that."""
+def classify_step(suggestion: RefactoringSuggestion, *, governed: bool = False) -> StepApplicability:
+    """Whether *suggestion* is safe to automate, and the facts behind that.
+
+    *governed* says an accepted decision governs the target's file: whatever
+    the shape proves, a person checks the decision allows the change.
+    """
     facts, unknowns = step_facts(suggestion)
     kind = suggestion.refactoring_type
     if kind == "extract_method":
@@ -194,6 +199,8 @@ def classify_step(suggestion: RefactoringSuggestion) -> StepApplicability:
         reasons = list(_JUDGMENT_BY_TYPE.get(kind, ("unclassified_refactoring_type",)))
     if needs_design(suggestion):
         reasons.insert(0, "needs_design")
+    if governed:
+        reasons.append("governed_by_decision")
     # ``all`` over nothing is True, so a future branch that returned no reason
     # would promote silently. Mechanical has to be positively argued.
     mechanical = bool(reasons) and all(reason in MECHANICAL_REASONS for reason in reasons)
