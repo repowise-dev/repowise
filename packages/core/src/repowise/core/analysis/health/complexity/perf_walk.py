@@ -327,6 +327,35 @@ def _loop_key_feeds(call: Node, loop: Node) -> bool:
     return bool(_loop_bound_names(loop) & _identifiers(call))
 
 
+_SINK_CALL_MAX = 60
+
+
+def _sink_call_text(call: Node, method: str) -> str:
+    """The callee as written with its arguments dropped, else its method name.
+
+    ``session.get`` stays as is and ``conn.execute(sql).fetchone`` reads
+    ``conn.execute().fetchone``. A callee that opens with a parenthesis or runs
+    long gives the method only, as do grammars with no ``function`` field (Java,
+    Kotlin); naming their receiver needs a per-dialect hook (ceiling).
+    """
+    fn = call.child_by_field_name("function")
+    text = (fn.text or b"").decode("utf-8", "replace") if fn is not None else ""
+    kept: list[str] = []
+    depth = 0
+    for char in text:
+        if char == "(":
+            kept.append("()" if depth == 0 else "")
+            depth += 1
+        elif char == ")":
+            depth = max(depth - 1, 0)
+        elif depth == 0 and not char.isspace():
+            kept.append(char)
+    callee = "".join(kept)
+    if callee and not callee.startswith("(") and len(callee) <= _SINK_CALL_MAX:
+        return callee
+    return method
+
+
 def _key_unused(hit: PerfHit) -> bool:
     return hit.loop is not None and hit.loop.key_unused
 
@@ -634,8 +663,12 @@ def _collect_perf_hits(
             if kind is not None:
                 if loop_depth >= 1:
                     facts = loop_facts(call_node, sink=True, per_call=True)
+                    call = _sink_call_text(call_node, method)
                     hits.append(
-                        PerfHit("io_in_loop", line, next_func, kind, func_start=next_start, loop=facts)
+                        PerfHit(
+                            "io_in_loop", line, next_func, kind,
+                            func_start=next_start, loop=facts, sink_call=call,
+                        )
                     )
                     if do_serial_await and awaited:
                         # An *awaited* sink in a loop body is additionally a
@@ -646,7 +679,7 @@ def _collect_perf_hits(
                         hits.append(
                             PerfHit(
                                 "serial_await_in_loop", line, next_func, kind,
-                                func_start=next_start, loop=facts,
+                                func_start=next_start, loop=facts, sink_call=call,
                             )
                         )
                     if do_nested_io and loop_depth >= 2 and outer_iter:
@@ -660,7 +693,7 @@ def _collect_perf_hits(
                         hits.append(
                             PerfHit(
                                 "nested_loop_with_io", line, next_func, kind,
-                                func_start=next_start, loop=facts,
+                                func_start=next_start, loop=facts, sink_call=call,
                             )
                         )
                 else:

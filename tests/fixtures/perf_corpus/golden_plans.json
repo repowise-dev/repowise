@@ -52,6 +52,7 @@
             "line_start": 42
           },
           {
+            "call": "save",
             "file_path": "src/app/jobs.py",
             "function_name": "drain",
             "line_end": 44,
@@ -62,7 +63,7 @@
         "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "src/app/jobs.py::drain",
-        "judgment_steps": 4,
+        "judgment_steps": 3,
         "mechanical_steps": 0,
         "opportunity_id": "perf3_d41b04897cfde2a9eed6",
         "paths": [
@@ -75,35 +76,27 @@
         "safety": "advisory",
         "steps": [
           {
-            "action": "Add a form of save that takes every key at once",
-            "applicability": "judgment",
-            "file_path": "src/app/db.py",
-            "line": null,
-            "order": 1,
-            "symbol": "src/app/db.py::save"
-          },
-          {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/jobs.py",
             "line": 40,
+            "order": 1,
+            "symbol": "drain"
+          },
+          {
+            "action": "Collect the keys before the loop and replace the per-key call with one batched call",
+            "applicability": "judgment",
+            "file_path": "src/app/jobs.py",
+            "line": 42,
             "order": 2,
             "symbol": "drain"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
-            "applicability": "judgment",
-            "file_path": "src/app/jobs.py",
-            "line": 42,
-            "order": 3,
-            "symbol": "drain"
-          },
-          {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key save call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/jobs.py",
             "line": 44,
-            "order": 4,
+            "order": 3,
             "symbol": "drain"
           }
         ],
@@ -152,18 +145,21 @@
       "plan": {
         "affected_locations": [
           {
+            "call": "_move",
             "file_path": "src/app/migrate.py",
             "function_name": "apply",
             "line_end": 587,
             "line_start": 587
           },
           {
+            "call": "_fold_one",
             "file_path": "src/app/migrate.py",
             "function_name": "apply",
             "line_end": 590,
             "line_start": 590
           },
           {
+            "call": "_write_alias",
             "file_path": "src/app/migrate.py",
             "function_name": "apply",
             "line_end": 591,
@@ -174,7 +170,7 @@
         "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "src/app/migrate.py::apply",
-        "judgment_steps": 4,
+        "judgment_steps": 3,
         "mechanical_steps": 0,
         "opportunity_id": "perf3_b03c60fe41fa017130c6",
         "paths": [
@@ -195,35 +191,27 @@
         "safety": "advisory",
         "steps": [
           {
-            "action": "Add a form of the per-key call that takes every key at once",
-            "applicability": "judgment",
-            "file_path": null,
-            "line": null,
-            "order": 1,
-            "symbol": null
-          },
-          {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key _move call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/migrate.py",
             "line": 587,
+            "order": 1,
+            "symbol": "apply"
+          },
+          {
+            "action": "Collect the keys before the loop and replace the per-key _fold_one call with one batched call",
+            "applicability": "judgment",
+            "file_path": "src/app/migrate.py",
+            "line": 590,
             "order": 2,
             "symbol": "apply"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
-            "applicability": "judgment",
-            "file_path": "src/app/migrate.py",
-            "line": 590,
-            "order": 3,
-            "symbol": "apply"
-          },
-          {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key _write_alias call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/migrate.py",
             "line": 591,
-            "order": 4,
+            "order": 3,
             "symbol": "apply"
           }
         ],
@@ -272,12 +260,14 @@
       "plan": {
         "affected_locations": [
           {
+            "call": "_hit",
             "file_path": "src/app/entry.py",
             "function_name": "a",
             "line_end": 252,
             "line_start": 250
           },
           {
+            "call": "_hit",
             "file_path": "src/app/entry.py",
             "function_name": "b",
             "line_end": 257,
@@ -315,7 +305,7 @@
             "symbol": "src/app/entry.py::_hit"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key _hit call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/entry.py",
             "line": 250,
@@ -323,7 +313,7 @@
             "symbol": "a"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key _hit call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/entry.py",
             "line": 255,
@@ -376,12 +366,14 @@
       "plan": {
         "affected_locations": [
           {
+            "call": "fetch_page",
             "file_path": "src/app/api.py",
             "function_name": "list_users",
             "line_end": 32,
             "line_start": 30
           },
           {
+            "call": "fetch_page",
             "file_path": "src/app/api.py",
             "function_name": "list_orders",
             "line_end": 33,
@@ -419,7 +411,7 @@
             "symbol": "src/app/repo.py::fetch_page"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key fetch_page call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/api.py",
             "line": 30,
@@ -427,7 +419,7 @@
             "symbol": "list_users"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key fetch_page call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/api.py",
             "line": 31,
@@ -481,12 +473,14 @@
       "plan": {
         "affected_locations": [
           {
+            "call": "_write",
             "file_path": "src/app/reindex.py",
             "function_name": "one",
             "line_end": 212,
             "line_start": 210
           },
           {
+            "call": "_write",
             "file_path": "src/app/reindex.py",
             "function_name": "many",
             "line_end": 217,
@@ -524,7 +518,7 @@
             "symbol": "src/app/reindex.py::_write"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key _write call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/reindex.py",
             "line": 210,
@@ -532,7 +526,7 @@
             "symbol": "one"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key _write call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/reindex.py",
             "line": 215,
@@ -656,12 +650,14 @@
       "plan": {
         "affected_locations": [
           {
+            "call": "_load",
             "file_path": "src/app/sync.py",
             "function_name": "sync_one",
             "line_end": 72,
             "line_start": 70
           },
           {
+            "call": "_load",
             "file_path": "src/app/sync.py",
             "function_name": "sync_all",
             "line_end": 73,
@@ -699,7 +695,7 @@
             "symbol": "src/app/sync.py::_load"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key _load call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/sync.py",
             "line": 70,
@@ -707,7 +703,7 @@
             "symbol": "sync_one"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key _load call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/sync.py",
             "line": 71,
@@ -760,6 +756,7 @@
       "plan": {
         "affected_locations": [
           {
+            "call": "write",
             "file_path": "src/app/cache.py",
             "function_name": "refresh",
             "line_end": 112,
@@ -854,7 +851,7 @@
         "safety": "proven",
         "steps": [
           {
-            "action": "Run the independent awaits concurrently, each still inside self._sem",
+            "action": "Run the independent calls concurrently, each still inside self._sem",
             "applicability": "mechanical",
             "file_path": "src/app/fetch.py",
             "line": 40,
@@ -996,7 +993,7 @@
         "safety": "advisory",
         "steps": [
           {
-            "action": "Run the independent awaits concurrently, with a bound on how many at once",
+            "action": "Run the independent calls concurrently, with a bound on how many at once",
             "applicability": "judgment",
             "file_path": "src/app/fanout.py",
             "line": 90,
@@ -1049,6 +1046,7 @@
       "plan": {
         "affected_locations": [
           {
+            "call": "get_session",
             "file_path": "src/app/job.py",
             "function_name": "run",
             "line_end": 202,
@@ -1080,7 +1078,7 @@
             "symbol": "src/app/db.py::get_session"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key get_session call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/job.py",
             "line": 200,
@@ -1163,7 +1161,7 @@
             "symbol": "src/app/db.py::only_sink"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/lone.py",
             "line": 9,
@@ -1340,6 +1338,7 @@
       "plan": {
         "affected_locations": [
           {
+            "call": "get_session",
             "file_path": "src/app/orders.py",
             "function_name": "handle",
             "line_end": 12,
@@ -1371,7 +1370,7 @@
             "symbol": "src/app/db.py::get_session"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key get_session call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/orders.py",
             "line": 10,
@@ -1424,6 +1423,7 @@
       "plan": {
         "affected_locations": [
           {
+            "call": "get_session",
             "file_path": "src/app/reports.py",
             "function_name": "handle",
             "line_end": 14,
@@ -1455,7 +1455,7 @@
             "symbol": "src/app/db.py::get_session"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key get_session call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/reports.py",
             "line": 12,
@@ -1508,6 +1508,7 @@
       "plan": {
         "affected_locations": [
           {
+            "call": "get_session",
             "file_path": "src/app/billing.py",
             "function_name": "handle",
             "line_end": 13,
@@ -1539,7 +1540,7 @@
             "symbol": "src/app/db.py::get_session"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key get_session call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/billing.py",
             "line": 11,
@@ -1602,7 +1603,7 @@
         "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "src/app/retry.py::post_with_retry",
-        "judgment_steps": 2,
+        "judgment_steps": 1,
         "mechanical_steps": 0,
         "opportunity_id": "perf3_bd36a05060a6d02a1245",
         "paths": [],
@@ -1610,19 +1611,11 @@
         "safety": "advisory",
         "steps": [
           {
-            "action": "Add a form of the per-key call that takes every key at once",
-            "applicability": "judgment",
-            "file_path": null,
-            "line": null,
-            "order": 1,
-            "symbol": null
-          },
-          {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/retry.py",
             "line": 50,
-            "order": 2,
+            "order": 1,
             "symbol": "post_with_retry"
           }
         ],
@@ -1671,6 +1664,7 @@
       "plan": {
         "affected_locations": [
           {
+            "call": "get_session",
             "file_path": "scripts/backfill.py",
             "function_name": "run",
             "line_end": 202,
@@ -1702,7 +1696,7 @@
             "symbol": "src/app/db.py::get_session"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key get_session call with one batched call",
             "applicability": "judgment",
             "file_path": "scripts/backfill.py",
             "line": 200,
@@ -1755,6 +1749,7 @@
       "plan": {
         "affected_locations": [
           {
+            "call": "reliable_sink",
             "file_path": "src/app/edge.py",
             "function_name": "run",
             "line_end": 232,
@@ -1786,7 +1781,7 @@
             "symbol": "src/app/db.py::reliable_sink"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key reliable_sink call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/edge.py",
             "line": 230,
@@ -1839,6 +1834,7 @@
       "plan": {
         "affected_locations": [
           {
+            "call": "guessed_sink",
             "file_path": "src/app/guess.py",
             "function_name": "run",
             "line_end": 242,
@@ -1870,7 +1866,7 @@
             "symbol": "src/app/db.py::guessed_sink"
           },
           {
-            "action": "Collect the keys before the loop and call the batched form once",
+            "action": "Collect the keys before the loop and replace the per-key guessed_sink call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/guess.py",
             "line": 240,

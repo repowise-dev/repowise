@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from repowise.core.analysis.execution_graph import file_of_symbol
 
@@ -14,15 +15,16 @@ from .models import RefactoringSuggestion
 from .preconditions import Applicability
 
 # Per strategy: an optional step at the intervention, then one step per call
-# site. Templates name the edit; the locations are the evidence's own.
+# site. Templates name the edit; the locations are the evidence's own, and
+# ``{call}`` names the call each site repeats.
 _STEPS: dict[str, tuple[str | None, str]] = {
     "batch_or_prefetch_io": (
         "Add a form of {sink} that takes every key at once",
-        "Collect the keys before the loop and call the batched form once",
+        "Collect the keys before the loop and replace the per-key {call} with one batched call",
     ),
     "parallelize_independent_awaits": (
         None,
-        "Run the independent awaits concurrently, with a bound on how many at once",
+        "Run the independent {call}s concurrently, with a bound on how many at once",
     ),
     "replace_membership_collection": (None, "Build a set once before the loop and probe it"),
     "buffer_string_accumulation": (None, "Accumulate into a list and join once after the loop"),
@@ -37,11 +39,11 @@ _API_STEPS: dict[str, tuple[str | None, str]] = {
     "batch_or_prefetch_io": (
         None,
         "Collect the keys before the loop and make one call with {api} in place of the "
-        "per-key call",
+        "per-key {call}",
     ),
     "parallelize_independent_awaits": (
         None,
-        "Run the independent awaits concurrently, each still inside {api}",
+        "Run the independent {call}s concurrently, each still inside {api}",
     ),
 }
 
@@ -67,13 +69,18 @@ def fix_steps(
     locations: list[dict[str, object]],
     api: str | None = None,
 ) -> list[dict[str, object]]:
-    """Ordered edits for one plan; mechanical only when the strategy is proven."""
+    """Ordered edits for one plan; mechanical only when the strategy is proven.
+
+    *sink* is the sink every site shares, or ``None``: a bulk form added to one
+    member's sink would leave the other sites' calls per-key.
+    """
     intro, per_site = (_API_STEPS if api else _STEPS).get(strategy, (None, ""))
-    per_site = per_site.format(api=api) if api else per_site
     applicability: Applicability = "mechanical" if safety == "proven" else "judgment"
     steps: list[dict[str, object]] = []
-    if intro:
-        target = intervention or sink
+    target = intervention or sink
+    # With nothing to name, a site step says the whole edit; a strategy with no
+    # site step keeps its intro whatever it can name.
+    if intro and (target or not per_site):
         steps.append(
             {
                 "action": intro.format(sink=(target or "the per-key call").rsplit("::", 1)[-1]),
@@ -86,7 +93,7 @@ def fix_steps(
     if per_site:
         steps.extend(
             {
-                "action": per_site,
+                "action": per_site.format(api=api, call=_call_phrase(location.get("call"))),
                 "symbol": location.get("function_name"),
                 "file_path": location.get("file_path"),
                 "line": location.get("line_start"),
@@ -96,6 +103,10 @@ def fix_steps(
             for location in locations
         )
     return [{"order": index, **step} for index, step in enumerate(steps, 1)]
+
+
+def _call_phrase(call: object) -> str:
+    return f"{call} call" if call else "call"
 
 
 _EFFORT_BANDS = ((1, "S"), (3, "M"), (8, "L"))
@@ -139,6 +150,43 @@ def _intervention(opportunity: PerformanceOpportunity, fix: PerformanceFix) -> s
     return opportunity.intervention_symbol
 
 
+def _site_locations(evidence: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One location per call site and loop, whatever number of markers observed it.
+
+    ``io_in_loop`` and ``nested_loop_with_io`` both fire on one call; that is one
+    edit, not two.
+    """
+    sites: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
+    for item in evidence:
+        key = (item["file_path"], item.get("line_start"), item.get("loop_line"))
+        site = sites.setdefault(
+            key,
+            {
+                "file_path": item["file_path"],
+                "function_name": item.get("function_name"),
+                "line_start": item.get("line_start"),
+                "line_end": item.get("line_end"),
+                **({"loop_line": item["loop_line"]} if item.get("loop_line") else {}),
+            },
+        )
+        if "call" not in site and (call := _site_call(item)):
+            site["call"] = call
+    return list(sites.values())
+
+
+def _site_call(item: dict[str, Any]) -> str | None:
+    """The call the site repeats: the detector's text, else a helper path's first hop."""
+    path = item.get("path") or ()
+    hop = path[1] if len(path) > 1 and isinstance(path[1], str) else None
+    return item.get("sink_call") or (hop.rsplit("::", 1)[-1] if hop else None)
+
+
+def _shared_sink(evidence: Iterable[dict[str, Any]]) -> str | None:
+    """The sink every site reaches, or ``None`` when a site has none or they differ."""
+    sinks = {item["path"][-1] if item.get("path") else None for item in evidence}
+    return sinks.pop() if len(sinks) == 1 else None
+
+
 def _suggestion(
     opportunity: PerformanceOpportunity, fix: PerformanceFix, confidence: str
 ) -> RefactoringSuggestion:
@@ -146,16 +194,7 @@ def _suggestion(
     intervention = _intervention(opportunity, fix)
     target_file = file_of_symbol(intervention) if intervention else anchor["file_path"]
     in_anchor_file = target_file == anchor["file_path"]
-    locations = [
-        {
-            "file_path": item["file_path"],
-            "function_name": item.get("function_name"),
-            "line_start": item.get("line_start"),
-            "line_end": item.get("line_end"),
-            **({"loop_line": item["loop_line"]} if item.get("loop_line") else {}),
-        }
-        for item in opportunity.evidence
-    ]
+    locations = _site_locations(opportunity.evidence)
     # A bulk form belongs on the per-key callee: the shared helper, else the one
     # sink the loop reaches. The loop's own function is where the keys are
     # collected, never what gains the bulk form.
@@ -164,7 +203,7 @@ def _suggestion(
         fix.strategy,
         fix.safety,
         intervention if fix.strategy != "batch_or_prefetch_io" or batched_on_helper else None,
-        opportunity.terminal_sink,
+        _shared_sink(opportunity.evidence),
         locations,
         fix.api,
     )

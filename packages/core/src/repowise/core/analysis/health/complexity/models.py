@@ -316,12 +316,17 @@ class PerfHit:
     # Distinct direct callers of the enclosing function, set only on the
     # centrality-gated ``hot_path_sync_io`` hit; 0 everywhere else.
     callers: int = 0
+    # The per-iteration call as written at ``line`` (``session.get``), so a plan
+    # can name what to batch; empty where the detector kept no call text.
+    sink_call: str = ""
 
     def loop_facts(self) -> dict[str, Any]:
         """Loop facts for ``details``; absent when unset so old findings are unchanged."""
         facts = self.loop.as_details() if self.loop is not None else {}
         if self.loop_line:
             facts["loop_line"] = self.loop_line
+        if self.sink_call:
+            facts["sink_call"] = self.sink_call
         return facts
 
 

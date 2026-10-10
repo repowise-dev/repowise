@@ -716,10 +716,13 @@ by `rank_score`; actionability only breaks ties. Excluded reasons are counted in
 against a DB or network client is advisory with a `bounded_concurrency`
 prerequisite. A loop already walking chunks is `loop_already_chunked`. When
 `io_in_loop` and `serial_await_in_loop` fire on one call they name each other in
-`siblings`. Plans list their edits (`mechanical` only when proven) and validation
-tests (coverage, call graph, import graph, then `via: "name-match"`). An
-opportunity links to a `performance_fix` refactoring plan only by exact
-`opportunity_id`.
+`siblings`. Plans list their edits (`mechanical` only when proven): one step per
+call site and loop, however many markers saw it, each naming the call it repeats
+(`details.sink_call`, or the helper a cross-function path enters). A step that adds
+a bulk form to the sink comes first only when every site reaches that one sink.
+Plans also list validation tests (coverage, call graph, import graph, then
+`via: "name-match"`). An opportunity links to a `performance_fix` refactoring
+plan only by exact `opportunity_id`.
 
 **Dataflow promotion.** `serial_await_in_loop` and `nested_loop_quadratic` are
 promoted to `dataflow_verified: true` when a def/use pass proves iterations
