@@ -2034,8 +2034,10 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     )
 
     # ---- Dead code findings --------------------------------------------------
-    if result.dead_code_report and result.dead_code_report.findings:
-        await save_dead_code_findings(session, repo_id, result.dead_code_report.findings)
+    # Written even when empty: a run that found nothing must clear the old
+    # open rows, not leave them standing as current findings.
+    if result.dead_code_report is not None:
+        await save_dead_code_findings(session, repo_id, result.dead_code_report.findings or [])
 
     # ---- Documentation drift: findings and resolved references --------------
     # Both tables, one savepoint, one run. Written even when the finding list

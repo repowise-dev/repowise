@@ -20,6 +20,7 @@ from repowise.core.analysis.finding_registry import excluded_types
 
 from ...models import DeadCodeFinding, _new_uuid
 from .._shared import _BATCH_SIZE, _finding_file_path
+from ..repository import stamp_analysis_ran
 
 
 def _dead_code_row_kwargs(finding: Any, repository_id: str) -> dict:
@@ -138,6 +139,7 @@ async def save_dead_code_findings(
         batch = findings[i : i + _BATCH_SIZE]
         session.add_all(_new_rows(batch, repository_id, null_lines_as_zero=null_lines_as_zero))
         await session.flush()
+    await stamp_analysis_ran(session, repository_id, "dead_code")
 
 
 def _finding_identity(finding: Any) -> tuple:
@@ -217,6 +219,7 @@ async def replace_dead_code_findings(
         batch = writable[i : i + _BATCH_SIZE]
         session.add_all(_new_rows(batch, repository_id, null_lines_as_zero=null_lines_as_zero))
         await session.flush()
+    await stamp_analysis_ran(session, repository_id, "dead_code")
 
 
 async def get_dead_code_findings(

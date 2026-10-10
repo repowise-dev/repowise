@@ -7,7 +7,7 @@ every public name, so existing imports are unaffected.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import delete, select
@@ -79,7 +79,7 @@ async def upsert_repository(
         repo.url = url
         repo.default_branch = default_branch
         if settings is not None:
-            repo.settings_json = json.dumps(settings)
+            repo.settings_json = json.dumps(keep_analysis_ran(repo.settings_json, settings))
         # Only advance the stamp when we could read a real commit; never blank
         # out a previously recorded one (e.g. a transient non-checkout path).
         if resolved_head:
@@ -88,6 +88,44 @@ async def upsert_repository(
 
     await session.flush()
     return repo
+
+
+ANALYSIS_RAN_KEY = "analysis_ran_at"
+
+
+def _settings_dict(raw: str | None) -> dict:
+    try:
+        data = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def keep_analysis_ran(old_json: str | None, new_settings: dict) -> dict:
+    """Carry the stage-completion stamps across a wholesale settings replace."""
+    kept = _settings_dict(old_json).get(ANALYSIS_RAN_KEY)
+    if kept is None or ANALYSIS_RAN_KEY in new_settings:
+        return new_settings
+    return {**new_settings, ANALYSIS_RAN_KEY: kept}
+
+
+async def stamp_analysis_ran(session: AsyncSession, repository_id: str, stage: str) -> None:
+    """Record that *stage* ("security" or "dead_code") just persisted a result.
+
+    Called only on the success path of the stage's own write, so the stamp
+    proves the stage ran, which a completed index job does not.
+    """
+    repo = await session.get(Repository, repository_id)
+    if repo is None:
+        return
+    settings = _settings_dict(repo.settings_json)
+    stamps = settings.get(ANALYSIS_RAN_KEY)
+    if not isinstance(stamps, dict):
+        stamps = {}
+    stamps[stage] = datetime.now(UTC).isoformat()
+    settings[ANALYSIS_RAN_KEY] = stamps
+    repo.settings_json = json.dumps(settings)
+    await session.flush()
 
 
 def _read_head_commit(local_path: str) -> str | None:

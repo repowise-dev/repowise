@@ -126,7 +126,9 @@ async def create_repo(
             if body.settings is not None:
                 import json as _json
 
-                repo.settings_json = _json.dumps(body.settings)
+                repo.settings_json = _json.dumps(
+                    crud.keep_analysis_ran(repo.settings_json, body.settings)
+                )
             await repo_session.flush()
             response = RepoResponse.from_orm(repo)
         else:  # pragma: no cover — the row was created two lines above
@@ -289,7 +291,7 @@ async def update_repo(
         style = body.settings.get("wiki_style")
         if style is not None:
             _reject_unknown_style(style, "wiki_style")
-        repo.settings_json = json.dumps(body.settings)
+        repo.settings_json = json.dumps(crud.keep_analysis_ran(repo.settings_json, body.settings))
     await session.flush()
     return RepoResponse.from_orm(repo)
 

@@ -2,24 +2,27 @@
 
 ``None`` means never ran or unknown, and is never replaced by ``now()``.
 
-Findings rows alone cannot answer this: a run that finds nothing writes no
-rows, so an all-clear repo would read as "never ran". The newest completed
-index job (init, update, upgrade and the web re-analyze all record one) covers
-that case. The result is the later of the two sources.
+Two sources, the later wins. The stage stamp (``Repository.settings_json``
+``analysis_ran_at``) is written on the success path of the stage's own write,
+so a run that found nothing still counts and a failed stage does not. Findings
+rows are older evidence that covers indexes written before stamps existed.
+A completed index job is deliberately not used: it proves the pipeline
+finished, not that this best-effort stage did.
 
-Ceiling: a completed job proves the pipeline finished, not that this stage ran
-cleanly (the security scan is best-effort inside it). Treat the value as
-"last index that could have produced these results".
+Ceiling: a stamp records that the stage persisted, and an incremental update
+stamps after scanning only the changed files.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.persistence.models import DeadCodeFinding, GenerationJob, SecurityFinding
+from repowise.core.persistence.crud.repository import ANALYSIS_RAN_KEY
+from repowise.core.persistence.models import DeadCodeFinding, Repository, SecurityFinding
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -29,15 +32,13 @@ def _aware(dt: datetime | None) -> datetime | None:
     return dt
 
 
-async def _last_completed_job(session: AsyncSession, repo_id: str) -> datetime | None:
-    return _aware(
-        await session.scalar(
-            select(func.max(GenerationJob.finished_at)).where(
-                GenerationJob.repository_id == repo_id,
-                GenerationJob.status == "completed",
-            )
-        )
-    )
+async def _stamp(session: AsyncSession, repo_id: str, stage: str) -> datetime | None:
+    raw = await session.scalar(select(Repository.settings_json).where(Repository.id == repo_id))
+    try:
+        stamps = json.loads(raw or "{}").get(ANALYSIS_RAN_KEY)
+        return _aware(datetime.fromisoformat(stamps[stage]))
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return None
 
 
 def _latest(*times: datetime | None) -> datetime | None:
@@ -53,7 +54,7 @@ async def dead_code_analyzed_at(session: AsyncSession, repo_id: str) -> datetime
             )
         )
     )
-    return _latest(rows, await _last_completed_job(session, repo_id))
+    return _latest(rows, await _stamp(session, repo_id, "dead_code"))
 
 
 async def security_scanned_at(session: AsyncSession, repo_id: str) -> datetime | None:
@@ -66,4 +67,4 @@ async def security_scanned_at(session: AsyncSession, repo_id: str) -> datetime |
             )
         )
     )
-    return _latest(rows, await _last_completed_job(session, repo_id))
+    return _latest(rows, await _stamp(session, repo_id, "security"))

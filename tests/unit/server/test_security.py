@@ -57,6 +57,31 @@ async def test_security_summary_scanned_at(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_security_summary_scanned_at_zero_findings(client: AsyncClient, app) -> None:
+    from repowise.core.analysis.security_scan import SecurityScanner
+    from repowise.core.persistence.database import get_session
+
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        await SecurityScanner(session, repo["id"]).replace_findings({}, ["a.py"])
+    resp = await client.get(f"/api/repos/{repo['id']}/security/summary")
+    assert resp.json()["scanned_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_security_settings_patch_keeps_stamp(client: AsyncClient, app) -> None:
+    from repowise.core.persistence.crud import stamp_analysis_ran
+    from repowise.core.persistence.database import get_session
+
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        await stamp_analysis_ran(session, repo["id"], "security")
+    await client.patch(f"/api/repos/{repo['id']}", json={"settings": {"x": 1}})
+    resp = await client.get(f"/api/repos/{repo['id']}/security/summary")
+    assert resp.json()["scanned_at"] is not None
+
+
+@pytest.mark.asyncio
 async def test_security_summary_ignores_history_rows(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _insert(app.state.session_factory, repo["id"], commit_sha="a" * 40)

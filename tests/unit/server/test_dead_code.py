@@ -174,23 +174,40 @@ async def test_dead_code_summary_analyzed_at(client: AsyncClient, app) -> None:
 
 @pytest.mark.asyncio
 async def test_dead_code_summary_analyzed_at_zero_findings(client: AsyncClient, app) -> None:
-    """A completed run that found nothing still reports when it ran."""
+    """A stage run that found nothing still reports when it ran."""
+    from repowise.core.persistence.crud import replace_dead_code_findings
+    from repowise.core.persistence.database import get_session
+
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        await replace_dead_code_findings(session, repo["id"], [])
+
+    data = (await client.get(f"/api/repos/{repo['id']}/dead-code/summary")).json()
+    assert data["total_findings"] == 0
+    assert data["analyzed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_completed_job_alone_is_not_analyzed(client: AsyncClient, app) -> None:
+    """A finished index job does not prove the stage ran."""
     from datetime import UTC, datetime
 
     from repowise.core.persistence.database import get_session
     from repowise.core.persistence.models import GenerationJob
 
     repo = await create_test_repo(client)
-    finished = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
     async with get_session(app.state.session_factory) as session:
         session.add(
-            GenerationJob(repository_id=repo["id"], status="completed", finished_at=finished)
+            GenerationJob(
+                repository_id=repo["id"],
+                status="completed",
+                finished_at=datetime(2026, 1, 2, tzinfo=UTC),
+            )
         )
         await session.commit()
 
     data = (await client.get(f"/api/repos/{repo['id']}/dead-code/summary")).json()
-    assert data["total_findings"] == 0
-    assert data["analyzed_at"].startswith("2026-01-02T03:04:05")
+    assert data["analyzed_at"] is None
 
 
 @pytest.mark.asyncio

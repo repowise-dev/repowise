@@ -1151,6 +1151,9 @@ class SecurityScanner:
                     ),
                     deduped,
                 )
+            from repowise.core.persistence.crud.repository import stamp_analysis_ran
+
+            await stamp_analysis_ran(self._session, self._repo_id, "security")
         except Exception as exc:
             # Pre-migration, the table does not exist yet — silently skip (the
             # historical contract for indexing against a not-yet-migrated DB).
