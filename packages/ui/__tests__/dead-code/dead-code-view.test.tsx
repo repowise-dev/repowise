@@ -9,7 +9,7 @@ import type {
   DeadCodeSummary,
 } from "@repowise-dev/types/dead-code";
 
-// jsdom has no layout engine → stub ResizeObserver so the Radix slider mounts.
+// jsdom has no layout engine → stub ResizeObserver for the Radix primitives.
 class RO {
   observe() {}
   unobserve() {}
@@ -34,8 +34,7 @@ vi.mock("sonner", () => ({
  * lets CSS pick one; jsdom applies no CSS, so a row control matches in both.
  * These scope row queries to the table.
  *
- * By caption, not by role alone: the cluster rollups above it are no longer
- * behind a disclosure, so the page now carries more than one <table>.
+ * By caption, so a second <table> elsewhere on the page cannot match.
  */
 const FINDINGS_TABLE = { name: "Dead code findings" };
 const rowButton = (name: string) =>
@@ -55,6 +54,16 @@ const SUMMARY: DeadCodeSummary = {
   deletable_lines: 120,
   total_lines: 9000,
   by_kind: { unreachable_file: 2, unused_export: 1, zombie_package: 0 },
+  analyzed_at: "2026-10-08T12:00:00Z",
+};
+
+const CLEAN: DeadCodeSummary = {
+  total_findings: 0,
+  confidence_summary: { high: 0, medium: 0, low: 0 },
+  deletable_lines: 0,
+  total_lines: 0,
+  by_kind: {},
+  analyzed_at: "2026-10-08T12:00:00Z",
 };
 
 const FINDINGS: DeadCodeFinding[] = [
@@ -157,7 +166,7 @@ describe("DeadCodeView", () => {
 
     // The lede's figure, then the safe pile's own sentence.
     expect(await screen.findByText("Propose cleanup")).toBeInTheDocument();
-    expect(screen.getByText(/come back high confidence/)).toBeInTheDocument();
+    expect(screen.getByText(/with no runtime-load risk/)).toBeInTheDocument();
     // The safe slice (not the unsafe bootstrap file) drives the pile preview.
     expect(screen.getAllByText(/legacy\.ts/).length).toBeGreaterThan(0);
   });
@@ -220,9 +229,7 @@ describe("DeadCodeView", () => {
 
     // With no open findings the page still has to offer the way back in, not
     // just the "no dead code found" state.
-    fireEvent.change(await screen.findByLabelText("Status"), {
-      target: { value: "acknowledged" },
-    });
+    fireEvent.click(await screen.findByRole("radio", { name: "Acknowledged" }));
 
     await waitFor(() =>
       expect(listFindings).toHaveBeenCalledWith(
@@ -244,7 +251,7 @@ describe("DeadCodeView", () => {
     // ...and it has to arrive in the open slice. The open payload predates the
     // reopen and does not contain it, so without merging the override in, the
     // finding is open on the server and invisible in the UI until a reload.
-    fireEvent.change(screen.getByLabelText("Status"), { target: { value: "open" } });
+    fireEvent.click(screen.getByRole("radio", { name: "Open" }));
 
     expect(screen.queryByText("No dead code found")).not.toBeInTheDocument();
     expect(await findRowButton("Resolve src/old/legacy.ts")).toBeInTheDocument();
@@ -292,6 +299,7 @@ describe("DeadCodeView", () => {
       ).not.toBeInTheDocument(),
     );
     expect(screen.queryByText("No dead code found")).not.toBeInTheDocument();
+    expect(screen.getByText("Every finding is resolved or set aside")).toBeInTheDocument();
 
     const undo = lastUndoAction();
     await undo.onClick();
@@ -313,7 +321,7 @@ describe("DeadCodeView", () => {
       ),
     });
     renderView(<DeadCodeView adapter={adapter} />);
-    await screen.findByText(/come back high confidence/);
+    await screen.findByText(/with no runtime-load risk/);
 
     const listCallsBefore = (adapter.listFindings as ReturnType<typeof vi.fn>).mock.calls.length;
     fireEvent.click(await screen.findByRole("button", { name: "Re-analyze" }));
@@ -387,6 +395,79 @@ describe("DeadCodeView", () => {
 
     await waitFor(() =>
       expect(rowButton("Resolve src/old/legacy.ts")).toBeInTheDocument(),
+    );
+  });
+
+  it("calls a recorded zero clean, with no table or sections under it", async () => {
+    renderView(
+      <DeadCodeView
+        adapter={makeAdapter({
+          getSummary: vi.fn(async () => CLEAN),
+          listFindings: vi.fn(async () => []),
+        })}
+      />,
+    );
+
+    const clean = await screen.findByText("No dead code found");
+    expect(clean.closest("[data-tone]")).toHaveAttribute("data-tone", "positive");
+    expect(screen.getByText("0")).toBeInTheDocument();
+    expect(screen.queryByText("All findings")).not.toBeInTheDocument();
+    expect(screen.queryByText("Safe to delete")).not.toBeInTheDocument();
+  });
+
+  it("reviews past findings from the clean state", async () => {
+    const listFindings = vi.fn(async () => [] as DeadCodeFinding[]);
+    renderView(
+      <DeadCodeView
+        adapter={makeAdapter({ getSummary: vi.fn(async () => CLEAN), listFindings })}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review past findings" }));
+
+    expect(await screen.findByText("All findings")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(listFindings).toHaveBeenCalledWith(expect.objectContaining({ status: "resolved" })),
+    );
+  });
+
+  it("never calls an unrecorded zero clean", async () => {
+    const adapter = makeAdapter({
+      getSummary: vi.fn(async () => ({ ...CLEAN, analyzed_at: null })),
+      listFindings: vi.fn(async () => []),
+    });
+    renderView(<DeadCodeView adapter={adapter} />);
+
+    expect(await screen.findByText("Not analysed yet")).toBeInTheDocument();
+    expect(screen.queryByText("No dead code found")).not.toBeInTheDocument();
+    expect(document.querySelector('[data-tone="positive"]')).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+    await waitFor(() => expect(adapter.analyze).toHaveBeenCalledTimes(1));
+  });
+
+  it("renders Re-analyze disabled with the host's reason beside it", async () => {
+    const adapter = makeAdapter({ analyzeDisabledReason: "This snapshot is read-only." });
+    renderView(<DeadCodeView adapter={adapter} />);
+
+    const button = await screen.findByRole("button", { name: "Re-analyze" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription("This snapshot is read-only.");
+    expect(screen.getByText("This snapshot is read-only.")).toBeVisible();
+  });
+
+  it("switches the table's slice from the segmented status control", async () => {
+    const listFindings = vi.fn(async () => FINDINGS);
+    renderView(<DeadCodeView adapter={makeAdapter({ listFindings })} />);
+
+    expect(await screen.findByRole("radio", { name: "Open" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: "False positive" }));
+    await waitFor(() =>
+      expect(listFindings).toHaveBeenCalledWith(
+        expect.objectContaining({ status: "false_positive" }),
+      ),
     );
   });
 });

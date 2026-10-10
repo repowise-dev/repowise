@@ -9,6 +9,7 @@ const SUMMARY: DeadCodeSummary = {
   deletable_lines: 4321,
   total_lines: 91234,
   by_kind: { unreachable_file: 12, unused_export: 88, zombie_package: 42 },
+  analyzed_at: new Date(Date.now() - 2 * 86_400_000).toISOString(),
 };
 
 describe("DeadCodeLede", () => {
@@ -18,43 +19,35 @@ describe("DeadCodeLede", () => {
     expect(screen.getByText("lines")).toBeInTheDocument();
   });
 
-  it("names every kind in prose rather than as separate tiles", () => {
+  it("says the posture in one sentence, with when it was measured", () => {
     render(<DeadCodeLede summary={SUMMARY} />);
     const prose = screen.getByText(/have no reachable caller/);
-    expect(prose.textContent).toContain("88 unused exports");
-    expect(prose.textContent).toContain("42 zombie packages");
-    expect(prose.textContent).toContain("12 unreachable files");
+    expect(prose.textContent).toBe(
+      "142 findings across 91,234 lines have no reachable caller; 4,321 lines are deletion-ready. Analysed 2d ago.",
+    );
   });
 
-  it("splits confidence across the ribbon and the bar", () => {
+  it("carries no stat ribbon or confidence bar repeating the sentence", () => {
     render(<DeadCodeLede summary={SUMMARY} />);
-    // High stands alone; medium and low are the one "verify this" bucket.
-    expect(screen.getByText("89")).toBeInTheDocument();
-    expect(screen.getByText("53")).toBeInTheDocument();
-    expect(screen.getByLabelText("89 high confidence")).toBeInTheDocument();
+    expect(screen.queryByText("High confidence")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("89 high confidence")).not.toBeInTheDocument();
+    // The methodology sits behind the label's info tip instead of in prose.
+    expect(screen.getByRole("button", { name: "What Reclaimable means" })).toBeInTheDocument();
   });
 
-  it("reports the deletable share of the flagged lines, not of the repo", () => {
-    render(<DeadCodeLede summary={SUMMARY} />);
-    // 4,321 of the 91,234 lines sitting inside a finding.
-    expect(screen.getByText("5%")).toBeInTheDocument();
-    expect(screen.getByText("91,234")).toBeInTheDocument();
+  it("drops the time rather than inventing one when the run is unknown", () => {
+    render(<DeadCodeLede summary={{ ...SUMMARY, analyzed_at: null }} />);
+    expect(screen.getByText(/have no reachable caller/).textContent).not.toMatch(/Analysed/);
   });
 
-  it("says a clean repository is a result, not an absence", () => {
+  it("agrees in number for a single finding", () => {
     render(
       <DeadCodeLede
-        summary={{
-          total_findings: 0,
-          confidence_summary: { high: 0, medium: 0, low: 0 },
-          deletable_lines: 0,
-          total_lines: 0,
-          by_kind: {},
-        }}
+        summary={{ ...SUMMARY, total_findings: 1, total_lines: 12, deletable_lines: 1, analyzed_at: null }}
       />,
     );
-    expect(
-      screen.getByText(/Nothing in this repository is currently flagged/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/no reachable caller/).textContent).toBe(
+      "1 finding across 12 lines has no reachable caller; 1 line is deletion-ready.",
+    );
   });
 });

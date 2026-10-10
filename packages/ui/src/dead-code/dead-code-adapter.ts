@@ -8,8 +8,8 @@ import type {
 /**
  * App-injected data + navigation for the shared {@link DeadCodeView}.
  *
- * The view owns the composition — the safe-to-delete pile, the cluster
- * rollups, the drill-down table, the optimistic patch/undo toast, bulk
+ * The view owns the composition — the lede, the safe-to-delete list, the
+ * findings table, the optimistic patch/undo toast, bulk
  * resolve, the "Propose cleanup" agent brief, and Re-analyze. The host
  * supplies *how* to fetch/mutate and *where* file links go, so web and hosted
  * render the same view from one source.
@@ -43,6 +43,11 @@ export interface DeadCodeAdapter {
    * fails. Optional: without it the view cannot know when to refetch.
    */
   waitForAnalysis?(jobId: string): Promise<void>;
+  /**
+   * When set, Re-analyze renders disabled with this sentence beside it, for a
+   * host that cannot run a pass right now (a read-only snapshot, a plan limit).
+   */
+  analyzeDisabledReason?: string;
   patchFinding(
     findingId: string,
     patch: DeadCodePatchInput,

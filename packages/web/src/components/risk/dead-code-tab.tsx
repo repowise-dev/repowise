@@ -2,9 +2,9 @@
 
 /**
  * Dead Code host — binds the shared {@link DeadCodeView} to web's `/api`
- * client and `/repos/:id` routing. The composition (safe-to-delete pile,
- * cluster rollups, drill-down table, patch/undo, bulk resolve, Propose
- * cleanup, Re-analyze) lives in `@repowise-dev/ui/dead-code`; this file only
+ * client and `/repos/:id` routing. The composition (lede, safe-to-delete
+ * list, findings table, patch/undo, bulk resolve, Propose cleanup,
+ * Re-analyze) lives in `@repowise-dev/ui/dead-code`; this file only
  * injects the app-specific pieces so web and hosted render the same view.
  */
 
