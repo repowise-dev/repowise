@@ -438,6 +438,25 @@ class TestFileTraverser:
         assert files["tests/test_demo.py"] is True
         assert files["tools/test_cli.py"] is True
 
+    def test_vitest_custom_pattern_is_stamped_as_test(self, tmp_path: Path) -> None:
+        (tmp_path / "core").mkdir()
+        (tmp_path / "core" / "package.json").write_text('{"name":"core","private":true}')
+        (tmp_path / "core" / "vitest.config.ts").write_text(
+            'export default defineConfig({ test: { include: ["**/*.vitest.ts"] } });'
+        )
+        (tmp_path / "core" / "stream").mkdir()
+        (tmp_path / "core" / "stream" / "charStream.ts").write_text(
+            'export function chars(s: string) { return [...s]; }'
+        )
+        (tmp_path / "core" / "stream" / "charStream.vitest.ts").write_text(
+            'import { it, expect } from "vitest";\n'
+            'import { chars } from "./charStream";\n'
+            'it("splits", () => expect(chars("ab")).toEqual(["a", "b"]));'
+        )
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["core/stream/charStream.vitest.ts"] is True
+        assert files["core/stream/charStream.ts"] is False
+
     def test_file_info_fields(self, tmp_path: Path) -> None:
         (tmp_path / "calc.py").write_text("class Calc: pass")
         traverser = FileTraverser(tmp_path)

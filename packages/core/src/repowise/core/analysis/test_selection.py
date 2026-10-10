@@ -67,6 +67,7 @@ from typing import TYPE_CHECKING, Any
 
 import pathspec
 
+from ..js_test_roots import JsTestRoots
 from ..pytest_roots import PYTEST_CONFIG_NAMES, PytestRoots
 from ..support_paths import DOC_EXTENSIONS
 from ..test_paths import is_test_path, is_test_related_path, is_test_support_path
@@ -412,18 +413,27 @@ def is_test_helper(path: str) -> bool:
     )
 
 
-def is_runnable_test(path: str, roots: PytestRoots | None = None) -> bool:
+def is_runnable_test(
+    path: str,
+    roots: PytestRoots | JsTestRoots | None = None,
+    js_roots: JsTestRoots | None = None,
+) -> bool:
     """A test-shaped file name with an extension a runner collects tests from.
 
-    With *roots*, a Python file pytest's config leaves out of collection
-    (``core/test_paths.py``) is not one: the same rule that stamps ``is_test``.
+    With *roots* or *js_roots*, follows runner collection configuration:
+    a Python file pytest leaves out is not runnable, and a JS/TS file Vitest or
+    Jest collects is runnable.
     """
+    if isinstance(roots, JsTestRoots) and js_roots is None:
+        js_roots = roots
+        roots = None
+
     p = PurePosixPath(path)
-    return (
-        p.suffix.lower() in _TEST_CODE_SUFFIXES
-        and is_test_path(p.name)
-        and (roots is None or is_test_path(path, roots=roots))
-    )
+    if p.suffix.lower() not in _TEST_CODE_SUFFIXES:
+        return False
+    if roots is None and js_roots is None:
+        return is_test_path(p.name)
+    return is_test_path(path, roots=roots, js_roots=js_roots)
 
 
 @functools.lru_cache(maxsize=8)

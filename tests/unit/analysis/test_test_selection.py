@@ -896,6 +896,16 @@ def test_a_test_named_module_pytest_does_not_collect_is_not_runnable() -> None:
     assert is_runnable_test("src/pkg/test_paths.py")
 
 
+def test_a_custom_pattern_js_test_file_vitest_collects_is_runnable() -> None:
+    """``core/stream/charStream.vitest.ts`` is runnable with roots, not runnable without."""
+    from repowise.core.js_test_roots import read_js_test_roots
+
+    config = 'export default defineConfig({ test: { include: ["**/*.vitest.ts"] } });\n'
+    roots = read_js_test_roots([("core/vitest.config.ts", config)])
+    assert is_runnable_test("core/stream/charStream.vitest.ts", roots)
+    assert not is_runnable_test("core/stream/charStream.vitest.ts")
+
+
 def test_a_runner_gets_only_its_own_always_run_tests_and_hears_of_the_rest() -> None:
     config = TestSelectionConfig(
         always_run=("tests/test_smoke.py", "apps/android/FooTest.kt", "e2e/")

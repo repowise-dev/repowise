@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from repowise.core.js_test_roots import read_js_test_roots
 from repowise.core.pytest_roots import read_pytest_roots
 from repowise.core.test_paths import (
     is_skippable_test_path,
@@ -425,3 +426,23 @@ def test_pytest_config_overrules_a_test_shaped_python_name(path: str, expected: 
 )
 def test_a_test_named_for_a_file_may_carry_a_qualifier(test_path, source, siblings, named):
     assert names_test_for(test_path, source, siblings) is named
+
+
+_JS_ROOTS = read_js_test_roots(
+    [
+        (
+            "core/vitest.config.ts",
+            'export default defineConfig({ test: { include: ["**/*.vitest.ts"] } });\n',
+        )
+    ]
+)
+
+
+def test_js_runner_config_promotes_custom_pattern_test_file() -> None:
+    # A custom-pattern test file is a test with roots and production without
+    assert is_test_path("core/stream/charStream.vitest.ts", js_roots=_JS_ROOTS)
+    assert not is_test_path("core/stream/charStream.vitest.ts")
+
+    # A standard .test.ts file stays a test even under a config whose include leaves it out
+    assert is_test_path("src/a.test.ts", js_roots=_JS_ROOTS)
+    assert is_test_path("src/a.test.ts")
