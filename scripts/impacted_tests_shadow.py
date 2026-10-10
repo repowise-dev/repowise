@@ -30,6 +30,7 @@ from typing import Any
 
 from repowise.core.ci.github import append_step_summary, notice
 from repowise.core.ci.markdown import ROW_LIMIT, code, details, more_line, plural
+from repowise.core.forges.ci import detect_ci
 
 #: Record layout version, bumped when a field changes meaning.
 RECORD_VERSION = 1
@@ -225,11 +226,12 @@ def _load(path: str | None, parse: Callable[[str], Any]) -> Any:
 
 
 def _context(env: Mapping[str, str]) -> dict[str, Any]:
-    pr = env.get("PR_NUMBER") or ""
+    ci = detect_ci(env)
+    # HEAD_SHA is the pull request's own head; the CI's head is its merge commit.
     return {
         "event": env.get("GITHUB_EVENT_NAME"),
-        "sha": env.get("HEAD_SHA") or env.get("GITHUB_SHA"),
-        "pr": int(pr) if pr.isdigit() else None,
+        "sha": env.get("HEAD_SHA") or ci.head_sha,
+        "pr": ci.change_number,
         "run_id": env.get("GITHUB_RUN_ID"),
     }
 

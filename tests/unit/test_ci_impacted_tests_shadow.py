@@ -183,3 +183,10 @@ def test_an_older_index_is_noted() -> None:
     assert "index predates the base" in shadow.render_summary(rec)
     rec = shadow.build_record(SELECTION, {"index_cache": "exact"}, None, {})
     assert "predates" not in shadow.render_summary(rec)
+
+
+def test_context_reads_the_change_number_from_the_ci() -> None:
+    env = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/pull/42/merge", "HEAD_SHA": "abc"}
+    assert shadow._context(env)["pr"] == 42
+    assert shadow._context(env)["sha"] == "abc"
+    assert shadow._context({})["pr"] is None
