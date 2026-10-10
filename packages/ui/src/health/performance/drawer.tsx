@@ -508,7 +508,7 @@ export function OpportunityDrawer({
 
             <Section title="Why it ranks here">
               <p className="text-sm text-[var(--color-text-secondary)]">
-                Position <span className="tabular-nums">{current.rank_position.toLocaleString()}</span>{" "}
+                Position <span className="tabular-nums">{(current.rank_position + 1).toLocaleString()}</span>{" "}
                 in the queue.
               </p>
               {current.why_ranked.length > 0 ? (

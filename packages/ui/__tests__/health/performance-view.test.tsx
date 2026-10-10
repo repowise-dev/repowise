@@ -209,6 +209,14 @@ describe("PerformanceView states", () => {
 });
 
 describe("PerformanceView drawer", () => {
+  it("numbers the queue from 1 although rank_position is stored 0-based", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    const first = await openFirstRow();
+    expect(within(first).getByText("1")).toBeTruthy();
+    const panel = await screen.findByRole("dialog");
+    expect(within(panel).getByText(/Position/).textContent).toMatch(/^Position 1 in the queue/);
+  });
+
   it("separates evidence confidence, actionability, and fix safety", async () => {
     render(<PerformanceView adapter={adapter()} />);
     await openFirstRow();

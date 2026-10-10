@@ -91,7 +91,7 @@ export function opportunity(
     actionability_reason: "strategy_requires_validation",
     prerequisites: ["batch_api_contract"],
     rank_score: 12.5,
-    rank_position: 1,
+    rank_position: 0,
     rank_factors: { boundary_kind: 4 },
     why_ranked: [{ factor: "boundary_kind", value: "db", points: 4 }],
     fix: {
@@ -139,7 +139,7 @@ export function page(overrides: Partial<PerformanceOpportunityPage> = {}): Perfo
         opportunity_id: "perf2_planready",
         actionability_state: "plan_ready",
         actionability_reason: "proven_strategy",
-        rank_position: 1,
+        rank_position: 0,
         confidence: "high",
         fix: {
           strategy: "parallelize_independent_awaits",
@@ -151,12 +151,12 @@ export function page(overrides: Partial<PerformanceOpportunityPage> = {}): Perfo
       opportunity({
         opportunity_id: "perf2_advisory",
         actionability_state: "advisory",
-        rank_position: 2,
+        rank_position: 1,
       }),
       opportunity({
         opportunity_id: "perf2_investigate",
         actionability_state: "investigate",
-        rank_position: 3,
+        rank_position: 2,
         boundary_kind: null,
         terminal_sink: null,
         intervention_symbol: null,
