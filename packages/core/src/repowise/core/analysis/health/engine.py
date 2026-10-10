@@ -1403,13 +1403,10 @@ class HealthAnalyzer:
             roles = None
         for finding in perf:
             path = finding.details.get("path")
-            if isinstance(path, list) and path:
-                owner = path[0]
-                if reachable is not None:
-                    finding.details["reliable_entry_reachability"] = owner in reachable
-            else:
-                owner = index.resolve_function(finding.file_path, finding.line_start or 0)
+            if reachable is not None and isinstance(path, list) and path:
+                finding.details["reliable_entry_reachability"] = path[0] in reachable
             if roles is not None:
+                owner = roles.owner_of(finding.file_path, finding.line_start, finding.details)
                 finding.details["role_owner"] = owner
                 finding.details["execution_role"] = roles.role_of(owner, finding.file_path)
         return roles

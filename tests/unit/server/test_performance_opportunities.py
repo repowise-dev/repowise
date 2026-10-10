@@ -8,6 +8,8 @@ never reaches.
 
 from __future__ import annotations
 
+import json
+
 from httpx import AsyncClient
 from sqlalchemy import select
 
@@ -596,3 +598,46 @@ async def test_a_stored_finding_takes_the_role_this_run_found(app, client: Async
             )
         ).scalar_one()
     assert '"execution_role":"request"' in stored
+
+
+async def test_a_finding_stored_before_role_owner_is_keyed_on_its_loop_owner(
+    app, client: AsyncClient
+) -> None:
+    """A legacy row gets its owner found as the analysis finds it, then keeps it."""
+    import networkx as nx
+
+    from repowise.core.analysis.execution_graph import ExecutionGraphIndex
+    from repowise.core.analysis.execution_roles import ExecutionRoles
+
+    crossing = _finding("src/c.py", 40, ["src/c.py::run", "src/db.py::fetch"])
+    inside = _finding("src/e.py", 12, [])
+    inside.details.pop("path")
+    inside.details["cross_function"] = False
+    repo_id, _ = await _seed(app, client, [crossing, inside])
+
+    graph = nx.DiGraph()
+    graph.add_node(
+        "src/e.py::load", node_type="symbol", name="load", file_path="src/e.py",
+        start_line=10, end_line=20,
+    )
+    roles = ExecutionRoles(
+        {"src/c.py::run": "request", "src/e.py::load": "event_consumer"},
+        ExecutionGraphIndex(graph),
+    )
+    async with app.state.session_factory() as session:
+        await crud.finalize_performance_opportunities(
+            session, repo_id, analyzed_commit="a" * 40, execution_roles=roles
+        )
+        await session.commit()
+        stored = (
+            await session.execute(
+                select(HealthFinding.file_path, HealthFinding.details_json).where(
+                    HealthFinding.repository_id == repo_id
+                )
+            )
+        ).all()
+    details = {path: json.loads(raw) for path, raw in stored}
+    assert details["src/c.py"]["role_owner"] == "src/c.py::run"
+    assert details["src/c.py"]["execution_role"] == "request"
+    assert details["src/e.py"]["role_owner"] == "src/e.py::load"
+    assert details["src/e.py"]["execution_role"] == "event_consumer"

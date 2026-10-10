@@ -250,19 +250,25 @@ async def finalize_performance_opportunities(
 async def _restamp_roles(
     session: AsyncSession, rows: list[Any], roles: ExecutionRoles
 ) -> list[Any]:
-    """Each stored finding with its loop owner's current role; changed rows are written."""
+    """Each stored finding with its loop owner's current role; changed rows are written.
+
+    A row stored before ``role_owner`` existed gets its owner found the way
+    the analysis finds it, and keeps it from then on.
+    """
     out: list[Any] = []
     changed = []
     for row in rows:
         details = json.loads(row.details_json or "{}")
-        if "role_owner" not in details:
+        if "role_owner" in details:
+            owner = details["role_owner"]
+        else:
+            owner = roles.owner_of(row.file_path, row.line_start, details)
+        role = roles.role_of(owner, row.file_path)
+        if details.get("execution_role") == role and "role_owner" in details:
             out.append(row)
             continue
-        role = roles.role_of(details["role_owner"], row.file_path)
-        if details.get("execution_role") == role:
-            out.append(row)
-            continue
-        details_json = json.dumps({**details, "execution_role": role}, separators=(",", ":"))
+        stamped = {**details, "execution_role": role, "role_owner": owner}
+        details_json = json.dumps(stamped, separators=(",", ":"))
         changed.append({"id": row.id, "details_json": details_json})
         out.append(SimpleNamespace(**{**row._mapping, "details_json": details_json}))
     if changed:

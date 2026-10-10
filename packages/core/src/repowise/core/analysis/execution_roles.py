@@ -404,9 +404,14 @@ def _settle_cold(index: ExecutionGraphIndex, reached: dict[str, ExecutionRole]) 
 
 @dataclass(frozen=True, slots=True)
 class ExecutionRoles:
-    """The hottest role reaching each function, ready to look up."""
+    """The hottest role reaching each function, ready to look up.
+
+    *index* is the graph the roles were walked over, kept so a stored finding
+    that predates ``role_owner`` can still be keyed on its loop owner.
+    """
 
     reached: Mapping[str, ExecutionRole]
+    index: ExecutionGraphIndex | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def build(cls, graph: Any, index: ExecutionGraphIndex) -> ExecutionRoles:
@@ -428,7 +433,18 @@ class ExecutionRoles:
             for node in seeds.by_role[role]:
                 reached.setdefault(node, role)
         _settle_cold(index, reached)
-        return cls(reached)
+        return cls(reached, index)
+
+    def owner_of(self, file_path: str, line: int | None, details: Mapping[str, Any]) -> str | None:
+        """The function that owns a performance finding's loop.
+
+        The path's first node when the cost crosses functions, else the
+        symbol holding the finding's line.
+        """
+        path = details.get("path")
+        if isinstance(path, list) and path:
+            return path[0]
+        return self.index.resolve_function(file_path, line or 0) if self.index else None
 
     def role_of(self, symbol: str | None, file_path: str) -> ExecutionRole:
         """The role of the function *symbol* in *file_path*.
