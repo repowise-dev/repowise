@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { ToolCallBlock } from "./tool-call-block";
-import { WorkingOrb } from "./working-orb";
 import type { ChatArtifact, ChatUIToolCall } from "@repowise-dev/types/chat";
 
 interface ToolCallGroupProps {
@@ -53,7 +52,6 @@ export function ToolCallGroup({ toolCalls, onViewArtifact }: ToolCallGroupProps)
         onClick={() => setExpanded((e) => !e)}
         aria-expanded={open}
       >
-        {running && <WorkingOrb />}
         <span className="font-medium text-[var(--color-text-secondary)]">
           {running ? "Working" : "Activity"}
         </span>

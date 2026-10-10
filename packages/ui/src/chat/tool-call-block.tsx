@@ -15,7 +15,6 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight, ArrowUpRight } from "lucide-react";
 import { cn } from "../lib/cn";
-import { WorkingOrb } from "./working-orb";
 import type { ChatUIToolCall } from "@repowise-dev/types/chat";
 
 const TOOL_LABELS: Record<string, string> = {
@@ -72,7 +71,6 @@ export function ToolCallBlock({
           disabled={isRunning}
           aria-expanded={expanded}
         >
-          {isRunning && <WorkingOrb />}
           <span className="font-medium text-[var(--color-text-secondary)]">
             {label}
           </span>

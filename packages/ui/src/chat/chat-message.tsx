@@ -5,6 +5,7 @@ import { cn } from "../lib/cn";
 import { ToolCallGroup } from "./tool-call-group";
 import { WorkingOrb } from "./working-orb";
 import { MessageActions } from "./message-actions";
+import { CHAT_STAGES, chatStage } from "./chat-stage";
 import { Markdown } from "../shared/markdown";
 import { SourceCitations, type SourceReference } from "./source-citations";
 import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
@@ -50,6 +51,7 @@ function ChatMessageImpl({
 }: ChatMessageProps) {
   const isUser = message.role === "user";
   const dock = density === "dock";
+  const stage = isUser ? null : chatStage(message);
 
   if (isUser) {
     return (
@@ -120,14 +122,17 @@ function ChatMessageImpl({
           </p>
         )}
 
-        {message.isStreaming &&
-          !message.text &&
-          !message.toolCalls.some((tc) => tc.status === "running") && (
-            <div className="flex items-center gap-2 py-2 text-xs text-[var(--color-text-tertiary)]">
-              <WorkingOrb />
-              <span>Reading context</span>
-            </div>
-          )}
+        {stage && (
+          // The one live marker, always at the edge of the answer: it follows
+          // the turn from thinking through each tool to writing.
+          <div
+            data-chat-stage={stage}
+            className="flex min-h-8 items-center gap-2 text-xs text-[var(--color-text-tertiary)]"
+          >
+            <WorkingOrb state={CHAT_STAGES[stage].state} />
+            <span>{CHAT_STAGES[stage].label}</span>
+          </div>
+        )}
         <MessageActions
           message={message}
           pinned={isLatest}

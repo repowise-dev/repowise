@@ -36,9 +36,9 @@ describe("ToolCallGroup", () => {
     expect(shells(container)).toHaveLength(1);
   });
 
-  it("uses one calm working orb rather than orange spinners", () => {
-    // Rule 10: a badge every row carries says nothing. Success is the default,
-    // so only work in flight gets a marker.
+  it("marks no step with a spinner or success badge", () => {
+    // Rule 10: a badge every row carries says nothing. The live marker is the
+    // turn's stage orb, not one per tool row.
     const { container: done } = render(
       <ToolCallGroup toolCalls={[call("a", "done")]} />,
     );
@@ -49,7 +49,7 @@ describe("ToolCallGroup", () => {
       <ToolCallGroup toolCalls={[call("b", "running")]} />,
     );
     expect(running.querySelector(".animate-spin")).toBeNull();
-    expect(running.querySelector('[data-working-orb="true"]')).not.toBeNull();
+    expect(running.querySelector('[data-working-orb="true"]')).toBeNull();
     expect(running.innerHTML).not.toContain("color-accent-primary");
   });
 

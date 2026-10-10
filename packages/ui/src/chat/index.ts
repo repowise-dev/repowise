@@ -15,6 +15,7 @@ export * from "./use-chat-shortcut";
 export * from "./chat-context-indicator";
 export * from "../shared/markdown";
 export * from "./chat-message";
+export * from "./chat-stage";
 export * from "./conversation-history";
 export * from "./model-selector";
 export * from "./message-actions";
