@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from pathlib import Path
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...git_head import read_head_commit
 from ..models import (
     GenerationJob,
     Page,
@@ -93,40 +93,20 @@ async def upsert_repository(
 def _read_head_commit(local_path: str) -> str | None:
     """Return the repo's current git HEAD SHA via plain file I/O, or None.
 
-    Dependency-free (no ``git`` binary, no gitpython): parse ``.git/HEAD`` and
-    follow at most one ref, falling back to ``packed-refs``. Returns ``None``
-    when *local_path* is not a git checkout (hosted/ephemeral indexes) or the
-    ref can't be resolved. Mirrors the MCP ``_meta`` reader so the value we
-    write is read back the same way — keeping freshness comparisons honest.
+    Dependency-free (no ``git`` binary, no gitpython). Returns ``None`` when
+    *local_path* is not a git checkout (hosted/ephemeral indexes) or the ref
+    can't be resolved. A linked worktree or submodule keeps ``.git`` as a
+    ``gitdir:`` pointer file; the shared reader follows that pointer and
+    resolves the branch against the common dir, so the stored commit is the
+    worktree's own.
+
+    The MCP ``_meta.read_live_head`` reader calls the same helper. The old
+    ``is_dir()`` guard treated a pointer file as non-git on both sides so the
+    written commit and the read-back comparison stayed symmetric; they still
+    share one implementation, and a ``None`` read still never blanks a
+    commit already stored.
     """
-    try:
-        git_dir = Path(local_path) / ".git"
-        # Linked worktrees use a ``.git`` *file* (gitdir pointer), not a dir;
-        # treated as non-git here on purpose so this stays in lockstep with the
-        # MCP ``_meta.read_live_head`` reader (same is_dir() guard), keeping
-        # the written commit and the read-back comparison symmetric.
-        if not git_dir.is_dir():
-            return None
-        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    if head.startswith("ref: "):
-        ref_rel = head[5:].strip()
-        try:
-            return (git_dir / ref_rel).read_text(encoding="utf-8").strip() or None
-        except OSError:
-            pass
-        try:
-            for raw in (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines():
-                if raw.startswith("#") or raw.startswith("^"):
-                    continue
-                sha, _, name = raw.partition(" ")
-                if name.strip() == ref_rel:
-                    return sha.strip() or None
-        except OSError:
-            return None
-        return None
-    return head or None
+    return read_head_commit(local_path)
 
 
 async def set_repo_function_mod_p80(session: AsyncSession, repo_id: str, value: int) -> None:

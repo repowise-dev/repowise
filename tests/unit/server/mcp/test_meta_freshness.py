@@ -20,10 +20,15 @@ from __future__ import annotations
 
 import subprocess
 import types
+from pathlib import Path
 
 import pytest
 
 from repowise.server.mcp_server import _meta
+from tests.unit.persistence.test_repository_head_commit import (
+    linked_worktree,
+    submodule_checkout,
+)
 
 _INDEXED = "a" * 40
 _LIVE = "b" * 40
@@ -321,3 +326,58 @@ async def test_execution_flows_targets_name_the_traced_files(setup_mcp, monkeypa
     assert result["_meta"]["indexed_commit"] == _INDEXED[:12]
     assert seen[-1]["repository"] is not None
     assert "src/auth/service.py" in seen[-1]["targets"]
+
+
+def test_read_live_head_plain_git_dir(tmp_path: Path) -> None:
+    sha = "a" * 40
+    git = tmp_path / ".git"
+    (git / "refs" / "heads").mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (git / "refs" / "heads" / "main").write_text(sha + "\n", encoding="utf-8")
+    assert _meta.read_live_head(str(tmp_path)) == sha
+
+
+def test_read_live_head_non_git_and_empty(tmp_path: Path) -> None:
+    assert _meta.read_live_head(str(tmp_path)) is None
+    assert _meta.read_live_head(None) is None
+    assert _meta.read_live_head("") is None
+
+
+def test_read_live_head_worktree_loose_ref(tmp_path: Path) -> None:
+    sha = "a" * 40
+    checkout = linked_worktree(tmp_path, sha, how="loose")
+    assert _meta.read_live_head(str(checkout)) == sha
+
+
+def test_read_live_head_worktree_packed_refs(tmp_path: Path) -> None:
+    sha = "c" * 40
+    checkout = linked_worktree(tmp_path, sha, how="packed")
+    assert _meta.read_live_head(str(checkout)) == sha
+
+
+def test_read_live_head_worktree_detached(tmp_path: Path) -> None:
+    sha = "b" * 40
+    checkout = linked_worktree(tmp_path, sha, how="detached")
+    assert _meta.read_live_head(str(checkout)) == sha
+
+
+def test_read_live_head_worktree_relative_gitdir(tmp_path: Path) -> None:
+    sha = "f" * 40
+    checkout = linked_worktree(tmp_path, sha, how="loose", relative=True)
+    assert _meta.read_live_head(str(checkout)) == sha
+
+
+def test_read_live_head_worktree_missing_gitdir_returns_none(tmp_path: Path) -> None:
+    (tmp_path / ".git").write_text("gitdir: /somewhere/.git/worktrees/wt\n", encoding="utf-8")
+    assert _meta.read_live_head(str(tmp_path)) is None
+
+
+def test_read_live_head_garbled_gitfile_returns_none(tmp_path: Path) -> None:
+    (tmp_path / ".git").write_text("not a gitdir\n", encoding="utf-8")
+    assert _meta.read_live_head(str(tmp_path)) is None
+
+
+def test_read_live_head_submodule_gitdir(tmp_path: Path) -> None:
+    sha = "9" * 40
+    checkout = submodule_checkout(tmp_path, sha)
+    assert _meta.read_live_head(str(checkout)) == sha

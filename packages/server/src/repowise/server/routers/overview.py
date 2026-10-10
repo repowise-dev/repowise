@@ -24,6 +24,7 @@ from repowise.core.analysis.health.aggregation import (
     severity_breakdown as health_severity_breakdown,
 )
 from repowise.core.analysis.health.scoring import hotspot_health
+from repowise.core.git_head import resolve_git_dir
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -98,22 +99,17 @@ def _remote_url(stored_url: str | None, local_path: str | None) -> str | None:
     if not local_path:
         return None
 
-    git_path = Path(local_path) / ".git"
-    # Worktrees and submodules use a `.git` FILE holding `gitdir: <path>`; the
-    # config lives in the main checkout, so follow the pointer before reading.
-    if git_path.is_file():
-        try:
-            pointer = git_path.read_text(encoding="utf-8").strip()
-        except OSError:
-            return None
-        if not pointer.startswith("gitdir:"):
-            return None
-        resolved = Path(pointer.split(":", 1)[1].strip())
-        if not resolved.is_absolute():
-            resolved = (Path(local_path) / resolved).resolve()
-        # A worktree's gitdir is `<main>/.git/worktrees/<name>`; config is two
-        # levels up. Fall back to the pointed-at dir for the submodule case.
-        git_path = resolved.parent.parent if resolved.parent.name == "worktrees" else resolved
+    # Worktrees and submodules use a `.git` FILE holding `gitdir: <path>`.
+    # The pointer walk lives in `resolve_git_dir` (the same one the HEAD
+    # reader uses) so this is not a third copy. Config is not in the
+    # worktree's private gitdir: that directory is `<main>/.git/worktrees/<name>`,
+    # and config is two levels up. A submodule's gitdir already holds config,
+    # and a normal `.git` directory is used as-is.
+    git_path = resolve_git_dir(local_path)
+    if git_path is None:
+        return None
+    if (Path(local_path) / ".git").is_file() and git_path.parent.name == "worktrees":
+        git_path = git_path.parent.parent
 
     config_path = git_path / "config"
     if not config_path.is_file():
