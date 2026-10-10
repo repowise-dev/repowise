@@ -1623,6 +1623,7 @@ export interface FixItem {
   source: FixSource;
   next_call: ActionCommand;
   why_ranked?: FixRankFact[];
+  value?: number;
 }
 
 export interface FixRankFact {
@@ -2268,6 +2269,8 @@ export interface NextAction {
   surface: string;
   effort: "S" | "M" | "L";
   confidence: "high" | "medium";
+  /** 0-4: the Fix first value band, or what the severity says. */
+  value?: number;
   done_when: string;
   command?: string | null;
   marker?: string | null;

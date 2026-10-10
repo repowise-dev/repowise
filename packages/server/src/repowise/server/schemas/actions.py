@@ -45,6 +45,9 @@ class NextAction(BaseModel):
     surface: str
     effort: Literal["S", "M", "L"]
     confidence: Literal["high", "medium"]
+    value: int = Field(
+        default=0, description="0-4: the Fix first value band, or what the severity says."
+    )
     done_when: str
     command: str | None = None
     marker: str | None = None

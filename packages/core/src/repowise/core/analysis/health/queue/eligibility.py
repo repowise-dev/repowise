@@ -29,6 +29,7 @@ from ..worth import (
     cost_proof,
     dispatch_shaped,
     dormant,
+    execution_role,
     lead_reason,
     perf_facets,
 )
@@ -426,11 +427,10 @@ def _role_reason(item: Any) -> Reason | None:
     A loop only startup, a CLI, tooling or tests run is paid once per process.
     A scheduled job's loop matters only once it is shown to grow with the data.
     """
-    facets = perf_facets(item)
-    role = field(item, "execution_role") or facets.get("execution_role") or "unknown"
+    role = execution_role(item)
     if role in COLD_ROLES:
         return "cold_role"
-    if role == "scheduled_job" and facets.get("loop_magnitude") != "grows_with_data":
+    if role == "scheduled_job" and perf_facets(item).get("loop_magnitude") != "grows_with_data":
         return "background_unproven"
     return None
 

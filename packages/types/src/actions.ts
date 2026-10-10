@@ -99,6 +99,8 @@ export interface NextAction {
   surface: ActionSurface;
   effort: "S" | "M" | "L";
   confidence: "high" | "medium";
+  /** 0 to 4: the Fix first value band, or what the severity says. Ranks with confidence and effort. */
+  value: number;
   done_when: string;
   command: string | null;
   /** The biomarker behind the action, for the glossary label. */

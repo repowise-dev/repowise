@@ -101,6 +101,8 @@ export interface FixItem {
   next_call: ActionCommand;
   /** The value inputs and the tier reason, so the order is explainable. */
   why_ranked: { factor: string; value: string }[];
+  /** The value band, 0 to 4, Do next ranks the item on. */
+  value: number;
 }
 
 /** The projection a list renders; the full item is one lookup away. */

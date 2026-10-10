@@ -100,7 +100,8 @@ PLANS = [
 def _perf(opp: str, sink: str, **over) -> dict:
     row = {
         "opportunity_id": opp, "rank_position": 0, "rank_score": 20,
-        "execution_context": "production", "boundary_kind": "db", "biomarker_type": "io_in_loop",
+        "execution_context": "production", "execution_role": "request", "boundary_kind": "db",
+        "biomarker_type": "io_in_loop",
         "actionability_state": "advisory", "plan_state": "available",
         "fix_strategy": "batch_or_prefetch_io", "fix_safety": "advisory",
         "file_path": "src/repo.py", "intervention_symbol": "src/repo.py::load_all",

@@ -298,6 +298,7 @@ async def _performance(session: AsyncSession, repo_id: str) -> list[Any]:
                 p.rank_position,
                 p.rank_score,
                 p.execution_context,
+                p.execution_role,
                 p.boundary_kind,
                 p.biomarker_type,
                 p.actionability_state,

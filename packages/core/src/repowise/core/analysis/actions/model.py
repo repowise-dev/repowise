@@ -82,6 +82,10 @@ TIER_RANK: dict[str, int] = {"act_now": 0, "plan": 1, "improve_signal": 2}
 #: worse outranks a claim that it is costly, which outranks tidiness.
 RULE_RANK: dict[str, int] = {rule: i for i, rule in enumerate(ACTION_RULES)}
 
+#: An action's value (0-4, as the Fix first queue values work) when its rule
+#: has none of its own: what its severity says.
+SEVERITY_VALUE: dict[str, int] = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+
 
 @dataclass(frozen=True, slots=True)
 class WhyFact:
@@ -144,6 +148,8 @@ class Action:
     done_when: str
     #: Rule-local ordering weight, comparable only within its rule.
     weight: float = 0.0
+    #: The shared value every rule ranks on; ``None`` reads :data:`SEVERITY_VALUE`.
+    value: int | None = None
     target_symbol: str | None = None
     #: What makes this action the same action next time, when the target alone
     #: does not: two performance opportunities can share a symbol, and a
@@ -189,6 +195,7 @@ class Action:
             "surface": self.surface,
             "effort": self.effort,
             "confidence": self.confidence,
+            "value": self.value if self.value is not None else SEVERITY_VALUE[self.severity],
             "done_when": self.done_when,
             "command": self.command,
             "marker": self.marker,

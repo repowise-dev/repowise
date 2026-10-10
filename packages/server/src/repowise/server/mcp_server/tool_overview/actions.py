@@ -5,13 +5,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from repowise.core.analysis.actions.engine import HEAD
 from repowise.core.persistence.crud.analysis.actions import load_actions_view
 
 logger = logging.getLogger(__name__)
 
 #: Rows per horizon. The UI previews five; an agent orienting needs the head,
 #: and ``total`` says how much sits behind it.
-_PER_HORIZON = 3
+_PER_HORIZON = HEAD
 
 _FIELDS = ("id", "tier", "title", "impact", "done_when")
 

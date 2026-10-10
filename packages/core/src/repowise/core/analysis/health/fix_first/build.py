@@ -80,9 +80,12 @@ from repowise.core.analysis.health.queue.value import (
     perf_confidence,
     perf_ready,
     perf_value,
+    perf_worth,
+    removed,
     shape_value,
     size_value,
     tier,
+    worth,
 )
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.scoring import biomarker_dimension
@@ -90,6 +93,7 @@ from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.health.worth import (
     SIZE_MARKERS,
     WORTH_MAGNITUDE,
+    execution_role,
     low_priority,
     magnitude,
     measure,
@@ -127,7 +131,8 @@ Rows = Iterable[Any]
 #: the hot-file bonus) from which an item leads as "break up", naming the whole
 #: problem: CCN 40, 200 lines or nesting 6.
 SIZE_BREAK_UP = WORTH_MAGNITUDE
-#: A file in the top fifth of production files by churn or dependents is hot.
+#: A file in the top fifth of production files by dependents is central (one
+#: value step); by churn it changes often (orders within a band only).
 HOT_QUANTILE = 0.8
 MAX_FACTS = 5
 MAX_TESTS = 5
@@ -150,7 +155,7 @@ class _Unit:
     kind: str
     tier: str
     value: int
-    score: float
+    worth: float
     confidence: str
     effort: str
     improves: str
@@ -269,8 +274,11 @@ class _Files:
     def nloc(self, path: str) -> int | None:
         return field(self.by_path.get(path), "nloc")
 
-    def hot(self, path: str) -> bool:
-        return self.commits(path) >= self.churn_cut or (self.dependents(path) or 0) >= self.deps_cut
+    def central(self, path: str) -> bool:
+        return (self.dependents(path) or 0) >= self.deps_cut
+
+    def churning(self, path: str) -> bool:
+        return self.commits(path) >= self.churn_cut
 
     def shape(self, path: str, symbol: str | None) -> dict[str, int]:
         """The measured size of ``symbol`` in ``path``, from its findings."""
@@ -368,7 +376,7 @@ class _Files:
         return f"{head}{text.exposure(deps, self.commits(path), self.coverage(path))}."
 
     def context(self, path: str) -> tuple[FixContext, ...]:
-        """History is context: shown beside the item, never ranked on."""
+        """History is context: shown beside the item, never lifting its band."""
         out: list[FixContext] = []
         commits = self.commits(path)
         if commits:
@@ -401,7 +409,7 @@ def _finish(
     source_id: str,
     value: int,
     ready: bool,
-    score: float,
+    worth: float,
     confidence: str,
     effort: str,
     improves: str,
@@ -423,17 +431,19 @@ def _finish(
             tier=unit_tier,
             kind=kind,
             improves=improves,
+            value=value,
             why_ranked=(
                 # A later item ranks by value only among later items.
                 FixRankFact("value" if low is None else "value within later", str(value)),
                 *rank_inputs(),
+                FixRankFact("worth in band", f"{worth:.0f}"),
                 FixRankFact("tier", why_tier),
             ),
             **fields(),
         )
 
     return _Unit(
-        item_id, kind, unit_tier, value, score, confidence, effort, improves, write, may_lead
+        item_id, kind, unit_tier, value, worth, confidence, effort, improves, write, may_lead
     )
 
 
@@ -607,10 +617,13 @@ def _refactor_unit(
     )
     mechanical = mechanical_n == len(steps)
     confidence = field(row, "confidence") or "medium"
-    hot = files.hot(path)
+    central, churning = files.central(path), files.churning(path)
     dimension = biomarker_dimension(marker) if marker else "maintainability"
     shape = files.shape(path, lead.get("target_symbol"))
-    size = size_value(shape, hot)
+    size = size_value(shape, central)
+    ccn_removed = sum(_extraction_worth(plans.get(s.get("plan_id")))[0] for s in steps)
+    deps = details.get("dependents")
+    deps = files.dependents(path) if deps is None else deps
     cloned = lead_type == "extract_method" and files.cloned(path, shape)
     low = low_priority(marker, shape, function_size=lead_type == "extract_method")
 
@@ -648,9 +661,7 @@ def _refactor_unit(
             )
             if len(steps) > 1:
                 title += f" (+{text.plural(len(steps) - 1, 'more step')})"
-        dependents = details.get("dependents")
-        if dependents is None:
-            dependents = files.dependents(path)
+        dependents = deps
         fix_steps = tuple(
             _refactor_step(i + 1, s, plans.get(s.get("plan_id"))) for i, s in enumerate(steps)
         )
@@ -721,22 +732,32 @@ def _refactor_unit(
     return _finish(
         kind="refactor",
         source_id=field(row, "opportunity_id"),
-        value=shape_value(gain, shape, cloned, hot=hot),
-        cold_value=shape_value(gain, shape, cloned, hot=False),
+        value=shape_value(gain, shape, cloned, central=central),
+        cold_value=shape_value(gain, shape, cloned, central=False),
         ready=mechanical or confidence == "high",
-        score=_num(field(row, "rank_score")),
+        worth=worth(removed(ccn_removed, gain), deps, churning),
         confidence=confidence if confidence in LEVEL_RANK else "medium",
         effort=effort_bucket,
         improves=dimension if dimension in FIX_IMPROVES else "maintainability",
         rank_inputs=lambda: [
             FixRankFact("health gain", f"{gain:.2f}"),
+            FixRankFact("complexity removed", str(ccn_removed)),
             FixRankFact("problem size", str(size if low is None else worth_size(shape))),
-            FixRankFact("hot file", "yes" if hot else "no"),
+            *_reach_facts(deps, central, churning),
             FixRankFact("duplicate inside", "yes" if cloned else "no"),
         ],
         fields=fields,
         low=low,
     )
+
+
+def _reach_facts(deps: int | None, central: bool, churning: bool) -> list[FixRankFact]:
+    """What reach and history add: importers lift the band when central,
+    churn only orders inside it."""
+    return [
+        FixRankFact("files that import it", f"{deps or 0}{' (top fifth)' if central else ''}"),
+        FixRankFact("changes often", "yes" if churning else "no"),
+    ]
 
 
 def _audited_steps(steps: list[Mapping[str, Any]]) -> tuple[list[Mapping[str, Any]], int]:
@@ -928,20 +949,22 @@ def _perf_unit(
         }
 
     confidence = perf_confidence(facets)
+    call_sites = int(field(lead, "affected_call_sites_total") or 0)
     return _finish(
         kind="perf_fix",
         may_lead=details.get("may_lead") is not False,
         source_id=f"{path}::{symbol or path}",
         value=perf_value(lead, facets),
         ready=perf_ready(lead, plan),
-        score=_num(field(lead, "rank_score")),
+        worth=perf_worth(call_sites, files.churning(path)),
         confidence=confidence,
         effort=effort or "M",
         improves="performance",
         low=perf_low_priority(lead),
         rank_inputs=lambda: [
             FixRankFact("runs in", field(lead, "execution_context") or "unknown"),
-            FixRankFact("entry reachable", text.REACH_ANSWER.get(exposure or "", "unknown")),
+            FixRankFact("run by", execution_role(lead)),
+            FixRankFact("call sites", str(call_sites)),
             FixRankFact("loop size", text.loop_size(magnitude)),
             FixRankFact(
                 "boundary", text.BOUNDARY_NOUN.get(field(lead, "boundary_kind") or "", "none")
@@ -959,11 +982,14 @@ class _FindingRank:
     """What a finding's value and tier read: one rule for the item and the stored judgement."""
 
     shape: dict[str, int]
-    hot: bool
+    central: bool
+    churning: bool
     cloned: bool
     low: str | None
     value: int
     cold_value: int
+    ccn_removed: int
+    worth: float
 
     @property
     def tier(self) -> str:
@@ -974,16 +1000,21 @@ def _finding_rank(finding: Any, files: _Files) -> _FindingRank:
     path = field(finding, "file_path")
     marker = field(finding, "biomarker_type") or ""
     impact = _num(field(finding, "health_impact"))
-    hot = files.hot(path)
+    central, churning = files.central(path), files.churning(path)
     shape = files.shape(path, field(finding, "function_name"))
     cloned = marker in SIZE_MARKERS and files.cloned(path, shape)
+    # Breaking up the whole function takes out its whole CCN.
+    ccn = shape.get("ccn", 0) if marker in SIZE_MARKERS else 0
     return _FindingRank(
         shape,
-        hot,
+        central,
+        churning,
         cloned,
         low_priority(marker, shape, error_kind=detail_map(finding).get("kind")),
-        shape_value(impact, shape, cloned, hot=hot),
-        shape_value(impact, shape, cloned, hot=False),
+        shape_value(impact, shape, cloned, central=central),
+        shape_value(impact, shape, cloned, central=False),
+        ccn,
+        worth(removed(ccn, impact), files.dependents(path), churning),
     )
 
 
@@ -995,8 +1026,8 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep, validate: Validate |
     public_id = field(lead, "public_id")
     dimension = biomarker_dimension(marker)
     rank = _finding_rank(lead, files)
-    shape, hot, cloned, low = rank.shape, rank.hot, rank.cloned, rank.low
-    size = size_value(shape, hot)
+    shape, cloned, low = rank.shape, rank.cloned, rank.low
+    size = size_value(shape, rank.central)
 
     def fields() -> dict[str, Any]:
         where = function or text.basename(path)
@@ -1055,14 +1086,15 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep, validate: Validate |
         value=rank.value,
         cold_value=rank.cold_value,
         ready=False,
-        score=impact,
+        worth=rank.worth,
         confidence="medium",
         effort="M",
         improves=dimension if dimension in FIX_IMPROVES else "defect",
         rank_inputs=lambda: [
             FixRankFact("health gain", f"{impact:.2f}"),
+            FixRankFact("complexity removed", str(rank.ccn_removed)),
             FixRankFact("problem size", str(size if low is None else worth_size(shape))),
-            FixRankFact("hot file", "yes" if hot else "no"),
+            *_reach_facts(files.dependents(path), rank.central, rank.churning),
             FixRankFact("duplicate inside", "yes" if cloned else "no"),
         ],
         fields=fields,
@@ -1238,7 +1270,7 @@ def build_fix_first(
     keeps every eligible item. ``basis`` is the analysis stamp when the caller
     read it apart; otherwise it comes from the metrics' ``updated_at``.
     ``item_id`` keeps just that item, at its rank, for a lookup by id.
-    ``hot_cuts`` are the (churn, dependents) thresholds for a hot file when the
+    ``hot_cuts`` are the (churn, dependents) thresholds for a churning and a central file when the
     caller measured them over more files than it passed in ``metrics``; see
     :func:`hot_cut` for the rule. ``symbol_lines`` maps a symbol id
     (``path::name``) to its first line, for a performance plan step that

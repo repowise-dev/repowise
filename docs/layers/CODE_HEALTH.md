@@ -108,8 +108,13 @@ Only the file itself is read: a flag imported from another module, or flipped fr
 outside with `setattr` or a test's monkeypatch, still reads as off.
 
 Items rank by value first (health recovered, or how far the code sits past size and
-complexity bars), then by tier. No single kind takes more than 3 of the first 5
-places while another kind has work worth doing.
+complexity bars, one step more in a widely imported file), then by tier. Inside a
+value band, the complexity a fix removes times how widely the file is imported
+decides, so a 4,000-line loop outranks a long print routine; how often the file
+changes only re-orders items there. A performance fix's value follows what runs it:
+a request or message handler first, then a scheduled job, then code with no role
+evidence. No single kind takes more than 3 of the first 5 places while another
+kind has work worth doing.
 
 | Tier | Meaning |
 |---|---|
@@ -129,7 +134,10 @@ dashboard, in `get_health` and in `repowise health --format json` (`queue_counts
 Fix first items sit beside a live secret, fresh regressions, fragile files, files
 with knowledge loss, broken doc references, a dead-code batch, missing or stale
 coverage, and decisions waiting for review. Rows are grouped as **Now**, **Worth
-planning** and **Improve what Repowise can see**. Dismissing or snoozing a row takes effect at once.
+planning** and **Improve what Repowise can see**. Within a group, rows rank by value
+times confidence over effort, and the top due Fix first item always has one of the
+first three places, so Do next and Fix first lead with the same work. Dismissing or
+snoozing a row takes effect at once.
 
 A fragile file asks for tests only when no measured coverage and no test in the
 code graph reaches it; otherwise the row asks you to simplify its lead function.

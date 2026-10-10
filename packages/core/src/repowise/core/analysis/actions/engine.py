@@ -10,9 +10,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
+from repowise.core.analysis.health.queue.order import priority
+
 from .context import RepoContext, build_context
 from .facts import RepoFacts
-from .model import HORIZONS, RULE_RANK, TIER_RANK, Action, RuleOutcome
+from .model import HORIZONS, RULE_RANK, SEVERITY_VALUE, TIER_RANK, Action, RuleOutcome
 from .rules import code, hygiene, signal
 from .summary import summarize
 
@@ -40,6 +42,10 @@ KEEP_PER_HORIZON = 20
 #: In the head of each tier, no rule takes more than this many places before
 #: every other rule with something to say has had one.
 PER_RULE_HEAD = 2
+
+#: The places every surface shows first (the overview's next actions). One of
+#: them is kept for the Fix first lead when it is due, so the two agree on it.
+HEAD = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,11 +76,21 @@ def _naive(value: datetime) -> datetime:
     return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
 
 
+def _priority(action: dict[str, Any]) -> float:
+    """The queue's ``value x confidence / effort``. A view stored before
+    actions carried a value reads its severity's."""
+    value = action.get("value")
+    if value is None:
+        value = SEVERITY_VALUE.get(action["severity"], 1)
+    return priority(value, action["confidence"], action["effort"])
+
+
 def _order(actions: list[Ranked]) -> list[Ranked]:
     ranked = sorted(
         actions,
         key=lambda r: (
             TIER_RANK[r.action["tier"]],
+            -_priority(r.action),
             RULE_RANK[r.action["rule"]],
             -r.weight,
             r.action["id"],
@@ -94,6 +110,19 @@ def _order(actions: list[Ranked]) -> list[Ranked]:
             else:
                 rest.append(r)
         out.extend(head + rest)
+    return _reserve_fix_first(out)
+
+
+def _reserve_fix_first(ordered: list[Ranked]) -> list[Ranked]:
+    """The Fix first lead (its rule's heaviest action) moved up into the last
+    :data:`HEAD` place when the order left it below. The rule emits only due
+    items."""
+    leads = [(r.weight, i) for i, r in enumerate(ordered) if r.action["rule"] == "fix_first"]
+    at = max(leads, key=lambda lead: (lead[0], -lead[1]))[1] if leads else None
+    if at is None or at < HEAD:
+        return ordered
+    out = list(ordered)
+    out.insert(HEAD - 1, out.pop(at))
     return out
 
 

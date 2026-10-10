@@ -304,13 +304,13 @@ def test_other_causes_keep_an_unknown_loop() -> None:
     assert len(_perf_queue(row).items) == 1
 
 
-# --- F8: unknown loops no entry point reaches -----------------------------------
+# --- F8: unknown loops no request, message or job runs ------------------------------
 
 
-def _value(**facets) -> str:
+def _value(role: str = "unknown", **facets) -> str:
     from tests.unit.health.fix_first_rows import _perf
 
-    row = _perf("perf3_v", "src/db.py::fetch")
+    row = _perf("perf3_v", "src/db.py::fetch", execution_role=role)
     row["details"] = {**row["details"], "facets": facets}
     item = _perf_queue(row).lead
     return next(f.value for f in item.why_ranked if f.factor in ("value", "value within later"))
@@ -333,15 +333,16 @@ def test_only_a_loop_known_to_grow_leads() -> None:
     assert lead(loop_magnitude="grows_with_data").tier != "later"
 
 
-def test_an_unknown_loop_no_entry_reaches_drops_a_step() -> None:
-    assert _value(loop_magnitude="unknown", exposure="not_entry_reachable") == "0"
+def test_an_unknown_loop_no_hot_role_runs_drops_a_step() -> None:
     assert _value(loop_magnitude="unknown") == "0"
+    # A name-derived entry point no longer counts: only the role does.
+    assert _value(loop_magnitude="unknown", exposure="entry_reachable") == "0"
 
 
 def test_reach_keeps_an_unknown_loop_a_step_below_a_known_one() -> None:
     # An unproven cost never earns the value a loop known to grow does.
-    assert _value(loop_magnitude="unknown", exposure="entry_reachable") == "1"
-    assert _value(loop_magnitude="grows_with_data", exposure="not_entry_reachable") == "2"
+    assert _value("request", loop_magnitude="unknown") == "1"
+    assert _value(loop_magnitude="grows_with_data") == "2"
 
 
 # --- lift: a duplicate inside the function ---------------------------------------
@@ -484,7 +485,13 @@ def test_a_module_scope_cause_reads_module_scope_of_its_file() -> None:
 def test_a_production_reachable_growing_db_loop_is_in_the_top_band() -> None:
     from repowise.core.analysis.health.queue.value import VALUE_MAX
 
-    assert _value(loop_magnitude="grows_with_data", exposure="entry_reachable") == str(VALUE_MAX)
+    grows = {"loop_magnitude": "grows_with_data"}
+    # Request or message, then a scheduled job, then no role evidence; a cold
+    # role never leads.
+    assert _value("request", **grows) == _value("event_consumer", **grows) == str(VALUE_MAX)
+    assert _value("scheduled_job", **grows) == "3"
+    assert _value("unknown", **grows) == "2"
+    assert _value("cli", **grows) == "1"
 
 
 def test_it_outranks_a_large_function_that_needs_judgment_on_score() -> None:

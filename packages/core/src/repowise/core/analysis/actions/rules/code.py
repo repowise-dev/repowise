@@ -503,6 +503,7 @@ def _ancestors(path: str) -> list[str]:
 
 
 #: Fix-first tiers that become actions; ``later`` stays on the Code Health page.
+#: Both are due, so both are listed this week as well as this quarter.
 _FIX_FIRST_TIER = {"now": "act_now", "next": "plan"}
 
 
@@ -531,7 +532,7 @@ def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             Action(
                 rule=rule,
                 tier=tier,
-                horizons=("week", "quarter") if tier == "act_now" else ("quarter",),
+                horizons=("week", "quarter"),
                 severity="high" if tier == "act_now" else "medium",
                 title=item.title,
                 impact=item.why,
@@ -548,6 +549,7 @@ def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 confidence="high" if item.confidence.level == "high" else "medium",
                 done_when="It leaves Fix first on the next update.",
                 weight=float(len(facts.fix_first) - item.rank),
+                value=item.value,
                 evidence_ids=tuple(
                     x for x in (item.source.opportunity_id, *item.source.finding_ids) if x
                 ),
