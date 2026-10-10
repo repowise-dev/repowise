@@ -45,6 +45,9 @@ class ResolverContext:
     # a second read; None (or a missing key) means read from disk.
     source_map: dict[str, bytes] | None = field(default=None, repr=False)
     compile_commands_cache: dict[str, dict] | None = field(default=None, repr=False)
+    # Where pytest collects (``pytest_roots.PytestRoots``), from the traverser's
+    # config pass. None when the caller did not walk the repo: collection unknown.
+    pytest_roots: Any | None = field(default=None, repr=False)
     # Lazy per-language indexes are stashed via getattr/setattr (e.g.
     # ``_php_psr4_map``, ``_composer_manifests``, ``_ts_workspace_map``,
     # ``_kotlin_index``, ``_ruby_rails_index``, ``_swift_targets``,

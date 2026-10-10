@@ -194,6 +194,7 @@ def build_repo_graph(
         include_nested_repos=include_nested_repos,
     )
     graph_builder.set_source_map(source_map)
+    graph_builder.set_pytest_roots(traverser.pytest_roots)
     graph_builder.build()
     if timings is not None:
         timings.stop("rebuild.graph")

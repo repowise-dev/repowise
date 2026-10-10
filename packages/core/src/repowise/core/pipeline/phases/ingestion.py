@@ -607,6 +607,7 @@ async def _run_ingestion(
     # Lend the just-read bytes to the builder so the language warmups that
     # scan file text during build() don't re-read the repo.
     graph_builder.set_source_map(source_map)
+    graph_builder.set_pytest_roots(traverser.pytest_roots)
     _phase_done(progress, "parse")
 
     # ---- tsconfig path-alias resolver (before graph build) ------------------

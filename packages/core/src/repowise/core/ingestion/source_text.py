@@ -57,3 +57,16 @@ def source_text(
         return Path(abs_path).read_text(encoding=encoding, errors=errors)
     except OSError:
         return None
+
+
+def source_bytes(rel_path: str, abs_path: str | Path, source_map: dict[str, bytes] | None) -> bytes:
+    """Raw bytes of one file, from *source_map* if it holds it, else from disk; ``b""`` if neither.
+
+    For byte-level scans that decode nothing, so no codec choice applies.
+    """
+    if source_map is not None and (data := source_map.get(rel_path)) is not None:
+        return data
+    try:
+        return Path(abs_path).read_bytes()
+    except OSError:
+        return b""

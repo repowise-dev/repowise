@@ -23,8 +23,10 @@ import posixpath
 import re
 from typing import TYPE_CHECKING, Any
 
+from ...test_paths import is_test_path
 from ..resolvers import ResolverContext
-from .base import DetectionContext, FrameworkHandler, _add_edge_if_new, source_bytes
+from ..source_text import source_bytes
+from .base import DetectionContext, FrameworkHandler, _add_edge_if_new
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -43,6 +45,12 @@ _PATH_LITERAL_RE = re.compile(
 )
 
 
+def _is_helper(target: str) -> bool:
+    """Not a directory-scoped file, and not test-named: a test already runs on its own."""
+    name = posixpath.basename(target)
+    return name not in _DIR_SCOPED and not is_test_path(name)
+
+
 def path_string_targets(path: str, text: bytes, path_set: set[str]) -> list[str]:
     """Indexed code files *text*, the source of *path*, names relative to its directory."""
     base = posixpath.dirname(path)
@@ -50,7 +58,7 @@ def path_string_targets(path: str, text: bytes, path_set: set[str]) -> list[str]
     for match in _PATH_LITERAL_RE.finditer(text):
         spec = match.group(1).decode("ascii", errors="ignore")
         target = posixpath.normpath(posixpath.join(base, spec))
-        if target != path and target in path_set and posixpath.basename(target) not in _DIR_SCOPED:
+        if target in path_set and _is_helper(target) and target != path:
             found[target] = None
     return list(found)
 
@@ -58,12 +66,11 @@ def path_string_targets(path: str, text: bytes, path_set: set[str]) -> list[str]
 def _add_path_string_edges(
     graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext, path_set: set[str]
 ) -> int:
-    source_map = ctx.source_map or {}
     count = 0
     for path in sorted(path_set):
         if not (path.endswith(_CODE_EXTS) and parsed_files[path].file_info.is_test):
             continue
-        text = source_bytes(path, parsed_files[path], source_map)
+        text = source_bytes(path, parsed_files[path].file_info.abs_path, ctx.source_map)
         for target in path_string_targets(path, text, path_set):
             if _add_edge_if_new(graph, path, target):
                 graph[path][target]["hint_source"] = PATH_STRING_HINT

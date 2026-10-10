@@ -31,7 +31,13 @@ from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatt
 
 from ..code_origin import is_generated_header
 from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
-from ..pytest_roots import PYTEST_CONFIG_NAMES, PytestRoots, pytest_options, pytest_roots
+from ..pytest_roots import (
+    PYTEST_CONFIG_NAMES,
+    PytestRoots,
+    parse_pytest_options,
+    pytest_options,
+    pytest_roots,
+)
 from ..test_paths import is_test_related_path
 from .languages.registry import REGISTRY as _LANG_REGISTRY
 from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
@@ -445,6 +451,11 @@ class FileTraverser:
                         prune_nested_git=self._console_scripts_prune_nested,
                     )
         return self._console_scripts
+
+    @property
+    def pytest_roots(self) -> PytestRoots:
+        """Where pytest collects, from the configs the console-script pass read."""
+        return self._console_script_tables().pytest_roots
 
     @property
     def _console_script_names(self) -> frozenset[str]:
@@ -1171,6 +1182,7 @@ def _collect_console_scripts(
     distributions: set[str] = set()
     inits: set[str] = set()
     pytest_configs: list[tuple[str, dict]] = []
+    unreadable: list[str] = []
     try:
         config_files = list(
             iter_glob(repo_root, tuple(PYTEST_CONFIG_NAMES), prune_nested_git=prune_nested_git)
@@ -1178,9 +1190,12 @@ def _collect_console_scripts(
     except OSError:
         return ConsoleScriptTables(frozenset(), frozenset(), frozenset(), frozenset())
     for config_file in config_files:
-        project, options = _read_python_config(config_file)
+        project, options, parsed = _read_python_config(config_file)
+        rel = config_file.relative_to(repo_root).as_posix()
         if options is not None:
-            pytest_configs.append((config_file.relative_to(repo_root).as_posix(), options))
+            pytest_configs.append((rel, options))
+        if not parsed:
+            unreadable.append(rel)
         if project is None:
             continue
         dist = project.get("name")
@@ -1194,7 +1209,7 @@ def _collect_console_scripts(
         frozenset(modules),
         frozenset(distributions),
         frozenset(inits),
-        pytest_roots(pytest_configs),
+        pytest_roots(pytest_configs, unreadable),
     )
 
 
@@ -1213,20 +1228,24 @@ def _distribution_init(repo_root: Path, base: Path, dist: str) -> str | None:
     return init.relative_to(repo_root).as_posix()
 
 
-def _read_python_config(config_file: Path) -> tuple[dict | None, dict | None]:
-    """``([project] table, pytest options)`` of one config, each None if absent or unreadable."""
+def _read_python_config(config_file: Path) -> tuple[dict | None, dict | None, bool]:
+    """``([project] table, pytest options, parsed)`` of one config.
+
+    The first two are None if absent or unreadable; *parsed* is False when the
+    file could not be read or parsed, so what it collects is unknown.
+    """
     import tomllib
 
     try:
         text = config_file.read_text(encoding="utf-8")
         if config_file.name != "pyproject.toml":
-            return None, pytest_options(config_file.name, text)
+            return None, parse_pytest_options(config_file.name, text), True
         data = tomllib.loads(text)
     except Exception:
-        return None, None
+        return None, None, False
     project = data.get("project")
     options = pytest_options(config_file.name, toml=data)
-    return (project if isinstance(project, dict) else None), options
+    return (project if isinstance(project, dict) else None), options, True
 
 
 def _add_script_targets(project: dict, names: set[str], modules: set[str]) -> None:

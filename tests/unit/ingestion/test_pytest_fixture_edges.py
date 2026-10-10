@@ -443,23 +443,53 @@ def test_conftest_edge_is_marked_as_a_convention_not_an_import() -> None:
     assert not graph.has_edge("app.py", "tests/conftest.py")
 
 
+def _conftest_graph(*nodes: str) -> nx.DiGraph:
+    graph = nx.DiGraph()
+    for node in nodes:
+        graph.add_node(node, is_test=True)
+    return graph
+
+
 def test_a_helper_beside_the_tests_gets_no_conftest_edge() -> None:
     """pytest collects only test files; a helper sees no fixture, so no route through it."""
     from repowise.core.ingestion.framework_edges.pytest_edges import _add_conftest_edges
+    from repowise.core.pytest_roots import PytestRoots
 
-    graph = nx.DiGraph()
-    for node in (
+    graph = _conftest_graph(
         "tests/conftest.py",
         "tests/lsp/conftest.py",
         "tests/lsp/test_client.py",
         "tests/lsp/_mock_server.py",
         "tests/lsp/__init__.py",
-    ):
-        graph.add_node(node, is_test=True)
-
-    _add_conftest_edges(graph, set(graph.nodes))
+    )
+    _add_conftest_edges(graph, set(graph.nodes), PytestRoots())
 
     assert graph.has_edge("tests/lsp/test_client.py", "tests/conftest.py")
     assert graph.has_edge("tests/lsp/conftest.py", "tests/conftest.py")
     assert not graph.has_edge("tests/lsp/_mock_server.py", "tests/conftest.py")
     assert not graph.has_edge("tests/lsp/__init__.py", "tests/conftest.py")
+
+
+def test_conftest_edges_follow_the_configured_python_files() -> None:
+    """A Django-style ``tests.py`` collected by ``python_files`` keeps its conftest edge."""
+    from repowise.core.ingestion.framework_edges.pytest_edges import _add_conftest_edges
+    from repowise.core.pytest_roots import read_pytest_roots
+
+    roots = read_pytest_roots([("pytest.ini", "[pytest]\npython_files = tests.py check_*.py\n")])
+    graph = _conftest_graph("app/conftest.py", "app/tests.py", "app/check_api.py", "app/helpers.py")
+    _add_conftest_edges(graph, set(graph.nodes), roots)
+
+    assert graph.has_edge("app/tests.py", "app/conftest.py")
+    assert graph.has_edge("app/check_api.py", "app/conftest.py")
+    assert not graph.has_edge("app/helpers.py", "app/conftest.py")
+
+
+def test_unknown_collection_keeps_every_conftest_edge() -> None:
+    """A config that did not parse, or no traverser roots at all: collection is unknown."""
+    from repowise.core.ingestion.framework_edges.pytest_edges import _add_conftest_edges
+    from repowise.core.pytest_roots import pytest_roots
+
+    for roots in (pytest_roots([], unreadable=["pyproject.toml"]), None):
+        graph = _conftest_graph("tests/conftest.py", "tests/helpers.py")
+        _add_conftest_edges(graph, set(graph.nodes), roots)
+        assert graph.has_edge("tests/helpers.py", "tests/conftest.py")

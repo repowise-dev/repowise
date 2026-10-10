@@ -68,6 +68,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # Launcher names the traverser read from pyproject.toml; set by the
         # pipelines that walk the repo, empty for a builder fed files directly.
         self.console_scripts: frozenset[str] = frozenset()
+        self._pytest_roots: Any | None = None
         self._built = False
         # Resolver-built DotNetProjectIndex, stashed by build() for the
         # dynamic-hints phase to reuse (see build()).
@@ -228,6 +229,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         same repo-relative POSIX key ``add_file`` registers under).
         """
         self._source_map = source_map or {}
+
+    def set_pytest_roots(self, roots: Any) -> None:
+        """Hand the builder where pytest collects (the traverser's ``pytest_roots``)."""
+        self._pytest_roots = roots
 
     def add_file(self, parsed: ParsedFile) -> None:
         """Register one parsed file and its symbols in the graph."""

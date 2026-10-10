@@ -72,3 +72,20 @@ def test_options_come_from_an_already_parsed_pyproject() -> None:
     parsed = {"tool": {"pytest": {"ini_options": {"testpaths": ["t"]}}}}
     assert pytest_options("pyproject.toml", toml=parsed) == {"testpaths": ["t"]}
     assert pytest_options("README.md", "[pytest]") is None
+
+
+def test_a_config_that_does_not_parse_is_recorded_as_unknown() -> None:
+    from repowise.core.pytest_roots import (
+        PytestConfigUnreadableError,
+        parse_pytest_options,
+        pytest_options,
+        pytest_roots,
+    )
+
+    with pytest.raises(PytestConfigUnreadableError):
+        parse_pytest_options("tox.ini", "[pytest\npython_files = x")
+    assert pytest_options("tox.ini", "[pytest\npython_files = x") is None
+    roots = pytest_roots([], unreadable=["pkg/tox.ini"])
+    assert roots.may_collect_name("pkg/tests/helpers.py")
+    assert not roots.may_collect_name("other/tests/helpers.py")
+    assert roots.may_collect_name("other/tests/test_x.py")

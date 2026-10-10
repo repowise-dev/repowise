@@ -165,6 +165,11 @@ Each result says how it was found, and a guess never passes for evidence:
 | None of the above | "unknown, run the full suite to be safe" |
 | No map ingested at all | A prompt to run `coverage add` on a report with contexts |
 
+The graph also carries test wiring no import states: runner setup files
+(`setupFiles`, `globalSetup` and the like) link to the tests their config runs,
+a helper a test starts by a path relative to itself links to that test, and a
+`conftest.py` links to the files pytest collects.
+
 With `--format list` the caveats go to stderr so the pipe stays clean. The
 command exits `0` in every case: it reports, it does not gate. `--format args`
 prints runner arguments, or `:all` whenever any part of the answer is unknown.

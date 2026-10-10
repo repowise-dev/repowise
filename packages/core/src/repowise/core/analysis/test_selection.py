@@ -17,7 +17,7 @@ is chosen when any of these hold:
    documentation some code names (a test may read it);
 5. a changed code file has no known test, only a filename guess names one, or
    a route to it passes through a test helper no test imports (unless every
-   test in that helper's language is selected anyway), or any Python
+   known test is selected anyway), or any Python
    test helper while a conftest or pytest config loads plugins by name (its
    users are unknown);
 6. the index is missing, disagrees with itself about its commit, or its graph
@@ -820,7 +820,8 @@ class _Evidence:
     known_tests: tuple[str, ...]
     plugin_loader: str | None
     gap: frozenset[str] = frozenset()
-    unplaced: frozenset[str] = frozenset()
+    # Tests every subset runs (unplaced and detected always-run).
+    every_subset: frozenset[str] = frozenset()
     # Explanations that do not force a full run, gathered while deciding.
     notes: list[str] = field(default_factory=list)
 
@@ -843,7 +844,7 @@ class _Evidence:
             known_tests=tuple(inp.known_tests),
             plugin_loader=inp.plugin_loader,
             gap=frozenset(inp.index_gap or ()),
-            unplaced=frozenset(inp.unplaced_tests),
+            every_subset=frozenset(inp.unplaced_tests) | frozenset(inp.always_run_tests),
         )
 
     def found(self, path: str) -> list[_TestRef]:
@@ -958,21 +959,21 @@ def _helper_route_reasons(
     """A helper on a route stands for its importers, which the walk adds beside it.
 
     One no test imports is used some other way (a fixture, a plugin), so its
-    users are unknown, unless every test of its kind already runs for *path*:
-    then no user it could have is left out.
+    users are unknown, unless every known test already runs for *path*: then
+    no user it could have is left out. Any language counts, since a test can
+    start a helper in another language by path.
     """
     plugins = [r for h in helpers if (r := _plugin_reason(h, ev))]
     if plugins:
         return [f"{path} is reached through a test helper: {plugins[0]}"]
     unimported = [h for h in helpers if not ev.importers.get(h)]
-    selected = {f for _, f in tests if f} | ev.unplaced
-    covered = [h for h in unimported if _peers_selected(h, selected, ev.known_tests)]
-    ev.notes.extend(
-        f"{path} is reached through the test helper {h}, which no test imports, "
-        "but every test in its language already runs for that change."
-        for h in covered
-    )
-    unimported = [h for h in unimported if h not in covered]
+    if unimported and _all_tests_selected(tests, ev):
+        ev.notes.extend(
+            f"{path} is reached through the test helper {h}, which no test imports, "
+            "but every known test already runs for that change."
+            for h in unimported
+        )
+        return []
     if not unimported:
         return []
     return [
@@ -981,11 +982,10 @@ def _helper_route_reasons(
     ]
 
 
-def _peers_selected(helper: str, selected: set[str], known_tests: Collection[str]) -> bool:
-    """Whether every known test in the helper's language family is in *selected*."""
-    family = next((g for g in (_PYTHON, _JS) if helper.endswith(g)), (PurePosixPath(helper).suffix,))
-    peers = {t for t in known_tests if t.endswith(family)}
-    return bool(peers) and peers <= selected
+def _all_tests_selected(tests: list[_TestRef], ev: _Evidence) -> bool:
+    """Whether *tests*, with the tests every selection runs, hold every known test."""
+    selected = {f for _, f in tests if f} | ev.every_subset
+    return bool(ev.known_tests) and set(ev.known_tests) <= selected
 
 
 def _unfiled_reasons(path: str, tests: list[_TestRef]) -> list[str]:

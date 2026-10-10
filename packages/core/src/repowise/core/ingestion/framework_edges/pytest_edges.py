@@ -24,6 +24,8 @@ from .base import (
 if TYPE_CHECKING:
     import networkx as nx
 
+    from ...pytest_roots import PytestRoots
+
 # Matched at the attribute tail rather than on `pytest.`, so `@my.fixture` and
 # `@pytest_asyncio.fixture` are both accepted: pytest resolves the decorator by
 # identity, not by module path.
@@ -206,12 +208,16 @@ def _fixture_scopes(parsed: Any, class_name: str | None) -> list[str | None]:
 CONFTEST_HINT = "pytest_conftest"
 
 
-def _add_conftest_edges(graph: nx.DiGraph, path_set: set[str]) -> int:
+def _add_conftest_edges(
+    graph: nx.DiGraph, path_set: set[str], roots: PytestRoots | None = None
+) -> int:
     """Collected tests and nested conftests -> each conftest.py at or above them.
 
     A helper beside the tests is not collected and sees no fixture, so it gets
     no edge: one would put the helper on the route of every change the conftest
-    reaches. Collection is read as :data:`_TEST_FILE_RE`, with its ceiling.
+    reaches. Collection is the configured ``python_files`` (*roots*, read once by
+    the traverser). Without *roots*, collection is unknown and every test-tree
+    file keeps its edge.
     """
     count = 0
     conftest_paths = [p for p in path_set if Path(p).name == "conftest.py"]
@@ -222,7 +228,9 @@ def _add_conftest_edges(graph: nx.DiGraph, path_set: set[str]) -> int:
         for p in path_set:
             if p == conf:
                 continue
-            if not (_TEST_FILE_RE.search(p) or Path(p).name == "conftest.py"):
+            if roots is not None and not (
+                Path(p).name == "conftest.py" or (p.endswith(".py") and roots.may_collect_name(p))
+            ):
                 continue
             node = graph.nodes.get(p, {})
             if not node.get("is_test", False):
@@ -393,7 +401,7 @@ class _ConftestHandler:
         ctx: ResolverContext,
         path_set: set[str],
     ) -> int:
-        return _add_conftest_edges(graph, path_set)
+        return _add_conftest_edges(graph, path_set, ctx.pytest_roots)
 
 
 HANDLERS: list[FrameworkHandler] = [_ConftestHandler(), _FixtureInjectionHandler()]

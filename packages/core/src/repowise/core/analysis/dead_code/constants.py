@@ -17,7 +17,7 @@ import re
 from functools import lru_cache
 
 from repowise.core.code_origin import is_build_file, is_vendored_or_generated_path
-from repowise.core.ingestion.framework_edges.test_runner_setup import TEST_SETUP_KEYS
+from repowise.core.ingestion.languages.js_config_values import TEST_SETUP_KEYS
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 # Non-code languages (registry passthrough languages plus "unknown").

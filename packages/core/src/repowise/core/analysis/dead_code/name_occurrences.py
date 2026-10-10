@@ -52,6 +52,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import PurePosixPath
 
+from ...ingestion.languages.js_config_values import value_spans
 from ...ingestion.languages.registry import REGISTRY
 from .constants import (
     _BARE_NAME_USE_LANGUAGES,
@@ -644,23 +645,9 @@ def _loaded(
     return bool(loaders) and "default" in export_shape(path, frozenset(), source_map.get(path))
 
 
-#: ``<load key>: <value>`` in a tool config, the key quoted or bare; the value a
-#: string, a list or an object (``input: { main: "src/a.ts" }``).
-_LOAD_VALUE_RE = re.compile(
-    rb"""["']?\b(?:"""
-    + b"|".join(k.encode() for k in _TOOL_CONFIG_LOAD_KEYS)
-    + rb""")\b["']?\s*[:=]\s*(\[[^\]]*\]|\{[^}]*\}|"[^"]*"|'[^']*')"""
-)
-# Comments, so a path a config only mentions in one is not loaded. A ``//``
-# after ``:`` is a URL (``https://``), not a comment.
-_LINE_COMMENT_RE = re.compile(rb"(?<![:\w])//[^\n]*")
-_BLOCK_COMMENT_RE = re.compile(rb"/\*.*?\*/", re.DOTALL)
-
-
 def _config_loads(config: str, target: str, source_map: dict[str, bytes]) -> bool:
     """Whether *config* names *target* under one of its load keys."""
-    text = _LINE_COMMENT_RE.sub(b"", _BLOCK_COMMENT_RE.sub(b"", source_map.get(config, b"")))
-    values = b"\n".join(m.group(1) for m in _LOAD_VALUE_RE.finditer(text))
+    values = b"\n".join(value_spans(source_map.get(config, b""), _TOOL_CONFIG_LOAD_KEYS))
     wanted = {key: {target} for key in _path_keys(target)}
     tails = {key.rpartition("/")[2] for key in wanted}
     return target in _targets_in(values, wanted, tails, config.rpartition("/")[0])

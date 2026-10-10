@@ -226,6 +226,7 @@ class EdgesMixin:
             # reads the bytes ingestion already has instead of a second pass
             # over the tree. Empty unless ``set_source_map`` was called.
             source_map=self._source_map,
+            pytest_roots=self._pytest_roots,
         )
 
         # The .NET project index ``build()`` already made; handlers that scope

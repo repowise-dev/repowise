@@ -46,6 +46,12 @@ PYTEST_CONFIG_SECTIONS: tuple[tuple[str, str | None], ...] = (
 )
 PYTEST_CONFIG_NAMES: frozenset[str] = frozenset(name for name, _ in PYTEST_CONFIG_SECTIONS)
 _PRECEDENCE = {name: rank for rank, (name, _) in enumerate(PYTEST_CONFIG_SECTIONS)}
+# pytest's own ``python_files`` default.
+DEFAULT_PYTHON_FILES: tuple[str, ...] = ("test_*.py", "*_test.py")
+
+
+class PytestConfigUnreadableError(ValueError):
+    """A pytest config file that does not parse."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +65,25 @@ class PytestRoots:
     """``testpaths`` and ``python_files`` for each directory holding a pytest config."""
 
     by_dir: Mapping[str, _Collection] = field(default_factory=dict)
+    # Directories holding a pytest config that did not parse: what it collects is unknown.
+    unreadable: frozenset[str] = frozenset()
+
+    def may_collect_name(self, path: str) -> bool:
+        """Whether *path*'s file name matches ``python_files`` of a config at or above it.
+
+        pytest's default applies where no config sets it. True under a config
+        that did not parse, and for a pattern with a directory part, so a doubt
+        keeps the file collectable.
+        """
+        p = PurePosixPath(path)
+        dirs = ["" if str(parent) == "." else str(parent) for parent in p.parents]
+        if any(d in self.unreadable for d in dirs):
+            return True
+        governing = [rules for d in dirs if (rules := self.by_dir.get(d)) is not None]
+        patterns = {pat for r in governing for pat in r.python_files or DEFAULT_PYTHON_FILES}
+        return any(
+            "/" in pat or fnmatchcase(p.name, pat) for pat in patterns or DEFAULT_PYTHON_FILES
+        )
 
     def collects(self, path: str) -> bool | None:
         """Whether a bare ``pytest`` run collects *path*; ``None`` when no config governs it.
@@ -93,8 +118,19 @@ def pytest_options(
 
     *toml* is ``pyproject.toml`` already parsed, so a caller that read it for
     another table does not parse it twice. A file that does not parse yields
-    ``None``, as it would leave pytest to its defaults here.
+    ``None``, as it would leave pytest to its defaults here; a caller that must
+    tell the two apart uses :func:`parse_pytest_options`.
     """
+    try:
+        return parse_pytest_options(name, text, toml=toml)
+    except PytestConfigUnreadableError:
+        return None
+
+
+def parse_pytest_options(
+    name: str, text: str = "", *, toml: Mapping[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """:func:`pytest_options`, raising :class:`PytestConfigUnreadableError` on a file that does not parse."""
     section = dict(PYTEST_CONFIG_SECTIONS).get(name, "")
     if section == "":
         return None
@@ -105,17 +141,20 @@ def pytest_options(
             return block if isinstance(block, dict) else None
         parser = configparser.ConfigParser(interpolation=None)
         parser.read_string(text)
-    except (tomllib.TOMLDecodeError, configparser.Error, AttributeError):
-        return None
+    except (tomllib.TOMLDecodeError, configparser.Error, AttributeError) as exc:
+        raise PytestConfigUnreadableError(f"{name}: {exc}") from exc
     if not parser.has_section(section):
         return {} if name == "pytest.ini" else None
     return dict(parser.items(section))
 
 
-def pytest_roots(configs: Iterable[tuple[str, Mapping[str, Any]]]) -> PytestRoots:
+def pytest_roots(
+    configs: Iterable[tuple[str, Mapping[str, Any]]], unreadable: Iterable[str] = ()
+) -> PytestRoots:
     """Build from ``(config path, options)`` pairs (:func:`pytest_options`).
 
-    The highest-precedence config in each directory wins.
+    The highest-precedence config in each directory wins. *unreadable* are the
+    paths of pytest configs that did not parse.
     """
     chosen: dict[str, tuple[int, Mapping[str, Any]]] = {}
     for path, options in configs:
@@ -131,8 +170,13 @@ def pytest_roots(configs: Iterable[tuple[str, Mapping[str, Any]]]) -> PytestRoot
                 _words(o.get("python_files")),
             )
             for key, (_, o) in chosen.items()
-        }
+        },
+        frozenset(_dir_key(PurePosixPath(u)) for u in unreadable),
     )
+
+
+def _dir_key(path: PurePosixPath) -> str:
+    return "" if str(path.parent) == "." else str(path.parent)
 
 
 def read_pytest_roots(texts: Iterable[tuple[str, str]]) -> PytestRoots:

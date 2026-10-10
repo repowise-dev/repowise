@@ -16,6 +16,7 @@ from repowise.core.ingestion.framework_edges.test_runner_setup import (
     SETUP_FILE_HINT,
     _add_setup_edges,
     is_runner_config,
+    leaves_its_directory,
     resolve_setup_spec,
     setup_specs,
 )
@@ -128,6 +129,21 @@ def test_tests_a_config_runs_get_an_edge_to_its_setup_files() -> None:
     assert not graph.has_edge("src/a.ts", "test/setup.ts")
 
 
+def test_a_config_whose_test_root_climbs_out_links_every_test() -> None:
+    assert leaves_its_directory(b'export default { test: { dir: "../tests" } }')
+    assert not leaves_its_directory(b'export default { test: { dir: "extensions" } }')
+    graph, parsed, ctx = _ctx(
+        {
+            "web/package.json": "{}",
+            "web/vitest.config.ts": "export default { root: '..', test: { setupFiles: ['./s.ts'] } }",
+            "web/s.ts": "",
+            "tests/a.test.ts": "",
+        }
+    )
+    assert _add_setup_edges(graph, parsed, ctx, ctx.path_set) == 1
+    assert graph.has_edge("tests/a.test.ts", "web/s.ts")
+
+
 # -- helpers named by path -------------------------------------------------------
 
 
@@ -147,8 +163,9 @@ def test_a_helper_named_relative_to_the_test_is_linked() -> None:
     js = b'spawn(process.execPath, [path.join(__dirname, "../fixture-server.ts")])'
     assert path_string_targets("tests/lsp/x.test.ts", js, path_set) == ["tests/fixture-server.ts"]
     # A name that only matches elsewhere, a scratch file named like a package
-    # marker, and a data file are not routes.
-    other = b'"server.py" "__init__.py" "../data/sample.json"'
+    # marker, a data file and another test are not routes.
+    path_set.add("tests/lsp/test_other.py")
+    other = b'"server.py" "__init__.py" "../data/sample.json" "test_other.py"'
     assert path_string_targets("tests/lsp/test_client.py", other, path_set) == []
 
 

@@ -229,26 +229,14 @@ def _read_warmup_source(
     parsed: Any,
     source_map: dict[str, bytes] | None,
 ) -> str | None:
-    """Text of *path* for a marker scan, from *source_map* if it has it.
+    """Text of *path* for a marker scan, preferring the bytes ingestion already read.
 
-    Neither ``ParsedFile`` nor ``FileInfo`` carries the source, so before
-    ``source_map`` existed these scans always re-opened the file. Decoding
-    matches what the disk fallback below does (utf-8 / replace) so a hit and
-    a miss can never disagree about the same bytes. Returns None when the
-    file is unavailable, which the callers treat as "no markers".
+    None when the file is unavailable, which the callers treat as "no markers".
     """
-    if source_map is not None:
-        data = source_map.get(path)
-        if data is not None:
-            return data.decode("utf-8", errors="replace")
-    abs_path = getattr(parsed.file_info, "abs_path", None)
-    if not abs_path:
-        return None
-    try:
-        with open(abs_path, encoding="utf-8", errors="replace") as f:
-            return f.read()
-    except OSError:
-        return None
+    from .source_text import source_text
+
+    abs_path = getattr(parsed.file_info, "abs_path", None) or ""
+    return source_text(path, abs_path, source_map, errors="replace")
 
 
 def _mark_cpp_entry_point_files(
