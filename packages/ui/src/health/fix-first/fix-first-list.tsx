@@ -2,8 +2,8 @@
 
 /**
  * Fix first: the ranked list of what to fix in this repository, as core built
- * it. The header states the scope exactly (shown of eligible, and what each
- * rule excluded); the list is the payload's order. Shared by every host: the
+ * it. The header states the scope exactly (shown of eligible); what each rule
+ * excluded is one click away in a popover; the list is the payload's order. Shared by every host: the
  * host fetches, routes and writes, this renders.
  */
 
@@ -11,13 +11,14 @@ import { useCallback, useState, type ElementType } from "react";
 import type { FixFirstQueue, FixItem, FixScope } from "@repowise-dev/types/fix-first";
 
 import { Skeleton, SkeletonRegion } from "../../ui/skeleton";
+import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
 import { ApiError } from "../../shared/api-error";
 import { toFriendlyMessage } from "../../lib/errors";
 import { OverviewSection } from "../../overview/section";
 import { AiPromptModal, fileChatContext } from "../ai-prompt-modal";
 import type { AiPromptFlavor } from "../ai-prompt-builder";
 import { FixFirstItem, type FixTriageStatus } from "./fix-first-item";
-import { fixFirstScopeSentence, fixLocation } from "./scope";
+import { exclusionEntries, fixFirstScopeSentence, fixLocation } from "./scope";
 
 export interface FixFirstListProps {
   queue: FixFirstQueue | undefined;
@@ -35,10 +36,7 @@ export interface FixFirstListProps {
   LinkComponent?: ElementType | undefined;
   /** Drop the section's top hairline when it opens the page. */
   flush?: boolean | undefined;
-  /**
-   * Closed by default: the score leads Code Health, and Fix first sits under
-   * it as one line with its count until the reader opens it.
-   */
+  /** Open by default: the items are what the page asks the reader to do. */
   defaultOpen?: boolean | undefined;
 }
 
@@ -55,7 +53,7 @@ export function FixFirstList({
   loadPrompt,
   LinkComponent,
   flush = false,
-  defaultOpen = false,
+  defaultOpen = true,
 }: FixFirstListProps) {
   // Every row starts as its one or two scan lines; the detail opens per row.
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
@@ -89,6 +87,24 @@ export function FixFirstList({
     : undefined;
 
   const count = queue ? queue.items.length : null;
+  const exclusions = queue ? exclusionEntries(queue.totals.excluded) : [];
+  const excludedTotal = exclusions.reduce((n, entry) => n + entry.count, 0);
+  const excludedControl =
+    excludedTotal > 0 ? (
+      <Popover>
+        <PopoverTrigger className="rounded text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+          <span className="tabular-nums">{excludedTotal.toLocaleString()}</span> excluded
+        </PopoverTrigger>
+        <PopoverContent align="start">
+          <p className="mb-1.5 text-[var(--color-text-tertiary)]">Left out of Fix first, by rule:</p>
+          <ul className="space-y-0.5 tabular-nums text-[var(--color-text-secondary)]">
+            {exclusions.map((entry) => (
+              <li key={entry.reason}>{entry.text}</li>
+            ))}
+          </ul>
+        </PopoverContent>
+      </Popover>
+    ) : null;
 
   return (
     <OverviewSection
@@ -99,9 +115,14 @@ export function FixFirstList({
       {...(count !== null ? { hint: `${count} ${count === 1 ? "item" : "items"}` } : {})}
       {...(description ? { description } : {})}
     >
-      {/* A collapsible section has no header action slot, so the toggle
-          leads the body. */}
-      {toggleTests ? <div>{toggleTests}</div> : null}
+      {/* A collapsible section has no header action slot, so the controls
+          lead the body. */}
+      {toggleTests || excludedControl ? (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          {toggleTests}
+          {excludedControl}
+        </div>
+      ) : null}
       {error ? (
         <ApiError
           title="Couldn't load Fix first"
@@ -116,8 +137,8 @@ export function FixFirstList({
         </SkeletonRegion>
       ) : queue && queue.items.length === 0 ? (
         <p className="text-sm text-[var(--color-text-secondary)]">
-          Nothing eligible to fix first. Every candidate was excluded by a rule listed above, or the
-          index has no health analysis yet.
+          Nothing eligible to fix first. Every candidate was excluded by a rule, or the index has
+          no health analysis yet.
         </p>
       ) : queue ? (
         <ol className="flex flex-col divide-y divide-[var(--color-border-default)]">

@@ -1,6 +1,7 @@
 /**
- * Fix first renders core's queue as it arrives: the section starts closed
- * with its count, the header states the scope exactly, each row is two scan
+ * Fix first renders core's queue as it arrives: the section starts open
+ * with its count, the header states the scope exactly, exclusions sit in a
+ * popover, each row is two scan
  * lines that open onto the why, steps and Verify, and actions appear only
  * where the item can back them.
  */
@@ -10,7 +11,11 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import type { FixFirstQueue, FixItem } from "@repowise-dev/types/fix-first";
 
 import { FixFirstList } from "../../src/health/fix-first/fix-first-list";
-import { fixFirstScopeSentence, fixPlanLabel } from "../../src/health/fix-first/scope";
+import {
+  exclusionPhrase,
+  fixFirstScopeSentence,
+  fixPlanLabel,
+} from "../../src/health/fix-first/scope";
 import { FIX_FIRST_QUEUE } from "./fixtures/fix-first";
 
 const [REFACTOR, FINDING, PERF] = FIX_FIRST_QUEUE.items as [FixItem, FixItem, FixItem];
@@ -34,20 +39,32 @@ function openRow(item: FixItem) {
 }
 
 describe("Fix first header", () => {
-  it("starts closed, with the title and the item count on the toggle", () => {
+  it("starts open, with the title and the item count on the toggle", () => {
     const { container } = renderList();
     const details = container.querySelector("details")!;
-    expect(details.open).toBe(false);
+    expect(details.open).toBe(true);
     const summary = container.querySelector("summary")!;
     expect(summary.textContent).toContain("Fix first");
     expect(summary.textContent).toContain("3 items");
   });
 
-  it("states shown of eligible and every nonzero exclusion with its count", () => {
-    expect(fixFirstScopeSentence(FIX_FIRST_QUEUE)).toBe(
-      "3 of 423 eligible items. Excluded: 612 in tests, 91 tooling, 5 generated, " +
-        "158 expected repetition, 12 with no safe fix, 505 below the worth floor, 167 history only.",
-    );
+  it("states shown of eligible, and lists every nonzero exclusion in a popover", async () => {
+    expect(fixFirstScopeSentence(FIX_FIRST_QUEUE)).toBe("3 of 423 eligible items.");
+    renderList();
+    expect(screen.queryByText("612 in tests")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "1,550 excluded" }));
+    const dialog = await screen.findByRole("dialog");
+    for (const line of [
+      "612 in tests",
+      "91 tooling",
+      "5 generated",
+      "158 expected repetition",
+      "12 with no safe fix",
+      "505 below the worth floor",
+      "167 history only",
+    ]) {
+      expect(within(dialog).getByText(line)).toBeTruthy();
+    }
   });
 
   it("counts dormant functions apart from what they excluded", () => {
@@ -59,9 +76,10 @@ describe("Fix first header", () => {
         dormant: 1,
       },
     };
-    const sentence = fixFirstScopeSentence(queue);
-    expect(sentence).toContain("3 switched off by a constant flag, 2 in dead code (delete it)");
-    expect(sentence).toMatch(/Dormant: 1 function behind a disabled flag\.$/);
+    expect(exclusionPhrase(queue.totals.excluded)).toContain(
+      "3 switched off by a constant flag, 2 in dead code (delete it)",
+    );
+    expect(fixFirstScopeSentence(queue)).toMatch(/Dormant: 1 function behind a disabled flag\.$/);
   });
 
   it("omits a rule that excluded nothing", () => {
@@ -72,9 +90,9 @@ describe("Fix first header", () => {
         excluded: { ...FIX_FIRST_QUEUE.totals.excluded, test: 0, generated: 0 },
       },
     };
-    const sentence = fixFirstScopeSentence(queue);
-    expect(sentence).not.toContain("in tests");
-    expect(sentence).not.toContain("generated");
+    const phrase = exclusionPhrase(queue.totals.excluded);
+    expect(phrase).not.toContain("in tests");
+    expect(phrase).not.toContain("generated");
   });
 
   it("asks for scope=all when tests are included, and says so", () => {

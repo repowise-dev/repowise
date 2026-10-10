@@ -76,31 +76,47 @@ const EXCLUSION_ORDER: FixExclusion[] = [
 
 /**
  * The header line, exact about scope: how many items are shown out of how
- * many are eligible, what each rule left out, and how many functions a
- * constant flag keeps dormant. A zero count is omitted because it excluded
- * nothing.
+ * many are eligible, and how many functions a constant flag keeps dormant.
+ * What each rule left out is listed apart, by {@link exclusionEntries}.
  */
 export function fixFirstScopeSentence(queue: FixFirstQueue<unknown>): string {
-  const { shown, eligible, excluded, dormant } = queue.totals;
+  const { shown, eligible, dormant } = queue.totals;
   const head = `${formatNumber(shown)} of ${formatNumber(eligible)} eligible item${
     eligible === 1 ? "" : "s"
   }.`;
-  const parts = exclusionPhrase(excluded);
-  const sentence = parts ? `${head} Excluded: ${parts}.` : head;
   return dormant
-    ? `${sentence} Dormant: ${formatNumber(dormant)} function${
+    ? `${head} Dormant: ${formatNumber(dormant)} function${
         dormant === 1 ? "" : "s"
       } behind a disabled flag.`
-    : sentence;
+    : head;
+}
+
+export interface ExclusionEntry {
+  reason: FixExclusion;
+  count: number;
+  /** `612 in tests`. */
+  text: string;
+}
+
+/** Each nonzero exclusion count with its words, in the sentence order. A zero
+ *  is omitted because it excluded nothing. */
+export function exclusionEntries(
+  counts: Partial<Record<FixExclusion, number>>,
+): ExclusionEntry[] {
+  return EXCLUSION_ORDER.filter((key) => (counts[key] ?? 0) > 0).map((key) => ({
+    reason: key,
+    count: counts[key] ?? 0,
+    text: `${formatNumber(counts[key] ?? 0)} ${EXCLUSION_LABEL[key]}`,
+  }));
 }
 
 /**
- * `3 in tests, 12 below the worth floor`: each nonzero exclusion count with
- * its words, in the sentence order. Empty when nothing was excluded.
+ * `3 in tests, 12 below the worth floor`: {@link exclusionEntries} as one
+ * phrase. Empty when nothing was excluded.
  */
 export function exclusionPhrase(counts: Partial<Record<FixExclusion, number>>): string {
-  return EXCLUSION_ORDER.filter((key) => (counts[key] ?? 0) > 0)
-    .map((key) => `${formatNumber(counts[key] ?? 0)} ${EXCLUSION_LABEL[key]}`)
+  return exclusionEntries(counts)
+    .map((entry) => entry.text)
     .join(", ");
 }
 
