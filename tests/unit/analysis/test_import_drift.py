@@ -90,6 +90,10 @@ _SETTINGS = b'INSTALLED_APPS = [\n    "django.contrib.admin",\n    "polls",\n]\n
         # Django settings and URLconfs name apps and modules by bare name.
         ("mysite/settings.py", _SETTINGS, _SETTINGS.replace(b'"polls"', b'"blog"')),
         ("mysite/settings/base.py", _SETTINGS, _SETTINGS.replace(b'    "polls",\n', b"")),
+        ("mysite/settings.py", b'ROOT_URLCONF = "urls"\n', b'ROOT_URLCONF = "routes"\n'),
+        ("mysite/settings.py", b'MIDDLEWARE = ["audit"]\n', b'MIDDLEWARE = ["audit", "trace"]\n'),
+        # Parsed at the indexed revision, unparseable now: its edges are gone.
+        ("mysite/settings.py", _SETTINGS, _SETTINGS.replace(b"]\n", b"\n")),
         (
             "mysite/urls.py",
             b'urlpatterns = [path("", include("polls"))]\n',

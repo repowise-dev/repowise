@@ -402,8 +402,8 @@ def _cat_file_batch(repo_path: str, sha: str, paths: list[str]) -> dict[str, byt
 def read_blobs(repo_path: str, specs: list[tuple[str, str]]) -> dict[tuple[str, str], bytes] | None:
     """``{(rev, path): bytes}`` over one ``git cat-file --batch``; ``None`` if git failed.
 
-    An object missing at its revision is omitted rather than raising, and so is
-    one that is not a file (a submodule).
+    An object missing at its revision, or one that is not a file (a submodule),
+    is omitted instead of raising.
     """
     request = "\n".join(f"{rev}:{path}" for rev, path in specs) + "\n"
     proc = subprocess.run(
