@@ -107,7 +107,7 @@ function isClear(risk: ChangeRisk): boolean {
 }
 
 function header(risk: ChangeRisk, changed: number | null): string {
-  return `Change review (${reviewScope(risk.ref ?? "working tree", risk.working_tree !== false, changed)})`;
+  return `Change review (${reviewScope(risk.ref ?? "working tree", risk.working_tree === true, changed)})`;
 }
 
 /** Each listed finding, then a count of the ones the server left out. */

@@ -256,14 +256,20 @@ def _enclosing_loops(
     node: Node, dialect: BasePerfDialect, loop_kinds: frozenset[str], fn_kinds: frozenset[str]
 ) -> list[Node]:
     """The data-dependent loops around *node* in its function, innermost first;
-    walked up only for hits."""
+    walked up only for hits. A loop whose iterable holds *node* is not one."""
     loops: list[Node] = []
     cur = node.parent
     for _ in range(64):
         if cur is None or cur.type in fn_kinds:
             break
         if cur.type in loop_kinds and cur.is_named and not dialect.is_constant_loop(cur):
-            loops.append(cur)
+            iterable = dialect.iterable_node(cur)
+            # ``for row in result.all():`` runs ``.all()`` once per pass of the loop
+            # around it, so the for loop itself is not what repeats it.
+            if iterable is None or not (
+                iterable.start_byte <= node.start_byte and node.end_byte <= iterable.end_byte
+            ):
+                loops.append(cur)
         cur = cur.parent
     return loops
 
@@ -356,6 +362,14 @@ def _is_block_loop_body_scope(
     return False
 
 
+def _in_deferred_body(node: Node, dialect: BasePerfDialect, scope_kinds: frozenset[str]) -> bool:
+    """Whether *node* sits in a body that runs when its result is iterated."""
+    cur = node.parent
+    while cur is not None and cur.type not in scope_kinds:
+        cur = cur.parent
+    return cur is not None and dialect.defers_body(cur)
+
+
 def perf_pass_runs(language: str, lmap: LanguageNodeMap) -> bool:
     """Whether ``_collect_perf_hits`` does anything for *language*."""
     return bool(lmap.call_kinds) and language in PERF_DIALECTS
@@ -410,6 +424,7 @@ def _collect_perf_hits(
     loop_kinds = lmap.loop_kinds
     fn_kinds = lmap.function_kinds
     lambda_kinds = lmap.lambda_kinds
+    scope_kinds = fn_kinds | lambda_kinds
     async_fn_kinds = lmap.async_function_kinds
     bare_call_wrapper_kinds = lmap.bare_call_wrapper_kinds
     # Block-iteration loops (Ruby ``items.each do … end``): only pay for the
@@ -661,6 +676,7 @@ def _collect_perf_hits(
                         and misc[1] is None
                         and kind in _HOT_PATH_SINK_KINDS
                         and method not in dialect.hot_path_excluded_methods
+                        and not _in_deferred_body(call_node, dialect, scope_kinds)
                     ):
                         # An inherently-blocking (non-awaited subprocess / fs /
                         # sync-network) sink outside any loop. Noisy everywhere,

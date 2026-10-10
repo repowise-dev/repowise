@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json as _json  # noqa: F401  — re-exported: a test patches answer._json.dumps
 import logging
 import time
@@ -94,6 +95,9 @@ from repowise.server.mcp_server._answer_pipeline import hydrate_hits as _hydrate
 from repowise.server.mcp_server._answer_pipeline import (
     retrieval_legs as _retrieval_legs,
 )
+from repowise.server.mcp_server._answer_pipeline import (
+    stamp_hybrid_rank as _stamp_hybrid_rank,
+)
 from repowise.server.mcp_server._entry_trace import (
     expand_via_entry_trace as _expand_via_entry_trace,
 )
@@ -119,6 +123,14 @@ from repowise.server.mcp_server.tool_answer.bodies import (
 from repowise.server.mcp_server.tool_answer.cache import (
     _serve_cached_answer,
     _write_answer_cache,
+)
+from repowise.server.mcp_server.tool_answer.callers import (
+    NO_EVIDENCE,
+    attach_graph_callers,
+    caller_evidence,
+    caller_lines,
+    is_caller_question,
+    is_impact_question,
 )
 from repowise.server.mcp_server.tool_answer.confidence import (
     _agreement_dominant,
@@ -152,6 +164,11 @@ from repowise.server.mcp_server.tool_answer.evidence import (
     _is_readable_path,
     _repo_root,
 )
+from repowise.server.mcp_server.tool_answer.neighbors import (
+    attach_graph_neighbors,
+    lead_file,
+    neighbor_evidence,
+)
 from repowise.server.mcp_server.tool_answer.payload import (
     _apply_lean_high,  # noqa: F401  — backward-compatible helper re-export
     _build_best_guesses,  # noqa: F401  — re-exported: imported from here by tests
@@ -178,6 +195,8 @@ from repowise.server.mcp_server.tool_answer.symbols import (
     _extract_value_answer,
     _hydrate_candidate_defines,
     _hydrate_symbols_for_hits,
+    lead_with_files,
+    place_named_files,
 )
 from repowise.server.mcp_server.tool_answer.synthesis import (
     _hash_answer_identity,
@@ -187,6 +206,7 @@ from repowise.server.mcp_server.tool_answer.synthesis import (
     _resolve_reasoning_for_answer,
     synthesize,
 )
+from repowise.server.mcp_server.tool_search_symbols import issue_files
 
 _log = logging.getLogger("repowise.mcp.answer")
 
@@ -199,6 +219,24 @@ if _MAX_CHARS_PER_HIT_EXCERPT < _GATED_EXCERPT_CHARS:
         f"while the fetch asks for {_GATED_EXCERPT_CHARS}. Raise "
         "_MAX_CHARS_PER_HIT_EXCERPT or lower _GATED_EXCERPT_CHARS."
     )
+
+
+async def _attach_neighbors(
+    payload: dict, *, wanted: bool, ctx, repo_id: str, hits: list[dict], exclude_spec
+) -> dict:
+    """``graph_neighbors`` for the file *payload* leads with; a failed lookup leaves it as is."""
+    if not wanted:
+        return payload
+    lead = lead_file(payload)
+    try:
+        async with get_session(ctx.session_factory) as session:
+            rows = await neighbor_evidence(
+                session, repo_id, lead, hits, exclude_spec, repo_root=_repo_root(ctx)
+            )
+    except Exception:
+        _log.warning("get_answer: graph neighbor lookup failed", exc_info=True)
+        return payload
+    return attach_graph_neighbors(payload, rows, lead)
 
 
 class _Retrieved(NamedTuple):
@@ -230,6 +268,7 @@ async def _run_retrieval_pipeline(
     # Drop excluded files right after hydration (which attaches target_path) so
     # they never enter ranking, citations, or fallback_targets.
     hits = filter_dicts_by_key(hits, "target_path", exclude_spec)
+    _stamp_hybrid_rank(hits)
 
     question_ids = _extract_question_identifiers(question)
 
@@ -299,6 +338,20 @@ async def _run_retrieval_pipeline(
     # Demote noise (decisions on non-why, test pages on non-test questions)
     # below real pages. Non-dropping; after anchoring, which never injects noise.
     hits = _demote_noise_hits(hits, question, is_why=_is_why_question(question))
+    # Files on a pasted stack trace lead; files defining a named identifier
+    # join just below the top three. No-op when the question has neither.
+    try:
+        issue = await issue_files(ctx, question)
+    except Exception:
+        _log.warning("get_answer: issue file lookup failed", exc_info=True)
+    else:
+        def _in_scope(paths: list[str]) -> list[str]:
+            return [p for p in paths if not scope or p.startswith(scope)]
+
+        if traced := _in_scope(issue.traced):
+            hits = lead_with_files(hits, traced)
+        if named := _in_scope(issue.named):
+            hits = place_named_files(hits, named)
     # The pre-cap ranking feeds ``candidates``: files below the synthesis cut
     # are still the best answer to "where do I look next".
     resolved_pool = list(hits)
@@ -412,6 +465,35 @@ async def get_answer(
     homonyms = retrieved.homonyms
     flow_paths = retrieved.flow_paths
 
+    # Caller questions get the graph's callers as evidence; every other
+    # question skips this without a query.
+    graph_callers = NO_EVIDENCE
+    if is_caller_question(question, question_ids):
+        try:
+            async with get_session(ctx.session_factory) as session:
+                graph_callers = await caller_evidence(
+                    session,
+                    repo_id,
+                    question,
+                    question_ids,
+                    hits,
+                    exclude_spec,
+                    repo_root=_repo_root(ctx),
+                )
+        except Exception:
+            _log.warning("get_answer: graph caller lookup failed", exc_info=True)
+
+    # Impact questions the caller lookup left unanswered get the users of the
+    # file the answer leads with, once that file is known.
+    _neighbors = functools.partial(
+        _attach_neighbors,
+        wanted=not graph_callers.rows and is_impact_question(question, question_ids),
+        ctx=ctx,
+        repo_id=repo_id,
+        hits=hits,
+        exclude_spec=exclude_spec,
+    )
+
     # Computed once, above the early returns (they rate retrieval too). The leg
     # status is read, not inferred from the capped `hits`; see _agreement_dominant.
     agreement_dominant = (
@@ -455,7 +537,9 @@ async def get_answer(
         _retrieval_quality(hits, agreement_dominant),
     )
     if union_payload is not None:
-        return _with_candidates(union_payload, resolved_pool)
+        return _with_candidates(
+            await _neighbors(attach_graph_callers(union_payload, graph_callers)), resolved_pool
+        )
 
     fallback_targets = [
         h["target_path"]
@@ -498,13 +582,18 @@ async def get_answer(
 
     if not always_synthesize and not dominant:
         return _with_candidates(
-            await build_abstain_payload(
-                question=question,
-                ctx=ctx,
-                hits=hits,
-                fallback_targets=fallback_targets,
-                repository=repository,
-                t0=t0,
+            await _neighbors(
+                attach_graph_callers(
+                    await build_abstain_payload(
+                        question=question,
+                        ctx=ctx,
+                        hits=hits,
+                        fallback_targets=fallback_targets,
+                        repository=repository,
+                        t0=t0,
+                    ),
+                    graph_callers,
+                )
             ),
             resolved_pool,
         )
@@ -547,7 +636,9 @@ async def get_answer(
             exclude_spec=exclude_spec,
             agreement_dominant=agreement_dominant,
             resolved_pool=resolved_pool,
+            graph_callers=graph_callers,
         )
+        payload = await _neighbors(payload)
         degraded_legs = _degraded_legs(_retrieval_legs())
         if degraded_legs:
             payload.setdefault("_meta", {})["retrieval_degraded"] = degraded_legs
@@ -576,6 +667,11 @@ async def get_answer(
     prelude = ""
     with contextlib.suppress(Exception):
         prelude = await _build_structured_prelude(hits, decisions, ctx, repo_id)
+    if graph_callers.rows:
+        graph_block = "Callers from the call graph:\n" + "\n".join(
+            f"- {line}" for line in caller_lines(graph_callers.rows)
+        )
+        prelude = f"{prelude}\n\n{graph_block}" if prelude else graph_block
 
     user_prompt = _USER_TEMPLATE.format(
         question=question.strip(),
@@ -642,6 +738,8 @@ async def get_answer(
         exclude_spec=exclude_spec,
     )
 
+    attach_graph_callers(payload, graph_callers)
+    await _neighbors(payload)
     if flow_paths:
         payload["flow_path"] = [" -> ".join(p) for p in flow_paths[:2]]
 

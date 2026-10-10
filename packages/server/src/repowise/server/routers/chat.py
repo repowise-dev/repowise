@@ -198,6 +198,7 @@ class _AgentTurn:
         self.provider = provider
         self.llm_messages = llm_messages
         self.text_parts: list[str] = []
+        self.provider_content: list[dict[str, Any]] | None = None
         self.tool_calls: list[dict[str, Any]] = []
         self.aborted = False
         self.truncated = False
@@ -293,6 +294,9 @@ class _AgentTurn:
         if event.type == "text_delta" and event.text:
             self.text_parts.append(event.text)
             return _sse_event("data", {"type": "text_delta", "text": event.text})
+        if event.type == "assistant_content":
+            self.provider_content = event.content_blocks
+            return None
         tc = event.tool_call
         if not tc:
             return None
@@ -315,8 +319,13 @@ class _AgentTurn:
 
     async def _run_pending(self, pending: list[dict[str, Any]]) -> AsyncIterator[str]:
         """Run the tool calls the provider left to us and feed the results back."""
-        self.llm_messages.append(assistant_tool_call_message("".join(self.text_parts), pending))
+        self.llm_messages.append(
+            assistant_tool_call_message(
+                "".join(self.text_parts), pending, provider_content=self.provider_content
+            )
+        )
         self.text_parts.clear()
+        self.provider_content = None
         for tc in pending:
             result = await self.execute(tc["name"], tc["arguments"])
             yield self._tool_result(tc["id"], tc["name"], tc["arguments"], result)

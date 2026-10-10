@@ -22,6 +22,7 @@ one aggregate read.
 from __future__ import annotations
 
 from collections import OrderedDict, namedtuple
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
@@ -33,6 +34,14 @@ from repowise.core.analysis.health.fix_first import DEFAULT_LIMIT, FixFirstQueue
 from repowise.core.analysis.health.fix_first.build import MIN_WORTH, hot_cut, hot_cut_offset
 from repowise.core.analysis.health.perf.opportunity_rank import DEFAULT_QUEUE_STATES
 from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
+from repowise.core.analysis.health.refactoring.models import (
+    RefactoringSuggestion as PlanSuggestion,
+)
+from repowise.core.analysis.health.refactoring.recommendations import (
+    DEFAULT_TEST_LIMIT,
+    _validation_inputs,
+    build_validation_plan,
+)
 from repowise.core.analysis.health.rows import detail_map
 from repowise.core.analysis.health.scoring import history_biomarkers
 
@@ -368,6 +377,61 @@ async def _symbol_lines(session: AsyncSession, repo_id: str, performance: list[A
     return {node_id: line for node_id, line in rows.all()}
 
 
+def _span_suggestion(path: str, function: Any, start: Any, end: Any) -> PlanSuggestion:
+    """A finding's lines as the plan shape the validation read takes."""
+    return PlanSuggestion(
+        refactoring_type="finding",
+        file_path=path,
+        target_symbol=function or "",
+        line_start=start if isinstance(start, int) else None,
+        line_end=end if isinstance(end, int) else None,
+        plan={},
+        evidence={},
+        impact_delta=0.0,
+        effort_bucket="M",
+        blast_radius={},
+        confidence="medium",
+    )
+
+
+async def _finding_validator(
+    session: AsyncSession, repo_id: str, findings: list[Any]
+) -> Callable[[str, Any, Any, Any], dict[str, Any] | None]:
+    """Tests for a finding with no plan, by the rule a plan's tests follow.
+
+    Measured coverage of the finding's lines first, then the tests that reach
+    the file through the call and import graphs, then a matching test name.
+    One batched read covers every candidate finding; the builder asks only for
+    the items it writes. Ceiling: tests are not ordered by symbol-level reach
+    (the plan path reads that evidence per symbol); upgrade path is passing
+    ``evidence`` to ``build_validation_plan``.
+    """
+    spans = {
+        (f.file_path, f.line_start, f.line_end): f
+        for f in findings
+        if f.file_path and isinstance(f.line_start, int)
+    }
+    if not spans:
+        return lambda *_: None
+    suggestions = [_span_suggestion(p, f.function_name, s, e) for (p, s, e), f in spans.items()]
+    inputs = await _validation_inputs(
+        session, repo_id, suggestions, sorted({s.file_path for s in suggestions})
+    )
+
+    def validate(path: str, function: Any, start: Any, end: Any) -> dict[str, Any] | None:
+        plan = build_validation_plan(
+            _span_suggestion(path, function, start, end),
+            inputs.measured,
+            inputs.inferred,
+            test_limit=DEFAULT_TEST_LIMIT,
+            order_tests=False,
+        )
+        # No test found: unknown, not the bare repo-wide command a plan falls back to.
+        return plan.as_dict() if plan.total else None
+
+    return validate
+
+
 #: Built queues kept in process. A handful covers the shapes one surface asks
 #: for (dashboard, CLI, Do next, one id), per repository a server holds.
 CACHE_SIZE = 32
@@ -490,6 +554,7 @@ async def _build(
         basis=await _basis(session, repository_id),
         hot_cuts=await _hot_cuts(session, repository_id),
         symbol_lines=await _symbol_lines(session, repository_id, performance),
+        validate=await _finding_validator(session, repository_id, findings),
     )
 
 

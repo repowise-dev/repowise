@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { BreakingChangesView } from "@repowise-dev/ui/workspace/breaking-changes-view";
 import { OverviewSection } from "@repowise-dev/ui/overview/section";
 import { fileEntityPath, symbolEntityPath } from "@repowise-dev/ui/shared/entity";
@@ -21,6 +22,7 @@ export function BreakingChangesSection({
   /** Repo alias to indexed repo id; a never-indexed repo's references stay text. */
   repoIds: Record<string, string>;
 }) {
+  const t = useTranslations("contracts");
   const open = useOpenContract();
   const { data, isLoading } = useWorkspaceBreakingChanges();
   const hasFindings = (data?.changes.length ?? 0) > 0;
@@ -32,13 +34,8 @@ export function BreakingChangesSection({
 
   return (
     <OverviewSection
-      title="Breaking changes"
-      {...(hasFindings
-        ? {
-            description:
-              "Provider contracts that changed in the most recent workspace update, and the consumers linked to them. Breaking first, then warnings.",
-          }
-        : {})}
+      title={t("breaking.title")}
+      {...(hasFindings ? { description: t("breaking.description") } : {})}
     >
       <BreakingChangesView
         report={data}

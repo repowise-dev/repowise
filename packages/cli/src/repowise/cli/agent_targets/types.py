@@ -108,6 +108,7 @@ class Tier(StrEnum):
 
     FULL = "full"
     GOOD = "good"
+    BASIC = "basic"
     PASTE_CONFIG = "paste-config"
 
 
@@ -459,8 +460,10 @@ def derive_tier(target: AgentTarget) -> Tier:
       faked by writing a config file. Requiring both is what makes it
       structurally impossible for the docs to claim Full while the session
       adapter is missing.
-    * Everything else is **Good**: a real integration, MCP and instructions and
-      possibly skills, but no hook-level interception.
+    * A target that wires MCP plus managed instructions or skills is **Good**:
+      the agent is told repowise exists, but nothing intercepts its tool calls.
+    * Everything else is **Basic**: repowise writes the MCP config and nothing
+      that tells the agent when to use it.
 
     Deliberately strict about Full. Breadth that overclaims depth is worse than
     narrower breadth, and the tier is the thing the README badges repeat.
@@ -469,4 +472,7 @@ def derive_tier(target: AgentTarget) -> Tier:
         return Tier.PASTE_CONFIG
     if target.hook_adapter and target.session_adapter:
         return Tier.FULL
-    return Tier.GOOD
+    caps = capabilities_of(target)
+    if Capability.MCP in caps and caps & {Capability.INSTRUCTIONS, Capability.SKILLS}:
+        return Tier.GOOD
+    return Tier.BASIC

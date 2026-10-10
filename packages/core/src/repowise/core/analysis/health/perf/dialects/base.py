@@ -226,6 +226,11 @@ class BasePerfDialect:
             has_db_import=has_db_import,
         )
 
+    def defers_body(self, fn: Node) -> bool:
+        """*fn*'s body runs when its result is iterated, not when it is called
+        (a generator, or an iterator closure that takes a ``yield`` callback)."""
+        return False
+
     def runs_in_place(self, closure: Node) -> bool:
         """*closure* runs to completion where it is written, like the loop body
         around it (``await limit(() => call())``), rather than being stored for later."""
@@ -317,6 +322,15 @@ class BasePerfDialect:
     def is_chunked_loop(self, node: Node) -> bool:
         """True when this loop walks its data a chunk at a time (already batched)."""
         return False
+
+    def iterable_node(self, node: Node) -> Node | None:
+        """The expression a for-each loop evaluates once before its first pass, or
+        ``None`` (the default, and any loop whose header runs every pass).
+
+        A call inside it runs once per *enclosing* loop pass, not once per pass of
+        this loop, so loop facts attribute it to the loop around this one.
+        """
+        return None
 
     @staticmethod
     def _steps_by_chunk(update: Node | None) -> bool:

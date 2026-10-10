@@ -97,12 +97,10 @@ log = structlog.get_logger(__name__)
 # and re-scores on mismatch (see ``update_cmd.persistence.full_rescore_due``),
 # instead of waiting out the 7-day decay timer.
 #
-# Reach, stated honestly: the gate is only consulted once an update reaches the
-# incremental path, so this lands on the next update that has changed files. A
-# repo with no new commits returns at the "already up to date" branch and picks
-# the correction up on its next commit; workspace members and the hosted
-# indexer do not run this path at all. That is the same reach the decay timer
-# already has — this extends that trigger rather than adding a wider one.
+# Reach: a single-repo ``repowise update`` checks it before the "already up to
+# date" return, so a checkout with no new commits re-scores on its next update
+# too, from the graph it re-parses, with no model call. Workspace members and
+# the hosted indexer do not run this path at all.
 #
 # Deliberately *not* folded into ``config_fingerprint``: that fingerprint means
 # "this repo's config content changed", and a workspace update answers drift in

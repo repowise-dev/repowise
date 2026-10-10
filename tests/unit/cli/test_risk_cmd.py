@@ -282,6 +282,18 @@ def test_percentile_text_never_hides_which_side_of_the_gate() -> None:
     )
 
 
+def test_headline_never_claims_more_than_was_measured() -> None:
+    from repowise.core.analysis.change_risk.render import headline
+
+    # 99.5 and 100.0 read 99%: "larger than 100%" cannot be true.
+    for pct in (99.5, 100.0):
+        assert "than 99%" in headline(_scored(pct), None, markdown=False)
+        assert "than 99%" in headline(_scored(pct), 95, markdown=False)
+    assert "than 42%" in headline(_scored(42.9), None, markdown=False)
+    # The gate-aware decimals are already below the next whole number.
+    assert headline(_scored(95.4), 95, markdown=False).endswith("than 95.4% of recent commits")
+
+
 def test_target_mode_refuses_ci_formats_and_the_gate(tmp_path: Path) -> None:
     repo = _ranked_repo(tmp_path)
 

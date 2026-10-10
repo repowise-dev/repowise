@@ -39,6 +39,8 @@ stored slug is coerced to.
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 import threading
 from dataclasses import dataclass, field
 
@@ -101,6 +103,15 @@ class AgentIdentity:
     #: ``derive_tier`` reads them.
     hook_adapter: str | None = None
     session_adapter: str | None = None
+    #: The agent's command on PATH, when it ships one.
+    executable: str | None = None
+    #: Arguments to ``executable`` that exit 0 only when signed in. Empty when
+    #: the CLI has no cheap, side-effect-free login query.
+    login_check: tuple[str, ...] = ()
+    install_hint: str = ""
+    login_hint: str = ""
+    #: The ``ProviderSpec`` name that drives this agent's CLI for indexing.
+    indexing_provider: str | None = None
 
     def __post_init__(self) -> None:
         if not is_agent_slug(self.slug):
@@ -132,6 +143,33 @@ class AgentIdentity:
             | set(self.announced_as)
         )
 
+    def which(self) -> str | None:
+        """Path to the agent's executable, or ``None`` when it is not on PATH."""
+        return shutil.which(self.executable) if self.executable else None
+
+    def is_installed(self) -> bool:
+        return self.which() is not None
+
+    def is_logged_in(self) -> bool:
+        """Installed and, where the CLI can say so cheaply, signed in."""
+        command = self.which()
+        if command is None:
+            return False
+        if not self.login_check:
+            return True
+        try:
+            # DEVNULL: an inherited Windows console stdin can block until the timeout.
+            result = subprocess.run(
+                [command, *self.login_check],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0
+
 
 CLAUDE_CODE = AgentIdentity(
     slug="claude_code",
@@ -140,17 +178,50 @@ CLAUDE_CODE = AgentIdentity(
     announced_as=frozenset({"claude"}),
     hook_adapter="claude-code",
     session_adapter="claude_code",
+    executable="claude",
+    #: Documented to exit 0 when signed in and 1 when not.
+    login_check=("auth", "status"),
+    install_hint="https://claude.com/claude-code",
+    login_hint="claude auth login",
+    indexing_provider="claude_cli",
 )
 CODEX = AgentIdentity(
     slug="codex",
     display_name="Codex CLI",
     hook_adapter="codex",
     session_adapter="codex",
+    executable="codex",
+    login_check=("login", "status"),
+    install_hint="npm install -g @openai/codex",
+    login_hint="codex login",
+    indexing_provider="codex_cli",
 )
-VSCODE = AgentIdentity(slug="vscode", display_name="VS Code")
-CURSOR = AgentIdentity(slug="cursor", display_name="Cursor")
-OPENCODE = AgentIdentity(slug="opencode", display_name="OpenCode")
-HERMES = AgentIdentity(slug="hermes", display_name="Hermes")
+VSCODE = AgentIdentity(slug="vscode", display_name="VS Code", executable="code")
+CURSOR = AgentIdentity(
+    slug="cursor",
+    display_name="Cursor",
+    hook_adapter="cursor",
+    executable="cursor",
+)
+OPENCODE = AgentIdentity(
+    slug="opencode",
+    display_name="OpenCode",
+    executable="opencode",
+    install_hint="curl -fsSL https://opencode.ai/install | bash",
+    login_hint="run opencode once to configure your provider",
+    indexing_provider="opencode",
+)
+HERMES = AgentIdentity(slug="hermes", display_name="Hermes", executable="hermes")
+COPILOT = AgentIdentity(
+    slug="copilot",
+    display_name="GitHub Copilot CLI",
+    executable="copilot",
+    install_hint="npm install -g @github/copilot",
+    login_hint="copilot login",
+)
+KIRO = AgentIdentity(
+    slug="kiro", display_name="Kiro", executable="kiro-cli", login_hint="kiro-cli login"
+)
 
 #: Registered identities, by slug. Order is not load-bearing here — the order
 #: agents are *presented* in belongs to the target registry, which is where a
@@ -235,6 +306,14 @@ def slug_for_hook_adapter(name: str | None) -> str:
     return UNKNOWN_AGENT
 
 
+def identity_for_provider(name: str) -> AgentIdentity | None:
+    """The agent whose CLI the LLM provider *name* drives, if any."""
+    for identity in _REGISTERED.values():
+        if identity.indexing_provider == name:
+            return identity
+    return None
+
+
 def identity_for_target_id(target_id: str) -> AgentIdentity | None:
     """The identity behind a ``--target=`` id."""
     return get_identity(target_id.replace("-", "_"))
@@ -275,6 +354,6 @@ def resolve_client_identity(client_name: str | None) -> str:
 
 #: The agents shipped with repowise, registered through the same seam a
 #: third-party package would use, so the alias-disjointness check covers them too.
-for _shipped in (CLAUDE_CODE, CODEX, VSCODE, CURSOR, OPENCODE, HERMES):
+for _shipped in (CLAUDE_CODE, CODEX, VSCODE, CURSOR, OPENCODE, HERMES, COPILOT, KIRO):
     register_identity(_shipped)
 del _shipped

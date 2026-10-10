@@ -29,148 +29,57 @@ import os
 from pathlib import Path
 from typing import Any
 
+from repowise.core.providers.embedding.registry import (
+    DEFAULT_EMBEDDER,
+    KEYLESS_EMBEDDERS,
+    list_embedders,
+)
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Provider catalog (hardcoded — add new providers here)
+# Provider catalog, derived from the provider specs. Flag-only providers
+# (mock) are left out. Order matters: auto-detect below takes the first entry
+# that is usable.
 # ---------------------------------------------------------------------------
 
 PROVIDER_CATALOG: list[dict[str, Any]] = [
     {
-        "id": "gemini",
-        "name": "Google Gemini",
-        "default_model": "gemini-3.5-flash-lite",
-        "models": [
-            "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite",
-            "gemini-3.1-pro-preview",
-        ],
-        "env_keys": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-        "requires_key": True,
-    },
-    {
-        "id": "anthropic",
-        "name": "Anthropic",
-        "default_model": "claude-haiku-4-5",
-        "models": ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"],
-        "env_keys": ["ANTHROPIC_API_KEY"],
-        "requires_key": True,
-    },
-    {
-        "id": "openai",
-        "name": "OpenAI",
-        "default_model": "gpt-5.6-luna",
-        "models": ["gpt-5.6-luna", "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"],
-        "env_keys": ["OPENAI_API_KEY"],
-        "requires_key": True,
-    },
-    {
-        "id": "openrouter",
-        "name": "OpenRouter",
-        "default_model": "google/gemini-3.5-flash-lite",
-        "models": [
-            "google/gemini-3.5-flash-lite",
-            "openai/gpt-5.6-luna",
-            "anthropic/claude-haiku-4-5",
-            "anthropic/claude-sonnet-5",
-        ],
-        "env_keys": ["OPENROUTER_API_KEY"],
-        "requires_key": True,
-    },
-    {
-        "id": "deepseek",
-        "name": "DeepSeek",
-        "default_model": "deepseek-v4-flash",
-        "models": ["deepseek-v4-flash", "deepseek-v4-pro"],
-        "env_keys": ["DEEPSEEK_API_KEY"],
-        "requires_key": True,
-    },
-    {
-        "id": "kimi",
-        "name": "Kimi",
-        "default_model": "kimi-for-coding",
-        "models": [
-            "kimi-for-coding",
-            "kimi-for-coding-highspeed",
-            "kimi-k2.5",
-            "kimi-k2.6",
-        ],
-        "env_keys": ["KIMI_API_KEY"],
-        "requires_key": True,
-    },
-    {
-        "id": "edenai",
-        "name": "Eden AI",
-        "default_model": "mistral/mistral-small-latest",
-        "models": [
-            "mistral/mistral-small-latest",
-            "openai/gpt-4o-mini",
-            "anthropic/claude-haiku-4-5",
-            "google/gemini-2.5-flash",
-        ],
-        "env_keys": ["EDENAI_API_KEY"],
-        "requires_key": True,
-    },
-    {
-        "id": "ollama",
-        "name": "Ollama (Local)",
-        "default_model": "qwen3.5:4b",
-        "models": ["qwen3.5:4b", "qwen3.5:2b", "llama3.2", "qwen2.5-coder"],
-        "env_keys": [],
-        "requires_key": False,
-    },
-    {
-        "id": "litellm",
-        "name": "LiteLLM",
-        "default_model": "groq/llama-3.1-70b-versatile",
-        "models": ["groq/llama-3.1-70b-versatile"],
-        # Was [] while requires_key stayed True, so _get_key_for_provider had
-        # nothing to look at and litellm read as unconfigured no matter what
-        # the user had set. The name matches the CLI's own validation map.
-        "env_keys": ["LITELLM_API_KEY"],
-        "requires_key": True,
-    },
-    {
-        "id": "claude_cli",
-        "name": "Claude Code (Local CLI)",
-        "default_model": "claude_cli/claude-haiku-4-5",
-        "models": [
-            "claude_cli/claude-haiku-4-5",
-            "claude_cli/claude-sonnet-4-6",
-            "claude_cli/claude-opus-4-6",
-        ],
-        "env_keys": [],
-        "requires_key": False,
-    },
-    {
-        "id": "codex_cli",
-        "name": "Codex (Local CLI)",
-        "default_model": "codex_cli/default",
-        "models": [
-            # The CLI's model list comes from the authenticated codex catalog
-            # at runtime (see core/providers/llm/codex_cli.py), so the static
-            # catalog only names the sentinel default; list_provider_status
-            # appends the resolved active model when it isn't cataloged.
-            "codex_cli/default",
-        ],
-        "env_keys": [],
-        "requires_key": False,
-    },
-    {
-        "id": "opencode",
-        "name": "OpenCode (Local CLI)",
-        "default_model": "opencode/default",
-        "models": [
-            "opencode/default",
-            "opencode/openai/gpt-5",
-            "opencode/deepseek/deepseek-v4-pro",
-        ],
-        "env_keys": [],
-        "requires_key": False,
-    },
+        "id": spec.name,
+        "name": spec.label,
+        "default_model": spec.default_model,
+        "models": list(spec.models),
+        "env_keys": list(spec.api_key_envs),
+        "requires_key": bool(spec.api_key_envs),
+        # What a user sets to make it usable, and how to install it.
+        "env_vars": list(spec.required_envs),
+        "setup_hint": spec.setup_hint,
+    }
+    for spec in PROVIDER_SPECS.values()
+    if spec.picker_rank is not None
 ]
 
 _CATALOG_BY_ID = {p["id"]: p for p in PROVIDER_CATALOG}
+
+FLAG_ONLY_PROVIDERS = [spec.name for spec in PROVIDER_SPECS.values() if spec.picker_rank is None]
+
+
+def _embedder_catalog() -> list[dict[str, Any]]:
+    """Every registered embedder, read at call time so custom ones appear.
+
+    A built-in embedder reads the same credentials as the LLM provider of the
+    same name, so its env vars come from that spec; a custom one has none.
+    The default comes first so the picker opens on it; the rest stay sorted.
+    """
+    return [
+        {
+            "id": name,
+            "env_vars": list(spec.required_envs) if (spec := PROVIDER_SPECS.get(name)) else [],
+            "semantic": name not in KEYLESS_EMBEDDERS,
+        }
+        for name in sorted(list_embedders(), key=lambda n: n != DEFAULT_EMBEDDER)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -412,16 +321,36 @@ def list_provider_status(
                 "models": models,
                 "default_model": p["default_model"],
                 "configured": configured,
+                "requires_key": p["requires_key"],
+                "env_vars": p["env_vars"],
+                "setup_hint": p["setup_hint"],
             }
         )
 
+    # Deferred: the estimator package pulls in the generation pipeline.
+    from repowise.core.cost_estimator import lookup_cost
+
+    model = active_model or (
+        _CATALOG_BY_ID.get(active_id, {}).get("default_model") if active_id else None
+    )
+    rates = lookup_cost(model) if model else None
+    # An unpriced model on a local provider costs nothing; anywhere else it
+    # is unknown, and null rates make the dashboard show no estimate.
+    spec = PROVIDER_SPECS.get(active_id or "")
+    if rates is None and model and spec is not None and spec.local:
+        rates = (0.0, 0.0)
+    input_rate, output_rate = rates or (None, None)
     return {
         "active": {
             "provider": active_id,
-            "model": active_model
-            or (_CATALOG_BY_ID.get(active_id, {}).get("default_model") if active_id else None),
+            "model": model,
+            "input_cost_per_1k": input_rate,
+            "output_cost_per_1k": output_rate,
+            "embedder": os.environ.get("REPOWISE_EMBEDDER", DEFAULT_EMBEDDER).lower(),
         },
         "providers": providers,
+        "flag_only_providers": FLAG_ONLY_PROVIDERS,
+        "embedders": _embedder_catalog(),
     }
 
 

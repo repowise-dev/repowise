@@ -2,13 +2,8 @@
 
 Delegates generation to the authenticated local Claude Code CLI via ``claude -p``
 (headless / print mode). Intended for users whose Claude subscription (Pro, Max,
-Team or Enterprise seat) is already configured by ``claude login``; it needs no
-ANTHROPIC_API_KEY.
-
-Security: uses ``asyncio.create_subprocess_exec`` (no shell), validates model
-names against a safe character set, disables the CLI's tool catalog, and runs
-the subprocess in a temporary scratch directory resolved with
-``Path.resolve()``.
+Team or Enterprise seat) is already configured by ``claude auth login``; it needs no
+ANTHROPIC_API_KEY. Shared subprocess handling lives in ``agent_cli``.
 
 Two deliberate differences from the other agent-CLI providers:
 
@@ -26,21 +21,23 @@ Two deliberate differences from the other agent-CLI providers:
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
-import os
-import re
-import shutil
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from repowise.core.providers.llm.agent_cli import (
+    EXEC_TIMEOUT_SECONDS,
+    AgentCliProvider,
+    model_label,
+    normalize_model,
+    tail,
+)
 from repowise.core.providers.llm.base import (
-    BaseProvider,
-    CacheHint,
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
@@ -53,14 +50,8 @@ log = structlog.get_logger(__name__)
 
 # Matches the anthropic provider's default, whose docstring calls haiku "ample
 # for doc pages". Overridable with --model / REPOWISE_MODEL.
-_DEFAULT_MODEL = "claude-haiku-4-5"
-_LABEL_PREFIX = "claude_cli/"
-
-_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/\-]*$")
-
-# A process spawn plus a full CLI turn on a prompt that can carry a lot of file
-# context. Generous, because too low is not a slow page but no page.
-_EXEC_TIMEOUT_SECONDS = 600
+_DEFAULT_MODEL = "claude-haiku-5-5"
+_EXEC_TIMEOUT_SECONDS = EXEC_TIMEOUT_SECONDS
 
 # This is a one-shot text generation: the prompt already carries the context.
 # Claude Code can still try a denied tool and spend the single turn before it
@@ -80,100 +71,17 @@ _SUPPORTED_REASONING_MODES: tuple[ReasoningMode, ...] = (
     "max",
 )
 
-# Subscription seats are rate limited per account and each call is a full CLI
-# process. Serializing turns a 68-page wiki into an hour; too much concurrency
-# trips the account limit and fails the run. 4 matches the ceiling init applies
-# to the other CLI-backed providers.
-#
-# The env override is a true override, not a clamp: it can raise the fan-out
-# above 4 as well as lower it. Deliberate -- a Max seat can take more than a Pro
-# one, and only the operator knows which they have -- but it does mean 4 is a
-# default rather than an enforced cap.
-_DEFAULT_CONCURRENCY = 4
-_CONCURRENCY_ENV = "REPOWISE_CLAUDE_CLI_CONCURRENCY"
-
-_NOT_FOUND_MESSAGE = (
-    "Claude Code CLI not found. Install it from https://claude.com/claude-code, "
-    "then run 'claude login'."
-)
-
-
-async def _close_subprocess_transport(proc: asyncio.subprocess.Process) -> None:
-    """Close asyncio's subprocess transport before the event loop shuts down."""
-
-    transport = getattr(proc, "_transport", None)
-    close = getattr(transport, "close", None)
-    if not callable(close):
-        return
-    with contextlib.suppress(Exception):
-        close()
-    await asyncio.sleep(0)
-
-
-def _resolve_claude_executable() -> str | None:
-    return shutil.which("claude")
-
-
-def _validate_model_name(model: str) -> None:
-    if not _MODEL_NAME_RE.match(model):
-        raise ProviderError(
-            "claude_cli",
-            f"Invalid model name {model!r}. Model names may only contain "
-            "alphanumeric characters, dots, hyphens, underscores, and forward slashes.",
-        )
-
 
 def _normalize_model(model: str | None) -> str:
-    """Return the native Claude model slug for *model*.
-
-    Accepts the persisted ``claude_cli/<slug>`` label as well as a bare slug, so
-    a value read back out of config.yaml round-trips.
-    """
-    if not model:
-        return _DEFAULT_MODEL
-    if model in (_LABEL_PREFIX.rstrip("/"), f"{_LABEL_PREFIX}default"):
-        return _DEFAULT_MODEL
-    if model.startswith(_LABEL_PREFIX):
-        return model.removeprefix(_LABEL_PREFIX) or _DEFAULT_MODEL
-    return model
+    return normalize_model(model, "claude_cli", _DEFAULT_MODEL) or _DEFAULT_MODEL
 
 
 def _model_label(native_model: str) -> str:
-    """Return the persisted attribution label for a Claude CLI model.
-
-    Prefixed so cost estimation prices it at zero (a subscription, not API
-    spend) and so a page records which path produced it.
-    """
-    return f"{_LABEL_PREFIX}{native_model}"
+    return model_label(native_model, "claude_cli")
 
 
-def _resolve_concurrency() -> int:
-    raw = os.environ.get(_CONCURRENCY_ENV, "").strip()
-    if not raw:
-        return _DEFAULT_CONCURRENCY
-    try:
-        value = int(raw)
-    except ValueError:
-        log.warning("claude_cli.concurrency.invalid", value=raw, using=_DEFAULT_CONCURRENCY)
-        return _DEFAULT_CONCURRENCY
-    return max(1, value)
-
-
-def _tail(text: str, max_chars: int = 2_000) -> str:
-    text = text.strip()
-    if len(text) <= max_chars:
-        return text
-    return text[-max_chars:]
-
-
-def _error_message(stderr: str, stdout: str, returncode: int) -> str:
-    for candidate in (_tail(stderr), _tail(stdout)):
-        if not candidate:
-            continue
-        if candidate.lstrip().startswith(("{", "[")):
-            continue
-        return candidate
-    return f"claude -p exited with {returncode}"
+def _is_failure(payload: dict[str, Any]) -> bool:
+    return bool(payload.get("is_error")) or payload.get("subtype") != "success"
 
 
 def _payload_failure(payload: dict[str, Any]) -> tuple[str, int | None]:
@@ -185,7 +93,7 @@ def _payload_failure(payload: dict[str, Any]) -> tuple[str, int | None]:
     detail = raw_status or payload.get("subtype") or "unknown error"
     result_text = payload.get("result")
     if isinstance(result_text, str) and result_text.strip():
-        detail = f"{detail}: {_tail(result_text, max_chars=500)}"
+        detail = f"{detail}: {tail(result_text, max_chars=500)}"
     return f"claude -p reported failure ({detail}).", status_code
 
 
@@ -215,27 +123,29 @@ def _parse_result(stdout: str) -> dict[str, Any]:
 
     raise ProviderError(
         "claude_cli",
-        f"could not parse claude -p JSON output: {_tail(text, max_chars=500)}",
+        f"could not parse claude -p JSON output: {tail(text, max_chars=500)}",
     )
 
 
-class ClaudeCliProvider(BaseProvider):
+class ClaudeCliProvider(AgentCliProvider):
     """LLM provider backed by ``claude -p`` (Claude Code headless mode).
 
     Args:
-        model: Claude model slug (e.g. ``claude-haiku-4-5``,
+        model: Claude model slug (e.g. ``claude-haiku-5-5``,
             ``claude-sonnet-4-6``). Persisted labels like
-            ``claude_cli/claude-haiku-4-5`` are accepted and normalized.
+            ``claude_cli/claude-haiku-5-5`` are accepted and normalized.
         rate_limiter: Accepted for interface consistency; the provider also
             bounds its own subprocess fan-out.
     """
 
-    # A process spawn plus a full CLI turn: the floor is tens of seconds even for
-    # a short prompt, so an interactive caller must budget in minutes or it
-    # cancels every call it makes (#1119). Stays under _EXEC_TIMEOUT_SECONDS so
-    # the caller gives up before the subprocess does and the error names the real
-    # cause.
-    interactive_timeout_s: float = 180.0
+    provider_name = "claude_cli"
+    agent_slug = "claude_code"
+    command_label = "claude -p"
+    concurrency_env = "REPOWISE_CLAUDE_CLI_CONCURRENCY"
+    default_model = _DEFAULT_MODEL
+    # Booked under the prefixed label, which prices a seat at $0.00 while
+    # ``repowise costs`` still shows the run's token volume (#2267).
+    records_cost = True
 
     def __init__(
         self,
@@ -243,81 +153,34 @@ class ClaudeCliProvider(BaseProvider):
         rate_limiter: RateLimiter | None = None,
         **_ignored: Any,
     ) -> None:
-        claude_cmd = _resolve_claude_executable()
-        if not claude_cmd:
-            raise ProviderError("claude_cli", _NOT_FOUND_MESSAGE)
-        self._claude_cmd = claude_cmd
-        self._model = _normalize_model(model)
-        _validate_model_name(self._model)
-        self._rate_limiter = rate_limiter
-        self._semaphore: asyncio.Semaphore | None = None
-        self._semaphore_loop: asyncio.AbstractEventLoop | None = None
+        # Swallows api_key/base_url a config overlay may pass; claude_cli uses neither.
+        super().__init__(model, rate_limiter=rate_limiter)
 
-    @property
-    def provider_name(self) -> str:
-        return "claude_cli"
-
-    @property
-    def model_name(self) -> str:
-        return _model_label(self._model)
+    def exec_timeout_seconds(self) -> float:
+        return _EXEC_TIMEOUT_SECONDS  # a module global, so tests can patch it
 
     def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
         return _SUPPORTED_REASONING_MODES
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
-        # The CLI has no machine-readable model catalog to query, so this is a
-        # curated list rather than discovery.
-        return (
+        # The CLI has no machine-readable model catalog, so this is curated.
+        return tuple(
             ProviderModelOption(
-                model=_model_label("claude-haiku-4-5"),
-                label="claude-haiku-4-5",
+                model=_model_label(slug),
+                label=slug,
                 reasoning_modes=_SUPPORTED_REASONING_MODES,
-                recommended=True,
+                recommended=recommended,
                 source="fallback",
-                notes="fastest; ample for doc pages",
-            ),
-            ProviderModelOption(
-                model=_model_label("claude-sonnet-4-6"),
-                label="claude-sonnet-4-6",
-                reasoning_modes=_SUPPORTED_REASONING_MODES,
-                source="fallback",
-                notes="better prose, slower",
-            ),
-            ProviderModelOption(
-                model=_model_label("claude-opus-4-6"),
-                label="claude-opus-4-6",
-                reasoning_modes=_SUPPORTED_REASONING_MODES,
-                source="fallback",
-                notes="highest quality; heaviest on subscription limits",
-            ),
+                notes=notes,
+            )
+            for slug, recommended, notes in (
+                ("claude-haiku-5-5", True, "fastest; ample for doc pages"),
+                ("claude-sonnet-4-6", False, "better prose, slower"),
+                ("claude-opus-4-6", False, "highest quality; heaviest on subscription limits"),
+            )
         )
 
-    def _get_semaphore(self) -> asyncio.Semaphore:
-        loop = asyncio.get_running_loop()
-        if self._semaphore_loop is not loop:
-            self._semaphore = asyncio.Semaphore(_resolve_concurrency())
-            self._semaphore_loop = loop
-        return self._semaphore  # type: ignore[return-value]
-
-    def _build_command(
-        self,
-        system_prompt: str,
-        *,
-        reasoning: ReasoningMode = "auto",
-    ) -> list[str]:
-        cmd = [
-            self._claude_cmd,
-            "-p",
-            "--output-format",
-            "json",
-            "--model",
-            self._model,
-            "--max-turns",
-            "1",
-            "--strict-mcp-config",
-            "--tools",
-            "",
-        ]
+    def build_command(self, system_prompt: str, reasoning: ReasoningMode) -> list[str]:
         prompt = system_prompt.strip()
         prompt = (
             f"{prompt}\n\n{_TOOLLESS_SYSTEM_INSTRUCTION}"
@@ -325,10 +188,22 @@ class ClaudeCliProvider(BaseProvider):
             else _TOOLLESS_SYSTEM_INSTRUCTION
         )
         # --system-prompt replaces Claude Code's agent preamble rather than
-        # appending to it: repowise's prompt is the whole instruction set, and
-        # the coding-agent framing only competes with it.
-        cmd.extend(["--system-prompt", prompt])
-
+        # appending to it: repowise's prompt is the whole instruction set.
+        cmd = [
+            self._executable,
+            "-p",
+            "--output-format",
+            "json",
+            "--model",
+            str(self._model),
+            "--max-turns",
+            "1",
+            "--strict-mcp-config",
+            "--tools",
+            "",
+            "--system-prompt",
+            prompt,
+        ]
         mode = normalize_reasoning(reasoning)
         if mode in _SUPPORTED_REASONING_MODES[1:]:
             cmd.extend(["--effort", mode])
@@ -337,88 +212,26 @@ class ClaudeCliProvider(BaseProvider):
             log.warning("claude_cli.reasoning.unsupported", requested=mode, using="auto")
         return cmd
 
-    async def generate(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        max_tokens: int = 4096,
-        temperature: float = 0.3,
-        request_id: str | None = None,
-        reasoning: ReasoningMode = "auto",
-        cache_hints: tuple[CacheHint, ...] = (),
-    ) -> GeneratedResponse:
-        # temperature and max_tokens have no CLI equivalent. The base-class
-        # contract says to clip rather than raise, so they are accepted and
-        # dropped.
-        if self._rate_limiter:
-            await self._rate_limiter.acquire(estimated_tokens=max_tokens)
+    @contextlib.contextmanager
+    def working_dir(self) -> Iterator[str]:
+        # One directory per call avoids both CLAUDE.md discovery and state
+        # leaking between concurrent pages; it is removed however the call ends.
+        with tempfile.TemporaryDirectory(prefix="repowise-claude-cli-") as scratch_dir:
+            yield str(Path(scratch_dir).resolve())
 
-        cmd = self._build_command(system_prompt, reasoning=reasoning)
-
-        log.debug("claude_cli.generate.start", model=self.model_name, request_id=request_id)
-
-        async with self._get_semaphore():
-            # One directory per call avoids both CLAUDE.md discovery and state
-            # leaking between concurrent pages. TemporaryDirectory removes it
-            # after success, failure, timeout, or cancellation.
-            with tempfile.TemporaryDirectory(prefix="repowise-claude-cli-") as scratch_dir:
-                cwd = str(Path(scratch_dir).resolve())
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        *cmd,
-                        stdin=asyncio.subprocess.PIPE,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=cwd,
-                    )
-                except FileNotFoundError as exc:
-                    raise ProviderError("claude_cli", _NOT_FOUND_MESSAGE) from exc
-
-                try:
-                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                        proc.communicate(user_prompt.encode("utf-8")),
-                        timeout=_EXEC_TIMEOUT_SECONDS,
-                    )
-                except asyncio.CancelledError:
-                    with contextlib.suppress(ProcessLookupError):
-                        proc.kill()
-                    with contextlib.suppress(ProcessLookupError):
-                        await proc.wait()
-                    raise
-                except TimeoutError as exc:
-                    with contextlib.suppress(ProcessLookupError):
-                        proc.kill()
-                    with contextlib.suppress(ProcessLookupError):
-                        await proc.wait()
-                    raise ProviderError(
-                        "claude_cli",
-                        f"claude -p timed out after {_EXEC_TIMEOUT_SECONDS} seconds.",
-                    ) from exc
-                finally:
-                    await _close_subprocess_transport(proc)
-
-        stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-        stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-
+    def exit_error(self, returncode: int | None, stdout: str, stderr: str) -> ProviderError:
+        # API failures arrive as JSON on stdout, often with stderr empty.
         payload: dict[str, Any] | None = None
         with contextlib.suppress(ProviderError):
             payload = _parse_result(stdout)
+        if payload is not None and _is_failure(payload):
+            message, status_code = _payload_failure(payload)
+            return ProviderError("claude_cli", message, status_code=status_code)
+        return ProviderError("claude_cli", self.error_message(stderr, stdout, returncode))
 
-        if proc.returncode != 0:
-            if payload is not None and (
-                payload.get("is_error") or payload.get("subtype") != "success"
-            ):
-                message, status_code = _payload_failure(payload)
-                raise ProviderError("claude_cli", message, status_code=status_code)
-            raise ProviderError(
-                "claude_cli",
-                _error_message(stderr, stdout, proc.returncode),
-            )
-
-        if payload is None:
-            payload = _parse_result(stdout)
-
-        if payload.get("is_error") or payload.get("subtype") != "success":
+    def parse_output(self, stdout: str, stderr: str) -> GeneratedResponse:
+        payload = _parse_result(stdout)
+        if _is_failure(payload):
             message, status_code = _payload_failure(payload)
             raise ProviderError("claude_cli", message, status_code=status_code)
 
@@ -428,34 +241,18 @@ class ClaudeCliProvider(BaseProvider):
 
         raw_usage = payload.get("usage")
         usage = raw_usage if isinstance(raw_usage, dict) else {}
-        # Claude Code reports only the *uncached remainder* of the prompt as
-        # ``input_tokens``. A page prompt is large and its stable prefix is
-        # cached, so the bulk of it arrives as a cache write (the first page of
-        # a type) or a cache read (every later page of that type). Persisting
-        # this field alone recorded ``input_tokens=2`` against a ~20k-token
-        # page, which is what made ``repowise status`` sum to zero for a whole
-        # wiki of claude_cli pages (#2267).
+        # Claude Code reports only the uncached remainder as ``input_tokens``;
+        # a page's stable prefix arrives as a cache write or a cache read. The
+        # three are disjoint, so their sum is the prompt total the rest of the
+        # codebase means by ``input_tokens`` (#2267). ``cached_tokens`` stays
+        # the read half.
         uncached_input_tokens = int(usage.get("input_tokens", 0) or 0)
         output_tokens = int(usage.get("output_tokens", 0) or 0)
-        # The read half is the "served from cache" number repowise reports.
         cached_tokens = int(usage.get("cache_read_input_tokens", 0) or 0)
         cache_creation_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
-        # The three are disjoint (a prompt token is sent uncached, read from the
-        # cache, or written to it), so their sum is the prompt total the rest of
-        # the codebase means by ``input_tokens``. ``cached_tokens`` stays the
-        # read half, separately, exactly as the provider docs describe.
         input_tokens = uncached_input_tokens + cached_tokens + cache_creation_tokens
 
         stop_reason, provider_stop_reason = normalize_stop_reason(payload.get("stop_reason"))
-
-        log.debug(
-            "claude_cli.generate.done",
-            input_tokens=input_tokens,
-            uncached_input_tokens=uncached_input_tokens,
-            output_tokens=output_tokens,
-            cached_tokens=cached_tokens,
-            request_id=request_id,
-        )
 
         usage_payload = {
             **usage,
@@ -464,16 +261,15 @@ class ClaudeCliProvider(BaseProvider):
             "input_tokens": input_tokens,
             "uncached_input_tokens": uncached_input_tokens,
             "cache_creation_input_tokens": cache_creation_tokens,
-            # Recorded for auditing only. Cost is priced at zero in the cost
-            # table: this is subscription usage, not API spend.
+            # Auditing only: the cost table prices subscription usage at zero.
             "reported_cost_usd": payload.get("total_cost_usd"),
             "num_turns": payload.get("num_turns"),
-            "stderr": _tail(stderr, max_chars=1_000) if stderr.strip() else "",
+            "stderr": tail(stderr, 1_000),
         }
         if not usage:
             usage_payload["estimated"] = True
 
-        response = GeneratedResponse(
+        return GeneratedResponse(
             content=content,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -482,27 +278,3 @@ class ClaudeCliProvider(BaseProvider):
             stop_reason=stop_reason,
             provider_stop_reason=provider_stop_reason,
         )
-
-        tracker = getattr(self, "_cost_tracker", None)
-        if tracker is not None:
-            # Booked under the prefixed label so the ledger prices the call at
-            # $0.00 (``claude_cli/`` is a zero-cost prefix: a seat is not API
-            # spend) while ``repowise costs`` still shows the run's token
-            # volume. Without this the provider wrote no ``llm_costs`` row at
-            # all and ``repowise costs`` reported "No cost records found" for a
-            # whole claude_cli wiki (#2267).
-            #
-            # Awaited inline rather than fired off as a detached task: a
-            # fire-and-forget write can still be in flight when the event loop
-            # is torn down after generation. ``record()`` swallows its own
-            # persistence errors, so generation is unaffected either way.
-            with contextlib.suppress(Exception):
-                await tracker.record(
-                    model=self.model_name,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    operation=tracker.operation,
-                    file_path=None,
-                )
-
-        return response

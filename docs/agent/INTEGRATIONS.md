@@ -10,38 +10,47 @@ every breadth claim in this space gets wrong.
 ## Tiers
 
 The tier is **derived from the code, never declared**. A descriptor reaches
-Full only by naming both a hook adapter and a transcript adapter, so no
-document can claim a depth the integration does not have.
+Full only by naming both a hook adapter and a transcript adapter, and Good
+only by wiring instructions or skills beside MCP, so no document can claim
+a depth the integration does not have.
 
 - **Full.** MCP tools, a managed instructions file, skills, slash commands, hook-level interception of tool calls, and transcript mining after the fact. Every surface repowise has.
-- **Good.** MCP tools, and a managed instructions file or skills where the host reads them. **No hook-level interception and no transcript mining.** The agent can ask repowise questions; repowise cannot see or annotate what the agent does in between.
+- **Good.** MCP tools plus a managed instructions file or skills, so the agent is told when to reach for them. **No transcript mining, and hooks only where the matrix says so.** The agent can ask repowise questions; repowise sees little or nothing of what it does in between.
+- **Basic.** repowise writes the MCP server config and nothing else. The tools are there; no instructions file or skill tells the agent when to use them.
 - **Paste-config.** `repowise agents print-config <id>` emits the MCP server snippet and we write nothing. Zero code and zero maintenance per host.
 
 ## The matrix
 
 `Yes` means repowise wires it. `Plugin` means the host's own plugin ships
 it and repowise does not write it. `No` means the surface does not exist
-for that agent.
+for that agent. `Indexing` is `Yes` when the agent's own CLI can run as the
+LLM that writes the index, selected by its provider id (`claude_cli`, for
+example). It is separate from the tier: it says nothing about the session.
 
-| Agent | Tier | MCP | Hooks | Skills | Commands | Instructions | Transcripts |
-|---|---|---|---|---|---|---|---|
-| [Claude Code](https://docs.claude.com/en/docs/claude-code) | Full | Yes | Yes | Plugin | Plugin | Yes | Yes |
-| [Codex CLI](https://developers.openai.com/codex/cli) | Full | Yes | Yes | Plugin | Yes | Yes | Yes |
-| [VS Code](https://code.visualstudio.com/docs/copilot/chat/mcp-servers) | Good | Yes | No | No | No | No | No |
-| [Cursor](https://cursor.com/docs/context/mcp) | Good | Yes | No | No | No | Yes | No |
-| [OpenCode](https://opencode.ai/docs/mcp-servers/) | Good | Yes | No | No | No | Yes | No |
-| [Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | Good | Yes | No | No | No | Yes | No |
+| Agent | Tier | MCP | Hooks | Skills | Commands | Instructions | Transcripts | Indexing |
+|---|---|---|---|---|---|---|---|---|
+| [Claude Code](https://docs.claude.com/en/docs/claude-code) | Full | Yes | Yes | Plugin | Plugin | Yes | Yes | Yes |
+| [Codex CLI](https://developers.openai.com/codex/cli) | Full | Yes | Yes | Plugin | Yes | Yes | Yes | Yes |
+| [VS Code](https://code.visualstudio.com/docs/copilot/chat/mcp-servers) | Good | Yes | No | No | No | Yes | No | No |
+| [Cursor](https://cursor.com/docs/context/mcp) | Good | Yes | Yes | No | No | Yes | No | No |
+| [OpenCode](https://opencode.ai/docs/mcp-servers/) | Good | Yes | No | No | No | Yes | No | Yes |
+| [Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | Good | Yes | No | No | No | Yes | No | No |
+| [GitHub Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) | Good | Yes | No | No | No | Yes | No | No |
+| [Kiro](https://kiro.dev/docs/mcp/configuration) | Good | Yes | No | No | No | Yes | No | No |
 
-Target ids for `--target=`: `claude-code`, `codex`, `vscode`, `cursor`, `opencode`, `hermes`.
+Target ids for `--target=`: `claude-code`, `codex`, `vscode`, `cursor`, `opencode`, `hermes`, `copilot`, `kiro`.
 
 ### What Good tier does not include
 
-VS Code, Cursor, OpenCode and Hermes sit at Good, and the honest version of that is worth stating
+VS Code, Cursor, OpenCode, Hermes, GitHub Copilot CLI and Kiro sit at Good, and the honest version of that is worth stating
 plainly. These agents get the MCP tools and the config repowise writes.
 They do **not** get hook-level interception: repowise never sees a tool
 call before it runs, never rewrites a noisy command, and never annotates
 a result afterwards. Nor is there transcript mining, so nothing learns
 from the session after it ends.
+
+The one exception is hooks: Cursor runs the distill command-rewrite hook,
+so noisy commands are rewritten there. Transcript mining is still absent.
 
 That is a real integration and it is most of the value. It is not the
 same product Full-tier agents get, and breadth that overclaims depth is
@@ -56,7 +65,7 @@ the server entry and paste it into whatever config that host reads:
 repowise agents print-config claude-code   # prints, writes nothing
 ```
 
-Ask for the target id whose host is closest to yours rather than editing a
+Ask for the target id whose host is closest to yours instead of editing a
 snippet by hand. The shapes genuinely differ, and not only in their wrapper:
 hosts disagree about the top-level key, about whether each entry carries a
 `type` field, about whether the invocation is one array or a command plus a
@@ -83,29 +92,28 @@ Per-tool detail: [MCP_TOOLS.md](MCP_TOOLS.md).
 
 ## Adding an agent
 
-**Adding an agent takes one descriptor file and one registry line.**
+The step-by-step recipes, including indexing backends and hook and
+transcript adapters, are in
+[docs/architecture/agent-platform.md](../architecture/agent-platform.md).
+In short, an integration target is:
 
-1. Write `packages/cli/src/repowise/cli/agent_targets/targets/<id>.py`
+1. An `AgentIdentity` in
+   [`identity.py`](../../packages/core/src/repowise/core/agents/identity.py).
+2. A descriptor module in `packages/cli/src/repowise/cli/agent_targets/targets/`
    exporting a `TARGET` that satisfies the `AgentTarget` protocol in
    [`types.py`](../../packages/cli/src/repowise/cli/agent_targets/types.py).
-   `vscode.py` is the smallest working example, at one install method and
-   one config file.
-2. Add one line to `_TARGET_MODULES` in
+3. One line in `_TARGET_MODULES` in
    [`registry.py`](../../packages/cli/src/repowise/cli/agent_targets/registry.py).
-   Order there is the order agents appear in prompts, in `--target=all` and
-   in listings, so keep it stable.
-3. Run `python scripts/gen_agent_matrix.py` to add the row here.
+4. A README badge under the tier `derive_tier` gives it, checked by
+   `tests/unit/cli/test_agent_matrix.py`.
+5. `python scripts/gen_agent_matrix.py` to add the row here.
 
-There is no third file for anything derived. The tier, this matrix and the
-`repowise agents` listing all read the descriptor, and the contract tests in
-`tests/unit/cli/test_agent_targets.py` are parameterized over the registry,
-so a new target inherits them.
-
-The README badge rows are the exception: a brand colour and a logo per agent
-are not derivable, and the README is not generated, so a new agent needs a
-badge added by hand and the count above them updated. That is checked rather
-than trusted. `tests/unit/cli/test_agent_matrix.py` fails when the badge rows
-and the registry disagree, and names what to add.
+An indexing backend is its own module in
+`packages/core/src/repowise/core/providers/llm/` subclassing `AgentCliProvider`,
+a `ProviderSpec` in
+[`specs.py`](../../packages/core/src/repowise/core/providers/llm/specs.py),
+and one `Backend` entry in
+`tests/unit/test_providers/test_agent_cli_contract.py`.
 
 Declare only what the agent genuinely has. `derive_tier` reads the adapter
 names, so a descriptor that names a hook adapter it has not implemented

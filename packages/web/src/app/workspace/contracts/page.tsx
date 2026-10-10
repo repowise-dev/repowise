@@ -1,15 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Link2 } from "lucide-react";
+import { getTranslations } from "next-intl/server";
 import type { ExtractionDiagnostics } from "@repowise-dev/api-client/types";
 import { PageShell } from "@repowise-dev/ui/shared";
 import { PageLede } from "@repowise-dev/ui/shared/page-lede";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
-import {
-  groupOrphanProviders,
-  unmatchedReasonCopy,
-} from "@repowise-dev/ui/workspace/contract-facts";
+import { groupOrphanProviders } from "@repowise-dev/ui/workspace/contract-facts";
 import { MAX_PROMPT_ROWS } from "@repowise-dev/ui/workspace/contract-ai-prompt";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import {
@@ -25,9 +23,15 @@ import { ContractsTable } from "./contracts-table";
 import { LinksSection } from "./links-table";
 import { NeedsAttention } from "./needs-attention";
 
-export const metadata: Metadata = { title: "Contracts" };
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("contracts");
+  return { title: t("title") };
+}
 
 export const revalidate = 30;
+
+/** The minimal translator shape the copy helpers below need; next-intl's `t` fits. */
+type Translator = (key: string, values?: Record<string, string | number>) => string;
 
 /** Rows per page of the full list. The server caps a page at 1,000. */
 const PAGE_SIZE = 100;
@@ -59,6 +63,7 @@ type Props = {
  * filter, so a deep link never lands on a list narrowed by accident.
  */
 export default async function ContractsPage({ searchParams }: Props) {
+  const t = await getTranslations("contracts");
   const sp = await searchParams;
   const deepLink =
     sp.contract && sp.repo && sp.file
@@ -114,67 +119,60 @@ export default async function ContractsPage({ searchParams }: Props) {
   // The lede carries matched links, so the ribbon does not repeat it.
   const ribbon: RibbonStat[] = [
     {
-      label: "Providers",
+      label: t("ribbon.providers"),
       value: diagnostics ? formatNumber(diagnostics.total_providers) : "",
-      sub: "routes, tables and exports published",
+      sub: t("ribbon.providersSub"),
     },
     {
-      label: "Consumers",
+      label: t("ribbon.consumers"),
       value: diagnostics ? formatNumber(diagnostics.total_consumers) : "",
-      sub: "call sites resolved to a contract",
+      sub: t("ribbon.consumersSub"),
     },
     {
-      label: "Unmatched consumers",
+      label: t("ribbon.unmatched"),
       value: diagnostics ? formatNumber(diagnostics.unmatched_consumers.length) : "",
-      sub: unmatchedReasonSub(diagnostics),
+      sub: unmatchedReasonSub(t, diagnostics),
     },
     {
-      label: "Providers with no caller",
+      label: t("ribbon.orphans"),
       value: diagnostics ? formatNumber(diagnostics.orphan_providers.length) : "",
-      sub: "in this workspace; not the same as unused",
+      sub: t("ribbon.orphansSub"),
     },
     {
       // Extraction reporting on its own recall: the denominator is calls a
       // dialect located, so it says nothing about calls nothing recognised.
-      label: "HTTP calls resolved",
+      label: t("ribbon.httpResolved"),
       value:
         diagnostics?.http_consumer_coverage != null
           ? `${Math.floor(diagnostics.http_consumer_coverage * 100)}%`
           : "",
       sub: diagnostics?.http_consumers_unresolved
-        ? `${formatNumber(diagnostics.http_consumers_unresolved)} located but not resolvable`
-        : "of the client calls extraction located",
+        ? t("ribbon.httpUnresolved", {
+            count: formatNumber(diagnostics.http_consumers_unresolved),
+          })
+        : t("ribbon.httpSub"),
     },
   ];
 
   return (
     <PageShell
-      title="Contracts"
+      title={t("title")}
       icon={<Link2 className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
-      description="Routes, tables and exports one repository publishes and another consumes."
+      description={t("description")}
     >
       <PageLede
-        label="Matched links"
-        value={diagnostics ? formatNumber(diagnostics.total_links) : "Unknown"}
-        unit="provider to consumer"
+        label={t("links.title")}
+        value={diagnostics ? formatNumber(diagnostics.total_links) : t("ledeUnknown")}
+        unit={t("ledeUnit")}
         layout="beside"
       >
         {diagnostics ? (
           <>
-            <p>
-              Each link is a call site resolved to the route, table or export that serves it, in
-              another repository or service.
-            </p>
-            <p>
-              It is a match on the path or name, not proof both sides share a schema. Calls that
-              matched nothing and providers nothing calls are under Needs attention.
-            </p>
+            <p>{t("ledeLinkLine1")}</p>
+            <p>{t("ledeLinkLine2", { attention: t("attention.title") })}</p>
           </>
         ) : (
-          <p>
-            Extraction diagnostics are not available, so the totals cannot be shown. Run a
-            workspace sync to rebuild them.
-          </p>
+          <p>{t("ledeNoDiagnostics")}</p>
         )}
       </PageLede>
 
@@ -184,7 +182,7 @@ export default async function ContractsPage({ searchParams }: Props) {
         <BreakingChangesSection repoIds={repoIds} />
 
         {diagnostics ? (
-          <OverviewSection title="Needs attention">
+          <OverviewSection title={t("attention.title")}>
             <NeedsAttention
               unmatched={diagnostics.unmatched_consumers}
               // Counts plus a prompt's worth of rows per group, not all 1,000+.
@@ -197,32 +195,31 @@ export default async function ContractsPage({ searchParams }: Props) {
 
         <OverviewSection
           id="all-contracts"
-          title="All detected contracts"
-          description={data ? listDescription(total, workspaceTotal, filtered) : undefined}
+          title={t("list.title")}
+          description={data ? listDescription(t, total, workspaceTotal, filtered) : undefined}
         >
           <ContractListControls filters={filters} repos={repos} byType={byType} />
           {rows.length === 0 ? (
             // One quiet sentence, like every other state with nothing in it.
             <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
-              {!data ? (
-                "The contract list could not be loaded. The API may be restarting; reload in a moment."
-              ) : total > 0 ? (
-                <>
-                  Page {formatNumber(page)} is past the end of this list, which has{" "}
-                  {formatNumber(total)} {total === 1 ? "contract" : "contracts"}.{" "}
-                  <Link
-                    href={contractsListHref({ ...filters, page: 1 })}
-                    className="text-[var(--color-accent-primary)] hover:underline"
-                  >
-                    Go to the first page
-                  </Link>
-                  .
-                </>
-              ) : filtered ? (
-                "No contracts match these filters. Clear the search or a filter to widen the list."
-              ) : (
-                "No contracts detected. They are found during a workspace sync, by reading the routes each repository serves and the calls the others make."
-              )}
+              {!data
+                ? t("list.loadFailed")
+                : total > 0
+                  ? t.rich("list.pagePastEnd", {
+                      page: formatNumber(page),
+                      total,
+                      first: (chunks) => (
+                        <Link
+                          href={contractsListHref({ ...filters, page: 1 })}
+                          className="text-[var(--color-accent-primary)] hover:underline"
+                        >
+                          {chunks}
+                        </Link>
+                      ),
+                    })
+                  : filtered
+                    ? t("list.noMatch")
+                    : t("list.noneDetected")}
             </p>
           ) : (
             <>
@@ -240,36 +237,59 @@ export default async function ContractsPage({ searchParams }: Props) {
       </ContractDrawerProvider>
 
       <p className="text-xs text-[var(--color-text-tertiary)]">
-        Contracts are matched on path. Two routes that share a path are one contract here, so a
-        repository can appear against a contract it declares for its own use.{" "}
-        <Link
-          href="/workspace/system-map"
-          className="text-[var(--color-accent-primary)] hover:underline"
-        >
-          See how they connect
-        </Link>
-        .
+        {t.rich("footer.note", {
+          link: (chunks) => (
+            <Link
+              href="/workspace/system-map"
+              className="text-[var(--color-accent-primary)] hover:underline"
+            >
+              {chunks}
+            </Link>
+          ),
+        })}
       </p>
     </PageShell>
   );
 }
 
 /** Say exactly what the list holds against the workspace it came from. */
-function listDescription(total: number, workspaceTotal: number | null, filtered: boolean): string {
-  const noun = total === 1 ? "contract" : "contracts";
+function listDescription(
+  t: Translator,
+  total: number,
+  workspaceTotal: number | null,
+  filtered: boolean,
+): string {
   if (!filtered) {
-    return `All ${formatNumber(total)} ${noun} detected across the workspace, ${PAGE_SIZE} to a page. One contract can be declared in several places, so a name may repeat.`;
+    return t("list.description", { total, pageSize: PAGE_SIZE });
   }
-  const of = workspaceTotal != null ? ` of ${formatNumber(workspaceTotal)}` : "";
-  return `${formatNumber(total)}${of} ${noun} match these filters.`;
+  return workspaceTotal != null
+    ? t("list.filteredOf", { total, workspaceTotal })
+    : t("list.filtered", { total });
 }
 
+/**
+ * The unmatched-reason short labels. The reason codes come from the system
+ * graph; the prose in `@repowise-dev/ui` stays English, so the label the ribbon
+ * shows is named here instead.
+ */
+const REASON_KEYS: Record<string, string> = {
+  no_provider: "reasons.no_provider",
+  unlinked: "reasons.unlinked",
+  internal_only: "reasons.internal_only",
+  external_host: "reasons.external_host",
+};
+
 /** Name why consumers went unmatched, since the count alone invites the wrong read. */
-function unmatchedReasonSub(diagnostics: ExtractionDiagnostics | null): string {
+function unmatchedReasonSub(
+  t: Translator,
+  diagnostics: ExtractionDiagnostics | null,
+): string {
   if (!diagnostics) return "";
   const reasons = Object.entries(diagnostics.unmatched_by_reason ?? {})
     .filter(([, n]) => n > 0)
     .sort((a, b) => b[1] - a[1]);
-  if (reasons.length === 0) return "every consumer matched a provider";
-  return reasons.map(([reason, n]) => `${n} ${unmatchedReasonCopy(reason).short}`).join(", ");
+  if (reasons.length === 0) return t("reasons.everyMatched");
+  return reasons
+    .map(([reason, n]) => `${n} ${t(REASON_KEYS[reason] ?? "reasons.unknown")}`)
+    .join(", ");
 }

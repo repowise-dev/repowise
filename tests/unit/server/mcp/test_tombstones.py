@@ -107,8 +107,11 @@ async def test_search_drops_tombstoned_pages(setup_mcp, session, monkeypatch):
     mcp_mod._vector_store.search = fake_search
     result = await search_codebase("auth service")
     # ``page_id`` is omitted only where ``page_type`` + ``target_path`` rebuild
-    # it; a file page serves ``path`` instead of ``target_path`` and keeps it.
-    ids = [r.get("page_id") or f"{r['page_type']}:{r['target_path']}" for r in result["results"]]
+    # it, or ``path`` on a file page that serves ``path`` instead.
+    ids = [
+        r.get("page_id") or f"{r['page_type']}:{r.get('target_path') or r['path']}"
+        for r in result["results"]
+    ]
     assert "file_page:src/auth/service.py" not in ids
     assert "file_page:src/db/models.py" in ids
 

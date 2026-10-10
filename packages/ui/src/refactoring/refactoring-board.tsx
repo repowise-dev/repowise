@@ -80,11 +80,15 @@ export interface RefactoringBoardServerState {
   confidence: Confidence | null;
   mechanicalOnly: boolean;
   /** The scope asked for: what Fix first would take, or the full inventory. */
-  scope: RefactoringScope;
-  /** The scope the server applied, which `total` counts. */
-  appliedScope: RefactoringScope;
+  scope?: RefactoringScope | undefined;
+  /**
+   * The scope the server applied, which `total` counts. Omit when the host has
+   * no scoped listing: the Scope control is not shown and the list is the full
+   * inventory.
+   */
+  appliedScope?: RefactoringScope | undefined;
   /** Under `fix_first`, what the filtered set leaves out, by reason. */
-  hidden: RefactoringHiddenCounts | null;
+  hidden?: RefactoringHiddenCounts | null | undefined;
   total: number;
   offset: number;
   nextOffset: number | null;
@@ -199,6 +203,7 @@ export function RefactoringBoard({
               opens the same inspector with the full explanation.
             </p>
           </div>
+          {serverState.appliedScope ? (
           <Segmented<RefactoringScope>
             label="Scope"
             value={serverState.appliedScope}
@@ -216,6 +221,7 @@ export function RefactoringBoard({
               { value: "all", label: "Full inventory", hint: "Every open opportunity" },
             ]}
           />
+          ) : null}
         </div>
 
         <div className="flex flex-wrap items-center gap-3">

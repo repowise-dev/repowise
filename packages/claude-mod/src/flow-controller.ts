@@ -47,8 +47,8 @@ export class LensFlow {
   private ticker: ReturnType<typeof setInterval> | undefined;
   private happy: ReturnType<typeof setTimeout> | undefined;
 
-  setReducedMotion(on: boolean): void {
-    this.still = on;
+  setReducedMotion(reduced: boolean): void {
+    this.still = reduced;
   }
 
   /** Another tab is shown, or the pane is gone: nothing of Flow is on screen. */

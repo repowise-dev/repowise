@@ -607,9 +607,7 @@ class OpenCodeTarget:
         as evidence the user has OpenCode would make our own output the reason
         the agent keeps being offered.
         """
-        import shutil
-
-        if shutil.which("opencode") is not None:
+        if IDENTITY.is_installed():
             return True
         return user_config_dir().is_dir()
 

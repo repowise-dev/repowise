@@ -91,6 +91,9 @@ export interface ActionsResponse {
 export interface ActiveProviderSelection {
   provider?: string | null;
   model?: string | null;
+  input_cost_per_1k?: number | null;
+  output_cost_per_1k?: number | null;
+  embedder?: string | null;
 }
 
 export interface AgentPromptResponse {
@@ -1264,6 +1267,13 @@ export interface EgoGraphResponse {
   center_git_meta: GitMetadataResponse | null;
   inbound_count: number;
   outbound_count: number;
+}
+
+/** One registered embedder, as the settings picker renders it. */
+export interface EmbedderEntry {
+  id: string;
+  env_vars?: string[];
+  semantic?: boolean;
 }
 
 /**
@@ -2624,11 +2634,16 @@ export interface ProviderEntry {
   models?: string[];
   default_model?: string | null;
   configured?: boolean;
+  requires_key?: boolean;
+  env_vars?: string[];
+  setup_hint?: string;
 }
 
 export interface ProviderStatusResponse {
   active: ActiveProviderSelection;
   providers?: ProviderEntry[];
+  flag_only_providers?: string[];
+  embedders?: EmbedderEntry[];
 }
 
 /**

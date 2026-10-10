@@ -42,3 +42,9 @@
   (#match? @call.target "^[A-Z]")
 ) @call.site
 
+
+; Handler passed as a JSX attribute value: onClick={handle} / {this.handle}
+(jsx_expression (identifier) @reference.name)
+(jsx_expression (member_expression
+  object: [(identifier) (this)] @reference.receiver
+  property: (property_identifier) @reference.name))

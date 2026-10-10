@@ -562,6 +562,24 @@ class GeminiProvider(BaseProvider):
         yield ChatStreamEvent(type="stop", stop_reason="end_turn")
 
 
+def _strip_unsupported_schema_keys(schema: Any) -> Any:
+    """Recursively drop JSON Schema keys Gemini's ``Schema`` proto lacks.
+
+    Pydantic renders ``dict[str, Any]`` parameters as ``additionalProperties``,
+    which the Gemini API rejects with 400 INVALID_ARGUMENT for the whole
+    request. The key is meaningless for Gemini anyway, so it is removed.
+    """
+    if isinstance(schema, dict):
+        return {
+            key: _strip_unsupported_schema_keys(value)
+            for key, value in schema.items()
+            if key != "additionalProperties"
+        }
+    if isinstance(schema, list):
+        return [_strip_unsupported_schema_keys(item) for item in schema]
+    return schema
+
+
 def _to_gemini_tools(tools: list[dict[str, Any]], genai_types: Any) -> list[Any] | None:
     """Convert OpenAI-format tool definitions to one Gemini ``Tool``."""
     if not tools:
@@ -574,7 +592,7 @@ def _to_gemini_tools(tools: list[dict[str, Any]], genai_types: Any) -> list[Any]
             genai_types.FunctionDeclaration(
                 name=fn["name"],
                 description=fn.get("description", ""),
-                parameters=params if params else None,
+                parameters=_strip_unsupported_schema_keys(params) if params else None,
             )
         )
     return [genai_types.Tool(function_declarations=declarations)]

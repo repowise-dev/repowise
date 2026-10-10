@@ -1,4 +1,6 @@
-import { coverageColor as color } from "./tokens";
+/** Neutral at rest; one restrained colour only for thin coverage. */
+const color = (pct: number) =>
+  pct < 30 ? "bg-[var(--color-error)]/70" : "bg-[var(--color-text-tertiary)]";
 
 export interface CoverageBarProps {
   value: number | null | undefined;

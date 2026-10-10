@@ -125,7 +125,7 @@ differently:
   file's 90-day activity. Authors of each touched file's five strongest
   co-change partners score at half weight. Each suggestion lists the files it
   owns and the co-change files behind it.
-- **`get_risk(changed_files=...)`**: `pr_blast_radius.recommended_reviewers` lists
+- **`get_risk(changed_files=...)`**: `directive.recommended_reviewers` lists
   up to five primary owners of the affected files, ranked by how many of those
   files they own, then by average ownership share.
 

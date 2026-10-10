@@ -40,26 +40,32 @@ prose-to-symbol search useless.
 
 from __future__ import annotations
 
-from typing import Any
+import os
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping
+from typing import Any, NamedTuple
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Page, WikiSymbol
 from repowise.core.test_paths import is_test_path, is_test_related_path
+from repowise.server.mcp_server._graph_files import graph_file_paths, per_index
 from repowise.server.mcp_server._helpers import (
-    LIKE_ESCAPE,
     _get_exclude_spec,
     _get_repo,
-    escape_like,
     is_excluded,
 )
+from repowise.server.mcp_server._hit_symbols import _stem
+from repowise.server.mcp_server._page_paths import PAGELESS_FILE
+from repowise.server.mcp_server._query_terms import STOPWORDS
 from repowise.server.mcp_server._query_terms import content_terms as content_terms
 from repowise.server.mcp_server.tool_search_symbols import (
     _symbol_kind_for_request_kind,
     _symbol_result,
     _tokens,
     _tombstoned_paths,
+    file_path_index,
 )
 
 # Rows pulled per term. Bounded per term so a common word cannot evict the
@@ -86,31 +92,124 @@ _LEAF_NAME_BONUS = 15.0
 # the question; the bare member name alone is deliberately insufficient.
 _GENERIC_MEMBER_NAMES = frozenset({"get", "run", "main"})
 
+# A name built out of the question's words: at least this many of them, making
+# up at least this share of the name's own words. Two common words meeting in
+# one short name is rare even when each word alone is everywhere.
+_NAME_COVER_MIN_WORDS = 2
+_NAME_COVER_MIN_SHARE = 2 / 3
+# A file name the question spells word for word, at least this long, is as
+# specific as a page hit. Two words (``test_matcher``) often name a role, not a topic.
+_FULL_COVER_MIN_WORDS = 3
 
-async def _candidates_for_term(session, repo_id: str, term: str) -> tuple[list[WikiSymbol], bool]:
+
+class _SymbolTextIndex(NamedTuple):
+    """One repo's symbols as plain text, by position, for in-process matching."""
+
+    symbol_ids: tuple[str, ...]
+    names: tuple[str, ...]
+    # Lowercased name, qualified name and path, space-joined (no term has a
+    # space, so none can match across two fields).
+    haystacks: tuple[str, ...]
+    postings: dict[str, tuple[int, ...]]  # name word -> positions whose name has it
+
+
+async def _symbol_text_index(session, repo_id: str) -> _SymbolTextIndex:
+    """Built once per index state; every question after that matches in memory.
+
+    Scanning the symbol table per term with ``LIKE`` cost hundreds of
+    milliseconds a term on a large repo, which made this leg the slowest part
+    of a search. The table only changes with the index.
+    """
+
+    async def build() -> _SymbolTextIndex:
+        res = await session.execute(
+            select(
+                WikiSymbol.symbol_id,
+                WikiSymbol.name,
+                WikiSymbol.qualified_name,
+                WikiSymbol.file_path,
+            ).where(WikiSymbol.repository_id == repo_id)
+        )
+        rows = res.all()
+        postings: dict[str, list[int]] = {}
+        for i, row in enumerate(rows):
+            for word in _name_words(row[1]):
+                postings.setdefault(word, []).append(i)
+        return _SymbolTextIndex(
+            tuple(row[0] for row in rows),
+            tuple(row[1] or "" for row in rows),
+            tuple(f"{row[1] or ''} {row[2] or ''} {row[3] or ''}".lower() for row in rows),
+            {word: tuple(pos) for word, pos in postings.items()},
+        )
+
+    return await per_index(session, repo_id, "prose_symbol_text", build)
+
+
+def _candidates_for_term(index: _SymbolTextIndex, term: str) -> tuple[list[int], bool]:
     """Up to :data:`_PER_TERM_CANDIDATES` symbols whose identity mentions *term*.
 
-    Returns ``(rows, saturated)``. Shorter names first: a term is a larger
+    Returns ``(positions, saturated)``. Shorter names first: a term is a larger
     share of a short name, so ``persist`` identifies ``persist_pages`` far
     more strongly than it identifies ``_persist_symbols_for_changed_files``,
     and the window should not be spent on the latter.
     """
-    esc = escape_like(term)
-    stmt = (
-        select(WikiSymbol)
-        .where(
-            WikiSymbol.repository_id == repo_id,
-            or_(
-                WikiSymbol.name.ilike(f"%{esc}%", escape=LIKE_ESCAPE),
-                WikiSymbol.qualified_name.ilike(f"%{esc}%", escape=LIKE_ESCAPE),
-                WikiSymbol.file_path.ilike(f"%{esc}%", escape=LIKE_ESCAPE),
-            ),
-        )
-        .order_by(func.length(WikiSymbol.name))
-        .limit(_PER_TERM_CANDIDATES)
+    needle = term.lower()
+    hits = [i for i, text in enumerate(index.haystacks) if needle in text]
+    hits.sort(key=lambda i: len(index.names[i]))
+    window = hits[:_PER_TERM_CANDIDATES]
+    return window, len(window) >= _PER_TERM_CANDIDATES
+
+
+def _covered_positions(
+    postings: Mapping[str, Iterable[int]],
+    size: Callable[[int], int],
+    terms: Iterable[str],
+    stem: Callable[[str], str] = _stem,
+) -> Counter[int]:
+    """Positions whose words the query's words mostly spell, with how many they spell.
+
+    ``postings`` maps a word, folded by ``stem``, to the positions carrying it
+    and ``size`` gives a position's own word count (see :func:`_name_covered`).
+    """
+    stems = {stem(t) for t in terms}
+    if len(stems) < _NAME_COVER_MIN_WORDS:
+        return Counter()
+    hits: Counter[int] = Counter()
+    for stem in stems:
+        hits.update(postings.get(stem, ()))
+    return Counter(
+        {
+            i: n
+            for i, n in hits.items()
+            if n >= _NAME_COVER_MIN_WORDS and n >= _NAME_COVER_MIN_SHARE * size(i)
+        }
     )
-    rows = list((await session.execute(stmt)).scalars().all())
-    return rows, len(rows) >= _PER_TERM_CANDIDATES
+
+
+def _name_cover_candidates(index: _SymbolTextIndex, terms: list[str]) -> list[int]:
+    """Symbols whose name the query's words mostly spell (see :func:`_name_covered`).
+
+    The per-term windows rank by name length, so a long name that combines two
+    saturated words (``dynamic`` + ``import``) falls outside both of them. This
+    asks for the combination directly, from the inverted name words.
+    """
+    hits = _covered_positions(index.postings, lambda i: len(_name_words(index.names[i])), terms)
+    covered = sorted(hits, key=lambda i: (-hits[i], len(index.names[i]), index.symbol_ids[i]))
+    return covered[:_PER_TERM_CANDIDATES]
+
+
+def _name_words(name: str | None) -> set[str]:
+    """The stemmed non-stopword words of a symbol's own name."""
+    return {_stem(t) for t in _tokens(name) if t not in STOPWORDS}
+
+
+def _name_covered(row: WikiSymbol, terms: Iterable[str]) -> bool:
+    """Whether the question's words make up most of *row*'s name."""
+    words = _name_words(row.name)
+    hit = words & {_stem(t) for t in terms}
+    return (
+        len(hit) >= _NAME_COVER_MIN_WORDS and len(hit) >= _NAME_COVER_MIN_SHARE * len(words)
+    )
 
 
 def _score(
@@ -158,6 +257,8 @@ def _corroborated(row: WikiSymbol, covered: dict[str, float], saturated: set[str
         return False
     name = (row.name or "").lower()
     informative = {term for term in covered if term not in saturated}
+    if _name_covered(row, set(covered)):
+        return True
     if name in _GENERIC_MEMBER_NAMES:
         return any(term != name for term in informative)
     if name in informative:
@@ -187,18 +288,26 @@ async def search_symbols_by_terms(
 
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-        by_id: dict[str, WikiSymbol] = {}
+        index = await _symbol_text_index(session, repository.id)
         matched: dict[str, set[str]] = {}
         saturated: set[str] = set()
         for term in terms:
-            rows, is_saturated = await _candidates_for_term(session, repository.id, term)
+            window, is_saturated = _candidates_for_term(index, term)
             if is_saturated:
                 saturated.add(term)
-            for row in rows:
-                by_id[row.symbol_id] = row
-                matched.setdefault(row.symbol_id, set()).add(term)
-        if not by_id:
+            for i in window:
+                matched.setdefault(index.symbol_ids[i], set()).add(term)
+        for i in _name_cover_candidates(index, terms):
+            matched.setdefault(index.symbol_ids[i], set())
+        if not matched:
             return []
+        res = await session.execute(
+            select(WikiSymbol).where(
+                WikiSymbol.repository_id == repository.id,
+                WikiSymbol.symbol_id.in_(list(matched)),
+            )
+        )
+        by_id = {row.symbol_id: row for row in res.scalars().all()}
 
         gres = await session.execute(
             select(GraphNode).where(
@@ -232,6 +341,11 @@ async def search_symbols_by_terms(
             for t in matched.get(symbol_id, ())
             if _covers(t, stoks)
         }
+        # Words that together spell most of the name are one signal, not
+        # several common words, so they count in full.
+        if _name_covered(row, terms):
+            words = _name_words(row.name)
+            covered.update({t: 1.0 for t in terms if _stem(t) in words})
         if not _corroborated(row, covered, saturated):
             continue
         scored.append((_score(row, gnode, covered), row))
@@ -246,6 +360,7 @@ async def symbol_backed_pages(
     *,
     max_files: int,
     symbol_limit: int = 20,
+    pageless: bool = False,
 ) -> list[dict]:
     """File pages whose indexed symbols the words of *question* name.
 
@@ -275,38 +390,145 @@ async def symbol_backed_pages(
 
     paths: list[str] = []
     names: dict[str, list[str]] = {}
+    signatures: dict[str, str] = {}
     for hit in symbols:
         path = hit.get("file")
         if not path:
             continue
         if path not in names:
             paths.append(path)
+            signatures[path] = hit.get("signature") or ""
         names.setdefault(path, []).append(hit.get("name") or "")
     paths = paths[:max_files]
     if not paths:
         return []
 
     async with get_session(ctx.session_factory) as session:
-        res = await session.execute(
-            select(Page.id, Page.target_path, Page.title, Page.summary, Page.page_type).where(
-                Page.target_path.in_(paths),
-                Page.page_type == "file_page",
-                Page.freshness_status != "tombstone",
-            )
+        by_path = await _file_pages(session, paths)
+    # Without ``pageless`` a file with no page is dropped: the caller only
+    # ranks pages.
+    out = [
+        by_path.get(p) or _pageless_row(p, signatures[p])
+        for p in paths
+        if p in by_path or pageless
+    ]
+    for row in out:
+        # The names that earned the page its place, for a ranker that would
+        # otherwise judge it on prose that never mentions them.
+        row["symbol_names"] = names[row["target_path"]]
+    return out
+
+
+async def _file_pages(session, paths: list[str]) -> dict[str, dict]:
+    """The live file page of each of *paths* that has one, by path."""
+    res = await session.execute(
+        select(Page.id, Page.target_path, Page.title, Page.summary, Page.page_type).where(
+            Page.target_path.in_(paths),
+            Page.page_type == "file_page",
+            Page.freshness_status != "tombstone",
         )
-        by_path = {
-            row[1]: {
-                "page_id": row[0],
-                "target_path": row[1],
-                "title": row[2] or f"File: {row[1]}",
-                "summary": row[3] or "",
-                "page_type": row[4] or "file_page",
-                # The names that earned the page its place, for a ranker that
-                # would otherwise judge it on prose that never mentions them.
-                "symbol_names": names[row[1]],
-            }
-            for row in res.all()
+    )
+    return {
+        row[1]: {
+            "page_id": row[0],
+            "target_path": row[1],
+            "title": row[2] or f"File: {row[1]}",
+            "summary": row[3] or "",
+            "page_type": row[4] or "file_page",
         }
-    # A symbol whose file has no page cannot be read, so it contributes
-    # nothing and is dropped rather than ranked.
-    return [by_path[p] for p in paths if p in by_path]
+        for row in res.all()
+    }
+
+
+def _pageless_row(path: str, snippet: str) -> dict:
+    """A file row for an indexed file that has no wiki page."""
+    return {
+        "page_id": f"{PAGELESS_FILE}:{path}",
+        "target_path": path,
+        "title": path,
+        "summary": snippet,
+        "page_type": PAGELESS_FILE,
+    }
+
+
+class _FilenameIndex(NamedTuple):
+    """One repo's file names as stemmed words, paged or not, by position."""
+
+    paths: tuple[str, ...]
+    paged: frozenset[str]  # paths with a file page, live or tombstoned
+    sizes: tuple[int, ...]  # how many words each file name has
+    postings: dict[str, tuple[int, ...]]  # file name word -> positions
+
+
+def _fold(word: str) -> str:
+    """:func:`_stem` plus ``-ing`` / ``-ed`` / ``-e``, so ``highlight`` meets
+    ``highlighting`` and ``parse`` meets ``parsed``. File names only: symbol
+    names are matched with the plain stem."""
+    word = _stem(word)
+    for suffix in ("ing", "ed", "e"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+            return word[: -len(suffix)]
+    return word
+
+
+def _filename_words(path: str) -> set[str]:
+    """``src/config/exec-command-highlighting.ts`` -> ``{exec, command, highlight}``.
+
+    The file name only: a directory names a whole area, not the file.
+    """
+    name = os.path.splitext(path.rsplit("/", 1)[-1])[0]
+    return {_fold(t) for t in _tokens(name) if t not in STOPWORDS}
+
+
+async def _filename_index(session, repo_id: str) -> _FilenameIndex:
+    # Read before ``per_index`` takes its lock, since that lock is not reentrant.
+    paged = (await file_path_index(session, repo_id)).paths
+    paths = tuple(sorted(set(paged) | set(await graph_file_paths(session, repo_id))))
+
+    async def build() -> _FilenameIndex:
+        words = [_filename_words(p) for p in paths]
+        postings: dict[str, list[int]] = {}
+        for i, ws in enumerate(words):
+            for w in ws:
+                postings.setdefault(w, []).append(i)
+        return _FilenameIndex(
+            paths,
+            frozenset(paged),
+            tuple(len(ws) for ws in words),
+            {w: tuple(pos) for w, pos in postings.items()},
+        )
+
+    return await per_index(session, repo_id, "prose_filename_words", build)
+
+
+async def filename_backed_pages(ctx: Any, question: str, *, max_files: int) -> list[dict]:
+    """Files whose file name the words of *question* mostly spell, as page rows.
+
+    The same cover rule as symbol names: ``exec command highlighting`` reaches
+    ``exec-command-highlighting.ts``. A file with no page gets a pageless row,
+    and ``full_cover`` says the question spells every word of the name.
+    Most-covered first, then shorter names.
+    """
+    terms = content_terms(question)
+    if not terms or max_files <= 0:
+        return []
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        index = await _filename_index(session, repository.id)
+        hits = _covered_positions(index.postings, index.sizes.__getitem__, terms, _fold)
+        if not hits:
+            return []
+        ranked = sorted(hits, key=lambda i: (-hits[i], index.sizes[i], index.paths[i]))[
+            :max_files
+        ]
+        by_path = await _file_pages(session, [index.paths[i] for i in ranked])
+    rows = []
+    for i in ranked:
+        path = index.paths[i]
+        # A tombstoned page's file is gone, so it gets no pageless row either.
+        if path not in by_path and path in index.paged:
+            continue
+        row = by_path.get(path) or _pageless_row(path, "")
+        row["full_cover"] = hits[i] >= max(index.sizes[i], _FULL_COVER_MIN_WORDS)
+        rows.append(row)
+    return rows

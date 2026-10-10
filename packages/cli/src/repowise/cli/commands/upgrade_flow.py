@@ -854,7 +854,12 @@ def upgrade_to_full(
         if embedder_name and embedder_name != cfg.get("embedder"):
             from repowise.cli.helpers import save_config_partial
 
-            save_config_partial(repo_path, embedder=embedder_name)
+            # Explicit `embedding_model=None`, not a bare `embedder=`: the
+            # embedder just changed, so any model pinned for the old one no
+            # longer describes what this table was built with, and
+            # `save_config_partial` only clears the pin when told the model
+            # changed, not merely because `embedder` was passed (#2627).
+            save_config_partial(repo_path, embedder=embedder_name, embedding_model=None)
 
         elapsed = time.monotonic() - start
         console.print(

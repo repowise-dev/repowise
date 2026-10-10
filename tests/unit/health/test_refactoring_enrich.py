@@ -401,6 +401,8 @@ def test_build_enrichment_provider_auto_detects_kimi(tmp_path, monkeypatch) -> N
         "OPENROUTER_API_KEY",
         "DEEPSEEK_API_KEY",
         "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "OLLAMA_BASE_URL",
         "LITELLM_API_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -422,6 +424,22 @@ def test_build_enrichment_provider_auto_detects_kimi(tmp_path, monkeypatch) -> N
         "name": "kimi",
         "kwargs": {"api_key": "sk-kimi-test"},
     }
+
+
+def test_build_enrichment_provider_runs_a_repo_cwd_cli_in_the_repo(tmp_path, monkeypatch) -> None:
+    """A configured agent CLI that works in the repo's directory is told which repo."""
+    captured = {}
+
+    def fake_get_provider(name, **kwargs):
+        captured.update(kwargs, name=name)
+        return object()
+
+    monkeypatch.setattr("repowise.core.providers.get_provider", fake_get_provider)
+
+    build_enrichment_provider(tmp_path, provider_name="codex_cli")
+
+    assert captured["name"] == "codex_cli"
+    assert captured["repo_path"] == tmp_path
 
 
 def test_validate_extract_method_detects_ccn_drop():

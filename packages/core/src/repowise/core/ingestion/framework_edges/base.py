@@ -95,8 +95,12 @@ def add_symbol_edge(graph: nx.DiGraph, source: str, target: str) -> bool:
         data = graph.nodes.get(node)
         if data is None or data.get("node_type") != "symbol":
             return False
-    if graph.has_edge(source, target):
-        return False
+    existing = graph.get_edge_data(source, target)
+    if existing is not None:
+        # A binding says the target runs, which outranks a bare mention of it.
+        if existing.get("edge_type") != "references":
+            return False
+        graph.remove_edge(source, target)
     graph.add_edge(
         source,
         target,

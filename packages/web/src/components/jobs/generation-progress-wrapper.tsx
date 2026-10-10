@@ -8,6 +8,7 @@ import { cancelJob } from "@/lib/api/jobs";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { computeElapsedMs } from "@/lib/jobs/progress";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { useTranslations } from "next-intl";
 
 interface Props {
   jobId: string;
@@ -25,6 +26,7 @@ interface Props {
 const PENDING_STUCK_THRESHOLD_MS = 30_000;
 
 export function GenerationProgressWrapper({ jobId, repoName, onDone, onRetry, quiet }: Props) {
+  const t = useTranslations("jobs");
   const { job, sse, messages, phase } = useJob(jobId);
   const [elapsed, setElapsed] = useState(0);
   const [actualCost, setActualCost] = useState<number | null>(null);
@@ -53,29 +55,42 @@ export function GenerationProgressWrapper({ jobId, repoName, onDone, onRetry, qu
     if (job?.status === "completed") {
       notifiedRef.current = true;
       if (!quiet) {
-        toast.success(`Documentation updated${repoName ? ` — ${repoName}` : ""}`, {
-          description: `${formatNumber(job.completed_pages)} pages generated`,
-        });
+        toast.success(
+          t("completed", { name: repoName ? ` — ${repoName}` : "" }),
+          {
+            description: t("pagesGenerated", {
+              count: formatNumber(job.completed_pages),
+            }),
+          },
+        );
       }
       onDone?.("completed");
     } else if (job?.status === "failed") {
       notifiedRef.current = true;
       if (!quiet) {
-        toast.error("Generation failed", {
-          description: job.error_message ?? "Unknown error",
+        toast.error(t("failed"), {
+          description: job.error_message ?? t("unknownError"),
         });
       }
       onDone?.("failed");
     } else if (job?.status === "cancelled") {
       notifiedRef.current = true;
       if (!quiet) {
-        toast.info("Job cancelled", {
-          description: "The pipeline was stopped before completion.",
+        toast.info(t("cancelled"), {
+          description: t("cancelledDescription"),
         });
       }
       onDone?.("cancelled");
     }
-  }, [job?.status, job?.completed_pages, job?.error_message, repoName, onDone, quiet]);
+  }, [
+    job?.status,
+    job?.completed_pages,
+    job?.error_message,
+    repoName,
+    onDone,
+    quiet,
+    t,
+  ]);
 
   const isPending = job?.status === "pending";
   const stuckPending =
@@ -91,7 +106,7 @@ export function GenerationProgressWrapper({ jobId, repoName, onDone, onRetry, qu
       // The stream/poll flips the job to "cancelled"; the status effect above
       // owns the toast so cancel-from-button and cancel-from-elsewhere match.
     } catch (e) {
-      toast.error("Couldn't cancel job", {
+      toast.error(t("cancelFailed"), {
         description: toFriendlyMessage(e),
       });
     } finally {

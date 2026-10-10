@@ -26,7 +26,7 @@ import {
   turnFooter,
 } from "../src/views/copy";
 import type { Node } from "../src/views/elements";
-import { ACTIVE_MARK, FLOW_KEY, FLOW_NEXT, FLOW_PREV, HAPPY_MS, flowPresses, flowView, rowKey, type FlowViewInput } from "../src/views/flow";
+import { ACTIVE_MARK, FLOW_BOX_ID, FLOW_NEXT, FLOW_PREV, HAPPY_MS, flowPresses, flowView, rowKey, type FlowViewInput } from "../src/views/flow";
 import { BLINK_MS, EYES, owl, owlEyes } from "../src/views/owl";
 import { THISTLE, flowTheme, hills, loch } from "../src/views/theme";
 import { fixture } from "./fake-host";
@@ -210,7 +210,7 @@ describe("Flow copy", () => {
 describe("the Flow tab", () => {
   it("empty: the owl asleep and what the tab will show, wrapped to 70 columns", () => {
     const tree = view(initialFlow);
-    expect(tree.type === "Box" && tree.props.key).toBe(FLOW_KEY);
+    expect(tree.type === "Box" && tree.props.key).toBe(FLOW_BOX_ID);
     const shown = lines(tree);
     expect(shown[0]).toBe(hills(120));
     expect(shown[1]).toBe("{─,─} Lens is listening. Send a prompt and this tab shows what only Lens");

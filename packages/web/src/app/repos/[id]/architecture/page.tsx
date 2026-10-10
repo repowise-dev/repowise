@@ -44,6 +44,7 @@
 
 import { use, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useQueryState, parseAsStringLiteral } from "nuqs";
 import { Code2 } from "lucide-react";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
@@ -100,13 +101,6 @@ const TAB_FOR_VIEW: Record<CanonicalView, string> = {
 
 const TAB_PANEL_ID = "architecture-tab-panel";
 
-const TABS: { id: string; label: string }[] = [
-  { id: "map", label: "Map" },
-  { id: "coupling", label: "Coupling" },
-  { id: "packages", label: "Third-party" },
-  { id: "symbols", label: "Symbols" },
-];
-
 /** Landing view when a tab is clicked, and for the page with no `?view=`.
  *
  * Map opens on Files. It used to open on Communities, because Files was 1,500
@@ -130,6 +124,8 @@ export default function ArchitecturePage({
 }) {
   const { id: repoId } = use(params);
   const router = useRouter();
+  const t = useTranslations("views.architecture");
+  const tCoupling = useTranslations("coupling");
   const [rawView, setView] = useQueryState(
     "view",
     parseAsStringLiteral(VIEWS).withDefault(DEFAULT_VIEW),
@@ -165,6 +161,12 @@ export default function ArchitecturePage({
   const view: CanonicalView =
     legacy?.view ?? VIEW_ALIASES[rawView] ?? (rawView as CanonicalView);
   const activeTab = TAB_FOR_VIEW[view] ?? "map";
+  const tabs: { id: string; label: string }[] = [
+    { id: "map", label: t("tabs.map") },
+    { id: "coupling", label: t("tabs.coupling") },
+    { id: "packages", label: t("tabs.packages") },
+    { id: "symbols", label: t("tabs.symbols") },
+  ];
 
   // Leaving a tab drops the params that only meant something inside it, so the
   // URL never carries a `signal=hot` into the Packages table where nothing
@@ -202,7 +204,7 @@ export default function ArchitecturePage({
     <div className="flex h-full flex-col">
       <div className="shrink-0 px-4 pt-3 sm:px-6">
         <ViewTabs
-          tabs={TABS}
+          tabs={tabs}
           value={activeTab}
           onValueChange={handleTabChange}
           panelId={TAB_PANEL_ID}
@@ -239,7 +241,7 @@ export default function ArchitecturePage({
             <div className="mb-2">
               <h1 className="mb-1 flex items-center gap-2 text-xl font-semibold text-[var(--color-text-primary)]">
                 <Code2 className="h-5 w-5 text-[var(--color-accent-primary)]" />
-                Change coupling
+                {t("couplingTitle")}
               </h1>
               <p className="text-sm text-[var(--color-text-secondary)]">
                 {COUPLING_DISCLAIMER}
@@ -247,7 +249,7 @@ export default function ArchitecturePage({
             </div>
             {/* Contain a render throw to the tab instead of letting it reach
                 the route boundary and blank the page. */}
-            <ErrorBoundary title="Couldn't load change coupling">
+            <ErrorBoundary title={tCoupling("loadFailed")}>
               <CouplingTab repoId={repoId} />
             </ErrorBoundary>
           </div>

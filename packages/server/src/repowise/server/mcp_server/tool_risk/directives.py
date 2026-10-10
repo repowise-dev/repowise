@@ -7,7 +7,12 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.analysis.next_call import ActionCommand
-from repowise.core.analysis.risk_semantics import structural_impact_contract
+from repowise.core.analysis.risk_semantics import (
+    structural_impact_band,
+    structural_impact_contract,
+)
+from repowise.core.analysis.test_reachability import tests_matching_by_name
+from repowise.core.co_change import MIN_CO_CHANGE_SUPPORT
 from repowise.core.persistence.crud.authority import decision_currencies
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.decision_graph import list_conflict_edges
@@ -50,15 +55,16 @@ _BC_CONSUMER_LIMIT = 5
 _CF_VIOLATION_LIMIT = 5
 _CF_CYCLE_LIMIT = 3
 
-#: Caps on the may-break split. Production impact leads the directive, so it
-#: keeps the larger budget; test fallout is a secondary signal capped tighter.
+#: Cap on the production files in reverse-import reach. Tests reached the same
+#: way join ``tests_to_run``.
 _MAY_BREAK_LIMIT = 5
-_MAY_BREAK_TESTS_LIMIT = 3
 #: Cap on the coverage-backed run-list. A validate-this-change set can be longer
 #: than the may-break lists (it is what you actually run), but stays glanceable;
 #: the overflow and full typed rows live in pr_blast_radius.test_impact.
 _TESTS_TO_RUN_LIMIT = 10
 _TESTS_TO_RUN_KIND = {"measured": "test_id", "inferred": "test_file"}
+#: Cap on the edit-list: the test files this change will probably need edited.
+_TESTS_TO_UPDATE_LIMIT = 3
 
 
 def _breaking_change_directive(
@@ -333,12 +339,16 @@ def _trim_blast_lists(
     are filtered by policy, not budget).
     """
     trimmed_blast: dict[str, Any] = dict(pr_blast_radius)
-    # Re-derive so the scale tier follows the caller's include, not the
-    # analyzer's default. The legacy field stays an exact alias.
+    # The structural score is uncalibrated and never sees the diff, so the MCP
+    # reply carries only its band (``directive.reach``). The number and its
+    # scale ride with ``include=["scales"]``; REST and the CLI keep the alias.
     structural_score = trimmed_blast.get("structural_impact_score")
-    if structural_score is not None:
+    contract = structural_impact_contract(float(structural_score or 0.0), full_scale=True)
+    for key in contract:
+        trimmed_blast.pop(key, None)
+    if structural_score is not None and full_scale:
         trimmed_blast.update(
-            structural_impact_contract(float(structural_score), full_scale=full_scale)
+            {k: v for k, v in contract.items() if k.startswith("structural_impact_")}
         )
     for key, cap in (
         ("transitive_affected", 15),
@@ -479,6 +489,58 @@ def _project_recommendation(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _unlisted_tests(paths: list[str], rows: list[dict[str, Any]]) -> list[str]:
+    """*paths* that no recommendation row names as its file or id."""
+    named = {
+        name.split("::", 1)[0]
+        for row in rows
+        for name in (row.get("test_id"), row.get("test_file"))
+        if isinstance(name, str)
+    }
+    return [path for path in paths if path not in named]
+
+
+def _tests_to_update(
+    changed_files: list[str],
+    test_paths: set[str],
+    pr_blast_radius: dict,
+    exclude_spec: Any,
+) -> list[dict[str, str]]:
+    """Test files the change will probably need edited, strongest reason first.
+
+    A test named for a changed file (``name_pair``), then one that imports it
+    (``imports``), then one that changes with it in git history (``co_change``).
+    A path keeps its first reason; tests already in the change are left out.
+    """
+    changed = set(changed_files)
+    candidates = filter_path_list(sorted(test_paths - changed), exclude_spec)
+    eligible = set(candidates)
+    named = tests_matching_by_name(changed_files, candidates)
+    ordered: list[tuple[str | None, str]] = [
+        (path, "name_pair")
+        for source in changed_files
+        if source in named
+        for path in (named[source].all_tests or named[source].tests)
+    ]
+    ordered += [
+        (_as_path(e), "imports")
+        for e in pr_blast_radius.get("transitive_affected") or []
+        if isinstance(e, dict) and e.get("direct")
+    ]
+    # Indexing already drops pairs below the support floor; a row that still
+    # records less is weak history, not a reason to edit a test.
+    ordered += [
+        (_as_path(e), "co_change")
+        for e in pr_blast_radius.get("cochange_warnings") or []
+        if isinstance(e, dict) and e.get("support", MIN_CO_CHANGE_SUPPORT) >= MIN_CO_CHANGE_SUPPORT
+    ]
+    rows: dict[str, str] = {}
+    for path, reason in ordered:
+        if path in eligible and path not in rows:
+            rows[path] = reason
+    return [{"path": path, "reason": reason} for path, reason in rows.items()]
+
+
 def _build_pr_directive(
     response: dict,
     pr_blast_radius: dict,
@@ -490,6 +552,8 @@ def _build_pr_directive(
     alias: str,
     *,
     full_scale: bool = False,
+    include_tests: bool = False,
+    include_blast: bool = False,
 ) -> None:
     """Assemble PR-mode output: trim co-change lists + blast radius, then build
     the directive block. Mutates *response* in place. Behavior preserved.
@@ -516,10 +580,16 @@ def _build_pr_directive(
         r["co_change_partners_emitted"] = emitted
         r["co_change_partners_truncated"] = emitted < total
 
+    # The blast block mostly repeats the directive, so it ships on request;
+    # unrequested, its trimmed rows are not omissions to recover.
     trimmed_blast = _trim_blast_lists(
-        pr_blast_radius, exclude_spec, collector, full_scale=full_scale
+        pr_blast_radius,
+        exclude_spec,
+        collector if include_blast else None,
+        full_scale=full_scale,
     )
-    response["pr_blast_radius"] = trimmed_blast
+    if include_blast:
+        response["pr_blast_radius"] = trimmed_blast
 
     # Directive: 3 short lists the agent can read in one glance. Each
     # entry is a file path (string), never a dossier. Designed to answer
@@ -536,42 +606,59 @@ def _build_pr_directive(
     all_may_break = [p for p in affected if p not in test_paths]
     all_may_break_tests = [p for p in affected if p in test_paths]
     may_break = all_may_break[:_MAY_BREAK_LIMIT]
-    may_break_tests = all_may_break_tests[:_MAY_BREAK_TESTS_LIMIT]
 
     all_missing_cochanges = filter_path_list(
         [p for p in (_as_path(e) for e in pr_blast_radius.get("cochange_warnings", [])) if p],
         exclude_spec,
     )
     missing_cochanges = all_missing_cochanges[:3]
+    all_tests_to_update = _tests_to_update(changed_files, test_paths, pr_blast_radius, exclude_spec)
     # Run-list: consume the analyzer's canonical typed population instead of
     # independently deriving test ids. Every row retains its basis through
     # de-duplication, sorting, exclusions, and the directive cap.
     test_impact = pr_blast_radius.get("test_impact") or {}
     all_recommendations = list(test_impact.get("recommendations") or [])
-    test_recommendations = all_recommendations[:_TESTS_TO_RUN_LIMIT]
-    test_recommendations_total = len(all_recommendations)
-    recommendations_capped = test_recommendations_total > _TESTS_TO_RUN_LIMIT
 
     # Preserve the measured-first legacy projection and its existing scalar
     # domain. The additive typed rows above are the union of evidence kinds.
     guarding = pr_blast_radius.get("guarding_tests") or {}
     all_tests_to_run = list(guarding.get("tests_to_run") or [])
     tests_to_run_basis = guarding.get("basis") or "none"
+    # Tests in reverse-import reach join an unmeasured list. A measured list
+    # names test ids, so they ride as typed rows instead of mixing in files.
+    if tests_to_run_basis != "measured":
+        listed = set(all_tests_to_run)
+        reached = [p for p in all_may_break_tests if p not in listed]
+        if reached:
+            all_tests_to_run += reached
+            tests_to_run_basis = "inferred"
+    else:
+        all_recommendations += [
+            {"test_id": path, "basis": "inferred", "reason": "structural_reach"}
+            for path in _unlisted_tests(all_may_break_tests, all_recommendations)
+        ]
+    test_recommendations = all_recommendations[:_TESTS_TO_RUN_LIMIT]
+    test_recommendations_total = len(all_recommendations)
+    recommendations_capped = test_recommendations_total > _TESTS_TO_RUN_LIMIT
     tests_to_run = all_tests_to_run[:_TESTS_TO_RUN_LIMIT]
     tests_to_run_total = len(all_tests_to_run)
     tests_capped = tests_to_run_total > _TESTS_TO_RUN_LIMIT
-    if not all_recommendations:
-        tests_to_run_suffix = ""
-    else:
+    tests_to_run_suffix = (
+        f" {tests_to_run_total} test(s) to run, {tests_to_run_basis}." if tests_to_run_total else ""
+    )
+    if include_tests and all_recommendations:
         basis_totals = test_impact.get("recommendations_by_primary_basis") or {}
         measured_total = int(basis_totals.get("measured", 0))
-        inferred_total = int(basis_totals.get("inferred", 0))
-        tests_to_run_suffix = (
+        # Plus the structural-reach rows added above, which the analyzer never counted.
+        inferred_total = int(basis_totals.get("inferred", 0)) + (
+            test_recommendations_total - len(test_impact.get("recommendations") or [])
+        )
+        tests_to_run_suffix += (
             f" {test_recommendations_total} test recommendation(s): {measured_total} measured "
             f"and {inferred_total} inferred, not coverage-proven candidate(s); "
             f"each row carries its basis."
         )
-    if recommendations_capped:
+    if include_tests and recommendations_capped:
         tests_to_run_suffix += (
             f" Showing {_TESTS_TO_RUN_LIMIT} of {test_recommendations_total}; omitted "
             "typed rows are captured by the response omission marker."
@@ -601,8 +688,8 @@ def _build_pr_directive(
         missing_tests = []
         missing_tests_total = 0
         missing_tests_summary = (
-            f"Coverage analysis is {coverage.get('status', 'unavailable')}; "
-            "missing_tests is withheld rather than treated as empty evidence."
+            f"Coverage analysis is {coverage.get('status', 'unavailable')}, so test gaps "
+            "are withheld rather than reported as none."
         )
 
     gov_count = len(governance_risk)
@@ -678,10 +765,17 @@ def _build_pr_directive(
             )
         )
 
+    structural_score = pr_blast_radius.get("structural_impact_score")
     directive = {
         "may_break": may_break,
-        "may_break_tests": may_break_tests,
         "missing_cochanges": missing_cochanges,
+        # Band of the structural heuristic: how far the import graph reaches,
+        # not whether anything breaks.
+        "reach": (
+            structural_impact_band(float(structural_score))
+            if structural_score is not None
+            else None
+        ),
         "missing_tests": missing_tests,
         "missing_tests_semantics": "changed_file_test_gap_compatibility_projection",
         "missing_tests_total": missing_tests_total,
@@ -697,16 +791,38 @@ def _build_pr_directive(
         "tests_to_run_emitted": len(tests_to_run),
         "tests_to_run_truncated": tests_capped,
         "tests_to_run_omitted": tests_to_run_total - len(tests_to_run),
-        "test_recommendations": test_recommendations,
-        "test_recommendations_total": test_recommendations_total,
-        "test_recommendations_emitted": len(test_recommendations),
-        "test_recommendations_truncated": recommendations_capped,
-        "test_recommendations_omitted": max(
-            0, test_recommendations_total - len(test_recommendations)
+        # Tests to edit, not to run; a file can sit in both lists.
+        "tests_to_update": all_tests_to_update,
+        **(
+            {
+                "test_recommendations": test_recommendations,
+                "test_recommendations_total": test_recommendations_total,
+                "test_recommendations_emitted": len(test_recommendations),
+                "test_recommendations_truncated": recommendations_capped,
+                "test_recommendations_omitted": max(
+                    0, test_recommendations_total - len(test_recommendations)
+                ),
+            }
+            if include_tests
+            else {}
         ),
-        "test_analysis": test_impact.get("analysis") or {"status": "unavailable"},
-        "coverage_analysis": coverage,
-        "test_inference_analysis": test_impact.get("inference") or {"status": "unavailable"},
+        # Without coverage the three analysis blocks are nulls and zeros.
+        **(
+            {
+                "test_analysis": test_impact.get("analysis") or {"status": "unavailable"},
+                "coverage_analysis": coverage,
+                "test_inference_analysis": (
+                    test_impact.get("inference") or {"status": "unavailable"}
+                ),
+            }
+            if coverage.get("status", "unavailable") != "unavailable"
+            else {
+                "coverage": {
+                    "status": coverage.get("status") or "unavailable",
+                    "reason": coverage.get("reason") or "no_per_test_coverage_map",
+                }
+            }
+        ),
         "test_unknown_files": [],
         "will_break_consumers": will_break_consumers,
         "will_break_consumers_semantics": "structural_reach_only",
@@ -726,23 +842,28 @@ def _build_pr_directive(
         "conformance_violations": conformance_violations,
         "dependency_cycles": dependency_cycles,
         "governance_risk": governance_risk,
+        "recommended_reviewers": trimmed_blast.get("recommended_reviewers") or [],
         "next_calls": [c.as_dict() for c in next_calls],
+        # Totals, not the capped list lengths: "~5" of 24 understates the reach.
         "summary": (
             f"PR touches {len(changed_files)} file(s). "
-            f"~{len(may_break)} downstream file(s) may be affected, "
-            f"{len(may_break_tests)} test(s) may break, "
-            f"{len(missing_cochanges)} historical co-changer(s) missing, "
+            f"~{len(all_may_break)} downstream file(s) may be affected, "
+            f"{len(all_missing_cochanges)} historical co-changer(s) missing, "
             f"{missing_tests_summary}"
             f"{tests_to_run_suffix}{gov_suffix}{xr_suffix}{bc_suffix}{cf_suffix}"
         ),
     }
     for key, population, cap in (
         ("may_break", all_may_break, _MAY_BREAK_LIMIT),
-        ("may_break_tests", all_may_break_tests, _MAY_BREAK_TESTS_LIMIT),
         ("missing_cochanges", all_missing_cochanges, 3),
         ("missing_tests", all_missing_tests if coverage_usable else [], 3),
         ("tests_to_run", all_tests_to_run, _TESTS_TO_RUN_LIMIT),
-        ("test_recommendations", all_recommendations, _TESTS_TO_RUN_LIMIT),
+        ("tests_to_update", all_tests_to_update, _TESTS_TO_UPDATE_LIMIT),
+        *(
+            (("test_recommendations", all_recommendations, _TESTS_TO_RUN_LIMIT),)
+            if include_tests
+            else ()
+        ),
         (
             "files_without_measured_tests",
             list(test_impact.get("files_without_measured_tests") or []),
@@ -811,4 +932,35 @@ def _build_pr_directive(
                 directive[f"{key}_truncated"] = True
             directive[f"{key}_omitted"] = total - emitted_count
 
+    # A withheld list reads as "no gaps", and the cross-repo families are
+    # always empty outside a workspace.
+    if not coverage_usable:
+        _drop_family(directive, "missing_tests")
+    if not _is_workspace_mode():
+        for stem in _WORKSPACE_FAMILIES:
+            if not directive.get(stem):
+                _drop_family(directive, stem)
+        if "will_break_consumers" not in directive and (
+            "missing_cross_repo_cochanges" not in directive
+        ):
+            directive.pop("cross_repo_relationship_analysis", None)
+
+    # The directive carries the reviewers, so the MCP blast copy would repeat
+    # them. The REST blast radius is built separately and keeps its field.
+    _drop_family(trimmed_blast, "recommended_reviewers")
     response["directive"] = directive
+
+
+_WORKSPACE_FAMILIES = (
+    "will_break_consumers",
+    "missing_cross_repo_cochanges",
+    "breaking_changes",
+    "conformance_violations",
+    "dependency_cycles",
+)
+
+
+def _drop_family(directive: dict[str, Any], stem: str) -> None:
+    """Remove *stem* and its ``<stem>_*`` counts and labels."""
+    for key in [k for k in directive if k == stem or k.startswith(f"{stem}_")]:
+        del directive[key]

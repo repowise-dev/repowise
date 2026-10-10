@@ -14,6 +14,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.providers.llm.specs import ZERO_COST_MODEL_PREFIXES
+
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -32,6 +34,8 @@ _PRICING: dict[str, dict[str, float]] = {
     "claude-sonnet-5": {"input": 3.0, "output": 15.0},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
     "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
+    # Prompts over 100K tokens bill at $0.50/$2.50; doc-page prompts stay under.
+    "claude-haiku-5-5": {"input": 0.1, "output": 0.5},
     "claude-3-5-sonnet-20241022": {"input": 3.0, "output": 15.0},
     # OpenAI — GPT-5 family (the models Codex sessions report). Rates per 1M
     # input/output; verify against current OpenAI pricing before relying on
@@ -103,7 +107,7 @@ def is_local_model(model: str) -> bool:
     return (
         model == "mock"
         or model.startswith(_LOCAL_MODEL_PREFIXES)
-        or model.startswith(("codex_cli/", "claude_cli/", "opencode/"))
+        or model.startswith(ZERO_COST_MODEL_PREFIXES)
         # Bare Ollama tags carry no prefix — the default is plain `qwen3.5:4b`.
         # The trailing tag must not be a bare number: Bedrock addresses hosted
         # Anthropic models as `anthropic.claude-sonnet-4-5-20250929-v1:0`, and

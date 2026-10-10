@@ -247,7 +247,9 @@ def _from_get_change_risk(target: str, result: Mapping[str, Any]) -> list[dict[s
         )
         out.append(
             _suggestion(
-                f"Why is {ref} rated {classification}{measured}?", "page", "get_change_risk"
+                f"What makes {ref} {classification.lower()}{measured}?",
+                "page",
+                "get_change_risk",
             )
         )
     if result.get("is_fix") is True:

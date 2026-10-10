@@ -10,15 +10,16 @@ over-estimate on a re-run: safe direction, wrong number.
 
 The token count is not the missing piece: ``cached_tokens`` already flows
 provider -> ``GeneratedPage`` -> the ``pages`` table, and the run report
-prints it. What is missing is a third rate (here, in
-``generation/cost_tracker.py``, and in the TS mirror at
-``packages/ui/src/dashboard/quick-actions.tsx``), plus splitting the
+prints it. What is missing is a third rate (here and in
+``generation/cost_tracker.py``), plus splitting the
 cached count out of ``input_tokens`` in the cost arithmetic. Worth doing
 when we report cost per re-index, where the discount is the whole story;
 not worth it to move a one-off init estimate by ~10%.
 """
 
 from __future__ import annotations
+
+from repowise.core.providers.llm.specs import ZERO_COST_MODEL_PREFIXES
 
 # Exact-match rates. Per-MTok pricing divided by 1000.
 _COST_TABLE_EXACT: dict[str, tuple[float, float]] = {
@@ -38,6 +39,7 @@ _COST_TABLE_EXACT: dict[str, tuple[float, float]] = {
     "claude-opus-4-6": (0.005, 0.025),  # $5 / $25 per MTok
     "claude-sonnet-4-6": (0.003, 0.015),  # $3 / $15 per MTok
     "claude-haiku-4-5": (0.001, 0.005),  # $1 / $5 per MTok
+    "claude-haiku-5-5": (0.0001, 0.0005),  # $0.10 / $0.50 per MTok, prompts <= 100K
     # DeepSeek V4 — https://api-docs.deepseek.com/quick_start/pricing
     "deepseek-v4-flash": (0.00027, 0.00110),  # $0.27 / $1.10 per MTok
     "deepseek-v4-pro": (0.00055, 0.00219),  # $0.55 / $2.19 per MTok
@@ -51,7 +53,7 @@ _COST_TABLE_EXACT: dict[str, tuple[float, float]] = {
 
 # Prefix fallbacks for unknown variants. No `gpt-5.6` catch-all: the 5.6
 # variants are not one price tier, and an unpriced model reads as free here
-# (``_lookup_cost`` falls through to (0.0, 0.0)), so a guess would be worse
+# (the estimator prices a ``None`` from ``lookup_cost`` at zero), so a guess would be worse
 # than the miss it hides.
 _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
     "gpt-5.6-luna": (0.0002, 0.0012),
@@ -80,24 +82,26 @@ _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
     "moonshot": (0.0006, 0.0024),
     "llama": (0.0, 0.0),
     "mock": (0.0, 0.0),
-    "codex_cli/": (0.0, 0.0),
-    "claude_cli/": (0.0, 0.0),
-    "opencode/": (0.0, 0.0),
+    **dict.fromkeys(ZERO_COST_MODEL_PREFIXES, (0.0, 0.0)),
 }
 
 
-def _lookup_cost(model_name: str) -> tuple[float, float]:
-    """Return ``(input_rate, output_rate)`` per 1K tokens for *model_name*."""
+def lookup_cost(model_name: str) -> tuple[float, float] | None:
+    """Return ``(input_rate, output_rate)`` per 1K tokens for *model_name*.
+
+    ``None`` when no entry matches: the model is unpriced, which is not the
+    same as free (the explicit zero rows above).
+    """
     lower = model_name.lower()
     # OpenRouter/LiteLLM slugs carry a routing prefix (`google/gemini-3.5-flash-lite`)
     # that hides the model from every entry below, which priced them at zero.
-    # `codex_cli/` and `opencode/` are genuinely free, so they keep their prefixes.
-    if "/" in lower and not lower.startswith(("codex_cli/", "claude_cli/", "opencode/")):
+    # The agent-CLI prefixes are genuinely free, so they keep their prefixes.
+    if "/" in lower and not lower.startswith(ZERO_COST_MODEL_PREFIXES):
         lower = lower.rsplit("/", 1)[-1]
     if lower in _COST_TABLE_EXACT:
         return _COST_TABLE_EXACT[lower]
     best_prefix = ""
-    best_rates = (0.0, 0.0)
+    best_rates: tuple[float, float] | None = None
     for prefix, rates in _COST_TABLE_PREFIX.items():
         if lower.startswith(prefix) and len(prefix) > len(best_prefix):
             best_prefix = prefix

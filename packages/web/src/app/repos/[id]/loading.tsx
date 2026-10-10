@@ -1,3 +1,4 @@
+import { getTranslations } from "next-intl/server";
 import { PageSkeleton } from "@repowise-dev/ui/shared/loading-skeletons";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 
@@ -16,9 +17,10 @@ import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
  * block rather than a guessed composition — 24 routes differ below the
  * header, and a specific guess would reflow on arrival for most of them.
  */
-export default function RepoLoading() {
+export default async function RepoLoading() {
+  const t = await getTranslations("loading");
   return (
-    <PageSkeleton label="Loading">
+    <PageSkeleton label={t("repo")}>
       <Skeleton className="h-[60vh] min-h-80 w-full rounded-xl" />
     </PageSkeleton>
   );

@@ -14,11 +14,13 @@ _INCLUDE_BLOCKS = (
     "last_change",
     "callers",
     "callees",
+    "references",
     "metrics",
     "community",
     "decisions",
     "health",
     "skeleton",
+    "skeleton+",
     "doc_drift",
     "symbols",
 )

@@ -190,6 +190,16 @@ def test_the_readme_agent_headline_counts_the_registry() -> None:
     )
 
 
+def test_the_indexing_column_matches_the_identities() -> None:
+    """Indexing is derived from ``indexing_provider``, never declared per row."""
+    from repowise.core.agents.identity import identity_for_target_id
+
+    for row in GEN.agent_rows():
+        identity = identity_for_target_id(row["id"])
+        expected = "Yes" if identity and identity.indexing_provider else "No"
+        assert GEN._cell(row, "indexing_provider") == expected, row["id"]
+
+
 def test_the_hooks_column_cannot_lie() -> None:
     """A target's declared HOOKS capability agrees with its hook adapter.
 
@@ -246,11 +256,6 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
     ("packages/server/README.md", "total", "registers {n} MCP tools"),
     ("packages/server/README.md", "single_repo", "advertises **{n} by default**"),
     (".claude-plugin/marketplace.json", "single_repo", "{w} task-shaped MCP tools"),
-    (
-        "plugins/claude-code/.claude-plugin/plugin.json",
-        "single_repo",
-        "{w} task-shaped MCP tools",
-    ),
     ("docs/agent/MCP_TOOLS.md", "single_repo", "**Default (single-repo):** {n} tools"),
     ("docs/agent/MCP_TOOLS.md", "single_repo", "those {n} plus"),
     ("docs/architecture/ARCHITECTURE.md", "single_repo", "advertises **{n}** tools by default"),

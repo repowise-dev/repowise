@@ -87,7 +87,7 @@ Every tool returns a JSON object with a `_meta` envelope. Most fields appear onl
 
 | Field | What to do with it |
 |-------|--------------------|
-| `stale_warning` | Present only when the index is behind in a way that changed served files. Run `repowise update` before trusting file-level detail. Its absence means current. |
+| `stale_warning` | Present only when the index is behind in a way that changed served files, or a served file has uncommitted edits or was indexed from edits since reverted (`working_tree_dirty` counts the edited ones; run `repowise update --working-tree`). Run `repowise update` before trusting file-level detail. Its absence means current. |
 | `indexed_commit`, `live_head`, `index_behind` | Which commit the answer describes and whether HEAD has moved since. |
 | `complete` | Symbol bodies or whole files served verified against the live file. Do not re-read them. |
 | `state` | `degraded`, `partial` or `truncated` when something fired, with reasons. A degraded empty result is a failed read, not an empty repository. |
@@ -147,9 +147,9 @@ Answers a how, where or why question in one call: it runs hybrid retrieval over 
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 | `include` | list[string] | none | `["evidence"]` returns the full evidence projection with a larger budget |
 
-**Key return fields:** `answer`, `confidence` (`high` / `medium` / `low`, rates the prose), `retrieval_quality` (`high` / `partial` / `weak`, rates the evidence), `citations`, `symbol_bodies` (live bodies of symbols the answer names), `retrieval`, `best_guesses` and `fallback_targets` (on low confidence), `candidate_files` (ranked file paths the citations do not already name: up to 3 at `high`, 5 otherwise), `episodes` (dated facts bearing on the question), `degraded` (synthesis could not run), `_meta.scope_hint` (areas the answer did not touch).
+**Key return fields:** `answer`, `confidence` (`high` / `medium` / `low`, rates the prose), `retrieval_quality` (`high` / `partial` / `weak`, rates the evidence), `citations`, `symbol_bodies` (live bodies of symbols the answer names), `retrieval`, `best_guesses` and `fallback_targets` (on low confidence; a low `best_guesses` row carries `functions`, `lines` and `size_bytes` instead of a page excerpt), `candidate_files` (ranked file paths the citations do not already name: up to 3 at `high`, 5 otherwise), `episodes` (dated facts bearing on the question), `degraded` (synthesis could not run), `_meta.scope_hint` (areas the answer did not touch).
 
-A `high` answer can be cited directly. On `low`, read the rows the reply names, then `candidate_files`, before searching again. Without an LLM provider the tool still answers from retrieval, marked `degraded`.
+A `high` answer can be cited directly. On `low`, read the rows the reply names, then `candidate_files`, before searching again. Without an LLM provider the tool still answers from retrieval, marked `degraded`. When retrieval is also `weak`, the reply serves `best_guesses` and `candidate_files` with one guidance line in `answer`, and no `citations`.
 
 ```
 get_answer(question="How does the authentication flow work?")
@@ -162,7 +162,7 @@ A triage card for files, modules or symbols: summary, symbols with signatures an
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `targets` | list[string] | required | File paths, module paths, or `"path::Symbol"` ids |
-| `include` | list[string] | none | Any of `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `skeleton`, `health`, `doc_drift`, `symbols` |
+| `include` | list[string] | none | Any of `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `health`, `doc_drift`, `symbols` |
 | `compact` | bool | `true` | `false` adds the structure block, imports and docstrings |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported (returns an error) |
 
@@ -171,6 +171,14 @@ A triage card for files, modules or symbols: summary, symbols with signatures an
 A file's compact symbol list holds its top 15 symbols: types (classes, interfaces, structs, traits, enums, type aliases, impls, modules) first, then functions and methods, then the rest, each group by centrality. `symbols_truncated` gives the total, and `include=["symbols"]` lists them all. When the response budget trims the list further, it keeps symbols by kind and name match, not centrality. A row without `symbol_id` is `path::name`; methods and overload variants carry theirs, so pass a row's id to `get_symbol` when it has one.
 
 `full_doc` returns the page as `content_md`, plus `digest_md` on pages that carry an agent digest: the questions the page answers, its concept index, public API and git signals. Both are dropped first when the response is over budget. `skeleton` renders a file with bodies elided: every signature, the imports, and the bodies of its most central symbols, with line ranges on every elision. `doc_drift` lists the documents that name the file and whether they carry drift. An empty `callers` or `callees` list comes with a `*_basis` saying how much of that language's calls the graph resolved; read it before concluding nothing calls a symbol.
+
+`references` is the edit set for a symbol target: every live line naming it, as `{path, line, kind, text}` with kind `definition`, `import`, `call` or `reference`. For a rename, a `complete` list is the whole edit set. Otherwise `reasons` says why. It is never complete for:
+
+- languages other than Python, TypeScript and JavaScript (same-package use needs no import)
+- more than 200 sites, a stale call line, an unreadable file, or an uncommitted edit outside the scanned files
+- a rename on import, export or destructure, a default export, or a CommonJS export
+- a dynamic use the graph recorded; access built from strings is otherwise not seen
+- more than 3 plain `reference` sites in one file: the rest are counted in `sites_omitted_by_file`, recoverable from `_meta.omitted`
 
 ```
 get_context(targets=["src/auth/middleware.ts", "src/api/routes.ts"], include=["callers"])
@@ -188,10 +196,10 @@ Returns verified, line-numbered source for one symbol, a live line range, or an 
 | `reference` | object | none | A `continuation_reference` or `fetch_reference` this tool emitted; pass it unchanged |
 | `context_lines` | int | `0` | Extra lines before and after, 0 to 50 |
 | `depth` | int | `1` | 2 or 3 also returns the bodies it calls, transitively |
-| `query` | string | none | Omission refs only: keep stored lines matching this regex or substring |
+| `query` | string | none | Omission refs only: keep stored lines matching this regex or substring. With no `symbol_id` or `id`, it is read as `symbol_id` |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
-**Key return fields:** `source` (up to about 600 lines, each prefixed with its line number), start and end lines, `kind`, `truncated` with a continuation to pass back, `ambiguous` and `candidates` when several symbols match, `callee_bodies` (with `depth` above 1), `not_rendered` (bodies past the budget, each with a range read to fetch it), fallback lines from a live grep on a miss.
+**Key return fields:** `source` (up to about 600 lines, each prefixed with its line number), start and end lines, `kind`, `truncated` with a continuation to pass back, `ambiguous` and `candidates` when several symbols match, `callee_bodies` (with `depth` above 1), `not_rendered` (bodies past the budget, each with a range read to fetch it), fallback lines from a live grep on a miss. A class or other container too large to serve whole returns `outlined: true`, its header in `source` and `members` (each member's `symbol_id`, signature and lines, with `members_total` when the list is capped) in place of the body, and no `_meta.complete`.
 
 ```
 get_symbol(symbol_id="src/auth/service.py::login", depth=2)
@@ -204,7 +212,8 @@ Hybrid search that routes by the shape of the query: identifiers search the symb
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `query` | string | required | Identifier, path or natural-language text |
+| `query` | string | `""` | Identifier, path or natural-language text. Required unless `pattern` is given |
+| `pattern` | string | none | Alias for `query`. When both are given, `query` is used and `pattern` is named in `ignored_arguments` |
 | `limit` | int | `5` | Max results. Outside `symbol` mode, at most this many distinct files: same-file hits share one row |
 | `mode` | string | `"auto"` | `auto`, `concept`, `symbol`, `path` or `hybrid`. An unknown mode runs as `auto` |
 | `kind` | string | none | `implementation`, `test`, `config` or `doc` |
@@ -213,6 +222,10 @@ Hybrid search that routes by the shape of the query: identifiers search the symb
 | `repo` | string | default repo | Workspace repo alias, or `"all"` to search every repo |
 
 **Key return fields:** `results` (every row that names a file carries it in `path`, and a row naming no file has no `path`; symbol hits carry `symbol_id`, line bounds and `signature`, plus `symbols` (`name:line` of up to five other matches in that file, then `+N more`) when several matched; concept hits carry `relevance_score`, `snippet` and `sources`; `file` on symbol and file hits is a deprecated alias of `path`, removed in the next minor release, and a page keeps `target_path` only where it differs from `path`), `candidates` (up to `limit` distinct openable file paths, best first). If your next move is a Read, read `candidates`: some `results` are pages that are not files.
+
+**Page rows** also carry `symbols`: up to three `name:line` entries (`Owner.member` for members) in that file whose names match the query's words. The first three page rows whose file has a matching line also carry `matched_lines`: a sample of up to three `{line, text}` source lines read from the live file that share the most query words, code lines before comments and imports. Unlike `lines`, it is never every match.
+
+An identifier or literal query also returns `lines` (`{path, line, kind, text}`, definitions first, at most 50): the `get_context` `references` of one to three exact symbols, else a live scan for the token (kind `definition` or `match`). `complete` is true only when they are every match (see `references` above); otherwise `reasons` says why. Past 3 plain `reference` lines in one file, and past 50 lines, rows are counted in `lines_omitted_by_file` and recoverable from `_meta.omitted`; test files sort after production files. A query of several words caps `lines` at 15 (definitions, then calls, then imports) and lists the 5 files with the most omitted rows, with `lines_omitted_by_file_total` counting all of them.
 
 ```
 search_codebase(query="GitIndexer index_repo")
@@ -227,12 +240,12 @@ What history says about touching a file: hotspot score, bug-fix record, owners, 
 |-----------|------|---------|---------|
 | `targets` | list[string] | `changed_files` | File paths to assess |
 | `changed_files` | list[string] | none | Files in a change; switches on PR mode |
-| `include` | list[string] | none | `graph` (typed dependents, consumers, cross-repo links), `churn`, `scales` (units and calibration, identical per call) |
+| `include` | list[string] | none | `graph` (typed dependents, consumers, cross-repo links), `churn`, `owners` (owner percentages, bus factor, contributor count), `tests` (typed `test_recommendations` in PR mode), `blast` (`pr_blast_radius` in PR mode), `scales` (units and calibration, identical per call) |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
-**Key return fields:** per file: `hotspot_score` (0 to 1), `health_score` (0 to 10), `dependents_count`, `co_change_partners`, owners, test gaps, `security_signals`. In PR mode, `directive` with `may_break`, `may_break_tests`, `missing_cochanges`, `test_recommendations` (each `measured` or `inferred`), `tests_to_run`, `tests_to_run_basis`, `next_calls`, and the 0 to 10 `structural_impact_score`. A target naming no indexed file returns `resolved: false` with a reason, never zeroed counts.
+**Key return fields:** per file: `hotspot_score` (0 to 1), `health_score` (0 to 10), `dependents_count`, `co_change_partners` (`file_path`, `support`, `conf_ab`, `has_import_link`), `primary_owner` (detailed owner metrics are opt-in under `include=["owners"]`), test gaps, `security_signals`. In PR mode, `directive` with `may_break`, `missing_cochanges`, `tests_to_run`, `tests_to_run_basis` (`measured`, `inferred` or `none`), `tests_to_update` (test files to edit, each with a `name_pair`, `imports` or `co_change` reason), `coverage`, `recommended_reviewers`, `next_calls`, and `reach` (`localized`, `moderate` or `broad`; `null` when no structural score was computed). `include=["blast"]` adds `pr_blast_radius`; the raw 0 to 10 `structural_impact_score` and its scale appear there only with `include=["blast", "scales"]`. `missing_tests` appears only when coverage can back it. A target naming no indexed file returns `resolved: false` with a reason, never zeroed counts.
 
-Dependent counts are a floor over the indexed graph, and structural reach is not proof of runtime breakage. `structural_impact_score` is an uncalibrated heuristic, not a probability.
+Dependent counts are a floor over the indexed graph, and structural reach is not proof of runtime breakage. `reach` bands an uncalibrated heuristic that never sees the diff; it is not a probability.
 
 ```
 get_risk(targets=["src/auth/middleware.ts"])
@@ -250,13 +263,13 @@ Reviews one commit, a `base..head` range, or uncommitted work by comparing the t
 | `exclude_patterns` | list[string] | none | Gitignore-style paths to omit; combined with a root `.riskignore` |
 | `include_paths` | list[string] or string | all | Gitignore-style paths to keep, as a list or one comma-separated string |
 | `baseline` | int | `200` | Recent commits sampled for percentile ranking; `0` disables percentiles |
-| `include` | list[string] | none | `findings` (every finding), `diagnostics` (raw score mechanics), `scales` (units) |
+| `include` | list[string] | none | `findings` (every finding), `diagnostics` (raw score mechanics, plus the delta's analyzer, revisions and limits), `scales` (units) |
 | `finding_id` | string | none | Expand one `health_delta` finding |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
 **Key return fields:** `directive` (`status` of `review_required`, `review_recommended`, `clear_in_analyzed_scope` or `unknown`, with reasons and next actions), `health_delta` (introduced, worsened and resolved findings with `status` and `top_findings`), `impacted_tests`, `patch_coverage` (when coverage is stored), `fix_history`, `branch_overlap`, `independent_changes`, `diff_shape`, `risk_percentile`, `cross_repo` (workspace mode).
 
-Trust `health_delta.status`: `partial` means files were skipped and the change is not cleared. `diff_shape` describes size and spread, never danger. An empty diff returns `status: "nothing_to_score"`.
+`directive.status` is the verdict. `health_delta.status` `partial` means files that may hold code were skipped, so the change is not cleared; docs and config files never cause it. `review_priority`, `classification` and `diff_shape` describe diff size and spread, never danger. An empty diff returns `status: "nothing_to_score"`.
 
 ```
 get_change_risk()

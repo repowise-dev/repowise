@@ -53,6 +53,8 @@ export interface ActionDrawerProps {
   onAnswer?: ((state: ActionStateValue, message: string) => void) | undefined;
   /** The agent prompt for an action, as core renders it. Omit to hide the prompt. */
   loadPrompt?: ((action: NextAction, flavor: AiPromptFlavor) => Promise<string>) | undefined;
+  /** Show each command's CLI line. Set false for a host with no CLI; agent calls stay. */
+  showCliCommands?: boolean | undefined;
   LinkComponent?: ElementType | undefined;
   renderTitle: (title: string) => ReactNode;
 }
@@ -81,6 +83,7 @@ export function ActionDrawer({
   fileHref,
   onAnswer,
   loadPrompt,
+  showCliCommands = true,
   LinkComponent,
   renderTitle,
 }: ActionDrawerProps) {
@@ -215,7 +218,7 @@ export function ActionDrawer({
                   {action.commands.map((c) => (
                     <li key={c.purpose} className="space-y-1">
                       <p className="text-sm text-[var(--color-text-secondary)]">{c.purpose}</p>
-                      {c.cli ? (
+                      {showCliCommands && c.cli ? (
                         <pre className="overflow-x-auto rounded bg-[var(--color-bg-inset)] px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">
                           {c.cli}
                         </pre>

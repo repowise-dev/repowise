@@ -140,7 +140,15 @@ class TestParityGoldens:
 
     def test_test_dir_suffixes_union(self) -> None:
         # .Specs = BDD-style sibling test projects (Polly, validated live).
-        assert REGISTRY.test_dir_suffixes() == (".Specs", ".Tests")
+        assert REGISTRY.test_dir_suffixes() == (
+            ".FunctionalTests",
+            ".FuzzTests",
+            ".IntegrationTests",
+            ".Specs",
+            ".Tests",
+            ".UnitTest",
+            ".UnitTests",
+        )
 
 
 # ---------------------------------------------------------------------------

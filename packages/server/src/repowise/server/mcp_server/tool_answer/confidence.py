@@ -21,6 +21,7 @@ from repowise.server.mcp_server._answer_context import (
 from repowise.server.mcp_server._answer_context import (
     is_why_question as _is_why_question,
 )
+from repowise.server.mcp_server._meta import _normalize_target_path
 from repowise.server.mcp_server.tool_answer.config import (
     _AGREEMENT_RANK_GAP,
     _AGREEMENT_TOP_RANK_MAX,
@@ -34,6 +35,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _HEDGE_MARKERS,
     _HIGH_CONFIDENCE_SCORE_FLOOR,
     _INLINE_BODY_MAX_LINES,
+    _LEAD_HYBRID_TOP_K,
     _SYMBOL_AGREEMENT_TOP_RANK_MAX,
     _flag_on,
     _opt_in,
@@ -494,7 +496,44 @@ def _retrieval_quality(hits: list[dict], agreement_dominant: bool) -> str:
     return "partial" if dominant_grade else "weak"
 
 
-def _degraded_confidence(reason: str, retrieval_quality: str) -> str:
+def file_hybrid_rank(hits: list[dict], path: str | None) -> int | None:
+    """The best hybrid rank any hit of *path*'s file carries, or None if none does.
+
+    Hits added after stamping (graph expansion, anchoring) carry no rank and can
+    precede the ranked hit of the same file, so the first match is not enough.
+    """
+    target = _normalize_target_path(path or "")
+    ranks = [
+        h["_hybrid_rank"]
+        for h in hits
+        if "_hybrid_rank" in h and _normalize_target_path(h.get("target_path") or "") == target
+    ]
+    return min(ranks, default=None)
+
+
+def lead_leaves_retrieval(hits: list[dict], lead: str | None) -> bool:
+    """True when the file a keyless answer names first is not where retrieval points.
+
+    A lead outside the top :data:`_LEAD_HYBRID_TOP_K` files of the unreranked
+    hybrid order, or never in it, was lifted by a rerank or an injected hit that
+    hybrid retrieval does not back.
+    """
+    if not hits or not lead:
+        return False
+    # Unstamped hits carry no hybrid order to disagree with.
+    if not any("_hybrid_rank" in h for h in hits):
+        return False
+    rank = file_hybrid_rank(hits, lead)
+    return rank is None or rank >= _LEAD_HYBRID_TOP_K
+
+
+def _degraded_confidence(
+    reason: str,
+    retrieval_quality: str,
+    *,
+    lead_outside_top: bool = False,
+    graph_answered: bool = False,
+) -> str:
     """Grade a synthesis-less payload on what a caller can act on, not on prose.
 
     The field tells an agent whether it still has work to do, so it is graded
@@ -507,8 +546,17 @@ def _degraded_confidence(reason: str, retrieval_quality: str) -> str:
     ``synthesis-failed`` stays "low": a provider is configured, so a retry can
     still produce a real answer. "no-llm-provider" is the end of the line, so
     there the evidence is all there is to grade.
+
+    A strong retrieval still grades "low" when the answer leads with a file it
+    does not back (:func:`lead_leaves_retrieval`): "medium" tells the caller to
+    start from that lead.
+
+    ``graph_answered`` (a caller question the call graph answered) grades
+    "medium" on its own: the answer then leads with graph edges, not retrieval.
     """
-    if reason != "no-llm-provider":
+    if reason == "no-llm-provider" and graph_answered:
+        return "medium"
+    if reason != "no-llm-provider" or lead_outside_top:
         return "low"
     return "low" if retrieval_quality == "weak" else "medium"
 

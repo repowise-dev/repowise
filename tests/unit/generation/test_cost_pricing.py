@@ -69,6 +69,10 @@ def test_family_prefix_covers_sonnet_and_haiku_variants() -> None:
     assert get_model_pricing("claude-haiku-5") == {"input": 1.0, "output": 5.0}
 
 
+def test_haiku_5_5_is_priced_below_the_haiku_family_rate() -> None:
+    assert get_model_pricing("claude-haiku-5-5") == {"input": 0.1, "output": 0.5}
+
+
 def test_gpt5_variants_resolve_by_tier_qualifier() -> None:
     assert get_model_pricing("gpt-5.5-nano") == {"input": 0.20, "output": 1.25}
     assert get_model_pricing("gpt-5.5-mini") == {"input": 0.75, "output": 4.50}

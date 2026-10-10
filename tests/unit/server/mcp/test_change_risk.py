@@ -52,7 +52,7 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
         "HEAD", extensions=["py", "md"], exclude_patterns=["docs/"], baseline=0
     )
 
-    assert result["working_tree"] is False
+    assert "working_tree" not in result
     # Raw model mechanics are a projection now; the default leads with action.
     assert "features" not in result
     assert "drivers" not in result
@@ -102,6 +102,35 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
     # Live-git responses carry a _meta envelope flagged as index-independent.
     assert result["_meta"]["source"] == "live_git"
     assert "warning" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_change_risk_labels_the_priority_tercile_as_diff_size(tmp_path, monkeypatch):
+    """The tercile ranks diff shape, so its label names size rather than a verdict."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"src/app.py": "value = 1\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "value = 2\n"}, "feat: app")
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    real_payload = module.change_risk_payload
+
+    def _ranked(result, **kwargs):
+        payload = real_payload(result, **kwargs)
+        payload.update(review_priority="high", classification="Elevated")
+        return payload
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    monkeypatch.setattr(module, "change_risk_payload", _ranked)
+    result = await module.get_change_risk("HEAD", baseline=0)
+
+    assert result["review_priority"] == "high"
+    assert result["classification"] == "Above-typical diff size"
 
 
 @pytest.mark.asyncio
@@ -287,10 +316,10 @@ async def test_impacted_tests_no_map_is_unknown_not_untested(tmp_path, monkeypat
     it = result["impacted_tests"]
     # Nothing is seeded in the graph either, so neither tier can speak.
     assert it["status"] == "no_map"
-    assert it["map_present"] is False
+    assert "map_present" not in it
     assert it["tests_to_run"] == []
     # Honest degradation: no untested claim, a "run the suite" summary instead.
-    assert it["line_coverage"]["untested_changes"] == []
+    assert "line_coverage" not in it
     assert "run the full suite" in it["summary"]
 
 
@@ -336,9 +365,9 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     assert it["status"] == "inferred"
     assert it["basis"] == "inferred"
     assert it["tests_to_run_kind"] == "test_file"
-    assert it["map_present"] is False
+    assert "map_present" not in it
     assert it["tests_to_run"] == ["tests/test_round_trips.py"]
-    assert it["line_coverage"]["untested_changes"] == []
+    assert "line_coverage" not in it
     # Answered by the import tier: there is no call edge here, which is exactly
     # when the weaker tier is allowed to speak.
     assert "reach the changed files in the graph" in it["summary"]
@@ -396,7 +425,7 @@ async def test_impacted_tests_no_session_factory_degrades_to_no_index(
     result = await module.get_change_risk(baseline=0)
 
     assert result["impacted_tests"]["status"] == "no_index"
-    assert result["impacted_tests"]["map_present"] is False
+    assert "map_present" not in result["impacted_tests"]
 
 
 @pytest.mark.asyncio
@@ -414,13 +443,11 @@ async def test_the_two_risk_tools_do_not_share_a_key_for_different_questions() -
     assert "missing_tests" not in empty
     # Every shape says which signal named the tests, including none.
     assert empty["basis"] == "none"
-    assert empty["tests_to_run_kind"] is None
-    assert set(empty["line_coverage"]) == {
-        "untested_changes",
-        "stale_test_candidates",
-        "covered",
-        "no_coverage_data",
-    }
+    # Nothing named, so no kind; the measured block alone carries the map
+    # flag and the line buckets.
+    assert "tests_to_run_kind" not in empty
+    assert "map_present" not in empty
+    assert "line_coverage" not in empty
 
 
 def test_score_measures_names_only_the_supporting_diff_shape_signal() -> None:
@@ -449,3 +476,67 @@ async def test_health_references_on_an_index_without_a_repository_are_skipped(fa
         SimpleNamespace(session_factory=factory), SimpleNamespace(findings=[finding])
     )
     assert finding.health_reference is None
+
+
+@pytest.mark.asyncio
+async def test_get_change_risk_drops_request_echoes_and_empty_fields(tmp_path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"src/app.py": "a = 1\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "a = 1\nb = 2\n"}, "feat: add b")
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    result = await module.get_change_risk("HEAD", baseline=0)
+
+    assert "exclude_patterns" not in result
+    assert "working_tree" not in result
+    assert "is_fix" not in result
+    assert "density" not in result["fix_history"]
+    assert "percentile" in result["fix_history"]
+
+    diagnostics = await module.get_change_risk("HEAD", baseline=0, include=["diagnostics"])
+    assert "density" in diagnostics["fix_history"]
+
+
+@pytest.mark.asyncio
+async def test_get_change_risk_keeps_working_tree_without_a_revspec(tmp_path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"src/app.py": "a = 1\n"}, "chore: seed")
+    (repo / "src" / "app.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    result = await module.get_change_risk(baseline=0)
+
+    assert result["working_tree"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_change_risk_keeps_is_fix_when_true(tmp_path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"src/app.py": "a = 1\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "a = 2\n"}, "fix: wrong value")
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    result = await module.get_change_risk("HEAD", baseline=0)
+
+    assert result["is_fix"] is True

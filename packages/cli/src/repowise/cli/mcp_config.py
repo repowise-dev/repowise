@@ -19,11 +19,12 @@ descriptor file and a registry line.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from repowise.core.agents.identity import CODEX
 
 
 def _looks_transient(path: Path) -> bool:
@@ -108,7 +109,7 @@ def generate_mcp_config(repo_path: Path, *, command: str | None = None) -> dict:
 def resolve_codex_executable() -> str | None:
     """Return the executable path used to launch Codex, or None if unavailable."""
 
-    return shutil.which("codex")
+    return CODEX.which()
 
 
 def is_codex_cli_installed() -> bool:
@@ -132,19 +133,7 @@ def is_codex_cli_installed() -> bool:
 def is_codex_logged_in() -> bool:
     """Return True when the local Codex CLI reports an authenticated session."""
 
-    codex_cmd = resolve_codex_executable()
-    if not codex_cmd or not is_codex_cli_installed():
-        return False
-    try:
-        result = subprocess.run(
-            [codex_cmd, "login", "status"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0
+    return is_codex_cli_installed() and CODEX.is_logged_in()
 
 
 # ---------------------------------------------------------------------------

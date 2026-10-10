@@ -24,7 +24,7 @@ Use Repowise with your Claude subscription via the `claude_cli` LLM provider. No
 
 ```bash
 # 1. Install Claude Code, then authenticate once
-claude login
+claude auth login
 
 # 2. Point Repowise at it
 repowise init --provider claude_cli --yes
@@ -42,7 +42,7 @@ Or persist it in `.repowise/config.yaml`:
 
 ```yaml
 provider: claude_cli
-model: claude_cli/claude-haiku-4-5
+model: claude_cli/claude-haiku-5-5
 ```
 
 ## Two directions, one name
@@ -55,7 +55,7 @@ does not enable the other.
 
 ## Choosing a model
 
-`claude_cli/claude-haiku-4-5` is the default, matching the `anthropic` provider.
+`claude_cli/claude-haiku-5-5` is the default, matching the `anthropic` provider.
 
 ```bash
 repowise init --provider claude_cli --model claude_cli/claude-sonnet-4-6
@@ -69,7 +69,7 @@ repowise init --provider claude_cli --model claude-opus-4-6
 
 | Model | Notes |
 |---|---|
-| `claude-haiku-4-5` | Fastest, and ample for doc pages. Default. |
+| `claude-haiku-5-5` | Fastest, and ample for doc pages. Default. |
 | `claude-sonnet-4-6` | Better prose, slower. |
 | `claude-opus-4-6` | Highest quality, heaviest on subscription limits. |
 
@@ -126,9 +126,9 @@ Otherwise the index keeps `embedder: mock` and search stays lexical.
 **`Claude Code CLI not found`** — `claude` is not on `PATH`. Install it from
 [claude.com/claude-code](https://claude.com/claude-code).
 
-**Authentication errors on the first page** — run `claude login`. Readiness
-detection stops at "is it installed", because the CLI keeps credentials in a
-keychain or OAuth store with no cheap way to probe login state.
+**Authentication errors on the first page** — run `claude auth login`, then
+check with `claude auth status`, which exits 0 when you are signed in. That is
+the check `repowise init` uses to show the provider as ready.
 
 **Rate-limit failures partway through a run** — lower
 `REPOWISE_CLAUDE_CLI_CONCURRENCY`, or scope the run with `--path`. Completed

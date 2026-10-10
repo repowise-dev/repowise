@@ -1,6 +1,6 @@
 ---
 description: Search the Repowise wiki using natural language, full-text, or symbol search.
-allowed-tools: Bash, Read
+allowed-tools: Bash(repowise search:*), Read
 ---
 
 # Repowise Search

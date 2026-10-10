@@ -182,7 +182,7 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
             fts=_state._fts,
             vector_store=_state._vector_store,
             decision_store=_state._decision_store,
-            vector_store_ready=_state._vector_store_ready or __import__("asyncio").Event(),
+            vector_store_ready=_state._vector_store_ready,
             _engine=None,
         )
 

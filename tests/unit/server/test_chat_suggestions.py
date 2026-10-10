@@ -151,14 +151,14 @@ def test_decision_health_mode_has_no_single_decision_to_name():
 def test_a_commit_names_its_rating_without_the_gated_drivers_block():
     result = {
         "ref": "9f52f0a",
-        "classification": "elevated",
+        "classification": "Above-typical diff size",
         "review_priority": "high",
         "risk_percentile": 88,
         "is_fix": True,
     }
     texts = _texts(page_suggestions("get_change_risk", "9f52f0a", result))
 
-    assert "Why is 9f52f0a rated elevated at p88?" in texts
+    assert "What makes 9f52f0a above-typical diff size at p88?" in texts
     assert "What did 9f52f0a fix?" in texts
 
 

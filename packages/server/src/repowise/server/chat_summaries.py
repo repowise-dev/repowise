@@ -31,14 +31,15 @@ def _risk_summary(result: dict[str, Any]) -> str:
 
 def _change_risk_summary(result: dict[str, Any]) -> str:
     ref = result.get("ref", "change")
-    priority = result.get("review_priority") or result.get("classification") or "unknown"
+    # The tercile ranks diff size, so the summary names the size label, not a verdict.
+    size = result.get("classification") or result.get("review_priority") or "unranked"
     pct = result.get("risk_percentile")
     if pct is not None:
-        return f"Change risk for {ref}: {priority} (p{pct})"
+        return f"Diff size for {ref}: {size} (p{pct})"
     score = result.get("score")
     if score is not None:
-        return f"Change risk for {ref}: {priority} (score {score})"
-    return f"Change risk for {ref}: {priority}"
+        return f"Diff size for {ref}: {size} (score {score})"
+    return f"Diff size for {ref}: {size}"
 
 
 def _why_path_summary(result: dict[str, Any]) -> str:

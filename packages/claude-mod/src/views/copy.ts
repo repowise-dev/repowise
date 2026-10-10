@@ -624,7 +624,7 @@ export function freshnessText(b: Pick<Behind, "indexBehind" | "ageDays">): strin
 }
 
 const ageText = (days: number): string => `index ${countOf(days, "day", "days")} old`;
-const when = (on: boolean, text: string): string | null => (on ? text : null);
+const when = (shown: boolean, text: string): string | null => (shown ? text : null);
 const named = <T>(v: T | null, text: (v: T) => string): string | null => (v === null ? null : text(v));
 
 /** How the reply says it was answered, in the order the detail lists it; each part only when the reply said it. */

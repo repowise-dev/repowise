@@ -61,6 +61,7 @@ from .extractors.bindings.python import expand_bare_relative_imports
 from .extractors.bindings.ts_js import (
     declarator_binds_callable,
     declarator_value_is_module_ref,
+    dynamic_import_bindings,
 )
 from .extractors.synthetic_symbols import extract_synthetic_symbols
 from .extractors.visibility import (
@@ -150,8 +151,29 @@ _TS_JS_LANGUAGES = ("typescript", "javascript", "svelte", "vue")
 
 # Languages whose query defines the ``@reference.*`` captures. Every other
 # language would only scan the whole match list to find nothing, so the check
-# is here rather than inside ``_extract_references``.
-_REFERENCE_LANGUAGES = ("cpp", "c", "go", "rust", "kotlin")
+# is here rather than inside ``_extract_references``. The SFC tags reuse the
+# TS captures but stay out: resolution has no local-shadow scan for them.
+_REFERENCE_LANGUAGES = ("cpp", "c", "go", "rust", "kotlin", "typescript", "javascript", "python")
+
+# Languages where a bare name resolves only through the file's own symbols or
+# a name it imports, so any other bare name cannot pass the reference floor.
+_NAMED_BINDING_LANGUAGES = frozenset({"typescript", "javascript", "python"})
+
+
+def _bare_reference_names(
+    language: str, symbols: list[Symbol], imports: list[Import]
+) -> frozenset[str] | None:
+    """Names a receiver-less reference in this file could resolve to, or None for any.
+
+    Most bare identifiers in a value position are locals; dropping them here
+    skips their per-site work. A wildcard import keeps every name.
+    """
+    if language not in _NAMED_BINDING_LANGUAGES:
+        return None
+    imported = {name for imp in imports for name in imp.local_names}
+    if "*" in imported:
+        return None
+    return frozenset(imported.union(s.name for s in symbols))
 
 
 def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
@@ -1029,7 +1051,8 @@ def _statement_imports(
         return macro_mod_imports(module_node, raw) if "mod" in raw else []
     if language in _TS_JS_LANGUAGES and _is_dynamic_esm_import(stmt_node):
         # ``import('./mod')`` binds a module namespace at runtime, so it is a
-        # wildcard, which keeps the target's exports live.
+        # wildcard, which keeps the target's exports live. The names it is
+        # destructured into still bind, for call resolution.
         return [
             Import(
                 raw_statement=raw,
@@ -1037,7 +1060,7 @@ def _statement_imports(
                 imported_names=["*"],
                 is_relative=module_text.startswith("."),
                 resolved_file=None,
-                bindings=[],
+                bindings=dynamic_import_bindings(stmt_node, src),
                 is_reexport=False,
             )
         ]
@@ -1446,7 +1469,7 @@ class ASTParser:
         # every non-SFC language.
         calls.extend(component_call_sites(lang, original_source, symbols))
         references = (
-            self._extract_references(matches, file_info, src, symbols)
+            self._extract_references(matches, file_info, src, symbols, imports)
             if lang in _REFERENCE_LANGUAGES
             else []
         )
@@ -1868,6 +1891,10 @@ class ASTParser:
                 mod_path_attr = _rust_mod_path_attribute(stmt_node, src)
                 if mod_path_attr is not None:
                     dedup_key = f"{raw}|path={mod_path_attr}"
+            # Two ``import('./m')`` calls share their text but not the names
+            # each one binds.
+            if language in _TS_JS_LANGUAGES and _is_dynamic_esm_import(stmt_node):
+                dedup_key = f"{raw}|at={stmt_node.start_byte}"
             if dedup_key in seen_raws:
                 continue
             seen_raws.add(dedup_key)
@@ -2002,6 +2029,7 @@ class ASTParser:
         file_info: FileInfo,
         src: str,
         symbols: list[Symbol],
+        imports: list[Import],
     ) -> list[CallSite]:
         """Extract sites that name a function without calling it.
 
@@ -2011,6 +2039,8 @@ class ASTParser:
         initialiser, and a ``::`` callable reference. Each leaves the named
         function with no inbound edge, which read as a ``safe_to_delete``
         unused export and took out whole handler and interop layers (#1602).
+        TS/JS and Python capture any value position: an argument, a list or
+        object entry, a return, an assignment and a default export.
 
         ``@reference.receiver`` is optional; capturing it is what lets
         ``_add_reference_edges`` restrict a bare name to free functions and
@@ -2045,6 +2075,7 @@ class ASTParser:
             key=lambda t: (t[0], -t[1]),
         )
         callable_ids = {s.id for s in symbols if s.kind in ("function", "method")}
+        bindable = _bare_reference_names(file_info.language, symbols, imports)
 
         references: list[CallSite] = []
         seen: set[tuple[int, str, str | None]] = set()
@@ -2074,6 +2105,8 @@ class ASTParser:
             for name_node, is_table in candidates:
                 name = _node_text(name_node, src).strip()
                 if not name or name in builtins:
+                    continue
+                if bindable is not None and receiver is None and name not in bindable:
                     continue
                 line = name_node.start_point[0] + 1
                 enclosing = _find_enclosing_symbol(line, symbol_ranges)

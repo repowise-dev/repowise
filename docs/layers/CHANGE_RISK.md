@@ -140,13 +140,16 @@ files reach, and what is missing from it. The response opens with a
 | Field | Meaning |
 |---|---|
 | `may_break` | Production files in structural reverse-import reach of the diff. Candidates for review, not proven breakage |
-| `may_break_tests` | Test files reached the same way, listed separately |
 | `missing_cochanges` | Files that historically change with these but are not in the diff |
-| `missing_tests`, `test_recommendations`, `tests_to_run` | Test gaps and which tests to run; each recommendation says whether it is `measured` (coverage) or `inferred` (graph reach) |
+| `tests_to_run`, `tests_to_run_basis` | Which tests to run, `measured` (coverage) or `inferred` (graph reach). With coverage the list is the measured one; `include=["tests"]` adds the typed `test_recommendations` rows, including reached tests the measured list lacks (`reason: structural_reach`) |
+| `missing_tests` | Changed files with a test gap; present only when coverage can back it |
+| `coverage` | `{status, reason}` when there is no per-test coverage map |
+| `tests_to_update` | Up to three test files the change will probably need edited, with why: `name_pair`, `imports` or `co_change`; empty when none qualify |
+| `reach` | `localized`, `moderate` or `broad`: the band of the structural heuristic below; `null` when no score was computed |
 | `next_calls` | What to call next |
 | `summary` | One sentence over all of the above |
 
-In a workspace the directive also carries cross-repo fields:
+In a workspace the directive also carries cross-repo fields, dropped when no workspace is loaded:
 `will_break_consumers` (repos that structurally depend on this one; structural
 reach, not a runtime claim), `missing_cross_repo_cochanges`,
 `breaking_changes` (incompatible provider contract changes since the last
@@ -154,11 +157,14 @@ index), `conformance_violations` and `dependency_cycles`. See
 [Cross-Repo Blast Radius](../scale/WORKSPACES.md#cross-repo-blast-radius) and
 [Breaking-Change Guard](../scale/WORKSPACES.md#breaking-change-guard).
 
-PR mode also reports `structural_impact_score`: a deterministic, uncalibrated
+The directive also names `recommended_reviewers`, and `include=["blast"]` adds
+`pr_blast_radius`. The structural impact score is a deterministic, uncalibrated
 0-10 heuristic over PageRank, churn and transitive dependents, banded
 `localized` (below 4), `moderate` (4 to below 7) and `broad` (7 and up). It is
-not a probability and does not decide review. `overall_risk_score` is an exact
-deprecated alias.
+not a probability and does not decide review. The MCP reply carries only its
+band, as `directive.reach`; `include=["blast", "scales"]` adds the score and
+its scale. The REST blast-radius response and the CLI keep the score with its
+exact deprecated alias `overall_risk_score`.
 
 ## Independent changes
 

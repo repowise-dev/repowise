@@ -29,7 +29,8 @@ Routine responses carry a lean envelope. `get_overview`, called once per session
 | `indexed_commit` | When a repository is resolved | Short SHA the index was built from |
 | `live_head` | When `.git/HEAD` is readable | Short SHA of the current checkout; equal to `indexed_commit` when current |
 | `index_behind` | When the live-versus-indexed comparison ran | `true` if HEAD moved, `false` if it matches. Absent means the comparison could not run |
-| `stale_warning` | Only on a real signal | HEAD moved and the move changed files this response serves, or the index is very old and git is unreachable. Two commits with identical trees set `index_behind` with no warning |
+| `stale_warning` | Only on a real signal | HEAD moved and the move changed files this response serves, a file this response serves has uncommitted edits the index has not seen or was indexed from uncommitted edits since reverted, or the index is very old and git is unreachable. Two commits with identical trees set `index_behind` with no warning |
+| `working_tree_dirty` | Only when above zero | How many served targets have uncommitted edits no `repowise update --working-tree` has indexed. Source reads are live; graph and index facts for those files predate the edit. A dirty tree elsewhere never sets it |
 | `index_scope` | When the index records it and its `status` is not `complete` (whole object on `get_overview`, or everywhere with `REPOWISE_MCP_INDEX_SCOPE=full`) | Compact description of how the index was built: run mode, provenance, git tier, whether it is whole |
 | `embedder_degraded` | When an embedder is resolved | `true` or `false` |
 | `embedder`, `embedder_warning` | Only when the embedder fell back to a mock or degraded mode, or the semantic index on disk could not be opened | Which embedder, and why |
@@ -95,7 +96,7 @@ The key is absent when every argument was understood. One entry per argument.
 |------|-------------------|-------|
 | `get_dead_code` | `kind`, `tier`, `min_confidence` | Top-level list, as above |
 | `get_context` | `include` | Top-level list |
-| `search_codebase` | `kind`, `mode` (an unknown `mode` runs as `auto`) | Top-level list |
+| `search_codebase` | `kind`, `mode` (an unknown `mode` runs as `auto`), `pattern` when `query` is also given (entry carries `"superseded_by": "query"`) | Top-level list |
 | `get_risk`, `get_change_risk` | `include` | Top-level list |
 | `get_answer` | `include` | `_meta.ignored_arguments`, a map: `{"include": [...]}` |
 | `get_health` | `refactoring_*` and `performance_*` filters, `scope`, `counts` | Top-level flat map of argument to dropped value, e.g. `{"counts": "code-shape"}` |
@@ -128,7 +129,7 @@ Every suggested follow-up (`get_health`'s `fix_first[].next_call`, the refactori
 | `retrieval` | Evidence rows (summary, snippet, key symbols). Shrinks as confidence rises |
 | `candidate_files` | Ranked file paths retrieval resolved, minus those already in `citations`: up to 3 at `high`, 5 at `medium`, `low` or `degraded`. Navigation, not evidence. Served at every confidence; absent when retrieval resolved no file |
 | `candidates` | The top 5 of those files as `{path, lines?, defines?}` rows. Only with `include=["evidence"]` |
-| `best_guesses`, `fallback_targets` | On low confidence: where to look, each with a one-line reason |
+| `best_guesses`, `fallback_targets` | On low confidence: where to look, each with a one-line reason. At `low` or `degraded` a `best_guesses` row drops its page `excerpt` and carries `functions` (up to 3 `{name, line}` symbols relevant to the question) and the live file's `lines` and `size_bytes`; `include=["evidence"]` brings the excerpt back |
 | `episodes` | A dated fact recorded about this checkout that bears on the question; `still_true` says how current it is |
 | `degraded` | Synthesis could not run (no provider, or the call failed). The answer is assembled from retrieval and mined rationale with no LLM, and `confidence` is graded from the retrieval: `medium` unless `retrieval_quality` is `weak`, never `high` |
 
@@ -146,7 +147,7 @@ Per target, under `targets`:
 |-------|---------|
 | title, summary, symbols | Docs summary and the symbols defined, with signatures and line numbers. Compact cards list the top 15 (types, then functions and methods, then the rest, by centrality) with `symbols_truncated` `{shown, total, hint}` and `symbols_total`; a budget trim below that keeps symbols by kind and name match, not centrality; `include=["symbols"]` lists all. A row without `symbol_id` is `path::name` |
 | `hotspot` | Churn flag |
-| `fix_history` | Only on files with counted bug fixes: count, age, `bug_magnet`. A cue to call `get_risk` |
+| `fix_history` | Only on files with counted bug fixes: count, age (measured to the indexed commit), `bug_magnet`. A cue to call `get_risk` |
 | `episodes` | Count of dated records bound to the target; `get_why` serves their bodies |
 | decisions | Titles by default. With `include=["decisions"]`, three lanes: `decisions` (accepted, governing), `candidates` (proposed, at most 3), `history` (accepted then withdrawn, at most 2) |
 | `file_preview` | For a file with no indexed symbols: `lines`, `chars`, and for a markdown or reST document `heading_count` with the first three `headings`; otherwise the first three non-empty lines as `head` |
@@ -205,31 +206,33 @@ Per file:
 
 | Field | Meaning |
 |-------|---------|
+| `defect_profile` | Only on files with counted bug fixes: `fix_count` (in 6-month window), `last_fix_days_ago` (measured to the indexed commit), `bug_magnet`, `top_symbols` |
 | `hotspot_score` | 0 to 1 churn percentile |
 | `health_score` | 0 to 10 |
 | `dependents_count` | Direct directed structural dependents; a floor over the indexed graph |
-| `co_change_partners` | Historical correlation only. Each has a recency-decayed `weight`, a `direction` (`a_to_b`, `b_to_a` or `undirected`, where `a` is the assessed file), and `conf_ab` / `conf_ba`, the share of each file's commits that touched the other |
-| owners, reviewers | Primary and recent owners (`owner_pct`, `recent_owner_pct` are 0 to 1) and recommended reviewers |
+| `co_change_partners` | Historical correlation only. Each row carries `file_path`, `support` (count of shared commits, when known), `conf_ab` (share of target file's commits that touched partner, when known), and `has_import_link`. Sorted by recency-decayed weight |
+| owners, reviewers | Primary owner (`primary_owner`) and the owner clause in `risk_summary` are unconditional; detailed owner metrics (`owner_pct`, `owner_line_pct`, `recent_owner`, `recent_owner_pct`, `bus_factor`, `contributor_count`) are opt-in under `include=["owners"]`; recommended reviewers stay in PR mode |
 | test gaps, `security_signals` | Test coverage gaps and security findings for the file |
 | `resolved`, `unresolved_reason` | A target naming no indexed file: `unsupported_target_kind` (a `module:` id), `directory`, `not_indexed`, `no_such_path`. Counts are omitted, never zeroed |
 
-Opt-in blocks: `graph` adds typed `dependents` (direct versus transitive), `consumers` (typed contract consumers only), `cross_repo_links`, `impact_surface` and `direct_risks`, with `relationship_analysis` distinguishing an empty analysis from an unavailable or partial one. `churn` adds `change_magnitude`, `risk_type` and `change_pattern`. `scales` adds the unit, range and calibration of every scalar; it is identical on every call, so ask once. A multi-target call also carries `global_hotspots`.
+Opt-in blocks: `owners` adds `owner_pct`, `owner_line_pct`, `recent_owner`, `recent_owner_pct`, `bus_factor` and `contributor_count`. `tests` adds the PR directive's typed `test_recommendations`, and `blast` adds `pr_blast_radius`, the PR dossier behind the directive (transitive files, co-change warnings, test gaps, the structural score; reviewers stay in the directive). `graph` adds typed `dependents` (direct versus transitive), `consumers` (typed contract consumers only), `cross_repo_links`, `impact_surface` and `direct_risks`, with `relationship_analysis` distinguishing an empty analysis from an unavailable or partial one. `churn` adds `change_magnitude`, `risk_type` and `change_pattern`. `scales` adds the unit, range and calibration of every scalar; it is identical on every call, so ask once. A multi-target call also carries `global_hotspots`.
 
 **PR mode** (`changed_files` passed). The response starts with `directive`:
 
 | Field | Meaning |
 |-------|---------|
 | `may_break` | Production files in reverse-import reach of the change: candidates for review, not proven breakage |
-| `may_break_tests` | Test files reached the same way, kept separate so tests do not crowd out production impact |
 | `missing_cochanges` | Historical co-change partners absent from the change |
-| `test_recommendations` | Typed rows, each with a `basis`: `measured` (the per-test coverage map found the test) or `inferred` (structural reach, not coverage proof) |
-| `tests_to_run`, `tests_to_run_basis` | The test ids or files to run, and whether the list is `measured`, `inferred` or `none`. An empty list with unavailable coverage never means no tests are needed |
-| `missing_tests`, `files_without_measured_tests` | Changed files with no measured test |
-| `coverage_analysis`, `test_inference_analysis` | Whether each evidence source was available, stale, partial or degraded |
-| `structural_impact_score` | Uncalibrated 0 to 10 structural heuristic: `localized` below 4, `moderate` 4 to below 7, `broad` 7 and up. Not a breakage probability. `overall_risk_score` is a deprecated alias |
+| `tests_to_run`, `tests_to_run_basis` | The test ids or files to run, and whether the list is `measured`, `inferred` or `none`. When coverage exists the list is the measured one; test files in reverse-import reach that it lacks come back as `inferred` rows with `reason: structural_reach` under `include=["tests"]`. An unmeasured list takes those files directly, and a `none` list that gains any becomes `inferred`. An empty list with unavailable coverage never means no tests are needed |
+| `tests_to_update` | Up to three test files the change will probably need edited, each `{path, reason}` with `reason` `name_pair` (named for a changed file), `imports` (imports one directly) or `co_change` (changes with one in git history), in that order. Tests to edit, not to run: a file can appear in both lists. Empty when none qualify |
+| `missing_tests`, `files_without_measured_tests` | Changed files with no measured test. `missing_tests` is absent when coverage is unavailable or stale, since an empty list would read as no gaps |
+| `coverage` | `{status, reason}` when there is no per-test coverage map. With a map, `coverage_analysis`, `test_analysis` and `test_inference_analysis` say whether each evidence source was available, stale, partial or degraded |
+| `test_recommendations` | With `include=["tests"]`: typed rows, each with a `basis`: `measured` (the per-test coverage map found the test) or `inferred` (structural reach, not coverage proof) |
+| `recommended_reviewers` | Up to five primary owners of the affected files |
+| `reach` | Band of the uncalibrated 0 to 10 structural heuristic: `localized` below 4, `moderate` 4 to below 7, `broad` 7 and up. `null` when the analyzer computed no score. Not a breakage probability, and it never sees the diff. The raw `pr_blast_radius.structural_impact_score` and its scale appear only with `include=["blast", "scales"]` |
 | `next_calls` | `get_change_risk()` for the diff itself, then `get_context` on the first `may_break` files |
 
-In workspace mode the directive also carries `will_break_consumers` (services in other repos that structurally depend on this one; structural reach only despite the name), `missing_cross_repo_cochanges`, `breaking_changes` (provider incompatibilities since the last index, with impacted consumers; a consumer link does not prove field use), `conformance_violations` and `dependency_cycles`.
+In workspace mode the directive also carries `will_break_consumers` (services in other repos that structurally depend on this one; structural reach only despite the name), `missing_cross_repo_cochanges`, `breaking_changes` (provider incompatibilities since the last index, with impacted consumers; a consumer link does not prove field use), `conformance_violations` and `dependency_cycles`. They are dropped when no workspace is loaded.
 
 Every float is rounded to 4 significant digits. Direct rows' `structural_score` values are in pagerank-weighted hotspot units and are not comparable to `get_change_risk` scores.
 
@@ -241,21 +244,23 @@ Every float is rounded to 4 significant digits. Direct rows' `structural_score` 
 |-------|---------|
 | `directive` | `status` (`review_required`, `review_recommended`, `clear_in_analyzed_scope`, `unknown`), a headline, reasons, next actions |
 | `health_delta` | What the change newly made worse. See below |
-| `risk_percentile`, `review_priority`, `classification`, `is_fix` | The change ranked against the repo's recent commits |
+| `risk_percentile`, `review_priority`, `classification` | The change's diff size and spread ranked against the repo's recent commits (`classification` reads `Below-typical`, `Typical` or `Above-typical diff size`). Size, not a verdict: `directive.status` is the verdict |
+| `is_fix` | Present only when the change is a bug fix |
+| `exclude_patterns` | Present only when something was excluded: the request's patterns plus `.riskignore` |
 | `diff_shape` | One sentence on size and spread; never a danger verdict |
-| `working_tree` | Whether uncommitted work was the subject |
-| `fix_history` | Recency-weighted bug-fix record of the touched files, with `percentile` and `overlap` |
+| `working_tree` | Present only when `revspec` was omitted: whether uncommitted work was scored, or a clean tree fell back to `HEAD` |
+| `fix_history` | Recency-weighted bug-fix record of the touched files, with `percentile` and `overlap`; the raw `density` ships with `include=["diagnostics"]` |
 | `impacted_tests` | Tests that execute the changed lines |
 | `patch_coverage` | Share of changed executable lines the stored coverage ran |
 | `branch_overlap` | Other branches editing the same files |
 | `independent_changes` | When the diff is several unrelated changes |
 | `cross_repo` | Workspace mode: consumers and breaking changes across repos |
 
-`include=["diagnostics"]` adds `score` (the raw 0 to 10 number), `fallback_band`, `risk_authority`, `score_measures`, `score_unit`, `baseline_sample_size`, `features` and `drivers`. `include=["scales"]` adds each field's unit, range and calibration.
+`include=["diagnostics"]` adds `score` (the raw 0 to 10 number), `fallback_band`, `risk_authority`, `score_measures`, `score_unit`, `baseline_sample_size`, `features` and `drivers`, plus `health_delta.analyzer` (analyzer and rules fingerprint), `health_delta.base` and `health_delta.head` (the two resolved revisions) and `health_delta.limits`. `include=["scales"]` adds each field's unit, range and calibration.
 
-**health_delta.** Both revisions are analysed from their own content, and a finding at head is reported only when the diff explains it. `scope` counts changed, eligible, analysed, skipped and failed files; `status` is `available`, `partial` or `unavailable`, and `partial` is never a clean bill. `introduced`, `worsened` and `resolved` are totals; `top_findings` holds the three most actionable, with `findings_total`. Each finding names `dimension`, `biomarker`, `severity`, `path`, `symbol`, head-side `lines`, a `reason`, and an `attribution` (`basis` of `added_lines`, `changed_symbol`, `changed_call_edge`, `new_file`, `file_change`, `context_change` or `unknown`, with a `confidence`). Identity ignores line numbers, so moved code introduces nothing. `inspect` gives the `finding_id` call that expands one; ids are bound to the two revisions. A finding that matches a stored one carries `health_reference` for `get_health(finding_id=...)`. Performance findings carry `opportunity_id` and are ordered by opportunity rank.
+**health_delta.** Both revisions are analysed from their own content, and a finding at head is reported only when the diff explains it. `scope` counts changed, eligible, analysed, skipped and failed files; `status` is `available`, `partial` or `unavailable`, and `partial` is never a clean bill. Documentation and configuration files (Markdown, JSON, YAML, TOML and the other doc or config extensions) are skipped with reason `not_code` and never make a run `partial`; a change made only of them reads `clear_in_analyzed_scope` with a headline saying health analysis does not cover them. HTML, schema and other files with no health dialect still make a run `partial`. `introduced`, `worsened` and `resolved` are totals; `top_findings` holds the three most actionable, with `findings_total`. Each finding names `dimension`, `biomarker`, `severity`, `path`, `symbol`, head-side `lines`, a `reason`, and an `attribution` (`basis` of `added_lines`, `changed_symbol`, `changed_call_edge`, `new_file`, `file_change`, `context_change` or `unknown`, with a `confidence`). Identity ignores line numbers, so moved code introduces nothing. `inspect` gives the `finding_id` call that expands one; ids are bound to the two revisions. A finding that matches a stored one carries `health_reference` for `get_health(finding_id=...)`. Performance findings carry `opportunity_id` and are ordered by opportunity rank.
 
-**impacted_tests.** `tests_to_run` names tests the per-test coverage map proves execute the changed lines, capped at ten with `total` and `truncated`. `line_coverage` buckets: `untested_changes`, `stale_test_candidates` (covered lines whose test file is absent from the diff), `covered`, `no_coverage_data`. With no coverage map, `status` is `inferred` when the import graph names test files reaching the change, or `no_map` (run the full suite). `basis` is always present: `measured`, `inferred` or `none`; `tests_to_run_kind` is `test_id` or `test_file`. Build the measured map with `coverage run --contexts=test` and `repowise coverage add`.
+**impacted_tests.** `tests_to_run` names tests the per-test coverage map proves execute the changed lines, capped at ten with `total` and `truncated`. With a coverage map, `map_present` is true and `line_coverage` buckets: `untested_changes`, `stale_test_candidates` (covered lines whose test file is absent from the diff), `covered`, `no_coverage_data`. With no coverage map, `map_present`, `line_coverage` and (unless tests are named) `tests_to_run_kind` are absent, and `status` is `inferred` when the import graph names test files reaching the change, or `no_map` (run the full suite). `basis` is always present: `measured`, `inferred` or `none`; `tests_to_run_kind` is `test_id` or `test_file` whenever `tests_to_run` is filled. Build the measured map with `coverage run --contexts=test` and `repowise coverage add`.
 
 **patch_coverage.** Present when the index stores coverage; the same computation and JSON shape `repowise coverage check --format json` gates on. `patch_coverage_pct` is null when no changed line is executable; files the report never names read `not_in_report`. `scope.freshness` is `stale` when coverage was measured at another commit than the change's head. `path_gates` judges the path-scoped gates in `coverage.gates`. Each file row carries `risk` (`fix_pressure`, `dependents`, `hotspot`, `bug_magnet`, `risky`, `reasons`, `basis`) and up to eight `hints` per uncovered range: `range`, `symbol`, up to three `tests` to extend, and a `basis` of `per_test` (measured), `call_graph` or `import_graph` (inferred). Without a `revspec`, it covers everything a push would bring, diffed from the merge-base with the default base branch.
 
@@ -334,6 +339,7 @@ Items are ordered by value first, then tier. History markers (churn, ownership, 
 | Field | Meaning |
 |-------|---------|
 | `kpis` | Hotspot health, `average_health` (NLOC-weighted), `average_health_unweighted`, `average_health_weighting`, pillar averages, `worst_performer_path`, `worst_test_path`, `non_code_files`, `average_health_code_only` |
+| `unanalysed_file_count` | Files in a language health has no dialect for, stored with no score and left out of every figure; absent when there are none |
 | `gap_analysis` | Weighted points the average must recover to reach 8.0, files below it, `files_to_reach_target`, `files_for_half_gap`, `weighted_gap_points`, `weighted_gross_gap_points` |
 | `worst_files`, `test_worst_files` | Lowest raw scores, production and test |
 | `high_leverage_files` | Ranked by `weighted_deficit`, with `share_of_repo_gap_pct` |

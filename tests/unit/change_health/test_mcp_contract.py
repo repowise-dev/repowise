@@ -156,7 +156,7 @@ async def test_a_clean_change_says_analyzed_scope_not_safe(tool, make_repo):
 async def test_a_partial_comparison_never_reads_as_clear(tool, make_repo):
     repo = make_repo()
     repo.commit("seed", {"app.py": "x = 1\n"})
-    repo.commit("mixed", {"app.py": python_complex("tangle", 18), "notes.md": "text\n"})
+    repo.commit("mixed", {"app.py": python_complex("tangle", 18), "lib.ex": "defmodule A do\nend\n"})
     module = tool(repo)
 
     result = await module.get_change_risk("HEAD", baseline=0)
@@ -164,6 +164,19 @@ async def test_a_partial_comparison_never_reads_as_clear(tool, make_repo):
     assert result["health_delta"]["status"] == "partial"
     assert result["health_delta"]["skipped"]["total"] == 1
     assert any("not analysed" in reason for reason in result["directive"]["reasons"])
+
+
+async def test_a_docs_only_change_says_there_is_no_code_to_analyse(tool, make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", "CHANGES.rst": "a\n"})
+    repo.commit("docs", {"CHANGES.rst": "b\n"})
+    module = tool(repo)
+
+    result = await module.get_change_risk("HEAD", baseline=0)
+
+    assert result["directive"]["status"] == "clear_in_analyzed_scope"
+    assert "No code changed" in result["directive"]["headline"]
+    assert result["health_delta"]["skipped"]["by_reason"] == {"not_code": 1}
 
 
 async def test_performance_findings_do_not_by_themselves_demand_review(tool, make_repo):
@@ -196,11 +209,17 @@ async def test_every_surfaced_finding_carries_an_attribution(tool, make_repo):
 async def test_the_delta_names_the_analyzer_and_the_two_sides(tool, make_repo):
     module = tool(seeded(make_repo))
 
-    delta = (await module.get_change_risk("HEAD", baseline=0))["health_delta"]
+    default = (await module.get_change_risk("HEAD", baseline=0))["health_delta"]
+    delta = (await module.get_change_risk("HEAD", baseline=0, include=["diagnostics"]))[
+        "health_delta"
+    ]
 
+    # Comparison mechanics are a projection: absent by default, exact on request.
+    assert not {"analyzer", "base", "head", "limits"} & set(default)
     assert delta["analyzer"]["analyzer_version"] > 0
     assert delta["base"]["sha"] and delta["head"]["sha"]
-    assert delta["basis"] == "both_sides_analyzed"
+    assert delta["limits"]
+    assert default["basis"] == delta["basis"] == "both_sides_analyzed"
 
 
 # -- caching and concurrency ------------------------------------------------

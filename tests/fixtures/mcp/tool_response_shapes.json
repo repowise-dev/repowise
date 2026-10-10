@@ -174,10 +174,8 @@
       "reasons": [],
       "status": null
     },
-    "exclude_patterns": [],
     "fix_history": {
       "available": null,
-      "density": null,
       "files": [
         {
           "churn": null,
@@ -206,31 +204,13 @@
       "percentile": null
     },
     "health_delta": {
-      "analyzer": {
-        "analyzer_version": null,
-        "performance_model_version": null,
-        "rules_fingerprint": null
-      },
-      "base": {
-        "kind": null,
-        "ref": null,
-        "sha": null
-      },
       "basis": null,
       "by_dimension": {},
       "by_severity": {},
       "explanation": null,
       "findings_emitted": null,
       "findings_total": null,
-      "head": {
-        "kind": null,
-        "ref": null,
-        "sha": null
-      },
       "introduced": null,
-      "limits": [
-        null
-      ],
       "resolved": null,
       "scope": {
         "analyzed": null,
@@ -251,13 +231,6 @@
     },
     "impacted_tests": {
       "basis": null,
-      "line_coverage": {
-        "covered": [],
-        "no_coverage_data": [],
-        "stale_test_candidates": [],
-        "untested_changes": []
-      },
-      "map_present": null,
       "status": null,
       "summary": null,
       "tests_to_run": [
@@ -266,11 +239,9 @@
       "total": null,
       "truncated": null
     },
-    "is_fix": null,
     "ref": null,
     "review_priority": null,
-    "risk_percentile": null,
-    "working_tree": null
+    "risk_percentile": null
   },
   "get_conformance": {
     "_meta": {
@@ -1367,33 +1338,10 @@
       }
     },
     "directive": {
-      "breaking_changes": [],
-      "breaking_changes_truncated": null,
-      "conformance_violations": [],
-      "coverage_analysis": {
-        "changed_files_total": null,
-        "changed_files_with_measured_tests": null,
-        "changed_files_without_measured_tests": null,
-        "freshness": {
-          "indexed_commit": null,
-          "ingested_commit": null,
-          "reason": null,
-          "status": null
-        },
-        "ingested_at": null,
-        "map_present": null,
-        "pair_count": null,
-        "reason": null,
-        "source_file_count": null,
-        "source_format": null,
-        "status": null,
-        "test_count": null
-      },
-      "cross_repo_relationship_analysis": {
+      "coverage": {
         "reason": null,
         "status": null
       },
-      "dependency_cycles": [],
       "files_without_measured_tests": [
         null
       ],
@@ -1404,14 +1352,6 @@
       "may_break_emitted": null,
       "may_break_omitted": null,
       "may_break_reduced_reason": null,
-      "may_break_tests": [
-        null
-      ],
-      "may_break_tests_emitted": null,
-      "may_break_tests_omitted": null,
-      "may_break_tests_reduced_reason": null,
-      "may_break_tests_total": null,
-      "may_break_tests_truncated": null,
       "may_break_total": null,
       "may_break_truncated": null,
       "missing_cochanges": [
@@ -1422,16 +1362,6 @@
       "missing_cochanges_reduced_reason": null,
       "missing_cochanges_total": null,
       "missing_cochanges_truncated": null,
-      "missing_cross_repo_cochanges": [],
-      "missing_cross_repo_cochanges_emitted": null,
-      "missing_cross_repo_cochanges_total": null,
-      "missing_cross_repo_cochanges_truncated": null,
-      "missing_tests": [],
-      "missing_tests_emitted": null,
-      "missing_tests_omitted": null,
-      "missing_tests_semantics": null,
-      "missing_tests_total": null,
-      "missing_tests_truncated": null,
       "next_calls": [
         {
           "arguments": {},
@@ -1441,23 +1371,15 @@
           "tool": null
         }
       ],
+      "reach": null,
+      "recommended_reviewers": [
+        {
+          "email": null,
+          "files": null,
+          "ownership_pct": null
+        }
+      ],
       "summary": null,
-      "test_analysis": {
-        "basis_categories": [
-          null
-        ],
-        "degraded": null,
-        "partial": null,
-        "stale": null,
-        "status": null
-      },
-      "test_inference_analysis": {
-        "candidates_before_dedup": null,
-        "changed_files_total": null,
-        "changed_files_with_candidates": null,
-        "reason": null,
-        "status": null
-      },
       "test_recommendations": [
         {
           "basis": null,
@@ -1487,12 +1409,12 @@
       "tests_to_run_omitted": null,
       "tests_to_run_total": null,
       "tests_to_run_truncated": null,
-      "will_break_consumers": [],
-      "will_break_consumers_deprecated": null,
-      "will_break_consumers_emitted": null,
-      "will_break_consumers_semantics": null,
-      "will_break_consumers_total": null,
-      "will_break_consumers_truncated": null
+      "tests_to_update": [
+        {
+          "path": null,
+          "reason": null
+        }
+      ]
     },
     "omission_marker": null,
     "pr_blast_radius": {
@@ -1585,44 +1507,6 @@
           }
         ]
       },
-      "overall_risk_score": null,
-      "overall_risk_score_compatibility": {
-        "deprecated": null,
-        "equivalent_value": null,
-        "historical_meaning": null,
-        "replacement": null
-      },
-      "recommended_reviewers": [
-        {
-          "email": null,
-          "files": null,
-          "ownership_pct": null
-        }
-      ],
-      "recommended_reviewers_emitted": null,
-      "recommended_reviewers_total": null,
-      "recommended_reviewers_truncated": null,
-      "structural_impact_band": null,
-      "structural_impact_scale": {
-        "authoritative_for_change_review": null,
-        "band_thresholds": {
-          "broad": null,
-          "moderate": null
-        },
-        "calibration": {
-          "status": null
-        },
-        "field": null,
-        "kind": null,
-        "measures": null,
-        "range": {
-          "maximum": null,
-          "minimum": null
-        },
-        "runtime_breakage_probability": null,
-        "unit": null
-      },
-      "structural_impact_score": null,
       "test_gaps": [
         null
       ],
@@ -1728,22 +1612,12 @@
     },
     "targets": {
       "packages/core/src/repowise/core/ingestion/call_resolver.py": {
-        "bus_factor": null,
         "co_change_partners": [
           {
-            "direction": null,
-            "evidence_kind": null,
+            "conf_ab": null,
             "file_path": null,
             "has_import_link": null,
-            "has_structural_link": null,
-            "last_co_change": null,
-            "provenance": null,
-            "relationship_type": null,
-            "structural_relationship_types": [
-              null
-            ],
-            "support": null,
-            "weight": null
+            "support": null
           }
         ],
         "co_change_partners_emitted": null,
@@ -1752,7 +1626,6 @@
         "co_change_partners_total": null,
         "co_change_partners_truncated": null,
         "commit_count_capped": null,
-        "contributor_count": null,
         "defect_profile": {
           "bug_magnet": null,
           "fix_count": null,
@@ -1770,10 +1643,7 @@
         "hotspot_score": null,
         "is_hotspot": null,
         "line_coverage_pct": null,
-        "owner_pct": null,
         "primary_owner": null,
-        "recent_owner": null,
-        "recent_owner_pct": null,
         "risk_summary": null,
         "security_signals": [],
         "target": null,

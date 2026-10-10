@@ -8,6 +8,7 @@
 
 import { ChevronRight, Home } from "lucide-react";
 import type { ZoomNode } from "@repowise-dev/ui/zoom";
+import { useTranslations } from "next-intl";
 
 interface ZoomBreadcrumbProps {
   chain: ZoomNode[];
@@ -15,13 +16,15 @@ interface ZoomBreadcrumbProps {
 }
 
 export function ZoomBreadcrumb({ chain, onCrumb }: ZoomBreadcrumbProps) {
+  const t = useTranslations("zoom");
+
   if (chain.length === 0) return null;
   const root = chain[0]!;
   const rest = chain.slice(1);
 
   return (
     <nav
-      aria-label="Zoom location"
+      aria-label={t("breadcrumb.label")}
       className="flex min-w-0 items-center gap-1 overflow-x-auto text-xs text-[var(--color-text-secondary)]"
     >
       <button

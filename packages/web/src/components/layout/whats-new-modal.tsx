@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from "@repowise-dev/ui/ui/dialog";
 import { useChangelog } from "@/lib/hooks/use-meta-version";
+import { useTranslations } from "next-intl";
 
 export interface WhatsNewModalProps {
   open: boolean;
@@ -15,6 +16,7 @@ export interface WhatsNewModalProps {
 
 /** Renders repowise's recent release notes from the bundled changelog. */
 export function WhatsNewModal({ open, onOpenChange }: WhatsNewModalProps) {
+  const t = useTranslations("shell");
   // Only fetch once the modal is opened.
   const { entries, error, isLoading } = useChangelog(open);
 
@@ -22,23 +24,28 @@ export function WhatsNewModal({ open, onOpenChange }: WhatsNewModalProps) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>What&apos;s new in repowise</DialogTitle>
+          <DialogTitle>{t("whatsNewModal.title")}</DialogTitle>
         </DialogHeader>
 
         {isLoading && (
-          <p className="text-sm text-[var(--color-text-tertiary)]">Loading release notes...</p>
+          <p className="text-sm text-[var(--color-text-tertiary)]">
+            {t("whatsNewModal.loading")}
+          </p>
         )}
         {error && (
           <p className="text-sm text-[var(--color-text-tertiary)]">
-            Release notes unavailable.{" "}
-            <a
-              href="https://github.com/repowise-dev/repowise/releases"
-              target="_blank"
-              rel="noreferrer"
-              className="text-[var(--color-accent-primary)] underline"
-            >
-              View on GitHub
-            </a>
+            {t.rich("whatsNewModal.unavailable", {
+              link: (chunks) => (
+                <a
+                  href="https://github.com/repowise-dev/repowise/releases"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[var(--color-accent-primary)] underline"
+                >
+                  {chunks}
+                </a>
+              ),
+            })}
           </p>
         )}
 

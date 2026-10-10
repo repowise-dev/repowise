@@ -25,6 +25,7 @@ from repowise.cli.agent_targets.registry import (
 )
 from repowise.cli.agent_targets.types import (
     AgentTarget,
+    DoctorStatus,
     FileAction,
     Scope,
     Tier,
@@ -47,7 +48,16 @@ def test_registry_exposes_the_shipped_targets() -> None:
     Order is load-bearing: it is the order agents appear in prompts, in
     ``--target=all`` and in listings, and new ids append rather than sort in.
     """
-    assert ALL_IDS == ["claude-code", "codex", "vscode", "cursor", "opencode", "hermes"]
+    assert ALL_IDS == [
+        "claude-code",
+        "codex",
+        "vscode",
+        "cursor",
+        "opencode",
+        "hermes",
+        "copilot",
+        "kiro",
+    ]
 
 
 @pytest.mark.parametrize("target_id", ALL_IDS)
@@ -126,6 +136,8 @@ def test_tiers_are_derived_from_the_adapters_a_target_names() -> None:
     assert tier_of("cursor") is Tier.GOOD
     assert tier_of("opencode") is Tier.GOOD
     assert tier_of("hermes") is Tier.GOOD
+    assert tier_of("copilot") is Tier.GOOD
+    assert tier_of("kiro") is Tier.GOOD
 
 
 def test_a_target_cannot_reach_full_without_a_session_adapter() -> None:
@@ -145,6 +157,35 @@ def test_a_target_cannot_reach_full_without_a_session_adapter() -> None:
         methods = get_target("claude-code").methods
 
     assert derive_tier(_HooksOnly()) is Tier.GOOD
+
+
+@pytest.mark.parametrize(
+    ("provides", "tier"),
+    [
+        ({"mcp"}, Tier.BASIC),
+        ({"mcp", "instructions"}, Tier.GOOD),
+        ({"mcp", "skills"}, Tier.GOOD),
+    ],
+)
+def test_good_needs_instructions_or_skills_beside_mcp(provides: set[str], tier: Tier) -> None:
+    """MCP alone is Basic; the capability set decides, not having methods at all."""
+    from repowise.cli.agent_targets.types import Capability, InstallMethod
+
+    class _Wired:
+        id = "wired"
+        display_name = "Wired"
+        docs_url = None
+        hook_adapter = None
+        session_adapter = None
+        methods = (
+            InstallMethod(
+                id="direct",
+                provides=frozenset(Capability(c) for c in provides),
+                managed_by="repowise",
+            ),
+        )
+
+    assert derive_tier(_Wired()) is tier
 
 
 def test_a_target_that_writes_nothing_is_paste_config() -> None:
@@ -238,10 +279,37 @@ def test_vscode_declines_user_scope() -> None:
     assert not get_target("vscode").supports_scope(Scope.USER)
 
 
-def test_cursor_declines_user_scope() -> None:
-    """One global entry can only name one repo, so this target does not write one."""
-    assert get_target("cursor").supports_scope(Scope.PROJECT)
-    assert not get_target("cursor").supports_scope(Scope.USER)
+def test_cursor_user_scope_writes_only_the_rewrite_hook(
+    _isolated_home: Path, cursor_hooks_json: Path
+) -> None:
+    """User scope is the hook in ``~/.cursor/hooks.json``; never a global MCP entry."""
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    target = get_target("cursor")
+    hooks = cursor_hooks_json
+    assert target.doctor().status is DoctorStatus.NOT_INSTALLED
+
+    first = target.install(Scope.USER)
+    assert [(f.path, f.action) for f in first.files] == [(hooks, FileAction.CREATED)]
+    assert not (_isolated_home / ".cursor" / "mcp.json").exists()
+    assert target.install(Scope.USER).files[0].action is FileAction.UNCHANGED
+    assert [r.scope for r in cursor_target.detect(None)] == [Scope.USER]
+    assert target.doctor().status is DoctorStatus.OK
+
+    removed = target.uninstall(Scope.USER)
+    assert [(f.path, f.action) for f in removed.files] == [(hooks, FileAction.REMOVED)]
+    assert cursor_target.detect(None) == []
+    assert target.uninstall(Scope.USER).files[0].action is FileAction.NOT_FOUND
+
+
+def test_cursor_user_scope_keeps_a_hooks_file_it_cannot_parse(cursor_hooks_json: Path) -> None:
+    target = get_target("cursor")
+    hooks = cursor_hooks_json
+    hooks.write_text('{"hooks": {"preToolUse": [{"command": "repowise-rewrite"', encoding="utf-8")
+
+    assert target.install(Scope.USER).files[0].action is FileAction.KEPT
+    assert target.uninstall(Scope.USER).files[0].action is FileAction.KEPT
+    assert target.doctor().status is DoctorStatus.BROKEN
 
 
 def test_cursor_writes_its_own_config_key_not_vs_codes() -> None:
@@ -663,7 +731,7 @@ def test_vscode_install_survives_a_vscode_path_that_is_a_file(tmp_path: Path) ->
     result = vscode_target.TARGET.install(Scope.PROJECT, repo_path=repo)
 
     assert (repo / ".vscode").is_file()
-    assert all(f.action is FileAction.KEPT for f in result.files)
+    assert all(f.action is FileAction.KEPT for f in result.files if f.path.parent.name == ".vscode")
     assert result.notes
 
 
@@ -1045,6 +1113,8 @@ def test_every_target_doctor_survives_a_non_utf8_config(tmp_path: Path, monkeypa
         Path(".claude") / "settings.json",
         Path(".codex") / "hooks.json",
         Path(".config") / "opencode" / "opencode.jsonc",
+        Path(".copilot") / "mcp-config.json",
+        Path(".kiro") / "settings" / "mcp.json",
     ):
         target_file = home / relative
         target_file.parent.mkdir(parents=True, exist_ok=True)
@@ -3325,3 +3395,353 @@ def test_yaml_merge_keeps_an_inline_list_inline_and_still_findable() -> None:
         added, "platform_toolsets", "cli", ["hermes-cli", "othersrv"]
     )
     assert restored == text
+
+
+# ---------------------------------------------------------------------------
+# GitHub Copilot instructions (.github/copilot-instructions.md)
+# ---------------------------------------------------------------------------
+
+
+def _copilot_instructions(repo: Path) -> Path:
+    return repo / ".github" / "copilot-instructions.md"
+
+
+def test_vscode_instructions_coexist_with_the_users_own_text(tmp_path: Path) -> None:
+    """Install appends our block; uninstall gives back the user's bytes exactly."""
+    from repowise.cli.agent_targets.instructions import DISTILL_MARKER_START
+
+    repo = tmp_path / "repo"
+    path = _copilot_instructions(repo)
+    path.parent.mkdir(parents=True)
+    original = "# Team rules\n\nUse tabs.\n"
+    path.write_text(original, encoding="utf-8", newline="\n")
+    target = get_target("vscode")
+
+    target.install(Scope.PROJECT, repo_path=repo)
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith(original.rstrip())
+    assert DISTILL_MARKER_START in text
+    assert target.install(Scope.PROJECT, repo_path=repo).files[-1].action is FileAction.UNCHANGED
+
+    result = target.uninstall(Scope.PROJECT, repo_path=repo)
+    assert {f.path: f.action for f in result.files}[path] is FileAction.REMOVED
+    assert path.read_bytes() == original.encode("utf-8")
+
+
+def test_vscode_instructions_round_trip_to_no_file(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = get_target("vscode")
+
+    target.install(Scope.PROJECT, repo_path=repo)
+    assert _copilot_instructions(repo).exists()
+    target.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert not (repo / ".github").exists()
+    assert not (repo / ".vscode").exists()
+
+
+# ---------------------------------------------------------------------------
+# GitHub Copilot CLI
+# ---------------------------------------------------------------------------
+
+
+def _copilot():
+    from repowise.cli.agent_targets.targets import copilot
+
+    return copilot
+
+
+def test_copilot_writes_the_mcp_config_json_shape(tmp_path: Path) -> None:
+    copilot = _copilot()
+    path = Path.home() / ".copilot" / "mcp-config.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"mcpServers": {"other": {"type": "stdio", "command": "x"}}}), encoding="utf-8"
+    )
+
+    result = copilot.TARGET.install(Scope.USER)
+
+    assert result.files[0].action is FileAction.UPDATED
+    servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+    assert servers["other"] == {"type": "stdio", "command": "x"}
+    entry = servers["repowise"]
+    assert entry["type"] == "stdio"
+    assert entry["args"] == ["mcp", "--transport", "stdio"]
+    assert entry["tools"] == ["*"]
+    assert copilot.TARGET.install(Scope.USER).files[0].action is FileAction.UNCHANGED
+
+
+def test_copilot_keeps_a_tools_list_the_user_narrowed(tmp_path: Path) -> None:
+    copilot = _copilot()
+    copilot.TARGET.install(Scope.USER)
+    path = copilot.mcp_config_path()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["mcpServers"]["repowise"]["tools"] = ["get_answer"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    copilot.TARGET.install(Scope.USER)
+
+    assert json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["repowise"]["tools"] == [
+        "get_answer"
+    ]
+
+
+def test_copilot_follows_copilot_home(tmp_path: Path, monkeypatch) -> None:
+    copilot = _copilot()
+    home = tmp_path / "copilot-home"
+    monkeypatch.setenv("COPILOT_HOME", f"  {home}  ")
+
+    copilot.TARGET.install(Scope.USER)
+
+    assert (home / "mcp-config.json").exists()
+    assert not (Path.home() / ".copilot").exists()
+    assert copilot.TARGET.detect()[0].config_path == home / "mcp-config.json"
+    assert copilot.TARGET.doctor().status.value == "ok"
+
+
+def _which_copilot(monkeypatch, present: bool) -> None:
+    monkeypatch.setattr(
+        "repowise.core.agents.identity.shutil.which",
+        lambda name: "/bin/copilot" if present and name == "copilot" else None,
+    )
+
+
+def test_copilot_is_present_only_with_its_binary(monkeypatch) -> None:
+    """VS Code fills ``~/.copilot`` too (ide, skills, agents, hooks, mcp-config)."""
+    _which_copilot(monkeypatch, False)
+    copilot = _copilot()
+    for name in ("ide", "skills", "agents", "hooks"):
+        (Path.home() / ".copilot" / name).mkdir(parents=True)
+    (Path.home() / ".copilot" / "mcp-config.json").write_text("{}", encoding="utf-8")
+
+    assert not copilot.TARGET.is_present()
+    _which_copilot(monkeypatch, True)
+    assert copilot.TARGET.is_present()
+
+
+def test_copilot_home_expands_a_tilde(monkeypatch) -> None:
+    monkeypatch.setenv("COPILOT_HOME", "~/elsewhere")
+    assert _copilot().config_dir() == Path.home() / "elsewhere"
+
+
+def test_copilot_leaves_a_local_entry_carrying_a_url_alone() -> None:
+    copilot = _copilot()
+    path = copilot.mcp_config_path()
+    path.parent.mkdir(parents=True)
+    stored = {"mcpServers": {"repowise": {"type": "local", "url": "https://x"}}}
+    path.write_text(json.dumps(stored), encoding="utf-8")
+
+    result = copilot.TARGET.install(Scope.USER)
+
+    assert result.files[0].action is FileAction.KEPT
+    assert json.loads(path.read_text(encoding="utf-8")) == stored
+
+
+def test_copilot_user_scope_round_trips_to_nothing() -> None:
+    copilot = _copilot()
+    copilot.TARGET.install(Scope.USER)
+
+    result = copilot.TARGET.uninstall(Scope.USER)
+
+    assert result.files[0].action is FileAction.REMOVED
+    assert not (Path.home() / ".copilot").exists()
+
+
+def test_copilot_project_registration_comes_from_its_own_claim(tmp_path: Path) -> None:
+    """The shared block alone, as VS Code writes it, is not a Copilot registration."""
+    copilot = _copilot()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    get_target("vscode").install(Scope.PROJECT, repo_path=repo)
+    assert copilot.TARGET.detect(repo) == []
+
+    result = copilot.TARGET.install(Scope.PROJECT, repo_path=repo)
+    assert result.files[0].action is FileAction.UPDATED
+    assert {r.scope for r in copilot.TARGET.detect(repo)} == {Scope.PROJECT}
+    assert copilot.TARGET.install(Scope.PROJECT, repo_path=repo).files[0].action is (
+        FileAction.UNCHANGED
+    )
+
+
+def test_copilot_project_scope_round_trips_to_no_file(tmp_path: Path) -> None:
+    copilot = _copilot()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    copilot.TARGET.install(Scope.PROJECT, repo_path=repo)
+    result = copilot.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert result.files[0].action is FileAction.REMOVED
+    assert not _copilot_instructions(repo).exists()
+
+
+def test_copilot_doctor_calls_a_non_object_config_broken() -> None:
+    copilot = _copilot()
+    path = copilot.mcp_config_path()
+    path.parent.mkdir(parents=True)
+    path.write_text("[]", encoding="utf-8")
+
+    report = copilot.TARGET.doctor()
+
+    assert report.status.value == "broken"
+    assert copilot.TARGET.install(Scope.USER).files[0].action is FileAction.KEPT
+    assert path.read_text(encoding="utf-8") == "[]"
+
+
+# ---------------------------------------------------------------------------
+# Kiro
+# ---------------------------------------------------------------------------
+
+
+def _kiro():
+    from repowise.cli.agent_targets.targets import kiro
+
+    return kiro
+
+
+@pytest.mark.parametrize("scope", [Scope.PROJECT, Scope.USER])
+def test_kiro_installs_mcp_and_steering_then_round_trips_to_nothing(
+    scope: Scope, tmp_path: Path
+) -> None:
+    kiro = _kiro()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    root = repo / ".kiro" if scope is Scope.PROJECT else Path.home() / ".kiro"
+
+    result = kiro.TARGET.install(scope, repo_path=repo)
+
+    assert {f.action for f in result.files} == {FileAction.CREATED}
+    entry = json.loads((root / "settings" / "mcp.json").read_text(encoding="utf-8"))[
+        "mcpServers"
+    ]["repowise"]
+    assert "type" not in entry
+    if scope is Scope.PROJECT:
+        assert entry["command"] == "repowise"
+        assert str(repo.resolve()).replace("\\", "/") in entry["args"]
+    else:
+        assert entry["args"] == ["mcp", "--transport", "stdio"]
+    steering = (root / "steering" / "repowise.md").read_text(encoding="utf-8")
+    assert steering.startswith(kiro.STEERING_HEADER)
+    assert not steering.startswith("---")
+    assert {r.scope for r in kiro.TARGET.detect(repo)} == {scope}
+    assert {f.action for f in kiro.TARGET.install(scope, repo_path=repo).files} == {
+        FileAction.UNCHANGED
+    }
+
+    removed = kiro.TARGET.uninstall(scope, repo_path=repo)
+
+    assert {f.action for f in removed.files} == {FileAction.REMOVED}
+    assert not root.exists()
+    assert kiro.TARGET.detect(repo) == []
+
+
+def test_kiro_keeps_a_sibling_server_and_a_steering_file_it_did_not_write(
+    tmp_path: Path,
+) -> None:
+    kiro = _kiro()
+    repo = tmp_path / "repo"
+    settings = repo / ".kiro" / "settings" / "mcp.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}), encoding="utf-8")
+    steering = repo / ".kiro" / "steering" / "repowise.md"
+    steering.parent.mkdir(parents=True)
+    steering.write_text("my own notes\n", encoding="utf-8")
+
+    result = kiro.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert {f.path: f.action for f in result.files}[steering] is FileAction.KEPT
+    assert steering.read_text(encoding="utf-8") == "my own notes\n"
+    kiro.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+    assert json.loads(settings.read_text(encoding="utf-8")) == {
+        "mcpServers": {"other": {"command": "x"}}
+    }
+    assert steering.read_text(encoding="utf-8") == "my own notes\n"
+
+
+def test_kiro_doctor_reports_each_user_state() -> None:
+    kiro = _kiro()
+    assert kiro.TARGET.doctor().status.value == "not-installed"
+
+    path = kiro.mcp_config_path(Scope.USER)
+    path.parent.mkdir(parents=True)
+    path.write_text("[]", encoding="utf-8")
+    assert kiro.TARGET.doctor().status.value == "broken"
+
+    path.unlink()
+    kiro.TARGET.install(Scope.USER)
+    assert kiro.TARGET.doctor().status.value == "ok"
+
+
+def test_kiro_install_notes_that_the_ide_ships_with_mcp_off(tmp_path: Path) -> None:
+    result = _kiro().TARGET.install(Scope.USER)
+    assert any("MCP disabled" in note for note in result.notes)
+
+
+def test_copilot_instructions_survive_removing_vscode_while_copilot_cli_reads_them(
+    tmp_path: Path,
+) -> None:
+    from repowise.cli.agent_targets.registry import removing
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    vscode_target, copilot_target = get_target("vscode"), get_target("copilot")
+    vscode_target.install(Scope.PROJECT, repo_path=repo)
+    copilot_target.install(Scope.USER)
+    copilot_target.install(Scope.PROJECT, repo_path=repo)
+    path = _copilot_instructions(repo)
+
+    result = vscode_target.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert {f.path: f.action for f in result.files}[path] is FileAction.KEPT
+    assert any("GitHub Copilot CLI" in note for note in result.notes)
+    assert path.exists()
+
+    vscode_target.install(Scope.PROJECT, repo_path=repo)
+    with removing(["vscode", "copilot"]):
+        vscode_target.uninstall(Scope.PROJECT, repo_path=repo)
+        copilot_target.uninstall(Scope.PROJECT, repo_path=repo)
+    assert not path.exists()
+
+
+def test_a_project_only_copilot_install_keeps_the_block_when_vscode_is_removed(
+    tmp_path: Path,
+) -> None:
+    """add copilot --scope=project, add vscode, remove vscode: the block stays."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    get_target("copilot").install(Scope.PROJECT, repo_path=repo)
+    get_target("vscode").install(Scope.PROJECT, repo_path=repo)
+
+    result = get_target("vscode").uninstall(Scope.PROJECT, repo_path=repo)
+
+    path = _copilot_instructions(repo)
+    assert {f.path: f.action for f in result.files}[path] is FileAction.KEPT
+    assert any("--target=copilot" in note for note in result.notes)
+    assert path.exists()
+
+
+def test_kiro_user_scope_follows_kiro_home(tmp_path: Path, monkeypatch) -> None:
+    kiro = _kiro()
+    monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kh"))
+
+    kiro.TARGET.install(Scope.USER)
+
+    assert (tmp_path / "kh" / "settings" / "mcp.json").exists()
+    assert not (Path.home() / ".kiro").exists()
+
+
+def test_removing_vscode_and_copilot_together_leaves_no_file(tmp_path: Path) -> None:
+    from repowise.cli.agent_targets.registry import removing
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    get_target("copilot").install(Scope.PROJECT, repo_path=repo)
+    get_target("vscode").install(Scope.PROJECT, repo_path=repo)
+
+    with removing(["vscode", "copilot"]):
+        get_target("vscode").uninstall(Scope.PROJECT, repo_path=repo)
+        get_target("copilot").uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert not _copilot_instructions(repo).exists()
