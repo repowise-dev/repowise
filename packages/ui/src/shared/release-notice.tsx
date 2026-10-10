@@ -8,26 +8,35 @@ const STORAGE_PREFIX = "repowise:release-notice-dismissed:";
 export interface ReleaseNoticeProps {
   /** Stable id for this notice, e.g. `"health-scoring"`. Combined with
    *  `version` to key the dismissal, so a later release that changes the same
-   *  thing again shows its notice once more. */
-  id: string;
+   *  thing again shows its notice once more. Not needed when the host owns
+   *  dismissal through `onDismiss`. */
+  id?: string;
   /** The release this notice belongs to. Omit only if the notice is not tied
    *  to one, in which case dismissal is permanent. */
   version?: string | null;
-  /** The one line the notice reads as. */
+  /** Bold lead sentence, e.g. "Savings accounting has been upgraded." */
+  title?: React.ReactNode;
+  /** The body copy. */
   children: React.ReactNode;
-  /** The explanation, behind a "What changed" toggle on the same line. */
+  /** The longer explanation, behind a "What changed" toggle. */
   detail?: React.ReactNode;
   /** The toggle's words, for hosts that localize. */
   detailLabel?: string;
   hideLabel?: string;
+  /** Optional link or disclosure, e.g. "See what changed". */
+  action?: React.ReactNode;
+  /** Host-owned dismissal (for example scoped per repository). When given the
+   *  notice stays visible until the host unmounts it and nothing is stored. */
+  onDismiss?: (() => void) | undefined;
+  dismissLabel?: string;
   className?: string;
 }
 
 /**
- * A one-time, dismissible "this changed in the release you just installed"
- * line. Lives in the shared package so both the web app and hosted can show
- * it; the web app's `UpgradeBanner` does a different job (an upgrade is
- * *available*) and is not what this replaces.
+ * The one "this changed in the release you installed" announcement, used on
+ * every surface that explains a release-driven change. Warnings and status
+ * belong in `Callout`; an upgrade that is merely available is not this either
+ * (the web app's `UpgradeBanner` does that job).
  *
  * One line, so it does not outrank the page it sits on; the explanation opens
  * in place. The visual is the shared {@link DismissibleNotice}; this owns only
@@ -40,30 +49,42 @@ export interface ReleaseNoticeProps {
 export function ReleaseNotice({
   id,
   version,
+  title,
   children,
   detail,
   detailLabel = "What changed",
   hideLabel = "Hide",
+  action,
+  onDismiss,
+  dismissLabel,
   className,
 }: ReleaseNoticeProps) {
-  const storageKey = STORAGE_PREFIX + id + (version ? `:v${version}` : "");
+  const storageKey = id ? STORAGE_PREFIX + id + (version ? `:v${version}` : "") : null;
+  const hostOwned = !!onDismiss || !storageKey;
   // Start dismissed so it does not flash in before the stored answer is read.
-  const [dismissed, setDismissed] = React.useState(true);
+  const [dismissed, setDismissed] = React.useState(!hostOwned);
 
   React.useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (hostOwned || !storageKey) return;
     try {
       setDismissed(!!window.localStorage.getItem(storageKey));
     } catch {
       setDismissed(false);
     }
-  }, [storageKey]);
+  }, [hostOwned, storageKey]);
 
   if (dismissed) return null;
 
+  const lead = title ? (
+    <>
+      <span className="font-medium text-[var(--color-text-primary)]">{title}</span>{" "}
+    </>
+  ) : null;
+
   const dismiss = () => {
+    if (onDismiss) return onDismiss();
     try {
-      window.localStorage.setItem(storageKey, "1");
+      if (storageKey) window.localStorage.setItem(storageKey, "1");
     } catch {
       /* localStorage unavailable - hide for this session only. */
     }
@@ -71,10 +92,17 @@ export function ReleaseNotice({
   };
 
   return (
-    <DismissibleNotice onDismiss={dismiss} {...(className ? { className } : {})}>
+    <DismissibleNotice
+      tone="info"
+      onDismiss={dismiss}
+      {...(dismissLabel ? { dismissLabel } : {})}
+      {...(action ? { action } : {})}
+      {...(className ? { className } : {})}
+    >
       {detail ? (
         <details className="group/release">
           <summary className="cursor-pointer list-none rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+            {lead}
             {children}{" "}
             <span className="text-[var(--color-accent-primary)] underline-offset-2 hover:underline">
               <span className="group-open/release:hidden">{detailLabel}</span>
@@ -84,7 +112,10 @@ export function ReleaseNotice({
           <div className="mt-1.5">{detail}</div>
         </details>
       ) : (
-        children
+        <>
+          {lead}
+          {children}
+        </>
       )}
     </DismissibleNotice>
   );

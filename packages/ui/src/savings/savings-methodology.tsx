@@ -3,7 +3,7 @@
 import * as React from "react";
 
 import { CollapsibleSection } from "../shared/collapsible-section";
-import { DismissibleNotice } from "../shared/dismissible-notice";
+import { ReleaseNotice } from "../shared/release-notice";
 
 /**
  * The accounting-method version this build reports under.
@@ -40,10 +40,10 @@ export function SavingsResetNotice({
 }: SavingsResetNoticeProps) {
   const A = LinkComponent ?? "a";
   return (
-    <DismissibleNotice
-      tone="info"
+    <ReleaseNotice
       onDismiss={onDismiss}
       dismissLabel="Dismiss the savings accounting notice"
+      title="Savings accounting has been upgraded."
       {...(methodologyHref
         ? {
             action: (
@@ -57,14 +57,11 @@ export function SavingsResetNotice({
           }
         : {})}
     >
-      <span className="font-medium text-[var(--color-text-primary)]">
-        Savings accounting has been upgraded.
-      </span>{" "}
       Savings are now recorded one event per interaction, with the evidence behind each
       figure kept alongside it. Estimates produced by the earlier method could not be
       converted, so they were restarted rather than carried over. Your omission history and
       everything else in this repository were not deleted.
-    </DismissibleNotice>
+    </ReleaseNotice>
   );
 }
 

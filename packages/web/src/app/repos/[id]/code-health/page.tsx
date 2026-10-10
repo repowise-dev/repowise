@@ -239,6 +239,7 @@ const CHURN_POINT_LIMIT = 5000;
 
 export default function CodeHealthPage() {
   const t = useTranslations("views.codeHealth");
+  const tc = useTranslations("common");
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -551,6 +552,7 @@ export default function CodeHealthPage() {
         detail={t("coChangeNoticeBody")}
         detailLabel={t("coChangeNoticeMore")}
         hideLabel={t("coChangeNoticeLess")}
+        dismissLabel={tc("dismiss")}
       >
         {t("coChangeNoticeTitle")}
       </ReleaseNotice>
