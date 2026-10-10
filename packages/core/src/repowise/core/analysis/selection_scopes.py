@@ -23,8 +23,7 @@ A scope also runs the tests reaching each file that names the changed one, so
 a test reading ``package.json`` as data is kept. An ecosystem scope already
 holds its own ecosystem's code under its root, so only the namers outside it
 are traced; more than :data:`MAX_NAMERS` of those that are not tests
-themselves (or of an asset's) run everything, since tracing that many costs
-what a full run saves. Package
+themselves (or of an asset's) run everything, a bound on the walk's cost. Package
 roots are read from the tracked paths the caller already holds, which list
 every manifest (the indexed file list misses some; see
 :mod:`~repowise.core.ingestion.package_roots`). Ceilings: code that globs a
@@ -55,8 +54,12 @@ from .test_selection import (
     is_runnable_test,
 )
 
-# Namers past this many make a full run cheaper to decide than to trace.
-MAX_NAMERS = 50
+# Non-test namers past this many run everything. Set from the walk's cost, not
+# from how useful the subset is: 170 namers (630 routes) walk in about 6 s on a
+# 20k-file repository, inside the agent tools' 30 s budget. Ceiling: past it a
+# full run is the answer; bounding the walk by a time budget instead of a count
+# is the upgrade.
+MAX_NAMERS = 200
 
 _JVM = (".java", ".kt", ".kts", ".scala", ".groovy")
 # (ecosystem, test suffixes, scoped to the file's directory, gitwildmatch

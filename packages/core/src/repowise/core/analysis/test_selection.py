@@ -342,8 +342,8 @@ def file_namers(
 
     Code that reads a file names it (``ROOT / "README.md"``), and a
     ``--doctest-glob`` turns every doc into a test, so the config declaring
-    one names each doc (first). One substring test per distinct file name and
-    source. A file *exact* accepts is named only by a mention whose written
+    one names each doc (first). One case-insensitive substring test per
+    distinct file name and source. A file *exact* accepts is named only by a mention whose written
     path can mean it (:mod:`~.namer_paths`); any other is
     named by its name alone, since another asset may include it (a stylesheet
     ``@import``) where no code names its directory. Every namer is listed: a
@@ -382,8 +382,9 @@ def _named_in(
     from .namer_paths import any_may_mean, mentions
 
     out: list[str] = []
+    folded = text.lower()
     for name, same in by_name.items():
-        if name not in text:
+        if name.lower() not in folded:
             continue
         written = mentions(text, name) if exact and any(exact(f) for f in same) else None
         out += [
