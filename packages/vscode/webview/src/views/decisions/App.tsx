@@ -44,7 +44,7 @@ function recencyKey(d: DecisionRecordResponse): number {
  *  not reflow when the decisions land. */
 function DecisionsSkeleton() {
   return (
-    <div className="flex h-full flex-col" aria-hidden>
+    <div className="flex h-full flex-col" role="status" aria-label="Loading decisions">
       <header className="border-b border-[var(--color-border-default)] px-6 py-4">
         <div className="h-6 w-32 animate-pulse rounded bg-[var(--color-bg-inset)]" />
         <div className="mt-3 flex gap-2">

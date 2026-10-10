@@ -134,7 +134,7 @@ function OpportunityDetailView({
         {CONFIDENCE_LABEL[detail.confidence]} confidence
       </p>
       {anyRelocated ? (
-        <p className="mt-3 rounded-md border border-[var(--color-caution)]/40 bg-[var(--color-caution)]/10 px-3 py-2 text-[12.5px] text-[var(--color-text-secondary)]">
+        <p className="mt-3 rounded-md border border-[var(--color-caution)]/40 bg-[var(--color-caution)]/10 px-3 py-2 text-xs text-[var(--color-text-secondary)]">
           {detail.ordering_note ??
             "A step below is moved by an earlier one, so its file and lines say where the symbol was. Find it again before applying it."}
         </p>
@@ -147,15 +147,15 @@ function OpportunityDetailView({
               onClick={() => onOpenStep(step.plan_id)}
               className="w-full rounded-lg border border-[var(--color-border-default)] px-3.5 py-3 text-left hover:border-[var(--color-border-hover)]"
             >
-              <span className="text-[12.5px] text-[var(--color-text-secondary)]">
+              <span className="text-xs text-[var(--color-text-secondary)]">
                 {String(i + 1).padStart(2, "0")} · {typeMeta(step.refactoring_type).label} ·{" "}
                 {step.applicability.classification === "mechanical" ? "Mechanical" : "Judgment"}
                 {step.relocated_by ? " · moved by an earlier step" : ""}
               </span>
-              <span className="mt-1 block break-all font-mono text-[13px] font-medium text-[var(--color-text-primary)]">
+              <span className="mt-1 block break-all font-mono text-xs font-medium text-[var(--color-text-primary)]">
                 {step.target_symbol || typeMeta(step.refactoring_type).label}
               </span>
-              <span className="mt-0.5 block break-all font-mono text-[11px] text-[var(--color-text-tertiary)]">
+              <span className="mt-0.5 block break-all font-mono text-xs text-[var(--color-text-tertiary)]">
                 {step.file_path}
                 {step.line_start ? `:${step.line_start}` : ""}
               </span>
@@ -577,7 +577,7 @@ function CenteredNote({ children }: { children: ReactNode }) {
 
 function ErrorNote({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="m-6 rounded-lg border border-[var(--color-error)] p-4 text-[15px]">
+    <div role="alert" className="m-6 rounded-lg border border-[var(--color-error)] p-4 text-[15px]">
       <p className="font-medium text-[var(--color-error)]">{title}</p>
       <p className="mt-2 text-[var(--color-text-secondary)]">{children}</p>
     </div>

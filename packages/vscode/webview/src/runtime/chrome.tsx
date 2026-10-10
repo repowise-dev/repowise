@@ -28,9 +28,9 @@ interface NavItem {
 
 /** The dashboards a panel can switch between, in the sidebar Home order. */
 const NAV: NavItem[] = [
-  { view: "health", title: "Health", icon: Activity },
+  { view: "health", title: "Code Health", icon: Activity },
   { view: "architecture", title: "Architecture", icon: Layers },
-  { view: "graph", title: "Graph", icon: Share2 },
+  { view: "graph", title: "Knowledge Graph", icon: Share2 },
   { view: "refactoring", title: "Refactoring", icon: Wrench },
   { view: "decisions", title: "Decisions", icon: Scale },
   { view: "docs", title: "Docs", icon: BookOpen },
@@ -39,11 +39,12 @@ const NAV: NavItem[] = [
 
 export function PanelChrome({ view, host }: { view: PanelViewId; host: WebviewHost }) {
   return (
-    <header className="sticky top-0 z-30 flex h-11 shrink-0 items-center gap-1 border-b border-[var(--color-border-default)] bg-[var(--color-bg-root)] px-2">
+    <header className="sticky top-0 z-30 flex h-9 shrink-0 items-center gap-1 border-b border-[var(--color-border-default)] bg-[var(--color-bg-root)] px-2">
       <button
         type="button"
         onClick={() => host.focusHome()}
         title="Back to Repowise home"
+        aria-label="Back to Repowise home"
         className="flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-surface)] hover:text-[var(--color-text-primary)]"
       >
         <Home className="h-4 w-4" />
@@ -64,6 +65,7 @@ export function PanelChrome({ view, host }: { view: PanelViewId; host: WebviewHo
         type="button"
         onClick={() => (view === "settings" ? undefined : host.openView("settings"))}
         title="Repowise settings"
+        aria-label="Repowise settings"
         aria-current={view === "settings" ? "page" : undefined}
         className={
           "ml-auto shrink-0 rounded-md p-1.5 transition-colors " +
@@ -93,6 +95,7 @@ function Tab({
       type="button"
       onClick={onClick}
       aria-current={active ? "page" : undefined}
+      aria-label={item.title}
       title={item.title}
       className={
         "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors " +

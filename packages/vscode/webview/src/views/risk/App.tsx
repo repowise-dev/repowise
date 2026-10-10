@@ -213,7 +213,7 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
  *  holds its shape while the working tree is scored. */
 function RiskSkeleton({ base }: { base: string }) {
   return (
-    <div className="flex flex-col gap-6 sm:gap-8" aria-hidden>
+    <div className="flex flex-col gap-6 sm:gap-8" role="status" aria-label="Loading change risk">
       <div className="flex flex-col gap-4 sm:flex-row sm:gap-8">
         <div className="flex shrink-0 flex-col gap-2.5">
           <div className="h-3 w-20 animate-pulse rounded bg-[var(--color-bg-inset)]" />
@@ -329,7 +329,7 @@ function FixHistoryNote({
   if (!history.available) {
     return (
       <p className="mt-2.5">
-        Fix history unavailable — the git history walk failed.
+        Fix history is unavailable for this range.
       </p>
     );
   }

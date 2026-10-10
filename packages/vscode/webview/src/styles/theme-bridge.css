@@ -4,7 +4,8 @@
  * the editor's theme; the panels deliberately keep that brand palette instead
  * of remapping every token onto --vscode-* (a full remap flattens the data
  * visualizations into editor grays). Only the pieces that must match the
- * editor chrome are bridged here: typography and the page background seam.
+ * editor chrome are bridged here: typography, neutral grounds, text, borders
+ * and the focus ring. Semantic (health/risk) and data colours stay Repowise.
  */
 
 :root {
@@ -20,6 +21,32 @@
 
 .dark {
   --kg-card-texture: none;
+}
+
+/*
+ * Native neutrals. The runtime stamps `native` on the root only while the Home
+ * switcher is on "auto"; pinning light or dark drops it, so a pinned choice
+ * shows the Repowise palette and auto follows the editor theme (light, dark
+ * and high contrast alike, since the --vscode-* values already resolve per
+ * theme). The sidebar Home view sits on the sidebar ground, panels on the
+ * editor ground.
+ */
+.native {
+  --color-bg-root: var(--vscode-editor-background);
+  --color-bg-surface: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  --color-bg-elevated: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  --color-bg-inset: var(--vscode-input-background, var(--vscode-editor-background));
+  --color-bg-inset-on-overlay: var(--vscode-input-background, var(--vscode-editor-background));
+  --color-bg-wash-hover: var(--vscode-list-hoverBackground);
+  --color-border-default: var(--vscode-panel-border, var(--vscode-widget-border, currentColor));
+  --color-text-primary: var(--vscode-foreground);
+  --color-text-secondary: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  /* Same source as secondary; faded so the three tiers stay distinct. */
+  --color-text-tertiary: color-mix(in srgb, var(--vscode-descriptionForeground, var(--vscode-foreground)) 70%, transparent);
+}
+
+.native[data-view="home"] {
+  --color-bg-root: var(--vscode-sideBar-background, var(--vscode-editor-background));
 }
 
 /*
@@ -47,11 +74,18 @@
   --color-text-tertiary: var(--color-text-secondary);
 }
 
-/* HC themes outline the focused element rather than tinting it, and an
-   unfocusable-looking control is the accessibility end of this. */
-.hc :focus-visible {
+/* One focus ring everywhere, in the editor's own focus colour. */
+:focus-visible {
   outline: 1px solid var(--vscode-focusBorder, currentColor);
   outline-offset: 2px;
+}
+
+/* HC themes mark the selected item with an outline, not a tint. */
+.hc [aria-current="page"],
+.hc [aria-selected="true"],
+.hc [aria-pressed="true"] {
+  outline: 1px solid var(--vscode-contrastActiveBorder, currentColor);
+  outline-offset: -1px;
 }
 
 html,
@@ -69,4 +103,9 @@ body {
 
 #root {
   height: 100%;
+}
+
+/* The sidebar is ~300px wide; its body copy matches native tree rows. */
+[data-view="home"] body {
+  font-size: 12px;
 }
