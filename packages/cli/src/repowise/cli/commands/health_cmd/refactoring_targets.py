@@ -208,6 +208,32 @@ def _render_stored_refactoring_targets(
     return True
 
 
+def _render_plan_recipe(repo_path: Path, plan_id: str, *, fmt: str) -> bool:
+    """One stored plan: its recipe as JSON, else the prompt an agent starts
+    from. False when no index or no plan answers *plan_id*."""
+    from repowise.cli.helpers import repo_index_session, run_async
+    from repowise.core.agent_prompts import render_plan
+    from repowise.core.analysis.health.refactoring.recipe import build_recipe
+    from repowise.server.services.refactoring_health import RefactoringHealthService
+
+    async def _read() -> dict[str, Any] | None:
+        async with repo_index_session(Path(repo_path)) as opened:
+            if opened is None:
+                return None
+            session, repo_id = opened
+            service = RefactoringHealthService(session, repo_id, Path(repo_path).name)
+            return (await service.plan_detail(plan_id)).get("plan")
+
+    plan = run_async(_read())
+    if plan is None:
+        return False
+    if fmt == "json":
+        click.echo(json.dumps(build_recipe(plan), indent=2))
+    else:
+        click.echo(render_plan(plan, repo_name=Path(repo_path).name))
+    return True
+
+
 def _list_row(plan: dict) -> dict:
     """A plan as a list row: the rendered Extract Method texts stay on plan
     detail, as on every other list."""

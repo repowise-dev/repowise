@@ -129,6 +129,85 @@ export interface RefactoringPlan {
   /** Plan detail only: what to check before applying it. Absent when the
    *  plan was never checked; empty when nothing was found. */
   risks?: PlanRisk[];
+  /** Plan detail with `include=recipe` only: the plan as an agent applies it. */
+  recipe?: RefactoringRecipe;
+}
+
+/** What one recipe step does to the code. Mirrors ``refactoring.recipe.RECIPE_ACTIONS``. */
+export type RecipeAction =
+  | "extract"
+  | "add_helper"
+  | "replace_with_call"
+  | "extract_class"
+  | "move"
+  | "cut_import"
+  | "keep"
+  | "reexport"
+  | "edit";
+
+/** What must hold before the edit: tests that pass, a characterization test to
+ *  add, or a plan risk. Mirrors ``refactoring.recipe.PRECONDITION_KINDS``. */
+export type RecipePreconditionKind =
+  | "tests"
+  | "characterization"
+  | "decision"
+  | "public_api"
+  | "active_edit"
+  | "dead_code";
+
+export interface RecipeStep {
+  n: number;
+  action: RecipeAction;
+  file: string | null;
+  span: { start: number; end: number } | null;
+  /** The instruction, in one or two sentences. */
+  text: string;
+  /** Extract Method: the helper to write and its copyable header. */
+  new_symbol?: {
+    name: string;
+    kind: "method" | "function" | null;
+    async: boolean;
+    params: string[];
+    returns: string[];
+    signature_text: string | null;
+    notes: string[];
+  };
+  call_site?: ExtractCallSite;
+  symbols?: string[];
+  to_file?: string | null;
+  /** Extract Helper: the directory the shared helper belongs in. */
+  directory?: string | null;
+  applicability?: "mechanical" | "judgment";
+  /** This step's own checks, where they differ from the plan's. */
+  verify?: { commands: string[]; tests: string[]; coverage: string };
+}
+
+/**
+ * One plan as a spec an agent applies (Repowise never applies it): what must
+ * hold before, the edits in order, what must hold after, and what not to do.
+ * Built by ``refactoring.recipe.build_recipe``.
+ */
+export interface RefactoringRecipe {
+  id: string | null;
+  kind: RefactoringType | string;
+  summary: string;
+  target: { file: string; symbol: string | null; span: { start: number; end: number } | null };
+  preconditions: Array<{ kind: RecipePreconditionKind; text: string; ref?: string }>;
+  steps: RecipeStep[];
+  postconditions: Array<
+    | {
+        kind: "verify";
+        text: string;
+        tests?: string[];
+        tests_total?: number;
+        commands?: string[];
+        basis?: string | null;
+        reasons?: Record<string, string>;
+      }
+    | { kind: "metric"; text: string }
+  >;
+  /** Phrases that read after "Do not". */
+  does_not: string[];
 }
 
 export interface RefactoringTypeCount {

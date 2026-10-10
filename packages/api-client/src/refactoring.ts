@@ -3,6 +3,7 @@
  * Backend: packages/server/src/repowise/server/routers/refactoring.py
  */
 
+import type { AgentPromptFlavor, AgentPromptResponse } from "@repowise-dev/types/agent-prompts";
 import { apiGet, apiPatch, apiPost, apiPut } from "./client";
 import type {
   GeneratedCode,
@@ -94,6 +95,18 @@ export async function getRefactoringPlan(
   suggestionId: string,
 ): Promise<RefactoringPlan> {
   return apiGet<RefactoringPlan>(`/api/repos/${repoId}/refactoring/${suggestionId}`);
+}
+
+/** One plan as the prompt an agent starts from, rendered by core for `flavor`. */
+export async function getRefactoringPlanPrompt(
+  repoId: string,
+  suggestionId: string,
+  opts: { flavor?: AgentPromptFlavor } = {},
+): Promise<AgentPromptResponse> {
+  return apiGet<AgentPromptResponse>(
+    `/api/repos/${repoId}/refactoring/${encodeURIComponent(suggestionId)}/prompt`,
+    { flavor: opts.flavor },
+  );
 }
 
 /** Opt-in: generate the refactored code + a diff for one plan (Phase-5 endpoint). */
@@ -192,6 +205,18 @@ export async function getRefactoringOpportunity(
       evidence_limit: opts.evidenceLimit,
       evidence_offset: opts.evidenceOffset,
     },
+  );
+}
+
+/** One opportunity, its ordered steps and their plans, as an agent prompt core renders. */
+export async function getRefactoringOpportunityPrompt(
+  repoId: string,
+  opportunityId: string,
+  opts: { flavor?: AgentPromptFlavor } = {},
+): Promise<AgentPromptResponse> {
+  return apiGet<AgentPromptResponse>(
+    `/api/repos/${repoId}/refactoring/opportunities/${encodeURIComponent(opportunityId)}/prompt`,
+    { flavor: opts.flavor },
   );
 }
 

@@ -30,10 +30,6 @@ import {
 import { listDecisions } from "@repowise-dev/api-client/decisions";
 import { getPageById, listAllPages } from "@repowise-dev/api-client/pages";
 import { getPatchCoverage, getRiskRange } from "@repowise-dev/api-client/risk";
-import {
-  buildRefactoringOpportunityPrompt,
-  buildRefactoringPlanPrompt,
-} from "@repowise-dev/ui/health/ai-prompt-builder";
 import { CONFIG_SECTION } from "../constants";
 import {
   SETTING_KEYS,
@@ -47,6 +43,7 @@ import {
 import type { RepowiseContext } from "./context";
 import { analyzeChange } from "./changeAnalysis";
 import { commitsMatch, getCurrentBranchName, resolveLiveHead } from "./gitApi";
+import { opportunityPrompt, planPrompt } from "./planPrompt";
 
 /** Thrown by the dispatcher when a request arrives while disconnected. */
 class NotReadyError extends Error {
@@ -309,28 +306,23 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
       cached(`refactor:opp:${opportunityId}`, (id) =>
         getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
       ),
-    refactoringOpportunityPrompt: async (opportunityId, flavor) => {
-      const detail = await cached(`refactor:opp:${opportunityId}`, (id) =>
-        getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
-      );
-      if (!detail.found) {
-        throw new Error(`No refactoring opportunity resolves for ${opportunityId}.`);
-      }
-      const repoName = ctx.repo?.name;
-      return buildRefactoringOpportunityPrompt({
-        opportunity: detail,
-        flavor,
-        ...(repoName ? { repoName } : {}),
-      });
-    },
+    refactoringOpportunityPrompt: (opportunityId, flavor) =>
+      opportunityPrompt(ctx, opportunityId, flavor, async () => {
+        const detail = await cached(`refactor:opp:${opportunityId}`, (id) =>
+          getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
+        );
+        if (!detail.found) {
+          throw new Error(`No refactoring opportunity resolves for ${opportunityId}.`);
+        }
+        return detail;
+      }),
     refactoringPlan: (suggestionId) =>
       cached(`refactor:plan:${suggestionId}`, (id) => getRefactoringPlan(id, suggestionId)),
     refactoringPrompt: async (suggestionId, flavor) => {
       const plan = await cached(`refactor:plan:${suggestionId}`, (id) =>
         getRefactoringPlan(id, suggestionId),
       );
-      const repoName = ctx.repo?.name;
-      return buildRefactoringPlanPrompt({ plan, flavor, ...(repoName ? { repoName } : {}) });
+      return planPrompt(ctx, plan, flavor);
     },
 
     // Decisions

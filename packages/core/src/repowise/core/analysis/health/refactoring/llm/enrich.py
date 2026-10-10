@@ -8,9 +8,9 @@ the indexing hot path:
 1. Gather the real source spans the plan references (the class body, every clone
    occurrence, the method to move, the files on each cut edge) straight off the
    working tree.
-2. Build a behaviour-preservation prompt carrying the structured plan + that
-   source + the graph/co-change context the deterministic layer already
-   computed, and ask the configured provider for the refactored code and a
+2. Build a behaviour-preservation prompt carrying the plan's recipe (the same
+   steps, checks and limits the copy-prompt and plan detail read) + that
+   source, and ask the configured provider for the refactored code and a
    unified diff.
 3. Self-check the result where it is cheap and meaningful: Extract Class with an
    LCOM4 before/after delta (re-walk the generated classes), Split File by
@@ -263,94 +263,12 @@ language.
 `+++ b/path`, `@@` hunks) covering every file you changed.
 """
 
-_TYPE_INSTRUCTIONS: dict[str, str] = {
-    "extract_class": (
-        "Refactoring: EXTRACT CLASS. Split the class into the cohesive groups in "
-        "the plan — each group becomes a new class owning its listed methods and "
-        "fields. Keep the original class as a thin coordinator that delegates, so "
-        "all existing call sites keep working."
-    ),
-    "extract_helper": (
-        "Refactoring: EXTRACT HELPER. The occurrences are duplicates of the same "
-        "logic. Extract one shared helper (place it at the suggested site) and "
-        "replace every occurrence with a call to it."
-    ),
-    "move_method": (
-        "Refactoring: MOVE METHOD. Move the method from its current class to the "
-        "target class it is more cohesive with, and update the call sites. Leave a "
-        "thin delegating wrapper only if removing the method outright would break "
-        "callers you cannot see."
-    ),
-    "break_cycle": (
-        "Refactoring: BREAK IMPORT CYCLE. Remove the cyclic dependency by "
-        "inverting or abstracting the import on each cut edge (dependency "
-        "inversion, a shared interface/protocol module, or a local import as a "
-        "last resort). Do not merge the files."
-    ),
-    "extract_method": (
-        "Refactoring: EXTRACT METHOD. The target is one long function; the plan's "
-        "'span' gives the line range to lift into a new helper method in the same "
-        "scope. Move exactly those lines into the helper and name it: the plan's "
-        "'suggested_name' is a deterministic starting point derived from the "
-        "slice's single output value, so keep it unless the code clearly warrants a better "
-        "name -- and rename it if it collides with something already in the file, "
-        "which it can. When 'suggested_name' is null no name was anchored in the plan "
-        "and the texts below read '<name>': choose one that describes what the lifted "
-        "code does. The plan's 'new_symbol.signature_text' is the helper's header and "
-        "'call_site.new_text' the statement that replaces the span; use both, filling "
-        "any '<name>' or '<type>' placeholder, and follow 'new_symbol.notes'. "
-        "Without them (an older plan, or one whose helper form is unknown), pass the plan's 'params' "
-        "as its arguments, return the plan's 'returns' value(s), and replace the "
-        "original lines with a call to it. When the plan's 'needs_async' is true the span awaits: "
-        "declare the helper async and await the call that replaces the lines. "
-        "When the plan's 'new_symbol.kind' is 'method' the span uses its receiver "
-        "('new_symbol.receiver'): make the helper a method of the same object and "
-        "call it through that receiver rather than passing it as an argument. "
-        "Preserve behaviour exactly; change nothing outside the "
-        "span and the single call site."
-    ),
-    "split_file": (
-        "Refactoring: SPLIT FILE. The module is too large and partitions into "
-        "the cohesive groups in the plan. Create one new file per group at its "
-        "'suggested_file' path, containing exactly that group's symbols, and "
-        "when a group's 'suggested_file' is null pick a filename that describes "
-        "its symbols, in the same directory as the original, and "
-        "remove them from the original. Keep the residual 'core' symbols in the "
-        "original file. When 'shim_required' is true, leave a back-compat "
-        "re-export shim in the original path (import and re-export the moved "
-        "symbols) so existing imports keep working; when false (same-package "
-        "languages such as Go) no import edits are needed. Never duplicate a "
-        "symbol across files — each moves to exactly one place. Emit one fenced "
-        "code block per file you create or change."
-    ),
-}
-
 
 def _build_user_prompt(suggestion: Any, spans: list[SourceSpan]) -> str:
-    """Render the plan + evidence + blast radius + source into a user prompt."""
-    rtype = suggestion.refactoring_type
-    parts: list[str] = []
-    parts.append(_TYPE_INSTRUCTIONS.get(rtype, f"Refactoring: {rtype}."))
-    parts.append(f"\nTarget: {suggestion.target_symbol} ({suggestion.file_path})")
+    """The plan as every surface words it (its recipe), then the source it names."""
+    from repowise.core.agent_prompts.refactoring import render_plan_spec
 
-    parts.append("\n## Structured plan\n")
-    parts.append("```json")
-    parts.append(
-        json.dumps(
-            {
-                "type": rtype,
-                "plan": suggestion.plan or {},
-                "evidence": suggestion.evidence or {},
-                "blast_radius": suggestion.blast_radius or {},
-                "validation": getattr(suggestion, "validation", {}) or {},
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    parts.append("```")
-
-    parts.append("\n## Source spans\n")
+    parts = [render_plan_spec(asdict(suggestion)), "\n## Source spans\n"]
     if not spans:
         parts.append("_(no source spans were resolvable from the working tree)_")
     for span in spans:
@@ -693,7 +611,7 @@ async def enrich_suggestion(
         if cached is not None:
             return cached
 
-    system = _SYSTEM_PROMPT + "\n" + _TYPE_INSTRUCTIONS.get(suggestion.refactoring_type, "")
+    system = _SYSTEM_PROMPT
     user = _build_user_prompt(suggestion, spans)
     response = await provider.generate(
         system,

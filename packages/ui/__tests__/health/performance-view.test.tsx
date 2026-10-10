@@ -404,6 +404,35 @@ describe("PerformanceView drawer", () => {
     expect(await screen.findByText("Structured plan handoff")).toBeTruthy();
   });
 
+  it("shows the plan prompt the server renders when the host serves one", async () => {
+    const exact: RefactoringPlan = {
+      id: "plan-1",
+      refactoring_type: "performance_fix",
+      file_path: "src/shared.py",
+      target_symbol: "src/shared.py::load",
+      line_start: 8,
+      line_end: 12,
+      plan: { opportunity_id: "perf2_planready", strategy: "batch_or_prefetch_io" },
+      evidence: {},
+      impact_delta: 0,
+      effort_bucket: "M",
+      blast_radius: {},
+      confidence: "medium",
+      source_biomarker: "io_in_loop",
+      rank_score: 12.5,
+    };
+    const served = vi.fn(async (planId: string, flavor: string) => `served ${planId} ${flavor}`);
+    render(
+      <PerformanceView
+        adapter={adapter({ getRefactoringPlan: async () => exact, getRefactoringPlanPrompt: served })}
+      />,
+    );
+    await openFirstRow();
+    fireEvent.click(await screen.findByRole("button", { name: "Copy the plan for an agent" }));
+    expect(await screen.findByText(/served plan-1 generic/)).toBeTruthy();
+    expect(served).toHaveBeenCalledWith("plan-1", "generic");
+  });
+
   it("falls back to the evidence handoff when no plan was verified", async () => {
     render(<PerformanceView adapter={adapter()} />);
     await openFirstRow();

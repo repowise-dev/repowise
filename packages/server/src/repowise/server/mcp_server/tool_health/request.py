@@ -59,6 +59,8 @@ _KNOWN_INCLUDES = frozenset(
         "unverified",
         # The shared legend for deficit points and percentiles, in ``_meta``.
         "semantics",
+        # With ``plan_id``: the plan as preconditions, steps and postconditions.
+        "recipe",
     }
 )
 

@@ -48,6 +48,7 @@ from .persist import (
     _persist_health,
 )
 from .refactoring_targets import (
+    _render_plan_recipe,
     _render_refactoring_targets,
     _render_stored_refactoring_targets,
 )
@@ -100,6 +101,16 @@ FIX_FIRST_ROWS = 3
     help=(
         "Print the refactoring queue the index stored, in the order MCP and the "
         "web UI serve it."
+    ),
+)
+@click.option(
+    "--plan",
+    "plan_id",
+    default=None,
+    metavar="ID",
+    help=(
+        "Print one stored refactoring plan as the recipe an agent applies: its "
+        "preconditions, steps and checks (JSON with --format json)."
     ),
 )
 @click.option(
@@ -175,6 +186,7 @@ def health_command(
     repo_alias: str | None,
     no_workspace: bool,
     refactoring_targets: bool,
+    plan_id: str | None,
     recompute: bool,
     generate_code: str | None,
     module_filter: str | None,
@@ -234,6 +246,14 @@ def health_command(
                 "do not apply to it.[/dim]"
             )
         _render_trend(repo_path, fmt=fmt)
+        return
+
+    if plan_id is not None:
+        if not _render_plan_recipe(repo_path, plan_id, fmt=fmt):
+            raise click.ClickException(
+                f"No stored refactoring plan {plan_id}. `repowise health --refactoring-targets` "
+                "lists the current plans."
+            )
         return
 
     if refactoring_targets and not recompute and generate_code is None:

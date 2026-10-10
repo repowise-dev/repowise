@@ -168,6 +168,15 @@ def test_agent_prompt_flavors_match_python() -> None:
         assert set(re.findall(r'"([a-z-]+)"', match.group(1))) == set(FLAVORS), alias
 
 
+def test_refactoring_recipe_vocabularies_match_python() -> None:
+    from repowise.core.analysis.health.refactoring.recipe import (
+        PRECONDITION_KINDS,
+        RECIPE_ACTIONS,
+    )
+
+    assert _union_members("RecipeAction", "refactoring.ts") == set(RECIPE_ACTIONS)
+    assert _union_members("RecipePreconditionKind", "refactoring.ts") == set(PRECONDITION_KINDS)
+
 
 def _interface_body(name: str, module: str) -> str:
     """The text between `export interface <name> {` and its closing brace."""

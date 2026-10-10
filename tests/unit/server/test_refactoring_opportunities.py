@@ -1332,3 +1332,65 @@ async def test_the_directive_names_no_test_file_when_only_tests_have_work(client
     assert directive["status"] == "clear"
     assert directive["reason"] == "only_test_file_opportunities"
     assert directive["opportunities_total"] == 1
+
+
+# ---------------------------------------------------------------------------
+# The recipe and the agent prompts core renders from it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_plans_recipe_is_served_only_when_asked_and_alike_on_rest_and_mcp(client, app):
+    repo_id = await _seed(client, app, files=2)
+    body = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    owner = body["items"][0]["opportunity_id"]
+    detail = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/{owner}")).json()
+    plan_id = detail["steps"][0]["plan_id"]
+    get_health = await _mcp(app)
+
+    bare = (await client.get(f"/api/repos/{repo_id}/refactoring/{plan_id}")).json()
+    assert "recipe" not in bare
+    assert "recipe" not in (await get_health(plan_id=plan_id))["plan"]
+
+    rest = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/{plan_id}", params={"include": "recipe"}
+        )
+    ).json()["recipe"]
+    mcp = (await get_health(plan_id=plan_id, include=["recipe"]))["plan"]["recipe"]
+    assert rest["id"] == mcp["id"] == plan_id
+    assert rest["steps"] == mcp["steps"]
+    (step,) = rest["steps"]
+    assert step["action"] == "extract"
+    assert step["span"] == {"start": 12, "end": 28}
+    assert rest["postconditions"][0]["kind"] == "verify"
+
+
+@pytest.mark.asyncio
+async def test_the_plan_and_opportunity_prompts_are_rendered_by_the_server(client, app):
+    repo_id = await _seed(client, app, files=2)
+    body = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    owner = body["items"][0]["opportunity_id"]
+    detail = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/{owner}")).json()
+    plan_id = detail["steps"][0]["plan_id"]
+
+    plan = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/{plan_id}/prompt",
+            params={"flavor": "claude-code-mcp"},
+        )
+    ).json()
+    assert plan["flavor"] == "claude-code-mcp"
+    assert "## Extract Method (`opp-repo`)" in plan["text"]
+    assert f'get_health(plan_id="{plan_id}")' in plan["text"]
+
+    opportunity = (
+        await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/{owner}/prompt")
+    ).json()
+    assert f"`{owner}`" in opportunity["text"]
+    assert f"Step id: `{plan_id}`" in opportunity["text"]
+    # The step's own instruction comes from its plan's recipe.
+    assert "Move lines 12-28 of `" in opportunity["text"]
+
+    missing = await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/refop_nope/prompt")
+    assert missing.status_code == 404

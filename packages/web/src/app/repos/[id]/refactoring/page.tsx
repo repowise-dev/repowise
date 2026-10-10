@@ -42,23 +42,19 @@ import type {
   OpportunityStatus,
   RefactoringOpportunity,
   RefactoringOpportunityDetail,
-  RefactoringOpportunityDetailResolved,
   RefactoringOpportunityPage,
   RefactoringOrder,
   RefactoringPlan,
   RefactoringScope,
 } from "@repowise-dev/types/refactoring";
-import {
-  useRelatedWork,
-  AiPromptModal,
-  buildRefactoringOpportunityPrompt,
-  buildRefactoringPlanPrompt,
-} from "@repowise-dev/ui/health";
+import { useRelatedWork, AiPromptModal, type PromptSource } from "@repowise-dev/ui/health";
 import {
   generateRefactoringCode,
   getRefactoringOpportunities,
   getRefactoringOpportunity,
+  getRefactoringOpportunityPrompt,
   getRefactoringPlan,
+  getRefactoringPlanPrompt,
   getRefactoringSettings,
   updateRefactoringSettings,
   updateRefactoringOpportunityStatus,
@@ -182,24 +178,23 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
     { revalidateOnFocus: false, shouldRetryOnError: false },
   );
 
-  const [promptFor, setPromptFor] = useState<
-    | { kind: "opportunity"; value: RefactoringOpportunityDetailResolved }
-    | { kind: "plan"; value: RefactoringPlan }
-    | null
-  >(null);
-
-  // A row hands over its whole opportunity, which means fetching the detail the
-  // list deliberately does not carry. One call, on demand, rather than steps on
-  // every row of every page.
-  const onRowAiPrompt = useCallback(
-    async (opportunity: RefactoringOpportunity) => {
-      const detail = await getRefactoringOpportunity(repoId, opportunity.opportunity_id, {
-        stepLimit: 50,
-        evidenceLimit: 20,
-      });
-      if (detail.found) setPromptFor({ kind: "opportunity", value: detail });
-    },
-    [repoId],
+  // Core renders both prompts from the stored plans, so a row hands over its
+  // opportunity by id: the prompt route reads the steps the list does not carry.
+  const [promptFor, setPromptFor] = useState<{
+    kind: "opportunity" | "plan";
+    id: string;
+    filePath: string;
+  } | null>(null);
+  const promptSource = useMemo<PromptSource | undefined>(() => {
+    if (!promptFor) return undefined;
+    const load =
+      promptFor.kind === "opportunity" ? getRefactoringOpportunityPrompt : getRefactoringPlanPrompt;
+    return async (flavor) => (await load(repoId, promptFor.id, { flavor })).text;
+  }, [repoId, promptFor]);
+  const onOpportunityPrompt = useCallback(
+    (o: Pick<RefactoringOpportunity, "opportunity_id" | "file_path">) =>
+      setPromptFor({ kind: "opportunity", id: o.opportunity_id, filePath: o.file_path }),
+    [],
   );
 
   const onStatusChange = useCallback(
@@ -355,7 +350,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
               if (change.offset !== undefined) setOffset(change.offset);
             }}
             onOpen={(o) => void setOpenId(o.opportunity_id)}
-            onAiPrompt={(o) => void onRowAiPrompt(o)}
+            onAiPrompt={onOpportunityPrompt}
             onStatusChange={onStatusChange}
             onSeeStructural={() => {
               setOffset(0);
@@ -387,7 +382,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         onOpenChange={(open) => {
           if (!open) void setOpenId(null);
         }}
-        onAiPrompt={(detail) => setPromptFor({ kind: "opportunity", value: detail })}
+        onAiPrompt={onOpportunityPrompt}
         onStatusChange={onStatusChange}
         onOpenStep={(planId) => void setOpenPlanId(planId)}
         fileHref={fileHref}
@@ -404,7 +399,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         onOpenChange={(open) => {
           if (!open) void setOpenPlanId(null);
         }}
-        onAiPrompt={(plan) => setPromptFor({ kind: "plan", value: plan })}
+        onAiPrompt={(plan) => setPromptFor({ kind: "plan", id: plan.id, filePath: plan.file_path })}
         onGenerateCode={onGenerateCode}
         settingsHref={`${prefix}/settings`}
         modelSetting={modelSetting}
@@ -416,18 +411,9 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         onOpenChange={(open) => {
           if (!open) setPromptFor(null);
         }}
-        getPrompt={
-          promptFor
-            ? (flavor) =>
-                promptFor.kind === "opportunity"
-                  ? buildRefactoringOpportunityPrompt({
-                      opportunity: promptFor.value,
-                      flavor,
-                    })
-                  : buildRefactoringPlanPrompt({ plan: promptFor.value, flavor })
-            : null
-        }
-        filePath={promptFor?.value.file_path ?? null}
+        getPrompt={null}
+        promptSource={promptSource}
+        filePath={promptFor?.filePath ?? null}
         title={t("promptTitle")}
         description={t("promptDescription")}
       />

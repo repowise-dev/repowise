@@ -17,6 +17,7 @@ import type {
   TestsReachingFile,
 } from "@repowise-dev/types/health";
 import type { Paginated } from "@repowise-dev/types";
+import type { AiPromptFlavor } from "./ai-prompts/shared";
 import type { CodeHealthOverlay } from "./map/types";
 import type { RelatedWorkHref } from "./related-work";
 import type {
@@ -84,6 +85,8 @@ export interface CodeHealthAdapter {
   ): Promise<Paginated<HealthFinding>>;
   /** Fetch one exact canonical plan for the performance drawer. */
   getRefactoringPlan?(planId: string): Promise<RefactoringPlan>;
+  /** One plan's agent prompt as core renders it (`/refactoring/{id}/prompt`). */
+  getRefactoringPlanPrompt?(planId: string, flavor: AiPromptFlavor): Promise<string>;
   /**
    * @deprecated Unused. The repo's Files page owns the file inventory; the
    * health views are triage surfaces and list only what carries findings.

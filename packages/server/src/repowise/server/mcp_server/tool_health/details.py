@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
+from repowise.core.analysis.health.refactoring.recipe import build_recipe
 from repowise.core.analysis.health.refactoring.serving import evidence_block
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE
 from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, finding_priorities
@@ -43,6 +44,7 @@ async def _detail_response(
     only_set: set[str],
     limit: int,
     cursor: int,
+    recipe: bool = False,
 ) -> dict[str, Any] | None:
     """Answer a lookup by id, or ``None`` when no selector was passed.
 
@@ -76,7 +78,9 @@ async def _detail_response(
             cursor=cursor,
         )
     if plan_id:
-        return await _plan_detail_response(session, repository, reference_repository, plan_id)
+        return await _plan_detail_response(
+            session, repository, reference_repository, plan_id, recipe=recipe
+        )
     return None
 
 
@@ -131,9 +135,10 @@ async def _fix_detail_response(session: Any, repository: Any, fix_id: str) -> di
 
 
 async def _plan_detail_response(
-    session: Any, repository: Any, reference_repository: str, plan_id: str
+    session: Any, repository: Any, reference_repository: str, plan_id: str, *, recipe: bool
 ) -> dict[str, Any]:
-    """One stored plan, and the composed opportunity it is a step of, if any.
+    """One stored plan, and the composed opportunity it is a step of, if any;
+    with *recipe*, also the plan as the recipe an agent applies.
 
     An indexed seek and one hydration, not a scan of every open plan.
     """
@@ -143,6 +148,8 @@ async def _plan_detail_response(
     if plan is not None:
         plan.setdefault("id", plan_id)
         plan["repository"] = reference_repository
+        if recipe:
+            plan["recipe"] = build_recipe(plan)
     result = {
         "mode": "refactoring_plan",
         "plan_id": plan_id,

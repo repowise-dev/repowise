@@ -19,6 +19,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.agent_prompts import Flavor, render_opportunity, render_plan
+from repowise.core.analysis.health.refactoring.recipe import build_recipe
 from repowise.core.analysis.health.refactoring.serving import (
     CANONICAL_ORDERS,
     CANONICAL_VIEWS,
@@ -35,10 +37,14 @@ from repowise.server.schemas import (
     RefactoringPlanStatusResponse,
     RefactoringRollupResponse,
 )
+from repowise.server.schemas.agent_prompts import AgentPromptResponse
 from repowise.server.services.refactoring_health import PlanListQuery, RefactoringHealthService
 
 _STEPS_PER_ROW = 3
 """Steps carried on a queue row; the detail call pages the rest."""
+# What an opportunity prompt inlines: the pages the web drawer reads.
+_PROMPT_STEPS = 50
+_PROMPT_EVIDENCE = 20
 
 router = APIRouter(
     prefix="/api/repos",
@@ -106,6 +112,9 @@ class RefactoringPlanDetailResponse(RefactoringPlanResponse):
 
     governed_by: list[str] | None = None
     risks: list[PlanRiskResponse] | None = None
+    # Only with ``include=recipe``: the plan as preconditions, steps and
+    # postconditions an agent applies (``refactoring.recipe``).
+    recipe: dict[str, Any] | None = None
 
 
 class RefactoringTypeCount(BaseModel):
@@ -416,6 +425,26 @@ async def get_refactoring_opportunity_detail(
     return detail
 
 
+@router.get(
+    "/{repo_id}/refactoring/opportunities/{opportunity_id}/prompt",
+    response_model=AgentPromptResponse,
+)
+async def get_refactoring_opportunity_prompt(
+    repo_id: str,
+    opportunity_id: str,
+    flavor: Flavor = Query("generic"),
+    session: AsyncSession = Depends(get_db_session),
+) -> AgentPromptResponse:
+    """One opportunity, its ordered steps and their plans, as an agent prompt."""
+    detail = await _service(session, repo_id).detail(
+        opportunity_id, step_limit=_PROMPT_STEPS, evidence_limit=_PROMPT_EVIDENCE
+    )
+    if not detail.get("found"):
+        raise HTTPException(status_code=404, detail="Unknown opportunity id")
+    text = render_opportunity(detail, flavor, await _repo_name(session, repo_id))
+    return AgentPromptResponse(flavor=flavor, text=text)
+
+
 class RefactoringOpportunityStatusUpdate(BaseModel):
     """The finding-triage vocabulary, applied to a whole opportunity."""
 
@@ -518,14 +547,47 @@ async def update_refactoring_settings(
 async def get_refactoring_plan(
     repo_id: str,
     suggestion_id: str,
+    include: Literal["recipe"] | None = Query(None),
     session: AsyncSession = Depends(get_db_session),
 ) -> RefactoringPlanDetailResponse:
     """One plan + its blast radius detail (deep-link / drill-down target)."""
+    detail, public_id = await _plan_detail(session, repo_id, suggestion_id)
+    if include == "recipe":
+        detail["recipe"] = build_recipe({**detail, "id": public_id})
+    return RefactoringPlanDetailResponse(**detail)
+
+
+async def _plan_detail(
+    session: AsyncSession, repo_id: str, suggestion_id: str
+) -> tuple[dict[str, Any], str]:
+    """The plan's detail dict and the public id an agent quotes back (the
+    detail's own ``id`` is the storage key this route has always served)."""
     row = await crud.get_refactoring_suggestion(session, repo_id, suggestion_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
     recommendation = await _service(session, repo_id).plan_recommendation(row)
-    return RefactoringPlanDetailResponse(**recommendation.detail_dict())
+    return recommendation.detail_dict(), row.public_id or row.id
+
+
+async def _repo_name(session: AsyncSession, repo_id: str) -> str | None:
+    repo = await crud.get_repository(session, repo_id)
+    return repo.name if repo is not None else None
+
+
+@router.get(
+    "/{repo_id}/refactoring/{suggestion_id}/prompt",
+    response_model=AgentPromptResponse,
+)
+async def get_refactoring_plan_prompt(
+    repo_id: str,
+    suggestion_id: str,
+    flavor: Flavor = Query("generic"),
+    session: AsyncSession = Depends(get_db_session),
+) -> AgentPromptResponse:
+    """One plan as the prompt an agent starts from, worded for its harness."""
+    detail, public_id = await _plan_detail(session, repo_id, suggestion_id)
+    text = render_plan({**detail, "id": public_id}, flavor, await _repo_name(session, repo_id))
+    return AgentPromptResponse(flavor=flavor, text=text)
 
 
 class RefactoringStatusUpdate(BaseModel):

@@ -1123,6 +1123,7 @@ By default it reads the analysis the last `repowise init` or `repowise update` s
 | `--refactoring-targets` | Print the refactoring queue the index stored: one opportunity per file with its structured, graph-aware plans (Extract Class / Helper / Method, Move Method, Split File) as ordered steps and Break Cycle as advisory evidence, in the same order MCP and the web UI serve. Reads the index, so it needs `repowise init` first. See [REFACTORING.md](../layers/REFACTORING.md) |
 | `--recompute` | Analyze the working tree in-process instead of reading the stored analysis. A whole-repo `table` run writes the result back to the index (scores, findings, a trend snapshot); `json`, `md` and `--file`/`--module` runs never write. Slow on a large repo; the only option outside an indexed one. With `--refactoring-targets`, `--scope` and `--counts` apply only here. |
 | `--generate-code <selector>` | Generate an actual refactoring patch for one target. The only `health` flag that calls an LLM; needs a configured provider. |
+| `--plan <id>` | Print one stored refactoring plan as the prompt an agent applies; with `--format json`, its recipe (preconditions, steps, postconditions). Reads the index. |
 | `--trend` | Print the last 10 health snapshots + any active alerts (declining / predicted decline) |
 | `--badge` | Print a shields.io-compatible badge URL/JSON for the repo's health score |
 | `--format` | Output: `table` (default), `json`, `md` |

@@ -1,12 +1,13 @@
 import { existsSync } from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { buildRefactoringPlanPrompt, type AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
+import type { AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
 import { typeMeta } from "@repowise-dev/ui/refactoring/meta";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 import { CONFIG_SECTION, InternalCommands } from "../constants";
 import type { RepowiseContext } from "../core/context";
 import { repoRelativePath } from "../core/fileSignals";
+import { planPrompt } from "../core/planPrompt";
 import { getPlansForFile } from "../core/plans";
 
 /** The Refactor sub-kinds this provider can emit, declared up front so VS Code
@@ -114,11 +115,7 @@ function planActions(plan: RefactoringPlan): vscode.CodeAction[] {
  */
 async function handPlanToCopilot(ctx: RepowiseContext, plan: RefactoringPlan): Promise<void> {
   if (!plan) return;
-  const prompt = buildRefactoringPlanPrompt({
-    plan,
-    flavor: "generic",
-    ...(ctx.repo?.name ? { repoName: ctx.repo.name } : {}),
-  });
+  const prompt = await planPrompt(ctx, plan, "generic");
   // The chat-open command exists even without a chat provider configured; it
   // would open the setup view and silently drop the query. Only hand off when
   // Copilot Chat is actually installed, otherwise the clipboard is the payload.
@@ -153,11 +150,7 @@ async function handPlanToClaudeCode(ctx: RepowiseContext, plan: RefactoringPlan)
     (existsSync(path.join(root, ".mcp.json")) || existsSync(path.join(root, ".vscode", "mcp.json")));
   const flavor: AiPromptFlavor = hasMcp ? "claude-code-mcp" : "claude-code";
 
-  const prompt = buildRefactoringPlanPrompt({
-    plan,
-    flavor,
-    ...(ctx.repo?.name ? { repoName: ctx.repo.name } : {}),
-  });
+  const prompt = await planPrompt(ctx, plan, flavor);
   await vscode.env.clipboard.writeText(prompt);
 
   if (vscode.extensions.getExtension("anthropic.claude-code")) {

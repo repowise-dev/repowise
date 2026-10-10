@@ -1,0 +1,178 @@
+{
+  "plans": [
+    {
+      "name": "extract_method_typed",
+      "repo_name": "acme/api",
+      "detail": {
+        "id": "refac4_aaaaaaaaaaaaaaaaaaaa",
+        "refactoring_type": "extract_method",
+        "file_path": "src/loader.py",
+        "target_symbol": "Loader.load",
+        "line_start": 40,
+        "line_end": 120,
+        "plan": {
+          "span": {"start": 61, "end": 78},
+          "params": ["path", "strict"],
+          "returns": ["config"],
+          "suggested_name": "_read_config",
+          "needs_async": true,
+          "async_host": true,
+          "new_symbol": {
+            "kind": "method",
+            "async": true,
+            "receiver": "self",
+            "uses_receiver": true,
+            "params": [{"name": "path", "type": "Path", "mode": "in"}, {"name": "strict", "type": null, "mode": "in"}],
+            "returns": [{"name": "config", "type": "<type>"}],
+            "signature_text": "async def _read_config(self, path: Path, strict) -> <type>:",
+            "notes": ["The return type is not named in the code."]
+          },
+          "call_site": {"replace_span": {"start": 61, "end": 78}, "new_text": "config = await self._read_config(path, strict)"}
+        },
+        "evidence": {"slice_nloc": 18, "ccn_removed": 6},
+        "impact_delta": 1.25,
+        "effort_bucket": "S",
+        "blast_radius": {"scope": "local"},
+        "confidence": "high",
+        "source_biomarker": "complex_method",
+        "validation": {
+          "basis": "measured",
+          "via": "coverage",
+          "total": 3,
+          "tests": ["tests/test_loader.py", "tests/test_cli.py"],
+          "truncated": true,
+          "affected_files": ["src/loader.py"],
+          "affected_symbols": ["Loader.load"],
+          "commands": ["pytest tests/test_cli.py tests/test_loader.py"],
+          "targets": [],
+          "reasons": {"tests/test_loader.py": "covers lines 61-78"},
+          "prerequisite": null
+        },
+        "governed_by": ["dec_1", "dec_2"],
+        "risks": [
+          {"kind": "decision", "text": "Decision \"Loaders stay sync-free\" governs this file; check it allows this change first.", "ref": "dec_1"},
+          {"kind": "active_edit", "text": "Changed in 3 commits by ana in the 14 days before the last index; check nobody is mid-change.", "ref": "abc1234"}
+        ]
+      }
+    },
+    {
+      "name": "performance_fix_steps",
+      "repo_name": null,
+      "detail": {
+        "id": "refac4_bbbbbbbbbbbbbbbbbbbb",
+        "refactoring_type": "performance_fix",
+        "file_path": "src/rows.py",
+        "target_symbol": "src/rows.py::load_rows",
+        "line_start": 12,
+        "line_end": 12,
+        "plan": {
+          "strategy": "batch_or_prefetch_io",
+          "safety": "advisory",
+          "steps": [
+            {"order": 1, "action": "Add a form of fetch_row that takes every key at once", "symbol": "src/db.py::fetch_row", "file_path": "src/db.py", "line": null, "applicability": "judgment"},
+            {"order": 2, "action": "Collect the keys before the loop and replace the per-key fetch_row call with one batched call", "symbol": "load_rows", "file_path": "src/rows.py", "line": 12, "applicability": "judgment", "verify": {"commands": ["pytest tests/test_rows.py"], "tests": ["tests/test_rows.py"], "coverage": "inferred"}},
+            {"order": 3, "action": "Collect the keys before the loop and replace the per-key fetch_row call with one batched call", "symbol": "load_rows", "file_path": "src/rows.py", "line": 12, "applicability": "judgment"}
+          ]
+        },
+        "evidence": {"boundary_kind": "db"},
+        "impact_delta": 0.0,
+        "effort_bucket": "M",
+        "blast_radius": {"files": ["src/rows.py"], "file_count": 1, "call_sites": 2},
+        "confidence": "medium",
+        "source_biomarker": "io_in_loop",
+        "validation": {
+          "basis": "unknown",
+          "via": null,
+          "total": 0,
+          "tests": [],
+          "truncated": false,
+          "affected_files": ["src/rows.py"],
+          "affected_symbols": [],
+          "commands": [],
+          "targets": [],
+          "reasons": {},
+          "prerequisite": "No test reaches this; add a characterization test for `load_rows` before the edit."
+        }
+      }
+    },
+    {
+      "name": "split_file_older_row",
+      "repo_name": null,
+      "detail": {
+        "id": "refac4_cccccccccccccccccccc",
+        "refactoring_type": "split_file",
+        "file_path": "pkg/big.py",
+        "target_symbol": "big.py -> 2 files",
+        "line_start": null,
+        "line_end": null,
+        "plan": {
+          "groups": [
+            {"name": "parsing", "symbols": ["parse_a", "parse_b"], "suggested_file": "pkg/parsing.py"},
+            {"name": null, "symbols": ["render"], "suggested_file": null}
+          ],
+          "residual": {"symbols": ["Config"]},
+          "shim_required": true
+        },
+        "evidence": {"file_nloc": 900, "group_count": 2},
+        "impact_delta": 0.0,
+        "effort_bucket": "L",
+        "blast_radius": {"dependent_count": 4},
+        "confidence": "medium",
+        "source_biomarker": ""
+      }
+    }
+  ],
+  "opportunities": [
+    {
+      "name": "two_steps_one_relocated",
+      "repo_name": "acme/api",
+      "detail": {
+        "found": true,
+        "opportunity_id": "refop4_dddddddddddddddddddd",
+        "file_path": "src/loader.py",
+        "lead_biomarker": "complex_method",
+        "lead_refactoring_type": "extract_method",
+        "addresses_primary_problem": null,
+        "effort_bucket": "M",
+        "confidence": "high",
+        "step_count": 2,
+        "mechanical_steps": 1,
+        "judgment_steps": 1,
+        "recoverable_health": 2.5,
+        "ordering_note": "A step carrying `relocated_by` names a symbol an earlier step moves.",
+        "steps": [
+          {"plan_id": "refac4_aaaaaaaaaaaaaaaaaaaa", "refactoring_type": "extract_method", "target_symbol": "Loader.load", "file_path": "src/loader.py", "line_start": 40, "line_end": 120, "relocated_by": null, "applicability": {"classification": "mechanical", "reasons": ["dataflow_proved_local_extraction"], "unknowns": []}, "validation_profile_id": "vp1"},
+          {"plan_id": "refac4_eeeeeeeeeeeeeeeeeeee", "refactoring_type": "move_method", "target_symbol": "Loader.parse", "file_path": "src/loader.py", "line_start": 130, "line_end": null, "relocated_by": "refac4_aaaaaaaaaaaaaaaaaaaa", "applicability": {"classification": "judgment", "reasons": [], "unknowns": ["call_sites_resolved"]}, "validation_profile_id": "vp2"}
+        ],
+        "plans": [
+          {
+            "id": "refac4_aaaaaaaaaaaaaaaaaaaa",
+            "refactoring_type": "extract_method",
+            "file_path": "src/loader.py",
+            "target_symbol": "Loader.load",
+            "line_start": 40,
+            "line_end": 120,
+            "plan": {"span": {"start": 61, "end": 78}, "params": ["path"], "returns": [], "suggested_name": null},
+            "evidence": {"ccn_removed": 6},
+            "blast_radius": {"scope": "local"},
+            "impact_delta": 1.25,
+            "effort_bucket": "S",
+            "confidence": "high",
+            "source_biomarker": "complex_method",
+            "status": "open"
+          }
+        ],
+        "evidence": [
+          {"plan_id": "refac4_ffffffffffffffffffff", "refactoring_type": "extract_helper", "target_symbol": "loader.py:10-20", "source_biomarker": "clone", "summary": {"duplicated_lines": 11, "occurrence_count": 2, "token_count": null}}
+        ],
+        "evidence_emitted": 1,
+        "evidence_total": 3,
+        "evidence_truncated": true,
+        "validation_profiles": [
+          {"id": "vp1", "basis": "measured", "via": "coverage", "total": 1, "tests": ["tests/test_loader.py"], "truncated": false, "affected_files": [], "affected_symbols": [], "commands": ["pytest tests/test_loader.py"], "targets": [], "reasons": {}},
+          {"id": "vp2", "basis": "unknown", "via": null, "total": 0, "tests": [], "truncated": false, "affected_files": [], "affected_symbols": [], "commands": [], "targets": [], "reasons": {}}
+        ]
+      }
+    }
+  ]
+}

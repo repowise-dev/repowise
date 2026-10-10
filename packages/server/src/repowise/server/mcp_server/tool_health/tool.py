@@ -157,15 +157,15 @@ async def get_health(
         targets: file paths or ``module:<name>``; misses land in ``unresolved``.
         include: ``biomarkers``|``refactoring``|``trend``|``coverage``|
             ``accuracy``|``signals``|``churn_complexity``|``doc_drift``|
-            ``semantics``, or a dimension incl. ``advisory``; ``performance`` and
-            ``refactoring`` add queues.
+            ``semantics``|``recipe``, or a dimension incl. ``advisory``;
+            ``performance`` and ``refactoring`` add queues.
         only: keys to keep; identity, totals, recovery survive.
             ``biomarkers``/``accuracy``/``refactoring`` alias their block key;
             ``performance``/``defect``/``maintainability``/``advisory``
             do not: they filter rows into ``unknown_only_keys``.
         repo: usually omitted.
         limit: max rows per ranked list (default 20), ``0`` for none.
-        cursor: zero-based offset into a ranked list.
+        cursor: offset into a ranked list.
         fix_id/finding_id/plan_id: stable ``id`` of an item, finding or plan.
         opportunity_id: ``perf...``/``refop...``: the unit, its steps or
             plan, evidence paged by ``only=["*_evidence"]``.
@@ -223,6 +223,7 @@ async def get_health(
             only_set=req.only_set,
             limit=req.limit,
             cursor=req.cursor,
+            recipe="recipe" in req.include_set,
         )
         if detail is not None:
             _attach_semantics(detail, req)

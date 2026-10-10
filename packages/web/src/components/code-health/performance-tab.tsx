@@ -10,7 +10,7 @@ import {
   getPerformanceOpportunityFindings,
   listHealthFindings,
 } from "@/lib/api/code-health";
-import { getRefactoringPlan } from "@/lib/api/refactoring";
+import { getRefactoringPlan, getRefactoringPlanPrompt } from "@/lib/api/refactoring";
 import { getFileContent } from "@/lib/api/files";
 import { getRelatedWork, relatedWorkHref } from "@/lib/api/related-work";
 
@@ -35,6 +35,8 @@ export function PerformanceTab({ repoId }: { repoId: string }) {
       getPerformanceOpportunityFindings: (opportunityId, options) =>
         getPerformanceOpportunityFindings(repoId, opportunityId, options),
       getRefactoringPlan: (planId) => getRefactoringPlan(repoId, planId),
+      getRefactoringPlanPrompt: async (planId, flavor) =>
+        (await getRefactoringPlanPrompt(repoId, planId, { flavor })).text,
       refactoringPlanHref: (planId) =>
         `/repos/${repoId}/refactoring?type=performance_fix&plan=${encodeURIComponent(planId)}`,
       // Onto the one galaxy, on the performance lens, with the cause's files

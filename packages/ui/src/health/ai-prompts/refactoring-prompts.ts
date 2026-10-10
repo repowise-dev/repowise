@@ -151,6 +151,11 @@ function planFacts(plan: RefactoringPlan, blurb: string): string {
 /**
  * Hand an agent ONE precomputed refactoring plan to execute and verify, with
  * its per-type steps, blast radius and completion contract.
+ *
+ * Fallback only: the server renders this prompt in core
+ * (`/refactoring/{id}/prompt`). Kept for a host talking to a server older than
+ * that route (the VS Code extension supports servers from 0.47); remove with
+ * the opportunity builder below once no supported server lacks it.
  */
 export function buildRefactoringPlanPrompt({
   plan,
@@ -359,7 +364,8 @@ function opportunityFacts(opportunity: RefactoringOpportunityDetailResolved): st
 /**
  * Hand an agent ONE composed refactoring opportunity: its ordered steps with the
  * mechanical/judgment split, evidence, validation and stable id. The multi-step
- * sibling of `buildRefactoringPlanPrompt`.
+ * sibling of `buildRefactoringPlanPrompt`, and a fallback the same way: the
+ * server renders it at `/refactoring/opportunities/{id}/prompt`.
  */
 export function buildRefactoringOpportunityPrompt({
   opportunity,

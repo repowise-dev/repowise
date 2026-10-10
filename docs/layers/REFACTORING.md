@@ -38,6 +38,7 @@ repowise health --refactoring-targets                  # the stored queue, in se
 repowise health --refactoring-targets --format json
 repowise health --refactoring-targets --recompute      # analyze the working tree instead of the index
 repowise health --refactoring-targets --generate-code 1   # code + diff for the top plan (LLM)
+repowise health --plan refac...                        # one plan as the prompt an agent applies
 ```
 
 From an agent, through MCP:
@@ -48,6 +49,7 @@ get_health(include=["refactoring"], only=["refactoring_opportunities"], limit=6)
 get_health(targets=["src/api/server.py"], include=["refactoring"])  # one file
 get_health(opportunity_id="refop...")                               # one opportunity's steps
 get_health(plan_id="refac...")                                      # one plan
+get_health(plan_id="refac...", include=["recipe"])                  # ...as a recipe an agent applies
 ```
 
 In the dashboard, the **Refactoring** page lists every type on one board, with
@@ -64,6 +66,13 @@ In a plan with several steps, such as a performance fix at several call sites,
 plan detail adds a `verify` to each step whose tests differ from the plan's: the
 tests that reach that step's lines and the command to run them. A step without
 one is checked by the plan's own command.
+
+Any plan can be read as a recipe: what must hold before the edit (tests that
+pass, a characterization test to add, a decision to read), the edits in order,
+the checks and expected improvement after, and what the edit must not do. The
+dashboard's copy-prompt, `repowise health --plan`, plan detail with
+`include=recipe` and code generation all read that same recipe, so an agent sees
+one set of steps wherever it starts.
 
 ## Reading the results
 
@@ -248,6 +257,7 @@ Most plans answer a health finding, so per-path marker rules in
 | `--refactoring-targets` | Print the stored refactoring queue in the order MCP and the dashboard serve it. |
 | `--recompute` | Analyze the working tree in-process instead of reading the index. Slow on large repos. |
 | `--generate-code SELECTOR` | Generate code and a diff for one plan. `SELECTOR` is a 1-based rank or a symbol name. Needs an API key. |
+| `--plan ID` | Print one stored plan as the prompt an agent applies; with `--format json`, its recipe. |
 | `--format json` | Machine-readable output. |
 
 ## See also
