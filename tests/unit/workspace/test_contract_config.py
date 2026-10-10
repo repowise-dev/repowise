@@ -136,3 +136,21 @@ class TestWorkspaceConfigWithContracts:
         assert loaded.contracts.detect_topics is False
         assert len(loaded.contracts.manual_links) == 1
         assert loaded.contracts.manual_links[0].contract_id == "http::GET::/jobs"
+
+
+class TestContractProjectPattern:
+    def test_default_is_omitted_from_the_dict(self) -> None:
+        assert "contract_project_pattern" not in ContractConfig().to_dict()
+
+    def test_round_trip(self) -> None:
+        cfg = ContractConfig(contract_project_pattern=r".+\.messages")
+        loaded = ContractConfig.from_dict(cfg.to_dict())
+        assert loaded.contract_project_pattern == r".+\.messages"
+
+    def test_pattern_changes_the_fingerprinted_dict(self) -> None:
+        changed = ContractConfig(contract_project_pattern="messages")
+        assert ContractConfig().to_dict() != changed.to_dict()
+
+    def test_invalid_regex_falls_back_to_the_default(self) -> None:
+        cfg = ContractConfig.from_dict({"contract_project_pattern": "(unclosed"})
+        assert cfg.contract_project_pattern == ContractConfig().contract_project_pattern

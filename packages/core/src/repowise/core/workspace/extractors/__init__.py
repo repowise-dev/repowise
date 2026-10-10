@@ -1,11 +1,12 @@
 """Contract extractors: HTTP routes, gRPC services, sockets, message topics,
-database tables, service boundaries."""
+MassTransit message types, database tables, service boundaries."""
 
 from __future__ import annotations
 
 from .data import DataExtractor, normalize_table_name
 from .grpc import GrpcExtractor
 from .http import HttpExtractor, normalize_http_path
+from .masstransit import MassTransitExtractor, build_message_type_index
 from .openapi import OpenApiExtractor, merge_openapi_providers
 from .service_boundary import (
     ServiceBoundary,
@@ -19,11 +20,13 @@ __all__ = [
     "DataExtractor",
     "GrpcExtractor",
     "HttpExtractor",
+    "MassTransitExtractor",
     "OpenApiExtractor",
     "ServiceBoundary",
     "SocketExtractor",
     "TopicExtractor",
     "assign_service",
+    "build_message_type_index",
     "detect_service_boundaries",
     "merge_openapi_providers",
     "normalize_http_path",

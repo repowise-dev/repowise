@@ -156,7 +156,7 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 | Type | Providers | Consumers |
 |------|-----------|-----------|
 | gRPC | `.proto` service definitions, plus per-language dialects (Go, Java, Python, C#, TypeScript, NestJS `@GrpcMethod`) | gRPC client stubs |
-| Topics | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Laravel `ShouldQueue` classes on the queues they run on), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
+| Topics | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, MassTransit `Publish`/`Send`/`IRequestClient` (C#, VB.NET), Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Laravel `ShouldQueue` classes on the queues they run on, MassTransit `IConsumer<T>`, open-generic consumers and saga events), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
 | Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")`, `ws` `WebSocketServer({ path })`, NestJS `@WebSocketGateway`; events: socket.io `emit` (server and client), Laravel broadcast events (`broadcastOn` / `broadcastAs`), `Broadcast::on`, Pusher `trigger` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)`, browser/Node `new WebSocket(url)`; events: socket.io `on` / `@SubscribeMessage`, Laravel Echo `listen` and `useEcho`, pusher-js `bind` |
 
 Socket detection is toggled by `detect_socket` in the `contracts:` block below.
@@ -187,6 +187,10 @@ contracts:
   detect_socket: true
   detect_topics: true
   detect_data: true
+  # Directory-name regex (full match, ignoring case) marking a .NET project whose
+  # types are MassTransit messages. The default is shown; widen it to match your
+  # own project naming, e.g. '(?:.+\.)?contracts?' to accept singular names too.
+  contract_project_pattern: '(?:.+\.)?contracts'
   # Map a consumer base token or absolute host to the repo it targets, so a
   # call whose base is unresolved at parse time links as an exact match.
   service_bases:
@@ -205,6 +209,23 @@ directory, filenames matching `test_*.py`, `*_test.py`, `*_test.go`, `*.test.*`,
 exists only in a test is a fixture, not a service contract. Calls to a literal
 third-party host (Stripe, Formspree, ...) that is not a workspace service are
 excluded from matching and reported under the `external_host` diagnostics reason.
+
+**MassTransit.** A message is routed by its .NET type, so its contract id is
+`topic::<namespace>:<type>` (lowercased), not a string. A type counts as a message
+only when it is declared at the top level of a non-generic type in a project under a
+directory matching `contracts.contract_project_pattern` (configurable; the default
+matches `Contracts` and `<Prefix>.Contracts`), in any repo of the workspace. A
+`Send` or `Publish` argument that is not one of those types never produces a
+contract, which keeps non-bus `Send` calls out unless they pass an indexed message
+type. Producers are `Publish`, `Send`, `SchedulePublish`, `ScheduleSend`,
+`ScheduleRecurringSend` (generic and argument forms), `Respond`, `IRequestClient<T>`
+and saga `Init<T>`, plus extension methods that wrap them; receivers declared as
+`IMediator`, `ISender` or `IPublisher` are skipped. Consumers are `IConsumer<T>`
+(including `Fault<T>`), closed open-generic consumers and registration helpers, and
+saga events. A name that matches two messages is skipped, not guessed, and a bare
+name is matched by its short name only when the repo declares no other type with
+that name. Adding or removing a message type, or changing the pattern, re-extracts
+every repo.
 
 ### Package Dependency Scanning
 
