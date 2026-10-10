@@ -123,7 +123,7 @@ def test_python_plan_carries_new_symbol():
     sym = {
         k: v
         for k, v in plan.plan["new_symbol"].items()
-        if k not in ("params", "returns", "signature_text")
+        if k not in ("params", "returns", "signature_text", "return_text")
     }
     if plan.plan["span"]["start"] >= 12:
         assert sym == {

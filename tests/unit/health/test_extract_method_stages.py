@@ -217,7 +217,7 @@ def test_composition_refuses_a_value_no_stage_hands_on():
     fn = _functions(src)[0]
     first = Extraction(3, 6, ("limit", "rows"), ("total",), 4, 2)
     second = Extraction(7, 10, ("rows", "total"), ("seen",), 4, 2)
-    assert _composes(fn, (first, second), ()) == ((), ())
+    assert _composes(fn, (first, second), ()) == (((), ()), frozenset())
     # The first stage keeps ``total`` to itself: the second would read nothing.
     keeps = Extraction(3, 6, ("limit", "rows"), (), 4, 2)
     assert _composes(fn, (keeps, second), ()) is None
@@ -422,3 +422,164 @@ def test_a_staged_id_names_the_whole_split():
         refactoring_public_id(type(plan)(**{**plan.__dict__, "plan": fewer})),
     }
     assert len(ids) == 3
+
+
+def test_an_else_arm_opening_on_a_comment_is_in_the_flow_graph():
+    # hermes ``run_doctor``: the stage read ``should_fix`` and bumped
+    # ``fixed_count`` inside such an arm, and the plan passed neither.
+    src = """
+    def f(p, fix):
+        n = 0
+        if p:
+            g()
+        else:
+            # fall back
+            if fix:
+                n += 1
+        return n
+    """
+    fn = _functions(src)[0]
+    lines = {st.start_line for b in fn.cfg.blocks for st in b.statements}
+    assert {8, 9} <= lines
+    reads = {u.name for b in fn.def_use.blocks.values() for u in b.uses}
+    assert {"fix", "n"} <= reads
+
+
+def test_an_input_bound_on_one_path_only_is_never_passed():
+    # ours ``tool_symbol.py::get_symbol``: ``members`` was bound only under
+    # ``if outline is not None:`` and the stage took it, raising on the other path.
+    sections = "".join(_section(n) for n in range(8))
+    src = f"""
+async def persist(repo_path, a, b, c, d, e, timings, strict, outline, {", ".join(f"flag_{n}, other_{n}" for n in range(8))}):
+    def _skip(step, exc):
+        pass
+
+    session = open_session(repo_path)
+    repo_id = 1
+    if outline is not None:
+        members = outline.members
+{textwrap.indent(textwrap.dedent(sections), " " * 4)}
+    if outline is not None:
+        report(members)
+"""
+    src = src.replace("await step_3(session, repo_id, a, b, c, d, e)", "await step_3(session, repo_id, members if outline is not None else None)")
+    fn = _functions(src)[0]
+    plan = find_stages(fn, get_language_map("python"))
+    assert plan.stages
+    assert all("members" not in x.params for x in plan.stages)
+
+
+_TS_GUARD = """
+async function run(opts, a, b, c, d, e) {
+  const token = opts.token ?? a.token;
+  if (!token) {
+    throw new Error("token missing");
+  }
+  // part one
+  try {
+    if (a) { await one(token, a); } else if (b) { await two(token, b); }
+  } catch (err) {
+    if (c) { log(err); }
+  }
+  // part two
+  try {
+    if (d) { await three(token, d); } else if (e) { await four(token, e); }
+  } catch (err) {
+    if (c) { log(err); }
+  }
+  // part three
+  for (const item of a.items) {
+    if (item.ok) { await five(token, item); } else if (item.skip) { continue; }
+  }
+  // part four
+  try {
+    if (a && b) { await six(token); } else if (d || e) { await seven(token); }
+  } catch (err) {
+    if (c) { log(err); }
+  }
+  return send(token);
+}
+"""
+
+
+def test_a_narrowing_guard_stays_in_the_function():
+    fn = _functions(_TS_GUARD, "typescript", "ts")[0]
+    plan = find_stages(fn, get_language_map("typescript"), max_returns=1)
+    assert plan.stages
+    guard = next(i for i, ln in enumerate(textwrap.dedent(_TS_GUARD).splitlines(), 1) if "if (!token)" in ln)
+    assert all(not x.start_line <= guard <= x.end_line for x in plan.stages)
+
+
+def test_a_loop_variable_a_stage_declares_is_never_handed_back():
+    # openclaw ``template.js``: ``entry = helper(entries, entry, labelMap)``
+    # for a ``for (const entry of ...)`` binder that ends with its loop.
+    src = """
+    function render(entries, extra) {
+      const byId = new Map();
+      for (const entry of entries) {
+        if (entry.a && entry.id) {
+          byId.set(entry.id, entry);
+        } else if (entry.b || extra) {
+          skip(entry);
+        } else if (entry.c && entry.d) {
+          keep(entry);
+        }
+      }
+      const labels = new Map();
+      for (const entry of entries) {
+        if (entry.type === "label" && entry.target && entry.label) {
+          labels.set(entry.target, entry.label);
+        } else if (entry.type === "a") {
+          labels.set(entry.id, "a");
+        } else if (entry.type === "b") {
+          labels.set(entry.id, "b");
+        } else if (entry.type === "c") {
+          labels.set(entry.id, "c");
+        } else if (entry.type === "d") {
+          labels.set(entry.id, "d");
+        }
+      }
+      function tree() {
+        for (const entry of entries) { if (entry.id && labels.has(entry.id)) { draw(entry); } }
+      }
+      return tree();
+    }
+    """
+    fn = _functions(src, "javascript", "js")[0]
+    plan = find_stages(fn, get_language_map("javascript"), max_returns=1)
+    assert len(plan.stages) >= 2
+    for x in plan.stages:
+        assert "entry" not in x.returns and "entry" not in x.params
+
+
+def test_typescript_texts_hand_back_and_type_what_they_can():
+    from repowise.core.analysis.health.refactoring import render
+
+    assert render.definite_type("typescript", "Outcome | undefined") == "Outcome"
+    assert render.definite_type("typescript", "undefined") == "undefined"
+    assert render.definite_type("python", "int | None") == "int | None"
+    shape = render.HelperShape(
+        language="typescript",
+        name="settle",
+        kind="function",
+        is_async=True,
+        params=(render.Slot("reply"), render.Slot("limit", "number")),
+        returns=(render.Slot("outcome", "Outcome"),),
+    )
+    texts = render.render(shape)
+    assert texts.returns == "return outcome;"
+    assert texts.notes == ("Write the types of reply: the code declares none for them.",)
+    py = render.render(render.HelperShape("python", "_f", "function", False, returns=(render.Slot("a"), render.Slot("b"))))
+    assert py.returns == "return a, b"
+
+
+def test_every_output_stage_says_how_it_hands_back():
+    for stage in _plans(_persist())["persist"].plan["stages"]:
+        text = stage["new_symbol"]["return_text"]
+        assert text == (f"return {', '.join(stage['returns'])}" if stage["returns"] else None)
+
+
+def test_an_import_only_a_stage_reads_leaves_the_function():
+    stages = _plans(_persist())["persist"].plan["stages"]
+    notes = [n for s in stages for n in s["new_symbol"].get("notes", []) if n.startswith("Remove ")]
+    assert notes and all("step_1" in n or "other_step_1" in n for n in notes)

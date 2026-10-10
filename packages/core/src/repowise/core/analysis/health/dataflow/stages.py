@@ -13,22 +13,29 @@ into K contiguous stages, each a helper the function then calls in sequence.
   loop, so a ``break`` / ``continue`` cannot leave the stage). Its inputs and
   outputs come from the same line liveness as a single span; an output not
   written on every path is also passed in (``inout``), so a skipped write hands
-  back the value it came with.
+  back the value it came with. Every input must be written on every path into
+  the stage (:mod:`assigned`): one bound only under a condition would raise
+  at the call. A name a stage declares in a nested block (a loop's ``const``)
+  is the stage's own, never an output. A guard (``if not x: raise``) whose
+  names the code after the stage reads stays in the function: type checkers
+  narrow ``x`` from it.
 - **Cuts.** A small dynamic program over the statement boundaries: lift as many
   decision points as possible, then prefer narrow interfaces (fewest names
-  crossing a cut), cuts at a banner comment or a ``timed()`` label, and fewer
-  stages. Deterministic: ties keep the earliest cut. A timer started in one
+  crossing a cut), cuts at a banner comment, a ``timed()`` label or a blank
+  line, stages that do not run across a banner, and fewer stages.
+  Deterministic: ties keep the earliest cut. A timer started in one
   statement and stopped in another (``timings.start("x")`` ...
   ``timings.stop("x")``) is never split by a stage edge.
 - **Context.** When more than five values are read by two or more stages and
   never rebound once the first stage starts, they travel on one parameter
   object instead of as separate parameters. The receiver never does.
 - **Composition.** The definitions each read observes
-  (:func:`reaching.observed_definitions`) are checked against the plan: a value defined outside a stage and read inside it must be one of its
-  inputs, and one defined in a stage and read outside it one of its outputs.
+  (:func:`reaching.observed_definitions`) are checked against the plan: a
+  value defined outside a stage and read inside it must be one of its inputs, and one defined in a stage and read outside it one of its outputs.
   A plan that fails is refused whole.
 
-Function-local imports are not inputs: a helper re-imports a name.
+Function-local imports are not inputs: a helper re-imports a name, and the
+function drops an import nothing it keeps still reads.
 """
 
 from __future__ import annotations
@@ -40,6 +47,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..complexity.nloc import is_string_stmt
+from .assigned import DefiniteAssignment
 from .reaching import observed_definitions
 from .slice import (
     _MIN_SLICE_NLOC,
@@ -52,6 +60,7 @@ from .slice import (
     _declared_before_read,
     _function_lines,
     _hoisted_bindings,
+    _identifiers,
     _infer_in_out,
     _outs_definitely_assigned,
     _reads_observing,
@@ -69,6 +78,7 @@ if TYPE_CHECKING:
 
     from ..complexity.languages import LanguageNodeMap
     from .analyze import FunctionAnalysis
+    from .defuse import FunctionDefUse
     from .dialects.base import Receiver
     from .slice import _Prefix, _Scan
 
@@ -88,6 +98,8 @@ _KEPT_DECISION = 200
 _PER_STAGE = 20
 _PER_NAME = 6
 _UNHINTED_CUT = 8
+_BLANK_LINE_CUT = 4
+_CROSSED_BANNER = 6
 
 # A timer's start and stop by label, in any language's call syntax.
 _TIMER_START = re.compile(r"""\.start\(\s*["']([^"'\n]+)["']""")
@@ -98,12 +110,14 @@ _TIMER_STOP = re.compile(r"""\.stop\(\s*["']([^"'\n]+)["']""")
 class StagePlan:
     """The stages in source order, the names carried on the parameter
     object (empty: plain parameters), and per stage the names it reads that
-    the function imports outside it, which the helper must import itself.
+    the function imports outside it, which the helper must import itself;
+    ``moved_imports`` are those nothing left in the function reads.
     ``reason`` says why there are no stages; None when there are."""
 
     stages: tuple[Extraction, ...] = ()
     context: tuple[str, ...] = ()
     imports: tuple[tuple[str, ...], ...] = ()
+    moved_imports: frozenset[str] = frozenset()
     reason: str | None = None
 
     @property
@@ -144,10 +158,11 @@ def find_stages(
     if len(stages) < 2:
         return StagePlan(reason="fewer_than_two_stages")
     context = _context(stages, cutter.def_lines, receiver)
-    imports = _composes(analysis, stages, context)
-    if imports is None:
+    composed = _composes(analysis, stages, context)
+    if composed is None:
         return StagePlan(reason="composition")
-    return StagePlan(stages=stages, context=context, imports=imports)
+    imports, moved = composed
+    return StagePlan(stages=stages, context=context, imports=imports, moved_imports=moved)
 
 
 def _code(block: Node) -> list[Node]:
@@ -201,8 +216,12 @@ class _Cutter:
         self.shared = _closure_state(def_use, self.def_lines, self.use_lines)
         self.reads = _reads_observing(analysis, self.def_lines)
         self.pre: _Prefix = _block_prefix(code, scan, _function_lines(analysis.fn_node), lmap)
-        self.hints = [bool(comment) for _st, comment in section_heads(code)]
+        self.cut_cost = _cut_costs(code)
+        self.banners = [c == 0 for c in self.cut_cost]
         self.timer_pairs = _timer_pairs(code)
+        self.guards = [_guard_names(st, lmap) for st in code]
+        self.assigned = DefiniteAssignment(analysis)
+        self.inner_bindings = _inner_bindings(def_use)
 
     def _sum(self, series: list[int], i: int, j: int) -> int:
         return series[j + 1] - series[i]
@@ -243,7 +262,8 @@ class _Cutter:
             if stage is None:
                 continue
             c = cost[i] + _PER_STAGE + _PER_NAME * (len(stage.params) + len(stage.returns))
-            c += 0 if self.hints[i] or i == 0 else _UNHINTED_CUT
+            c += 0 if i == 0 else self.cut_cost[i]
+            c += _CROSSED_BANNER * sum(self.banners[i + 1 : k])
             if c < best:
                 best, choice = c, (i, stage)
         return best, choice
@@ -257,10 +277,14 @@ class _Cutter:
         params, returns = _infer_in_out(
             self.def_lines, self.use_lines, s, e, self.declared_first, reads=self.reads
         )
+        returns = self._own_bindings_dropped(span, s, e, returns)
         params = self._with_inouts(span, s, params, returns)
         if params is None or len(returns) > self.max_returns:
             return None
-        if not self._signature_holds(span, s, e, returns):
+        bound = self.assigned.before(s)
+        if bound is None or not set(params) <= bound:
+            return None
+        if not self._signature_holds(span, s, e, returns) or self._guard_needed_after(i, j, e):
             return None
         pre = self.pre
         uses, assigns = _receiver_facts(self.receiver, pre, i, j, 0)
@@ -288,6 +312,33 @@ class _Cutter:
         if self._sum(pre.jumps, i, j) or self._sum(pre.nested, i, j):
             return False
         return not any((i <= a <= j) != (i <= b <= j) for a, b in self.timer_pairs)
+
+    def _own_bindings_dropped(
+        self, span: list[Node], s: int, e: int, returns: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        """*returns* without the names the stage only declares inside a nested
+        block (a loop's ``const``): those bindings end with the block."""
+        top = [
+            (st.start_point[0] + 1, st.end_point[0] + 1)
+            for st in span
+            if st.type in self.lmap.local_decl_kinds
+        ]
+
+        def scoped(var: str) -> bool:
+            lines = [(ln, inner) for ln, inner in self.inner_bindings.get(var, ()) if s <= ln <= e]
+            return bool(lines) and all(
+                inner and not any(lo <= ln <= hi for lo, hi in top) for ln, inner in lines
+            )
+
+        return tuple(r for r in returns if not scoped(r))
+
+    def _guard_needed_after(self, i: int, j: int, e: int) -> bool:
+        """Whether a guard in statements ``i..j`` names a value read after *e*."""
+        return any(
+            any(ln > e for name in names for ln in self.use_lines.get(name, ()))
+            for names in self.guards[i : j + 1]
+            if names
+        )
 
     def _signature_holds(self, span: list[Node], s: int, e: int, returns: tuple[str, ...]) -> bool:
         """The single-span slicer's own refusals: a hoisted binding, a
@@ -337,6 +388,48 @@ def _timer_pairs(code: list[Node]) -> list[tuple[int, int]]:
     return pairs
 
 
+def _cut_costs(code: list[Node]) -> list[int]:
+    """What cutting before each statement costs: nothing under a banner
+    comment or a ``timed()`` label, less after a blank line."""
+    out = []
+    for n, (st, comment) in enumerate(section_heads(code)):
+        prev = code[n - 1] if n else None
+        blank = prev is not None and st.start_point[0] - prev.end_point[0] > 1
+        out.append(0 if comment else _BLANK_LINE_CUT if blank else _UNHINTED_CUT)
+    return out
+
+
+def _guard_names(st: Node, lmap: LanguageNodeMap) -> frozenset[str]:
+    """The names a guard statement tests (``if not x: raise``): an ``if`` with
+    no else arm whose body ends by raising. Empty for anything else."""
+    if st.type not in lmap.if_kinds or st.child_by_field_name("alternative") is not None:
+        return frozenset()
+    if any(c.type in ("else_clause", "elif_clause") for c in st.children):
+        return frozenset()
+    body = st.child_by_field_name("consequence")
+    if body is None:
+        return frozenset()
+    stmts = [c for c in body.named_children if not is_comment(c)]
+    # ``if (!x) throw e;`` has the throw itself as its consequence.
+    last = body if body.type in lmap.raise_kinds or not stmts else stmts[-1]
+    raises = last.type in lmap.raise_kinds or any(
+        c.type in lmap.raise_kinds for c in last.named_children
+    )
+    if not raises:
+        return frozenset()
+    condition = st.child_by_field_name("condition")
+    return frozenset(_identifiers(condition)) if condition is not None else frozenset()
+
+
+def _inner_bindings(def_use: FunctionDefUse) -> dict[str, list[tuple[int, bool]]]:
+    """Per name, each write's line and whether it opens a block-scoped
+    binding (``let`` / ``const`` / a loop's declared variable)."""
+    out: dict[str, list[tuple[int, bool]]] = {}
+    for d in def_use.definitions:
+        out.setdefault(d.var, []).append((d.line, d.declares))
+    return out
+
+
 def _context(
     stages: tuple[Extraction, ...], def_lines: dict[str, list[int]], receiver: Receiver | None
 ) -> tuple[str, ...]:
@@ -360,14 +453,16 @@ def _context(
 
 def _composes(
     analysis: FunctionAnalysis, stages: tuple[Extraction, ...], context: tuple[str, ...]
-) -> tuple[tuple[str, ...], ...] | None:
+) -> tuple[tuple[tuple[str, ...], ...], frozenset[str]] | None:
     """Per stage, the function-local imports it reads from outside itself,
-    or None when some read would no longer see the value it saw (module
-    docstring, Composition), by the definitions each read observes."""
+    and those no read left in the function needs; None when some read would
+    no longer see the value it saw (module docstring, Composition), by the
+    definitions each read observes."""
     starts = [x.start_line for x in stages]
     ins = [set(x.params) | set(context) for x in stages]
     outs = [set(x.returns) for x in stages]
     imported: list[set[str]] = [set() for _ in stages]
+    kept: set[str] = set()
 
     def stage_at(line: int) -> int | None:
         k = bisect_right(starts, line) - 1
@@ -380,17 +475,20 @@ def _composes(
         m = stage_at(use.line)
         for d in (definitions[i] for i in seen):
             k = stage_at(d.line)
-            if k == m:
-                continue
             if d.imports:
-                if m is not None:
+                if m is None:
+                    kept.add(use.name)
+                elif k != m:
                     imported[m].add(use.name)
+                continue
+            if k == m:
                 continue
             if (m is not None and use.name not in ins[m]) or (
                 k is not None and use.name not in outs[k]
             ):
                 return None
-    return tuple(tuple(sorted(names)) for names in imported)
+    moved = frozenset().union(*imported) - kept
+    return tuple(tuple(sorted(names)) for names in imported), moved
 
 
 __all__ = ["STAGE_MAX_CCN", "STAGE_MAX_NLOC", "StagePlan", "find_stages"]
