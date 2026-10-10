@@ -399,7 +399,14 @@ class _CFGBuilder:
             self._edge(cur, join)
             return
         if alt.type == "else_clause":  # Python / TS wrap the else arm in a clause
-            inner = next((c for c in alt.named_children), None)
+            # Comment nodes are named siblings here too, and an ``else:`` whose only
+            # child is a comment has no statements at all. Picking a comment would
+            # make it ``alt``, so the kind is never an ``if_kinds`` one and it reaches
+            # ``_process_seq`` as a statement, giving the block the comment's own start
+            # line. Skip them the same way ``_body_stmts`` does.
+            inner = next(
+                (c for c in alt.named_children if "comment" not in c.type), None
+            )
             if inner is None:
                 self._edge(cur, join)
                 return

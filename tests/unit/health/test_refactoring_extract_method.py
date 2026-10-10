@@ -92,6 +92,44 @@ def test_finds_clean_extraction_with_inferred_signature():
     assert best.slice_nloc >= 5
 
 
+# The same tail as _PROCESS, with a comment opening the else arm. The CFG fix keeps
+# the arm's block on the statement's line, so the slice still sees it.
+_PROCESS_ELSE_COMMENT = """
+def process(records, threshold):
+    results = []
+    errors = 0
+    for r in records:
+        if r is None:
+            errors += 1
+            continue
+        results.append(r)
+    total = 0
+    count = 0
+    for v in results:
+        if v > threshold:
+            total += v
+            count += 1
+        else:
+            # count the misses too
+            total -= v
+    average = total / count if count else 0
+    return average, errors
+"""
+
+
+def test_a_comment_opening_the_else_arm_still_yields_the_same_extraction():
+    # The comment must not change which span is offered or the parameters it takes.
+    lmap = get_language_map("python")
+    extractions = find_extractions(_first(_PROCESS_ELSE_COMMENT), lmap)
+    assert extractions, "expected at least one extraction"
+    best = extractions[0]
+    assert "average" in best.returns
+    assert "results" in best.params and "threshold" in best.params
+    assert len(best.returns) <= 1
+    assert best.ccn_removed >= 1
+    assert best.slice_nloc >= 5
+
+
 def test_no_extraction_when_every_span_has_a_jump():
     # A guard-clause cascade: every span contains a return, so nothing is a
     # single-exit slice -> no candidate.
