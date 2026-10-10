@@ -330,6 +330,9 @@ def _loop_key_feeds(call: Node, loop: Node) -> bool:
 _SINK_CALL_MAX = 60
 
 
+_STRING_QUOTES = frozenset("'\"`")
+
+
 def _sink_call_text(call: Node, method: str, dialect: BasePerfDialect) -> str:
     """The callee as written with its arguments dropped, else its method name.
 
@@ -339,11 +342,16 @@ def _sink_call_text(call: Node, method: str, dialect: BasePerfDialect) -> str:
     method only, as does a dialect with no callee text.
     """
     text = dialect.callee_text(call)
-    if len(text) > 4 * _SINK_CALL_MAX or "'" in text or '"' in text or "`" in text:
+    if len(text) > 4 * _SINK_CALL_MAX or not _STRING_QUOTES.isdisjoint(text):
         return method
+    callee = _strip_call_args(text)
+    return callee if _quotable(callee) else method
+
+
+def _strip_call_args(text: str) -> str:
+    """``conn.execute(sql).fetchone`` -> ``conn.execute().fetchone``, whitespace dropped."""
     if "(" not in text:
-        text = "".join(text.split())
-        return text if text and len(text) <= _SINK_CALL_MAX else method
+        return "".join(text.split())
     kept: list[str] = []
     depth = 0
     for char in text:
@@ -354,10 +362,11 @@ def _sink_call_text(call: Node, method: str, dialect: BasePerfDialect) -> str:
             depth = max(depth - 1, 0)
         elif depth == 0 and not char.isspace():
             kept.append(char)
-    callee = "".join(kept)
-    if callee and not callee.startswith("(") and len(callee) <= _SINK_CALL_MAX:
-        return callee
-    return method
+    return "".join(kept)
+
+
+def _quotable(callee: str) -> bool:
+    return bool(callee) and not callee.startswith("(") and len(callee) <= _SINK_CALL_MAX
 
 
 def _key_unused(hit: PerfHit) -> bool:
