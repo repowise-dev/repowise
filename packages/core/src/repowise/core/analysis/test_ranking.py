@@ -123,17 +123,19 @@ def co_change_counts(
     pairs: dict[tuple[str, str], int] = {}
     for owner, records in partners.items():
         for p in records:
-            if owner in changed and p.file_path not in changed:
-                key = (owner, p.file_path)
-            elif p.file_path in changed and owner not in changed:
-                key = (p.file_path, owner)
-            else:
-                continue
-            pairs[key] = max(pairs.get(key, 0), p.support or round(p.weight))
+            if key := _pair(owner, p.file_path, changed):
+                pairs[key] = max(pairs.get(key, 0), p.support or round(p.weight))
     out: dict[str, int] = {}
     for (_, other), count in pairs.items():
         out[other] = out.get(other, 0) + count
     return out
+
+
+def _pair(a: str, b: str, changed: set[str]) -> tuple[str, str] | None:
+    """``(changed file, other file)`` when exactly one of *a* and *b* changed."""
+    if (a in changed) == (b in changed):
+        return None
+    return (a, b) if a in changed else (b, a)
 
 
 def _lift(best: dict[str, int], test_file: str | None, tier: str) -> None:
@@ -176,13 +178,14 @@ def tiers_of(
         _lift(best, info.get("test_file"), _covered_tier(sources, by_line, changed))
     for row in result.get("inferred") or ():
         _lift(best, row["test_file"], _graph_tier(row, changed, hops or {}))
-    out: dict[str, str] = {}
-    for test in selection.test_files:
-        if test in best:
-            out[test] = TIERS[best[test]]
-        else:
-            out[test] = "transitive" if selected_by_change(selection, test) else "every-subset"
-    return out
+    return {t: _tier(t, best, selection) for t in selection.test_files}
+
+
+def _tier(test: str, best: Mapping[str, int], selection: Selection) -> str:
+    """*test*'s strongest evidence; with none, whether a changed file or a rule put it in."""
+    if test in best:
+        return TIERS[best[test]]
+    return "transitive" if selected_by_change(selection, test) else "every-subset"
 
 
 def _reach(result: Mapping[str, Any], changed: Collection[str]) -> dict[str, int]:
