@@ -594,7 +594,7 @@ def _refactor_step(
             is_async=bool(body.get("needs_async", False)),
         )
         where = f"lines {start}-{end} of {sym}" if start and end else f"part of {sym}"
-        line_text = f"Extract {where} into {into}"
+        line_text = _stage_one(f"Extract {where} into {into}", sym, body)
     elif kind == "extract_helper":
         line_text = f"Replace the duplicate in {sym} with a call to one shared helper"
     elif kind == "extract_class":
@@ -634,6 +634,27 @@ def _refactor_step(
     return FixStep(
         order, line_text, path, start or step.get("line_start"), mechanical, **code, command=command
     )
+
+
+def _stage_count(body: Mapping[str, Any]) -> int:
+    """How many helpers a staged Extract Method plan splits its function into; 0 unstaged."""
+    return sum(isinstance(stage, dict) for stage in body.get("stages") or ())
+
+
+def _stage_one(line_text: str, sym: str, body: Mapping[str, Any]) -> str:
+    """A staged plan's step is its first stage (the plan's top-level span),
+    so it says so and names what the whole plan does."""
+    count = _stage_count(body)
+    if not count:
+        return line_text
+    residual = body.get("orchestrator")
+    before, after = (
+        (residual.get("ccn_before"), residual.get("ccn_after"))
+        if isinstance(residual, dict)
+        else (None, None)
+    )
+    ccn = f", CCN {before} -> {after}" if before is not None and after is not None else ""
+    return f"Stage 1 of {count}: {line_text} (the plan splits {sym} into {count} helpers{ccn})"
 
 
 def _uncut_cycle_text(path: str, plan: Any) -> str:
@@ -874,8 +895,16 @@ def _refactor_fix_steps(
 
 
 def _refactor_title(plan: _RefactorPlan, lead_plan: Any) -> str:
-    """A big function's first lift names the problem and the span; any other
-    plan reads its title off the lead step's kind."""
+    """A staged plan names how many helpers it splits the function into, a big
+    function's first lift names the problem and the span, and any other plan
+    reads its title off the lead step's kind."""
+    stages = _stage_count(_plan_body(lead_plan)) if plan.lead_type == "extract_method" else 0
+    if stages:
+        return _with_more_steps(plan, f"Split {plan.sym} into {stages} helpers")
+    return _span_title(plan, lead_plan)
+
+
+def _span_title(plan: _RefactorPlan, lead_plan: Any) -> str:
     start, end = _span(lead_plan)
     name = _plan_body(lead_plan).get("suggested_name") or NAME_PLACEHOLDER
     spanned = plan.lead_type == "extract_method" and bool(start and end)
@@ -884,6 +913,10 @@ def _refactor_title(plan: _RefactorPlan, lead_plan: Any) -> str:
     title = text.REFACTOR_TITLE.get(
         "extract_method_span" if spanned else plan.lead_type, "Refactor {file}"
     ).format(sym=plan.sym, file=text.basename(plan.path), start=start, end=end, name=name)
+    return _with_more_steps(plan, title)
+
+
+def _with_more_steps(plan: _RefactorPlan, title: str) -> str:
     if len(plan.steps) > 1:
         title += f" (+{text.plural(len(plan.steps) - 1, 'more step')})"
     return title
