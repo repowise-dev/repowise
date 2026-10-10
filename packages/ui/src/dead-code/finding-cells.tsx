@@ -155,7 +155,7 @@ export function FindingSafety({ finding }: { finding: DeadCodeFinding }) {
     <span className="mt-0.5 flex min-w-0 items-baseline gap-1.5 text-2xs text-[var(--color-text-tertiary)]">
       <span
         aria-hidden
-        className="inline-block h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-full bg-[var(--color-warning)]"
+        className="inline-block h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-full bg-[var(--color-text-tertiary)]"
       />
       <span className="min-w-0">
         <span className="font-medium text-[var(--color-text-secondary)]">Review first</span>

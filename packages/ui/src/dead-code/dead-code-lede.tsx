@@ -63,9 +63,8 @@ export function DeadCodeLede({ summary, action, children }: DeadCodeLedeProps) {
             <>
               <strong className={strong}>{plural(findings, "finding")}</strong> across{" "}
               <strong className={strong}>{plural(summary.total_lines, "line")}</strong>{" "}
-              {findings === 1 ? "has" : "have"} no reachable caller;{" "}
-              <strong className={strong}>{plural(summary.deletable_lines, "line")}</strong>{" "}
-              {summary.deletable_lines === 1 ? "is" : "are"} deletion-ready.
+              {findings === 1 ? "has" : "have"} no reachable caller. Only the deletion-ready
+              share is counted above.
             </>
           )}
           <AnalysedAt at={summary.analyzed_at} />

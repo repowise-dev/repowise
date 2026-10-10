@@ -23,7 +23,7 @@ describe("DeadCodeLede", () => {
     render(<DeadCodeLede summary={SUMMARY} />);
     const prose = screen.getByText(/have no reachable caller/);
     expect(prose.textContent).toBe(
-      "142 findings across 91,234 lines have no reachable caller; 4,321 lines are deletion-ready. Analysed 2d ago.",
+      "142 findings across 91,234 lines have no reachable caller. Only the deletion-ready share is counted above. Analysed 2d ago.",
     );
   });
 
@@ -47,7 +47,7 @@ describe("DeadCodeLede", () => {
       />,
     );
     expect(screen.getByText(/no reachable caller/).textContent).toBe(
-      "1 finding across 12 lines has no reachable caller; 1 line is deletion-ready.",
+      "1 finding across 12 lines has no reachable caller. Only the deletion-ready share is counted above.",
     );
   });
 });
