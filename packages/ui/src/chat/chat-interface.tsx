@@ -95,9 +95,9 @@ export interface ChatInterfaceProps {
    */
   historySlot?: ReactNode;
 
-  /** Avatar src forwarded to `ChatMessage`. */
+  /** @deprecated Turns no longer render avatars. Ignored. */
   assistantAvatarSrc?: string;
-  /** Optional host-supplied avatar for user turns. */
+  /** @deprecated Turns no longer render avatars. Ignored. */
   userAvatarSrc?: string;
   /** Forwarded to `SourceCitations` for href customisation. */
   buildCitationHref?: (source: SourceReference) => string;
@@ -151,8 +151,6 @@ export function ChatInterface({
   onCancel,
   modelSelectorSlot,
   historySlot,
-  assistantAvatarSrc,
-  userAvatarSrc,
   buildCitationHref,
   linkPrefix,
   emptyStateLogoSrc = "/repowise-logo.png",
@@ -213,6 +211,18 @@ export function ChatInterface({
     !error && lastMessage?.role === "assistant" && !lastMessage.isStreaming
       ? lastMessage.followUps ?? []
       : [];
+  // One pass rather than a backwards scan per turn on every streamed token.
+  const modelChangedIds = useMemo(() => {
+    const changed = new Set<string>();
+    let previous: string | null = null;
+    for (const m of messages) {
+      if (m.role !== "assistant") continue;
+      const identity = `${m.provider ?? ""}:${m.model ?? ""}`;
+      if (previous !== null && previous !== identity) changed.add(m.id);
+      previous = identity;
+    }
+    return changed;
+  }, [messages]);
   const showContext =
     context !== undefined &&
     context.kind !== "repository" &&
@@ -399,29 +409,19 @@ export function ChatInterface({
               )}
             >
               {messages.map((m, index) => {
-                const previousAssistant = messages
-                  .slice(0, index)
-                  .reverse()
-                  .find((candidate) => candidate.role === "assistant");
-                const modelChanged = Boolean(
-                  m.role === "assistant" &&
-                  previousAssistant &&
-                  `${previousAssistant.provider ?? ""}:${previousAssistant.model ?? ""}` !==
-                    `${m.provider ?? ""}:${m.model ?? ""}`,
-                );
+                const isLast = index === messages.length - 1;
                 return (
                 <ChatMessage
                   key={m.id}
                   message={m}
                   repoId={repoId}
                   onViewArtifact={handleViewArtifact}
-                  {...(assistantAvatarSrc ? { assistantAvatarSrc } : {})}
-                  {...(userAvatarSrc ? { userAvatarSrc } : {})}
                   density={variant}
-                  modelChanged={modelChanged}
+                  modelChanged={modelChangedIds.has(m.id)}
+                  isLatest={isLast && m.role === "assistant"}
+                  {...(isLast && m.role === "assistant" && error ? { error } : {})}
                   {...(onRetry ? { onRetry } : {})}
                   {...(onEditAndResend ? { onEditAndResend } : {})}
-                  onFollowUp={handleFollowUp}
                   {...(buildCitationHref ? { buildCitationHref } : {})}
                   {...(linkPrefix ? { linkPrefix } : {})}
                 />
@@ -438,9 +438,12 @@ export function ChatInterface({
                   ariaLabel="Next steps"
                 />
               )}
-              {error && (
-                <div className="rounded-lg border border-[var(--color-error)]/30 bg-[var(--color-error)]/10 px-4 py-2.5 text-sm text-[var(--color-error)]">
-                  {error}
+              {error && lastMessage?.role !== "assistant" && (
+                // The newest answer carries its own error and Retry; this is
+                // only for a failure before any answer turn exists.
+                <div role="alert" className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+                  <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-error)]" />
+                  <span className="min-w-0 [overflow-wrap:anywhere]">{error}</span>
                 </div>
               )}
             </div>

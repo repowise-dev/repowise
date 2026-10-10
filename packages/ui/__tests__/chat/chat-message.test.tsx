@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { ChatMessage } from "../../src/chat/chat-message.js";
 import type { ChatUIMessage } from "@repowise-dev/types/chat";
 
@@ -30,15 +30,78 @@ describe("ChatMessage", () => {
     ).toBeNull();
   });
 
-  it("renders the user on the opposite side with a neutral identity surface", () => {
-    render(<ChatMessage message={USER} repoId="r1" />);
+  it("renders the user on the opposite side as a borderless bubble with no label or avatar", () => {
+    const { container } = render(<ChatMessage message={USER} repoId="r1" />);
     const turn = screen.getByRole("article", { name: "You" });
-    expect(turn.className).toContain("justify-end");
+    expect(turn.className).toContain("items-end");
     expect(turn).toHaveAttribute("data-chat-role", "user");
-    expect(screen.getByText("You")).toBeInTheDocument();
-    expect(screen.getByText("Where is auth handled?").className).toContain(
-      "bg-[var(--color-bg-surface)]",
+    expect(screen.queryByText("You")).toBeNull();
+    expect(container.querySelector("img, svg.lucide-user-round")).toBeNull();
+    const bubble = screen.getByText("Where is auth handled?");
+    expect(bubble.className).toContain("bg-[var(--color-bg-elevated)]");
+    expect(bubble.className).not.toContain("border");
+  });
+
+  it("renders the answer without a label or avatar", () => {
+    const { container } = render(<ChatMessage message={ASSISTANT} repoId="r1" />);
+    expect(screen.queryByText("Repowise")).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("names the model only when it changed from the previous answer", () => {
+    const withModel = { ...ASSISTANT, provider: "anthropic", model: "claude" };
+    const view = render(<ChatMessage message={withModel} repoId="r1" />);
+    expect(screen.queryByText(/anthropic/)).toBeNull();
+    view.rerender(<ChatMessage message={withModel} repoId="r1" modelChanged />);
+    expect(screen.getByText(/Model changed to anthropic · claude/)).toBeInTheDocument();
+  });
+
+  it("offers copy and retry, with no canned follow up", () => {
+    render(<ChatMessage message={ASSISTANT} repoId="r1" isLatest onRetry={() => {}} />);
+    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /follow up/i })).toBeNull();
+    // The newest answer never hides its actions behind hover.
+    const group = screen.getByRole("group", { name: "assistant message actions" });
+    expect(group.className).not.toContain("opacity-0");
+  });
+
+  it("reveals actions on hover or focus for older turns, never only on hover for touch", () => {
+    render(<ChatMessage message={ASSISTANT} repoId="r1" />);
+    const group = screen.getByRole("group", { name: "assistant message actions" });
+    expect(group.className).toContain("pointer-fine:opacity-0");
+    expect(group.className).toContain("group-focus-within/turn:opacity-100");
+  });
+
+  it("shows an inline error with Retry when the answer failed before any text", () => {
+    let retried = 0;
+    render(
+      <ChatMessage
+        message={{ ...ASSISTANT, text: "" }}
+        repoId="r1"
+        error="The provider rejected the request."
+        onRetry={() => {
+          retried += 1;
+        }}
+      />,
     );
+    expect(screen.getByRole("alert")).toHaveTextContent("The provider rejected the request.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(retried).toBe(1);
+  });
+
+  it("resends an edit with the primary action, not the model colour", () => {
+    render(
+      <ChatMessage
+        message={{ ...USER, serverId: "s1" }}
+        repoId="r1"
+        onEditAndResend={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit and resend" }));
+    const submit = screen.getByRole("button", { name: "Fork and resend" });
+    expect(submit.className).toContain("accent-fill");
+    expect(submit.className).not.toContain("color-model");
   });
 
   it("renders assistant text as markdown", () => {
