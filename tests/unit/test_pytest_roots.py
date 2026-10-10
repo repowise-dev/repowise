@@ -52,6 +52,22 @@ def test_a_nested_config_passed_from_the_root_keeps_its_tests() -> None:
     assert roots.collects("skills/creator/scripts/test_init.py") is True
 
 
+def test_a_file_an_ancestor_config_collects_stays_collected() -> None:
+    """A nested ``python_files`` narrows names, but the root config still collects it."""
+    roots = read_pytest_roots(
+        [
+            ("pytest.ini", "[pytest]\n"),
+            ("pkg/tox.ini", "[pytest]\npython_files = check_*.py\n"),
+        ]
+    )
+    assert roots.collects("pkg/sub/test_x.py") is True
+
+
+def test_a_python_files_pattern_with_a_directory_never_excludes() -> None:
+    roots = read_pytest_roots([("pytest.ini", "[pytest]\npython_files = tests/*.py\n")])
+    assert roots.collects("pkg/test_x.py") is True
+
+
 def test_options_come_from_an_already_parsed_pyproject() -> None:
     parsed = {"tool": {"pytest": {"ini_options": {"testpaths": ["t"]}}}}
     assert pytest_options("pyproject.toml", toml=parsed) == {"testpaths": ["t"]}

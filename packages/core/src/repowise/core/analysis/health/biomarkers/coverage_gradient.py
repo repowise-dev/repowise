@@ -27,7 +27,6 @@ the has-tests / hotspot gates.
 
 from __future__ import annotations
 
-from ....test_paths import is_test_related_path
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -59,7 +58,7 @@ class CoverageGradientDetector:
         if cov is None:
             # No coverage data -> silent. Absent is not the same as uncovered.
             return []
-        if is_test_related_path(ctx.file_path, ctx.language):
+        if ctx.is_test_material:
             return []
 
         uncovered_fraction = max(0.0, (100.0 - float(cov)) / 100.0)

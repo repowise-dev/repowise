@@ -126,6 +126,8 @@ def refresh_history(
             nloc=int(field(metric, "nloc", 0) or 0),
             has_test_file=bool(field(metric, "has_test_file", False)),
             module=field(metric, "module"),
+            # The stored row's flag; ``None`` on an older row falls back to the path.
+            is_test=field(metric, "is_test", None),
             git_meta=git_meta,
             repo_active_contributors_90d=repo_active_contributors_90d,
         )

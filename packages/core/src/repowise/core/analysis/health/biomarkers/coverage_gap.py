@@ -13,7 +13,6 @@ does nothing — the absence-of-coverage case is the
 
 from __future__ import annotations
 
-from ....test_paths import is_test_related_path
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -32,7 +31,7 @@ class CoverageGapDetector:
             return []
         if ctx.total_coverable_lines <= 0:
             return []
-        if is_test_related_path(ctx.file_path, ctx.language):
+        if ctx.is_test_material:
             return []
 
         cov = ctx.line_coverage_pct

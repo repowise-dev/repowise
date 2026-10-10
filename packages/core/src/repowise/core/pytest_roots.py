@@ -16,10 +16,14 @@ precedence applies: ``pytest.ini`` (even with no section), then
 ``pyproject.toml``, ``tox.ini``, ``setup.cfg``. A nested config's ``testpaths``
 are read against its own directory and against the repository root, because a
 CI job may pass it with ``-c`` from the root (``pytest -c skills/pyproject.toml
-skills``); a file either reading collects counts as collected, so a doubt keeps
-a test a test. Ceiling: ``python_files``
-patterns are matched against the file name only, so a pattern with a directory
-part never matches; none seen so far.
+skills``), and a file any config above it collects (by ``testpaths`` and
+``python_files``) counts as collected, so a doubt keeps a test a test.
+
+The rule follows a bare ``pytest`` run. A file a CI job only names explicitly on
+the command line, outside every ``testpaths``, is not seen as a test; list such
+files in ``tests.always_run``. Ceiling: ``python_files`` patterns are matched
+against the file name only, and a pattern with a directory part is skipped
+rather than allowed to exclude a file; none seen so far.
 """
 
 from __future__ import annotations
@@ -57,17 +61,24 @@ class PytestRoots:
     by_dir: Mapping[str, _Collection] = field(default_factory=dict)
 
     def collects(self, path: str) -> bool | None:
-        """Whether a bare ``pytest`` run collects *path*; ``None`` when no config governs it."""
+        """Whether a bare ``pytest`` run collects *path*; ``None`` when no config governs it.
+
+        Collected when any config at or above it collects it (see the module
+        docstring), so only a unanimous "no" demotes a test.
+        """
         p = PurePosixPath(path)
-        for parent in p.parents:
-            key = "" if str(parent) == "." else str(parent)
-            if (rules := self.by_dir.get(key)) is not None:
-                return _collected(p, p.relative_to(parent), rules)
-        return None
+        verdicts = [
+            _collected(p, p.relative_to(parent), rules)
+            for parent in p.parents
+            if (rules := self.by_dir.get("" if str(parent) == "." else str(parent))) is not None
+        ]
+        return any(verdicts) if verdicts else None
 
 
 def _collected(path: PurePosixPath, rel: PurePosixPath, rules: _Collection) -> bool:
-    if rules.python_files and not any(fnmatchcase(path.name, pat) for pat in rules.python_files):
+    # A pattern with a directory part is skipped (see the module ceiling).
+    patterns = [pat for pat in rules.python_files if "/" not in pat]
+    if patterns and not any(fnmatchcase(path.name, pat) for pat in patterns):
         return False
     if not rules.testpaths or "." in rules.testpaths:
         return True

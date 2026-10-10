@@ -344,7 +344,7 @@ _ROOTS = read_pytest_roots(
         # production modules named for what they do, outside testpaths
         ("packages/core/src/repowise/core/test_paths.py", ""),
         ("packages/core/src/repowise/core/analysis/test_selection.py", ""),
-        ("hermes_cli/approvals_test.py", ""),
+        ("mytool/cli/approvals_test.py", ""),
         # a test directory still settles it, inside testpaths or not
         ("tests/unit/test_engine.py", "test"),
         ("packages/ui/tests/test_a.py", "test"),

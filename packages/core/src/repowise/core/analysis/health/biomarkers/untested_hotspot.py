@@ -24,7 +24,6 @@ is an accusation.
 from __future__ import annotations
 
 from ....ingestion.git_indexer.fix_shape import is_code_path
-from ....test_paths import is_test_related_path
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -60,7 +59,7 @@ class UntestedHotspotDetector:
         # A test file is not undertested. Coverage reports rarely instrument
         # the suite itself, so where coverage is ingested every test file reads
         # as 0% covered and a churning one would be accused of it.
-        if is_test_related_path(ctx.file_path, ctx.language):
+        if ctx.is_test_material:
             return []
         if not _has_something_to_test(ctx):
             return []
