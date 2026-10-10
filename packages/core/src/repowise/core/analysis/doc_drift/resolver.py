@@ -173,13 +173,19 @@ class RepoIndex:
         from .extractor import prose_lines
 
         found: set[str] = set()
+        # GitHub suffixes repeated headings: the second ``## Usage`` is
+        # ``#usage-1``, the third ``#usage-2``. Same bookkeeping as
+        # github-slugger, so a suffixed slug that collides with a literal
+        # heading (``## Usage 1`` already took ``usage-1``) skips to the next
+        # free number rather than registering a slug GitHub never renders.
+        occurrences: dict[str, int] = {}
         previous = ""
         for _lineno, line in prose_lines(self._doc_text.get(rel, "")):
             m = _HEADING_RE.match(line)
             if m:
-                found.add(github_slug(m.group(1)))
+                found.add(_unique_slug(github_slug(m.group(1)), occurrences))
             elif previous.strip() and _SETEXT_UNDERLINE_RE.match(line):
-                found.add(github_slug(previous))
+                found.add(_unique_slug(github_slug(previous), occurrences))
             for groups in _HTML_ANCHOR_RE.findall(line):
                 value = next((g for g in groups if g), "")
                 found.add(value.strip().lower())
@@ -189,6 +195,21 @@ class RepoIndex:
         frozen = frozenset(found)
         self._doc_anchors[rel] = frozen
         return frozen
+
+
+def _unique_slug(slug: str, occurrences: dict[str, int]) -> str:
+    """The anchor GitHub gives a heading slugged *slug*, given the earlier ones.
+
+    *occurrences* holds every slug already handed out in the document and is
+    updated in place. Mirrors github-slugger: on a clash, bump the base slug's
+    counter and try ``f"{slug}-{n}"`` until one is free.
+    """
+    result = slug
+    while result in occurrences:
+        occurrences[slug] += 1
+        result = f"{slug}-{occurrences[slug]}"
+    occurrences[result] = 0
+    return result
 
 
 def _suffix(path: str) -> str:
