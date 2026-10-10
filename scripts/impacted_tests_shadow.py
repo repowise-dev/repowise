@@ -42,26 +42,29 @@ def split_classname(dotted: str) -> tuple[str, list[str]]:
     parts are taken as classes; a collection error names the module alone.
     """
     parts = dotted.split(".")
-    classes: list[str] = []
-    while len(parts) > 1 and parts[-1][:1].isupper():
-        classes.insert(0, parts.pop())
-    return "/".join(parts) + ".py", classes
+    module = len(parts)
+    while module > 1 and parts[module - 1][:1].isupper():
+        module -= 1
+    return "/".join(parts[:module]) + ".py", parts[module:]
+
+
+def node_id(case: ET.Element) -> str:
+    """The pytest node id of a JUnit ``testcase``; the file alone for a collection error."""
+    classname = case.get("classname") or ""
+    path, classes = split_classname(classname or case.get("name") or "")
+    path = (case.get("file") or path).replace("\\", "/")
+    return "::".join([path, *classes, case.get("name") or ""]) if classname else path
 
 
 def read_junit(xml_text: str) -> tuple[set[str], set[str]]:
-    """Test files a JUnit report ran, and the node ids that failed or errored.
-
-    A collection error has no test name, so its node id is the file alone.
-    """
+    """Test files a JUnit report ran, and the node ids that failed or errored."""
     ran: set[str] = set()
     failing: set[str] = set()
     for case in ET.fromstring(xml_text).iter("testcase"):
-        classname = case.get("classname") or ""
-        path, classes = split_classname(classname or case.get("name") or "")
-        path = (case.get("file") or path).replace("\\", "/")
-        ran.add(path)
+        node = node_id(case)
+        ran.add(file_of(node))
         if any(child.tag in ("failure", "error") for child in case):
-            failing.add("::".join([path, *classes, case.get("name") or ""]) if classname else path)
+            failing.add(node)
     return ran, failing
 
 
