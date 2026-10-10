@@ -992,12 +992,15 @@ class HealthAnalyzer:
         # overlap with the pre-walk instead of blocking it — on large
         # repos the scan takes seconds during which the progress bar
         # would otherwise sit at zero.
-        dup_task = asyncio.ensure_future(
-            asyncio.to_thread(self._duplication, run, changed_set, None)
+        dup_task = (
+            None
+            if "dry_violation" in run.disabled
+            else asyncio.ensure_future(asyncio.to_thread(self._duplication, run, changed_set, None))
         )
         target_files = self._target_files(changed_set)
         if not target_files:
-            dup_task.cancel()
+            if dup_task is not None:
+                dup_task.cancel()
             return HealthReport(
                 repo_id="",
                 analyzed_at=datetime.now(UTC),
@@ -1009,7 +1012,7 @@ class HealthAnalyzer:
         return self._score(
             run,
             walked,
-            await dup_task,
+            await dup_task if dup_task is not None else DuplicationReport(),
             changed_files=changed_files,
             repo_function_mod_p80=repo_function_mod_p80,
             on_step=on_step,

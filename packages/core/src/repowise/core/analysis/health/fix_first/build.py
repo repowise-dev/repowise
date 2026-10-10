@@ -1282,12 +1282,6 @@ def _severity(severity: str | None, low: str | None) -> str:
     return severity if low is None else f"{severity} by the detector; lower priority by shape"
 
 
-def _dead_spans(rows: Rows) -> dict[str, list[DeadSpan]]:
-    """Sure, open dead-code findings by file: ``(symbol, start, end)``, the
-    symbol ``None`` for an unreachable file."""
-    return dead_spans(rows)
-
-
 def _clone_spans(plans: Iterable[Any]) -> dict[str, list[tuple[int, int]]]:
     """Where verified duplicates sit, by file: the occurrences an Extract
     Helper plan names. Those come from clone pairs the detector verified
@@ -1354,7 +1348,7 @@ def _prepare(
         hot_cuts,
         _clone_spans(plans),
         _extractions(plans),
-        _dead_spans(dead_code),
+        dead_spans(dead_code),
     )
     return split, files
 
@@ -1402,12 +1396,7 @@ def _judge_file_shape(shape: list[Any], scope: Verdict, files: _Files) -> dict[A
     """One file's code-shape findings: only the lead of the eligible ones is eligible."""
     if not scope.eligible:
         return {field(f, "id"): Judgement.of(scope) for f in shape}
-
-    def first_step(finding: Any) -> bool:
-        return files.first_step(finding) is not None
-
-    verdicts = {id(f): finding_verdict(f, files, first_step) for f in shape}
-    lead = primary_finding([f for f in shape if verdicts[id(f)].eligible])
+    verdicts, lead = _shape_verdicts(shape, files)
     out: dict[Any, Judgement] = {}
     for f in shape:
         verdict = verdicts[id(f)]
@@ -1419,6 +1408,38 @@ def _judge_file_shape(shape: list[Any], scope: Verdict, files: _Files) -> dict[A
             rank = _finding_rank(f, files)
             out[field(f, "id")] = Judgement(None, rank.value, rank.tier)
     return out
+
+
+def _shape_verdicts(shape: list[Any], files: _Files) -> tuple[dict[int, Verdict], Any | None]:
+    """Each code-shape finding's verdict, by ``id``, and the lead of the
+    eligible ones: the one rule the queue and the stored judgement share."""
+
+    def first_step(finding: Any) -> bool:
+        return files.first_step(finding) is not None
+
+    verdicts = {id(f): finding_verdict(f, files, first_step) for f in shape}
+    return verdicts, primary_finding([f for f in shape if verdicts[id(f)].eligible])
+
+
+class _Gate:
+    """The scope rule for one queue build, counting every unit it turns away."""
+
+    def __init__(self, files: _Files, keep_tests: bool) -> None:
+        self.files = files
+        self.keep_tests = keep_tests
+        self.tally = Tally(FIX_EXCLUSIONS)
+
+    def exclude(self, verdict: Verdict, path: str, symbol: str | None = None) -> bool:
+        return self.tally.add(verdict, (path, text.short_symbol(symbol)))
+
+    def scope(self, path: str, context: str | None = None) -> Verdict:
+        """Why ``path`` is out of scope, counted; eligible when it is in."""
+        files = self.files
+        verdict = path_verdict(
+            path, files.is_test(path), context, files.origin(path), keep_tests=self.keep_tests
+        )
+        self.tally.add(verdict)
+        return verdict
 
 
 def build_fix_first(
@@ -1456,22 +1477,38 @@ def build_fix_first(
     refactoring opportunity's judgement, by id, for the index to store.
     """
     metrics = list(metrics)
-    keep_tests = scope == "all"
     plans = list(plans)
     split, files = _prepare(metrics, findings, plans, dead_code, hot_cuts)
-    tally = Tally(FIX_EXCLUSIONS)
+    gate = _Gate(files, keep_tests=scope == "all")
+    units, planned_files = _refactor_units(refactoring, plans, gate, judged)
+    units += _perf_units(performance, gate, symbol_lines)
+    units += _finding_units(split, planned_files, gate, validate)
+    ordered = order(units)
+    if item_id is not None:
+        shown = [(i, u) for i, u in enumerate(ordered) if u.id == item_id]
+    else:
+        keep = ordered if limit is None else ordered[: max(limit, 0)]
+        shown = list(enumerate(keep))
+    by_improves = Counter(u.improves for u in units)
+    return FixFirstQueue(
+        items=tuple(u.write(rank) for rank, u in shown),
+        totals=FixTotals(
+            candidates=len(units) + gate.tally.total,
+            eligible=len(units),
+            shown=len(shown),
+            excluded=gate.tally.excluded,
+            dormant=len(gate.tally.dormant),
+        ),
+        by_improves={k: by_improves.get(k, 0) for k in FIX_IMPROVES},
+        basis=dict(basis) if basis is not None else _basis(metrics),
+    )
 
-    def exclude(verdict: Verdict, path: str, symbol: str | None = None) -> bool:
-        return tally.add(verdict, (path, text.short_symbol(symbol)))
 
-    def scope_verdict(path: str, context: str | None = None) -> Verdict:
-        """Why ``path`` is out of scope, counted; eligible when it is in."""
-        verdict = path_verdict(
-            path, files.is_test(path), context, files.origin(path), keep_tests=keep_tests
-        )
-        tally.add(verdict)
-        return verdict
-
+def _refactor_units(
+    refactoring: Rows, plans: list[Any], gate: _Gate, judged: dict[str, Judgement] | None
+) -> tuple[list[_Unit], set[str]]:
+    """Units for the open refactoring plans in scope, and the files they cover."""
+    files = gate.files
     plan_rows = {field(p, "public_id"): p for p in plans}
 
     def concrete(step: Mapping[str, Any]) -> bool:
@@ -1484,25 +1521,55 @@ def build_fix_first(
         key=lambda r: (field(r, "rank_position") or 0, field(r, "opportunity_id")),
     ):
         path = field(row, "file_path")
-        verdict = scope_verdict(path)
+        verdict = gate.scope(path)
         details = detail_map(row)
         steps = list(details.get("steps") or [])
         gain = _num(field(row, "recoverable_health"))
         if verdict.eligible:
             verdict = refactor_verdict(gain, steps, files, path, concrete)
-            exclude(verdict, path, steps[0].get("target_symbol") if steps else None)
+            gate.exclude(verdict, path, steps[0].get("target_symbol") if steps else None)
         if not verdict.eligible:
-            if judged is not None:
-                judged[field(row, "opportunity_id")] = Judgement(verdict.reason)
+            _record(judged, row, Judgement(verdict.reason))
             continue
         unit = _refactor_unit(row, details, steps, gain, plan_rows, files)
         units.append(unit)
-        if judged is not None:
-            judged[field(row, "opportunity_id")] = Judgement(None, unit.value, unit.tier)
+        _record(judged, row, Judgement(None, unit.value, unit.tier))
         # Only a plan that became an item speaks for the file's findings; an
         # excluded one leaves them to compete on their own.
         planned_files.add(path)
+    return units, planned_files
 
+
+def _record(judged: dict[str, Judgement] | None, row: Any, judgement: Judgement) -> None:
+    if judged is not None:
+        judged[field(row, "opportunity_id")] = judgement
+
+
+def _perf_units(
+    performance: Rows, gate: _Gate, symbol_lines: Mapping[str, int] | None
+) -> list[_Unit]:
+    """One unit per open performance intervention in scope."""
+    contexts = DEFAULT_QUEUE_CONTEXTS | {"test"} if gate.keep_tests else DEFAULT_QUEUE_CONTEXTS
+    lines = symbol_lines or {}
+    units: list[_Unit] = []
+    for (path, symbol), rows in _interventions(performance).items():
+        if not gate.scope(path, "production").eligible:
+            continue
+        rows.sort(key=lambda r: (field(r, "rank_position") or 0, field(r, "opportunity_id")))
+        verdict, worth = perf_fix_verdict(
+            rows,
+            contexts,
+            lambda path=path, symbol=symbol: gate.files.unreachable(
+                path, symbol, lines.get(symbol)
+            ),
+        )
+        if not gate.exclude(verdict, path, symbol):
+            units.append(_perf_unit(worth, gate.files, symbol_lines))
+    return units
+
+
+def _interventions(performance: Rows) -> dict[tuple[str, str], list[Any]]:
+    """Open performance rows by (file, intervention symbol)."""
     # Ceiling: grouped by the intervention as stored, until persistence writes
     # one row per intervention.
     groups: dict[tuple[str, str], list[Any]] = defaultdict(list)
@@ -1510,65 +1577,46 @@ def build_fix_first(
         if _open(row):
             path = field(row, "file_path") or ""
             groups[(path, field(row, "intervention_symbol") or path)].append(row)
-    perf_contexts = DEFAULT_QUEUE_CONTEXTS | {"test"} if keep_tests else DEFAULT_QUEUE_CONTEXTS
-    lines = symbol_lines or {}
-    for (path, symbol), rows in groups.items():
-        if not scope_verdict(path, "production").eligible:
-            continue
-        rows.sort(key=lambda r: (field(r, "rank_position") or 0, field(r, "opportunity_id")))
-        verdict, worth = perf_fix_verdict(
-            rows,
-            perf_contexts,
-            lambda path=path, symbol=symbol: files.unreachable(path, symbol, lines.get(symbol)),
-        )
-        if not exclude(verdict, path, symbol):
-            units.append(_perf_unit(worth, files, symbol_lines))
+    return groups
 
-    def first_step(finding: Any) -> bool:
-        return files.first_step(finding) is not None
 
+def _finding_units(
+    split: dict[str, tuple[list[Any], list[Any]]],
+    planned_files: set[str],
+    gate: _Gate,
+    validate: Validate | None,
+) -> list[_Unit]:
+    """One unit per file whose code-shape findings no plan covers: its lead."""
+    files = gate.files
+    units: list[_Unit] = []
     for path, (shape, history) in split.items():
         if path in planned_files:
             continue
         lead = primary_finding(shape)
         if lead is None and not history:
             continue  # advisory only: nothing to fix, nothing to count
-        if not scope_verdict(path).eligible:
+        if not gate.scope(path).eligible:
             continue
         if lead is None:
-            tally.add(Verdict("history_only"))
+            gate.tally.add(Verdict("history_only"))
             continue
         # A finding that is no candidate leaves the file's others to compete;
         # the file is counted under its own lead's reason when none is left.
-        verdicts = {id(f): finding_verdict(f, files, first_step) for f in shape}
-        eligible = primary_finding([f for f in shape if verdicts[id(f)].eligible])
+        verdicts, eligible = _shape_verdicts(shape, files)
         if eligible is None:
-            culprit = lead if not verdicts[id(lead)].eligible else next(
-                f for f in shape if not verdicts[id(f)].eligible
-            )
-            exclude(verdicts[id(culprit)], path, field(culprit, "function_name"))
+            culprit = _culprit(shape, lead, verdicts)
+            gate.exclude(verdicts[id(culprit)], path, field(culprit, "function_name"))
             continue
         units.append(_finding_unit(eligible, files, files.first_step(eligible), validate))
+    return units
 
-    ordered = order(units)
-    if item_id is not None:
-        shown = [(i, u) for i, u in enumerate(ordered) if u.id == item_id]
-    else:
-        keep = ordered if limit is None else ordered[: max(limit, 0)]
-        shown = list(enumerate(keep))
-    by_improves = Counter(u.improves for u in units)
-    return FixFirstQueue(
-        items=tuple(u.write(rank) for rank, u in shown),
-        totals=FixTotals(
-            candidates=len(units) + tally.total,
-            eligible=len(units),
-            shown=len(shown),
-            excluded=tally.excluded,
-            dormant=len(tally.dormant),
-        ),
-        by_improves={k: by_improves.get(k, 0) for k in FIX_IMPROVES},
-        basis=dict(basis) if basis is not None else _basis(metrics),
-    )
+
+def _culprit(shape: list[Any], lead: Any, verdicts: dict[int, Verdict]) -> Any:
+    """The finding a file with no candidate is counted under: its lead when
+    that is out, else the first one out."""
+    if not verdicts[id(lead)].eligible:
+        return lead
+    return next(f for f in shape if not verdicts[id(f)].eligible)
 
 
 __all__ = [
