@@ -660,23 +660,24 @@ def _infer_in_out(
     after it that may observe one of those writes (*reads*,
     :func:`_reads_observing`). A read before the span that a write in it
     reaches around a loop is not an OUT: :func:`_loop_carry_free` refuses
-    those spans.
+    those spans. Both line lists are sorted (:func:`_var_lines`), so the
+    span tests are bisects.
     """
     params: list[str] = []
     returns: list[str] = []
     for var in sorted(set(def_lines) | set(use_lines)):
         dl = def_lines.get(var, [])
         ul = use_lines.get(var, [])
-        in_uses = [ln for ln in ul if s <= ln <= e]
-        in_defs = [ln for ln in dl if s <= ln <= e]
+        u_lo, u_hi = bisect_left(ul, s), bisect_right(ul, e)
+        d_lo, d_hi = bisect_left(dl, s), bisect_right(dl, e)
 
-        if in_uses and any(ln < s for ln in dl):
-            first_use = in_uses[0]
+        if u_lo < u_hi and d_lo > 0:
+            first_use = ul[u_lo]
             declared = first_use in declared_first.get(var, ())
-            if not declared and not any(ln < first_use for ln in in_defs):
+            if not declared and not (d_lo < d_hi and dl[d_lo] < first_use):
                 params.append(var)
 
-        if in_defs and any(
+        if d_lo < d_hi and any(
             ln > e and any(s <= d <= e for d in seen) for ln, seen in reads.get(var, ())
         ):
             returns.append(var)
