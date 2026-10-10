@@ -187,17 +187,6 @@ class RefactoringTargetsResponse(BaseModel):
     plans: list[RefactoringPlanResponse]
 
 
-class RefactoringPlanPageResponse(BaseModel):
-    """Bounded product page; the legacy targets response remains unpaged."""
-
-    items: list[RefactoringPlanResponse]
-    total: int
-    has_more: bool
-    next_offset: int | None
-    summary: RefactoringSummary
-    structural_leads: list[RefactoringPlanResponse]
-
-
 class RefactoringSettings(BaseModel):
     """The code-generation switch plus the model it will use.
 

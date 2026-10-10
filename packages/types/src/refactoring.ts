@@ -2,7 +2,6 @@
 
 import type { ActionCommand } from "./actions.js";
 import type { FixExclusion } from "./fix-first.js";
-import type { Paginated } from "./pagination.js";
 import type { QueueCounts } from "./queue.js";
 
 export type RefactoringType =
@@ -239,13 +238,6 @@ export interface RefactoringSummary {
 export interface RefactoringTargets {
   summary: RefactoringSummary;
   plans: RefactoringPlan[];
-}
-
-/** Bounded product list. The legacy unpaged RefactoringTargets path remains. */
-export interface RefactoringPlanPage extends Paginated<RefactoringPlan> {
-  summary: RefactoringSummary;
-  /** Bounded canonical structural head used by the existing Start here section. */
-  structural_leads: RefactoringPlan[];
 }
 
 export interface GeneratedSpan {

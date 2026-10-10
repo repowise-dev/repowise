@@ -60,7 +60,6 @@ async def hydrate_recommendations(
     metric_rows: Sequence[Any] | None = None,
     view: RecommendationView = "canonical",
     test_limit: int = DEFAULT_TEST_LIMIT,
-    rank_only: bool = False,
     step_verify: bool = False,
 ) -> list[Recommendation]:
     """Hydrate, enrich, validate, rank, and serialize-ready all *rows*.
@@ -68,11 +67,6 @@ async def hydrate_recommendations(
     Query shape is constant in plan/test count: health metrics and graph metrics
     are bulk reads, measured coverage is one ``IN`` query, and inferred walks
     use their existing bounded level queries over the complete unanswered set.
-
-    *rank_only* skips the symbol-level evidence that orders each plan's tests:
-    rank and validation basis are unchanged, the test order falls back to name
-    and directory. A paged surface ranks every row this way, then passes the
-    rows it returns through :func:`detail_recommendations`.
 
     *step_verify* also validates each step of a multi-step plan
     (:func:`with_step_verify`). Finalize asks, so it is stored once; a live
@@ -90,14 +84,13 @@ async def hydrate_recommendations(
     centrality = {
         node_id: float(metric.get("in_degree") or 0.0) for node_id, metric in graph_metrics.items()
     }
-    plans, inputs = await _validation_plans(
+    plans = await _validation_plans(
         session,
         repository_id,
         suggestions,
         test_limit=test_limit,
-        detailed=not rank_only,
         in_degree=centrality,
-        step_verify=step_verify and not rank_only,
+        step_verify=step_verify,
     )
     recommendations = build_recommendations(
         suggestions,
@@ -105,40 +98,7 @@ async def hydrate_recommendations(
         centrality=centrality,
         validations=dict(enumerate(plans)),
     )
-    if rank_only:
-        recommendations = [dataclasses.replace(item, inputs=inputs) for item in recommendations]
     return apply_view(recommendations, view)
-
-
-async def detail_recommendations(
-    session: AsyncSession,
-    repository_id: str,
-    recommendations: Sequence[Recommendation],
-    *,
-    test_limit: int = DEFAULT_TEST_LIMIT,
-) -> list[Recommendation]:
-    """*recommendations* with their tests ordered by full evidence, same order.
-
-    Only the validation is rebuilt; rank, benefit and the rest come from the
-    pass that ranked them, so a page detailed here matches a full hydration.
-    """
-    if not recommendations:
-        return []
-    suggestions = [item.suggestion for item in recommendations]
-    shared = {id(item.inputs): item.inputs for item in recommendations}
-    plans, _ = await _validation_plans(
-        session,
-        repository_id,
-        suggestions,
-        test_limit=test_limit,
-        detailed=True,
-        inputs=next(iter(shared.values())) if len(shared) == 1 else None,
-    )
-    out = []
-    for item, plan in zip(recommendations, plans, strict=True):
-        item.suggestion.validation = plan.as_dict()
-        out.append(dataclasses.replace(item, validation=plan))
-    return out
 
 
 async def _validation_plans(
@@ -147,30 +107,18 @@ async def _validation_plans(
     suggestions: Sequence[RefactoringSuggestion],
     *,
     test_limit: int,
-    detailed: bool,
-    inputs: ValidationInputs | None = None,
     in_degree: Mapping[str, float] | None = None,
     step_verify: bool = False,
-) -> tuple[list[ValidationPlan], ValidationInputs]:
-    """One validation plan per suggestion, every read batched across the set.
-
-    *inputs* from an earlier pass over a superset of these suggestions skips
-    the coverage read and the reachability walk; only the symbol evidence is
-    read again, and only for these suggestions.
-    """
+) -> list[ValidationPlan]:
+    """One validation plan per suggestion, every read batched across the set."""
     target_files = sorted(
         {path for suggestion in suggestions for path in affected_files(suggestion)}
     )
-    if inputs is None:
-        inputs = await validation_inputs(
-            session, repository_id, suggestions, target_files, in_degree=in_degree
-        )
-    evidence = (
-        await _validation_evidence(
-            session, repository_id, suggestions, target_files, inputs.test_files, inputs.evidence
-        )
-        if detailed
-        else inputs.evidence
+    inputs = await validation_inputs(
+        session, repository_id, suggestions, target_files, in_degree=in_degree
+    )
+    evidence = await _validation_evidence(
+        session, repository_id, suggestions, target_files, inputs.test_files, inputs.evidence
     )
     plans = [
         build_validation_plan(
@@ -179,7 +127,6 @@ async def _validation_plans(
             inputs.inferred,
             test_limit=test_limit,
             evidence=evidence,
-            order_tests=detailed,
         )
         for suggestion in suggestions
     ]
@@ -195,7 +142,7 @@ async def _validation_plans(
             )
             for plan, suggestion in zip(plans, suggestions, strict=True)
         ]
-    return plans, inputs
+    return plans
 
 
 async def validation_inputs(
@@ -298,4 +245,4 @@ async def _validation_evidence(
     )
 
 
-__all__ = ["detail_recommendations", "hydrate_recommendations", "validation_inputs"]
+__all__ = ["hydrate_recommendations", "validation_inputs"]

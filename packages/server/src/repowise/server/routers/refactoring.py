@@ -42,7 +42,6 @@ from repowise.server.schemas import (
     RefactoringOpportunityStatusResponse,
     RefactoringOpportunityStatusUpdate,
     RefactoringPlanDetailResponse,
-    RefactoringPlanPageResponse,
     RefactoringPlanStatusResponse,
     RefactoringRollupResponse,
     RefactoringSettings,
@@ -66,10 +65,6 @@ router = APIRouter(
     tags=["refactoring"],
     dependencies=[Depends(verify_api_key)],
 )
-
-
-def _csv_values(value: str | None) -> frozenset[str]:
-    return frozenset(part.strip() for part in (value or "").split(",") if part.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -109,43 +104,6 @@ async def get_refactoring_targets(
         )
     )
     return RefactoringTargetsResponse(**body)
-
-
-@router.get("/{repo_id}/refactoring/targets/page", response_model=RefactoringPlanPageResponse)
-async def get_refactoring_plan_page(
-    repo_id: str,
-    refactoring_type: str | None = Query(None),
-    min_confidence: str | None = Query(None, description="Compatibility confidence floor"),
-    confidence: str | None = Query(None, description="Comma-separated exact confidence values"),
-    effort: str | None = Query(None, description="Comma-separated effort buckets"),
-    file_path: str | None = Query(None),
-    search: str | None = Query(None, max_length=200),
-    sort: Literal["canonical", "health", "effort", "blast", "file"] = Query("canonical"),
-    view: Literal["canonical", "file_spread"] = Query("canonical"),
-    limit: int = Query(60, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),
-) -> RefactoringPlanPageResponse:
-    """Bounded list with server-owned filters and deterministic ordering.
-
-    Reads the rank, factors and validation the finalizer stored: filters,
-    order and paging are SQL, so the cost follows the page, not the plan count.
-    """
-    body = await _service(session, repo_id).ranked_plan_page(
-        PlanListQuery(
-            refactoring_type=refactoring_type,
-            min_confidence=min_confidence,
-            confidences=_csv_values(confidence),
-            efforts=_csv_values(effort),
-            file_path=file_path,
-            search=(search or "").strip().lower(),
-            sort=sort,
-            view=view,
-            limit=limit,
-            offset=offset,
-        )
-    )
-    return RefactoringPlanPageResponse(**body)
 
 
 # ---------------------------------------------------------------------------

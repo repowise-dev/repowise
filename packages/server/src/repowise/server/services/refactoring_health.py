@@ -25,16 +25,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.queue.counts import NOT_JUDGED
-from repowise.core.analysis.health.queue_rules import keep, sort_key
+from repowise.core.analysis.health.queue_rules import keep
 from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 from repowise.core.analysis.health.refactoring.recommendations import (
-    EFFORT_RANK,
     PLAN_FILTERS,
-    PLAN_SORTS,
-    UNKNOWN_EFFORT,
-    apply_view,
-    blast_size,
-    matches_search,
     plan_types,
     stored_recommendation,
 )
@@ -68,7 +62,6 @@ from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
     refactoring_step_counts,
 )
 from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
-    detail_recommendations,
     hydrate_recommendations,
 )
 from repowise.core.persistence.models import RefactoringOpportunity, RefactoringSuggestion
@@ -150,68 +143,19 @@ def _plan_window(
 
 @dataclass(frozen=True, slots=True)
 class PlanListQuery:
-    """One plan-list request: the filters, search, order and page."""
+    """One plan-list request: the filters and the view."""
 
     refactoring_type: str | None = None
     min_confidence: str | None = None
-    confidences: frozenset[str] = frozenset()
-    efforts: frozenset[str] = frozenset()
     file_path: str | None = None
-    search: str = ""
-    sort: str = "canonical"
     view: Literal["canonical", "file_spread"] = "canonical"
-    limit: int | None = None
-    offset: int = 0
 
     def filters(self) -> dict[str, Any]:
         """The params ``PLAN_FILTERS`` reads, on either path."""
         return {
             "refactoring_types": plan_types(self.refactoring_type),
             "file_path": self.file_path,
-            "confidences": self.confidences,
-            "efforts": self.efforts,
         }
-
-
-#: Structural plans a plan page leads with.
-_STRUCTURAL_LEADS = 12
-
-
-def _live_sorted(items: list[Any], sort: str) -> list[Any]:
-    """*items*, in view order, under a named sort from the shared table."""
-    position = {id(item): index for index, item in enumerate(items)}
-
-    def key(item: Any) -> tuple[Any, ...]:
-        suggestion = item.suggestion
-        if sort == "effort":
-            bucket = EFFORT_RANK.get(suggestion.effort_bucket, UNKNOWN_EFFORT)
-            return (bucket, position[id(item)])
-        row = {
-            "impact_delta": suggestion.impact_delta,
-            "blast_size": blast_size(suggestion),
-            "file_path": suggestion.file_path,
-            "target_symbol": suggestion.target_symbol,
-            "id": item.id,
-        }
-        return (*sort_key(PLAN_SORTS[sort], row), position[id(item)])
-
-    if sort != "effort" and sort not in PLAN_SORTS:
-        return items
-    return sorted(items, key=key)
-
-
-def _plan_page_payload(
-    items: list[Any], total: int, offset: int, summary: dict[str, Any], leads: list[Any]
-) -> dict[str, Any]:
-    next_offset = offset + len(items) if offset + len(items) < total else None
-    return {
-        "items": [item.as_dict() for item in items],
-        "total": total,
-        "has_more": next_offset is not None,
-        "next_offset": next_offset,
-        "summary": summary,
-        "structural_leads": [item.as_dict() for item in leads],
-    }
 
 
 class RefactoringHealthService:
@@ -463,11 +407,11 @@ class RefactoringHealthService:
             }
         return result
 
-    # -- plan lists ---------------------------------------------------------
+    # -- plan list ----------------------------------------------------------
     #
-    # Each list reads the rank, factors and validation the finalizer stored, so
-    # its cost follows the page. A store with an open plan the finalizer did
-    # not rank is ranked per request instead. Remove that live path once every
+    # The list reads the rank, factors and validation the finalizer stored. A
+    # store with an open plan the finalizer did not rank is ranked per request
+    # instead. Remove that live path once every
     # served store has been indexed by a version that writes ranks.
 
     async def ranked_plans(self, query: PlanListQuery) -> dict[str, Any]:
@@ -487,7 +431,7 @@ class RefactoringHealthService:
             chips = await summarize_open_plans(
                 self._session, self._repository_id, min_confidence=query.min_confidence
             )
-            plans = [stored_recommendation(row).as_dict() for row in stored[0]]
+            plans = [stored_recommendation(row).as_dict() for row in stored]
         else:
             rows = await get_refactoring_suggestions(
                 self._session, self._repository_id, min_confidence=query.min_confidence
@@ -499,77 +443,6 @@ class RefactoringHealthService:
             )
             plans = [item.as_dict() for item in ranked]
         return {"summary": {"total": chips["total"], "by_type": chips["by_type"]}, "plans": plans}
-
-    async def ranked_plan_page(self, query: PlanListQuery) -> dict[str, Any]:
-        """One page of open plans, its total, the chips and the structural leads."""
-        stored = await ranked_refactoring_suggestions(
-            self._session,
-            self._repository_id,
-            min_confidence=query.min_confidence,
-            filters=query.filters(),
-            search=query.search,
-            sort=query.sort,
-            view=query.view,
-            limit=query.limit,
-            offset=query.offset,
-        )
-        if stored is None:
-            return await self._live_plan_page(query)
-        rows, total = stored
-        leads = await ranked_refactoring_suggestions(
-            self._session,
-            self._repository_id,
-            min_confidence=query.min_confidence,
-            filters={"refactoring_types": plan_types("structural")},
-            limit=_STRUCTURAL_LEADS,
-        )
-        return _plan_page_payload(
-            [stored_recommendation(row) for row in rows],
-            total,
-            query.offset,
-            await summarize_open_plans(
-                self._session, self._repository_id, min_confidence=query.min_confidence
-            ),
-            [stored_recommendation(row) for row in (leads[0] if leads else [])],
-        )
-
-    async def _live_plan_page(self, query: PlanListQuery) -> dict[str, Any]:
-        """The page ranked per request. One batched ranking pass over the open
-        plans; the symbol-level evidence that orders each plan's tests is read
-        only for the rows this response returns."""
-        rows = await get_refactoring_suggestions(
-            self._session, self._repository_id, min_confidence=query.min_confidence
-        )
-        canonical = await hydrate_recommendations(
-            self._session, self._repository_id, rows, view="canonical", rank_only=True
-        )
-        structural = plan_types("structural") or ()
-        leads = [item for item in canonical if item.suggestion.refactoring_type in structural]
-        leads = leads[:_STRUCTURAL_LEADS]
-        filters = query.filters()
-        ordered = _live_sorted(
-            [
-                item
-                for item in apply_view(canonical, query.view)
-                if keep(PLAN_FILTERS, item.suggestion, filters)
-                and (not query.search or matches_search(item.suggestion, query.search))
-            ],
-            query.sort,
-        )
-        end = None if query.limit is None else query.offset + query.limit
-        page = ordered[query.offset : end]
-        shown = list({id(item): item for item in [*page, *leads]}.values())
-        detailed = {
-            id(item.suggestion): item
-            for item in await detail_recommendations(self._session, self._repository_id, shown)
-        }
-        return _plan_page_payload(
-            [detailed[id(item.suggestion)] for item in page],
-            len(ordered),
-            query.offset,
-            summarize_plans(item.suggestion for item in canonical),
-            [detailed[id(item.suggestion)] for item in leads],
-        )
 
     async def plan_recommendation(self, row: Any, *, owner: Any = None) -> Any:
         """One stored plan as a ranked recommendation, without the repository.

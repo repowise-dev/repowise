@@ -17,11 +17,8 @@ from typing import Any
 
 from sqlalchemy import (
     Select,
-    String,
-    Text,
     bindparam,
     case,
-    collate,
     func,
     or_,
     select,
@@ -31,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....analysis.finding_registry import excluded_types
 from ...models import RefactoringSuggestion, _new_uuid, _now_utc
-from ...sql import LIKE_ESCAPE, escape_like, rule_predicate
+from ...sql import rule_predicate
 from .._shared import _BATCH_SIZE, _finding_file_path
 
 # The finding-triage vocabulary, shared with health findings so Code Health has
@@ -566,86 +563,23 @@ def _base_order(view: str, predicates: list[Any]) -> tuple[Select[Any], tuple[An
     return query, (spread.c.spread_round, spread.c.first)
 
 
-def _sort_keys(sort: str, base: tuple[Any, ...], *, byte_order: bool) -> tuple[Any, ...]:
-    """A named sort from the shared table, ties broken by the view order.
-
-    *byte_order* collates text as Python compares it; SQLite's default already
-    does, and it has no ``"C"`` collation to name.
-    """
-    from ....analysis.health.refactoring.recommendations import (
-        EFFORT_RANK,
-        PLAN_SORTS,
-        UNKNOWN_EFFORT,
-    )
-
-    if sort == "effort":
-        bucket = case(EFFORT_RANK, value=RefactoringSuggestion.effort_bucket, else_=UNKNOWN_EFFORT)
-        return (bucket, *base)
-    keys = PLAN_SORTS.get(sort)
-    if keys is None:
-        return base
-    ordered = []
-    for name, descending in keys:
-        column = getattr(RefactoringSuggestion, name)
-        if byte_order and isinstance(column.type, String | Text):
-            column = collate(column, "C")
-        ordered.append(column.desc() if descending else column.asc())
-    return (*ordered, *base)
-
-
-def _search_prefilter(search: str) -> list[Any]:
-    """Every word of *search* in some searchable column: a superset of the
-    exact match, which :func:`matches_search` then decides.
-
-    A word ``plan_json`` may store escaped (non-ASCII, a quote, a backslash),
-    or SQLite cannot case-fold (non-ASCII), is left to the exact match alone.
-    """
-    columns = (
-        RefactoringSuggestion.file_path,
-        RefactoringSuggestion.target_symbol,
-        RefactoringSuggestion.refactoring_type,
-        RefactoringSuggestion.source_biomarker,
-        RefactoringSuggestion.plan_json,
-    )
-    return [
-        or_(
-            *(
-                func.lower(column).like(f"%{escape_like(word)}%", escape=LIKE_ESCAPE)
-                for column in columns
-            )
-        )
-        for word in search.split()
-        if word.isascii() and '"' not in word and "\\" not in word
-    ]
-
-
 async def ranked_refactoring_suggestions(
     session: AsyncSession,
     repository_id: str,
     *,
     min_confidence: str | None = None,
     filters: Mapping[str, Any] | None = None,
-    search: str = "",
-    sort: str = "canonical",
     view: str = "canonical",
-    limit: int | None = None,
-    offset: int = 0,
-) -> tuple[list[RefactoringSuggestion], int] | None:
-    """One page of open plans in persisted rank order, and its total.
+) -> list[RefactoringSuggestion] | None:
+    """The open plans in persisted rank order.
 
     *filters* are the params of the shared ``PLAN_FILTERS``. They narrow after
     the view is dealt, as the in-memory path does, so a filtered
-    ``file_spread`` keeps the order the unfiltered one had. A search reads
-    every row its SQL prefilter keeps, so its cost is bounded only by that
-    prefilter. ``None`` when an open plan was not ranked by the last
-    finalize: the caller ranks live.
+    ``file_spread`` keeps the order the unfiltered one had. ``None`` when an
+    open plan was not ranked by the last finalize: the caller ranks live.
     """
     from ....analysis.health.queue_rules import active_filters
-    from ....analysis.health.refactoring.recommendations import (
-        PLAN_FILTERS,
-        matches_search,
-        rehydrate_suggestion,
-    )
+    from ....analysis.health.refactoring.recommendations import PLAN_FILTERS
 
     base = _suggestion_filters(
         repository_id,
@@ -666,26 +600,8 @@ async def ranked_refactoring_suggestions(
         rule_predicate(RefactoringSuggestion, rule, value)
         for rule, value in active_filters(PLAN_FILTERS, filters or {})
     ]
-    byte_order = session.get_bind().dialect.name == "postgresql"
-    query = query.where(*narrowing, *_search_prefilter(search)).order_by(
-        *_sort_keys(sort, order, byte_order=byte_order)
-    )
-    if search:
-        # The prefilter bounds the read; the exact match is the shared one.
-        rows = [
-            row
-            for row in (await session.execute(query)).scalars().all()
-            if matches_search(rehydrate_suggestion(row), search)
-        ]
-        end = None if limit is None else offset + limit
-        return rows[offset:end], len(rows)
-    total = int(
-        (await session.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
-    )
-    query = query.offset(offset)
-    if limit is not None:
-        query = query.limit(limit)
-    return list((await session.execute(query)).scalars().all()), total
+    query = query.where(*narrowing).order_by(*order)
+    return list((await session.execute(query)).scalars().all())
 
 
 async def summarize_open_plans(

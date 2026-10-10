@@ -77,7 +77,6 @@ GET  /api/repos/{repo_id}/refactoring/opportunities          ?view= &scope= &fil
 GET  /api/repos/{repo_id}/refactoring/opportunities/{opportunity_id}
 GET  /api/repos/{repo_id}/refactoring/summary
 GET  /api/repos/{repo_id}/refactoring/targets                ?refactoring_type= &min_confidence=
-GET  /api/repos/{repo_id}/refactoring/targets/page           ?limit= &offset= &refactoring_type=
 GET  /api/repos/{repo_id}/refactoring/{suggestion_id}
 POST /api/repos/{repo_id}/refactoring/{suggestion_id}/generate-code
 GET  /api/repos/{repo_id}/refactoring/settings

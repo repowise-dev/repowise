@@ -416,11 +416,11 @@ repo (`routers/search.py`).
 
 ### 5.4 Pagination
 
-`limit`/`offset` is the convention (39 operations take `limit`, 19 take
+`limit`/`offset` is the convention (41 operations take `limit`, 18 take
 `offset`), with a per-route maximum in the schema. The page-shaped responses
 that need to tell a client whether more exists return an explicit
 `{total, offset, has_more, next_offset}` instead, e.g.
-`GET /api/repos/{repo_id}/refactoring/targets/page`. `GET /api/pages` accepts a
+`GET /api/repos/{repo_id}/refactoring/opportunities`. `GET /api/pages` accepts a
 `limit` up to 5000, which is the one route where a full listing is a realistic
 request.
 

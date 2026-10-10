@@ -334,12 +334,10 @@ async def test_imported_names_are_read_per_test_and_file(async_session):
     assert found == {"src/walk.py": {"tests/test_walk.py": frozenset({"walk"})}}
 
 
-async def test_a_detailed_page_matches_a_full_hydration(async_session):
-    """Paged surfaces rank every plan without symbol evidence and detail only
-    the rows they return; those rows must serialize exactly as before."""
+async def test_hydration_orders_a_plans_tests_by_the_symbol_they_call(async_session):
+    """A test calling the changed symbol leads one that calls only a neighbour."""
     from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
     from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
-        detail_recommendations,
         hydrate_recommendations,
     )
 
@@ -393,15 +391,9 @@ async def test_a_detailed_page_matches_a_full_hydration(async_session):
         ]
 
     full = await hydrate_recommendations(async_session, repo.id, plans())
-    ranked = await hydrate_recommendations(async_session, repo.id, plans(), rank_only=True)
-    detailed = await detail_recommendations(async_session, repo.id, ranked)
 
-    assert [item.as_dict() for item in detailed] == [item.as_dict() for item in full]
     assert full[0].validation.tests == ["tests/test_walk.py", "tests/test_bystander.py"]
     assert full[0].validation.reasons["tests/test_walk.py"] == "calls walk"
-    # The rank pass orders nothing it will not serve.
-    assert ranked[0].validation.reasons == {}
-    assert ranked[0].rank_score == full[0].rank_score
 
 
 async def test_a_seed_that_calls_another_seed_does_not_shorten_its_distance(async_session):
@@ -559,7 +551,7 @@ async def _hub_repo(session, *, tests=(), edges=()):
     return repo
 
 
-async def _util_validations(session, repo_id, *, rank_only=False):
+async def _util_validations(session, repo_id):
     from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
     from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
         hydrate_recommendations,
@@ -582,7 +574,7 @@ async def _util_validations(session, repo_id, *, rank_only=False):
         )
         for symbol, start, end in (("walk", 1, 20), ("lonely", 50, 60))
     ]
-    items = await hydrate_recommendations(session, repo_id, plans, rank_only=rank_only)
+    items = await hydrate_recommendations(session, repo_id, plans)
     return {item.suggestion.target_symbol: item for item in items}
 
 
@@ -602,17 +594,6 @@ async def test_a_hub_plan_lists_only_tests_reaching_the_changed_symbol(async_ses
     assert lonely.prerequisite == (
         "No test reaches this; add a characterization test for `lonely` before the edit."
     )
-    # The rank-only pass a paged list makes narrows the same way.
-    ranked = await _util_validations(async_session, repo.id, rank_only=True)
-    for symbol, item in full.items():
-        fast = ranked[symbol]
-        assert (fast.validation.basis, fast.validation.total, fast.validation.prerequisite) == (
-            item.validation.basis,
-            item.validation.total,
-            item.validation.prerequisite,
-        )
-        assert set(fast.validation.tests) == set(item.validation.tests)
-        assert fast.risk == item.risk
 
 
 async def test_a_hub_import_the_graph_cannot_tie_to_a_symbol_still_counts(async_session):

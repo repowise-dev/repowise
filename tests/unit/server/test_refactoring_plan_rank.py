@@ -71,17 +71,8 @@ _QUERIES = [
     ("targets", {"view": "file_spread"}),
     ("targets", {"refactoring_type": "extract_method"}),
     ("targets", {"min_confidence": "medium", "file_path": "pkg/leaf.py"}),
-    ("targets/page", {}),
-    ("targets/page", {"limit": 2, "offset": 1}),
-    ("targets/page", {"view": "file_spread", "refactoring_type": "structural"}),
-    ("targets/page", {"sort": "health"}),
-    ("targets/page", {"sort": "effort", "view": "file_spread"}),
-    ("targets/page", {"sort": "blast"}),
-    ("targets/page", {"sort": "file", "limit": 3}),
-    ("targets/page", {"search": "helper.do_work"}),
-    ("targets/page", {"search": "parsing loop"}),
-    ("targets/page", {"confidence": "medium,high", "effort": "S,M", "view": "file_spread"}),
-    ("targets/page", {"min_confidence": "medium", "limit": 1, "offset": 2}),
+    ("targets", {"view": "file_spread", "refactoring_type": "structural"}),
+    ("targets", {"min_confidence": "medium", "view": "file_spread"}),
 ]
 
 
@@ -128,7 +119,6 @@ def _no_live_ranking(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError("a ranked store must not be ranked per request")
 
     monkeypatch.setattr(service, "hydrate_recommendations", refuse)
-    monkeypatch.setattr(service, "detail_recommendations", refuse)
     # The one-plan rebuild from seeks is the fallback too.
     monkeypatch.setattr(recommendations, "build_recommendations", refuse)
     monkeypatch.setattr(service.RefactoringHealthService, "_rank_inputs", refuse)
@@ -145,11 +135,7 @@ async def test_stored_rank_answers_every_query_as_live_ranking_did(
     live = await _answers(client, repo_id)
 
     assert stored == live
-    # The rank order is the canonical one: a non-empty default page leads with
-    # the highest score among production plans.
-    page = stored[4]
-    assert page["total"] == 7
-    assert [item["id"] for item in page["items"]] == [plan["id"] for plan in stored[0]["plans"]]
+    assert len(stored[0]["plans"]) == 7
 
 
 async def test_a_plan_finalize_did_not_rank_sends_the_list_live(
@@ -233,63 +219,15 @@ async def test_resolving_a_ranked_plan_drops_it_and_keeps_the_rest_in_order(
     client: AsyncClient, app, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo_id = await _seed_ranked(client, app)
-    before = (await client.get(f"/api/repos/{repo_id}/refactoring/targets/page")).json()["items"]
+    before = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()["plans"]
     gone = before[1]["id"]
     patched = await client.patch(
         f"/api/repos/{repo_id}/refactoring/{gone}/status", json={"status": "resolved"}
     )
     assert patched.status_code == 200
     _no_live_ranking(monkeypatch)
-    after = (await client.get(f"/api/repos/{repo_id}/refactoring/targets/page")).json()
-    assert [item["id"] for item in after["items"]] == [
-        item["id"] for item in before if item["id"] != gone
-    ]
-    assert after["total"] == len(before) - 1
-
-
-async def test_search_matches_what_the_live_match_accepts(
-    client: AsyncClient, app, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Words the SQL prefilter cannot judge (JSON-escaped, or beyond ASCII case
-    folding) still find their plans, and LIKE wildcards are literal."""
-    repo_id = await _seed(client, app)
-    async with app.state.session_factory() as session:
-        for symbol, strategy in (
-            ("parse_a_b", "keep 100% of rows"),
-            ("parse_axb", "keep 1000 rows"),
-            ("Über_load", "inline the Übergabe step"),
-        ):
-            session.add(
-                RefactoringSuggestion(
-                    **_refactoring_row_kwargs(
-                        {**_EXTRA[0], "target_symbol": symbol, "plan": {"strategy": strategy}},
-                        repo_id,
-                    )
-                )
-            )
-        await session.flush()
-        await crud.finalize_refactoring_opportunities(session, repo_id)
-        await session.commit()
-
-    async def found(word: str) -> list[str]:
-        body = (
-            await client.get(
-                f"/api/repos/{repo_id}/refactoring/targets/page", params={"search": word}
-            )
-        ).json()
-        return sorted(item["target_symbol"] for item in body["items"])
-
-    with monkeypatch.context() as patch:
-        _no_live_ranking(patch)
-        stored = {word: await found(word) for word in ("a_b", "100%", "übergabe", "über_load")}
-    assert stored == {
-        "a_b": ["parse_a_b"],
-        "100%": ["parse_a_b"],
-        "übergabe": ["Über_load"],
-        "über_load": ["Über_load"],
-    }
-    await _unrank(app, repo_id)
-    assert {word: await found(word) for word in stored} == stored
+    after = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()["plans"]
+    assert [item["id"] for item in after] == [item["id"] for item in before if item["id"] != gone]
 
 
 async def test_finalize_ranks_only_live_plans(client: AsyncClient, app) -> None:

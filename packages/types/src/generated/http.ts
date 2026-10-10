@@ -2794,16 +2794,6 @@ export interface RefactoringPlanDetailResponse {
   recipe?: Record<string, unknown> | null;
 }
 
-/** Bounded product page; the legacy targets response remains unpaged. */
-export interface RefactoringPlanPageResponse {
-  items: RefactoringPlanResponse[];
-  total: number;
-  has_more: boolean;
-  next_offset: number | null;
-  summary: RefactoringSummary;
-  structural_leads: RefactoringPlanResponse[];
-}
-
 /**
  * One ranked refactoring plan, with its open ``plan`` / ``evidence`` /
  * ``blast_radius`` dicts re-hydrated from the persisted ``*_json`` columns.
