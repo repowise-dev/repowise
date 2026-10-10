@@ -117,7 +117,16 @@ export default function CostsPage() {
         {spendError ? (
           <ApiError title={t("spendErrorTitle")} onRetry={() => void retrySpend()} />
         ) : spend === undefined ? (
-          <p className="text-sm text-[var(--color-text-tertiary)]">{t("loadingSpend")}</p>
+          <SkeletonRegion label={t("loadingSpend")} className="flex flex-col gap-3">
+            <Skeleton className="h-5 w-48" />
+            <Skeleton className="h-14 w-full" />
+          </SkeletonRegion>
+        ) : spend.total_calls === 0 ? (
+          <EmptyState
+            size="compact"
+            title={t("spendEmptyTitle")}
+            description={t("spendEmptyDescription")}
+          />
         ) : (
           <SpendSummary spend={spend} />
         )}
@@ -209,11 +218,7 @@ function SavingsSections({ data }: { data: SavingsView }) {
           total={data.saved_input_tokens}
           nameHeader={t("surfaceHeader")}
           caption={t("surfaceCaption")}
-          empty={
-            <p className="text-sm text-[var(--color-text-secondary)]">
-              {t("surfaceEmpty")}
-            </p>
-          }
+          empty={<EmptyState size="compact" title={t("surfaceEmpty")} />}
         />
       </OverviewSection>
 

@@ -25,6 +25,9 @@ import { RemoveWorkspaceRepoButton, SyncButton } from "./sync-buttons";
 import { getTranslations } from "next-intl/server";
 import { WorkspaceNextActionsPanel } from "./workspace-next-actions-panel";
 
+const WORKSPACE_DOCS_HREF =
+  "https://github.com/repowise-dev/repowise/blob/main/docs/start/QUICKSTART.md";
+
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations("views.workspace");
   return { title: t("title") };
@@ -86,7 +89,8 @@ export default async function WorkspaceDashboardPage() {
         <EmptyState
           title={t("emptyTitle")}
           description={t("emptyDescription")}
-          icon={<Layers className="h-8 w-8" />}
+          icon={<Layers />}
+          action={{ label: t("emptyAction"), href: WORKSPACE_DOCS_HREF }}
         />
       </PageShell>
     );
