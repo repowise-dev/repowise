@@ -186,14 +186,14 @@ export function DecisionsTable({
           {d.tags.slice(0, 3).map((tag) => (
             <span
               key={tag}
-              className="font-mono text-[11px] text-[var(--color-text-tertiary)]"
+              className="font-mono text-2xs text-[var(--color-text-tertiary)]"
             >
               {tag}
             </span>
           ))}
           {d.tags.length > 3 && (
             <span
-              className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]"
+              className="font-mono text-2xs tabular-nums text-[var(--color-text-tertiary)]"
               title={d.tags.slice(3).join(", ")}
             >
               +{d.tags.length - 3}
@@ -237,6 +237,11 @@ export function DecisionsTable({
     },
   ];
 
+  const filtersActive =
+    filters.status !== "all" ||
+    filters.source !== "all" ||
+    (filters.scope ?? "all") !== "all";
+
   const empty =
     isLoading ? undefined : error ? (
       <ApiError
@@ -244,10 +249,20 @@ export function DecisionsTable({
         message="An error occurred while fetching decisions."
         {...(onRetry ? { onRetry } : {})}
       />
+    ) : filtersActive ? (
+      <EmptyState
+        tone="filtered"
+        title="No decisions match these filters"
+        action={{
+          label: "Clear filters",
+          onClick: () =>
+            onFiltersChange({ ...filters, status: "all", source: "all", scope: "all" }),
+        }}
+      />
     ) : (
       <EmptyState
-        title="No decisions found"
-        description="No architectural decisions match the current filters."
+        title="No decisions yet"
+        description="Decisions are inferred from pull requests, commits and agent sessions, or you can record one yourself."
       />
     );
 

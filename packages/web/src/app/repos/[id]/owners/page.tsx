@@ -11,6 +11,7 @@ import {
   OwnerDirectory,
   type OwnerDirectoryFilters,
 } from "@repowise-dev/ui/owners/owner-directory";
+import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { useDebounce } from "@/lib/hooks/use-debounce";
 import { listAllOwners, listOwnersPage } from "@/lib/api/owners";
@@ -23,6 +24,7 @@ const DISTRIBUTION_PREFETCH_CAP = 120;
 
 export default function OwnersDirectoryPage() {
   const t = useTranslations("views.contributors");
+  const tCommon = useTranslations("common");
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const [filters, setFilters] = useState<OwnerDirectoryFilters>({
@@ -36,7 +38,7 @@ export default function OwnersDirectoryPage() {
     [debouncedQ, filters.sort],
   );
 
-  const { data, size, setSize, isLoading, isValidating } = useSWRInfinite<
+  const { data, error, mutate, size, setSize, isLoading, isValidating } = useSWRInfinite<
     Paginated<OwnerListEntry>
   >(
     (pageIndex, previous) => {
@@ -93,6 +95,16 @@ export default function OwnersDirectoryPage() {
         base={`/repos/${id}`}
         hrefFor={(o) => `/repos/${id}/owners/${encodeURIComponent(o.key)}`}
         LinkComponent={Link}
+        error={
+          error ? (
+            <ApiError
+              title={t("loadFailedTitle")}
+              message={t("loadFailed")}
+              retryLabel={tCommon("retry")}
+              onRetry={() => void mutate()}
+            />
+          ) : undefined
+        }
         onSelect={(o) =>
           router.push(`/repos/${id}/owners/${encodeURIComponent(o.key)}`)
         }

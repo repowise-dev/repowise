@@ -40,6 +40,8 @@ export interface OwnerDirectoryProps {
   /** Base path for the section jump links, e.g. `/repos/42`. */
   base?: string;
   LinkComponent?: React.ElementType | undefined;
+  /** Rendered in place of the table when the list could not load. */
+  error?: React.ReactNode;
 }
 
 const INACTIVE_DAYS = 90;
@@ -75,6 +77,7 @@ export function OwnerDirectory({
   hrefFor,
   base,
   LinkComponent,
+  error,
 }: OwnerDirectoryProps) {
   // The lede is a claim about the whole repo, so it is computed off the full
   // set when the caller has one. Computed off the loaded page instead, "68% of
@@ -277,7 +280,7 @@ export function OwnerDirectory({
         title="Everyone"
         description="A dot marks sole-owned files held by someone who has stopped committing, so a clean column means nothing to chase."
         action={
-          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+          <span className="font-mono text-caption uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
             {total.toLocaleString()} {total === 1 ? "contributor" : "contributors"}
           </span>
         }
@@ -293,7 +296,9 @@ export function OwnerDirectory({
           />
         </div>
 
-        {isLoading && owners.length === 0 ? (
+        {error ? (
+          error
+        ) : isLoading && owners.length === 0 ? (
           // Row-height skeletons, not tiles: a skeleton whose shape misses the
           // real layout reflows when content lands, which reads as slower than
           // showing nothing.
@@ -303,15 +308,19 @@ export function OwnerDirectory({
             ))}
           </div>
         ) : owners.length === 0 ? (
-          <EmptyState
-            icon={<Users className="h-6 w-6" />}
-            title="No contributors match"
-            description={
-              filters.q
-                ? "Nothing matches that filter. Clear it to see everyone."
-                : "Contributors land with the first git index."
-            }
-          />
+          filters.q ? (
+            <EmptyState
+              tone="filtered"
+              title="No contributors match this search"
+              action={{ label: "Clear search", onClick: () => onFiltersChange({ ...filters, q: "" }) }}
+            />
+          ) : (
+            <EmptyState
+              icon={<Users />}
+              title="No contributors yet"
+              description="Contributors land with the first git index."
+            />
+          )
         ) : (
           <OwnerTable
             owners={owners}

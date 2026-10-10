@@ -1,4 +1,5 @@
 import type { EpisodeSummary } from "@repowise-dev/types/episodes";
+import { EmptyState } from "../shared/empty-state";
 
 /**
  * Facts about the checkout itself, as opposed to claims somebody made about
@@ -61,11 +62,17 @@ export interface CheckoutFactsProps {
 
 export function CheckoutFacts({ facts, available, total }: CheckoutFactsProps) {
   if (facts.length === 0) {
-    return (
+    return available ? (
+      <EmptyState
+        tone="positive"
+        title="Nothing unusual about this checkout"
+        description="Facts appear here when the tree drifts from what its own tooling expects, such as an unformatted tree or an editable install shadowing an installed command."
+      />
+    ) : (
       <p className="text-sm text-[var(--color-text-secondary)]">
-        {available
-          ? "Nothing unusual about this checkout. Facts appear here when the tree drifts from what its own tooling expects, such as an unformatted tree or an editable install shadowing an installed command."
-          : "Nothing to show for this checkout right now. Facts land here once an index has looked: an unformatted tree, an editable install shadowing an installed command, or a walk that stops at a nested repository."}
+        Nothing to show for this checkout right now. Facts land here once an index has looked: an
+        unformatted tree, an editable install shadowing an installed command, or a walk that stops
+        at a nested repository.
       </p>
     );
   }
@@ -110,7 +117,7 @@ export function CheckoutFacts({ facts, available, total }: CheckoutFactsProps) {
               ))}
             </ul>
             {shared && (
-              <p className="mt-1.5 text-[11px] text-[var(--color-text-tertiary)]">
+              <p className="mt-1.5 text-2xs text-[var(--color-text-tertiary)]">
                 {shared}
               </p>
             )}
@@ -146,7 +153,7 @@ function FactRow({
         {fact.evidence}
       </p>
       {shown > 0 && (
-        <p className="mt-0.5 font-mono text-[11px] text-[var(--color-text-tertiary)] break-all">
+        <p className="mt-0.5 font-mono text-2xs text-[var(--color-text-tertiary)] break-all">
           {fact.nodes.join(", ")}
           {hidden > 0 && (
             <span className="tabular-nums"> and {hidden} more</span>
@@ -158,7 +165,7 @@ function FactRow({
           for free would read as a doubt about the fact rather than about the
           check. */}
       {fact.still_true && !hideVerdict && (
-        <p className="mt-0.5 text-[11px] text-[var(--color-text-tertiary)]">
+        <p className="mt-0.5 text-2xs text-[var(--color-text-tertiary)]">
           {fact.still_true}
         </p>
       )}

@@ -281,6 +281,6 @@ describe("DecisionsTable", () => {
 
   it("renders an empty-state message when there are no decisions and no error", () => {
     render(<DecisionsTable {...baseProps} decisions={[]} />);
-    expect(screen.getByText("No decisions found")).toBeInTheDocument();
+    expect(screen.getByText("No decisions yet")).toBeInTheDocument();
   });
 });

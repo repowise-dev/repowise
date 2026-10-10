@@ -34,7 +34,12 @@ export default async function OwnerProfilePage({
   const base = `/repos/${id}`;
   const ownerKey = decodeURIComponent(owner);
 
-  const profile = await getOwnerProfile(id, ownerKey).catch(() => null);
+  // Only a 404 means "no such contributor"; anything else is a failed
+  // request and goes to the route error boundary.
+  const profile = await getOwnerProfile(id, ownerKey).catch((e: unknown) => {
+    if ((e as { status?: number })?.status === 404) return null;
+    throw e;
+  });
 
   if (!profile) {
     return (
@@ -43,9 +48,9 @@ export default async function OwnerProfilePage({
         title={t("profileTitle")}
       >
         <EmptyState
-          icon={<Users className="h-6 w-6" />}
           title={t("profileEmptyTitle")}
           description={t("profileEmptyDescription")}
+          action={{ label: t("profileBack"), href: `${base}/owners` }}
         />
       </PageShell>
     );
