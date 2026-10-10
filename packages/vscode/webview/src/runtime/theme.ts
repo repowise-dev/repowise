@@ -89,6 +89,8 @@ export function getThemeKind(): ThemeKind {
  */
 export function setThemeOverride(kind: ThemeKind): void {
   apply(kind);
+  // The override is a Repowise-palette scheme; native neutrals would clash with it.
+  document.documentElement.classList.remove("native");
 }
 
 export function subscribeTheme(cb: (kind: ThemeKind) => void): () => void {
