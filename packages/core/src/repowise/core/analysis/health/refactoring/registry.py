@@ -16,25 +16,11 @@ from dataclasses import replace
 
 import structlog
 
+from ..effort import effort_bucket as effort_bucket  # re-exported for the detectors
 from ..scoring import HISTORY_CATEGORY, biomarker_category, deduction_split, history_cap
 from .models import CONFIDENCE_LEVELS, RefactoringContext, RefactoringSuggestion
 
 log = structlog.get_logger(__name__)
-
-
-def effort_bucket(nloc: int) -> str:
-    """Map a target's NLOC to a coarse effort bucket.
-
-    Shared by every detector so the effort label is consistent across
-    refactoring types (matches the CLI's refactoring-targets thresholds).
-    """
-    if nloc <= 40:
-        return "S"
-    if nloc <= 150:
-        return "M"
-    if nloc <= 400:
-        return "L"
-    return "XL"
 
 
 class RefactoringDetector(ABC):

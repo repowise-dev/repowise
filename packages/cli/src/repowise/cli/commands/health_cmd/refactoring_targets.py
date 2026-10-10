@@ -21,17 +21,8 @@ import click
 from rich.table import Table
 
 from repowise.cli.helpers import console
+from repowise.core.analysis.health.effort import EFFORT_WEIGHT, effort_bucket
 from repowise.core.analysis.health.models import primary_finding
-
-
-def _effort_bucket(nloc: int) -> tuple[str, int]:
-    if nloc <= 40:
-        return "S", 1
-    if nloc <= 150:
-        return "M", 2
-    if nloc <= 400:
-        return "L", 3
-    return "XL", 5
 
 
 def _suggestion_to_dict(s: object) -> dict[str, Any]:
@@ -245,7 +236,7 @@ def _build_targets(
         if primary is None:
             continue
         total_impact = round(sum(x.health_impact for x in fs), 3)
-        bucket, weight = _effort_bucket(nloc)
+        bucket = effort_bucket(nloc)
         file_sugg = sugg_by_file.get(path, [])
         targets.append(
             {
@@ -257,7 +248,7 @@ def _build_targets(
                 "primary_reason": primary.reason,
                 "total_impact": total_impact,
                 "effort_bucket": bucket,
-                "impact_per_effort": round(total_impact / weight, 3),
+                "impact_per_effort": round(total_impact / EFFORT_WEIGHT[bucket], 3),
                 "finding_count": len(fs),
                 "plans": [_suggestion_to_dict(s) for s in file_sugg],
             }

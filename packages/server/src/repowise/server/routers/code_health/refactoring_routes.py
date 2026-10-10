@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.effort import EFFORT_WEIGHT, effort_bucket
 from repowise.core.analysis.health.impact_effort import build_impact_effort, fix_first_marks
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.scope import parse_scope
@@ -31,16 +32,6 @@ from .statuses import STATUS_FILTER_DESCRIPTION, parse_status_filter
 
 _SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
-_EFFORT_BUCKETS: tuple[tuple[int, str], ...] = (
-    (40, "S"),
-    (150, "M"),
-    (400, "L"),
-)
-
-# The divisor behind ``impact_per_effort``, and the order ``max_effort`` caps.
-_EFFORT_RANK = {"S": 1, "M": 2, "L": 3, "XL": 5}
-
-
 _SORT_KEYS = {
     "impact_per_effort": lambda t: (-t["impact_per_effort"], -t["total_impact"]),
     "total_impact": lambda t: -t["total_impact"],
@@ -56,13 +47,6 @@ _SORT_KEYS = {
     "score": lambda t: (t["score"], -t["total_impact"], t["file_path"]),
     "finding_count": lambda t: -t["finding_count"],
 }
-
-
-def _effort_for_nloc(nloc: int) -> str:
-    for ceiling, label in _EFFORT_BUCKETS:
-        if nloc <= ceiling:
-            return label
-    return "XL"
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,7 +182,7 @@ def _lead_finding(fs: list[Any]) -> Any:
     return max(fs, key=lambda x: (_SEVERITY_ORDER.get(x.severity, 0), -(x.line_start or 0)))
 
 
-def _target_row(file_path: str, fs: list[Any], m: Any, effort_bucket: str) -> dict:
+def _target_row(file_path: str, fs: list[Any], m: Any, bucket: str) -> dict:
     primary = _lead_finding(fs)
     # Impact, and therefore the ranking, counts only findings still open:
     # ``score`` on this row was computed from open findings, and a file
@@ -223,8 +207,8 @@ def _target_row(file_path: str, fs: list[Any], m: Any, effort_bucket: str) -> di
         "finding_count": len(fs),
         "open_finding_count": len(open_fs),
         "biomarkers": sorted({x.biomarker_type for x in fs}),
-        "effort_bucket": effort_bucket,
-        "impact_per_effort": round(total_impact / _EFFORT_RANK[effort_bucket], 3),
+        "effort_bucket": bucket,
+        "impact_per_effort": round(total_impact / EFFORT_WEIGHT[bucket], 3),
     }
 
 
@@ -238,7 +222,7 @@ async def _queue_targets(
 
     metric_by_path, findings = await _load_queue_rows(session, repo_id, q)
     by_file = _group_by_file(findings, _finding_filter(q))
-    max_effort_rank = _EFFORT_RANK.get(q.max_effort or "", 99)
+    max_effort_rank = EFFORT_WEIGHT.get(q.max_effort or "", 99)
 
     targets: list[dict] = []
     history_only = 0
@@ -254,10 +238,10 @@ async def _queue_targets(
         if _is_history_only(fs, q, history):
             history_only += 1
             continue
-        effort_bucket = _effort_for_nloc(m.nloc)
-        if _EFFORT_RANK[effort_bucket] > max_effort_rank:
+        bucket = effort_bucket(m.nloc)
+        if EFFORT_WEIGHT[bucket] > max_effort_rank:
             continue
-        targets.append(_target_row(file_path, fs, m, effort_bucket))
+        targets.append(_target_row(file_path, fs, m, bucket))
     return targets, history_only
 
 
