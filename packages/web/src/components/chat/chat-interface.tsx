@@ -8,7 +8,6 @@ import { ChatInterface as ChatInterfaceShell } from "@repowise-dev/ui/chat/chat-
 import { getArtifactSourceTarget, useChatDraft } from "@repowise-dev/ui/chat";
 import { pageHref } from "@/lib/utils/page-href";
 import { getProviders } from "@/lib/api/providers";
-import { getRepoStats } from "@/lib/api/repos";
 import { forkConversation, setConversationArtifactPinned } from "@/lib/api/chat";
 import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
 import { ModelSelector } from "./model-selector";
@@ -19,10 +18,6 @@ import { useTranslations } from "next-intl";
 interface ChatInterfaceProps {
   repoId: string;
   repoName?: string;
-  /** Branch shown in the empty-state status line. */
-  defaultBranch?: string;
-  /** HEAD SHA shown in the empty-state status line, abbreviated to 7. */
-  headCommit?: string;
   /** Question to send immediately on mount (quick-ask deep links, `?q=`). */
   initialQuestion?: string;
 }
@@ -30,8 +25,6 @@ interface ChatInterfaceProps {
 export function ChatInterface({
   repoId,
   repoName,
-  defaultBranch,
-  headCommit,
   initialQuestion,
 }: ChatInterfaceProps) {
   const t = useTranslations("chat");
@@ -73,13 +66,6 @@ export function ChatInterface({
   );
   const anyConfigured =
     providers === undefined || providers.providers.some((p) => p.configured);
-
-  // Orientation status line for the empty state.
-  const { data: stats } = useSWR(
-    `repo-stats:${repoId}`,
-    () => getRepoStats(repoId),
-    { revalidateOnFocus: false },
-  );
 
   // A plain /chat URL is an explicit fresh workspace. Only an addressable
   // conversation URL restores history, which keeps returning users from being
@@ -200,24 +186,6 @@ export function ChatInterface({
       onArtifactPin={pinArtifact}
       onOpenArtifactSource={openArtifactSource}
       artifactOverrides={artifactOverrides}
-      statusSlot={
-        // Orientation, in one line: what was indexed, and which commit it was
-        // indexed from. The branch and SHA used to sit in a second page header
-        // that duplicated the breadcrumb; they belong with the other figures.
-        <span>
-          {[
-            stats ? `${stats.file_count.toLocaleString()} files` : null,
-            stats ? `${Math.round(stats.doc_coverage_pct)}% documented` : null,
-            stats && stats.symbol_count > 0
-              ? `${stats.symbol_count.toLocaleString()} symbols indexed`
-              : null,
-            defaultBranch,
-            headCommit ? headCommit.slice(0, 7) : null,
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        </span>
-      }
       sendDisabled={!anyConfigured}
       sendDisabledReason={
         <span>

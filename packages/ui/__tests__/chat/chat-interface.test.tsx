@@ -239,7 +239,7 @@ describe("ChatInterface shell", () => {
     expect(screen.getByTestId("model-slot")).toBeInTheDocument();
     expect(screen.getByTestId("history-slot")).toBeInTheDocument();
     const model = screen.getByTestId("model-slot");
-    const shortcut = screen.getByText("Shift+Enter for newline");
+    const shortcut = screen.getByText("Enter to send · Shift+Enter for newline");
     expect(model.compareDocumentPosition(shortcut) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByRole("button", { name: "Send message" }).className).not.toContain("accent-fill");
   });
@@ -258,5 +258,71 @@ describe("ChatInterface shell", () => {
     );
     expect(screen.getByRole("status")).toHaveTextContent("Answer complete.");
     expect(screen.getByRole("status")).not.toHaveTextContent("First second");
+  });
+
+  it("keeps the empty state lean: no logo, no shortcut hint, at most four suggestions", () => {
+    const { container } = render(
+      <ChatInterface repoId="r1" messages={[]} isStreaming={false} onSend={vi.fn()} onCancel={vi.fn()} />,
+    );
+    expect(container.querySelector("img")).toBeNull();
+    expect(screen.queryByText(/Press \? from any page/)).toBeNull();
+    const group = screen.getByRole("group", { name: "Suggested questions" });
+    expect(group.querySelectorAll("button")).toHaveLength(4);
+    // One hint, inside the composer.
+    expect(screen.getAllByText(/Shift\+Enter for newline/)).toHaveLength(1);
+  });
+
+  it("holds the header row in place before any artifact arrives", () => {
+    const view = render(
+      <ChatInterface repoId="r1" messages={[USER_MSG, ASSISTANT_MSG]} isStreaming={false} onSend={vi.fn()} onCancel={vi.fn()} />,
+    );
+    const hidden = view.container.querySelector('button[aria-hidden="true"]');
+    expect(hidden?.className).toContain("invisible");
+    expect(screen.queryByRole("button", { name: /Artifacts/ })).toBeNull();
+  });
+
+  it("shows the disabled reason inside the composer instead of a warning box", () => {
+    const { container } = render(
+      <ChatInterface
+        repoId="r1"
+        messages={[]}
+        isStreaming={false}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        sendDisabled
+        sendDisabledReason={<span>No chat provider is configured.</span>}
+      />,
+    );
+    const composer = container.querySelector("[data-chat-composer]");
+    expect(composer).toHaveTextContent("No chat provider is configured.");
+    expect(container.innerHTML).not.toContain("color-warning");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  });
+
+  it("puts a failed answer's error and Retry on the answer itself", () => {
+    const onRetry = vi.fn();
+    render(
+      <ChatInterface
+        repoId="r1"
+        messages={[USER_MSG, { ...ASSISTANT_MSG, text: "" }]}
+        isStreaming={false}
+        error="The provider timed out."
+        onRetry={onRetry}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("The provider timed out.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("fills the send button only when there is text", () => {
+    render(<ChatInterface repoId="r1" messages={[]} isStreaming={false} onSend={vi.fn()} onCancel={vi.fn()} />);
+    const send = screen.getByRole("button", { name: "Send message" });
+    expect(send.className).not.toContain("accent-fill");
+    fireEvent.change(screen.getByLabelText("Chat message"), { target: { value: "hi" } });
+    expect(send.className).toContain("accent-fill");
+    expect(send.className).toContain("rounded-full");
   });
 });

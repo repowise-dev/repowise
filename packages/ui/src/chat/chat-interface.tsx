@@ -12,10 +12,10 @@
  * The shell is stateless apart from the textarea input value and renders
  * messages, the empty-state suggestions, the input area, and slots.
  *
- * Chat is a reading surface: the transcript sits on `--color-bg-root` and the
- * one chrome row above it on `--color-bg-surface`. There is exactly one chrome
- * row — the page used to stack its own repo header on top of this one, under a
- * breadcrumb, so three hairlines ran before the first word of content.
+ * Chat is a reading surface: one 720px column on `--color-bg-root` holds the
+ * transcript, the empty state and the composer. History and artifacts sit in
+ * a borderless header row that is always mounted, so nothing shifts when the
+ * first artifact arrives.
  */
 
 import {
@@ -32,7 +32,6 @@ import { Button } from "../ui/button";
 import { ActivityDot } from "../ui/activity-dot";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../lib/cn";
-import { BrandMark } from "../shared/brand-mark";
 import { ChatMessage } from "./chat-message";
 import { ArtifactPanel } from "./artifact-panel";
 import { ChatContextIndicator } from "./chat-context-indicator";
@@ -48,7 +47,6 @@ import type {
 import type { SourceReference } from "./source-citations";
 import { ChatComposer } from "./chat-composer";
 import { ChatSuggestions } from "./chat-suggestions";
-import { CHAT_SHORTCUT_HINT } from "./use-chat-shortcut";
 import { useChatScroll } from "./use-chat-scroll";
 
 const DEFAULT_SUGGESTIONS: readonly ChatSuggestion[] = [
@@ -59,9 +57,6 @@ const DEFAULT_SUGGESTIONS: readonly ChatSuggestion[] = [
   "What architectural decisions have been made?",
   "Search for authentication-related code",
 ].map((text) => ({ text, source: "static" as const }));
-
-const MICRO_LABEL =
-  "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
 export interface ChatInterfaceProps {
   /** Identifier forwarded to `ChatMessage` for source-citation hrefs. */
@@ -103,7 +98,7 @@ export interface ChatInterfaceProps {
   buildCitationHref?: (source: SourceReference) => string;
   /** Forwarded to `SourceCitations` for route-agnostic link generation. */
   linkPrefix?: string;
-  /** Logo shown above the empty-state heading. */
+  /** @deprecated The empty state no longer shows a logo. Ignored. */
   emptyStateLogoSrc?: string;
   /** Override the static tier with suggestions derived from live page data. */
   suggestions?: readonly ChatSuggestion[];
@@ -115,7 +110,7 @@ export interface ChatInterfaceProps {
   statusSlot?: ReactNode;
   /** Disables the composer (e.g. no chat provider configured). */
   sendDisabled?: boolean;
-  /** Banner shown above the composer when sending is disabled. */
+  /** Why sending is disabled, shown inside the composer. */
   sendDisabledReason?: ReactNode;
   /** Compact transcript treatment for a floating dock. */
   variant?: "page" | "dock";
@@ -153,7 +148,6 @@ export function ChatInterface({
   historySlot,
   buildCitationHref,
   linkPrefix,
-  emptyStateLogoSrc = "/repowise-logo.png",
   suggestions,
   placeholder,
   statusSlot,
@@ -328,68 +322,65 @@ export function ChatInterface({
     textareaRef.current?.focus();
   }
 
+  const dock = variant === "dock";
+  // One column for the transcript, the empty state and the composer.
+  const column = cn("mx-auto w-full", dock ? "max-w-full px-4" : "max-w-[720px] px-[var(--page-pad)]");
+
   return (
     <div className="flex h-full min-h-0 flex-col" data-chat-variant={variant}>
-      {/* The one chrome row. */}
-      {(historySlot || totalArtifactCount > 0) && (
-        <div className="flex items-center justify-between gap-2 px-[var(--page-pad)] py-2.5 border-b border-[var(--color-border-default)] shrink-0 bg-[var(--color-bg-surface)]">
-          <div className="flex min-w-0 items-center gap-2">{historySlot}</div>
-          <div className="flex items-center gap-2 shrink-0">
-            {totalArtifactCount > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className={cn(
-                  "h-8 text-xs gap-1.5 tabular-nums",
-                  artifactPulse && "text-[var(--color-accent-secondary)]",
-                )}
-                onClick={() => setArtifactPanelOpen(true)}
-              >
-                {artifactPulse ? (
-                  <ActivityDot className="h-1.5 w-1.5 bg-[var(--color-accent-secondary)]" />
-                ) : null}
-                <PanelRight className="h-4 w-4" />
-                <span className="sr-only sm:not-sr-only">Artifacts</span>
-                {totalArtifactCount}
-              </Button>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Header controls. Always mounted at a fixed height so the transcript
+          never shifts when the first artifact arrives. */}
+      <div className={cn("flex h-11 shrink-0 items-center justify-between gap-2", dock ? "px-3" : "px-[var(--page-pad)]")}>
+        <div className="flex min-w-0 items-center gap-2">{historySlot}</div>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-hidden={totalArtifactCount === 0 || undefined}
+          tabIndex={totalArtifactCount === 0 ? -1 : undefined}
+          className={cn(
+            "h-8 shrink-0 gap-1.5 text-xs tabular-nums",
+            totalArtifactCount === 0 && "invisible",
+            artifactPulse && "text-[var(--color-text-primary)]",
+          )}
+          onClick={() => setArtifactPanelOpen(true)}
+        >
+          {artifactPulse ? (
+            <ActivityDot className="h-1.5 w-1.5 bg-[var(--color-text-tertiary)]" />
+          ) : null}
+          <PanelRight className="h-4 w-4" />
+          <span className="sr-only sm:not-sr-only">Artifacts</span>
+          {totalArtifactCount}
+        </Button>
+      </div>
 
       {/* Message list or empty state */}
       <div className="flex-1 min-h-0 relative">
         {isEmpty ? (
-          // Scrolls: at 390x667 the mark, heading, status and six suggestions
-          // exceed the viewport, and the old centred flex column clipped them.
-          // Top-anchored rather than centred — vertical centring would need a
-          // height Radix's `display:table` viewport wrapper does not pass down,
-          // and the section style reads left-aligned everywhere else anyway.
+          // Top-anchored rather than centred: vertical centring would need a
+          // height Radix's `display:table` viewport wrapper does not pass down.
           <ScrollArea className="h-full" viewportRef={viewportRef}>
-            <div ref={contentRef} className={cn("mx-auto flex max-w-2xl flex-col", variant === "dock" ? "gap-5 px-4 py-7" : "gap-10 px-[var(--page-pad)] py-14")}>
-              <div className="space-y-4">
-                {variant !== "dock" && <BrandMark darkSrc={emptyStateLogoSrc} size={40} />}
-                <h2 className={cn("font-semibold text-[var(--color-text-primary)]", variant === "dock" ? "text-lg" : "text-[22px]")}>
-                  {variant === "dock" ? "Ask from this view" : `Ask anything about ${repoName ?? "this codebase"}`}
+            <div ref={contentRef} className={cn(column, "flex flex-col", dock ? "gap-5 py-6" : "gap-8 pb-8 pt-[12vh]")}>
+              <div className="space-y-2">
+                <h2 className={cn("font-semibold text-[var(--color-text-primary)]", dock ? "text-lg" : "text-[22px]")}>
+                  {dock ? "Ask from this view" : `Ask anything about ${repoName ?? "this codebase"}`}
                 </h2>
-                <p className={cn("text-[var(--color-text-secondary)] leading-relaxed", variant === "dock" ? "text-sm" : "text-base")}>
-                  {variant === "dock"
-                    ? "Keep investigating without leaving the page. Answers use the active repository context."
-                    : "Explore architecture, assess risk, search code, trace dependencies, and understand decisions. Every answer cites the pages it read."}
+                <p className={cn("text-[var(--color-text-secondary)] leading-relaxed", dock ? "text-sm" : "text-base")}>
+                  {dock
+                    ? "Answers use the active repository context."
+                    : "Architecture, risk, code health, decisions. Every answer cites the pages it read."}
                 </p>
                 {statusSlot && (
                   <p className="font-mono text-xs text-[var(--color-text-tertiary)] tabular-nums">
                     {statusSlot}
                   </p>
                 )}
-                <p className={cn(MICRO_LABEL)}>{CHAT_SHORTCUT_HINT}</p>
               </div>
 
               <ChatSuggestions
-                suggestions={visibleSuggestions}
+                suggestions={visibleSuggestions.slice(0, 4)}
                 onSelect={handleSuggestion}
                 layout="rows"
-                label="Start with"
+                ariaLabel="Suggested questions"
               />
             </div>
           </ScrollArea>
@@ -401,12 +392,7 @@ export function ChatInterface({
           >
             <div
               ref={contentRef}
-              className={cn(
-                "mx-auto w-full",
-                variant === "dock"
-                  ? "max-w-full space-y-6 px-4 py-5"
-                  : "max-w-[960px] space-y-10 px-[var(--page-pad)] py-10",
-              )}
+              className={cn(column, dock ? "space-y-5 py-5" : "space-y-8 py-8")}
             >
               {messages.map((m, index) => {
                 const isLast = index === messages.length - 1;
@@ -454,10 +440,11 @@ export function ChatInterface({
             type="button"
             onClick={jumpToLatest}
             aria-pressed={isFollowingLive}
-            className="absolute bottom-3 left-1/2 z-10 inline-flex min-h-9 -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] px-3 text-xs font-medium text-[var(--color-text-secondary)] shadow-[var(--shadow-sm)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            aria-label="Jump to latest"
+            title="Jump to latest"
+            className="absolute bottom-3 left-1/2 z-10 flex h-8 w-8 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] text-[var(--color-text-secondary)] shadow-[var(--shadow-sm)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
           >
-            <ArrowDown className="h-3.5 w-3.5" />
-            Jump to latest
+            <ArrowDown className="h-4 w-4" />
           </button>
         )}
       </div>
@@ -466,21 +453,13 @@ export function ChatInterface({
         {announcement}
       </span>
 
-      {/* Input area. The composer keeps its elevation: it is a genuinely
-          interactive surface, which is what rule 1 reserves elevation for. */}
       <div
         className={cn(
           "shrink-0",
-          variant === "dock" ? "px-3 pb-3 pt-3" : "px-[var(--page-pad)] pb-5 pt-4",
-          !isEmpty && "border-t border-[var(--color-border-default)]",
+          dock ? "pb-3 pt-1" : "pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-2",
         )}
       >
-        <div className={cn("mx-auto w-full", variant === "dock" ? "max-w-full" : "max-w-[960px]")}>
-          {sendDisabled && sendDisabledReason && (
-            <div className="mb-2 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-3 py-2 text-xs text-[var(--color-text-secondary)]">
-              {sendDisabledReason}
-            </div>
-          )}
+        <div className={cn(column, dock && "px-3")}>
           {showContext && context && (
             <ChatContextIndicator
               context={context}
@@ -495,16 +474,12 @@ export function ChatInterface({
             isStreaming={isStreaming}
             placeholder={composerPlaceholder}
             disabled={sendDisabled}
-            compact={variant === "dock"}
+            {...(sendDisabledReason ? { disabledReason: sendDisabledReason } : {})}
+            compact={dock}
             autoFocus={autoFocus}
             textareaRef={textareaRef}
             {...(modelSelectorSlot ? { footer: modelSelectorSlot } : {})}
           />
-          {isEmpty && !modelSelectorSlot && (
-            <p className={cn(MICRO_LABEL, "mt-2.5 text-center")}>
-              Shift+Enter for newline · Enter to send
-            </p>
-          )}
         </div>
       </div>
 

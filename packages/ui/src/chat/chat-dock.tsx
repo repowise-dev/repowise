@@ -509,6 +509,7 @@ export function ChatDock({
           isStreaming={isStreaming}
           placeholder={presentation.placeholder}
           disabled={sendDisabled}
+          {...(sendDisabledReason ? { disabledReason: sendDisabledReason } : {})}
           compact
           appearance="bare"
           autoFocus
@@ -524,11 +525,6 @@ export function ChatDock({
             }
             className="mt-2"
           />
-        )}
-        {sendDisabled && sendDisabledReason && (
-          <div className="mt-2 text-xs text-[var(--color-text-secondary)]">
-            {sendDisabledReason}
-          </div>
         )}
       </aside>
     );
