@@ -96,7 +96,6 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         "blocks",
         (
             "global_hotspots",
-            "pr_blast_radius.guarding_tests",
             "pr_blast_radius",
             "directive.test_recommendations[]",
             "directive.tests_to_run[]",

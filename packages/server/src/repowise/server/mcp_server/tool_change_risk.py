@@ -26,7 +26,6 @@ from repowise.core.analysis.change_risk import (
     normalize_extensions,
     score_live_change,
 )
-from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.analysis.prior_fix_impact import (
     FixRecord,
     PriorFixFile,
@@ -71,6 +70,11 @@ from repowise.server.mcp_server._test_impact import (
     _norm,
     cross_repo_tests,
     tests_block_for,
+)
+from repowise.server.mcp_server._test_selection import (
+    SelectionUnavailableError,
+    select_change_tests,
+    selection_block,
 )
 
 log = structlog.get_logger(__name__)
@@ -170,7 +174,7 @@ async def get_change_risk(
     were skipped. ``review_priority``, ``classification`` and ``diff_shape``
     measure diff size only, not danger.
 
-    ``impacted_tests`` keeps measured coverage and inferred candidates distinct.
+    ``impacted_tests`` is the ``impacted-tests`` selection; read ``run_all``.
     ``patch_coverage`` is the share of changed executable lines stored coverage
     ran; ``hints`` name tests to extend. ``fix_history`` is the changed files'
     bug-fix record, ``overlap`` the past fixes on these exact lines,
@@ -263,7 +267,12 @@ async def get_change_risk(
     )
     try:
         payload["impacted_tests"] = await _impacted_tests_block(
-            ctx, changed, changed_error, collector
+            ctx,
+            changed,
+            changed_error,
+            collector,
+            revspec=revspec,
+            working_tree=result.working_tree,
         )
         patch_changed, patch_error, patch_label, patch_revspec = await _push_change(
             str(ctx.path),
@@ -1111,81 +1120,6 @@ async def _branch_overlap_block(
     return block
 
 
-def _cap_tests(tests: list[str], collector: OmissionCollector, label: str) -> list[str]:
-    """First _IMPACTED_TESTS_LIMIT ids; the tail goes to the omission store."""
-    if len(tests) > _IMPACTED_TESTS_LIMIT:
-        collector.add(
-            f"impacted_tests.tests_to_run ({label}) beyond cap={_IMPACTED_TESTS_LIMIT} "
-            f"({len(tests) - _IMPACTED_TESTS_LIMIT} dropped)",
-            tests[_IMPACTED_TESTS_LIMIT:],
-        )
-    return tests[:_IMPACTED_TESTS_LIMIT]
-
-
-async def _inferred_impacted(
-    session: Any, repo_id: str, changed_files: list[str], collector: OmissionCollector
-) -> dict[str, Any]:
-    """Graph-inferred candidates for a repo with no coverage map.
-
-    "Run the full suite" is correct but useless on the repositories that have
-    no coverage report, which is most of them. The dependency graph can narrow
-    it: a test file that reaches a changed file is worth running first. That is
-    a candidate list and is labelled one - ``basis`` is ``"inferred"`` and
-    there is no ``map_present``, so nothing here can be read as the line-precise
-    measured answer.
-
-    Deliberately file-level and line-blind. Reaching carries no line
-    attribution, so there is no ``line_coverage`` rather than one filled from
-    a signal that cannot speak to lines - the distinction this whole block
-    exists to keep.
-    """
-    from repowise.core.analysis.test_reachability import load_test_files, tests_reaching
-    from repowise.core.analysis.test_selection import expand_test_scopes
-
-    hint = (
-        "Inferred from the dependency graph, not measured. For the line-precise "
-        "answer build the map with `coverage run --contexts=test` then "
-        "`repowise coverage add`."
-    )
-    try:
-        test_files = await load_test_files(session, repo_id)
-        reaching = await tests_reaching(session, repo_id, changed_files, test_files=test_files)
-    except Exception:
-        test_files, reaching = set(), {}
-    # A conftest the walk stopped at stands for the tests under its directory.
-    tests = rank_tests_by_reach(
-        {path: expand_test_scopes(found, test_files) for path, found in reaching.items()}
-    )
-    if not tests:
-        return _empty_impacted(
-            "no_map",
-            "No per-test coverage map ingested and no test reaches the changed files "
-            "in the graph; run the full suite. " + hint,
-        )
-    total = len(tests)
-    block = _empty_impacted("inferred", "")
-    block.update(
-        {
-            "basis": "inferred",
-            "tests_to_run": _cap_tests(tests, collector, "inferred"),
-            "tests_to_run_kind": "test_file",
-            "total": total,
-            "truncated": total > _IMPACTED_TESTS_LIMIT,
-            "summary": (
-                f"{total} test file(s) reach the changed files in the graph"
-                + (
-                    f"; showing first {_IMPACTED_TESTS_LIMIT}"
-                    if total > _IMPACTED_TESTS_LIMIT
-                    else ""
-                )
-                + ". "
-                + hint
-            ),
-        }
-    )
-    return block
-
-
 async def _push_change(
     repo_path: str,
     revspec: str | None,
@@ -1369,19 +1303,23 @@ async def _impacted_tests_block(
     changed: dict[str, set[int]],
     changed_error: tuple[str, str] | None,
     collector: OmissionCollector,
+    *,
+    revspec: str | None = None,
+    working_tree: bool = False,
 ) -> dict[str, Any]:
-    """Line-precise impacted tests + honest missing-test buckets for the change.
+    """The tests the change needs, decided as ``repowise impacted-tests`` decides them.
 
-    Built on the same core functions the CLI (``repowise impacted-tests``) and
-    get_risk's guarding-tests path use - ``changed_lines`` -> ``tests_covering``
-    / ``detect_missing_tests`` - so the answer is coverage-grounded. The CLI's
-    filename-pattern guess is deliberately omitted: an agent cannot tell a guess
-    from real coverage, and ``no_coverage_data`` already reports those files
-    honestly as "unknown, run the suite". Degrades to a ``status`` string rather
-    than raising, so it never fails the surrounding score.
+    The same collection and fail-closed selection (``test_collection`` then
+    ``select_tests``) over the whole change, every touched path included, so a
+    manifest, a conftest or a test that walks the source tree weighs here as it
+    does in CI. ``line_coverage`` classifies the scored files' lines against
+    the per-test map, on the side of the diff the map was measured at.
+    Degrades to a ``status`` string rather than raising, so it never fails the
+    surrounding score.
     """
+    from repowise.core.analysis.changed_lines import change_set
     from repowise.core.analysis.missing_test_signal import detect_missing_tests
-    from repowise.core.persistence.crud import tests_covering
+    from repowise.core.analysis.test_collection import query_lines
     from repowise.core.persistence.database import get_session
 
     session_factory = getattr(ctx, "session_factory", None)
@@ -1391,38 +1329,34 @@ async def _impacted_tests_block(
         )
     if changed_error is not None:
         return _empty_impacted(*changed_error)
-
     try:
-        async with get_session(session_factory) as session:
-            repo_id = (await _get_repo(session)).id
-            report = await detect_missing_tests(session, repo_id, changed)
-            if report.map_empty:
-                return await _inferred_impacted(session, repo_id, sorted(changed), collector)
-            by_file: dict[str, list[str]] = {}
-            for source_file, lines in changed.items():
-                rows = await tests_covering(session, repo_id, source_file, lines=lines)
-                ids = sorted({row["test_id"] for row in rows})
-                if ids:
-                    by_file[source_file] = ids
+        change = await asyncio.to_thread(
+            partial(
+                change_set,
+                str(ctx.path),
+                None if working_tree else revspec or "HEAD",
+                working_tree=working_tree,
+            )
+        )
+    except (ValueError, subprocess.SubprocessError, OSError):
+        return _empty_impacted("unknown", "Could not read the change from git.")
+    try:
+        result, selection, _ = await select_change_tests(ctx.path, session_factory, change)
+        block = selection_block(
+            result, selection, collector, limit=_IMPACTED_TESTS_LIMIT, label="impacted_tests"
+        )
+        if not result["map_empty"]:
+            lines = query_lines(change, result["measured_commit"])
+            async with get_session(session_factory) as session:
+                repo_id = (await _get_repo(session)).id
+                report = await detect_missing_tests(
+                    session, repo_id, {p: lines[p] for p in changed if p in lines}
+                )
+            block["line_coverage"] = _serialize_missing(report)
+    except SelectionUnavailableError as exc:
+        return _empty_impacted(exc.status, str(exc))
     except LookupError:
         return _empty_impacted("no_index", "No indexed repository; run `repowise init`.")
     except SQLAlchemyError:
-        return _empty_impacted("unknown", "Could not read the coverage map.")
-
-    tests = rank_tests_by_reach(by_file)
-    total = len(tests)
-    return {
-        "status": "map_present",
-        "basis": "measured",
-        "map_present": True,
-        "tests_to_run": _cap_tests(tests, collector, "measured"),
-        "tests_to_run_kind": "test_id",
-        "total": total,
-        "truncated": total > _IMPACTED_TESTS_LIMIT,
-        "line_coverage": _serialize_missing(report),
-        "summary": (
-            f"{total} test(s) cover the changed lines"
-            + (f"; showing first {_IMPACTED_TESTS_LIMIT}" if total > _IMPACTED_TESTS_LIMIT else "")
-            + "."
-        ),
-    }
+        return _empty_impacted("unknown", "Could not read the index.")
+    return block

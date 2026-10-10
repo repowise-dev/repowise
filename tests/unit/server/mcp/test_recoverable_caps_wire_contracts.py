@@ -348,7 +348,13 @@ async def test_risk_multi_target_graph_cards_recover_relationship_tails(
 async def test_risk_real_adversarial_wire_recovers_each_directive_lane(
     setup_mcp: str, session: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import importlib
+
     from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer
+    from repowise.core.analysis.test_selection import Selection
+
+    get_risk_mod = importlib.import_module("repowise.server.mcp_server.tool_risk.get_risk")
+    from repowise.server.mcp_server.tool_risk.directives import ChangeTests
 
     _configure_omissions(tmp_path)
     for index in range(8):
@@ -373,10 +379,6 @@ async def test_risk_real_adversarial_wire_recovers_each_directive_lane(
             *[f"tests/sealed_{i}.py" for i in range(8)],
         ]
         payload["cochange_warnings"] = [f"src/cochange_{i}.py" for i in range(8)]
-        payload["guarding_tests"] = {
-            "tests_to_run": [f"tests/GUARD_{i}.py::test_it" for i in range(14)],
-            "basis": "measured",
-        }
         recommendations = [
             {
                 "test_id": f"tests/REC_{i}.py::test_it",
@@ -401,6 +403,20 @@ async def test_risk_real_adversarial_wire_recovers_each_directive_lane(
         return payload
 
     monkeypatch.setattr(PRBlastRadiusAnalyzer, "analyze_files", sealed_analyze)
+    guards = tuple(f"tests/GUARD_{i}.py::test_it" for i in range(14))
+    selection = Selection(
+        run_all=False,
+        reasons=(),
+        tests=guards,
+        test_files=tuple(t.split("::")[0] for t in guards),
+        basis={"src/gap_0.py": "coverage"},
+        why={t.split("::")[0]: "src/gap_0.py changed (coverage)" for t in guards},
+    )
+
+    async def sealed_tests(*_a: Any) -> ChangeTests:
+        return ChangeTests(selection=selection)
+
+    monkeypatch.setattr(get_risk_mod, "_change_tests", sealed_tests)
     changed = [f"src/gap_{i}.py" for i in range(6)]
     result = await tool_middleware(get_risk)(
         ["src/auth/service.py"], changed_files=changed, include=["tests", "blast"]
@@ -413,8 +429,7 @@ async def test_risk_real_adversarial_wire_recovers_each_directive_lane(
         "missing_cochanges": 8,
         "missing_tests": 6,
         "tests_to_run": 14,
-        # 15 analyzer rows plus the 8 reached tests the measured list lacks.
-        "test_recommendations": 23,
+        "test_recommendations": 15,
         "files_without_measured_tests": 12,
         "test_unknown_files": 12,
     }

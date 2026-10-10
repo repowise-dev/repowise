@@ -112,6 +112,8 @@ class CoveringTestEvidence:
     #: Uncapped. A surface decides how many to show.
     tests_to_run: tuple[str, ...] = ()
     basis: str | None = None  # measured | inferred | None
+    #: Why every test must run, when nothing narrower can be vouched for.
+    run_all: str | None = None
 
 
 def _plural(word: str, count: int) -> str:
@@ -198,7 +200,17 @@ def _actions(delta: ChangeHealthDelta, tests: CoveringTestEvidence) -> tuple[Rev
             )
         )
     next_priority = len(actions)
-    if tests.tests_to_run:
+    if tests.run_all:
+        actions.append(
+            ReviewAction(
+                kind="run_tests",
+                priority=next_priority,
+                evidence_basis=tests.basis,
+                explanation=f"Run every test: {tests.run_all}",
+            )
+        )
+        next_priority += 1
+    elif tests.tests_to_run:
         actions.append(
             ReviewAction(
                 kind="run_tests",

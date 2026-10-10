@@ -12,12 +12,11 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.engine import _has_paired_test_file, _path_basenames
+from repowise.core.analysis.pr_blast import untested_files
 from repowise.core.co_change import confidence_ratio, parse_partners
 from repowise.core.git_refs import find_path_removal
 from repowise.core.persistence.models import (
     GitMetadata,
-    GraphNode,
     Repository,
 )
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
@@ -239,60 +238,8 @@ def _compute_impact_surface(
 
 
 async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> bool:
-    """Return True if *target* has no test, coverage-backed where the map has data.
-
-    Three signals, in descending order of what they can prove, and the file is a
-    gap only when all three stay silent - the same ladder ``pr_blast``
-    ``_find_test_gaps`` uses, because the two answered this question differently
-    and a reader has no way to tell which one they are looking at.
-
-    1. A per-test coverage row (from ``repowise coverage add``) is
-       execution-proof: never a gap.
-    2. A test file reaching it in the dependency graph is evidence, not proof,
-       but a recorded edge rather than a guess - it catches the suites whose
-       tests are named for behaviour rather than for the file under test.
-    3. Otherwise the filename pattern (test_<name>, <name>_test, <name>.spec.*)
-       - an honest "unknown", never asserted as untested.
-
-    Test files themselves (is_test=True) are never a gap.
-    """
-    from repowise.core.persistence.crud import covered_source_files
-
-    # Test files don't need tests — skip the check entirely
-    node_res = await session.execute(
-        select(GraphNode.is_test)
-        .where(
-            GraphNode.repository_id == repo_id,
-            GraphNode.node_id == target,
-        )
-        .limit(1)
-    )
-    row = node_res.scalar_one_or_none()
-    if row is True:
-        return False
-
-    # Coverage proves a test exercises this file: not a gap.
-    if await covered_source_files(session, repo_id, {target}):
-        return False
-
-    # The graph records a test reaching it: not a gap either. Degrades to "no
-    # signal" rather than raising - a failed walk must not become an accusation.
-    from repowise.core.analysis.test_reachability import tests_reaching
-
-    try:
-        if await tests_reaching(session, repo_id, [target]):
-            return False
-    except Exception:
-        pass
-
-    test_nodes = await session.execute(
-        select(GraphNode.node_id).where(
-            GraphNode.repository_id == repo_id,
-            GraphNode.is_test == True,  # noqa: E712
-        )
-    )
-    test_basenames = _path_basenames(set(test_nodes.scalars()))
-    return not _has_paired_test_file(target, test_basenames)
+    """Whether nothing can be shown to test *target* (``pr_blast.untested_files``)."""
+    return bool(await untested_files(session, repo_id, [target]))
 
 
 async def _get_security_signals(session: AsyncSession, repo_id: str, target: str) -> list[dict]:

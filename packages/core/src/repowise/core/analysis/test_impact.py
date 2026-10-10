@@ -69,37 +69,6 @@ def _recommendation_sort_key(row: dict[str, Any]) -> tuple[int, int, str, str]:
     )
 
 
-def legacy_guarding_tests(test_impact: dict[str, Any]) -> dict[str, Any]:
-    """Compatibility projection for the historical ``guarding_tests`` block.
-
-    Compatibility preserves the historical measured-first contract: measured
-    rows win when any exist, otherwise inferred rows are the fallback. Consumers
-    that need the additive union and per-row truth read ``recommendations``.
-    """
-    recommendations = test_impact["recommendations"]
-    measured = [row for row in recommendations if row["basis"] == "measured"]
-    selected = measured or [row for row in recommendations if row["basis"] == "inferred"]
-    basis = selected[0]["basis"] if selected else "none"
-    by_file = {
-        row["source_file"]: row[f"{basis}_tests"]
-        for row in test_impact["files"]
-        if basis != "none" and row[f"{basis}_tests"]
-    }
-    return {
-        "map_present": test_impact["coverage"]["map_present"],
-        "basis": basis,
-        "tests_to_run": [row["test_id"] for row in selected],
-        "tests_to_run_with_basis": selected,
-        "tests_to_run_total": len(selected),
-        "tests_to_run_emitted": len(selected),
-        "tests_to_run_truncated": False,
-        "by_file": by_file,
-        "analysis": test_impact["analysis"],
-        "coverage": test_impact["coverage"],
-        "inference": test_impact["inference"],
-    }
-
-
 async def analyze_test_impact(
     session: AsyncSession,
     repository_id: str,
@@ -170,6 +139,13 @@ async def analyze_test_impact(
         path: {"tests": list(reached.all_tests or reached.tests), "via": reached.via}
         for path, reached in reached_by_file.items()
     }
+    if inference_error is None:
+        from repowise.core.analysis.test_collection import narrow_scopes
+
+        walked = {path: row["tests"] for path, row in inferred.items()}
+        for path, tests in (await narrow_scopes(session, repository_id, walked, test_files)).items():
+            if tests != walked[path]:
+                inferred[path] = {**inferred[path], "tests": tests, "narrowed": True}
 
     return assemble_test_impact(
         changed,
@@ -217,7 +193,8 @@ def assemble_test_impact(
     rows (``test_id``, optional ``test_file`` and ``source_format``), read only
     when *coverage_summary* reports pairs. *inferred_by_file* maps a changed path
     to ``{"tests": [...], "via": tier}``, both keys required, with ``tests`` the
-    uncapped list (``ReachedBy.all_tests``, not the display-capped ``tests``);
+    uncapped list (``ReachedBy.all_tests``, not the display-capped ``tests``), and
+    ``narrowed`` true when a reached conftest was already resolved to its tests;
     paths outside *changed_files* are ignored. That list is used as the walk
     found it, except where a scope file expanded (below). *coverage_summary* carries
     ``pair_count``, ``test_count``, ``source_file_count``, ``ingested_at``,
@@ -334,7 +311,7 @@ def assemble_test_impact(
             if not (exclude_spec and is_excluded(test_id, exclude_spec))
         ]
         inferred_totals_by_file[path] = len(kept_tests)
-        if expanded != list(reached["tests"]):
+        if reached.get("narrowed") or expanded != list(reached["tests"]):
             # A root conftest stands for every test in the repository: rank the
             # expansion nearest-first and keep the walk's own per-target cap.
             kept_tests = rank_tests(path, kept_tests)[:MAX_TESTS_PER_TARGET]

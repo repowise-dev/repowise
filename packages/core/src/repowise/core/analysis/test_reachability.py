@@ -203,6 +203,7 @@ __all__ = [
     "call_graph_from_graph",
     "clear_test_map_cache",
     "direct_dependents",
+    "direct_importers",
     "files_reached_by_tests",
     "files_with_paired_tests",
     "imported_names_by_test",
@@ -1007,6 +1008,17 @@ async def direct_dependents(
 _LEGACY_CONFTEST_FILTER = (
     " AND NOT (edge_type = 'dynamic_uses' AND COALESCE(hint_source, '') = 'pytest_conftest')"
 )
+
+
+#: Edges a test file writes itself: imports and references, not the wiring a
+#: test runner adds (a conftest or setup file reaches every test under it).
+_AUTHORED_EDGE_TYPES = sorted(FILE_DEPENDENCY_EDGE_TYPES - {"framework"})
+
+
+async def direct_importers(session: AsyncSession, repo_id: str, files: list[str]) -> set[str]:
+    """Files whose own code imports or references one of *files*, one hop."""
+    rows = await _edges_into(session, repo_id, files, _AUTHORED_EDGE_TYPES, frozenset())
+    return {source for source, _ in rows}
 
 
 def _in_clause(prefix: str, values: list[str], params: dict[str, Any]) -> str:

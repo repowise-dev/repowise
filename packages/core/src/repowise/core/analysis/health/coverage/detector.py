@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from pathlib import Path
 
 from ....test_paths import is_test_related_path
 from .clover import parse_clover
@@ -162,33 +161,3 @@ def is_test_file(rel_path: str, source: str | None = None) -> bool:
         if any(token in head for token in _FRAMEWORK_IMPORTS):
             return True
     return False
-
-
-def paired_test_file(rel_path: str, all_paths: set[str]) -> str | None:
-    """Return a candidate test-file path for *rel_path*, or ``None``."""
-    p = Path(rel_path.replace("\\", "/"))
-    stem = p.stem
-    candidates = {
-        f"test_{stem}.py",
-        f"{stem}_test.py",
-        f"{stem}.test.ts",
-        f"{stem}.test.tsx",
-        f"{stem}.test.js",
-        f"{stem}.test.jsx",
-        f"{stem}.test.mts",
-        f"{stem}.test.cts",
-        f"{stem}.spec.ts",
-        f"{stem}.spec.js",
-        f"{stem}.spec.mts",
-        f"{stem}.spec.cts",
-        f"{stem}_test.go",
-        f"{stem}_spec.rb",
-        f"{stem}Test.java",
-        f"{stem}Tests.java",
-    }
-    for other in all_paths:
-        norm = other.replace("\\", "/")
-        base = norm.rsplit("/", 1)[-1]
-        if base in candidates:
-            return other
-    return None

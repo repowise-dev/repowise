@@ -141,7 +141,7 @@ files reach, and what is missing from it. The response opens with a
 |---|---|
 | `may_break` | Production files in structural reverse-import reach of the diff. Candidates for review, not proven breakage |
 | `missing_cochanges` | Files that historically change with these but are not in the diff |
-| `tests_to_run`, `tests_to_run_basis` | Which tests to run, `measured` (coverage) or `inferred` (graph reach). With coverage the list is the measured one; `include=["tests"]` adds the typed `test_recommendations` rows, including reached tests the measured list lacks (`reason: structural_reach`) |
+| `tests_to_run`, `tests_to_run_basis` | Which tests to run, from the same selection `repowise impacted-tests` makes; `measured` when coverage decided a changed file, else `inferred`. `tests_run_all` says when every test must run, `tests_to_run_why` why each listed test is in. `include=["tests"]` adds the typed `test_recommendations` rows |
 | `missing_tests` | Changed files with a test gap; present only when coverage can back it |
 | `coverage` | `{status, reason}` when there is no per-test coverage map |
 | `tests_to_update` | Up to three test files the change will probably need edited, with why: `name_pair`, `imports` or `co_change`; empty when none qualify |

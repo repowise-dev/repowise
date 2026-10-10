@@ -15,7 +15,6 @@ co_change_partners_json field stored in git_metadata rows.
 from __future__ import annotations
 
 import math
-import os
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -51,34 +50,62 @@ _ROLE_PREFIXES = ("tool_", "get_")
 _MIN_STEM_LENGTH = 3
 
 
-def test_name_stems(base: str) -> list[tuple[str, bool]]:
-    """Stems a test file for ``base`` could be named after, each with whether the
-    match has to be exact.
-
-    The full stem keeps the historical substring match, which absorbs suffixes
-    like ``test_parser_edge_cases``. A stripped stem is shorter and so collides
-    far more easily (``tool_repos`` -> ``repos``, a prefix of ``repository``),
-    and clearing a gap on a coincidence is the one error that costs a reader.
-    """
-    stems = [(base, False)]
+def _subject_names(path: str) -> list[str]:
+    """*path*, and *path* with a dispatch-role prefix stripped from its file name."""
+    head, _, name = path.rpartition("/")
+    stem = name.split(".", 1)[0]
+    out = [path]
     for prefix in _ROLE_PREFIXES:
-        stripped = base[len(prefix) :]
-        if base.startswith(prefix) and len(stripped) >= _MIN_STEM_LENGTH:
-            stems.append((stripped, True))
-    return stems
+        if stem.startswith(prefix) and len(stem) - len(prefix) >= _MIN_STEM_LENGTH:
+            out.append(f"{head}/{name[len(prefix):]}" if head else name[len(prefix) :])
+    return out
 
 
-def _names_a_test_for(stem: str, ext: str, test_path: str, exact: bool) -> bool:
-    """Whether ``test_path`` follows a naming convention for ``stem``."""
-    if exact:
-        named = os.path.splitext(os.path.basename(test_path))[0]
-        return named in (f"test_{stem}", f"{stem}_test", f"{stem}.spec")
-    return (
-        f"test_{stem}" in test_path
-        or f"{stem}_test" in test_path
-        or f"{stem}.spec.{ext}" in test_path
-        or f"{stem}.spec." in test_path
+async def untested_files(session: AsyncSession, repo_id: str, paths: list[str]) -> list[str]:
+    """The code files among *paths* nothing can be shown to test, in their order.
+
+    Three signals, checked in descending order of what they can prove, and a
+    file only becomes a gap when all three stay silent. Asserting "nothing
+    tests this" is the one claim here that costs a reader something if it is
+    wrong, so the bar for making it is no evidence at all.
+
+    1. A per-test coverage row (from ``repowise coverage add``) is
+       execution-*proof*: never a gap.
+    2. A test file reaching it in the dependency graph is evidence, not proof,
+       but a recorded edge rather than a guess, and it finds the suites that
+       name their tests for behaviour instead of for the file under test.
+    3. Otherwise a test named for it by convention (``tests_matching_by_name``,
+       also tried with a dispatch-role prefix stripped), an honest "unknown",
+       never asserted as untested.
+
+    Test files, and files that are not code (a manifest, a workflow), are never
+    gaps: they need no test of their own.
+    """
+    from repowise.core.analysis.test_reachability import (
+        load_test_files,
+        tests_matching_by_name,
+        tests_reaching,
     )
+    from repowise.core.analysis.test_selection import is_code_file
+    from repowise.core.persistence.crud import covered_source_files
+
+    if not paths:
+        return []
+    test_files = await load_test_files(session, repo_id)
+    candidates = [p for p in paths if is_code_file(p) and p not in test_files]
+    if not candidates:
+        return []
+    covered = await covered_source_files(session, repo_id, set(candidates))
+    # Degrades to "no signal" rather than raising: a failed walk must not
+    # turn into a false accusation.
+    try:
+        reached = set(await tests_reaching(session, repo_id, candidates, test_files=test_files))
+    except Exception:
+        reached = set()
+    rest = [p for p in candidates if p not in covered and p not in reached]
+    subjects = {p: _subject_names(p) for p in rest}
+    named = tests_matching_by_name(sorted({n for ns in subjects.values() for n in ns}), test_files)
+    return [p for p in rest if not any(n in named for n in subjects[p])]
 
 
 class PRBlastRadiusAnalyzer:
@@ -147,12 +174,8 @@ class PRBlastRadiusAnalyzer:
         # 5. Test gaps
         test_gaps = await self._find_test_gaps(all_affected_paths)
 
-        # 6. Canonical test impact. MCP and REST consume this same typed
-        #    population; ``guarding_tests`` is its compatibility projection.
+        # 6. Canonical test impact: the typed population MCP and REST consume.
         test_impact = await self._test_impact(changed_files, exclude_spec=exclude_spec)
-        from repowise.core.analysis.test_impact import legacy_guarding_tests
-
-        guarding_tests = legacy_guarding_tests(test_impact)
 
         # 7. Structural impact heuristic (0-10). The compatibility field is an
         #    exact alias supplied by the shared public semantics contract.
@@ -165,7 +188,6 @@ class PRBlastRadiusAnalyzer:
             "recommended_reviewers": recommended_reviewers,
             "test_gaps": test_gaps,
             "test_impact": test_impact,
-            "guarding_tests": guarding_tests,
             **structural_impact_contract(structural_impact_score),
         }
 
@@ -388,83 +410,8 @@ class PRBlastRadiusAnalyzer:
         return reviewers[:5]
 
     async def _find_test_gaps(self, affected_files: list[str]) -> list[str]:
-        """Return the files nothing can be shown to test.
-
-        Three signals, checked in descending order of what they can prove, and a
-        file only becomes a gap when all three stay silent. Asserting "nothing
-        tests this" is the one claim here that costs a reader something if it is
-        wrong, so the bar for making it is no evidence at all.
-
-        1. A per-test coverage row (from ``repowise coverage add``) is
-           execution-*proof*: never a gap.
-        2. A test file reaching it in the dependency graph is evidence, not
-           proof - control reaching a file is not a run exercising it - but it
-           is a recorded edge rather than a guess, and it finds the suites that
-           name their tests for behaviour instead of for the file under test.
-           Used only as this floor; nothing downstream reads a coverage figure
-           off it.
-        3. Otherwise the filename pattern (test_<name>, <name>_test,
-           <name>.spec.*), tried against every stem in ``test_name_stems`` - an
-           honest "unknown", never asserted as untested.
-
-        Test files themselves are excluded; they don't need their own tests.
-        """
-        if not affected_files:
-            return []
-
-        from repowise.core.analysis.test_reachability import tests_reaching
-        from repowise.core.persistence.crud import covered_source_files
-
-        # Coverage-proven-tested files: absent from gaps regardless of naming.
-        covered = await covered_source_files(self._session, self._repo_id, set(affected_files))
-
-        # Graph-reached files: likewise absent. Degrades to "no signal" rather
-        # than raising - a failed walk must not turn into a false accusation.
-        try:
-            reached = set(await tests_reaching(self._session, self._repo_id, affected_files))
-        except Exception:
-            reached = set()
-
-        node_res = await self._session.execute(
-            select(GraphNode.node_id, GraphNode.is_test).where(
-                GraphNode.repository_id == self._repo_id,
-                GraphNode.node_id.in_(affected_files),
-            )
-        )
-        # Build a set of affected files that are themselves test files
-        test_file_set = {row[0] for row in node_res.all() if row[1]}
-
-        # Fetch all test paths for the filename fallback (map-no-data files only)
-        all_test_res = await self._session.execute(
-            select(GraphNode.node_id).where(
-                GraphNode.repository_id == self._repo_id,
-                GraphNode.is_test == True,  # noqa: E712
-            )
-        )
-        test_paths = {row[0] for row in all_test_res.all()}
-
-        gaps = []
-        for path in affected_files:
-            # Skip test files — they don't need their own tests
-            if path in test_file_set:
-                continue
-            # Coverage proves a test exercises this file: not a gap.
-            if path in covered:
-                continue
-            # The graph records a test reaching it: not a gap either.
-            if path in reached:
-                continue
-            base = os.path.splitext(os.path.basename(path))[0]
-            ext = os.path.splitext(path)[1].lstrip(".")
-            has_test = any(
-                _names_a_test_for(stem, ext, tp, exact)
-                for stem, exact in test_name_stems(base)
-                for tp in test_paths
-            )
-            if not has_test:
-                gaps.append(path)
-
-        return gaps
+        """The affected files nothing can be shown to test (:func:`untested_files`)."""
+        return await untested_files(self._session, self._repo_id, affected_files)
 
     async def _test_impact(self, changed_files: list[str], exclude_spec: Any = None) -> dict:
         """Canonical measured + inferred test-impact population."""
@@ -477,40 +424,6 @@ class PRBlastRadiusAnalyzer:
             repository_alias=self._repository_alias,
             exclude_spec=exclude_spec,
         )
-
-    async def _guarding_tests(self, changed_files: list[str]) -> dict:
-        """Compatibility projection of :meth:`_test_impact`.
-
-        ``basis`` retains its historical measured/inferred/none domain and
-        measured-first fallback. The canonical ``test_impact`` block contains
-        the additive union and per-recommendation truth.
-        """
-        from repowise.core.analysis.test_impact import legacy_guarding_tests
-
-        return legacy_guarding_tests(await self._test_impact(changed_files))
-
-    async def _inferred_guarding_tests(self, changed_files: list[str], empty: dict) -> dict:
-        """Compatibility wrapper returning only structurally inferred rows."""
-        impact = await self._test_impact(changed_files)
-        inferred = [row for row in impact["recommendations"] if row["basis"] == "inferred"]
-        by_file = {
-            item["source_file"]: item["inferred_tests"]
-            for item in impact["files"]
-            if item["inferred_tests"]
-        }
-        return {
-            "map_present": empty.get("map_present", impact["coverage"]["map_present"]),
-            "basis": "inferred" if inferred else "none",
-            "tests_to_run": [row["test_id"] for row in inferred],
-            "tests_to_run_with_basis": inferred,
-            "tests_to_run_total": len(inferred),
-            "tests_to_run_emitted": len(inferred),
-            "tests_to_run_truncated": False,
-            "by_file": by_file,
-            "analysis": impact["analysis"],
-            "coverage": impact["coverage"],
-            "inference": impact["inference"],
-        }
 
     @staticmethod
     def _compute_overall_risk(

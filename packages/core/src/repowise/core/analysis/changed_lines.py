@@ -297,12 +297,23 @@ class ChangeSet:
     head: str | None
 
 
-def change_set(repo_path: str, revspec: str | None = None, *, staged: bool = False) -> ChangeSet:
+def change_set(
+    repo_path: str,
+    revspec: str | None = None,
+    *,
+    staged: bool = False,
+    working_tree: bool = False,
+) -> ChangeSet:
     """The change :func:`changed_lines` reads, with every touched path and its ends.
 
-    Raises ``ValueError`` on an unknown revision, as :func:`changed_lines` does.
+    *working_tree* reads what ``HEAD`` does not have, staged or not (untracked
+    files stay out, as in :func:`changed_lines`); its base is ``HEAD``. Raises
+    ``ValueError`` on an unknown revision, as :func:`changed_lines` does.
     """
-    command, revisions, label = _change_command(repo_path, revspec, staged=staged)
+    if working_tree:
+        command, revisions, label = ["diff"], ["HEAD"], working_tree_label()
+    else:
+        command, revisions, label = _change_command(repo_path, revspec, staged=staged)
     tail = ["--no-renames", *revisions]
     diffs = parse_unified_diff(_diff(repo_path, [*command, "--unified=0", *DIFF_ARGS, *tail]))
     listing = _diff(repo_path, [*command, "--name-status", "-z", *tail])
@@ -316,7 +327,7 @@ def change_set(repo_path: str, revspec: str | None = None, *, staged: bool = Fal
             deleted.add(path)
         else:
             files[path] = diffs.get(path) or FileDiff(path=path)
-    base, head = _change_ends(repo_path, revspec, staged=staged)
+    base, head = _change_ends(repo_path, revspec, staged=staged or working_tree)
     return ChangeSet(files, deleted, label, base, head)
 
 

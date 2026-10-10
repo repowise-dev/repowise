@@ -191,8 +191,17 @@ async def test_get_change_risk_rejects_repo_all() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _factory_with_repo(coverage_records: list | None):
-    """Build an in-memory session factory seeded with one repo + coverage map."""
+async def _factory_with_repo(
+    coverage_records: list | None,
+    *,
+    head_commit: str | None = None,
+    measured_at: str | None = None,
+):
+    """Build an in-memory session factory seeded with one repo + coverage map.
+
+    *head_commit* is the commit the index describes, *measured_at* the one the
+    coverage map was measured at.
+    """
     from datetime import UTC, datetime
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -219,15 +228,28 @@ async def _factory_with_repo(coverage_records: list | None):
                 local_path="/tmp/repo",
                 default_branch="main",
                 settings_json="{}",
+                head_commit=head_commit,
                 created_at=now,
                 updated_at=now,
             )
         )
         await s.flush()
         if coverage_records:
-            await save_test_coverage(s, "repo1", coverage_records, source_format="coverage.py")
+            await save_test_coverage(
+                s,
+                "repo1",
+                coverage_records,
+                source_format="coverage.py",
+                ingested_commit_sha=measured_at,
+            )
         await s.commit()
     return factory
+
+
+def _sha(repo: Path, rev: str = "HEAD") -> str:
+    return subprocess.run(
+        ["git", "rev-parse", rev], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
 
 
 def _tc(test_id: str, source_file: str, covered_lines: list[int], test_file: str):
@@ -263,7 +285,9 @@ async def test_impacted_tests_line_precise_hit_and_miss(tmp_path, monkeypatch) -
         [
             _tc("tests/test_app.py::test_app", "src/app.py", [3], "tests/test_app.py"),
             _tc("tests/test_other.py::test_other", "src/other.py", [9], "tests/test_other.py"),
-        ]
+        ],
+        head_commit=_sha(repo, "HEAD~1"),
+        measured_at=_sha(repo),
     )
 
     module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
@@ -272,17 +296,22 @@ async def test_impacted_tests_line_precise_hit_and_miss(tmp_path, monkeypatch) -
         return SimpleNamespace(path=str(repo), session_factory=factory)
 
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
-    result = await module.get_change_risk(baseline=0)
+    # The covering tests exist but are not tracked, so none runs as a test the
+    # graph cannot see into; an explicit revspec keeps them out of the change.
+    (repo / "tests").mkdir()
+    for name in ("test_app", "test_other"):
+        (repo / f"tests/{name}.py").write_text("x = 1\n", encoding="utf-8")
+    result = await module.get_change_risk("HEAD", baseline=0)
 
     it = result["impacted_tests"]
-    assert it["status"] == "map_present"
     assert it["basis"] == "measured"
     assert it["tests_to_run_kind"] == "test_id"
     assert it["map_present"] is True
-    # app.py line 3 is covered -> its test is named; other/new are not covering.
-    assert it["tests_to_run"] == ["tests/test_app.py::test_app"]
-    assert it["total"] == 1
-    assert it["truncated"] is False
+    # app.py line 3 is covered -> its test leads; other/new are not covering.
+    assert it["tests_to_run"][0] == "tests/test_app.py::test_app"
+    # No test is known for the new file, so the subset cannot be vouched for.
+    assert it["run_all"] is True
+    assert any(r.startswith("src/new.py:") for r in it["reasons"])
 
     mt = it["line_coverage"]
     # other.py is in the map but its changed lines (1,2,3) are uncovered.
@@ -315,12 +344,12 @@ async def test_impacted_tests_no_map_is_unknown_not_untested(tmp_path, monkeypat
 
     it = result["impacted_tests"]
     # Nothing is seeded in the graph either, so neither tier can speak.
-    assert it["status"] == "no_map"
-    assert "map_present" not in it
+    assert it["status"] == "run_all"
+    assert it["map_present"] is False
     assert it["tests_to_run"] == []
-    # Honest degradation: no untested claim, a "run the suite" summary instead.
+    # Honest degradation: no untested claim, a "run every test" summary instead.
     assert "line_coverage" not in it
-    assert "run the full suite" in it["summary"]
+    assert it["summary"].startswith("Run every test:")
 
 
 @pytest.mark.asyncio
@@ -337,13 +366,25 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(["init", "-q"], repo)
-    _commit(repo, {"src/app.py": "a\nb\n"}, "chore: seed")
+    _commit(
+        repo,
+        {"src/app.py": "a\nb\n", "tests/test_round_trips.py": "from src import app\n"},
+        "chore: seed",
+    )
     _commit(repo, {"src/app.py": "a\nb\nc\n"}, "feat: add line")
 
-    factory = await _factory_with_repo(None)
+    factory = await _factory_with_repo(None, head_commit=_sha(repo, "HEAD~1"))
     async with factory() as s:
         for path, is_test in (("tests/test_round_trips.py", True), ("src/app.py", False)):
-            s.add(GraphNode(repository_id="repo1", node_id=path, node_type="file", is_test=is_test))
+            s.add(
+                GraphNode(
+                    repository_id="repo1",
+                    node_id=path,
+                    node_type="file",
+                    is_test=is_test,
+                    always_run_reason="" if is_test else None,
+                )
+            )
         s.add(
             GraphEdge(
                 repository_id="repo1",
@@ -362,16 +403,16 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
     it = (await module.get_change_risk(baseline=0))["impacted_tests"]
 
-    assert it["status"] == "inferred"
+    assert it["status"] == "selected"
     assert it["basis"] == "inferred"
     assert it["tests_to_run_kind"] == "test_file"
-    assert "map_present" not in it
+    assert it["map_present"] is False
     assert it["tests_to_run"] == ["tests/test_round_trips.py"]
-    assert "line_coverage" not in it
     # Answered by the import tier: there is no call edge here, which is exactly
     # when the weaker tier is allowed to speak.
-    assert "reach the changed files in the graph" in it["summary"]
-    assert "not measured" in it["summary"]
+    assert it["why"] == {"tests/test_round_trips.py": "src/app.py changed (import-graph)"}
+    assert "line_coverage" not in it
+    assert it["summary"].startswith("1 test(s) to run for this change")
 
 
 @pytest.mark.asyncio
@@ -387,6 +428,9 @@ async def test_impacted_tests_overflow_cap_is_honest(tmp_path, monkeypatch) -> N
         _tc(f"tests/test_{i}.py::test_{i}", "src/hot.py", [1], f"tests/test_{i}.py")
         for i in range(12)
     ]
+    (repo / "tests").mkdir()
+    for i in range(12):
+        (repo / f"tests/test_{i}.py").write_text("x = 1\n", encoding="utf-8")
     factory = await _factory_with_repo(records)
 
     module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
@@ -395,7 +439,7 @@ async def test_impacted_tests_overflow_cap_is_honest(tmp_path, monkeypatch) -> N
         return SimpleNamespace(path=str(repo), session_factory=factory)
 
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
-    result = await module.get_change_risk(baseline=0)
+    result = await module.get_change_risk("HEAD", baseline=0)
 
     it = result["impacted_tests"]
     assert it["total"] == 12

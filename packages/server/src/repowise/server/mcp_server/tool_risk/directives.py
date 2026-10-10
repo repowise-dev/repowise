@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -12,6 +13,11 @@ from repowise.core.analysis.risk_semantics import (
     structural_impact_contract,
 )
 from repowise.core.analysis.test_reachability import tests_matching_by_name
+from repowise.core.analysis.test_selection import (
+    Selection,
+    is_runnable_test,
+    selected_by_change,
+)
 from repowise.core.co_change import MIN_CO_CHANGE_SUPPORT
 from repowise.core.persistence.crud.authority import decision_currencies
 from repowise.core.persistence.database import get_session
@@ -25,6 +31,7 @@ from repowise.server.mcp_server._helpers import (
     filter_path_list,
     is_excluded,
 )
+from repowise.server.mcp_server._test_selection import basis_of, run_kind, run_order
 
 
 def _as_path(entry: Any) -> str | None:
@@ -62,7 +69,8 @@ _MAY_BREAK_LIMIT = 5
 #: than the may-break lists (it is what you actually run), but stays glanceable;
 #: the overflow and full typed rows live in pr_blast_radius.test_impact.
 _TESTS_TO_RUN_LIMIT = 10
-_TESTS_TO_RUN_KIND = {"measured": "test_id", "inferred": "test_file"}
+#: Run-all reasons carried on the directive; the rest go to the omission store.
+_RUN_ALL_REASONS_LIMIT = 3
 #: Cap on the edit-list: the test files this change will probably need edited.
 _TESTS_TO_UPDATE_LIMIT = 3
 
@@ -489,44 +497,60 @@ def _project_recommendation(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _unlisted_tests(paths: list[str], rows: list[dict[str, Any]]) -> list[str]:
-    """*paths* that no recommendation row names as its file or id."""
-    named = {
-        name.split("::", 1)[0]
-        for row in rows
-        for name in (row.get("test_id"), row.get("test_file"))
-        if isinstance(name, str)
-    }
-    return [path for path in paths if path not in named]
+@dataclass(frozen=True)
+class ChangeTests:
+    """The selection for the PR's files (``_test_selection``), or why there is none."""
+
+    result: dict[str, Any] = field(default_factory=dict)
+    selection: Selection | None = None
+    #: Files whose own code imports a changed file (no runner wiring).
+    importers: set[str] = field(default_factory=set)
+    #: pytest's collection roots, so a production ``test_*.py`` is not a test.
+    roots: Any = None
+    status: str = "selected"
+    message: str = ""
 
 
 def _tests_to_update(
     changed_files: list[str],
-    test_paths: set[str],
+    tests: ChangeTests,
     pr_blast_radius: dict,
     exclude_spec: Any,
 ) -> list[dict[str, str]]:
     """Test files the change will probably need edited, strongest reason first.
 
-    A test named for a changed file (``name_pair``), then one that imports it
-    (``imports``), then one that changes with it in git history (``co_change``).
-    A path keeps its first reason; tests already in the change are left out.
+    Only tests the selection runs because of a changed file (not a rule that
+    runs them with every subset), that a runner collects, and that the change
+    does not already touch. Among those: a test named for a changed file
+    (``name_pair``), then one whose own code imports it (``imports``; a
+    conftest or setup file reaches tests through runner wiring, not an
+    import), then one that changes with it in git history (``co_change``). A
+    path keeps its first reason.
     """
+    selection = tests.selection
+    if selection is None:
+        return []
     changed = set(changed_files)
-    candidates = filter_path_list(sorted(test_paths - changed), exclude_spec)
-    eligible = set(candidates)
-    named = tests_matching_by_name(changed_files, candidates)
+    eligible = set(
+        filter_path_list(
+            sorted(
+                t
+                for t in selection.test_files
+                if selected_by_change(selection, t)
+                and is_runnable_test(t, tests.roots)
+                and t not in changed
+            ),
+            exclude_spec,
+        )
+    )
+    named = tests_matching_by_name(changed_files, sorted(eligible))
     ordered: list[tuple[str | None, str]] = [
         (path, "name_pair")
         for source in changed_files
         if source in named
         for path in (named[source].all_tests or named[source].tests)
     ]
-    ordered += [
-        (_as_path(e), "imports")
-        for e in pr_blast_radius.get("transitive_affected") or []
-        if isinstance(e, dict) and e.get("direct")
-    ]
+    ordered += [(path, "imports") for path in sorted(tests.importers)]
     # Indexing already drops pairs below the support floor; a row that still
     # records less is weak history, not a reason to edit a test.
     ordered += [
@@ -541,6 +565,33 @@ def _tests_to_update(
     return [{"path": path, "reason": reason} for path, reason in rows.items()]
 
 
+def _tests_to_run(
+    tests: ChangeTests, collector: OmissionCollector
+) -> tuple[list[str], str, dict[str, Any]]:
+    """``(run list, basis, extra directive fields)`` from the selection.
+
+    The extra fields say whether every test must run and why, and why each
+    emitted test is in the list; a failed selection says so and names nothing.
+    """
+    selection = tests.selection
+    if selection is None:
+        return [], "none", {"tests_status": tests.status, "tests_status_reason": tests.message}
+    population = run_order(tests.result, selection)
+    reasons = list(selection.reasons)
+    if len(reasons) > _RUN_ALL_REASONS_LIMIT:
+        collector.add(
+            f"directive.tests_run_all_reasons beyond cap={_RUN_ALL_REASONS_LIMIT} "
+            f"({len(reasons) - _RUN_ALL_REASONS_LIMIT} dropped)",
+            reasons[_RUN_ALL_REASONS_LIMIT:],
+        )
+    shown = dict.fromkeys(t.split("::", 1)[0] for t in population[:_TESTS_TO_RUN_LIMIT])
+    extra: dict[str, Any] = {"tests_run_all": selection.run_all}
+    if selection.run_all:
+        extra["tests_run_all_reasons"] = reasons[:_RUN_ALL_REASONS_LIMIT]
+    extra["tests_to_run_why"] = {p: selection.why[p] for p in shown if p in selection.why}
+    return population, basis_of(selection), extra
+
+
 def _build_pr_directive(
     response: dict,
     pr_blast_radius: dict,
@@ -551,13 +602,16 @@ def _build_pr_directive(
     test_paths: set[str],
     alias: str,
     *,
+    tests: ChangeTests | None = None,
     full_scale: bool = False,
     include_tests: bool = False,
     include_blast: bool = False,
 ) -> None:
     """Assemble PR-mode output: trim co-change lists + blast radius, then build
-    the directive block. Mutates *response* in place. Behavior preserved.
+    the directive block. Mutates *response* in place. *tests* is the
+    selection the run and edit lists come from.
     """
+    tests = tests or ChangeTests(status="unknown", message="No test selection was made.")
     # PR mode — drop global_hotspots (irrelevant to a specific diff), trim
     # per-target co-change lists, and synthesize a tight directive the
     # agent can act on without parsing the whole blast-radius dossier.
@@ -604,7 +658,6 @@ def _build_pr_directive(
     # symbol an importer uses actually changed. The diff-backed fields below keep
     # "will".
     all_may_break = [p for p in affected if p not in test_paths]
-    all_may_break_tests = [p for p in affected if p in test_paths]
     may_break = all_may_break[:_MAY_BREAK_LIMIT]
 
     all_missing_cochanges = filter_path_list(
@@ -612,31 +665,12 @@ def _build_pr_directive(
         exclude_spec,
     )
     missing_cochanges = all_missing_cochanges[:3]
-    all_tests_to_update = _tests_to_update(changed_files, test_paths, pr_blast_radius, exclude_spec)
-    # Run-list: consume the analyzer's canonical typed population instead of
-    # independently deriving test ids. Every row retains its basis through
-    # de-duplication, sorting, exclusions, and the directive cap.
+    all_tests_to_update = _tests_to_update(changed_files, tests, pr_blast_radius, exclude_spec)
+    # Typed rows from the analyzer ride behind include=["tests"]. The run list
+    # is the selection: the answer ``repowise impacted-tests`` gives.
     test_impact = pr_blast_radius.get("test_impact") or {}
     all_recommendations = list(test_impact.get("recommendations") or [])
-
-    # Preserve the measured-first legacy projection and its existing scalar
-    # domain. The additive typed rows above are the union of evidence kinds.
-    guarding = pr_blast_radius.get("guarding_tests") or {}
-    all_tests_to_run = list(guarding.get("tests_to_run") or [])
-    tests_to_run_basis = guarding.get("basis") or "none"
-    # Tests in reverse-import reach join an unmeasured list. A measured list
-    # names test ids, so they ride as typed rows instead of mixing in files.
-    if tests_to_run_basis != "measured":
-        listed = set(all_tests_to_run)
-        reached = [p for p in all_may_break_tests if p not in listed]
-        if reached:
-            all_tests_to_run += reached
-            tests_to_run_basis = "inferred"
-    else:
-        all_recommendations += [
-            {"test_id": path, "basis": "inferred", "reason": "structural_reach"}
-            for path in _unlisted_tests(all_may_break_tests, all_recommendations)
-        ]
+    all_tests_to_run, tests_to_run_basis, tests_fields = _tests_to_run(tests, collector)
     test_recommendations = all_recommendations[:_TESTS_TO_RUN_LIMIT]
     test_recommendations_total = len(all_recommendations)
     recommendations_capped = test_recommendations_total > _TESTS_TO_RUN_LIMIT
@@ -646,13 +680,12 @@ def _build_pr_directive(
     tests_to_run_suffix = (
         f" {tests_to_run_total} test(s) to run, {tests_to_run_basis}." if tests_to_run_total else ""
     )
+    if tests_fields.get("tests_run_all"):
+        tests_to_run_suffix += " Every test must run (tests_run_all_reasons)."
     if include_tests and all_recommendations:
         basis_totals = test_impact.get("recommendations_by_primary_basis") or {}
         measured_total = int(basis_totals.get("measured", 0))
-        # Plus the structural-reach rows added above, which the analyzer never counted.
-        inferred_total = int(basis_totals.get("inferred", 0)) + (
-            test_recommendations_total - len(test_impact.get("recommendations") or [])
-        )
+        inferred_total = int(basis_totals.get("inferred", 0))
         tests_to_run_suffix += (
             f" {test_recommendations_total} test recommendation(s): {measured_total} measured "
             f"and {inferred_total} inferred, not coverage-proven candidate(s); "
@@ -785,12 +818,12 @@ def _build_pr_directive(
         "files_without_measured_tests": [],
         "tests_to_run": tests_to_run,
         "tests_to_run_basis": tests_to_run_basis,
-        # A measured row names a coverage-map test id; an inferred one a test file.
-        "tests_to_run_kind": _TESTS_TO_RUN_KIND.get(tests_to_run_basis),
+        "tests_to_run_kind": run_kind(tests_to_run),
         "tests_to_run_total": tests_to_run_total,
         "tests_to_run_emitted": len(tests_to_run),
         "tests_to_run_truncated": tests_capped,
         "tests_to_run_omitted": tests_to_run_total - len(tests_to_run),
+        **tests_fields,
         # Tests to edit, not to run; a file can sit in both lists.
         "tests_to_update": all_tests_to_update,
         **(

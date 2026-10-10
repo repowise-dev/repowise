@@ -9,6 +9,7 @@ from typing import Any, NamedTuple
 from sqlalchemy import func, select
 
 from repowise.core.analysis.risk_semantics import file_risk_scales
+from repowise.core.analysis.test_reachability import direct_importers
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.batches import chunked
 from repowise.core.persistence.crud import get_graph_nodes_by_ids, get_test_file_paths
@@ -35,6 +36,11 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._test_selection import (
+    SelectionUnavailableError,
+    files_change,
+    select_change_tests,
+)
 
 from .assessment import (
     _assess_one_target,
@@ -42,7 +48,7 @@ from .assessment import (
     fix_annotation,
     normalize_target_path,
 )
-from .directives import _build_pr_directive, _governance_directive
+from .directives import ChangeTests, _build_pr_directive, _governance_directive
 from .enrichment import _enrich_cross_repo, _enrich_health
 
 #: Fields an agent cannot rank or act on: uncalibrated pagerank floats, and
@@ -329,6 +335,27 @@ async def _enrich_cards(
     await asyncio.to_thread(_enrich_episodes, scored, ctx.path)
 
 
+async def _change_tests(ctx: Any, paths: list[str]) -> ChangeTests:
+    """The selection for a change known by its paths, and the tests importing them.
+
+    Every path counts, excluded or not: a test can break on any of them.
+    """
+    try:
+        change = await asyncio.to_thread(files_change, ctx.path, paths)
+        result, selection, checkout = await select_change_tests(
+            ctx.path, ctx.session_factory, change
+        )
+        async with get_session(ctx.session_factory) as session:
+            importers = await direct_importers(session, (await _get_repo(session)).id, paths)
+    except SelectionUnavailableError as exc:
+        return ChangeTests(status=exc.status, message=str(exc))
+    except Exception as exc:  # the rest of the directive stands without its tests
+        return ChangeTests(status="unknown", message=f"Could not select tests: {exc}")
+    return ChangeTests(
+        result=result, selection=selection, importers=importers, roots=checkout.roots
+    )
+
+
 async def _lead_with_pr_directive(
     response: dict,
     evidence: _RiskEvidence,
@@ -339,6 +366,7 @@ async def _lead_with_pr_directive(
     full_scale: bool,
     include_tests: bool,
     include_blast: bool,
+    touched: list[str] | None = None,
 ) -> dict:
     governance_risk = await _governance_directive(ctx, changed_files)
     _build_pr_directive(
@@ -350,6 +378,7 @@ async def _lead_with_pr_directive(
         governance_risk,
         evidence.test_paths,
         ctx.alias,
+        tests=await _change_tests(ctx, touched or changed_files),
         full_scale=full_scale,
         include_tests=include_tests,
         include_blast=include_blast,
@@ -426,6 +455,7 @@ async def get_risk(
     ctx = await _resolve_repo_context(repo)
     collector = OmissionCollector("get_risk", repo_root=ctx.path)
     exclude_spec = _get_exclude_spec(ctx.path)
+    touched = list(dict.fromkeys(changed_files or ()))
     targets = filter_path_list(targets or changed_files, exclude_spec)
     changed_files = filter_path_list(changed_files, exclude_spec)
     include_graph = "graph" in include_set
@@ -453,6 +483,7 @@ async def get_risk(
             full_scale="scales" in include_set,
             include_tests="tests" in include_set,
             include_blast="blast" in include_set,
+            touched=touched,
         )
     elif len(targets) > 1:
         # Ambient hotspots orient a multi-file request; beside one named file they are noise.

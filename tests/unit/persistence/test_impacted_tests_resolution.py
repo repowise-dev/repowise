@@ -528,3 +528,41 @@ async def test_a_reaching_fixture_nobody_requests_selects_only_the_import_check(
     out = await _narrowed(async_session, repo.id)
 
     assert _pairs(out, "src/app/util.py") == {"tests/test_a.py": "conftest-import-check"}
+
+
+async def test_narrow_scopes_resolves_a_reached_conftest_as_the_selection_does(
+    async_session, tmp_path
+) -> None:
+    """A few-hop walk that stopped at the conftest gets the test that can break."""
+    from repowise.core.analysis.test_collection import narrow_scopes
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/conftest.py").write_text(_CONFTEST, encoding="utf-8")
+    repo = await insert_repo(async_session, local_path=str(tmp_path))
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    test_files = {"tests/conftest.py", "tests/test_a.py", "tests/test_b.py", "tests/test_c.py"}
+
+    out = await narrow_scopes(
+        async_session,
+        repo.id,
+        {"src/app/util.py": ["tests/conftest.py"], "src/other.py": ["tests/test_c.py"]},
+        test_files,
+    )
+
+    assert out == {"src/app/util.py": ["tests/test_a.py"], "src/other.py": ["tests/test_c.py"]}
+
+
+async def test_narrow_scopes_keeps_every_test_under_a_conftest_it_cannot_read(
+    async_session, tmp_path
+) -> None:
+    from repowise.core.analysis.test_collection import narrow_scopes
+
+    repo = await insert_repo(async_session, local_path=str(tmp_path))
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    test_files = {"tests/conftest.py", "tests/test_a.py", "tests/test_b.py", "tests/test_c.py"}
+
+    out = await narrow_scopes(
+        async_session, repo.id, {"src/app/util.py": ["tests/conftest.py"]}, test_files
+    )
+
+    assert out == {"src/app/util.py": ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py"]}

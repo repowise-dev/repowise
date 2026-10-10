@@ -19,6 +19,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.analysis.test_collection import narrow_scopes
 from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
     DEFAULT_MAX_DEPTH,
@@ -263,6 +264,7 @@ async def _analyze_consumer(
     measured: dict[str, list[dict[str, Any]]] = {}
     reached: dict[str, Any] = {}
     test_files: set[str] = set()
+    narrowed: dict[str, list[str]] = {}
     # A pass that fails takes down only its own signal; whatever the other pass
     # found, and the links already classified, still reach the caller.
     failures: list[str] = []
@@ -315,6 +317,12 @@ async def _analyze_consumer(
                     scope_kind(t) for hit in reached.values() for t in hit.all_tests or hit.tests
                 ):
                     test_files = await load_test_files(session, repo_index.repo_id)
+                    narrowed = await narrow_scopes(
+                        session,
+                        repo_index.repo_id,
+                        {k: hit.all_tests or hit.tests for k, hit in reached.items()},
+                        test_files,
+                    )
             except Exception as exc:
                 failures.append(f"inferred: {type(exc).__name__}")
 
@@ -366,7 +374,12 @@ async def _analyze_consumer(
                 continue
             # The walk trims its own list per target; the join caps per consumer
             # and provider pair below and reports the cut, so start from all of them.
-            reached_tests = expand_test_scopes(hit.all_tests or hit.tests, test_files)
+            key = link.consumer_symbol_id if link.consumer_symbol_id in reached else path
+            reached_tests = (
+                narrowed[key]
+                if key in narrowed
+                else expand_test_scopes(hit.all_tests or hit.tests, test_files)
+            )
             if not reached_tests:
                 continue
             file_tests.update(reached_tests)

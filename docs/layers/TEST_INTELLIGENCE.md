@@ -248,22 +248,25 @@ row keeps its `basis`:
 | `measured` | A test node id | The per-test map shows the test covering a changed file |
 | `inferred` | A test file path | The graph shows the test reaching the change; a candidate, not proof |
 
-`tests_to_run`, sent without the include, is the flat list with
-`tests_to_run_basis`. When coverage exists it is the measured list; test files
-in reverse-import reach that it lacks appear only as `inferred` rows with
-`reason: structural_reach` under the include. Without coverage those files
-join the list itself as `inferred`. Without a coverage map the directive carries
+`tests_to_run`, sent without the include, is the run list from the same
+selection `repowise impacted-tests` makes, with `tests_to_run_basis`,
+`tests_to_run_why` and `tests_run_all` (plus `tests_run_all_reasons` when every
+test must run). Without a coverage map the directive carries
 `coverage: {status, reason}`; with one, `coverage_analysis` says whether
 coverage is available, partial, degraded or stale.
 
-**`get_change_risk(revspec=...)`** returns `impacted_tests`, computed from the
-changed *lines*, so it is narrower:
+**`get_change_risk(revspec=...)`** returns `impacted_tests`, the same selection
+over the change's diff, so a measured map at either end of it matches by line:
 
 ```json
 {
-  "status": "map_present",
+  "status": "selected",
+  "run_all": false,
+  "reasons": [],
+  "basis": "measured",
   "map_present": true,
-  "tests": ["tests/test_auth.py::test_login", "..."],
+  "tests_to_run": ["tests/test_auth.py::test_login", "..."],
+  "why": {"tests/test_auth.py": "src/auth.py changed (coverage)"},
   "total": 23,
   "truncated": true,
   "line_coverage": {
@@ -272,14 +275,14 @@ changed *lines*, so it is narrower:
     "covered": [...],
     "no_coverage_data": [...]
   },
-  "summary": "23 test(s) cover the changed lines; showing first 10."
+  "summary": "23 test(s) to run for this change; showing first 10; the rest can be skipped."
 }
 ```
 
 `untested_changes` is the strong signal: the file is in the map but nothing
 covers the lines you touched. `stale_test_candidates` flags covered lines whose
 guarding test is absent from the diff. `no_coverage_data` means the file is not
-in the map. `get_change_risk` leaves out the CLI's filename-pattern guess.
+in the map.
 
 **Self-checking before a push.** `get_change_risk` without a `revspec` measures
 `patch_coverage` over everything a push would bring: the working tree
@@ -311,11 +314,12 @@ carries a discriminator beside the list:
 
   | `status` | Meaning |
   |---|---|
-  | `map_present` | A per-test map exists. An empty `tests` list here is a real finding: nothing in the map covers this change |
-  | `inferred` | No map; the graph names candidate test files. Passing them does not clear the change |
-  | `no_map` | No map and no graph answer. The summary says to run the full suite |
+  | `selected` | The selection vouches for `tests_to_run`. Empty here means the change needs no test (documentation, a deleted test) |
+  | `run_all` | Every test must run; `reasons` says why, and `tests_to_run` is what to run first |
   | `no_index` | Nothing indexed yet |
-  | `unknown` | The git read failed |
+  | `unknown` | The git or index read failed |
+  | `config_invalid` | `tests.*` in `.repowise/config.yaml` does not parse |
+  | `timeout` | The selection took over 30 seconds; `repowise impacted-tests` gives the same answer |
   | `no_source_line_changes` | No changed source lines to map |
 
 - `get_risk` keeps coverage availability, freshness and map presence explicit
