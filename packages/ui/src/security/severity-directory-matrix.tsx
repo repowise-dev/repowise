@@ -3,6 +3,7 @@
 import * as React from "react";
 import { cn } from "../lib/cn";
 import type { SecurityFinding } from "./findings-table";
+import { securityLevel, type SecurityLevel } from "./posture";
 
 export interface SeverityDirectoryMatrixProps {
   findings: SecurityFinding[];
@@ -13,22 +14,17 @@ export interface SeverityDirectoryMatrixProps {
   className?: string;
 }
 
-const SEVERITY_ORDER = ["high", "med", "low"] as const;
-const SEVERITY_LABEL: Record<string, string> = {
+const SEVERITY_ORDER: SecurityLevel[] = ["high", "med", "low"];
+const SEVERITY_LABEL: Record<SecurityLevel, string> = {
   high: "High",
   med: "Medium",
   low: "Low",
 };
-const SEVERITY_TOKEN: Record<string, string> = {
-  high: "var(--color-error)",
-  med: "var(--color-warning)",
-  low: "var(--color-text-tertiary)",
-};
 
 /**
- * Severity × directory heat matrix — where the security findings concentrate,
- * so reviewers know which area to triage first. Mirrors the dead-code
- * confidence × kind grid idiom; intensity rides on a token via color-mix.
+ * Where the security findings concentrate: a plain count table of directory
+ * by severity, highest total first. Counts only, no cell tints: a heat ground
+ * made a directory of fixtures look like the page's emergency.
  */
 export function SeverityDirectoryMatrix({
   findings,
@@ -36,91 +32,72 @@ export function SeverityDirectoryMatrix({
   maxRows = 14,
   className,
 }: SeverityDirectoryMatrixProps) {
-  const { rows, max } = React.useMemo(() => {
-    const byDir = new Map<string, { dir: string; counts: Record<string, number>; total: number }>();
-    let max = 0;
+  const rows = React.useMemo(() => {
+    const byDir = new Map<string, { dir: string; counts: Record<SecurityLevel, number>; total: number }>();
     for (const f of findings) {
       const segments = f.file_path.split("/").slice(0, depth);
       const dir = segments.length === 0 ? "(root)" : segments.join("/");
-      const sev = SEVERITY_ORDER.includes(f.severity as (typeof SEVERITY_ORDER)[number])
-        ? f.severity
-        : "low";
-      const cur = byDir.get(dir) ?? { dir, counts: {}, total: 0 };
-      cur.counts[sev] = (cur.counts[sev] ?? 0) + 1;
+      const cur = byDir.get(dir) ?? { dir, counts: { high: 0, med: 0, low: 0 }, total: 0 };
+      cur.counts[securityLevel(f.severity)] += 1;
       cur.total += 1;
-      if (cur.counts[sev] > max) max = cur.counts[sev];
       byDir.set(dir, cur);
     }
-    const ordered = Array.from(byDir.values())
+    return Array.from(byDir.values())
       .sort((a, b) => b.total - a.total)
       .slice(0, maxRows);
-    return { rows: ordered, max };
   }, [findings, depth, maxRows]);
 
-  if (rows.length === 0) {
-    return (
-      <div
-        className={cn(
-          "rounded-md border border-dashed border-[var(--color-border-default)] p-4 text-center text-xs text-[var(--color-text-tertiary)]",
-          className,
-        )}
-      >
-        No findings yet.
-      </div>
-    );
-  }
+  if (rows.length === 0) return null;
 
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-md border border-[var(--color-border-default)]",
+        "overflow-x-auto rounded-md border border-[var(--color-border-default)]",
         className,
       )}
     >
       <table className="w-full border-collapse text-xs">
         <thead>
-          <tr className="bg-[var(--color-bg-elevated)]">
-            <th className="px-3 py-2 text-left font-medium text-[var(--color-text-tertiary)]">
+          <tr className="text-2xs uppercase tracking-wider text-[var(--color-text-tertiary)]">
+            <th scope="col" className="px-3 py-2 text-left font-medium">
               Directory
             </th>
             {SEVERITY_ORDER.map((s) => (
-              <th
-                key={s}
-                className="px-2 py-2 text-right font-medium text-[var(--color-text-tertiary)]"
-              >
+              <th key={s} scope="col" className="px-3 py-2 text-right font-medium">
                 {SEVERITY_LABEL[s]}
               </th>
             ))}
+            <th scope="col" className="px-3 py-2 text-right font-medium">
+              Total
+            </th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.dir} className="border-t border-[var(--color-border-default)]">
-              <td
-                className="max-w-[260px] truncate px-3 py-2 font-mono text-[var(--color-text-secondary)]"
-                title={r.dir}
+            <tr key={r.dir} className="border-t border-[var(--color-table-divider)]">
+              <th
+                scope="row"
+                className="min-w-[10rem] break-all px-3 py-2 text-left font-mono font-normal text-[var(--color-text-secondary)]"
               >
                 {r.dir}
-              </td>
+              </th>
               {SEVERITY_ORDER.map((s) => {
-                const c = r.counts[s] ?? 0;
-                const intensity = max > 0 ? c / max : 0;
-                const alphaPct = Math.round((0.1 + intensity * 0.55) * 100);
-                const bg =
-                  c === 0
-                    ? "transparent"
-                    : `color-mix(in srgb, ${SEVERITY_TOKEN[s]} ${alphaPct}%, transparent)`;
+                const c = r.counts[s];
                 return (
                   <td
                     key={s}
-                    className="px-2 py-2 text-right tabular-nums"
-                    style={{ backgroundColor: bg }}
-                    title={`${c} ${SEVERITY_LABEL[s]} in ${r.dir}`}
+                    className={cn(
+                      "px-3 py-2 text-right font-mono tabular-nums",
+                      c ? "text-[var(--color-text-primary)]" : "text-[var(--color-text-tertiary)]",
+                    )}
                   >
-                    {c || ""}
+                    {c}
                   </td>
                 );
               })}
+              <td className="px-3 py-2 text-right font-mono tabular-nums text-[var(--color-text-secondary)]">
+                {r.total}
+              </td>
             </tr>
           ))}
         </tbody>
