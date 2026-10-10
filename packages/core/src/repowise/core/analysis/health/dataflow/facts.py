@@ -40,6 +40,7 @@ from .analyze import FunctionAnalysis
 from .dialects.base import get_defuse_dialect
 from .gating import is_flagged
 from .parsing import function_metrics, parse_source
+from .reaching import observed_definitions
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -155,42 +156,13 @@ def derive_facts(analysis: FunctionAnalysis) -> DataflowFacts:
 def _live_definition_indices(analysis: FunctionAnalysis) -> set[int]:
     """Definition indices some read can observe (conservative: over-marks live).
 
-    A use of ``v`` at line ``L`` in block ``b`` observes:
-
-    - the latest same-block definition(s) of ``v`` strictly before ``L``, or,
-      when none exists, every definition of ``v`` reaching ``IN[b]``;
-    - plus, conservatively, any same-block definition of ``v`` AT line ``L``
-      (multiple statements on one line cannot be ordered by line numbers alone,
-      so ambiguity counts as live -- fewer dead stores, never a false one).
-
-    Anything the rules cannot prove observed stays potentially dead; the caller
-    subtracts this set from all body definitions to get the dead stores.
+    Anything :func:`observed_definitions` cannot prove observed stays
+    potentially dead; the caller subtracts this set from all body definitions
+    to get the dead stores.
     """
-    def_use = analysis.def_use
-    reaching = analysis.reaching
     live: set[int] = set()
-
-    for bid, bdu in def_use.blocks.items():
-        if not bdu.uses:
-            continue
-        in_defs = reaching.in_sets.get(bid, frozenset())
-        in_by_var: dict[str, list[int]] = {}
-        for i in in_defs:
-            in_by_var.setdefault(reaching.definitions[i].var, []).append(i)
-        local_by_var: dict[str, list] = {}
-        for d in bdu.defs:
-            local_by_var.setdefault(d.var, []).append(d)
-
-        for use in bdu.uses:
-            local = local_by_var.get(use.name, [])
-            earlier = [d for d in local if d.line < use.line]
-            if earlier:
-                latest = max(d.line for d in earlier)
-                live.update(d.index for d in earlier if d.line == latest)
-            else:
-                live.update(in_by_var.get(use.name, ()))
-            live.update(d.index for d in local if d.line == use.line)
-
+    for _use, seen in observed_definitions(analysis.def_use, analysis.reaching):
+        live.update(seen)
     return live
 
 

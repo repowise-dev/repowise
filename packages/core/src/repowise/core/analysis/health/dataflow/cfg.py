@@ -34,6 +34,14 @@ children, while the C-family (Go / TS / Java / Rust) hangs the else arm off an
 ``alternative`` field -- the builder recognises both. A language that maps no
 ``if_kinds`` / ``block_kinds`` simply yields a straight-line CFG (degrade to
 silence), the same precision-first default as the def/use dialect.
+
+**Exceptions.** A ``try`` body, ``else`` clause or handler is joined to the
+handlers / ``finally`` it can raise into from the state before it and at the
+end of each of its blocks, not between two statements of one block: a write
+that a later statement of the same block overwrites never reaches the handler
+(a ``try`` body ``x = 1; y = g(); x = 2`` hides ``x = 1`` from an
+``except`` that reads ``x``). Splitting every protected statement into its own block would close
+that gap at the cost of a much larger graph.
 """
 
 from __future__ import annotations
@@ -222,6 +230,10 @@ class _CFGBuilder:
             src.successors.append(dst.id)
         if src.id not in dst.predecessors:
             dst.predecessors.append(src.id)
+
+    def _edges_to(self, sources: list[BasicBlock], dst: BasicBlock) -> None:
+        for src in sources:
+            self._edge(src, dst)
 
     def _record_stmt(self, block: BasicBlock, node: Node) -> None:
         block.statements.append(
@@ -473,46 +485,49 @@ class _CFGBuilder:
                 self._edge(fin_out, join)
             normal_join = fin_entry
 
-        # try body (the protected region)
+        # try body (the protected region). An exception may leave it before
+        # its first statement completes or from any block inside it, so the
+        # state before the body and at the end of every body block reaches the
+        # handlers and the ``finally`` (which also runs on a body ``return``).
+        # Blocks are numbered in creation order: a region's blocks are the
+        # ones created from its first id on.
+        first = len(self.blocks)
         body_entry = self._new()
         self._edge(cur, body_entry)
-        # The finally body runs on every path out of the protected region,
-        # including abrupt exits (a body / handler ``return`` or ``raise``)
-        # that never reach the normal join. Approximate with an edge from the
-        # region entry, mirroring the handler edges below; without it a
-        # ``finally`` after an always-returning body is flagged unreachable.
-        if finally_clause is not None:
-            self._edge(body_entry, normal_join)
         body_out = self._process_seq(
             self._body_stmts(try_node.child_by_field_name("body")), body_entry
         )
+        protected = [cur, *self.blocks[first:]]
+        if finally_clause is not None:
+            self._edges_to(protected, normal_join)
 
-        # ``else`` runs only when the body completed without an exception.
+        # ``else`` runs only when the body completed without an exception; one
+        # raised inside it skips the handlers but still runs the ``finally``.
         else_clause = next((c for c in try_node.children if c.type == "else_clause"), None)
         if else_clause is not None and body_out is not None:
+            first = len(self.blocks)
             else_entry = self._new()
             self._edge(body_out, else_entry)
             else_out = self._process_seq(self._body_stmts(self._block_of(else_clause)), else_entry)
             if else_out is not None:
                 self._edge(else_out, normal_join)
+            if finally_clause is not None:
+                self._edges_to(self.blocks[first:], normal_join)
         elif body_out is not None:
             self._edge(body_out, normal_join)
 
-        # except handlers are reachable from the protected region (an exception
-        # may escape any statement in the body -> approximate with an edge from
-        # the body entry to each handler).
         for handler in (c for c in try_node.children if c.type in self.lmap.catch_kinds):
+            first = len(self.blocks)
             handler_entry = self._new("handler")
-            self._edge(body_entry, handler_entry)
-            if finally_clause is not None:
-                # Finally also runs when a handler returns or re-raises. This
-                # edge lets handler definitions reach reads in the finally body.
-                self._edge(handler_entry, normal_join)
+            self._edges_to(protected, handler_entry)
             handler_out = self._process_seq(
                 self._body_stmts(self._block_of(handler)), handler_entry
             )
             if handler_out is not None:
                 self._edge(handler_out, normal_join)
+            # A handler that returns or raises part-way still runs ``finally``.
+            if finally_clause is not None:
+                self._edges_to(self.blocks[first:], normal_join)
 
         return join
 

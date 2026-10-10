@@ -631,3 +631,289 @@ function f(xs: string[], ys: string[], out: string[]): void {
     )
     writes = _marked(src, "W")
     assert any(x.start_line <= writes[0] <= x.end_line for x in _spans("typescript", "ts", src))
+
+
+# A later write on a path that need not run does not hide the span's value:
+# an ``else`` arm (hermes ``api_server.py``) or a ``try`` body that may raise
+# before its write (hermes ``moa_loop.py``).
+_LATER_WRITE_MAY_NOT_RUN = [
+    (
+        "python",
+        "py",
+        """
+def f(a, b, c):
+    if a:
+        x = b + 1  # W
+        if b > c:
+            log(b)
+        log(c)
+        log(a)
+    else:
+        x = c
+    return x  # R
+""",
+    ),
+    (
+        "typescript",
+        "ts",
+        """
+function f(a: number, b: number, c: number): number {
+  let x = 0;
+  if (a > 0) {
+    x = b + 1; // W
+    if (b > c) {
+      log(b);
+    }
+    log(c);
+    log(a);
+  } else {
+    x = c;
+  }
+  return x; // R
+}
+""",
+    ),
+    (
+        "go",
+        "go",
+        """
+package m
+func f(a int, b int, c int) int {
+	x := 0
+	if a > 0 {
+		x = b + 1 // W
+		if b > c {
+			log(b)
+		}
+		log(c)
+		log(a)
+	} else {
+		x = c
+	}
+	return x // R
+}
+""",
+    ),
+    (
+        "java",
+        "java",
+        """
+class M {
+  int f(int a, int b, int c) {
+    int x = 0;
+    if (a > 0) {
+      x = b + 1; // W
+      if (b > c) {
+        log(b);
+      }
+      log(c);
+      log(a);
+    } else {
+      x = c;
+    }
+    return x; // R
+  }
+}
+""",
+    ),
+    (
+        "python",
+        "py",
+        """
+def f(a, b):
+    x = None  # W
+    if a:
+        log(a)
+    log(b)
+    log(a)
+    try:
+        y = g(a)
+        x = y
+    except Exception:
+        pass
+    return x  # R
+""",
+    ),
+    (
+        "typescript",
+        "ts",
+        """
+function f(a: number, b: number): number {
+  let x = 0;
+  x = a + 1; // W
+  if (a > b) {
+    log(a);
+  }
+  log(b);
+  log(a);
+  try {
+    const y = g(a);
+    x = y;
+  } catch (err) {
+    log(err);
+  }
+  return x; // R
+}
+""",
+    ),
+    (
+        "java",
+        "java",
+        """
+class M {
+  int f(int a, int b) {
+    int x = 0;
+    x = a + 1; // W
+    if (a > b) {
+      log(a);
+    }
+    log(b);
+    log(a);
+    try {
+      int y = g(a);
+      x = y;
+    } catch (Exception err) {
+      log(err);
+    }
+    return x; // R
+  }
+}
+""",
+    ),
+    (
+        # ``finally`` runs even when ``g`` raises before the body's write.
+        "python",
+        "py",
+        """
+def f(a, b):
+    x = None  # W
+    if a:
+        log(a)
+    log(b)
+    log(a)
+    log(b)
+    try:
+        x = g(a)
+    finally:
+        log(x)  # R
+    return x
+""",
+    ),
+    (
+        # The write sits deep in the ``try`` body; the handler reads it.
+        "python",
+        "py",
+        """
+def f(a, b):
+    x = 0
+    try:
+        for i in a:
+            log(i)
+        x = b + 1  # W
+        if b:
+            log(b)
+        log(a)
+        log(b)
+        x = g(a)
+    except Exception:
+        log(x)  # R
+    return x
+""",
+    ),
+    (
+        "typescript",
+        "ts",
+        """
+function f(a: number[], b: number): number {
+  let x = 0;
+  try {
+    for (const i of a) {
+      log(i);
+    }
+    x = b + 1; // W
+    if (b) {
+      log(b);
+    }
+    log(a);
+    log(b);
+    x = g(a);
+  } catch (err) {
+    log(x); // R
+  }
+  return x;
+}
+""",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("language", "ext", "src"),
+    _LATER_WRITE_MAY_NOT_RUN,
+    ids=[
+        "py-else",
+        "ts-else",
+        "go-else",
+        "java-else",
+        "py-try",
+        "ts-try",
+        "java-try",
+        "py-try-finally",
+        "py-try-inner",
+        "ts-try-inner",
+    ],
+)
+def test_write_reaching_past_a_later_conditional_write_is_returned(
+    language: str, ext: str, src: str
+):
+    leaking, returning = _leaks(language, ext, "x", src)
+    assert leaking == []
+    assert returning, "the span holding the write should still be offered, returning x"
+
+
+def test_closure_read_sees_the_value_reaching_its_creation():
+    """hermes ``api_server.py``: the read after the span sits in a closure made
+    after the ``if`` / ``else`` join, so the ``else`` arm's write does not
+    hide the span's from it."""
+    src = textwrap.dedent(
+        """
+def f(a, b, c):
+    if a:
+        x = b + 1  # W
+        if b > c:
+            log(b)
+        log(c)
+        log(a)
+    else:
+        x = c
+    def run():
+        return x  # R
+    return run
+"""
+    )
+    leaking, returning = _leaks("python", "py", "x", src)
+    assert leaking == []
+    assert returning
+
+
+def test_closure_read_no_statement_covers_keeps_the_line_rule():
+    """A closure read the CFG places nowhere still counts, by the nearest def
+    above it: dropping it could only drop a return."""
+    src = textwrap.dedent(
+        """
+def f(a, b, c):
+    x = 0
+    x = b + 1  # W
+    if b > c:
+        log(b)
+    log(c)
+    log(a)
+    def run():
+        return x  # R
+    return run
+"""
+    )
+    with mock.patch.object(slicer, "_statements_by_line", lambda cfg: {}):
+        leaking, returning = _leaks("python", "py", "x", src)
+    assert leaking == []
+    assert returning

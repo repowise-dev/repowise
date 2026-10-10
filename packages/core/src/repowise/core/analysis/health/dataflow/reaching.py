@@ -29,8 +29,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
+
     from .cfg import CFG
     from .defuse import Definition, FunctionDefUse
+    from .dialects.base import Occurrence
 
 
 @dataclass
@@ -126,3 +129,51 @@ def compute_reaching(
         definitions=fdu.definitions,
         converged=converged,
     )
+
+
+def observed_definitions(
+    fdu: FunctionDefUse, reaching: ReachingDefinitions
+) -> Iterator[tuple[Occurrence, list[int]]]:
+    """Each read in *fdu* with the definition indices it may observe
+    (:func:`_observe`)."""
+    for bid, bdu in fdu.blocks.items():
+        if not bdu.uses:
+            continue
+        in_by_var: dict[str, list[int]] = {}
+        for i in reaching.in_sets.get(bid, frozenset()):
+            in_by_var.setdefault(reaching.definitions[i].var, []).append(i)
+        local_by_var: dict[str, list[Definition]] = {}
+        for d in bdu.defs:
+            local_by_var.setdefault(d.var, []).append(d)
+        for use in bdu.uses:
+            seen = _observe(local_by_var.get(use.name, []), in_by_var.get(use.name, ()), use.line)
+            yield use, seen
+
+
+def definitions_at(
+    fdu: FunctionDefUse, reaching: ReachingDefinitions, block_id: int, var: str, line: int
+) -> list[int]:
+    """The definition indices of *var* a read at *line* in *block_id* may
+    observe (:func:`_observe`)."""
+    bdu = fdu.block(block_id)
+    local = [d for d in bdu.defs if d.var == var] if bdu is not None else []
+    entering = [
+        i for i in reaching.in_sets.get(block_id, ()) if reaching.definitions[i].var == var
+    ]
+    return _observe(local, entering, line)
+
+
+def _observe(local: list[Definition], entering: Iterable[int], line: int) -> list[int]:
+    """A read at *line* observes the latest same-block definitions (*local*)
+    strictly before it or, when there is none, every definition *entering* the
+    block; plus any same-block definition at *line* itself, since lines alone
+    cannot order a write and a read sharing one. Over-marking is the safe side
+    for every consumer."""
+    earlier = [d for d in local if d.line < line]
+    if earlier:
+        latest = max(d.line for d in earlier)
+        seen = [d.index for d in earlier if d.line == latest]
+    else:
+        seen = list(entering)
+    seen.extend(d.index for d in local if d.line == line)
+    return seen

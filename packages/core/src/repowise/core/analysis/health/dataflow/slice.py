@@ -7,8 +7,8 @@ helper's signature:
 
 - **IN (parameters)** -- variables the span *reads* whose value is produced
   before the span (defined-before, used-inside).
-- **OUT (return)** -- variables the span *defines* that are *used after* it,
-  with no intervening redefinition (so the helper returns the live value).
+- **OUT (return)** -- variables the span *defines* whose value may reach a
+  read after it along some CFG path (so the helper returns the live value).
 
 **Extractability predicate (precision-first).** A span is a candidate only when
 it cuts at statement boundaries within a single block (so never a partial
@@ -19,11 +19,11 @@ matter without being nearly the whole body, and has at most one return and a
 small parameter list. Everything else is suppressed -- ten great extractions,
 not two hundred maybes.
 
-Line-based liveness over D2's def/use occurrences realises the IN/OUT inference;
-the CFG/jump scan realises the single-exit predicate. The jump and nested-scope
-node kinds come from the language's ``LanguageNodeMap`` (the same source the CFG
-builder uses), so every full-tier language whose map populates them is served by
-this one slicer.
+Line-based liveness over D2's def/use occurrences realises the IN inference,
+reaching definitions over the CFG the OUT inference, and the CFG/jump scan the
+single-exit predicate. The jump and nested-scope node kinds come from the
+language's ``LanguageNodeMap`` (the same source the CFG builder uses), so every
+full-tier language whose map populates them is served by this one slicer.
 """
 
 from __future__ import annotations
@@ -37,12 +37,14 @@ from ..complexity.ast_utils import member_object, self_member_name
 from ..complexity.body_facts import BodyTally, FactKinds, is_exit, step
 from ..complexity.nloc import _code_line_numbers
 from .dialects.base import SUPER, mentions_receiver
+from .reaching import definitions_at, observed_definitions
 
 if TYPE_CHECKING:
     from tree_sitter import Node
 
     from ..complexity.languages import LanguageNodeMap
     from .analyze import FunctionAnalysis
+    from .cfg import CFG
     from .defuse import FunctionDefUse
     from .dialects.base import Receiver
 
@@ -170,6 +172,8 @@ def find_extractions(
 
     def_lines, use_lines = _var_lines(analysis.def_use)
     declared_first = _declared_before_read(analysis.def_use)
+    # Built on the first span that clears the cheap gates.
+    reads: dict[str, list[tuple[int, frozenset[int]]]] | None = None
     hoisted = _hoisted_bindings(def_lines, use_lines)
     decl_lines = _declaration_lines(analysis.def_use)
     shared = _closure_state(analysis.def_use, def_lines, use_lines)
@@ -220,7 +224,11 @@ def find_extractions(
                 span = stmts[i : j + 1]
                 s = span[0].start_point[0] + 1
                 e = span[-1].end_point[0] + 1
-                params, returns = _infer_in_out(def_lines, use_lines, s, e, declared_first)
+                if reads is None:
+                    reads = _reads_observing(analysis, def_lines)
+                params, returns = _infer_in_out(
+                    def_lines, use_lines, s, e, declared_first, reads=reads
+                )
                 if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
                     continue
                 if not _outs_definitely_assigned(span, returns, def_lines, lmap):
@@ -581,12 +589,66 @@ def _declared_before_read(def_use: FunctionDefUse) -> dict[str, frozenset[int]]:
     return {var: frozenset(lines) for var, lines in declared.items()}
 
 
+def _reads_observing(
+    analysis: FunctionAnalysis, def_lines: dict[str, list[int]]
+) -> dict[str, list[tuple[int, frozenset[int]]]]:
+    """Per variable, each read's line with the def lines it may observe.
+
+    Reads take reaching definitions over the CFG, so a later write on a path
+    that need not run (an ``else`` arm, a ``try`` body that may raise first)
+    does not hide the span's value from the read. A closure's read observes
+    what reaches the statement that creates the closure, or, where no recorded
+    statement covers it, the nearest def above it: a read is never dropped,
+    since a dropped read can only drop a return. Only names in *def_lines*
+    count for closures, as in :func:`_var_lines`.
+    """
+    def_use, reaching = analysis.def_use, analysis.reaching
+    defs = reaching.definitions
+    reads: dict[str, list[tuple[int, frozenset[int]]]] = defaultdict(list)
+    for use, seen in observed_definitions(def_use, reaching):
+        if not use.echo:
+            reads[use.name].append((use.line, frozenset(defs[i].line for i in seen)))
+    statements: dict[int, tuple[int, int]] | None = None
+    for u in def_use.captured.reads:
+        dl = def_lines.get(u.name)
+        if not dl:
+            continue
+        if statements is None:
+            statements = _statements_by_line(analysis.cfg)
+        at = statements.get(u.line)
+        if at is not None:
+            observed = frozenset(
+                defs[i].line for i in definitions_at(def_use, reaching, at[0], u.name, at[1])
+            )
+        else:
+            k = bisect_left(dl, u.line)
+            observed = frozenset(dl[k - 1 : k])
+        reads[u.name].append((u.line, observed))
+    return reads
+
+
+def _statements_by_line(cfg: CFG) -> dict[int, tuple[int, int]]:
+    """Per line, (block id, start line) of the innermost recorded statement
+    covering it."""
+    best: dict[int, tuple[int, int, int]] = {}
+    for block in cfg.blocks:
+        for st in block.statements:
+            width = st.end_line - st.start_line
+            for line in range(st.start_line, st.end_line + 1):
+                held = best.get(line)
+                if held is None or width < held[0]:
+                    best[line] = (width, block.id, st.start_line)
+    return {line: (bid, start) for line, (_w, bid, start) in best.items()}
+
+
 def _infer_in_out(
     def_lines: dict[str, list[int]],
     use_lines: dict[str, list[int]],
     s: int,
     e: int,
-    declared_first: dict[str, frozenset[int]] | None = None,
+    declared_first: dict[str, frozenset[int]],
+    *,
+    reads: dict[str, list[tuple[int, frozenset[int]]]],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Infer IN (parameters) and OUT (return) variables for span ``[s, e]``.
 
@@ -594,8 +656,11 @@ def _infer_in_out(
     an in-span write, and which has a definition before the span (a parameter or
     an earlier assignment). A write on the same line as that read precedes it
     only where *declared_first* (:func:`_declared_before_read`) says the line
-    declares the name first. OUT: a variable written in the span and read after
-    it, with no redefinition between the span and that first later read.
+    declares the name first. OUT: a variable written in the span with a read
+    after it that may observe one of those writes (*reads*,
+    :func:`_reads_observing`). A read before the span that a write in it
+    reaches around a loop is not an OUT: :func:`_loop_carry_free` refuses
+    those spans.
     """
     params: list[str] = []
     returns: list[str] = []
@@ -607,17 +672,14 @@ def _infer_in_out(
 
         if in_uses and any(ln < s for ln in dl):
             first_use = in_uses[0]
-            declared = first_use in (declared_first or {}).get(var, ())
+            declared = first_use in declared_first.get(var, ())
             if not declared and not any(ln < first_use for ln in in_defs):
                 params.append(var)
 
-        if in_defs:
-            after_uses = [ln for ln in ul if ln > e]
-            if after_uses:
-                first_after = after_uses[0]
-                redefined = any(e < ln < first_after for ln in dl)
-                if not redefined:
-                    returns.append(var)
+        if in_defs and any(
+            ln > e and any(s <= d <= e for d in seen) for ln, seen in reads.get(var, ())
+        ):
+            returns.append(var)
     return tuple(params), tuple(returns)
 
 

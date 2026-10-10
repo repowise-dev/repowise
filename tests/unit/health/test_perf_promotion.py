@@ -338,3 +338,36 @@ def test_line_outside_any_loop_is_not_independent():
         """,
         "HIT",
     )
+
+
+def test_a_write_deeper_in_the_try_body_does_not_prove_more():
+    # The handler is reachable from every block of the body, so a write after
+    # a nested branch is still skipped on the exception path.
+    assert not _independent(
+        """
+        async def run(items):
+            for item in items:
+                try:
+                    if item.flag:
+                        log(item)
+                    key = item.id
+                except AttributeError:
+                    pass
+                r = await fetch(key)  # HIT
+        """,
+        "HIT",
+    )
+    assert _independent(
+        """
+        async def run(items):
+            for item in items:
+                try:
+                    if item.flag:
+                        log(item)
+                    key = item.id
+                except AttributeError:
+                    key = 0
+                r = await fetch(key)  # HIT
+        """,
+        "HIT",
+    )
