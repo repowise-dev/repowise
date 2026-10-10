@@ -40,14 +40,16 @@ def strip_credentials(url: str | None) -> str | None:
     userinfo, hostpart = "", rest
     if "@" in rest:
         # The authority normally ends at the first `/`, but an unencoded `/` in
-        # a password moves it, and `user:123/x` even passes for host:port. No
-        # forge allows `@` in an owner, group or repo name, so an `@` after a
-        # `/` ends the userinfo. An empty head is `file:///`, which has none.
+        # a password moves it, and `user:123/x` even passes for host:port. Such
+        # a password always leaves a `:` before the first `/`, so only then is
+        # a later `@` the end of the userinfo; `host/repo@v1.git` keeps its path.
+        # Ceiling: `host:8443/repo@v1.git` reads as credentials and loses its
+        # host. A port plus a path `@` is rare, and losing a host beats a leak.
         head = rest.split("/", 1)[0]
         if "@" in head:
             userinfo, _, host = head.rpartition("@")
             hostpart = host + rest[len(head) :]
-        elif head:
+        elif ":" in head:
             userinfo, _, hostpart = rest.partition("@")
     user = userinfo.split(":", 1)[0] if scheme.lower() in _SSH_SCHEMES else ""
     return f"{scheme}://{user + '@' if user else ''}{hostpart}"
