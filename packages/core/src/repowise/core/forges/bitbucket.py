@@ -28,6 +28,10 @@ PUBLIC_HOST = "bitbucket.org"
 _PUBLIC_ORIGIN = f"https://{PUBLIC_HOST}"
 _HOST_ALIASES = frozenset({PUBLIC_HOST, "www.bitbucket.org", "altssh.bitbucket.org"})
 
+# A push from Pipelines is ``bitbucket-pipelines <commits-noreply@bitbucket.org>``.
+_BOT_NAME_RE = re.compile(r"^bitbucket[-_ ]?pipelines$", re.IGNORECASE)
+_BOT_EMAIL_RE = re.compile(r"^commits-noreply@bitbucket\.org$", re.IGNORECASE)
+
 # Cloud merges write ``Merged in branch (pull request #12)``; Data Center
 # writes ``Merge pull request #12 in PROJ/repo from branch to main``.
 _SUBJECT_REF_RES = (
@@ -123,6 +127,8 @@ register(
     Bitbucket(
         kind=ForgeKind.BITBUCKET,
         label="Bitbucket",
+        bot_name_re=_BOT_NAME_RE,
+        bot_email_re=_BOT_EMAIL_RE,
         ci=CiSystem(
             name="bitbucket_pipelines",
             markers=("BITBUCKET_BUILD_NUMBER",),

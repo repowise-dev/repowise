@@ -33,6 +33,10 @@ _SSH_HOSTS = frozenset({"ssh.dev.azure.com", "vs-ssh.visualstudio.com"})
 _LEGACY_SUFFIX = ".visualstudio.com"
 _GIT = "_git"
 
+# Pipelines commit as ``Project Collection Build Service (org)`` or
+# ``<Project> Build Service (org)``; there is no noreply address to fold.
+_BOT_NAME_RE = re.compile(r" Build Service \([^()\n]*\)$|^azure[-_ ]?pipelines$", re.IGNORECASE)
+
 # Squash and merge completions write ``Merged PR 12: title``; older Server
 # merges write ``Merge pull request 12 from x into main``.
 _SUBJECT_REF_RES = (
@@ -127,6 +131,7 @@ register(
     Azure(
         kind=ForgeKind.AZURE,
         label="Azure DevOps",
+        bot_name_re=_BOT_NAME_RE,
         ci=CiSystem(
             name="azure_pipelines",
             markers=("TF_BUILD", "SYSTEM_TEAMFOUNDATIONCOLLECTIONURI"),

@@ -196,6 +196,16 @@ class BaseForge:
     #: On this forge the body's merge trailer outranks a subject suffix (a
     #: cherry-picked ``(#7)`` merged through MR ``!3`` is MR 3).
     merge_body_first: bool = False
+    #: The noreply address this forge mints for a login, matched on the
+    #: lowercased email, with a ``login`` group. ``noreply_fold`` is what the
+    #: variants of one login fold to (an ``re.Match.expand`` template); empty
+    #: keeps the address. ``forges.identity`` reads these for every forge.
+    noreply_re: re.Pattern[str] | None = None
+    noreply_fold: str = ""
+    #: Automation this forge runs, matched on the raw name or email. Bots that
+    #: commit to any host are in ``forges.identity``, not here.
+    bot_name_re: re.Pattern[str] | None = None
+    bot_email_re: re.Pattern[str] | None = None
 
     # -- registry hooks -------------------------------------------------
 
@@ -236,5 +246,8 @@ class BaseForge:
         return []
 
     def normalize_identity(self, email: str, name: str) -> tuple[str, bool]:
-        """No noreply form or bot account known: the email lowercased, a person."""
-        return (email or "").strip().lower(), False
+        """``(canonical_email, is_bot)``, read against every forge's rules,
+        since an address keeps its minting forge's shape after a move."""
+        from .identity import normalize_identity  # identity reads the registry
+
+        return normalize_identity(email, name)

@@ -32,6 +32,17 @@ _SUBJECT_REF_RES = (
 )
 _URL_REF_RE = re.compile(r"/pull/(\d{1,9})\b")
 
+# ``NNN+login@users.noreply.github.com``, or the older ``login@...`` without
+# the id. Both fold to the id-less form: the id is optional, the login is not.
+_NOREPLY_RE = re.compile(r"^(?:\d+\+)?(?P<login>[^@\s+]+)@users\.noreply\.github\.com$")
+_NOREPLY_FOLD = r"\g<login>@users.noreply.github.com"
+_BOT_NAME_RE = re.compile(r"^github[-_ ]?actions$", re.IGNORECASE)
+# ``noreply@github.com`` is the system author of web merges: a bot, and its
+# own key, never folded into a person.
+_BOT_EMAIL_RE = re.compile(
+    r"@bots\.noreply\.github\.com|^(?:actions|noreply)@github\.com$", re.IGNORECASE
+)
+
 # What says a commit *is* one PR: a merge commit's subject, or the squash
 # suffix closing the subject. ``Revert "x (#5)"`` merged no PR 5, so the
 # suffix must end the subject, give or take a full stop or a ``[skip ci]``.
@@ -92,5 +103,9 @@ register(
             repo_url=(("GITHUB_SERVER_URL", "GITHUB_REPOSITORY"),),
         ),
         merge_subject_res=MERGE_SUBJECT_RES,
+        noreply_re=_NOREPLY_RE,
+        noreply_fold=_NOREPLY_FOLD,
+        bot_name_re=_BOT_NAME_RE,
+        bot_email_re=_BOT_EMAIL_RE,
     )
 )

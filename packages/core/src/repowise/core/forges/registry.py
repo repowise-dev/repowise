@@ -25,6 +25,9 @@ def register(forge: BaseForge) -> None:
     """Add or replace a forge. Registration order is host-claim order."""
     _FORGES[forge.kind] = forge
     _claimed.cache_clear()
+    from .identity import clear_caches  # identity reads this registry
+
+    clear_caches()
 
 
 def all_forges() -> Iterator[BaseForge]:

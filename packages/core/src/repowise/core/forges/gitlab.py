@@ -39,6 +39,17 @@ _FOREIGN_REF_RES = (_MERGE_TRAILER_RE, _URL_REF_RE)
 # GitHub; a bare ``!12`` elsewhere in a subject only mentions one.
 _NATIVE_MERGE_SUBJECT_RES = (re.compile(r"\(!(\d{1,9})\)\s*$"),)
 
+# ``NNN-login@users.noreply.<host>``, on gitlab.com and self-managed hosts.
+# GitLab always writes the id, so there is no variant to fold: the address is
+# kept, since dropping the id could only merge two accounts that reused a
+# login. A rename (same id, new login) stays split; folding by id would join it.
+_NOREPLY_RE = re.compile(r"^\d+-(?P<login>[^@\s+]+)@users\.noreply\.(?!github\.com$)[^@\s]+$")
+# Project and group access tokens commit as ``project_<id>_bot_<hex>`` at
+# ``noreply.<host>``; ``Ghost User`` holds a deleted account's work.
+_BOT_LOGIN = r"(?:project|group)_\d+_bot\w*"
+_BOT_NAME_RE = re.compile(rf"^{_BOT_LOGIN}$|^ghost user$", re.IGNORECASE)
+_BOT_EMAIL_RE = re.compile(rf"^{_BOT_LOGIN}@noreply\.", re.IGNORECASE)
+
 
 @dataclass(frozen=True, slots=True)
 class GitLab(BaseForge):
@@ -84,6 +95,9 @@ register(
         kind=ForgeKind.GITLAB,
         label="GitLab",
         change_term="merge request",
+        noreply_re=_NOREPLY_RE,
+        bot_name_re=_BOT_NAME_RE,
+        bot_email_re=_BOT_EMAIL_RE,
         ci=CiSystem(
             name="gitlab_ci",
             markers=("GITLAB_CI",),
