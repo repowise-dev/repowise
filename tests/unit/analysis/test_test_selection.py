@@ -694,6 +694,46 @@ def test_a_full_run_prints_only_the_sentinel() -> None:
         assert format_args(runner_args(full, runner)) == ":all"
 
 
+def test_go_args_keep_the_ranked_order_of_first_appearance() -> None:
+    sel = _subset(
+        tests=("zeta/z_test.go", "alpha/a_test.go", "mid/m_test.go"),
+        files=("zeta/z_test.go", "alpha/a_test.go", "mid/m_test.go"),
+    )
+    assert runner_args(sel, "go") == ["./zeta", "./alpha", "./mid"]
+    # the files runner walks the same order, so both agree on first appearance
+    assert runner_args(sel, "files") == ["zeta/z_test.go", "alpha/a_test.go", "mid/m_test.go"]
+
+
+def test_go_args_collapse_a_packages_files_to_its_first_position() -> None:
+    sel = _subset(tests=("pkg/b_test.go", "pkg/a_test.go"), files=("pkg/b_test.go", "pkg/a_test.go"))
+    assert runner_args(sel, "go") == ["./pkg"]
+
+
+def test_go_args_append_a_changed_package_after_the_ranked_ones() -> None:
+    sel = Selection(
+        run_all=False,
+        reasons=(),
+        tests=("zeta/z_test.go",),
+        test_files=("zeta/z_test.go",),
+        packages=("alpha",),
+    )
+    assert runner_args(sel, "go") == ["./zeta", "./alpha"]
+    # a changed package that already has a selected test file is not repeated
+    dup = Selection(
+        run_all=False,
+        reasons=(),
+        tests=("zeta/z_test.go",),
+        test_files=("zeta/z_test.go",),
+        packages=("zeta",),
+    )
+    assert runner_args(dup, "go") == ["./zeta"]
+
+
+def test_go_args_keep_the_root_package_spelling() -> None:
+    sel = _subset(tests=("a_test.go", "pkg/b_test.go"), files=("a_test.go", "pkg/b_test.go"))
+    assert runner_args(sel, "go") == [".", "./pkg"]
+
+
 @pytest.mark.parametrize(
     ("path", "expected"),
     [

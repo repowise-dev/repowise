@@ -1279,8 +1279,12 @@ def _pytest_args(selection: Selection) -> list[str]:
 
 def _go_args(selection: Selection) -> list[str]:
     go_tests = [f for f in selection.test_files if f.endswith("_test.go")]
-    dirs = {str(PurePosixPath(f).parent) for f in go_tests} | set(selection.packages)
-    return sorted("." if d == "." else f"./{d}" for d in dirs)
+    # keep the ranked order of first appearance, then append any changed
+    # package with no selected test file, in its own order
+    dirs = list(dict.fromkeys(str(PurePosixPath(f).parent) for f in go_tests))
+    seen = set(dirs)
+    dirs += [d for d in selection.packages if d not in seen]
+    return ["." if d == "." else f"./{d}" for d in dirs]
 
 
 def _jest_args(selection: Selection) -> list[str]:
