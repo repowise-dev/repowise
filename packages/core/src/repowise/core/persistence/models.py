@@ -2108,8 +2108,55 @@ class FunctionFact(Base):
     receiver_assigns_known: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     receiver_assigns_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     early_exits: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The complexity walk's size measures (``FunctionComplexity.stored_metrics``).
+    # NULL where the walk did not measure them; ``params`` is NULL rather than 0
+    # when no parameter was found, since the walk cannot tell that from none.
+    ccn: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    nloc: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    params: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_nesting: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class RefactoringPayoff(Base):
+    """What happened to a plan the writer resolved as no longer detected.
+
+    One row per plan, written when the writer resolves it and removed when it
+    reopens. ``before_*`` come from the stored ``function_facts`` row of the
+    plan's target, ``after_*`` from the run that resolved it, so nothing is
+    measured again when the plan is read. The prediction stays on the plan row.
+    """
+
+    __tablename__ = "refactoring_payoffs"
+
+    suggestion_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("refactoring_suggestions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    # ``refactoring.payoff.PAYOFF_OUTCOMES``.
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    # The commit the resolving run analysed; NULL when it was not recorded.
+    resolved_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resolved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    before_ccn: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    before_nloc: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    before_params: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    after_ccn: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    after_nloc: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    after_params: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # A function the resolving run found in the target's file and the run
+    # before did not, sized like the plan's slice or carrying its suggested
+    # name: the helper, when the plan was applied.
+    new_symbol: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (Index("ix_refactoring_payoffs_repo_outcome", "repository_id", "outcome"),)
 
 
 class RefactoringOpportunity(QueueVerdict, Base):

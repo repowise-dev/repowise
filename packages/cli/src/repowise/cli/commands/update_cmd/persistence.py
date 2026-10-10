@@ -1548,7 +1548,11 @@ async def _rescore_health_from_db(
             # this pass just scored the working tree, and the stored column is
             # written by a different step whose ordering is not guaranteed.
             await save_full_health_report(
-                session, repo_id, report, analyzed_commit=get_head_commit(Path(repo_path))
+                session,
+                repo_id,
+                report,
+                analyzed_commit=get_head_commit(Path(repo_path)),
+                repo_path=repo_path,
             )
             # That writer replaced every open finding, the governance ones too,
             # and only the governance pass produces those.

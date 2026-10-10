@@ -1278,6 +1278,7 @@ async def persist_partial_health(
     and metrics across an incremental ``repowise update``.
     """
     from repowise.core.persistence.crud import (
+        PayoffContext,
         finalize_performance_opportunities,
         finalize_refactoring_opportunities,
         upsert_health_findings,
@@ -1285,7 +1286,7 @@ async def persist_partial_health(
         upsert_refactoring_suggestions,
         write_function_facts,
     )
-    from repowise.core.pipeline.persist import _analyzed_commit
+    from repowise.core.pipeline.persist import _analyzed_commit, path_liveness
 
     changed_paths = sorted(
         set(getattr(report, "authoritative_paths", None) or ())
@@ -1337,6 +1338,13 @@ async def persist_partial_health(
                     if suggestion.refactoring_type != "performance_fix"
                 ],
                 file_paths=changed_paths,
+                # Before the facts below replace the stored ones: those are the
+                # measures a resolved plan was detected against.
+                payoff=PayoffContext(
+                    fact_rows=getattr(report, "function_facts", None),
+                    is_live=path_liveness(repo_path),
+                    commit=analyzed_commit,
+                ),
             )
         # A partial run sees a subset of the findings, so the plans and the
         # queue it would derive are a subset too. Both are rebuilt here instead,

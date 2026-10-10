@@ -152,6 +152,35 @@ class PlanRiskResponse(BaseModel):
     ref: str | None = None
 
 
+class PlanMeasuresResponse(BaseModel):
+    """A function's stored size measures; an absent one was not measured."""
+
+    ccn: int | None = None
+    nloc: int | None = None
+    params: int | None = None
+
+
+class PlanPayoffResponse(BaseModel):
+    """What happened to a plan the index resolved as no longer detected.
+
+    ``applied`` means the measures are consistent with the plan being applied:
+    the target shed at least half the predicted decision points and a function
+    fitting the extracted slice appeared beside it.
+    """
+
+    #: ``refactoring.payoff.PAYOFF_OUTCOMES``.
+    outcome: str
+    resolved_commit: str | None = None
+    resolved_at: str | None = None
+    before: PlanMeasuresResponse | None = None
+    after: PlanMeasuresResponse | None = None
+    #: Measured drop, beside the plan's predicted ``evidence``.
+    realised: dict[str, int] | None = None
+    #: The function that appeared beside the target, sized like the plan's
+    #: slice or carrying its suggested name.
+    new_symbol: str | None = None
+
+
 class RefactoringPlanDetailResponse(RefactoringPlanResponse):
     """One plan read alone: what other layers say about its target. Lists stay
     on :class:`RefactoringPlanResponse` and never carry these; both are absent
@@ -162,6 +191,10 @@ class RefactoringPlanDetailResponse(RefactoringPlanResponse):
     # Only with ``include=recipe``: the plan as preconditions, steps and
     # postconditions an agent applies (``refactoring.recipe``).
     recipe: dict[str, Any] | None = None
+    # Only on a plan the index resolved as no longer detected: applied, file
+    # deleted or target changed, with the target's measures before and after
+    # (``crud.plan_payoff``).
+    payoff: PlanPayoffResponse | None = None
 
 
 class RefactoringTypeCount(BaseModel):

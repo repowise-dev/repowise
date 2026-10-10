@@ -130,6 +130,35 @@ export interface RefactoringPlan {
   risks?: PlanRisk[];
   /** Plan detail with `include=recipe` only: the plan as an agent applies it. */
   recipe?: RefactoringRecipe;
+  /** Plan detail only, on a plan the index resolved as no longer detected. */
+  payoff?: RefactoringPlanPayoff;
+}
+
+/** What happened to a resolved plan. Mirrors ``refactoring.payoff.PAYOFF_OUTCOMES``. */
+export type RefactoringPayoffOutcome =
+  | "applied"
+  | "file_deleted"
+  | "superseded"
+  | "target_changed"
+  | "unknown";
+
+/** A function's stored size measures; an absent one was not measured. */
+export interface PlanMeasures {
+  ccn?: number;
+  nloc?: number;
+  params?: number;
+}
+
+export interface RefactoringPlanPayoff {
+  outcome: RefactoringPayoffOutcome;
+  resolved_commit?: string;
+  resolved_at?: string;
+  before?: PlanMeasures;
+  after?: PlanMeasures;
+  /** Measured drop (`ccn_removed`, `nloc_removed`), beside the plan's predicted `evidence`. */
+  realised?: Record<string, number>;
+  /** The function that appeared beside the target, sized like the plan's slice. */
+  new_symbol?: string;
 }
 
 /** What one recipe step does to the code. Mirrors ``refactoring.recipe.RECIPE_ACTIONS``. */

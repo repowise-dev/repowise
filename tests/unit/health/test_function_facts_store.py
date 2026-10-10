@@ -245,3 +245,35 @@ fn tail() -> Result<(), E> {
     facts = _facts("check.rs", "rust", source)
     assert facts["check"] is not None and facts["check"].early_exits == 2
     assert facts["tail"] is not None and facts["tail"].early_exits == 0
+
+
+def test_a_fresh_analysis_fills_the_size_measures(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    (tmp_path / "store.py").write_bytes(_PY)
+    graph = nx.DiGraph()
+    graph.add_node("store.py", node_type="file")
+    for fc in walk_file("store.py", "python", _PY).functions:
+        graph.add_node(
+            f"store.py::{fc.name}",
+            node_type="symbol",
+            kind="function",
+            name=fc.name,
+            file_path="store.py",
+            start_line=fc.start_line,
+            end_line=fc.end_line,
+        )
+    parsed = SimpleNamespace(
+        file_info=SimpleNamespace(
+            path="store.py", abs_path=str(tmp_path / "store.py"), language="python", is_test=False
+        ),
+        symbols=[],
+    )
+    report = HealthAnalyzer(graph=graph, parsed_files=[parsed], repo_root=tmp_path).analyze()
+
+    by_id = {row["symbol_id"]: row for row in report.function_facts or []}
+    plain = by_id["store.py::plain"]
+    assert (plain["ccn"], plain["max_nesting"], plain["params"]) == (2, 1, 1)
+    assert plain["nloc"] > 0
+    # No parameter besides the receiver: unknown, never 0.
+    assert by_id["store.py::each"]["params"] is None

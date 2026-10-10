@@ -107,6 +107,14 @@ on the same lines. A governed plan's steps are `judgment`, and its
 `blast_radius.co_change_partners` names the files that usually change with it.
 A newly accepted decision shows here after the next index or update.
 
+A plan the index stops detecting is resolved, and its detail then carries a
+`payoff` with the target's size before and after and the commit that resolved
+it. `applied` means the measures are consistent with the plan being applied: the
+target lost at least half the predicted complexity and a function the size of
+the extracted span appeared beside it (Extract Method only, so far). The other
+outcomes are `file_deleted`, `superseded` (the same plan found again under a new
+id), `target_changed` (renamed or rewritten another way) and `unknown`.
+
 Break Cycle is advisory. Its plan names edges to cut, not which symbols cross
 them or how to move them, so an opportunity carries it as `evidence` rather than
 as a numbered step: it never leads, and never reaches Fix first. The plan itself
