@@ -120,16 +120,20 @@ def test_settings_view_ternary_dispatch_is_flat():
     fn = _fn(SETTINGS_VIEW, "SettingsView")
     assert fn.ccn == 11  # every arm is still a decision
     assert fn.max_nesting == 0
+    assert fn.cognitive == 10  # a flat +1 per arm, like an ``else if``
     assert BIOMARKER.detect(_ctx(fn)) == []
 
 
 def test_conditional_rendering_inside_markup_is_flat():
     fn = _fn(NESTED_RENDER, "Inspector")
+    assert fn.ccn == 7
     assert fn.max_nesting == 0
+    assert fn.cognitive == 6
 
 
 def test_real_pyramid_inside_a_jsx_handler_still_flagged():
     fn = _fn(HANDLER_PYRAMID, "Panel")
+    # for > if > try > if > while: the arrow handler rolls into Panel.
     assert fn.max_nesting == 5
     [finding] = BIOMARKER.detect(_ctx(fn))
     assert finding.severity.value == "high"
@@ -147,7 +151,8 @@ function label(status: string, muted: boolean): string {
 """
     fn = _fn(src, "label", "typescript", "/tmp/label.ts")
     assert fn.ccn == 5
-    assert fn.max_nesting == 1
+    assert fn.max_nesting == 1  # the head opens one level, the arms none
+    assert fn.cognitive == 4  # head 1 + a flat 1 per arm
 
 
 def test_ternary_in_a_consequence_still_nests():
@@ -157,6 +162,58 @@ function pick(err: unknown, active: boolean): string {
 }
 """
     assert _fn(src, "pick", "typescript", "/tmp/pick.ts").max_nesting == 2
+
+
+def test_pyramid_inside_a_map_arrow_in_jsx_still_nests():
+    src = """
+export function List({ items }: Props) {
+  return (
+    <ul>
+      {items.map(i => {
+        if (i.a) {
+          for (const x of i.xs) {
+            if (x.b) {
+              if (x.c) {
+                track(x)
+              }
+            }
+          }
+        }
+        return <li key={i.id} />
+      })}
+    </ul>
+  )
+}
+"""
+    assert _fn(src, "List").max_nesting == 4
+
+
+def test_value_ternary_in_a_call_argument_inside_jsx_still_nests():
+    src = """
+export function Label({ a, b }: Props) {
+  return <span>{fmt(a ? (b ? 1 : 2) : 3)}</span>
+}
+"""
+    assert _fn(src, "Label").max_nesting == 2
+
+
+def test_value_ternary_in_an_object_literal_inside_jsx_still_nests():
+    src = """
+export function Dot({ a, b }: Props) {
+  return <div style={{ color: a ? (b ? 'red' : 'green') : 'blue' }} />
+}
+"""
+    assert _fn(src, "Dot").max_nesting == 2
+
+
+def test_ternary_whose_branch_is_not_jsx_nests_outside_markup():
+    src = """
+export function Maybe({ a, b }: Props) {
+  const el = a ? b && <A /> : null
+  return el
+}
+"""
+    assert _fn(src, "Maybe").max_nesting == 1
 
 
 def test_python_conditional_expression_chain_unchanged():

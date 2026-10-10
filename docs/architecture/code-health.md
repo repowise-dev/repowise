@@ -514,8 +514,11 @@ read the CCN outside the dispatch plus the CCN of its most complex arm.
 In TypeScript and JavaScript (TSX / JSX included) a ternary opens no nesting level
 when it is an arm of a chain (`a ? x : b ? y : z`), sits inside JSX markup, or has a
 JSX branch: a view choosing one of ten panels is one decision per arm (each still
-counts toward CCN), not ten levels deep. A ternary inside another's `consequence`
-still nests, and so does every `if` / `for` / `try` in a handler written in JSX.
+counts toward CCN and adds a flat +1 to cognitive complexity, like an `else if`), not
+ten levels deep. A ternary inside another's `consequence` still nests, as does one in
+a call argument or object literal inside JSX (`{fmt(a ? b : c)}`) and one whose
+branch is not itself JSX (`cond ? c2 && <A/> : x`); so does every `if` / `for` /
+`try` in a handler written in JSX.
 
 `biomarkers/registry.py` is an **explicit list**, not auto-discovery:
 keeps the registration order deterministic and lets tests inject extras

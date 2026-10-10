@@ -122,6 +122,11 @@ def is_markup(node: Node) -> bool:
     return node.type.startswith("jsx_")
 
 
+# Nodes inside JSX whose contents are values, not rendered choices:
+# ``{fmt(a ? b : c)}`` and ``style={{k: a ? b : c}}``.
+_MARKUP_VALUE_KINDS = frozenset({"arguments", "object"})
+
+
 def _unparen(node: Node | None) -> Node | None:
     while node is not None and node.type == "parenthesized_expression" and node.named_children:
         node = node.named_children[0]
@@ -133,7 +138,9 @@ def _is_flat_ternary(node: Node, lmap: LanguageNodeMap, in_markup: bool) -> bool
 
     That is one rendered inside JSX, one with a JSX branch, or an arm of a
     chain (the ``alternative`` of a ternary of its kind). A ternary in another's
-    ``consequence`` still nests: that is a decision inside a decision.
+    ``consequence`` still nests: that is a decision inside a decision. Outside
+    markup a branch must itself be JSX, so ``cond ? c2 && <A/> : x`` nests.
+    Like an ``else if``, a flat ternary costs a flat +1 cognitive.
     """
     if node.type not in lmap.flat_ternary_kinds:
         return False
@@ -374,10 +381,11 @@ def _walk_function_body(
             or node.type in lmap.catch_kinds
         ):
             ccn_increment = 1
-            # An ``else if`` / ``elif`` chain arm, a ternary chain arm or markup
-            # choice, and a comprehension / case-guard filter are flat: charge the extra branch (ccn) but do
-            # not open a new nesting level for them. This parallels the
-            # flat-``switch``/``match`` special-case above.
+            # An ``else if`` / ``elif`` chain arm, a ternary chain arm or
+            # markup choice, and a comprehension / case-guard filter are flat:
+            # charge the extra branch (ccn) but do not open a new nesting
+            # level for them. This parallels the flat-``switch``/``match``
+            # special-case above.
             if not (
                 node.type in _FLAT_BRANCH_KINDS
                 or _is_elif_continuation(node)
@@ -429,8 +437,15 @@ def _walk_function_body(
             deepest_depth = new_depth
             deepest_node[:] = [node]
 
-        # Markup context ends at a callback: a handler inside JSX is logic.
-        child_markup = node.type not in lmap.lambda_kinds and (in_markup or is_markup(node))
+        # Markup context ends at a callback (a handler inside JSX is logic) and
+        # at call arguments and object literals (a value, not a rendered
+        # choice). Only arrows need the reset: the walk never descends into
+        # other function kinds.
+        child_markup = (
+            (in_markup or is_markup(node))
+            and node.type not in lmap.lambda_kinds
+            and node.type not in _MARKUP_VALUE_KINDS
+        )
         for child in node.children:
             _recurse(child, new_depth, child_markup)
 
