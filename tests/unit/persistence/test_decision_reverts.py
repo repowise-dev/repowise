@@ -54,7 +54,7 @@ def history(tmp_path: Path) -> dict[str, str]:
     c: dict[str, str] = {"root": str(repo)}
     # Every file the cases below edit exists from the start, so each target is
     # a modification; the add/delete cases at the end use files of their own.
-    for name in ("pool", "cache", "retry", "strict", "tpl", "net", "save", "sort", "parser"):
+    for name in ("pool", "cache", "retry", "strict", "tpl", "net", "save", "sort", "parser", "loader"):
         (repo / f"{name}.txt").write_text("start\n")
     for name in ("legacy", "ci", "cfg", "misc", "metrics", "other", "settings", "log", "docs"):
         (repo / f"{name}.txt").write_text("start\n")
@@ -97,6 +97,10 @@ def history(tmp_path: Path) -> dict[str, str]:
     c["tense_target"] = _commit(repo, "Use a topological sort for ordering", "sort.txt")
     _revert(repo, c["tense_target"])
     _commit(repo, "Fixed #70 -- Used a topological sort for ordering.", "sort.txt")
+    # ... or closing the change a pull URL in the subject named.
+    c["url_target"] = _commit(repo, "Backport https://github.com/o/r/pull/55 to the loader", "loader.txt")
+    _revert(repo, c["url_target"])
+    _commit(repo, "Fixed #55 -- Backported the loader fix again", "loader.txt")
     # ... or a second attempt under the same issue key, editing the same files;
     c["retry_target"] = _commit(repo, "gh-80: Speed up the parser", "parser.txt")
     _revert(repo, c["retry_target"])
@@ -170,6 +174,7 @@ def test_each_rule_links_its_target_and_nothing_else(history):
     links = {(link.revert, link.target): link.rule for link in found if not link.relanded}
     assert {link.target for link in found if link.relanded} >= {
         history["retry_target"],
+        history["url_target"],
         history["deleted_target"],
         history["added_target"],
         history["chain_revert"],

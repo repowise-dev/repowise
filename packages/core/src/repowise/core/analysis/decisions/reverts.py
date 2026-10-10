@@ -324,7 +324,9 @@ class _Relands:
         # them.
         subject = self.hist.subject_of[link.target]
         later = set(self.hist.by_reland_key.get(_reland_key(subject), []))
-        for issue in _HASH_REF_RE.findall(subject):
+        refs = set(_HASH_REF_RE.findall(subject))
+        refs.update(str(n) for n in change_refs(subject, "", self.hist.forge))
+        for issue in refs:
             later.update(self.hist.by_closed_issue.get(issue, []))
         if self.in_force_at_head(link.target) or any(self.after(link, s) for s in later):
             return True
