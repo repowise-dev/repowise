@@ -216,7 +216,43 @@ export function Maybe({ a, b }: Props) {
     assert _fn(src, "Maybe").max_nesting == 1
 
 
-def test_python_conditional_expression_chain_unchanged():
+def test_python_conditional_expression_chain_is_flat():
+    # ``#3278`` left Python nesting a conditional-expression chain one level
+    # per arm; the chain now reads like an ``elif`` dispatch. The else-arm of
+    # ``X if C else Y`` is the node's last named child (the grammar names no
+    # ``alternative`` field), so the arm is found positionally.
     src = "def f(a, b):\n    return 1 if a else 2 if b else 3\n"
     fn = _fn(src, "f", "python", "/tmp/f.py")
-    assert (fn.ccn, fn.max_nesting) == (3, 2)
+    assert (fn.ccn, fn.max_nesting) == (3, 1)
+    assert fn.cognitive == 2  # head 1 + a flat 1 per arm, like an ``elif``
+
+
+def test_python_longer_chain_is_flat():
+    src = (
+        "def f(a, b, c):\n"
+        "    return 1 if a else 2 if b else 3 if c else 4\n"
+    )
+    fn = _fn(src, "f", "python", "/tmp/f.py")
+    assert fn.ccn == 4
+    assert fn.max_nesting == 1  # the head opens one level, the arms none
+    assert fn.cognitive == 3
+
+
+def test_python_parenthesized_chain_arm_is_flat():
+    src = "def f(a, b, c):\n    return 1 if a else (2 if b else 3)\n"
+    fn = _fn(src, "f", "python", "/tmp/f.py")
+    assert fn.max_nesting == 1
+
+
+def test_python_conditional_in_a_consequence_still_nests():
+    # A conditional in another's consequence is a decision inside a decision.
+    src = "def g(a, b):\n    return (1 if a else 2) if b else 3\n"
+    fn = _fn(src, "g", "python", "/tmp/g.py")
+    assert fn.max_nesting == 2
+
+
+def test_python_conditional_inside_an_if_still_nests():
+    # The ``if`` opens a level; the conditional inside it opens a second.
+    src = "def h(a, b):\n    if a:\n        return 1 if b else 2\n    return 0\n"
+    fn = _fn(src, "h", "python", "/tmp/h.py")
+    assert fn.max_nesting == 2

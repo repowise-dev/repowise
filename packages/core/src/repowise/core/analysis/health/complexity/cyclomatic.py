@@ -133,14 +133,33 @@ def _unparen(node: Node | None) -> Node | None:
     return node
 
 
+def _ternary_else_arm(node: Node, lmap: LanguageNodeMap) -> Node | None:
+    """The else-arm of a ternary: its ``alternative`` where the grammar names
+    it, else its last named child.
+
+    A positional grammar (``ternary_arms_positional``) spells the arms as the
+    node's first and last named children instead of ``consequence`` /
+    ``alternative`` fields — Python's ``X if C else Y`` orders them
+    ``X``, ``C``, ``Y``. Locating the else-arm by position lets a chain arm be
+    recognised as flat for those languages too.
+    """
+    arm = node.child_by_field_name("alternative")
+    if arm is not None:
+        return arm
+    if lmap.ternary_arms_positional and node.named_children:
+        return node.named_children[-1]
+    return None
+
+
 def _is_flat_ternary(node: Node, lmap: LanguageNodeMap, in_markup: bool) -> bool:
     """A ternary that chooses rather than nests (see ``flat_ternary_kinds``).
 
     That is one rendered inside JSX, one with a JSX branch, or an arm of a
-    chain (the ``alternative`` of a ternary of its kind). A ternary in another's
-    ``consequence`` still nests: that is a decision inside a decision. Outside
-    markup a branch must itself be JSX, so ``cond ? c2 && <A/> : x`` nests.
-    Like an ``else if``, a flat ternary costs a flat +1 cognitive.
+    chain (the else-arm, per ``_ternary_else_arm``, of a ternary of its kind).
+    A ternary in another's ``consequence`` still nests: that is a decision
+    inside a decision. Outside markup a branch must itself be JSX, so
+    ``cond ? c2 && <A/> : x`` nests. Like an ``else if``, a flat ternary costs
+    a flat +1 cognitive.
     """
     if node.type not in lmap.flat_ternary_kinds:
         return False
@@ -150,7 +169,7 @@ def _is_flat_ternary(node: Node, lmap: LanguageNodeMap, in_markup: bool) -> bool
     while parent is not None and parent.type == "parenthesized_expression":
         parent = parent.parent
     if parent is not None and parent.type == node.type:
-        alternative = _unparen(parent.child_by_field_name("alternative"))
+        alternative = _unparen(_ternary_else_arm(parent, lmap))
         if alternative is not None and alternative.id == node.id:
             return True
     return any(

@@ -69,6 +69,12 @@ class LanguageNodeMap:
     # (``a ? x : b ? y : z``, a dispatch) or a choice between markup (JSX).
     # Still a CCN point; no nesting level. Empty keeps every ternary nesting.
     flat_ternary_kinds: frozenset[str] = frozenset()
+    # Some grammars spell a ternary's branches positionally instead of naming
+    # them ``consequence`` / ``alternative`` (Python's ``X if C else Y`` has no
+    # field names: the arms are its first and last named children). For those
+    # the else-arm is the node's last named child, so a chain arm can still be
+    # located by position and recognised as flat.
+    ternary_arms_positional: bool = False
 
     # ------------------------------------------------------------------
     # Class-level analysis (LCOM4 / god-class). All three fields default
@@ -353,6 +359,11 @@ _PY = LanguageNodeMap(
     # branch kinds. The comprehension ``for`` (``for_in_clause``) is a generator,
     # not a decision, so it is intentionally left out.
     branch_kinds=frozenset({"if_statement", "elif_clause", "conditional_expression", "if_clause"}),
+    # A conditional-expression chain (``1 if a else 2 if b else 3``) reads like
+    # an ``elif`` dispatch: each else-arm chooses rather than nests. The grammar
+    # names no branch fields, so the arm is found positionally.
+    flat_ternary_kinds=frozenset({"conditional_expression"}),
+    ternary_arms_positional=True,
     loop_kinds=frozenset({"for_statement", "while_statement"}),
     try_kinds=frozenset({"try_statement"}),
     catch_kinds=frozenset({"except_clause"}),
