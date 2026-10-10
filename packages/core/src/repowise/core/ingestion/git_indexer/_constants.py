@@ -118,23 +118,6 @@ def _truncate_body(body: str) -> str:
     return encoded[:_MAX_COMMIT_BODY_BYTES].decode("utf-8", errors="ignore")
 
 
-# PR/squash-description markers — a body containing one of these reads like a
-# real PR write-up worth retaining for decision mining (mirrors the extractor's
-# ``_PR_BODY_MARKERS``; kept here to avoid a cross-package import at index time).
-_PR_BODY_MARKERS: tuple[str, ...] = (
-    "## why",
-    "## motivation",
-    "## what",
-    "## changes",
-    "## context",
-    "## summary",
-    "closes #",
-    "fixes #",
-    "resolves #",
-    "before:",
-    "after:",
-)
-
 # Co-change pair extraction widens the window because individual files
 # may only co-change a handful of times in 500 commits. On low-churn repos
 # the 500-commit window produced 0 co-change pairs every run; 2000 commits
@@ -365,10 +348,6 @@ HOTSPOT_HALFLIFE_DAYS: float = 180.0
 HOTSPOT_MIN_COMMITS_90D: int = 3
 HOTSPOT_MIN_TEMPORAL_SCORE: float = 0.5
 HOTSPOT_HIGH_COMMITS_90D: int = 8
-
-# Regex to extract PR/MR numbers from commit messages.
-# Matches: "#123", "Merge pull request #456", "(#789)", "!42" (GitLab MR)
-_PR_NUMBER_RE = re.compile(r"(?:pull request |)\#(\d+)|\(#(\d+)\)|!(\d+)")
 
 # Allowlist of extensions for which per-file git indexing (blame, commit
 # history, hotspot/stable classification) is worth running.  Anything NOT in

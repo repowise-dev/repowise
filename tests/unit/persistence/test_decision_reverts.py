@@ -54,7 +54,7 @@ def history(tmp_path: Path) -> dict[str, str]:
     c: dict[str, str] = {"root": str(repo)}
     # Every file the cases below edit exists from the start, so each target is
     # a modification; the add/delete cases at the end use files of their own.
-    for name in ("pool", "cache", "retry", "strict", "tpl", "net", "save", "sort", "parser"):
+    for name in ("pool", "cache", "retry", "strict", "tpl", "net", "save", "sort", "parser", "loader"):
         (repo / f"{name}.txt").write_text("start\n")
     for name in ("legacy", "ci", "cfg", "misc", "metrics", "other", "settings", "log", "docs"):
         (repo / f"{name}.txt").write_text("start\n")
@@ -97,6 +97,10 @@ def history(tmp_path: Path) -> dict[str, str]:
     c["tense_target"] = _commit(repo, "Use a topological sort for ordering", "sort.txt")
     _revert(repo, c["tense_target"])
     _commit(repo, "Fixed #70 -- Used a topological sort for ordering.", "sort.txt")
+    # ... or closing the change a pull URL in the subject named.
+    c["url_target"] = _commit(repo, "Backport https://github.com/o/r/pull/55 to the loader", "loader.txt")
+    _revert(repo, c["url_target"])
+    _commit(repo, "Fixed #55 -- Backported the loader fix again", "loader.txt")
     # ... or a second attempt under the same issue key, editing the same files;
     c["retry_target"] = _commit(repo, "gh-80: Speed up the parser", "parser.txt")
     _revert(repo, c["retry_target"])
@@ -170,6 +174,7 @@ def test_each_rule_links_its_target_and_nothing_else(history):
     links = {(link.revert, link.target): link.rule for link in found if not link.relanded}
     assert {link.target for link in found if link.relanded} >= {
         history["retry_target"],
+        history["url_target"],
         history["deleted_target"],
         history["added_target"],
         history["chain_revert"],
@@ -317,3 +322,40 @@ def test_an_abbreviated_sha_resolves_only_when_unique():
     assert _resolve("abc1234", shas) is None
     assert _resolve("abc1234f", shas) == shas[1]
     assert _resolve("not-a-sha", shas) is None
+
+
+@pytest.mark.parametrize(
+    ("remote", "linked"),
+    [("https://gitlab.com/g/p.git", True), ("https://github.com/o/r.git", False)],
+)
+def test_a_revert_names_a_gitlab_merge_request_by_its_shorthand(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remote: str, linked: bool
+) -> None:
+    """The MR is the merge commit whose trailer names it; ``!N`` is read on GitLab only."""
+    for var in ("GITHUB_ACTIONS", "GITLAB_CI", "TF_BUILD", "BITBUCKET_BUILD_NUMBER"):
+        monkeypatch.delenv(var, raising=False)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "T")
+    _git(repo, "config", "commit.gpgsign", "false")
+    _git(repo, "remote", "add", "origin", remote)
+    _commit(repo, "Initial commit", "pool.txt")
+    _git(repo, "checkout", "-q", "-b", "feat")
+    _commit(repo, "Use a connection pool", "pool.txt")
+    _git(repo, "checkout", "-q", "main")
+    _git(
+        repo,
+        "merge",
+        "--no-ff",
+        "-q",
+        "-m",
+        "Merge branch 'feat' into 'main'\n\nUse a connection pool\n\nSee merge request g/p!42",
+        "feat",
+    )
+    merge = _git(repo, "rev-parse", "HEAD")
+    _commit(repo, "revert: drop the pool from !42, it leaks", "pool.txt")
+
+    links = find_revert_links(repo)
+    assert [(link.target, link.rule) for link in links] == ([(merge, "pr")] if linked else [])
