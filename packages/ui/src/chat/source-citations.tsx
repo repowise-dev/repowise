@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { ArrowUpRight } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { getPageTypeIcon } from "../lib/page-types";
 import { filePageId } from "../shared/entity/routes";
 import type { ChatUIToolCall } from "@repowise-dev/types/chat";
@@ -224,36 +224,35 @@ export function SourceCitations({
   if (sources.length === 0) return null;
 
   return (
-    <details className="group/cites mt-5 border-t border-[var(--color-border-default)] pt-3">
-      <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] marker:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
-        <span>Sources · {sources.length}</span>
-        <span aria-hidden className="transition-transform group-open/cites:rotate-90">›</span>
+    <details className="group/cites">
+      <summary className="inline-flex min-h-8 cursor-pointer list-none items-center gap-1.5 rounded-md text-xs text-[var(--color-text-tertiary)] marker:hidden hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
+        <span className="tabular-nums">Sources · {sources.length}</span>
+        <ChevronRight aria-hidden className="h-3 w-3 transition-transform group-open/cites:rotate-90 motion-reduce:transition-none" />
       </summary>
-      {/* Links, not chips. Each one goes somewhere, so the accent is earned on
-          hover; a border and a ground on every entry turned a list of eight
-          into a wall of boxes that outweighed the answer above it. The counter
-          badge went with them — numbering is only worth its weight when the
-          prose cites [1], and a reply does not. */}
-      <ul className="flex flex-col gap-1.5 pb-1 pt-2">
+      {/* Links, not chips: each goes somewhere, so the accent is earned on
+          hover. Titles wrap rather than truncate. */}
+      <ul className="flex flex-col gap-1 pb-1 pt-1">
         {sources.map((source) => (
           <li key={source.id}>
             <a
               href={buildHref ? buildHref(source) : defaultBuildHref(source, prefix)}
-              className="group flex w-full min-w-0 items-baseline gap-2 text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors"
+              className="group flex min-h-8 w-full min-w-0 flex-wrap items-baseline gap-x-2 rounded-md py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
             >
               <SourceIcon
                 pageType={source.pageType}
                 className="h-3.5 w-3.5 shrink-0 self-center text-[var(--color-text-tertiary)] group-hover:text-[var(--color-accent-primary)] transition-colors"
               />
-              {/* No truncation: a cut title reports a layout decision to the
-                  reader as missing content. Long ones wrap. */}
-              <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{source.title}</span>
+              <span className="min-w-0 [overflow-wrap:anywhere]">{source.title}</span>
+              {source.targetPath && source.targetPath !== source.title && (
+                <span className="min-w-0 font-mono text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
+                  {source.targetPath}
+                </span>
+              )}
               {source.confidence != null && (
-                <span className="font-mono text-[11px] text-[var(--color-text-tertiary)] tabular-nums">
+                <span className="font-mono text-[var(--color-text-tertiary)] tabular-nums">
                   {(source.confidence * 100).toFixed(0)}%
                 </span>
               )}
-              <ArrowUpRight className="h-3 w-3 shrink-0 self-center opacity-0 group-hover:opacity-100 transition-opacity" />
             </a>
           </li>
         ))}

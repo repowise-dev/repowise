@@ -96,8 +96,8 @@ function ArtifactHeader({ artifact, comparing, onCompare, onPin, onOpenSource, o
   return (
     <header className="border-b border-[var(--color-border-default)] pb-4">
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0"><h2 className="truncate text-sm font-semibold text-[var(--color-text-primary)]">{artifact.title || artifact.type}</h2><p className="mt-1 font-mono text-[10px] text-[var(--color-text-tertiary)]">{artifact.tool_name} · {artifact.id}</p></div>
-        {artifact.pinned && <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">Pinned</span>}
+        <h2 className="min-w-0 text-[15px] font-semibold text-[var(--color-text-primary)] [overflow-wrap:anywhere]">{artifact.title || artifact.type}</h2>
+        {artifact.pinned && <span className="shrink-0 text-xs text-[var(--color-text-tertiary)]">Pinned</span>}
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-x-1">
         {onPin && <button type="button" aria-label={artifact.pinned ? "Unpin artifact" : "Pin artifact"} className={actionClass} onClick={() => { const next = !artifact.pinned; void Promise.resolve(onPin(artifact, next)).catch(() => setStatus("Artifact pin update failed.")); }}>{artifact.pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}<span>{artifact.pinned ? "Unpin" : "Pin"}</span></button>}

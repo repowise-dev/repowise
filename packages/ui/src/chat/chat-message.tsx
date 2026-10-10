@@ -101,7 +101,7 @@ function ChatMessageImpl({
         )}
 
         {message.text && (
-          <Markdown content={message.text} density={dock ? "compact" : "reading"} streaming={message.isStreaming} />
+          <Markdown content={message.text} density={dock ? "narrow" : "reading"} streaming={message.isStreaming} fill />
         )}
 
         {!message.isStreaming && message.toolCalls.length > 0 && (

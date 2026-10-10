@@ -62,7 +62,7 @@ function SectionTitle({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] mb-2">
+    <div className="flex items-center gap-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] mb-2">
       <Icon className="h-3 w-3" />
       <span>{children}</span>
     </div>
@@ -71,7 +71,7 @@ function SectionTitle({
 
 function FilePathChip({ path }: { path: string }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[10px] font-mono text-[var(--color-text-secondary)]">
+    <span className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs font-mono text-[var(--color-text-secondary)]">
       <FileCode className="h-2.5 w-2.5 opacity-60" />
       <span className="truncate max-w-[200px]" title={path}>
         {path}
@@ -119,7 +119,7 @@ export function OverviewRenderer({ data }: { data: OverviewArtifactData }) {
             {data.modules.slice(0, 12).map((m) => (
               <span
                 key={m}
-                className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[10px] font-mono text-[var(--color-text-secondary)]"
+                className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs font-mono text-[var(--color-text-secondary)]"
               >
                 {m}
               </span>
@@ -295,21 +295,21 @@ function ChangeFindingCard({ finding }: { finding: ChangeFindingRow }) {
     <li className="rounded-lg border border-[var(--color-border-default)] p-2.5">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <SeverityMark severity={finding.severity as Severity} />
-        <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           {finding.change} · {finding.dimension}
         </span>
       </div>
       <p className="mt-1 text-xs text-[var(--color-text-primary)]">
         {finding.reason}
       </p>
-      <p className="mt-0.5 truncate font-mono text-[10px] text-[var(--color-text-secondary)]">
+      <p className="mt-0.5 truncate font-mono text-xs text-[var(--color-text-secondary)]">
         {finding.symbol ? `${finding.symbol} — ` : ""}
         <span title={finding.path}>
           {finding.path}
           {lines}
         </span>
       </p>
-      <p className="mt-1 text-[10px] text-[var(--color-text-secondary)]">
+      <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
         <span className="text-[var(--color-text-tertiary)]">Why this change: </span>
         {finding.attribution.why}{" "}
         <span className="uppercase tracking-wider">
@@ -318,7 +318,7 @@ function ChangeFindingCard({ finding }: { finding: ChangeFindingRow }) {
       </p>
       {finding.inspect && (
         <p
-          className="mt-1 truncate font-mono text-[10px] text-[var(--color-text-secondary)]"
+          className="mt-1 truncate font-mono text-xs text-[var(--color-text-secondary)]"
           title={finding.inspect}
         >
           {finding.inspect}
@@ -362,7 +362,7 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
       {directive && (
         <div>
           <p
-            className={`text-[10px] font-medium uppercase tracking-wider ${tone.className}`}
+            className={`font-mono text-[10px] font-medium uppercase tracking-[0.12em] ${tone.className}`}
           >
             {tone.label}
           </p>
@@ -373,7 +373,7 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
       )}
 
       {partial && delta && (
-        <p role="status" className="text-[10px] text-[var(--color-warning)]">
+        <p role="status" className="text-xs text-[var(--color-warning)]">
           {delta.explanation}
         </p>
       )}
@@ -392,7 +392,7 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
       )}
 
       {/* One compact context row, not a second dashboard. */}
-      <dl className="flex flex-wrap gap-x-4 gap-y-1 border-t border-[var(--color-border-default)] pt-2 text-[10px]">
+      <dl className="flex flex-wrap gap-x-4 gap-y-1 border-t border-[var(--color-border-default)] pt-2 text-xs">
         {data.ref && <ContextItem label="Change" value={String(data.ref)} />}
         {pct !== null && <ContextItem label="Diff shape" value={`p${pct}`} />}
         {data.review_priority && (
@@ -423,14 +423,14 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
         fragile.length > 0 ||
         data.classification) && (
         <details>
-          <summary className="cursor-pointer text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+          <summary className="cursor-pointer text-xs text-[var(--color-text-tertiary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
             More detail
           </summary>
           <div className="mt-2 space-y-2">
             {directive?.next_actions?.length ? (
               <div>
                 <SectionTitle icon={ArrowRight}>Next actions</SectionTitle>
-                <ul className="space-y-0.5 text-[10px] text-[var(--color-text-secondary)]">
+                <ul className="space-y-0.5 text-xs text-[var(--color-text-secondary)]">
                   {directive.next_actions.map((action) => (
                     <li key={action}>{action}</li>
                   ))}
@@ -440,7 +440,7 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
             {runAll !== null && (
               <p
                 role="status"
-                className="text-[10px] text-[var(--color-warning)]"
+                className="text-xs text-[var(--color-warning)]"
               >
                 Run every test{runAll ? `: ${runAll}` : ""}
               </p>
@@ -450,7 +450,7 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
                 <SectionTitle icon={CheckCircle2}>
                   {runAll !== null ? "Run these first" : "Tests to run"}
                 </SectionTitle>
-                <ul className="space-y-0.5 font-mono text-[10px] text-[var(--color-text-secondary)]">
+                <ul className="space-y-0.5 font-mono text-xs text-[var(--color-text-secondary)]">
                   {tests.slice(0, 10).map((test) => (
                     <li key={test} className="truncate" title={test}>
                       {test}
@@ -464,7 +464,7 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
                 <SectionTitle icon={GitBranch}>
                   Historically fragile files
                 </SectionTitle>
-                <ul className="space-y-0.5 text-[10px] text-[var(--color-text-secondary)]">
+                <ul className="space-y-0.5 text-xs text-[var(--color-text-secondary)]">
                   {fragile.slice(0, 5).map((file) => (
                     <li key={file.path} className="flex justify-between gap-2">
                       <span className="truncate font-mono" title={file.path}>
@@ -499,17 +499,17 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
               </div>
             )}
             {data.diff_shape && (
-              <p className="text-[10px] text-[var(--color-text-tertiary)]">
+              <p className="text-xs text-[var(--color-text-tertiary)]">
                 {String(data.diff_shape)}
               </p>
             )}
             {data.classification && (
-              <p className="text-[10px] text-[var(--color-text-tertiary)]">
+              <p className="text-xs text-[var(--color-text-tertiary)]">
                 {String(data.classification)}
               </p>
             )}
             {data.warning && (
-              <p className="text-[10px] text-[var(--color-text-tertiary)]">
+              <p className="text-xs text-[var(--color-text-tertiary)]">
                 {String(data.warning)}
               </p>
             )}
@@ -557,20 +557,20 @@ export function RiskReportRenderer({ data }: { data: RiskReportArtifactData }) {
                     {t.file_path}
                   </span>
                   {t.is_hotspot && (
-                    <span className="inline-flex items-center gap-1 rounded bg-[var(--color-warning)]/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-warning)]">
-                      <AlertTriangle className="h-2.5 w-2.5" /> hotspot
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-warning)]">
+                      <AlertTriangle className="h-3 w-3" /> Hotspot
                     </span>
                   )}
                 </div>
                 {typeof t.score === "number" && (
-                  <div className="text-[10px] text-[var(--color-text-tertiary)] mt-0.5 tabular-nums">
+                  <div className="text-xs text-[var(--color-text-tertiary)] mt-0.5 tabular-nums">
                     Hotspot {formatHotspotPct(t.score)} pct
                     {t.risk_type ? ` · ${t.risk_type}` : ""}
                     {t.trend ? ` · ${t.trend}` : ""}
                   </div>
                 )}
                 {t.risk_summary && (
-                  <p className="text-[10px] text-[var(--color-text-secondary)] mt-1 line-clamp-2">
+                  <p className="text-xs text-[var(--color-text-secondary)] mt-1 line-clamp-2">
                     {t.risk_summary}
                   </p>
                 )}
@@ -592,7 +592,7 @@ export function RiskReportRenderer({ data }: { data: RiskReportArtifactData }) {
                 <span className="font-mono text-[var(--color-text-secondary)] truncate">
                   {h.path}
                 </span>
-                <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
+                <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
                   {formatHotspotPct(h.score)}
                 </span>
               </div>
@@ -637,7 +637,7 @@ export function SearchResultsRenderer({
           <div className="text-xs font-medium text-[var(--color-text-primary)]">
             {r.title}
           </div>
-          <div className="text-[10px] text-[var(--color-text-tertiary)] mt-0.5">
+          <div className="text-xs text-[var(--color-text-tertiary)] mt-0.5">
             {getPageTypeLabel(r.page_type)}
             {typeof r.relevance_score === "number" && (
               <> · score {(r.relevance_score as number).toFixed(2)}</>
@@ -739,7 +739,7 @@ function DecisionCards({
           <h3 className="text-xs font-medium text-[var(--color-text-primary)]">
             {r.title}
             {r.status && (
-              <span className="ml-1.5 text-[10px] font-normal text-[var(--color-text-tertiary)]">
+              <span className="ml-1.5 text-xs font-normal text-[var(--color-text-tertiary)]">
                 ({r.status})
               </span>
             )}
@@ -834,7 +834,7 @@ export function DecisionsRenderer({ data }: { data: DecisionsArtifactData }) {
                 <li key={i} className="text-xs text-[var(--color-text-secondary)]">
                   <span className="truncate">{d.title}</span>
                   {d.source && (
-                    <span className="ml-1.5 text-[10px] text-[var(--color-text-tertiary)]">
+                    <span className="ml-1.5 text-xs text-[var(--color-text-tertiary)]">
                       ({d.source})
                     </span>
                   )}
@@ -851,7 +851,7 @@ export function DecisionsRenderer({ data }: { data: DecisionsArtifactData }) {
                 <li key={i} className="text-xs text-[var(--color-text-secondary)]">
                   <span className="truncate">{d.title}</span>
                   {d.status && (
-                    <span className="ml-1.5 text-[10px] text-[var(--color-text-tertiary)]">
+                    <span className="ml-1.5 text-xs text-[var(--color-text-tertiary)]">
                       ({d.status})
                     </span>
                   )}
@@ -896,7 +896,7 @@ export function DecisionsRenderer({ data }: { data: DecisionsArtifactData }) {
       )}
       <DecisionCards rows={rows} />
       {data.origin_story?.primary_author && (
-        <p className="text-[10px] text-[var(--color-text-tertiary)]">
+        <p className="text-xs text-[var(--color-text-tertiary)]">
           Primary author: {String(data.origin_story.primary_author)}
         </p>
       )}
@@ -950,7 +950,7 @@ export function DeadCodeRenderer({ data }: { data: DeadCodeArtifactData }) {
               ))}
             </div>
             {tier.truncated && (
-              <p className="mt-1.5 text-[10px] text-[var(--color-text-tertiary)]">
+              <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">
                 {tier.findings.length} of {tier.count.toLocaleString()} shown
               </p>
             )}
@@ -974,11 +974,11 @@ function DeadCodeRow({
         <span className="font-mono text-[var(--color-text-primary)] truncate">
           {finding.symbol_name ? `${finding.file_path}::${finding.symbol_name}` : finding.file_path}
         </span>
-        <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)] shrink-0">
+        <span className="text-xs tabular-nums text-[var(--color-text-tertiary)] shrink-0">
           {(finding.confidence * 100).toFixed(0)}%
         </span>
       </div>
-      <div className="text-[10px] text-[var(--color-text-tertiary)] mt-0.5">
+      <div className="text-xs text-[var(--color-text-tertiary)] mt-0.5">
         {finding.kind}
         {showLines && typeof finding.lines === "number" && (
           <> · {finding.lines} lines</>
@@ -1028,7 +1028,7 @@ export function SourceRenderer({ data }: { data: Record<string, unknown> }) {
   return (
     <div className="space-y-3">
       <p className="truncate font-mono text-xs text-[var(--color-text-secondary)]" title={path}>{path}</p>
-      <pre className="max-h-[60vh] overflow-auto border-l border-[var(--color-border-default)] pl-3 font-mono text-[11px] leading-relaxed text-[var(--color-text-secondary)] whitespace-pre-wrap break-words">{source || fallback.map((line) => typeof line === "string" ? line : JSON.stringify(line)).join("\n")}</pre>
+      <pre className="max-h-[60vh] overflow-auto border-l border-[var(--color-border-default)] pl-3 font-mono text-xs leading-relaxed text-[var(--color-text-secondary)] whitespace-pre-wrap break-words">{source || fallback.map((line) => typeof line === "string" ? line : JSON.stringify(line)).join("\n")}</pre>
     </div>
   );
 }
@@ -1071,7 +1071,7 @@ function extractPath(data: Record<string, unknown>): Array<{ node: string; relat
 export function DependencyPathRenderer({ data }: { data: Record<string, unknown> }) {
   const path = extractPath(data);
   if (path.length === 0) return <p className="text-xs text-[var(--color-text-tertiary)]">No dependency path was found. This does not prove that no runtime relationship exists.</p>;
-  return <div><SectionTitle icon={GitBranch}>Selected dependency path</SectionTitle><ol className="space-y-1">{path.slice(0, 100).map((item, index) => <li key={`${item.node}:${index}`} className="flex items-center gap-2 font-mono text-xs text-[var(--color-text-secondary)]"><span className="w-5 shrink-0 tabular-nums text-[var(--color-text-tertiary)]">{index + 1}</span><span className="break-all">{item.node}</span>{item.relationship && <span className="text-[10px] text-[var(--color-text-tertiary)]">{item.relationship}</span>}</li>)}</ol></div>;
+  return <div><SectionTitle icon={GitBranch}>Selected dependency path</SectionTitle><ol className="space-y-1">{path.slice(0, 100).map((item, index) => <li key={`${item.node}:${index}`} className="flex items-center gap-2 font-mono text-xs text-[var(--color-text-secondary)]"><span className="w-5 shrink-0 tabular-nums text-[var(--color-text-tertiary)]">{index + 1}</span><span className="break-all">{item.node}</span>{item.relationship && <span className="text-xs text-[var(--color-text-tertiary)]">{item.relationship}</span>}</li>)}</ol></div>;
 }
 
 export function CallPathRenderer({ data }: { data: Record<string, unknown> }) {
@@ -1079,7 +1079,7 @@ export function CallPathRenderer({ data }: { data: Record<string, unknown> }) {
   const path = extractPath(data);
   if (flows.length === 0 && path.length === 0) return <p className="text-xs text-[var(--color-text-tertiary)]">No indexed call path was returned. Dynamic calls may be outside structural coverage.</p>;
   if (path.length > 0) return <DependencyPathRenderer data={{ path }} />;
-  return <div><SectionTitle icon={ArrowRight}>Selected execution flows</SectionTitle><ol className="border-t border-[var(--color-border-default)]">{flows.slice(0, 25).map((flow, index) => { const row = flow as Record<string, unknown>; const trace = Array.isArray(row.trace) ? row.trace.map(String) : []; return <li key={index} className="border-b border-[var(--color-border-default)] py-2 text-xs text-[var(--color-text-secondary)]"><span className="font-mono break-all">{String(row.entry_point_name ?? row.name ?? row.title ?? row.entry_point ?? `Flow ${index + 1}`)}</span>{trace.length > 0 && <ol className="mt-2 space-y-1 border-l border-[var(--color-border-default)] pl-3">{trace.slice(0, 50).map((node, traceIndex) => <li key={`${node}:${traceIndex}`} className="font-mono text-[11px] break-all">{node}</li>)}</ol>}{typeof row.termination === "string" && row.termination.length > 0 && <p className="mt-2 text-[10px] text-[var(--color-text-tertiary)]">Stopped: {row.termination}</p>}</li>; })}</ol></div>;
+  return <div><SectionTitle icon={ArrowRight}>Selected execution flows</SectionTitle><ol className="border-t border-[var(--color-border-default)]">{flows.slice(0, 25).map((flow, index) => { const row = flow as Record<string, unknown>; const trace = Array.isArray(row.trace) ? row.trace.map(String) : []; return <li key={index} className="border-b border-[var(--color-border-default)] py-2 text-xs text-[var(--color-text-secondary)]"><span className="font-mono break-all">{String(row.entry_point_name ?? row.name ?? row.title ?? row.entry_point ?? `Flow ${index + 1}`)}</span>{trace.length > 0 && <ol className="mt-2 space-y-1 border-l border-[var(--color-border-default)] pl-3">{trace.slice(0, 50).map((node, traceIndex) => <li key={`${node}:${traceIndex}`} className="font-mono text-xs break-all">{node}</li>)}</ol>}{typeof row.termination === "string" && row.termination.length > 0 && <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">Stopped: {row.termination}</p>}</li>; })}</ol></div>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1092,7 +1092,7 @@ export function GenericJsonRenderer({
   data: Record<string, unknown>;
 }) {
   return (
-    <pre className="text-[10px] font-mono text-[var(--color-text-secondary)] overflow-auto max-h-[70vh] whitespace-pre-wrap break-words">
+    <pre className="text-xs font-mono text-[var(--color-text-secondary)] overflow-auto max-h-[70vh] whitespace-pre-wrap break-words">
       {JSON.stringify(data, null, 2)}
     </pre>
   );

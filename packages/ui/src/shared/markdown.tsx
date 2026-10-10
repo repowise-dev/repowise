@@ -20,9 +20,13 @@
  * The face stays sans. Serif is bounded to the named wiki reading surfaces so
  * the mark keeps meaning "this is a document"; a reply is prose, not a document.
  *
- * `density="compact"` keeps the old chrome scale for consumers that render the
- * same markdown inside a narrow panel, where 16px body would not fit the column
- * it is given. One component, one prop — not a second renderer.
+ * `density="narrow"` steps the reading scale down to 14px for the chat dock;
+ * `density="compact"` keeps the chrome scale for side panels where 16px body
+ * would not fit the column. One component, one prop, not a second renderer.
+ *
+ * Streaming is read from context rather than baked into the component map, so
+ * the map keeps its identity when an answer completes: code blocks stay
+ * mounted in their final frame instead of remounting with a height jump.
  *
  * Inline code is deliberately *not* accent-coloured. Nothing here resolves to a
  * page, so an accent path would be decoration on something that does not
@@ -30,7 +34,14 @@
  * renderer already fixed.
  */
 
-import { lazy, Suspense, useMemo } from "react";
+import {
+  createContext,
+  lazy,
+  Suspense,
+  useContext,
+  useMemo,
+  type ComponentPropsWithoutRef,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
@@ -46,7 +57,7 @@ const MermaidDiagram = lazy(() =>
 const MICRO_LABEL =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
-export type MarkdownDensity = "reading" | "compact";
+export type MarkdownDensity = "reading" | "narrow" | "compact";
 
 interface Scale {
   h1: string;
@@ -59,6 +70,8 @@ interface Scale {
   gap: string;
   listIndent: string;
   rule: string;
+  /** Table width rule. Only the reading column can afford a 640px floor. */
+  table: string;
 }
 
 const SCALES: Record<MarkdownDensity, Scale> = {
@@ -73,6 +86,20 @@ const SCALES: Record<MarkdownDensity, Scale> = {
     gap: "mb-4",
     listIndent: "ml-5",
     rule: "my-6",
+    table: "w-full min-w-[640px]",
+  },
+  narrow: {
+    h1: "text-lg mt-6 mb-2.5",
+    h2: "text-base mt-5 mb-2",
+    h3: "text-[15px] mt-4 mb-1.5",
+    body: "text-sm",
+    list: "text-sm space-y-1",
+    block: "my-3",
+    code: "text-xs",
+    gap: "mb-3",
+    listIndent: "ml-5",
+    rule: "my-5",
+    table: "w-full",
   },
   compact: {
     h1: "text-base mt-4 mb-2",
@@ -81,15 +108,54 @@ const SCALES: Record<MarkdownDensity, Scale> = {
     body: "text-xs",
     list: "text-xs space-y-1",
     block: "my-2",
-    code: "text-[11px]",
+    code: "text-xs",
     gap: "mb-2",
     listIndent: "ml-4",
     rule: "my-3",
+    table: "w-full",
   },
 };
 
-function buildComponents(s: Scale, streaming: boolean): Components {
-  const measure = s.body === "text-base" ? "max-w-[72ch]" : "max-w-full";
+const StreamingContext = createContext(false);
+
+function MarkdownCode({
+  className,
+  children,
+  node: _node,
+  compact,
+  ...props
+}: ComponentPropsWithoutRef<"code"> & { node?: unknown; compact: boolean }) {
+  const streaming = useContext(StreamingContext);
+  const declaredLanguage = className?.match(/language-([^\s]+)/)?.[1];
+  const rawCode = String(children ?? "");
+  const isBlock = Boolean(declaredLanguage) || rawCode.includes("\n");
+  if (isBlock) {
+    const language = declaredLanguage ?? "text";
+    const code = rawCode.replace(/\n$/, "");
+    if (language === "mermaid") {
+      const source = <pre><code>{code}</code></pre>;
+      return (
+        <CodeFrame code={code} language={language} compact={compact}>
+          {streaming ? source : <Suspense fallback={source}><MermaidDiagram chart={code} /></Suspense>}
+        </CodeFrame>
+      );
+    }
+    return <HighlightedCodeBlock code={code} language={language} compact={compact} streaming={streaming} />;
+  }
+  // 0.85em, relative: Geist Mono runs wider and taller than Geist at the
+  // same nominal size, so 1em mono inside 16px sans reads oversized.
+  return (
+    <code
+      className="break-all whitespace-normal rounded px-1 py-0.5 bg-[var(--color-bg-inset)] text-[var(--color-text-primary)] text-[0.85em] font-mono [overflow-wrap:anywhere]"
+      {...props}
+    >
+      {children}
+    </code>
+  );
+}
+
+function buildComponents(s: Scale, measure: string): Components {
+  const compact = s.body !== "text-base";
   return {
     h1: ({ children }) => (
       <h1
@@ -137,39 +203,7 @@ function buildComponents(s: Scale, streaming: boolean): Components {
     input: ({ type, node: _node, ...props }) => type === "checkbox" ? (
       <input type="checkbox" disabled className="mr-2 align-middle accent-[var(--color-accent-secondary)]" {...props} />
     ) : <input type={type} {...props} />,
-    code: ({ className, children, node: _node, ...props }) => {
-      const declaredLanguage = className?.match(/language-([^\s]+)/)?.[1];
-      const rawCode = String(children ?? "");
-      const isBlock = Boolean(declaredLanguage) || rawCode.includes("\n");
-      if (isBlock) {
-        const language = declaredLanguage ?? "text";
-        const code = rawCode.replace(/\n$/, "");
-        if (language === "mermaid") {
-          return (
-            <CodeFrame code={code} language={language} compact={s.body !== "text-base"}>
-              {streaming ? (
-                <pre className="m-0 min-w-max p-4"><code className="font-mono text-[var(--color-text-primary)]">{code}</code></pre>
-              ) : (
-                <Suspense fallback={<pre className="m-0 min-w-max p-4"><code className="font-mono text-[var(--color-text-primary)]">{code}</code></pre>}>
-                  <MermaidDiagram chart={code} />
-                </Suspense>
-              )}
-            </CodeFrame>
-          );
-        }
-        return <HighlightedCodeBlock code={code} language={language} compact={s.body !== "text-base"} streaming={streaming} />;
-      }
-      // 0.85em, relative: Geist Mono runs wider and taller than Geist at the
-      // same nominal size, so 1em mono inside 16px sans reads oversized.
-      return (
-        <code
-          className="break-all whitespace-normal rounded px-1 py-0.5 bg-[var(--color-bg-inset)] text-[var(--color-text-primary)] text-[0.85em] font-mono [overflow-wrap:anywhere]"
-          {...props}
-        >
-          {children}
-        </code>
-      );
-    },
+    code: (props) => <MarkdownCode {...props} compact={compact} />,
     pre: ({ children }) => <>{children}</>,
     blockquote: ({ children }) => (
       <blockquote
@@ -190,7 +224,7 @@ function buildComponents(s: Scale, streaming: boolean): Components {
     ),
     table: ({ children }) => (
       <div className={`${s.block} max-w-full overflow-x-auto overscroll-x-contain border-y border-[var(--color-border-default)]`}>
-        <table className={`${s.code} w-full min-w-[640px] border-collapse`}>{children}</table>
+        <table className={`${s.code} ${s.table} border-collapse`}>{children}</table>
       </div>
     ),
     thead: ({ children }) => (
@@ -226,21 +260,29 @@ function buildComponents(s: Scale, streaming: boolean): Components {
 
 export interface MarkdownProps {
   content: string;
-  /** `compact` keeps chrome sizes for narrow panels. */
+  /** `narrow` for the chat dock, `compact` for chrome-sized side panels. */
   density?: MarkdownDensity;
   /** Defers expensive code/diagram rendering until the answer is complete. */
   streaming?: boolean;
+  /** Fill the host column instead of capping prose at 72ch. For hosts that
+   *  already set a reading width, such as the chat column. */
+  fill?: boolean;
 }
 
-export function Markdown({ content, density = "reading", streaming = false }: MarkdownProps) {
+const REMARK_PLUGINS = [remarkGfm];
+
+export function Markdown({ content, density = "reading", streaming = false, fill = false }: MarkdownProps) {
+  const measure = density === "reading" && !fill ? "max-w-[72ch]" : "max-w-full";
   const components = useMemo(
-    () => buildComponents(SCALES[density], streaming),
-    [density, streaming],
+    () => buildComponents(SCALES[density], measure),
+    [density, measure],
   );
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-      {content}
-    </ReactMarkdown>
+    <StreamingContext.Provider value={streaming}>
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components}>
+        {content}
+      </ReactMarkdown>
+    </StreamingContext.Provider>
   );
 }
 

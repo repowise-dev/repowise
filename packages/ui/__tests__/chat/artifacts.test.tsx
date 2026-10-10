@@ -70,7 +70,7 @@ describe("chat artifact renderers", () => {
       />,
     );
     expect(screen.getByText("src/hot.ts")).toBeInTheDocument();
-    expect(screen.getByText("hotspot")).toBeInTheDocument();
+    expect(screen.getByText("Hotspot")).toBeInTheDocument();
     expect(screen.getByText("src/other.ts")).toBeInTheDocument();
     expect(screen.getByText(/99th pct/)).toBeInTheDocument();
     expect(screen.getByText("88th")).toBeInTheDocument();
@@ -98,7 +98,7 @@ describe("chat artifact renderers", () => {
       />,
     );
     expect(screen.getByText("src/auth.py")).toBeInTheDocument();
-    expect(screen.getByText("hotspot")).toBeInTheDocument();
+    expect(screen.getByText("Hotspot")).toBeInTheDocument();
     expect(screen.getByText("src/db.py")).toBeInTheDocument();
     expect(screen.getByText(/91th pct/)).toBeInTheDocument();
     expect(screen.getByText("85th")).toBeInTheDocument();

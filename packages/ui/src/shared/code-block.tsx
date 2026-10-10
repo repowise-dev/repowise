@@ -27,10 +27,14 @@ interface CodeFrameProps {
   code: string;
   language: string;
   children: ReactNode;
+  /** 12px code for narrow columns (dock, tool output); 14px otherwise. */
   compact?: boolean;
+  /** Header label. Defaults to the language. */
+  label?: string;
+  className?: string;
 }
 
-export function CodeFrame({ code, language, children, compact = false }: CodeFrameProps) {
+export function CodeFrame({ code, language, children, compact = false, label, className }: CodeFrameProps) {
   const [copied, setCopied] = useState(false);
 
   async function copy() {
@@ -40,15 +44,16 @@ export function CodeFrame({ code, language, children, compact = false }: CodeFra
   }
 
   return (
-    <div className="group my-4 min-w-0 overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-inset)]">
-      <div className="flex min-h-9 items-center justify-between border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-3">
+    <div className={cn("group/code my-4 min-w-0 overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-inset)]", className)}>
+      <div className="flex min-h-7 items-center justify-between pl-3 pr-1 pointer-coarse:min-h-8">
         <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-[var(--color-text-tertiary)]">
-          {language || "text"}
+          {label ?? (language || "text")}
         </span>
+        {/* Revealed on hover or focus with a mouse; always shown on touch. */}
         <button
           type="button"
           onClick={() => void copy()}
-          className="inline-flex min-h-8 items-center gap-1.5 text-xs text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-[var(--color-text-tertiary)] transition-opacity hover:text-[var(--color-text-primary)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] pointer-fine:opacity-0 pointer-fine:group-hover/code:opacity-100 pointer-coarse:h-8 motion-reduce:transition-none"
           aria-label="Copy code"
         >
           {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
@@ -57,10 +62,15 @@ export function CodeFrame({ code, language, children, compact = false }: CodeFra
       </div>
       {/* Selectable region for the chat selection control. No line numbers:
           a fenced snippet's third line is not the third line of any file, and
-          a wrong range is worse than none. */}
+          a wrong range is worse than none. The pre rules apply to both the
+          plain streaming pre and Shiki's, so completion swaps colour only and
+          never the block's height. */}
       <div
         data-chat-selection=""
-        className={cn("min-w-0 overflow-x-auto", compact ? "text-[11px]" : "text-sm")}
+        className={cn(
+          "min-w-0 overflow-x-auto [&_code]:font-mono [&_pre]:m-0 [&_pre]:min-w-max [&_pre]:bg-transparent! [&_pre]:font-mono [&_pre]:leading-relaxed [&_pre]:text-[var(--color-text-primary)]",
+          compact ? "text-xs [&_pre]:px-3 [&_pre]:pb-3 [&_pre]:pt-1" : "text-sm [&_pre]:px-4 [&_pre]:pb-4 [&_pre]:pt-1",
+        )}
       >
         {children}
       </div>
@@ -73,6 +83,8 @@ interface HighlightedCodeBlockProps {
   language: string;
   compact?: boolean;
   streaming?: boolean;
+  label?: string;
+  className?: string;
 }
 
 export function HighlightedCodeBlock({
@@ -80,6 +92,8 @@ export function HighlightedCodeBlock({
   language,
   compact = false,
   streaming = false,
+  label,
+  className,
 }: HighlightedCodeBlockProps) {
   const [html, setHtml] = useState<string | null>(null);
 
@@ -97,15 +111,18 @@ export function HighlightedCodeBlock({
   }, [code, language, streaming]);
 
   return (
-    <CodeFrame code={code} language={language} compact={compact}>
+    <CodeFrame
+      code={code}
+      language={language}
+      compact={compact}
+      {...(label ? { label } : {})}
+      {...(className ? { className } : {})}
+    >
       {!streaming && html ? (
-        <div
-          className="[&>pre]:m-0 [&>pre]:bg-transparent! [&>pre]:p-4"
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
+        <div dangerouslySetInnerHTML={{ __html: html }} />
       ) : (
-        <pre className="m-0 min-w-max p-4">
-          <code className="font-mono text-[var(--color-text-primary)]">{code}</code>
+        <pre>
+          <code>{code}</code>
         </pre>
       )}
     </CodeFrame>

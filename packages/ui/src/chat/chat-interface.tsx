@@ -58,6 +58,12 @@ const DEFAULT_SUGGESTIONS: readonly ChatSuggestion[] = [
   "Search for authentication-related code",
 ].map((text) => ({ text, source: "static" as const }));
 
+// Radix wraps viewport content in an inline `display: table` div that grows
+// to its widest child, so one wide table or code line widened the whole
+// transcript past a phone screen. As a block it holds the column width and
+// wide content scrolls inside its own container.
+const VIEWPORT_BLOCK = "[&>div]:block!";
+
 export interface ChatInterfaceProps {
   /** Identifier forwarded to `ChatMessage` for source-citation hrefs. */
   repoId: string;
@@ -358,7 +364,7 @@ export function ChatInterface({
         {isEmpty ? (
           // Top-anchored rather than centred: vertical centring would need a
           // height Radix's `display:table` viewport wrapper does not pass down.
-          <ScrollArea className="h-full" viewportRef={viewportRef}>
+          <ScrollArea className="h-full" viewportRef={viewportRef} viewportClassName={VIEWPORT_BLOCK}>
             <div ref={contentRef} className={cn(column, "flex flex-col", dock ? "gap-5 py-6" : "gap-8 pb-8 pt-[12vh]")}>
               <div className="space-y-2">
                 <h2 className={cn("font-semibold text-[var(--color-text-primary)]", dock ? "text-lg" : "text-[22px]")}>
@@ -388,7 +394,7 @@ export function ChatInterface({
           <ScrollArea
             className="h-full"
             viewportRef={viewportRef}
-            viewportClassName="[overflow-anchor:auto]"
+            viewportClassName={cn(VIEWPORT_BLOCK, "[overflow-anchor:auto]")}
           >
             <div
               ref={contentRef}

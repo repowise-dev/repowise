@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { ToolCallGroup } from "../../src/chat/tool-call-group.js";
+import { ToolCallGroup, summarizeToolCalls } from "../../src/chat/tool-call-group.js";
+import { readableToolName } from "../../src/chat/tool-call-block.js";
 import type { ChatUIToolCall } from "@repowise-dev/types/chat";
 
 function call(id: string, status: ChatUIToolCall["status"]): ChatUIToolCall {
@@ -32,7 +33,7 @@ describe("ToolCallGroup", () => {
         toolCalls={[call("a", "done"), call("b", "done"), call("c", "done")]}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Activity/ }));
+    fireEvent.click(screen.getByRole("button", { name: /3 searches/ }));
     expect(shells(container)).toHaveLength(1);
   });
 
@@ -50,17 +51,49 @@ describe("ToolCallGroup", () => {
     );
     expect(running.querySelector(".animate-spin")).toBeNull();
     expect(running.querySelector('[data-working-orb="true"]')).toBeNull();
-    expect(running.innerHTML).not.toContain("color-accent-primary");
+    expect(running.innerHTML).not.toContain("text-[var(--color-accent-primary)]");
   });
 
-  it("auto-expands while a step is running and reports the step count", () => {
-    render(
+  it("summarises several steps in one quiet line without borders", () => {
+    const { container } = render(
       <ToolCallGroup toolCalls={[call("a", "done"), call("b", "running")]} />,
     );
-    expect(screen.getByText(/Working/)).toBeInTheDocument();
-    expect(screen.getByText(/2 steps/)).toBeInTheDocument();
-    // Expanded without a click: both step labels are on screen.
+    const line = screen.getByRole("button", { name: /2 searches/ });
+    expect(line).toHaveAttribute("aria-expanded", "false");
+    expect(container.innerHTML).not.toContain("border");
+    expect(container.innerHTML).not.toContain("uppercase");
+    fireEvent.click(line);
     expect(screen.getAllByText("Searching codebase")).toHaveLength(2);
+  });
+
+  it("serialises input and result into the shared 12px code block only when opened", () => {
+    const { container } = render(<ToolCallGroup toolCalls={[call("a", "done")]} />);
+    expect(container.querySelector("pre")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Searching codebase/ }));
+    expect(screen.getByText("Input")).toBeInTheDocument();
+    expect(screen.getByText("Result")).toBeInTheDocument();
+    expect(container.querySelector("[data-chat-selection]")?.className).toContain("text-xs");
+    expect(container.querySelector("pre code")?.textContent).toContain('"query": "auth"');
+  });
+
+  it("names unknown tools readably", () => {
+    expect(readableToolName("get_blast_radius")).toBe("Blast radius");
+    render(<ToolCallGroup toolCalls={[{ ...call("a", "done"), name: "get_blast_radius" }]} />);
+    expect(screen.getByText("Blast radius")).toBeInTheDocument();
+  });
+});
+
+describe("summarizeToolCalls", () => {
+  it("counts pages read, searches and checks", () => {
+    expect(
+      summarizeToolCalls([
+        { id: "1", name: "get_context", arguments: { targets: ["a", "b", "c"] }, status: "done" },
+        { id: "2", name: "get_symbol", arguments: {}, status: "done" },
+        { id: "3", name: "search_codebase", arguments: {}, status: "done" },
+        { id: "4", name: "search_codebase", arguments: {}, status: "error" },
+        { id: "5", name: "get_health", arguments: {}, status: "done" },
+      ]),
+    ).toBe("Read 4 pages · 2 searches · 1 check · 1 failed");
   });
 });
 
@@ -82,7 +115,7 @@ describe("ToolCallGroup grounding row", () => {
     },
   };
 
-  it("renders a read made for the page as one quiet hairline row naming what was read", () => {
+  it("renders a read made for the page as one quiet row naming what was read", () => {
     const { container } = render(<ToolCallGroup toolCalls={[grounding]} />);
     expect(shells(container)).toHaveLength(1);
     expect(screen.getByText("Read for this page")).toBeInTheDocument();
@@ -94,7 +127,7 @@ describe("ToolCallGroup grounding row", () => {
 
   it("keeps the model's own steps under their tool labels", () => {
     render(<ToolCallGroup toolCalls={[grounding, call("b", "done")]} />);
-    fireEvent.click(screen.getByRole("button", { name: /Activity/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Read 1 page · 1 search/ }));
     expect(screen.getByText("Read for this page")).toBeInTheDocument();
     expect(screen.getByText("Searching codebase")).toBeInTheDocument();
   });

@@ -1,20 +1,15 @@
 "use client";
 
 /**
- * One step of the model's work, as a hairline row.
- *
- * It used to be a bordered `bg-elevated` box that `ToolCallGroup` then nested
- * inside another bordered `bg-elevated` box — the same plane twice, with two
- * borders around it. The group owns the container now; a step is a row.
- *
- * A finished step carries no success badge. A green check on every completed
- * row says nothing, because success is the default and the failure case is what
- * needs marking. Only a *running* step shows a marker, and only while it runs.
+ * One step of the model's work as a quiet text row. A finished step carries
+ * no success badge: success is the default, so only a failure is marked. The
+ * live progress marker belongs to the turn (see `chat-stage`), not the row.
  */
 
-import { useState } from "react";
-import { ChevronDown, ChevronRight, ArrowUpRight } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ArrowUpRight, ChevronRight } from "lucide-react";
 import { cn } from "../lib/cn";
+import { HighlightedCodeBlock } from "../shared/code-block";
 import type { ChatUIToolCall } from "@repowise-dev/types/chat";
 
 const TOOL_LABELS: Record<string, string> = {
@@ -27,103 +22,99 @@ const TOOL_LABELS: Record<string, string> = {
   get_why: "Querying decisions",
   search_codebase: "Searching codebase",
   get_dead_code: "Checking dead code",
+  get_answer: "Asking the index",
 };
 
 /** A step the server took for the page, before the model's first turn. */
 const GROUNDING_LABEL = "Read for this page";
 
-const MICRO_LABEL =
-  "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+const RESULT_PREVIEW_CHARS = 2000;
+
+/** `get_blast_radius` reads as "Blast radius" for a tool with no label. */
+export function readableToolName(name: string): string {
+  const words = name.replace(/^get_/, "").replace(/[_-]+/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : name;
+}
+
+export function toolCallLabel(toolCall: ChatUIToolCall): string {
+  if (toolCall.origin === "grounding") return GROUNDING_LABEL;
+  return TOOL_LABELS[toolCall.name] ?? readableToolName(toolCall.name);
+}
 
 interface ToolCallBlockProps {
   toolCall: ChatUIToolCall;
   onViewArtifact?: () => void;
-  /** Renders the top hairline. Omitted on the first row of a group. */
+  /** @deprecated Rows no longer draw dividers. Ignored. */
   divided?: boolean;
 }
 
-export function ToolCallBlock({
-  toolCall,
-  onViewArtifact,
-  divided = false,
-}: ToolCallBlockProps) {
+export function ToolCallBlock({ toolCall, onViewArtifact }: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(false);
-  const label =
-    toolCall.origin === "grounding"
-      ? GROUNDING_LABEL
-      : TOOL_LABELS[toolCall.name] ?? toolCall.name;
+  const label = toolCallLabel(toolCall);
   const isRunning = toolCall.status === "running";
   const isError = toolCall.status === "error";
 
+  // Serialised once per open, not on every render of a streaming turn.
+  const input = useMemo(
+    () => (expanded ? JSON.stringify(toolCall.arguments, null, 2) : ""),
+    [expanded, toolCall.arguments],
+  );
+  const result = useMemo(() => {
+    if (!expanded || !toolCall.result) return "";
+    const full = JSON.stringify(toolCall.result, null, 2);
+    return full.length > RESULT_PREVIEW_CHARS ? `${full.slice(0, RESULT_PREVIEW_CHARS)}\n...` : full;
+  }, [expanded, toolCall.result]);
+
   return (
-    <div
-      data-tool-origin={toolCall.origin}
-      className={cn(
-        "text-xs",
-        divided && "border-t border-[var(--color-border-default)]",
-      )}
-    >
-      <div className="flex items-center gap-2 px-3 py-2">
+    <div data-tool-origin={toolCall.origin} className="text-xs">
+      <div className="flex min-h-8 items-center gap-2">
         <button
           type="button"
-          className="flex flex-1 min-w-0 items-center gap-2 text-left"
+          className="flex min-h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
           onClick={() => !isRunning && setExpanded((e) => !e)}
           disabled={isRunning}
           aria-expanded={expanded}
         >
-          <span className="font-medium text-[var(--color-text-secondary)]">
-            {label}
-          </span>
+          <span className="shrink-0 text-[var(--color-text-secondary)]">{label}</span>
           {!isRunning && (toolCall.summary || isError) && (
             // The server already composes a failed summary as "Error: ...", so
             // a separate Failed badge beside it just says the same thing twice.
             <span
+              title={toolCall.summary || "Failed"}
               className={cn(
-                "truncate ml-1",
-                isError
-                  ? "text-[var(--color-error)]"
-                  : "text-[var(--color-text-tertiary)]",
+                "min-w-0 truncate",
+                isError ? "text-[var(--color-error)]" : "text-[var(--color-text-tertiary)]",
               )}
             >
-              — {toolCall.summary || "Failed"}
+              · {toolCall.summary || "Failed"}
             </span>
           )}
-        </button>
-        <span className="ml-auto flex items-center gap-2 shrink-0">
-          {toolCall.artifact && onViewArtifact && !isRunning && (
-            <button
-              type="button"
-              onClick={onViewArtifact}
-              className="text-[var(--color-accent-primary)] hover:underline flex items-center gap-0.5"
-            >
-              View <ArrowUpRight className="h-3 w-3" />
-            </button>
+          {!isRunning && (
+            <ChevronRight
+              aria-hidden
+              className={cn(
+                "h-3 w-3 shrink-0 text-[var(--color-text-tertiary)] transition-transform motion-reduce:transition-none",
+                expanded && "rotate-90",
+              )}
+            />
           )}
-          {!isRunning &&
-            (expanded ? (
-              <ChevronDown className="h-3 w-3 text-[var(--color-text-tertiary)]" />
-            ) : (
-              <ChevronRight className="h-3 w-3 text-[var(--color-text-tertiary)]" />
-            ))}
-        </span>
+        </button>
+        {toolCall.artifact && onViewArtifact && !isRunning && (
+          <button
+            type="button"
+            onClick={onViewArtifact}
+            className="inline-flex min-h-8 shrink-0 items-center gap-0.5 rounded-md px-1 text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          >
+            View <ArrowUpRight aria-hidden className="h-3 w-3" />
+          </button>
+        )}
       </div>
 
       {expanded && (
-        <div className="px-3 pb-2.5 space-y-2.5">
-          <div>
-            <span className={MICRO_LABEL}>Input</span>
-            <pre className="mt-1 text-[10px] font-mono text-[var(--color-text-secondary)] overflow-x-auto max-h-32 overflow-y-auto">
-              {JSON.stringify(toolCall.arguments, null, 2)}
-            </pre>
-          </div>
-          {toolCall.result && (
-            <div>
-              <span className={MICRO_LABEL}>Result</span>
-              <pre className="mt-1 text-[10px] font-mono text-[var(--color-text-secondary)] overflow-x-auto max-h-48 overflow-y-auto">
-                {JSON.stringify(toolCall.result, null, 2).slice(0, 2000)}
-                {JSON.stringify(toolCall.result).length > 2000 ? "\n..." : ""}
-              </pre>
-            </div>
+        <div className="pb-1">
+          <HighlightedCodeBlock code={input} language="json" label="Input" compact className="my-1.5" />
+          {result && (
+            <HighlightedCodeBlock code={result} language="json" label="Result" compact className="my-1.5" />
           )}
         </div>
       )}
