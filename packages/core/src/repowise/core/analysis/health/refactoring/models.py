@@ -46,10 +46,12 @@ For Extract Helper:
 For Extract Method:
 
 - ``plan`` = ``{"span": {"start": int, "end": int}, "params": [str, ...],
-  "returns": [str, ...], "suggested_name": str | None}`` — the lines to lift,
-  the inferred signature, and a deterministic starting name (from the slice's
-  single informative OUT value, else absent). It is an editable starting point
-  and is not unique within a file.
+  "returns": [str, ...], "suggested_name": str | None, "needs_async": bool}``
+  — the lines to lift, the inferred signature, a deterministic starting name
+  (from the slice's single informative OUT value, else absent; an editable
+  starting point, not unique within a file), and whether the span awaits, so
+  the helper is async and its call awaited. An awaiting plan adds
+  ``"async_host": bool``, False when the enclosing function is not async.
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` — the size and
   complexity (code lines, decision points) the residual method sheds.
 - ``blast_radius`` = ``{"scope": "local"}`` — the one type whose blast radius is

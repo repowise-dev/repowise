@@ -69,7 +69,9 @@ class Extraction:
     variable(s). ``slice_nloc`` is the span's code lines, counted with the
     walker's NLOC rule (blank, comment-only and docstring lines excluded, as in
     the function's own ``nloc``), and ``ccn_removed`` the decision points it
-    carries (the complexity the residual method sheds).
+    carries (the complexity the residual method sheds). ``needs_async`` is
+    True when the span suspends (an ``await_kinds`` token outside any nested
+    scope): the helper must be async and its call site awaited.
     """
 
     start_line: int
@@ -78,6 +80,7 @@ class Extraction:
     returns: tuple[str, ...]
     slice_nloc: int
     ccn_removed: int
+    needs_async: bool = False
 
 
 def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[Extraction]:
@@ -159,12 +162,15 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
             # candidate span would put the O(n^2 * subtree) cost straight back.
             nested_prefix = [0]
             code_prefix = [0]
+            await_prefix = [0]
             for st in stmts:
-                d, jmp = _span_metrics(
-                    [st], decision_kinds, jump_kinds, scope_kinds, _exit_macros(lmap)
+                d, jmp, awaits = _span_metrics(
+                    [st], decision_kinds, jump_kinds, scope_kinds, _exit_macros(lmap),
+                    lmap.await_kinds,
                 )
                 dec_prefix.append(dec_prefix[-1] + d)
                 jump_prefix.append(jump_prefix[-1] + (1 if jmp else 0))
+                await_prefix.append(await_prefix[-1] + (1 if awaits else 0))
                 nested_prefix.append(
                     nested_prefix[-1] + (1 if _holds_a_named_nested_function([st], lmap) else 0)
                 )
@@ -217,9 +223,31 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                         returns=returns,
                         slice_nloc=slice_nloc,
                         ccn_removed=decisions,
+                        needs_async=await_prefix[j + 1] > await_prefix[i],
                     )
                 )
     return _sorted(out)
+
+
+def function_is_async(fn_node: Node, lmap: LanguageNodeMap) -> bool:
+    """True when *fn_node* is declared async, so an awaiting helper fits in it.
+
+    The marker is a dedicated node kind (``lmap.async_function_kinds``) or an
+    ``async`` token on the declaration itself or one of its modifier children
+    (Python and TS/JS ``async``, Rust ``function_modifiers``). The body is not
+    searched: an ``async`` token there belongs to a nested statement.
+    """
+    if fn_node.type in lmap.async_function_kinds:
+        return True
+    body = fn_node.child_by_field_name("body")
+    for child in fn_node.children:
+        if child.type == "async":
+            return True
+        if (body is None or child.id != body.id) and any(
+            grand.type == "async" for grand in child.children
+        ):
+            return True
+    return False
 
 
 def _tail_is_block_value(
@@ -860,21 +888,25 @@ def _span_metrics(
     jump_kinds: frozenset[str],
     scope_kinds: frozenset[str],
     exit_macros: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset()),
-) -> tuple[int, bool]:
-    """Decision-point count and jump presence within *span* (nested scopes are
-    not descended into). A macro named in *exit_macros* counts as a jump."""
+    await_kinds: frozenset[str] = frozenset(),
+) -> tuple[int, bool, bool]:
+    """Decision-point count, jump presence and await presence within *span*
+    (nested scopes are not descended into). A macro named in *exit_macros*
+    counts as a jump."""
     decisions = 0
     has_jump = False
+    has_await = False
     for root in span:
         stack: list[Node] = [root]
         while stack:
             node = stack.pop()
             t = node.type
             has_jump = has_jump or _is_jump(node, jump_kinds, exit_macros)
+            has_await = has_await or t in await_kinds
             if t in decision_kinds:
                 decisions += 1
             for child in node.children:
                 if child.type in scope_kinds:
                     continue
                 stack.append(child)
-    return decisions, has_jump
+    return decisions, has_jump, has_await

@@ -166,6 +166,13 @@ Most plans answer a health finding, so per-path marker rules in
   docstring. When the best span misses one of these, only a span that does not
   overlap it is offered, never a slightly smaller copy of it. Estimated gain
   never exceeds the share of decision points removed.
+- An Extract Method span that awaits (Python `await`, `async with`, `async for`;
+  TypeScript and JavaScript `await`, `for await`; Rust `.await`; C++ `co_await`)
+  carries `needs_async: true`: the helper is async and its call is awaited. When
+  the function holding the span is not declared async (a C++ coroutine, or a Rust
+  `.await` inside an `async` block of a plain `fn`), the step is a judgment call
+  with reason `async_helper_unexpressible`. Kotlin `suspend` calls and C# are not
+  modelled, since neither language has Extract Method support yet.
 - Move Method never targets a class the method only instantiates, or an ancestor of
   its own class.
 - Split File works on any language with call resolution and suggests a split only

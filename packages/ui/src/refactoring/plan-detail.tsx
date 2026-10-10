@@ -429,7 +429,7 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
     const lines = em.span ? em.span.end - em.span.start + 1 : 0;
     const ccn = Number(plan.evidence?.ccn_removed ?? 0);
     const helperName = em.suggested_name ?? "helper";
-    const sig = `${helperName}(${em.params.join(", ")})${
+    const sig = `${em.needs_async ? "async " : ""}${helperName}(${em.params.join(", ")})${
       em.returns.length ? ` -> ${em.returns.join(", ")}` : ""
     }`;
     return (
@@ -437,7 +437,8 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
         {hideIntro ? null : (
           <p className="text-xs text-[var(--color-text-tertiary)]">
             Lift {lines} line{lines === 1 ? "" : "s"} out of{" "}
-            <span className="font-mono">{plan.target_symbol}</span> into a focused helper
+            <span className="font-mono">{plan.target_symbol}</span> into a focused{" "}
+            {em.needs_async ? "async helper whose call is awaited" : "helper"}
             {ccn ? `, shedding ${ccn} decision point${ccn === 1 ? "" : "s"}` : ""}.
           </p>
         )}

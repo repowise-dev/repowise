@@ -63,7 +63,7 @@ from .gating import (
 )
 from .lookup import function_analysis_at
 from .reaching import ReachingDefinitions, compute_reaching
-from .slice import Extraction, find_extractions
+from .slice import Extraction, find_extractions, function_is_async
 
 __all__ = [
     "CFG",
@@ -97,6 +97,7 @@ __all__ = [
     "derive_facts",
     "find_extractions",
     "function_analysis_at",
+    "function_is_async",
     "get_defuse_dialect",
     "is_flagged",
     "is_flagged_function",

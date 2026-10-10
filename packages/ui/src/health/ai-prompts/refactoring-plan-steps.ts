@@ -72,6 +72,7 @@ function extractMethodSteps(plan: RefactoringPlan): string {
     "",
     `- **Parameters (in):** ${params}`,
     `- **Returns (out):** ${returns}`,
+    ...(em.needs_async ? ["- **Async:** the span awaits, so declare the helper async and await its call"] : []),
     "",
     "Move exactly those lines into the new helper in the same scope, pass the parameters above, return the value(s) above, and replace the original lines with a single call to it. Preserve behavior exactly: change nothing outside the span and that one call site.",
   ].join("\n");

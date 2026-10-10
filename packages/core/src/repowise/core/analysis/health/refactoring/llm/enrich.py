@@ -351,7 +351,9 @@ _TYPE_INSTRUCTIONS: dict[str, str] = {
         "which it can. When 'suggested_name' is null no name was anchored in the plan, "
         "so choose one that describes what the lifted code computes. Pass the plan's 'params' as its arguments "
         "and return the plan's 'returns' value(s), and replace the original lines "
-        "with a call to it. Preserve behaviour exactly; change nothing outside the "
+        "with a call to it. When the plan's 'needs_async' is true the span awaits: "
+        "declare the helper async and await the call that replaces the lines. "
+        "Preserve behaviour exactly; change nothing outside the "
         "span and the single call site."
     ),
     "split_file": (

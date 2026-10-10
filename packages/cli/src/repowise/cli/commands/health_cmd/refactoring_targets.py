@@ -615,7 +615,10 @@ def _plan_detail_console(p: dict) -> list[str]:
             f"    [dim]extract lines {span.get('start')}-{span.get('end')} "
             f"({ev.get('slice_nloc')} lines, -{ev.get('ccn_removed')} CCN)[/dim]"
         )
-        out.append(f"    [dim]in:[/dim] {params}    [dim]out:[/dim] {returns}")
+        out.append(
+            f"    [dim]in:[/dim] {params}    [dim]out:[/dim] {returns}"
+            + ("    [dim]async helper, call awaited[/dim]" if pl.get("needs_async") else "")
+        )
     elif kind == "move_method":
         to_file = pl.get("to_file")
         dest = f"{pl.get('to_class')}" + (f" [dim]({to_file})[/dim]" if to_file else "")
@@ -687,6 +690,7 @@ def _plan_detail_md(p: dict) -> list[str]:
             f"    - extract lines {span.get('start')}-{span.get('end')} "
             f"({ev.get('slice_nloc')} lines, -{ev.get('ccn_removed')} CCN)  ·  "
             f"in: {params}  ·  out: {returns}"
+            + ("  ·  async helper, call awaited" if pl.get("needs_async") else "")
         )
     elif kind == "move_method":
         dest = pl.get("to_class")

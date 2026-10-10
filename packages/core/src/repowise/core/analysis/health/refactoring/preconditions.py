@@ -32,6 +32,7 @@ Applicability = Literal["mechanical", "judgment"]
 # for the two mechanical codes, "what was proved?".
 MECHANICAL_REASONS = ("dataflow_proved_local_extraction",)
 JUDGMENT_REASONS = (
+    "async_helper_unexpressible",
     "build_constraints_unknown",
     "call_site_bindings_unproven",
     "changes_symbol_home",
@@ -142,8 +143,12 @@ def _extract_method_reasons(suggestion: RefactoringSuggestion, facts: dict[str, 
 
     R1's dataflow gate proves the span behaviour-preserving before it is ever
     offered, and the blast radius is categorically local, so the only thing left
-    to check is that the detector itself was sure.
+    to check is that the detector itself was sure, and that an awaiting span
+    has an async function to land in.
     """
+    plan = suggestion.plan or {}
+    if plan.get("needs_async") and plan.get("async_host") is False:
+        return ["async_helper_unexpressible"]
     if not facts["local_scope"]:
         return ["changes_symbol_home"]
     if suggestion.confidence != "high":

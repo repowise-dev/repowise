@@ -247,6 +247,12 @@ class LanguageNodeMap:
     #     segment. The slicer treats them as jumps for the same reason. A user
     #     macro of the same name that does not exit only hides a span.
     yield_kinds: frozenset[str] = frozenset()
+    #   * ``await_kinds`` -- tokens that suspend the function (Python ``await`` /
+    #     ``async with`` / ``async for``, TS/JS ``await`` / ``for await``, Rust
+    #     ``.await``, C++ ``co_await``). Matched on the anonymous keyword token,
+    #     which every form carries. A span holding one lifts into a helper that
+    #     must itself be async, with its call site awaited.
+    await_kinds: frozenset[str] = frozenset()
     exit_macro_kinds: frozenset[str] = frozenset()
     exit_macro_names: frozenset[str] = frozenset()
     #   * ``statement_wrapper_kinds`` -- statement node(s) that merely wrap the
@@ -363,6 +369,9 @@ _PY = LanguageNodeMap(
     continue_kinds=frozenset({"continue_statement"}),
     with_kinds=frozenset({"with_statement"}),
     yield_kinds=frozenset({"yield"}),
+    # ``async`` marks ``async with`` / ``async for`` (and the comprehension
+    # form); a nested ``async def`` is a scope the slicer never enters.
+    await_kinds=frozenset({"await", "async"}),
     decorator_kinds=frozenset({"decorator"}),
     decorated_definition_kinds=frozenset({"decorated_definition"}),
 )
@@ -421,6 +430,7 @@ _TS = LanguageNodeMap(
     break_kinds=frozenset({"break_statement"}),
     continue_kinds=frozenset({"continue_statement"}),
     yield_kinds=frozenset({"yield_expression"}),
+    await_kinds=frozenset({"await"}),
 )
 
 _JS = _TS  # identical control-flow nodes; tree-sitter-javascript shares shape.
@@ -595,6 +605,7 @@ _RUST = LanguageNodeMap(
     exit_macro_names=frozenset({"bail", "ensure", "try"}),
     break_kinds=frozenset({"break_expression"}),
     continue_kinds=frozenset({"continue_expression"}),
+    await_kinds=frozenset({"await"}),
     # Rust parses every statement-position control-flow expression inside an
     # ``expression_statement``; the CFG builder unwraps it to classify the real
     # node, and the slicer uses this as the expression-oriented marker for
@@ -759,6 +770,9 @@ _CPP = LanguageNodeMap(
     raise_kinds=frozenset({"throw_statement"}),
     break_kinds=frozenset({"break_statement"}),
     continue_kinds=frozenset({"continue_statement"}),
+    # A coroutine carries no ``async`` token, so a span holding one is never
+    # offered as a mechanical extraction.
+    await_kinds=frozenset({"co_await"}),
 )
 
 _C = LanguageNodeMap(

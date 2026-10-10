@@ -55,6 +55,15 @@ describe("extract_method plan accessors", () => {
     expect(em.suggested_name).toBeNull();
   });
 
+  it("reads needs_async, false for a plan stored before it existed", () => {
+    expect(extractMethodPlan(extractMethodPlanFixture()).needs_async).toBe(false);
+    const awaiting = extractMethodPlanFixture({
+      plan: { span: { start: 30, end: 48 }, params: [], returns: [], needs_async: true },
+    });
+    expect(extractMethodPlan(awaiting).needs_async).toBe(true);
+    expect(planSynopsis(awaiting)).toBe("Extract 19 lines into an async helper");
+  });
+
   it("returns a null span when the plan omits it", () => {
     const em = extractMethodPlan(extractMethodPlanFixture({ plan: { params: [], returns: [] } }));
     expect(em.span).toBeNull();

@@ -227,8 +227,13 @@ def _find_extractions_reference(analysis, lmap):
                 ):
                     continue
                 span = stmts[i : j + 1]
-                decisions, has_jump = _span_metrics(
-                    span, decision_kinds, jump_kinds, scope_kinds, _exit_macros(lmap)
+                decisions, has_jump, has_await = _span_metrics(
+                    span,
+                    decision_kinds,
+                    jump_kinds,
+                    scope_kinds,
+                    _exit_macros(lmap),
+                    lmap.await_kinds,
                 )
                 if has_jump or decisions < _MIN_CCN_REMOVED:
                     continue
@@ -254,6 +259,7 @@ def _find_extractions_reference(analysis, lmap):
                         returns=returns,
                         slice_nloc=slice_nloc,
                         ccn_removed=decisions,
+                        needs_async=has_await,
                     )
                 )
     return _sorted(out)
@@ -569,7 +575,8 @@ def test_detector_emits_suggestion_for_flagged_function():
     assert 0 < share < 1
     assert s.impact_delta == round(1.5 * share, 3)
     # Plan shape is the locked schema.
-    assert set(s.plan) == {"span", "params", "returns", "suggested_name"}
+    assert set(s.plan) == {"span", "params", "returns", "suggested_name", "needs_async"}
+    assert s.plan["needs_async"] is False
     assert set(s.plan["span"]) == {"start", "end"}
     assert set(s.evidence) == {"slice_nloc", "ccn_removed"}
     # A categorical claim, not a count: extraction is local, so there is nothing

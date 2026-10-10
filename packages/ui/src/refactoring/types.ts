@@ -156,6 +156,8 @@ export interface ExtractMethodPlan {
   params: string[];
   returns: string[];
   suggested_name: string | null;
+  /** The span awaits: the helper is async and its call site awaited. */
+  needs_async: boolean;
 }
 
 export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
@@ -170,6 +172,7 @@ export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
     params: Array.isArray(p.params) ? (p.params as string[]) : [],
     returns: Array.isArray(p.returns) ? (p.returns as string[]) : [],
     suggested_name: typeof p.suggested_name === "string" ? p.suggested_name : null,
+    needs_async: p.needs_async === true,
   };
 }
 
@@ -286,7 +289,8 @@ export function planSynopsis(plan: RefactoringPlan): string {
     case "extract_method": {
       const em = extractMethodPlan(plan);
       const lines = em.span ? em.span.end - em.span.start + 1 : 0;
-      return lines ? `Extract ${lines} line${lines === 1 ? "" : "s"} into a helper` : "Extract a helper method";
+      const helper = em.needs_async ? "an async helper" : "a helper";
+      return lines ? `Extract ${lines} line${lines === 1 ? "" : "s"} into ${helper}` : "Extract a helper method";
     }
     case "move_method": {
       const mv = moveTarget(plan);
