@@ -566,11 +566,7 @@ def _render_fields(
     params = leading + tuple(
         render.Slot(p, types.get(p), p in after) for p in extraction.params if p != own
     )
-    # An output also passed in may come back unwritten; any other is written.
-    returns = tuple(
-        render.Slot(r, types.get(r) if r in extraction.params else render.definite_type(language, types.get(r)))
-        for r in extraction.returns
-    )
+    returns = tuple(render.Slot(r, types.get(r)) for r in extraction.returns)
     declared, before, rebound = _out_binding(analysis, extraction, get_language_map(language or ""))
     fn_node = analysis.fn_node
     texts = render.render(

@@ -181,19 +181,27 @@ def _return_line(s: HelperShape, family: str) -> str | None:
     return f"return {names}" if family in ("python", "go") else f"return {names};"
 
 
-def definite_type(language: str | None, declared: str | None) -> str | None:
-    """*declared* without the ``undefined`` arm a TS / JS declaration carries
-    for before its first write: a helper whose output is written on every
-    path returns the value itself."""
-    if declared is None or _FAMILY.get(language or "") not in ("ts", "js"):
-        return declared
-    arms = [a.strip() for a in declared.split("|")]
-    kept = [a for a in arms if a != "undefined"]
-    return " | ".join(kept) if kept and len(kept) < len(arms) else declared
+def _undefined_arm_notes(s: HelperShape) -> list[str]:
+    """A TS / JS output the author declared ``T | undefined`` that the helper
+    always writes (it is not passed in): the declared type is kept, and the
+    note says the narrower return type is safe."""
+    taken = {p.name for p in s.params}
+    out = []
+    for r in s.returns:
+        arms = [a.strip() for a in (r.type or "").split("|")]
+        kept = [a for a in arms if a != "undefined"]
+        if r.name not in taken and kept and len(kept) < len(arms):
+            out.append(
+                f"{r.name} is declared `{r.type}`, but every path through these lines "
+                f"writes it, so the helper may return `{' | '.join(kept)}`."
+            )
+    return out
 
 
 def _notes(s: HelperShape, family: str) -> list[str]:
     out = []
+    if family in ("ts", "js"):
+        out.extend(_undefined_arm_notes(s))
     if family == "ts":
         untyped = [p.name for p in s.params if not p.type]
         if untyped:
@@ -505,7 +513,6 @@ __all__ = [
     "Slot",
     "brief",
     "context_name",
-    "definite_type",
     "list_plan",
     "private_name",
     "render",

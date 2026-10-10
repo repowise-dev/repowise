@@ -172,6 +172,9 @@ export interface RecipeStep {
     params: string[];
     returns: string[];
     signature_text: string | null;
+    /** The helper's last line handing its outputs back (`return a, b`);
+     *  null without outputs or on a plan stored before it. */
+    return_text?: string | null;
     notes: string[];
   };
   call_site?: ExtractCallSite;
