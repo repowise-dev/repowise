@@ -50,7 +50,9 @@ name such as ``toString``) cannot move either, since the type it overrides for
 is the reason it exists. Building the target through a static factory
 (``OperationResult.Ok()``, any target member returning the target type) counts
 as instantiating it, and an interface, an exception type, a ``*Util``/``*Helper``
-class or a C# ``static class`` is never a home for instance behaviour. The
+class or a C# ``static class`` is never a home for instance behaviour, and
+neither is a class in another language family (a Swift call the graph resolved
+onto a Kotlin class of the same name). The
 other ``partial`` fragments of the method's own class are its own class.
 """
 
@@ -63,6 +65,7 @@ from repowise.core.analysis.dead_code.contract_methods import is_contract_method
 from repowise.core.analysis.execution_graph import is_reliable_call_edge
 
 from ....test_paths import is_test_related_path
+from .language_family import same_language_family
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, effort_bucket, register
 
@@ -251,11 +254,17 @@ def _never_a_target(graph: Any, class_id: str) -> bool:
     return any(n.endswith(_NON_TARGET_SUFFIXES) for n in names)
 
 
-def _is_target(graph: Any, class_id: str, accessed: set[str], home: set[str]) -> bool:
+def _is_target(
+    graph: Any, class_id: str, accessed: set[str], home: set[str], home_file: str
+) -> bool:
     """A foreign class the method could move to: not its own class or an
-    ancestor (*home*), not a class it builds, not a non-target kind."""
+    ancestor (*home*), not a class it builds, not a non-target kind, and in a
+    file *home_file*'s code can move into (a call resolved across languages
+    names a class the method cannot live in)."""
+    target_file = (_node(graph, class_id) or {}).get("file_path") or class_id.rpartition("::")[0]
     return (
         class_id not in home
+        and same_language_family(home_file, target_file)
         and not _builds(graph, class_id, accessed)
         and not _never_a_target(graph, class_id)
     )
@@ -415,7 +424,7 @@ class MoveMethodDetector(RefactoringDetector):
         foreign = [
             (c, m)
             for c, m in accessed_by_class.items()
-            if _is_target(graph, c, m, own_and_inherited)
+            if _is_target(graph, c, m, own_and_inherited, ctx.file_path)
         ]
         if not foreign:
             return None

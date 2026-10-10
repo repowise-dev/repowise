@@ -13,6 +13,7 @@ both ask the same question of a listed receiver.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from .languages import LanguageNodeMap
@@ -30,6 +31,13 @@ _IDENTIFIER_SUFFIX = "identifier"
 _DECLARATOR_NAME_KINDS = frozenset(
     {"identifier", "field_identifier", "type_identifier", "qualified_identifier"}
 )
+
+# Longest callee path a callback's name carries. A longer chain keeps its
+# trailing segments, which name the call the callback is handed to.
+_MAX_CALLEE_PATH = 100
+# A callee whose source text is already a dotted name (``ipcMain.handle``,
+# ``this.on``) and is kept as written.
+_PLAIN_PATH = re.compile(r"[\w$#]+(?:\.[\w$#]+)*")
 
 
 def _pascal_unwrap_name(name: Node) -> Node:
@@ -161,9 +169,16 @@ def _find_call_callback_callee(node: Node) -> str | None:
     if call is None or call.type != "call_expression":
         return None
     callee = call.child_by_field_name("function")
-    if callee is None or callee.text is None:
+    if callee is None:
         return None
-    return " ".join(_node_text(callee).split())
+    path = _node_text(callee)
+    if not _PLAIN_PATH.fullmatch(path):
+        # A chained callee (``z.object({...}).superRefine``) would carry every
+        # argument in its text; its identifier path names the same call.
+        path = ".".join(_identifier_chain(callee, lower=False))
+    if len(path) > _MAX_CALLEE_PATH:
+        path = path[-_MAX_CALLEE_PATH:].partition(".")[2]
+    return path or None
 
 
 _TEST_SUITE_CALLBACK_CALLEES = frozenset({"describe", "context", "suite"})
@@ -346,20 +361,23 @@ def _count_parameters(fn_node: Node) -> int:
     return count
 
 
-def _identifier_chain(node: Node) -> list[str]:
-    """Every identifier under *node*, lowercased, in document order.
+def _identifier_chain(node: Node, *, lower: bool = True) -> list[str]:
+    """Every identifier under *node*, lowercased unless *lower* is false, in
+    document order.
 
     Order is load-bearing: the last entry is the name being called, the rest
-    the receiver path. Argument lists are never descended into.
+    the receiver path. Argument and type-argument lists are never descended
+    into.
     """
     names: list[str] = []
     stack: list[Node] = [node]
     while stack:
         cur = stack.pop()
-        if cur.type in ("argument_list", "arguments"):
+        if cur.type in ("argument_list", "arguments", "type_arguments"):
             continue
         if cur.type.endswith(_IDENTIFIER_SUFFIX) and cur.text is not None:
-            names.append(cur.text.decode("utf-8", "replace").lower())
+            text = cur.text.decode("utf-8", "replace")
+            names.append(text.lower() if lower else text)
         stack.extend(reversed(cur.children))
     return names
 

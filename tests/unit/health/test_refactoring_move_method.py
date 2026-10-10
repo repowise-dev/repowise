@@ -480,3 +480,30 @@ def test_other_partial_fragments_of_the_own_class_are_home():
         "C.cs", "T.cs", edge_type="imports", imported_names=["C"], hint_source="partial_class"
     )
     assert _detect_in(g, "C.cs", "csharp") == []
+
+
+def test_a_class_in_another_language_is_never_a_move_target():
+    """The call graph resolved a Swift method onto a Kotlin class of the same
+    name (openclaw NodeAppModel.swift -> OpenClawCanvasA2UIAction.kt)."""
+    g = _envy_graph_in("swift", "swift")
+    nx.relabel_nodes(
+        g,
+        {n: n.replace("T.swift", "T.kt") for n in list(g) if n.startswith("T.swift")},
+        copy=False,
+    )
+    for node in ("T.kt::T", "T.kt::T.Alpha", "T.kt::T.Beta", "T.kt::T.Gamma"):
+        g.nodes[node].update(file_path="T.kt", language="kotlin")
+    assert _detect_in(g, "C.swift", "swift") == []
+
+
+def test_a_target_in_the_same_language_family_still_moves():
+    g = _envy_graph_in("tsx", "typescript")
+    nx.relabel_nodes(
+        g,
+        {n: n.replace("T.tsx", "T.js") for n in list(g) if n.startswith("T.tsx")},
+        copy=False,
+    )
+    for node in ("T.js::T", "T.js::T.Alpha", "T.js::T.Beta", "T.js::T.Gamma"):
+        g.nodes[node].update(file_path="T.js", language="javascript")
+    out = _detect_in(g, "C.tsx", "typescript")
+    assert [s.plan["to_file"] for s in out] == ["T.js"]

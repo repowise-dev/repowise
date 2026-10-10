@@ -9,6 +9,7 @@ from repowise.core.analysis.health.refactoring.preconditions import (
     JUDGMENT_REASONS,
     MECHANICAL_REASONS,
     classify_step,
+    needs_design,
     step_facts,
 )
 
@@ -110,12 +111,43 @@ def test_a_split_that_needs_a_shim_is_a_judgment_call() -> None:
     assert "rewrites_dependent_imports" in applicability.reasons
 
 
-def test_a_split_nobody_can_name_a_target_for_is_not_mechanical() -> None:
+def test_a_split_nobody_can_name_a_target_for_needs_design() -> None:
     plan = dict(go_split().plan)
-    plan["groups"] = [{"symbols": ["Stock"], "suggested_file": None}]
-    applicability = classify_step(go_split(plan=plan))
+    plan["groups"] = [{"symbols": ["Stock"], "name": None, "suggested_file": None}]
+    row = go_split(plan=plan)
+    applicability = classify_step(row)
     assert applicability.classification == "judgment"
-    assert applicability.reasons == ("no_named_target",)
+    assert applicability.reasons == ("needs_design", "build_constraints_unknown")
+    assert needs_design(row)
+    assert not needs_design(go_split())
+
+
+def test_a_shimmed_split_with_an_unnamed_group_needs_design() -> None:
+    """ours ``ast_utils.py -> 5 files``: ``groups_named`` false."""
+    plan = {
+        "shim_required": True,
+        "groups": [
+            {"name": "walk", "symbols": ["walk"], "suggested_file": "pkg/walk.py"},
+            {"name": None, "symbols": ["a", "b"], "suggested_file": None},
+        ],
+    }
+    applicability = classify_step(step("split_file", plan=plan))
+    assert applicability.reasons[0] == "needs_design"
+    assert applicability.facts["groups_named"] is False
+
+
+def test_an_extract_class_with_unnamed_groups_needs_design() -> None:
+    groups = [{"name": None, "methods": ["a", "b"], "fields": ["x", "y"]}] * 2
+    row = step("extract_class", plan={"groups": groups})
+    assert needs_design(row)
+    assert classify_step(row).reasons[0] == "needs_design"
+    named = [dict(group, name=f"Part{i}") for i, group in enumerate(groups)]
+    assert not needs_design(step("extract_class", plan={"groups": named}))
+
+
+def test_only_grouping_plans_can_need_design() -> None:
+    for kind in ("extract_method", "extract_helper", "move_method", "break_cycle"):
+        assert not needs_design(step(kind))
 
 
 @pytest.mark.parametrize(

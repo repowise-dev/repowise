@@ -48,6 +48,7 @@ from typing import Any
 from ....code_origin import is_migration_path, is_vendored_or_generated_path
 from ....test_paths import is_test_related_path
 from ..duplication.detector import clone_ranges, union_line_count
+from .language_family import same_language_family
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, effort_bucket, register
 
@@ -431,10 +432,15 @@ class ExtractHelperDetector(RefactoringDetector):
         # then coalesce the overlapping windows the clone detector emits for one
         # physical block into a single site per region (without merging, the
         # same import/parse block reads as "5 sites" when it is really one).
-        # Clones are detected within a language, so every occurrence in a block
-        # shares ``ctx.language`` — which the ambiguous ``spec/`` rule needs.
+        # The clone index hashes token shapes across every language, so a site
+        # in another language family is dropped too: no shared helper can serve
+        # it. What is left shares ``ctx.language``'s family, which the
+        # ambiguous ``spec/`` rule needs.
         kept = [
-            o for o in block.occurrences if not _is_skippable_occurrence(o[0], ctx.language)
+            o
+            for o in block.occurrences
+            if same_language_family(ctx.file_path, o[0])
+            and not _is_skippable_occurrence(o[0], ctx.language)
         ]
         occurrences = [
             o

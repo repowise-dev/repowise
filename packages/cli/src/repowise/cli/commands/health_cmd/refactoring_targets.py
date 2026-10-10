@@ -537,8 +537,8 @@ def _render_opportunities_md(opportunities: list[dict], plan_by_id: dict) -> Non
 def _render_unattached_console(plans: list[dict]) -> None:
     """Plans no opportunity claims.
 
-    A file whose only plans are demoted clones or advisory cycles publishes no
-    opportunity, so without this the CLI would print a smaller number than the
+    A file whose only plans are demoted clones, advisory cycles or unnamed
+    splits publishes no opportunity, so without this the CLI would print a smaller number than the
     analyzer found and call it the total. They are listed as observations,
     under their own heading, rather than folded back in as work.
     """
@@ -546,8 +546,8 @@ def _render_unattached_console(plans: list[dict]) -> None:
         return
     console.print(f"\n[bold]Unattached observations ({len(plans)})[/bold]")
     console.print(
-        "[dim]Duplication and import cycles, not ranked work: no file's "
-        "opportunity is built on them.[/dim]"
+        "[dim]Duplication, import cycles and splits with unnamed groups, not "
+        "ranked work: no file's opportunity is built on them.[/dim]"
     )
     for p in plans:
         console.print(f"\n[cyan]{p['target_symbol']}[/cyan] [dim]({p['file_path']})[/dim]")
@@ -560,8 +560,8 @@ def _render_unattached_md(plans: list[dict]) -> None:
         return
     click.echo("\n## Unattached observations\n")
     click.echo(
-        "Duplication and import cycles, not ranked work: no file's opportunity is "
-        "built on them.\n"
+        "Duplication, import cycles and splits with unnamed groups, not ranked "
+        "work: no file's opportunity is built on them.\n"
     )
     for p in plans:
         click.echo(f"- **{p['target_symbol']}** ({p['file_path']})")

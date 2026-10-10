@@ -46,7 +46,8 @@ if TYPE_CHECKING:
     from tree_sitter import Node
 
 #: Suffix ``ast_utils._find_function_entry_name`` gives a callback entry, as in
-#: ``"it callback"``. The text before it is the callee, arguments included.
+#: ``"it callback"``. The text before it is the callee's dotted path
+#: (``it.each`` for ``it.each([...])``), arguments left out.
 _CALLBACK_SUFFIX = " callback"
 
 _JAVA_MODIFIERS = "modifiers"
@@ -142,9 +143,9 @@ def is_test_case(fn_node: Node, name: str, language: str) -> bool:
         if not dialect.callback_callees:
             return False
         callee = lowered[: -len(_CALLBACK_SUFFIX)]
-        # ``it.each([1,2])`` carries its arguments in the entry name; the first
-        # dotted segment is the framework function in every form of it.
-        return callee.split(".", 1)[0].split("(", 1)[0] in dialect.callback_callees
+        # The first dotted segment is the framework function in every form of
+        # it (``it``, ``it.each``, ``it.skip``).
+        return callee.split(".", 1)[0] in dialect.callback_callees
     if dialect.name_prefixes and lowered.startswith(dialect.name_prefixes):
         return True
     if _matches_runner_prefix(name, dialect.runner_prefixes):

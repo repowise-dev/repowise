@@ -284,6 +284,27 @@ def test_test_file_dropped_but_real_sites_kept():
     assert files == ["pkg/a.py", "pkg/b.py"]
 
 
+def test_a_site_in_another_language_is_dropped():
+    # The clone index hashes token shapes across languages: an export list in
+    # TypeScript paired with one in Python. No helper serves both.
+    clones = [
+        _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55),
+        _pair("pkg/a.py", "ui/c.ts", 10, 25, 5, 20),
+    ]
+    sugs = [
+        s
+        for s in detect_refactorings(_ctx("pkg/a.py", clones))
+        if s.refactoring_type == "extract_helper"
+    ]
+    assert [o["file"] for o in sugs[0].plan["occurrences"]] == ["pkg/a.py", "pkg/b.py"]
+    only_cross = [_pair("pkg/a.py", "ui/c.ts", 10, 25, 5, 20)]
+    assert [
+        s
+        for s in detect_refactorings(_ctx("pkg/a.py", only_cross))
+        if s.refactoring_type == "extract_helper"
+    ] == []
+
+
 def test_generated_migration_occurrences_dropped():
     # Migration boilerplate duplicates heavily but is never refactored — a
     # clone confined to migration files yields no suggestion.

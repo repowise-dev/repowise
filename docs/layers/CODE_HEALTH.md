@@ -263,7 +263,8 @@ Each low-scoring file can carry deterministic refactoring plans (Extract Method,
 Split File, Break Cycle, Performance Fix and others) with evidence, gain, effort and
 blast radius. `repowise health --refactoring-targets` prints the stored queue.
 Break Cycle is advisory: it is shown beside a file's steps, never as one, and
-never in Fix first. See [REFACTORING.md](REFACTORING.md).
+never in Fix first. A Split File or Extract Class plan with an unnamed group is
+held the same way (`needs_design`). See [REFACTORING.md](REFACTORING.md).
 
 ## Trends, coverage and badges
 

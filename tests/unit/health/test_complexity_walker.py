@@ -282,6 +282,36 @@ test.describe("routes", () => {
     assert "beforeEach callback" in names
 
 
+def test_a_chained_callee_names_its_callback_by_identifier_path():
+    """A zod schema's ``superRefine`` callback was named after the whole
+    ``z.object({...})`` expression, a name thousands of characters long."""
+    _require_language("typescript")
+    fields = ", ".join(f"field{i}: z.string().optional()" for i in range(40))
+    source = f"""
+export const Schema = z
+  .object({{ {fields} }})
+  .strict()
+  .superRefine((value, ctx) => {{
+    if (value.field1 && !value.field2) {{
+      ctx.addIssue({{ code: "custom", message: "field2" }});
+    }}
+  }});
+
+it.each([{{ name: "a", x: 1 }}, {{ name: "b", x: 2 }}])("case $name", ({{ x }}) => {{
+  expect(x).toBeGreaterThan(0);
+}});
+
+makeHandler<Entry[]>(config)((entry) => {{
+  return entry.id;
+}});
+""".encode()
+    names = [fn.name for fn in walk_file("/tmp/schema.ts", "typescript", source).functions]
+    assert "z.object.strict.superRefine callback" in names
+    assert "it.each callback" in names
+    assert "makeHandler callback" in names
+    assert all(len(name) <= 120 and "(" not in name for name in names)
+
+
 def test_rust_flat_match_complexity():
     """A flat match (all arms are simple expressions) should count as 1 CCN
     point for the match itself; individual arms should NOT add CCN."""

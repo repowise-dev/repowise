@@ -95,7 +95,20 @@ a file whose only plan is a cycle). The plan list's `structural_total` leaves
 Break Cycle out, matching the opportunities; `by_type` still counts it.
 
 Names are never invented. A suggested helper or file name is `null` when nothing
-in the code anchors one.
+in the code anchors one. A Split File or Extract Class plan with an unnamed group
+says what to separate but not what the result is, so its applicability carries
+`needs_design` and an opportunity holds it as `evidence`, the same way as a
+cycle: it is not a step and never reaches Fix first.
+
+Code only moves within a language family: TypeScript, JavaScript and the
+single-file components that host them; C, C++, their headers and Objective-C;
+C# with Razor; every other language on its own. A Move Method target or an
+Extract Helper site in another family is never proposed, even when the call
+graph or the clone index paired the two files.
+
+A plan's `target_symbol` names code, not an expression. A callback is named
+after the dotted path of the call it is passed to (`it.each callback`,
+`z.object.strict.superRefine callback`), without its arguments.
 
 An empty list means no detector found work that clears its gates. It does not mean
 the code needs no attention: check the findings in

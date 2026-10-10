@@ -33,6 +33,11 @@ none of the cycles it named were worth cutting. It rides along as evidence the
 same way, so it is never a numbered step, never leads, and never reaches Fix
 first; the plan stays in the plan inventory.
 
+**An unnamed group is a design question, not a step.** A ``split_file`` or
+``extract_class`` plan with a group it cannot name says what to separate but
+not what the result is (``needs_design``). It rides along as evidence the same
+way, until the group has a name.
+
 **A finding is recovered once.** A step names the findings its own target
 answers: the source biomarker's findings whose span it covers, and for a
 named finding only the one on the same symbol. Two steps answering one
@@ -67,7 +72,7 @@ from .opportunity_rank import (
     weakest_confidence,
     why_ranked,
 )
-from .preconditions import StepApplicability, classify_step
+from .preconditions import StepApplicability, classify_step, needs_design
 from .recommendations import affected_files, rehydrate_suggestion
 
 # Opportunity ids share the plan id's version and digest, and differ in the
@@ -242,7 +247,7 @@ def is_standalone_clone(suggestion: RefactoringSuggestion) -> bool:
 
 
 def _is_step(suggestion: RefactoringSuggestion) -> bool:
-    if suggestion.refactoring_type in ADVISORY_TYPES:
+    if suggestion.refactoring_type in ADVISORY_TYPES or needs_design(suggestion):
         return False
     if suggestion.refactoring_type == "extract_helper":
         return is_standalone_clone(suggestion)

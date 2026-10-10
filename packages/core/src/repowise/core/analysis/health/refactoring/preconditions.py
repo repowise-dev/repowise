@@ -38,7 +38,7 @@ JUDGMENT_REASONS = (
     "changes_symbol_home",
     "detector_confidence_below_high",
     "inverts_imports_across_files",
-    "no_named_target",
+    "needs_design",
     "reshapes_class_surface",
     "rewrites_dependent_imports",
     "unclassified_refactoring_type",
@@ -76,7 +76,8 @@ def _int_or_none(value: Any) -> int | None:
 
 
 def _named_groups(plan: dict[str, Any]) -> bool | None:
-    """Whether every proposed group names the file it lands in.
+    """Whether every proposed group is named: the file a split group lands in,
+    or the class an extracted group becomes.
 
     ``None`` when the plan proposes no groups at all: absence of groups is not
     evidence that the naming succeeded, and R1 made an unnameable group emit
@@ -85,7 +86,20 @@ def _named_groups(plan: dict[str, Any]) -> bool | None:
     groups = [group for group in (plan.get("groups") or []) if isinstance(group, dict)]
     if not groups:
         return None
-    return all(group.get("suggested_file") for group in groups)
+    return all(group.get("suggested_file") or group.get("name") for group in groups)
+
+
+# The types whose plan is a set of groups to create. With a group unnamed, the
+# plan says what to separate but not what the result is, which is a design
+# decision for a person, not a step to hand off.
+_GROUPING_TYPES = frozenset({"split_file", "extract_class"})
+
+
+def needs_design(suggestion: RefactoringSuggestion) -> bool:
+    """Whether *suggestion* is a grouping plan with a group it does not name."""
+    if suggestion.refactoring_type not in _GROUPING_TYPES:
+        return False
+    return _named_groups(suggestion.plan or {}) is not True
 
 
 # Which facts each refactoring type can even have. A key absent here is not
@@ -97,7 +111,7 @@ _BASE_FACT_KEYS = ("affected_file_count", "cross_file", "blast_size", "confidenc
 _TYPE_FACT_KEYS: dict[str, tuple[str, ...]] = {
     "extract_method": ("local_scope",),
     "split_file": ("shim_required", "groups_named", "dependents", "framework_registration"),
-    "extract_class": ("dependents", "framework_registration"),
+    "extract_class": ("groups_named", "dependents", "framework_registration"),
     "move_method": ("callers", "framework_registration"),
     "break_cycle": ("framework_registration",),
     "extract_helper": ("co_change_count",),
@@ -175,8 +189,6 @@ def _split_file_reasons(_suggestion: RefactoringSuggestion, facts: dict[str, Any
     """
     if facts["shim_required"] is not False:
         return ["rewrites_dependent_imports", "changes_symbol_home"]
-    if facts["groups_named"] is not True:
-        return ["no_named_target"]
     return ["build_constraints_unknown"]
 
 
@@ -200,6 +212,8 @@ def classify_step(suggestion: RefactoringSuggestion) -> StepApplicability:
         reasons = _split_file_reasons(suggestion, facts)
     else:
         reasons = list(_JUDGMENT_BY_TYPE.get(kind, ("unclassified_refactoring_type",)))
+    if needs_design(suggestion):
+        reasons.insert(0, "needs_design")
     # ``all`` over nothing is True, so a future branch that returned no reason
     # would promote silently. Mechanical has to be positively argued.
     mechanical = bool(reasons) and all(reason in MECHANICAL_REASONS for reason in reasons)
@@ -217,5 +231,6 @@ __all__ = [
     "Applicability",
     "StepApplicability",
     "classify_step",
+    "needs_design",
     "step_facts",
 ]

@@ -127,9 +127,9 @@ def test_js_suite_and_setup_callbacks_are_not_test_cases() -> None:
     assert "localHelper" not in cases
     assert "it callback" in cases
     assert "test callback" in cases
-    # ``it.each([1,2])`` carries its arguments in the entry name; the first
-    # dotted segment is still the framework function.
-    assert "it.each([1, 2]) callback" in cases
+    # ``it.each([1,2])`` is named by its dotted path, arguments left out; the
+    # first segment is still the framework function.
+    assert "it.each callback" in cases
 
 
 def test_a_language_with_no_row_classifies_nothing() -> None:

@@ -163,6 +163,42 @@ def test_a_file_with_only_a_cycle_publishes_nothing() -> None:
     assert compose_opportunities([cycle()]) == []
 
 
+def unnamed_split() -> RefactoringSuggestion:
+    """ours ``augment_cmd/_shared.py -> 4 files``: a group with no name."""
+    row = split()
+    groups = [dict(group) for group in row.plan["groups"]]
+    groups[1].update(name=None, suggested_file=None)
+    return plan(
+        "split_file",
+        row.target_symbol,
+        plan={**row.plan, "groups": groups},
+        evidence=row.evidence,
+        impact_delta=0.0,
+        blast_radius=row.blast_radius,
+        source_biomarker="",
+    )
+
+
+def test_a_split_with_an_unnamed_group_is_evidence_not_a_step() -> None:
+    opportunity = compose_opportunities([unnamed_split(), plan("extract_method")])[0]
+    assert [step.refactoring_type for step in opportunity.steps] == ["extract_method"]
+    assert [item.refactoring_type for item in opportunity.evidence] == ["split_file"]
+    assert compose_opportunities([unnamed_split()]) == []
+
+
+def test_an_extract_class_with_unnamed_groups_is_evidence_not_a_step() -> None:
+    groups = [{"name": None, "methods": ["a", "b"], "fields": ["x", "y"]}] * 2
+    unnamed = plan("extract_class", "Orders", plan={"groups": groups})
+    assert compose_opportunities([unnamed]) == []
+
+
+def test_a_split_whose_groups_are_all_named_stays_a_step() -> None:
+    """ours ``refactoring_targets.py -> 3 files`` (``groups_named`` true)."""
+    opportunity = compose_opportunities([split()])[0]
+    assert [step.refactoring_type for step in opportunity.steps] == ["split_file"]
+    assert "needs_design" not in opportunity.steps[0].applicability.reasons
+
+
 @pytest.mark.usefixtures("dry_violation_shown")
 def test_plan_inventory_is_steps_plus_evidence_plus_unattached() -> None:
     """The rollup's plan counts reconcile with the opportunities they fold into."""
