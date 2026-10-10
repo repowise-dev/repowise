@@ -26,6 +26,9 @@ _COMMENT_MARK = re.compile(r"^\s*(?:#+|//+|/\*+|\*+)|\*+/\s*$")
 _RULE_CHARS = " \t-=~#*_+.─━═"
 _ENUMERATION = re.compile(r"^(?:\d+[.)]|\[\d+\]|(?:step|pass)\s+\d+\s*[:.)])\s*", re.IGNORECASE)
 _PARENTHETICAL = re.compile(r"\([^)]*\)")
+# Editor folding markers around a section: ``# region Load edges``,
+# ``// #endregion``, ``// <editor-fold desc="Load edges">``.
+_FOLD = re.compile(r'^(?:(?:end)?region\b|</?editor-fold(?:[^>]*desc="([^"]*)")?[^>]*>)\s*', re.I)
 _BANNER_WORD = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*")
 # Comments that talk to a tool or a reviewer, not about the code below them.
 _DIRECTIVES = frozenset(
@@ -118,7 +121,7 @@ def banner_words(comment_lines: list[str]) -> list[str]:
 
     A banner is one line of short prose, optionally drawn between rules
     (``# ==== / # Environment / # ====`` or ``# -- Load edges --``), with a
-    leading step number dropped. Two to ``_MAX_BANNER_WORDS`` plain words: one
+    leading step number and any editor folding marker (``# region``) dropped. Two to ``_MAX_BANNER_WORDS`` plain words: one
     word is a heading (``# Decisions``), not a name for what the block does,
     and anything holding code, paths or punctuation (``# key -> value``) is
     prose about the code rather than its name.
@@ -126,6 +129,7 @@ def banner_words(comment_lines: list[str]) -> list[str]:
     content = []
     for line in comment_lines:
         text = _COMMENT_MARK.sub("", line).strip(_RULE_CHARS)
+        text = _FOLD.sub(lambda m: m.group(1) or "", text).strip(_RULE_CHARS)
         if text:
             content.append(text)
     if len(content) != 1:

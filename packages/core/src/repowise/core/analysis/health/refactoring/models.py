@@ -49,10 +49,10 @@ For Extract Method:
   "returns": [str, ...], "suggested_name": str | None, "needs_async": bool}``
   — the lines to lift, the inferred signature, a deterministic starting name
   (a stage label, a banner comment, or the single OUT value of an effect-free
-  span; never one a sibling in the helper's scope already uses; else absent),
-  and whether the span awaits, so
-  the helper is async and its call awaited. An awaiting plan adds
-  ``"async_host": bool``, False when the enclosing function is not async.
+  span; never one already taken in the helper's scope; else absent), and
+  whether the span awaits, so the helper is async and its call awaited. An
+  awaiting plan adds ``"async_host": bool``, False when the enclosing function
+  is not async.
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` — the size and
   complexity (code lines, decision points) the residual method sheds.
 - ``blast_radius`` = ``{"scope": "local"}`` — the one type whose blast radius is

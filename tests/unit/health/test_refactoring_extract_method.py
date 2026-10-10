@@ -158,18 +158,18 @@ def _find_extractions_reference(analysis, lmap):
         _MIN_SLICE_NLOC,
         _MIN_STMTS,
         Extraction,
-        _all_blocks,
         _declared_before_read,
         _exit_macros,
         _function_lines,
         _infer_in_out,
-    _loop_carry_free,
-    _outs_definitely_assigned,
+        _loop_carry_free,
+        _outs_definitely_assigned,
         _sorted,
         _span_metrics,
         _stmts_nloc,
         _unwrap_container,
         _var_lines,
+        all_blocks,
     )
 
     fn_node = analysis.fn_node
@@ -206,7 +206,7 @@ def _find_extractions_reference(analysis, lmap):
 
     out = []
     evaluated = 0
-    for block, loop in _all_blocks(fn_node, lmap.block_kinds, scope_kinds, lmap.loop_kinds):
+    for block, loop in all_blocks(fn_node, lmap.block_kinds, scope_kinds, lmap.loop_kinds):
         stmts = block.named_children
         n = len(stmts)
         is_body = block.id == body_container.id

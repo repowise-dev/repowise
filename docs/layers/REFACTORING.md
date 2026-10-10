@@ -104,13 +104,16 @@ in the code anchors one. A Split File or Extract Class plan with an unnamed grou
 is held as `needs_design`, like a cycle: it is not a step and never reaches Fix
 first. Code only moves within a language family, so Java, Kotlin and Scala are
 separate. A callback is named after the call it is passed to. An Extract Method
-helper is named, in order, from a `timed(..., "label")` stage label on the span,
-a short banner comment directly above it, or its single output value as
+helper is named, in order, from a `timed(..., "label")` stage label on the span, a
+short banner comment directly above it, or its single output value as
 `compute_<value>`. The `compute_` form is used only for a span with no outside
-effects: one that awaits, calls something for its effect (printing, logging, I/O)
-or writes through a name it did not create gets no `compute_` name. Names follow
-the file's casing, and a name that a function in the same scope (the class, or
-the module) already uses is dropped, so a `null` name means you name the helper.
+effects: one that awaits, calls something for its effect (printing, logging, I/O),
+calls a method on an object it did not create, or writes, deletes or increments
+through a name it did not create gets no `compute_` name, and no banner name that
+promises a value (`build_`, `get_`). Names follow the file's casing, and a name
+already taken where the helper lands (a function, an assigned name or an import in
+the same class or module, or a parameter or local of the function it comes from) is
+dropped, so a `null` name means you name the helper.
 
 An empty list means no detector found work that clears its gates. It does not mean
 the code needs no attention: check the findings in

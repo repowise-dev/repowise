@@ -46,10 +46,10 @@ Plan shape (open dict, no migration):
 - ``plan`` = ``{"span": {"start": int, "end": int}, "params": [str, ...],
   "returns": [str, ...], "suggested_name": str | None}`` -- the lines to lift,
   the inferred signature, and a deterministic starting name (see
-  :func:`helper_name`): a ``timed()`` stage label, a banner comment, or
+  ``helper_naming``): a ``timed()`` stage label, a banner comment, or
   ``compute_<out>`` for an effect-free span with one informative OUT value.
-  ``None`` when nothing anchors a name, or when the name would collide with a
-  function already defined in the scope the helper lands in.
+  ``None`` when nothing anchors a name, or when the name is already taken in
+  the scope the helper lands in.
 - ``plan.needs_async`` -- the span awaits, so the helper is async and its call
   is awaited. An awaiting plan also carries ``async_host``: False when the
   enclosing function is not declared async, which makes the step a judgment
@@ -73,52 +73,21 @@ from typing import TYPE_CHECKING, Any
 from ..biomarkers.brain_method import BrainMethodDetector
 from ..biomarkers.complex_method import ComplexMethodDetector
 from ..biomarkers.large_method import LargeMethodDetector
-from ..complexity.ast_utils import _find_function_entry_name
 from ..complexity.cyclomatic import _is_boolean_operator, is_markup
 from ..complexity.languages import get_language_map
 from ..complexity.nloc import is_string_stmt
 from ..dataflow import find_extractions
-from ..dataflow.span import (
-    enclosing_with,
-    has_outside_effects,
-    section_heads,
-    span_statements,
-)
 from ..effort import effort_bucket
 from ..perf.dialects import PERF_DIALECTS
 from ..scoring import severity_deduction
+from .helper_naming import ScopeNames, helper_name, out_value_name
 from .models import RefactoringContext, RefactoringSuggestion
-from .naming import banner_words, join_identifier, label_words, split_words
 from .registry import RefactoringDetector, register
 
 if TYPE_CHECKING:
     from ..complexity.languages import LanguageNodeMap
     from ..dataflow import Extraction, FunctionAnalysis
     from ..models import Severity
-
-# OUT values whose name describes the variable's role, not the block's
-# product: ``compute_result`` names nothing the reader did not know.
-_UNINFORMATIVE_OUT = frozenset(
-    {"out", "result", "results", "value", "values", "ret", "tmp", "temp", "data", "item"}
-)
-
-# How each language that reaches this detector joins the words of a helper
-# name. Only the languages the Extract Method slicer has a dialect for
-# (``dataflow/dialects/__init__.py``) can appear here. C++ is deliberately
-# absent: it has no single convention (the standard library is snake_case,
-# Google style is PascalCase, Qt is camelCase), so it keeps the snake_case
-# default rather than getting one answer that is wrong for most C++ repos.
-_NAME_CONVENTION: dict[str, str] = {
-    "go": "camelCase",
-    "java": "camelCase",
-    "typescript": "camelCase",
-    "tsx": "camelCase",
-    "javascript": "camelCase",
-    "jsx": "camelCase",
-    "svelte": "camelCase",
-    "vue": "camelCase",
-}
-_SNAKE_CASE = "snake_case"
 
 # The function-level structural biomarkers this detector answers. A function is
 # only offered an extraction when one of these flagged it, so the suggestion
@@ -164,7 +133,7 @@ class ExtractMethodDetector(RefactoringDetector):
             return []
 
         out: list[RefactoringSuggestion] = []
-        names = _ScopeNames(lmap)
+        names = ScopeNames(lmap)
         # Source order, so the first of two colliding plans keeps the name.
         for analysis in sorted(analyses, key=lambda a: (a.start_line, a.end_line)):
             matched = self._findings_for(analysis, ctx.findings)
@@ -190,7 +159,10 @@ class ExtractMethodDetector(RefactoringDetector):
                         "params": list(best.params),
                         "returns": list(best.returns),
                         "suggested_name": names.claim(
-                            analysis.fn_node, helper_name(analysis, best, lmap, ctx.language)
+                            analysis,
+                            helper_name(
+                                analysis, best, lmap, ctx.language, names.imports(analysis.fn_node)
+                            ),
                         ),
                         **_async_fields(analysis, best, lmap, ctx.language),
                     },
@@ -246,35 +218,8 @@ class ExtractMethodDetector(RefactoringDetector):
     def _suggested_name(
         analysis: FunctionAnalysis, extraction: Extraction, language: str | None = None
     ) -> str | None:
-        """The name the slice's single OUT value gives the helper, in
-        *language*'s identifier convention: the last source
-        :func:`helper_name` tries, and only for a span with no outside effects.
-
-        Same posture as Extract Helper (see ``naming``): anchor the name to
-        something the plan already knows rather than guess what the block does.
-        A span whose single product is ``average`` is, by construction, the code
-        that computes it, so ``compute_average`` describes it without inferring
-        intent. With no single informative OUT there is no anchor and no name.
-
-        Convention is per language: Python, Rust and C++ keep ``compute_average``;
-        Go, Java and the TypeScript/JavaScript family take ``computeAverage``.
-        C++ gets no convention because it has no single one -- the standard
-        library is snake_case and Google style is PascalCase, so a fixed answer
-        would be wrong for as many repos as it fixed. The out value's own casing
-        is kept as word boundaries rather than thrown away, so ``meanValue`` is
-        ``computeMeanValue`` in Java, not ``compute_meanvalue``.
-        """
-        if len(extraction.returns) != 1:
-            return None
-        out_words = split_words(extraction.returns[0])
-        if not out_words:
-            return None
-        # ``_UNINFORMATIVE_OUT`` is keyed on the single-word slug, matching the
-        # names it holds (``meanValue`` is a product, ``result`` is a role).
-        if "_".join(out_words) in _UNINFORMATIVE_OUT:
-            return None
-        convention = _NAME_CONVENTION.get(language or "", _SNAKE_CASE)
-        return join_identifier(["compute", *out_words], convention)
+        """The OUT-value name alone (:func:`helper_naming.out_value_name`)."""
+        return out_value_name(analysis, extraction, language)
 
     @staticmethod
     def _confidence(extraction: Extraction, share: float) -> str:
@@ -305,119 +250,6 @@ def recovered_share(
         nloc_share = extraction.slice_nloc / analysis.nloc if analysis.nloc > 0 else 0.0
         return min(1.0, nloc_share, ccn_share)
     return min(1.0, ccn_share)
-
-
-def helper_name(
-    analysis: FunctionAnalysis,
-    extraction: Extraction,
-    lmap: LanguageNodeMap,
-    language: str | None,
-) -> str | None:
-    """A deterministic starting name for the lifted helper, before the
-    collision check, or ``None`` when nothing in the code anchors one.
-
-    Sources in order: the ``timed(..., "label")`` stage label the span opens
-    with, or whose ``with`` block it is the whole body of; the banner comment
-    directly above its first statement (the author's own name for the block);
-    the single OUT value, as ``compute_<out>``, but only for a span with no
-    outside effects. A label or banner names only its
-    own section, so a span that opens a second one gets neither. A span that
-    awaits, calls for effect or writes through a name it does not bind is not
-    a computation, so it gets no ``compute_`` name, from the OUT value or from
-    a banner.
-    """
-    stmts = span_statements(analysis.fn_node, extraction.start_line, extraction.end_line, lmap)
-    if not stmts:
-        return None
-    wrapper = enclosing_with(stmts, lmap)
-    heads = [_section_words(stmt, comment) for stmt, comment in section_heads(stmts)]
-    words = _label(wrapper) if wrapper is not None else []
-    words = words or (heads[0] if heads and not any(heads[1:]) else [])
-    effects = extraction.needs_async or has_outside_effects(
-        stmts, _span_locals(analysis, extraction), lmap
-    )
-    if words and not (effects and words[0] == "compute"):
-        return join_identifier(words, _NAME_CONVENTION.get(language or "", _SNAKE_CASE))
-    if effects:
-        return None
-    return ExtractMethodDetector._suggested_name(analysis, extraction, language)
-
-
-def _section_words(stmt: Any, comment: list[str]) -> list[str]:
-    """The stage label *stmt* opens with, else the banner *comment* above it."""
-    return _label(stmt) or banner_words(comment)
-
-
-def _label(stmt: Any) -> list[str]:
-    return label_words((stmt.text or b"").decode("utf-8", "replace"))
-
-
-def _span_locals(analysis: FunctionAnalysis, extraction: Extraction) -> frozenset[str]:
-    """Names the span binds itself: written inside it and not passed in."""
-    start, end = extraction.start_line, extraction.end_line
-    written = {d.var for d in analysis.def_use.definitions if start <= d.line <= end}
-    return frozenset(written - set(extraction.params))
-
-
-# How far below a scope a sibling definition can sit: ``export const f = () =>``
-# is four levels under a TS module, a decorated Python method three under its
-# class. Deeper nodes are expressions, which a scan for names need not visit.
-_SIBLING_DEPTH = 4
-
-
-class _ScopeNames:
-    """The names already taken in each scope a helper lands in, so a suggested
-    name never shadows a sibling function or another plan's helper.
-
-    A helper lands where its host function sits: a method's class, a nested
-    function's enclosing function, else the module. Names compare without a
-    leading underscore (``compute_x`` collides with ``_compute_x``). A colliding
-    name is dropped rather than suffixed: ``compute_total_2`` says nothing the
-    reader can use, and the first plan in source order keeps the name.
-    Go's package scope spans files; only this file's names are seen.
-    """
-
-    def __init__(self, lmap: LanguageNodeMap) -> None:
-        self._lmap = lmap
-        self._taken: dict[int, set[str]] = {}
-
-    def claim(self, fn_node: Any, name: str | None) -> str | None:
-        if name is None or fn_node is None:
-            return name
-        scope = _enclosing_scope(fn_node, self._lmap)
-        taken = self._taken.get(scope.id)
-        if taken is None:
-            taken = self._taken[scope.id] = _defined_names(scope, self._lmap)
-        key = name.lstrip("_")
-        if key in taken:
-            return None
-        taken.add(key)
-        return name
-
-
-def _enclosing_scope(fn_node: Any, lmap: LanguageNodeMap) -> Any:
-    holders = lmap.class_kinds | lmap.function_kinds | lmap.lambda_kinds
-    node = fn_node.parent
-    while node is not None and node.parent is not None and node.type not in holders:
-        node = node.parent
-    return node if node is not None else fn_node
-
-
-def _defined_names(scope: Any, lmap: LanguageNodeMap) -> set[str]:
-    """Names of the functions defined directly in *scope* (not in nested ones)."""
-    fn_kinds = lmap.function_kinds | lmap.lambda_kinds
-    stop = fn_kinds | lmap.class_kinds
-    names: set[str] = set()
-    stack = [(child, 1) for child in scope.children]
-    while stack:
-        node, depth = stack.pop()
-        if node.type in fn_kinds:
-            names.add(_find_function_entry_name(node, lmap).lstrip("_"))
-            continue
-        if node.type in stop or depth >= _SIBLING_DEPTH:
-            continue
-        stack.extend((child, depth + 1) for child in node.children)
-    return names
 
 
 def _async_fields(

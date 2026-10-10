@@ -144,7 +144,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
 
     out: list[Extraction] = []
     evaluated = 0
-    for block, loop in _all_blocks(fn_node, lmap.block_kinds, scope_kinds, lmap.loop_kinds):
+    for block, loop in all_blocks(fn_node, lmap.block_kinds, scope_kinds, lmap.loop_kinds):
         stmts = block.named_children
         n = len(stmts)
         is_body = block.id == body_container.id
@@ -949,7 +949,7 @@ def _unwrap_container(node: Node, block_kinds: frozenset[str]) -> Node:
             return cur
 
 
-def _all_blocks(
+def all_blocks(
     fn_node: Node,
     block_kinds: frozenset[str],
     scope_kinds: frozenset[str],
