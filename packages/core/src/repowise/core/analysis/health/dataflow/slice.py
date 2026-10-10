@@ -33,7 +33,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple
 
+from ..complexity.ast_utils import member_object, self_member_name
 from ..complexity.nloc import _code_line_numbers
+from .dialects.base import SUPER, mentions_receiver
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -76,10 +78,14 @@ class Extraction:
     scope): the helper must be async and its call site awaited.
 
     ``uses_receiver`` says whether the span names the instance its method
-    runs on (``self``, ``this``, a Go receiver; lambdas in the span count,
-    they share it), and ``receiver_writes`` which of its fields the span
-    assigns. Both are None when the language cannot tell (no receiver model,
-    or a bare name that may be a field in Java / C++).
+    runs on (``self``, ``this``, ``super``, a Go receiver; lambdas in the
+    span count, they share it), and ``receiver_assigns`` which of its fields
+    the span assigns directly (``self.x = ...``, ``self.x[k] += ...``,
+    ``this.n++``, unpacking targets): not through an alias, a mutating call
+    (``self.items.append``) or ``del``. Both are None when the language cannot
+    tell (no receiver model, or a bare name that may be a field in Java /
+    C++), and ``receiver_assigns`` also when an assignment target rooted at
+    the receiver has a shape this does not read.
     """
 
     start_line: int
@@ -90,7 +96,7 @@ class Extraction:
     ccn_removed: int
     needs_async: bool = False
     uses_receiver: bool | None = None
-    receiver_writes: tuple[str, ...] | None = None
+    receiver_assigns: tuple[str, ...] | None = None
 
 
 class _Scan(NamedTuple):
@@ -103,23 +109,16 @@ class _Scan(NamedTuple):
     awaits: tuple[frozenset[str], frozenset[str]]
     lambdas: frozenset[str] = frozenset()
     receiver: Receiver | None = None
-    yields: frozenset[str] = frozenset()
-    # Jumps that stay inside the function (``break`` / ``continue``).
-    local_jumps: frozenset[str] = frozenset()
 
 
 class _Metrics(NamedTuple):
-    """What :func:`_span_metrics` finds in a span or a whole function body:
-    ``yields`` (a generator), ``exits`` (returns, raises and exiting macros
-    that leave the function) on top of what the slicer gates on."""
+    """What :func:`_span_metrics` finds in a span or a whole function body."""
 
     decisions: int
     jump: bool
     awaits: bool
     receiver_use: bool = False
-    receiver_writes: frozenset[str] = frozenset()
-    yields: bool = False
-    exits: int = 0
+    receiver_assigns: frozenset[str] = frozenset()
 
 
 class _Prefix(NamedTuple):
@@ -132,7 +131,7 @@ class _Prefix(NamedTuple):
     nested: list[int]
     code: list[int]
     receiver: list[int]
-    writes: list[frozenset[str]]
+    assigns: list[frozenset[str]]
 
 
 def find_extractions(
@@ -171,7 +170,7 @@ def find_extractions(
     hoisted = _hoisted_bindings(def_lines, use_lines)
     decl_lines = _declaration_lines(analysis.def_use)
     shared = _closure_state(analysis.def_use, def_lines, use_lines)
-    scan = _scan_for(lmap, receiver)
+    scan = _scan_for(lmap, receiver, fn_node)
     scope_kinds = scan.scopes
     free_writes = _free_write_lines(analysis.def_use) if receiver and receiver.implicit else []
     # Expression-oriented grammars (nonempty ``statement_wrapper_kinds``): a
@@ -237,7 +236,7 @@ def find_extractions(
                     span, loop, s, e, def_lines, use_lines, lmap
                 ):
                     continue
-                uses, writes = _receiver_facts(receiver, pre, i, j, _count_in(free_writes, s, e))
+                uses, assigns = _receiver_facts(receiver, pre, i, j, _count_in(free_writes, s, e))
                 out.append(
                     Extraction(
                         start_line=s,
@@ -248,13 +247,18 @@ def find_extractions(
                         ccn_removed=decisions,
                         needs_async=pre.awaits[j + 1] > pre.awaits[i],
                         uses_receiver=uses,
-                        receiver_writes=writes,
+                        receiver_assigns=assigns,
                     )
                 )
     return _sorted(out)
 
 
-def _scan_for(lmap: LanguageNodeMap, receiver: Receiver | None) -> _Scan:
+def _scan_for(lmap: LanguageNodeMap, receiver: Receiver | None, fn_node: Node) -> _Scan:
+    """The walk's kinds for *fn_node*. The receiver is looked for only when
+    its name (or ``super``) appears in the function's text at all: most
+    functions never mention it, and then no node needs the check."""
+    if receiver is not None and not (receiver.names and mentions_receiver(fn_node, receiver.names)):
+        receiver = None
     return _Scan(
         decisions=lmap.branch_kinds
         | lmap.loop_kinds
@@ -270,9 +274,7 @@ def _scan_for(lmap: LanguageNodeMap, receiver: Receiver | None) -> _Scan:
         exit_macros=_exit_macros(lmap),
         awaits=_awaits(lmap),
         lambdas=lmap.lambda_kinds,
-        receiver=receiver if receiver is not None and receiver.names else None,
-        yields=lmap.yield_kinds,
-        local_jumps=lmap.break_kinds | lmap.continue_kinds,
+        receiver=receiver,
     )
 
 
@@ -293,7 +295,7 @@ def _block_prefix(
         pre.nested.append(pre.nested[-1] + _holds_a_named_nested_function([st], lmap))
         pre.code.append(pre.code[-1] + _stmts_nloc([st], lines))
         pre.receiver.append(pre.receiver[-1] + m.receiver_use)
-        pre.writes.append(m.receiver_writes)
+        pre.assigns.append(m.receiver_assigns)
     return pre
 
 
@@ -311,14 +313,15 @@ def _free_write_lines(def_use: FunctionDefUse) -> list[int]:
 def _receiver_facts(
     receiver: Receiver | None, pre: _Prefix, i: int, j: int, free_writes: int
 ) -> tuple[bool | None, tuple[str, ...] | None]:
-    """``uses_receiver`` / ``receiver_writes`` for the span over statements
+    """``uses_receiver`` / ``receiver_assigns`` for the span over statements
     ``i..j`` (see :class:`Extraction`)."""
     if receiver is None:
         return None, None
     if not receiver.names:
         return False, ()
     named = pre.receiver[j + 1] > pre.receiver[i]
-    fields = tuple(sorted(frozenset().union(*pre.writes[i : j + 1])))
+    found = frozenset().union(*pre.assigns[i : j + 1])
+    fields = None if _UNREAD_TARGET in found else tuple(sorted(found))
     if receiver.implicit:
         return (True if named else None), (None if free_writes else fields)
     return named, fields
@@ -1098,96 +1101,138 @@ def _is_jump(
 
 
 def _span_metrics(span: list[Node], scan: _Scan) -> _Metrics:
-    """Decision points, jumps, awaits, yields, exits and receiver references
+    """Decision points, jump and await presence, and receiver references
     within *span*: a candidate span's statements, or a function body's for
     facts about the whole function. Nested scopes are not descended into,
     except a lambda for the receiver alone, since it shares the instance. A
-    macro named in ``scan.exit_macros`` counts as a jump and an exit; an await
-    under one of the await scope kinds (``async`` blocks) does not suspend
-    the function."""
+    macro named in ``scan.exit_macros`` counts as a jump; an await under one
+    of the await scope kinds (``async`` blocks) does not suspend the
+    function."""
     await_kinds, await_scope_kinds = scan.awaits
     receiver = scan.receiver
-    decisions = exits = 0
-    has_jump = has_await = has_yield = uses = False
-    writes: set[str] = set()
+    decisions = 0
+    has_jump = has_await = uses = False
+    assigns: set[str] = set()
     for root in span:
         # (node, whether its awaits count, inside a lambda: receiver only)
         stack: list[tuple[Node, bool, bool]] = [(root, True, False)]
         while stack:
             node, counts_await, nested = stack.pop()
             if receiver is not None:
-                uses = _receiver_ref(node, receiver, writes) or uses
+                uses = _receiver_ref(node, receiver, assigns) or uses
             if not nested:
                 t = node.type
-                if _is_jump(node, scan.jumps, scan.exit_macros):
-                    has_jump = True
-                    has_yield = has_yield or t in scan.yields
-                    exits += t not in scan.yields and t not in scan.local_jumps
+                has_jump = has_jump or _is_jump(node, scan.jumps, scan.exit_macros)
                 has_await = has_await or (counts_await and t in await_kinds)
                 decisions += t in scan.decisions
                 counts_await = counts_await and t not in await_scope_kinds
-            for child in node.children:
-                if child.type not in scan.scopes:
-                    stack.append((child, counts_await, nested))
-                elif receiver is not None and child.type in scan.lambdas:
-                    stack.append((child, False, True))
-    return _Metrics(
-        decisions, has_jump, has_await, uses, frozenset(writes), has_yield, exits
-    )
+            _push_children(node, stack, counts_await, nested, scan)
+    return _Metrics(decisions, has_jump, has_await, uses, frozenset(assigns))
 
 
-# Index access on a receiver field (``self.cache[k] = v``) writes into it.
+def _push_children(
+    node: Node,
+    stack: list[tuple[Node, bool, bool]],
+    counts_await: bool,
+    nested: bool,
+    scan: _Scan,
+) -> None:
+    """Queue *node*'s children: nested scopes are skipped, except a lambda
+    when the receiver is looked for (it shares the instance)."""
+    for child in node.children:
+        if child.type not in scan.scopes:
+            stack.append((child, counts_await, nested))
+        elif scan.receiver is not None and child.type in scan.lambdas:
+            stack.append((child, False, True))
+
+
+# Index access on a receiver field (``self.cache[k] = v``) assigns into it.
 _INDEX_KINDS = frozenset({"subscript", "subscript_expression", "index_expression", "array_access"})
-_OBJECT_FIELDS = ("object", "operand", "value", "argument", "array")
-_MEMBER_FIELDS = ("attribute", "property", "field")
+# Unpacking targets whose named children are targets themselves
+# (``a, self.b = ...``, ``[this.x, y] = ...``).
+_UNPACK_KINDS = frozenset(
+    {
+        "pattern_list",
+        "tuple_pattern",
+        "list_pattern",
+        "expression_list",
+        "tuple",
+        "list",
+        "array_pattern",
+        "object_pattern",
+        "parenthesized_expression",
+        "list_splat_pattern",
+        "rest_pattern",
+    }
+)
+# Marks a target rooted at the receiver whose shape is not read, so the
+# span's assigned fields are unknown.
+_UNREAD_TARGET = ""
 
 
-def _receiver_ref(node: Node, receiver: Receiver, writes: set[str]) -> bool:
-    """True when *node* names the receiver; a write to one of its fields adds
-    the field's name to *writes* (the receiver leaf under it is visited next)."""
+def _receiver_ref(node: Node, receiver: Receiver, assigns: set[str]) -> bool:
+    """True when *node* names the receiver; an assignment to one of its
+    fields adds the field's name to *assigns* (the receiver leaf under it is
+    visited next)."""
     if node.type in receiver.write_kinds:
         target = (
             node.child_by_field_name("left")
             or node.child_by_field_name("argument")
             or (node.named_children[0] if node.named_children else None)
         )
-        # ``a, self.b = ...``: Go and Python hold several targets in a list.
-        many = target is not None and target.type.endswith("list")
-        for each in target.named_children if many else [target]:
-            field = _receiver_field(each, receiver)
-            if field:
-                writes.add(field)
+        if target is not None:
+            _collect_assigned(target, receiver, assigns)
         return False
     return _is_receiver(node, receiver)
 
 
+def _collect_assigned(target: Node, receiver: Receiver, assigns: set[str]) -> None:
+    """The receiver fields one assignment target writes, unpacking included;
+    a target of another shape that mentions the receiver makes them unknown."""
+    if target.type in _UNPACK_KINDS:
+        for each in target.named_children:
+            _collect_assigned(each, receiver, assigns)
+        return
+    if target.type in ("assignment_pattern", "object_assignment_pattern"):  # ``[this.a = 1]``
+        left = target.child_by_field_name("left")
+        if left is not None:
+            _collect_assigned(left, receiver, assigns)
+        return
+    if target.type == "pair_pattern":  # ``{key: this.a}``
+        value = target.child_by_field_name("value")
+        if value is not None:
+            _collect_assigned(value, receiver, assigns)
+        return
+    field = _receiver_field(target, receiver)
+    if field:
+        assigns.add(field)
+    elif target.type not in receiver.access_kinds | _INDEX_KINDS and mentions_receiver(
+        target, receiver.names
+    ):
+        assigns.add(_UNREAD_TARGET)
+
+
 def _is_receiver(node: Node, receiver: Receiver) -> bool:
-    """A leaf naming the receiver: a ``this`` / ``self`` token, or an
-    identifier spelling a named receiver (Python ``self``, Go ``s``)."""
+    """A leaf naming the receiver: a ``this`` / ``self`` / ``super`` token,
+    or an identifier spelling a named receiver (Python ``self``, Go ``s``)
+    or ``super`` (Python's no-argument ``super()``)."""
     if node.children or not node.text:
         return False
-    if node.type in receiver.names:
+    if node.type in receiver.names or node.type == SUPER:
         return True
-    return node.type == "identifier" and node.text.decode("utf-8", "replace") in receiver.names
+    if node.type != "identifier":
+        return False
+    text = node.text.decode("utf-8", "replace")
+    return text in receiver.names or text == SUPER
 
 
-def _field_child(node: Node, fields: tuple[str, ...]) -> Node | None:
-    for field in fields:
-        child = node.child_by_field_name(field)
-        if child is not None:
-            return child
-    return None
-
-
-def _receiver_field(target: Node | None, receiver: Receiver) -> str | None:
-    """``x`` for a write target ``self.x``, ``self.x.y`` or ``self.x[k]``."""
-    cur = target
+def _receiver_field(target: Node, receiver: Receiver) -> str | None:
+    """``x`` for an assignment target ``self.x``, ``self.x.y`` or ``self.x[k]``."""
+    cur: Node | None = target
     while cur is not None and (cur.type in receiver.access_kinds or cur.type in _INDEX_KINDS):
-        obj = _field_child(cur, _OBJECT_FIELDS) or (
-            cur.named_children[0] if cur.named_children else None
-        )
-        if obj is not None and cur.type in receiver.access_kinds and _is_receiver(obj, receiver):
-            member = _field_child(cur, _MEMBER_FIELDS)
-            return member.text.decode("utf-8", "replace") if member and member.text else None
-        cur = obj
+        if cur.type in receiver.access_kinds:
+            field = self_member_name(cur, receiver.names)
+            if field is not None:
+                return field
+        cur = member_object(cur)
     return None

@@ -208,7 +208,7 @@ Most plans answer a health finding, so per-path marker rules in
   step is a judgment call with reason `async_helper_unexpressible`.
 - An Extract Method plan says whether the helper must be a method on the same
   object (the span uses `self`, `this` or a Go receiver) and which of the
-  object's fields the span assigns, under `new_symbol`. A span that uses `this`
+  object's fields the span assigns directly, under `new_symbol`. A span that uses `this`
   outside a class, or writes fields of a Go value receiver, is a judgment call
   (`receiver_unbound`, `receiver_copy_written`).
 - Move Method never targets a class the method only instantiates, or an ancestor of

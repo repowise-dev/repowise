@@ -40,6 +40,7 @@ precision-first contract the perf pillar depends on.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -131,6 +132,18 @@ class Receiver:
 
 #: A function with no instance: it is never a method.
 NO_RECEIVER = Receiver()
+
+#: ``super`` reaches the instance too (Python ``super()``, TS / Java ``super``).
+SUPER = "super"
+
+
+def mentions_receiver(node: Node, names: frozenset[str]) -> bool:
+    """Whether *node*'s text holds one of *names* (or ``super``) as a word.
+    A text test, so a mention in a string or comment counts: it can only
+    make an answer unknown or cost a walk, never hide a use."""
+    words = "|".join(re.escape(n) for n in sorted(names | {SUPER}))
+    text = (node.text or b"").decode("utf-8", "replace")
+    return re.search(rf"(?<![\w$])(?:{words})(?![\w$])", text) is not None
 
 
 @runtime_checkable
@@ -439,7 +452,28 @@ class BaseDefUseDialect:
 
     def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """The instance *fn_node* runs on (:class:`Receiver`), ``NO_RECEIVER``
-        for a plain function. Default: None, this language cannot tell."""
+        for a plain function, None when this language cannot tell.
+
+        A function with no receiver of its own nested in one that has one (a
+        Python inner ``def``, a Go func literal, a Java or C++ lambda) can
+        still reach the outer instance through the captured name; that is
+        unknown, not "none", unless the name never appears in it. An outer
+        implicit receiver (Java, C++) can be reached by a bare field name, so
+        it is always unknown.
+        """
+        own = self._own_receiver(fn_node, lmap)
+        if own is None or own.names:
+            return own
+        outer_fn = _enclosing_function(fn_node, lmap)
+        if outer_fn is None:
+            return own
+        outer = self.receiver(outer_fn, lmap)
+        if outer is None or outer.implicit:
+            return None if outer is None or outer.names else own
+        return None if outer.names and mentions_receiver(fn_node, outer.names) else own
+
+    def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
+        """The receiver *fn_node* declares itself. Default: None (unknown)."""
         return None
 
     def _receiver(self, names: frozenset[str], **flags: bool) -> Receiver:
@@ -473,6 +507,18 @@ class BaseDefUseDialect:
 
 # Per closure-local name, the (start, end) points where that binding is in scope.
 _Scopes = dict[str, list[tuple[tuple[int, int], tuple[int, int]]]]
+
+
+def _enclosing_function(node: Node, lmap: LanguageNodeMap) -> Node | None:
+    """The nearest function or lambda holding *node*, stopping at a class
+    (a method's class body starts a new instance)."""
+    holders = lmap.function_kinds | lmap.lambda_kinds
+    cur = node.parent
+    while cur is not None and cur.type not in lmap.class_kinds:
+        if cur.type in holders:
+            return cur
+        cur = cur.parent
+    return None
 
 
 def _pos(occ: Occurrence) -> tuple[int, int]:

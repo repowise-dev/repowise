@@ -71,19 +71,24 @@ describe("extract_method plan accessors", () => {
 
   it("reads new_symbol and the receiver hazard, null for a plan stored before them", () => {
     const old = extractMethodPlan(extractMethodPlanFixture());
-    expect([old.kind, old.mutates, old.receiver_hazard]).toEqual([null, null, null]);
+    expect([old.kind, old.uses_receiver, old.assigns, old.receiver_hazard]).toEqual([null, null, null, null]);
     const em = extractMethodPlan(
       extractMethodPlanFixture({
         plan: {
           span: { start: 30, end: 48 },
           params: [],
           returns: [],
-          new_symbol: { kind: "method", async: false, receiver: "s", mutates: ["n"] },
+          new_symbol: { kind: "method", async: false, receiver: "s", uses_receiver: true, assigns: ["n"] },
           receiver_hazard: "receiver_copy_written",
         },
       }),
     );
-    expect([em.kind, em.mutates, em.receiver_hazard]).toEqual(["method", ["n"], "receiver_copy_written"]);
+    expect([em.kind, em.uses_receiver, em.assigns, em.receiver_hazard]).toEqual([
+      "method",
+      true,
+      ["n"],
+      "receiver_copy_written",
+    ]);
   });
 
   it("returns a null span when the plan omits it", () => {

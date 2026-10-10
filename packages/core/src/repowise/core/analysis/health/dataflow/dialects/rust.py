@@ -150,7 +150,7 @@ class RustDefUseDialect(BaseDefUseDialect):
             self._targets(child.child_by_field_name("pattern"), out, sink)
         return tuple(out)
 
-    def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
+    def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """``self`` when the signature takes it (``self_parameter``)."""
         params = fn_node.child_by_field_name("parameters")
         if params is None or not any(c.type == "self_parameter" for c in params.named_children):

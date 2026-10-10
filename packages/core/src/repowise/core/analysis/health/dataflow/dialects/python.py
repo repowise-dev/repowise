@@ -82,7 +82,7 @@ class PythonDefUseDialect(BaseDefUseDialect):
                 out.append(self._occ(name_node))
         return tuple(out)
 
-    def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
+    def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """A method's first parameter when it is ``self`` / ``cls`` and the
         function sits in a class body; a nested function reaches ``self`` as a
         captured name instead, which is already one of its parameters. A

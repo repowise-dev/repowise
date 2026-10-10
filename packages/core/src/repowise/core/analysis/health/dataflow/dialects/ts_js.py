@@ -60,6 +60,10 @@ _SCOPE_BOUNDARIES = frozenset(
 _THIS = frozenset({"this"})
 
 
+def _is_static(method: Node) -> bool:
+    return any(c.type == "static" for c in method.children)
+
+
 class TsJsDefUseDialect(BaseDefUseDialect):
     language = "typescript"
     member_access_kinds = frozenset({"member_expression"})
@@ -108,17 +112,20 @@ class TsJsDefUseDialect(BaseDefUseDialect):
             self._targets(pattern, out, sink)
         return tuple(out)
 
-    def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
+    def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """``this``, bound when it is a class instance: a class method, or an
         arrow function (which takes ``this`` from where it is written) inside
         one or in a class field. An object-literal method or a plain function
-        gets ``this`` from its caller, so a helper method cannot share it."""
+        gets ``this`` from its caller, so a helper method cannot share it. In
+        a ``static`` method ``this`` is the class, not an instance: judged
+        unbound too, the conservative call."""
         node = fn_node
         while node is not None and node.type not in lmap.class_kinds:
             if node.type in _SCOPE_BOUNDARIES and node.type != "arrow_function":
                 parent = node.parent
-                bound = node.type == "method_definition" and parent is not None
-                return self._receiver(_THIS, bound=bound and parent.type == "class_body")
+                in_class = node.type == "method_definition" and parent is not None
+                bound = in_class and parent.type == "class_body" and not _is_static(node)
+                return self._receiver(_THIS, bound=bound)
             node = node.parent
         return self._receiver(_THIS, bound=node is not None)
 

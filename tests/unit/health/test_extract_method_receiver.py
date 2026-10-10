@@ -59,11 +59,11 @@ def _receiver(language: str, fn):
 
 
 def _facts(language: str, ext: str, src: str, index: int = 0):
-    """``(uses_receiver, receiver_writes)`` per candidate span, keyed by span."""
+    """``(uses_receiver, receiver_assigns)`` per candidate span, keyed by span."""
     fn = _functions(language, ext, src)[index]
     rec = _receiver(language, fn)
     return {
-        (x.start_line, x.end_line): (x.uses_receiver, x.receiver_writes)
+        (x.start_line, x.end_line): (x.uses_receiver, x.receiver_assigns)
         for x in find_extractions(fn, get_language_map(language), rec)
     }
 
@@ -122,9 +122,21 @@ def test_python_plan_carries_new_symbol():
     (plan,) = plans.values()
     sym = plan.plan["new_symbol"]
     if plan.plan["span"]["start"] >= 12:
-        assert sym == {"kind": "method", "async": False, "receiver": "self", "mutates": ["big", "done", "hits", "small"]}
+        assert sym == {
+            "kind": "method",
+            "async": False,
+            "receiver": "self",
+            "uses_receiver": True,
+            "assigns": ["big", "done", "hits", "small"],
+        }
     else:
-        assert sym == {"kind": "function", "async": False, "receiver": None, "mutates": []}
+        assert sym == {
+            "kind": "function",
+            "async": False,
+            "receiver": None,
+            "uses_receiver": False,
+            "assigns": [],
+        }
     assert "receiver_hazard" not in plan.plan
     assert classify_step(plan).classification == "mechanical"
 
@@ -239,7 +251,7 @@ function run(items, limit) {
 
 def test_this_in_a_plain_function_is_a_judgment_call():
     (plan,) = _plans("javascript", "js", _PLAIN_JS)
-    assert plan.plan["new_symbol"]["mutates"]
+    assert plan.plan["new_symbol"]["assigns"]
     assert plan.plan["receiver_hazard"] == "receiver_unbound"
     assert plan.plan["new_symbol"]["kind"] is None
     assert classify_step(plan).reasons == ("receiver_unbound",)
@@ -367,8 +379,8 @@ def test_new_symbol_does_not_change_the_public_id():
 
 
 def test_the_same_walk_gives_whole_function_facts():
-    """One walk serves a span and a whole body: generator, exits, awaits and
-    receiver writes of a function come from its body's statements."""
+    """One walk serves a span and a whole body: a function's awaits and
+    receiver assignments come from its body's statements."""
     from repowise.core.analysis.health.dataflow.slice import _scan_for, _span_metrics
 
     src = """
@@ -385,6 +397,116 @@ def test_the_same_walk_gives_whole_function_facts():
     (fn,) = _functions("python", "py", src)
     lmap = get_language_map("python")
     body = fn.fn_node.child_by_field_name("body").named_children
-    m = _span_metrics(body, _scan_for(lmap, _receiver("python", fn)))
-    assert (m.yields, m.exits, m.awaits) == (True, 2, True)
-    assert (m.receiver_use, m.receiver_writes) == (True, frozenset({"seen"}))
+    m = _span_metrics(body, _scan_for(lmap, _receiver("python", fn), fn.fn_node))
+    assert (m.jump, m.awaits) == (True, True)
+    assert (m.receiver_use, m.receiver_assigns) == (True, frozenset({"seen"}))
+
+
+def _first_named(language: str, src: str, kinds: frozenset[str]):
+    from tree_sitter import Parser
+
+    from repowise.core.ingestion.parser import _get_language
+
+    root = Parser(_get_language(language)).parse(textwrap.dedent(src).encode()).root_node
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type in kinds:
+            return node
+        stack.extend(reversed(node.children))
+    raise AssertionError(kinds)
+
+
+_PY_INNER = """
+class A:
+    def m(self):
+        def inner(v):
+            {body}
+"""
+
+
+@pytest.mark.parametrize(
+    ("language", "src", "kind", "expected"),
+    [
+        # A nested def reaching the outer self: unknown, not "no receiver".
+        ("python", _PY_INNER.format(body="self.x = v"), "function_definition", None),
+        ("python", _PY_INNER.format(body="return v"), "function_definition", "none"),
+        ("go", "package m\nfunc (s *S) M() { f := func() { s.n = 1 }; f() }\n", "func_literal", None),
+        ("go", "package m\nfunc (s *S) M() { f := func() { x := 1; _ = x }; f() }\n", "func_literal", "none"),
+        ("java", "class A { void m() { Runnable r = () -> { x = 1; }; } }", "lambda_expression", None),
+        ("java", "class A { static void m() { Runnable r = () -> { x = 1; }; } }", "lambda_expression", "none"),
+        ("cpp", "struct A { void m() { auto f = [this]() { x = 1; }; } };", "lambda_expression", None),
+    ],
+)
+def test_a_nested_function_reaching_the_outer_receiver_is_unknown(language, src, kind, expected):
+    lmap = get_language_map(language)
+    outer_kinds = lmap.function_kinds
+    node = _first_named(language, src, frozenset({kind}))
+    if kind in outer_kinds:  # the nested def, not the method holding it
+        stack = list(node.child_by_field_name("body").children)
+        while stack:
+            cur = stack.pop()
+            if cur.type == kind:
+                node = cur
+                break
+            stack.extend(cur.children)
+    rec = get_defuse_dialect(language).receiver(node, lmap)
+    assert (rec is NO_RECEIVER if expected == "none" else rec is None), rec
+
+
+def test_super_counts_as_a_receiver_use():
+    src = """
+    class A(B):
+        def run(self, items, limit):
+            total = 0
+            for it in items:
+                if it > limit:
+                    total += it
+                elif it < 0:
+                    total -= it
+                else:
+                    total += 1
+            print(total)
+            if total > 10:
+                super().flush(total)
+                print(total)
+            else:
+                print(-total)
+                print(limit)
+            return total
+    """
+    facts = _facts("python", "py", src)
+    assert _span(facts, 12) == (True, ())
+
+
+def test_unpacking_targets_are_assignments_and_an_unread_shape_is_unknown():
+    src = """
+    class A:
+        def run(self, items, limit):
+            total = 0
+            for it in items:
+                if it > limit:
+                    total += it
+                elif it < 0:
+                    total -= it
+                else:
+                    total += 1
+            print(total)
+            if total > 10:
+                self.a, (self.b, x) = total, (1, 2)
+                print(x)
+            else:
+                self.c = 0
+                print(limit)
+            return total
+    """
+    assert _span(_facts("python", "py", src), 12) == (True, ("a", "b", "c"))
+    rebinding = src.replace("self.c = 0", "self = other")
+    assert _span(_facts("python", "py", rebinding), 12) == (True, None)
+
+
+def test_typescript_static_method_this_is_the_class():
+    node = _first_named(
+        "typescript", "class A { static m() { return this; } }", frozenset({"method_definition"})
+    )
+    assert get_defuse_dialect("typescript").receiver(node, get_language_map("typescript")).bound is False

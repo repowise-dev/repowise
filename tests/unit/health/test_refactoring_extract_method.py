@@ -592,7 +592,8 @@ def test_detector_emits_suggestion_for_flagged_function():
         "kind": "function",
         "async": False,
         "receiver": None,
-        "mutates": [],
+        "uses_receiver": False,
+        "assigns": [],
     }
     assert set(s.plan["span"]) == {"start", "end"}
     assert set(s.evidence) == {"slice_nloc", "ccn_removed"}

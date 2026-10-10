@@ -70,6 +70,15 @@ _SCOPE_BOUNDARIES = frozenset({"lambda_expression"})
 _CALLEE_NAME_KINDS = frozenset({"identifier", "qualified_identifier", "template_function"})
 
 
+def _declarator_name(fn_node: Node) -> Node | None:
+    """The innermost node of a definition's ``declarator`` chain (its name),
+    None for a lambda, which has no declarator."""
+    name = fn_node.child_by_field_name("declarator")
+    while name is not None and name.child_by_field_name("declarator") is not None:
+        name = name.child_by_field_name("declarator")
+    return name
+
+
 class CppDefUseDialect(BaseDefUseDialect):
     language = "cpp"
     member_access_kinds = frozenset({_FIELD_EXPRESSION})
@@ -121,11 +130,15 @@ class CppDefUseDialect(BaseDefUseDialect):
                 out.append(self._occ(name_node))
         return tuple(out)
 
-    def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
+    def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """``this`` for a member function defined in its class (a bare name
         can also be a field); none for a ``static`` one or a free function.
-        Unknown for an out-of-class ``A::f`` definition: whether it is static
-        is declared in the class, which this file may not hold."""
+        Unknown for an out-of-class ``A::f`` definition (whether it is static
+        is declared in the class, which this file may not hold) and for a
+        lambda, which captures ``this`` or not in a list this does not read."""
+        name = _declarator_name(fn_node)
+        if name is None:
+            return None
         if any(
             c.type == "storage_class_specifier" and c.text == b"static"
             for c in fn_node.named_children
@@ -136,10 +149,7 @@ class CppDefUseDialect(BaseDefUseDialect):
             parent = parent.parent
         if parent is not None and parent.type == "field_declaration_list":
             return self._receiver(lmap.self_identifiers, implicit=True)
-        name = fn_node.child_by_field_name("declarator")
-        while name is not None and name.child_by_field_name("declarator") is not None:
-            name = name.child_by_field_name("declarator")
-        return None if name is not None and name.type == "qualified_identifier" else NO_RECEIVER
+        return None if name.type == "qualified_identifier" else NO_RECEIVER
 
     def _parameter_list(self, fn_node: Node) -> Node | None:
         node: Node | None = fn_node

@@ -102,9 +102,12 @@ class JavaDefUseDialect(BaseDefUseDialect):
                 out.append(self._occ(name_node))
         return tuple(out)
 
-    def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
+    def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """``this`` for an instance method or constructor, where a bare name
-        can also be a field; a ``static`` method has none."""
+        can also be a field; a ``static`` method has none. A lambda has none
+        of its own: it reaches the enclosing method's (``receiver``)."""
+        if fn_node.type in lmap.lambda_kinds:
+            return NO_RECEIVER
         modifiers = next((c for c in fn_node.named_children if c.type == "modifiers"), None)
         if modifiers is not None and any(c.type == "static" for c in modifiers.children):
             return NO_RECEIVER

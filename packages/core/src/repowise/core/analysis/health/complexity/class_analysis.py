@@ -25,7 +25,14 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from ....ingestion.python_overload import is_python_overload
 from ....test_paths import is_test_related_path
-from .ast_utils import _IDENTIFIER_SUFFIX, _find_name, is_function_node, is_misread_scope
+from .ast_utils import (
+    _find_name,
+    is_function_node,
+    is_misread_scope,
+    member_name,
+    member_object,
+    self_member_name,
+)
 from .languages import LanguageNodeMap, get_language_map
 from .models import ClassComplexity, CohesionGroup, FunctionComplexity
 from .nloc import CodeLineIndex
@@ -36,10 +43,6 @@ if TYPE_CHECKING:
 
     from tree_sitter import Node
 
-_PROP_FIELD_NAMES = ("property", "attribute", "field", "name")
-# ``expression`` is C#'s receiver field on ``member_access_expression`` (its
-# ``this`` token is unnamed, so the positional fallback would pick the member).
-_OBJECT_FIELD_NAMES = ("object", "value", "argument", "operand", "expression")
 # Fields of a binding node that hold the bound name, in probe order.
 _BINDING_NAME_FIELDS = ("name", "declarator", "left", "parameters")
 # A method's signature children: names there declare, they do not reference.
@@ -224,43 +227,6 @@ def _bound_names(node: Node, lmap: LanguageNodeMap) -> list[str]:
     return [_text(c) for c in named if c.type in lmap.identifier_kinds]
 
 
-def _receiver(node: Node) -> Node | None:
-    """The receiver child of a member-access node."""
-    for field_name in _OBJECT_FIELD_NAMES:
-        obj = node.child_by_field_name(field_name)
-        if obj is not None:
-            return obj
-    return next((c for c in node.children if c.is_named), None)
-
-
-def _member(node: Node) -> Node | None:
-    """The member-name child of a member-access node."""
-    for field_name in _PROP_FIELD_NAMES:
-        prop = node.child_by_field_name(field_name)
-        if prop is not None:
-            return prop
-    named = [c for c in node.children if c.is_named]
-    return next((c for c in reversed(named) if c.type.endswith(_IDENTIFIER_SUFFIX)), None)
-
-
-def _self_member_name(node: Node, lmap: LanguageNodeMap) -> str | None:
-    """Extract ``member`` from a ``self.member`` / ``this.member`` access.
-
-    Returns the member name when the receiver token is one of the
-    language's ``self_identifiers``; otherwise ``None`` (so ``other.x`` and
-    ``a.b.c``'s outer hops are ignored — only direct instance access
-    counts toward cohesion).
-    """
-    obj, prop = _receiver(node), _member(node)
-    if obj is None or prop is None or obj is prop:
-        return None
-    if obj.text is None or prop.text is None:
-        return None
-    if obj.text.decode("utf-8", errors="replace") not in lmap.self_identifiers:
-        return None
-    return prop.text.decode("utf-8", errors="replace")
-
-
 def _is_callee(node: Node, lmap: LanguageNodeMap) -> bool:
     """Whether *node* is the function a call invokes (``self.x()``)."""
     parent = node.parent
@@ -283,7 +249,7 @@ def _self_member_nodes(method_node: Node, lmap: LanguageNodeMap) -> Iterator[tup
         if node.type in lmap.class_kinds:
             continue  # nested class has its own self
         if node.type in lmap.member_access_kinds:
-            name = _self_member_name(node, lmap)
+            name = self_member_name(node, lmap.self_identifiers)
             if name:
                 yield node, name
         stack.extend(node.children)
@@ -324,7 +290,7 @@ def _foreign_member_id(node: Node, lmap: LanguageNodeMap) -> int | None:
     to another object, never to the enclosing class."""
     if node.type not in lmap.member_access_kinds:
         return None
-    obj, prop = _receiver(node), _member(node)
+    obj, prop = member_object(node), member_name(node)
     if obj is None or prop is None or obj.id == prop.id:
         return None  # a bare call (``id()``) has no receiver
     return prop.id

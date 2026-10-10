@@ -164,8 +164,12 @@ export interface ExtractMethodPlan {
   /** The helper is a method sharing the span's receiver, or a plain function.
    *  Null when the language cannot tell or the plan predates the field. */
   kind: "method" | "function" | null;
-  /** Receiver fields the span assigns. Null when not all are known. */
-  mutates: string[] | null;
+  /** Whether the span uses the helper's object; null when it may, through a
+   *  bare field name (Java, C++), or the plan does not say. */
+  uses_receiver: boolean | null;
+  /** Receiver fields the span assigns directly (not through an alias, a
+   *  mutating call or delete). Null when not all are known. */
+  assigns: string[] | null;
   /** Why the helper cannot share the receiver as it is (a judgment call). */
   receiver_hazard: "receiver_unbound" | "receiver_copy_written" | null;
 }
@@ -188,7 +192,8 @@ export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
     needs_async: p.needs_async === true,
     async_host: typeof p.async_host === "boolean" ? p.async_host : null,
     kind: sym.kind === "method" || sym.kind === "function" ? sym.kind : null,
-    mutates: Array.isArray(sym.mutates) ? (sym.mutates as string[]) : null,
+    uses_receiver: typeof sym.uses_receiver === "boolean" ? sym.uses_receiver : null,
+    assigns: Array.isArray(sym.assigns) ? (sym.assigns as string[]) : null,
     receiver_hazard: RECEIVER_HAZARDS.find((h) => h === p.receiver_hazard) ?? null,
   };
 }

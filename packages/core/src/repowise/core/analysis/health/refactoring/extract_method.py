@@ -55,11 +55,13 @@ Plan shape (open dict, no migration):
   enclosing function is not declared async, which makes the step a judgment
   call (``preconditions``) rather than a mechanical one.
 - ``plan.new_symbol`` = ``{"kind": "method" | "function" | None, "async":
-  bool, "receiver": str | None, "mutates": [str, ...] | None}`` -- whether
-  the helper must be a method (the span uses ``self`` / ``this`` / the Go
-  receiver, or a Java / C++ field may be read bare), the receiver name a
-  method keeps, and the receiver fields the span assigns. None where the
-  language cannot tell. ``plan.receiver_hazard`` is set only when the
+  bool, "receiver": str | None, "uses_receiver": bool | None, "assigns":
+  [str, ...] | None}`` -- whether the helper must be a method (the span uses
+  ``self`` / ``this`` / ``super`` / the Go receiver, or may read a Java / C++
+  field bare, ``uses_receiver`` None), the receiver name a method keeps, and
+  the receiver fields the span assigns directly (``Extraction``). None where
+  the language cannot tell. ``new_symbol.async`` is the canonical async key;
+  ``needs_async`` stays for stored rows and their readers. ``plan.receiver_hazard`` is set only when the
   receiver cannot be shared as it is (``_receiver_hazard``), which makes the
   step a judgment call.
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` -- the size and
@@ -282,11 +284,12 @@ def _async_fields(
 def _symbol_fields(extraction: Extraction, receiver: Receiver | None) -> dict[str, Any]:
     """``new_symbol``: what the helper is (``kind`` method or function, None
     when the language cannot tell), ``async``, the ``receiver`` a method
-    reaches its instance by, and the receiver fields it assigns (``mutates``,
-    None when not all are known). ``receiver_hazard`` only when lifting the
-    span changes what the receiver is (see ``_receiver_hazard``)."""
-    uses, writes = extraction.uses_receiver, extraction.receiver_writes
-    hazard = _receiver_hazard(receiver, uses, writes)
+    reaches its instance by, whether the span uses it (None: it may, by a
+    bare field name), and the receiver fields it assigns directly
+    (``assigns``, None when not all are known). ``receiver_hazard`` only when
+    lifting the span changes what the receiver is (``_receiver_hazard``)."""
+    uses, assigns = extraction.uses_receiver, extraction.receiver_assigns
+    hazard = _receiver_hazard(receiver, uses, assigns)
     kind: str | None = None
     if receiver is not None and hazard != "receiver_unbound":
         kind = "method" if receiver.implicit or uses else "function"
@@ -294,9 +297,11 @@ def _symbol_fields(extraction: Extraction, receiver: Receiver | None) -> dict[st
     fields: dict[str, Any] = {
         "new_symbol": {
             "kind": kind,
+            # Canonical async key; ``needs_async`` is kept for stored rows.
             "async": extraction.needs_async,
             "receiver": name,
-            "mutates": list(writes) if writes is not None else None,
+            "uses_receiver": uses,
+            "assigns": list(assigns) if assigns is not None else None,
         }
     }
     if hazard:
@@ -305,7 +310,7 @@ def _symbol_fields(extraction: Extraction, receiver: Receiver | None) -> dict[st
 
 
 def _receiver_hazard(
-    receiver: Receiver | None, uses: bool | None, writes: tuple[str, ...] | None
+    receiver: Receiver | None, uses: bool | None, assigns: tuple[str, ...] | None
 ) -> str | None:
     """Why a helper cannot share the span's receiver as it is, or None.
 
@@ -313,13 +318,14 @@ def _receiver_hazard(
     instance (a TS/JS plain function or object-literal method), so no helper
     method can be given the same one. ``receiver_copy_written``: the span
     assigns a field of a Go value receiver, a copy, so a helper holding its
-    own copy loses the write the rest of the method reads.
+    own copy loses the write the rest of the method reads (also when the
+    assigned fields are unknown).
     """
     if receiver is None or not uses:
         return None
     if not receiver.bound:
         return "receiver_unbound"
-    if receiver.copy and writes:
+    if receiver.copy and (assigns is None or assigns):
         return "receiver_copy_written"
     return None
 

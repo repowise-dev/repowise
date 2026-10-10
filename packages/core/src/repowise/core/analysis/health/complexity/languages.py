@@ -90,7 +90,7 @@ class LanguageNodeMap:
     # denote the instance (``self`` / ``this`` / ``$this`` / ``cls``), and
     # ``member_access_kinds`` to the node type(s) for ``receiver.member``
     # access. The receiver and member-name children are pulled out by the
-    # generic field-name probe in ``walker._self_member_name`` (it tries
+    # generic field-name probe in ``ast_utils.self_member_name`` (it tries
     # the ``object``/``value`` and ``property``/``attribute``/``field``/
     # ``name`` fields, then falls back to positional children), so most
     # tree-sitter grammars need only the node-type names below.

@@ -25,6 +25,10 @@ if TYPE_CHECKING:
 # ``field_identifier`` / ``property_identifier`` / ``type_identifier`` ...).
 # Used by both the assertion-callee scan and the class self-member probe.
 _IDENTIFIER_SUFFIX = "identifier"
+_PROP_FIELD_NAMES = ("property", "attribute", "field", "name")
+# ``expression`` is C#'s receiver field on ``member_access_expression`` (its
+# ``this`` token is unnamed, so the positional fallback would pick the member).
+_OBJECT_FIELD_NAMES = ("object", "value", "argument", "operand", "expression")
 
 # Leaf node types that carry a declared name at the bottom of a C/C++
 # ``declarator`` chain.
@@ -38,6 +42,44 @@ _MAX_CALLEE_PATH = 100
 # A callee whose source text is already a dotted name (``ipcMain.handle``,
 # ``this.on``) and is kept as written.
 _PLAIN_PATH = re.compile(r"[\w$#]+(?:\.[\w$#]+)*")
+
+
+def member_object(node: Node) -> Node | None:
+    """The receiver child of a member-access (or index) node."""
+    for field_name in _OBJECT_FIELD_NAMES:
+        obj = node.child_by_field_name(field_name)
+        if obj is not None:
+            return obj
+    return next((c for c in node.children if c.is_named), None)
+
+
+def member_name(node: Node) -> Node | None:
+    """The member-name child of a member-access node."""
+    for field_name in _PROP_FIELD_NAMES:
+        prop = node.child_by_field_name(field_name)
+        if prop is not None:
+            return prop
+    named = [c for c in node.children if c.is_named]
+    return next((c for c in reversed(named) if c.type.endswith(_IDENTIFIER_SUFFIX)), None)
+
+
+def self_member_name(node: Node, names: frozenset[str]) -> str | None:
+    """Extract ``member`` from a ``self.member`` / ``this.member`` access.
+
+    Returns the member name when the receiver token is one of *names*
+    (a language's ``self_identifiers``, or a Go receiver's own name);
+    otherwise ``None`` (so ``other.x`` and
+    ``a.b.c``'s outer hops are ignored — only direct instance access
+    counts toward cohesion).
+    """
+    obj, prop = member_object(node), member_name(node)
+    if obj is None or prop is None or obj is prop:
+        return None
+    if obj.text is None or prop.text is None:
+        return None
+    if obj.text.decode("utf-8", errors="replace") not in names:
+        return None
+    return prop.text.decode("utf-8", errors="replace")
 
 
 def _pascal_unwrap_name(name: Node) -> Node:
