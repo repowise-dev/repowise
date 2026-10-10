@@ -189,7 +189,32 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # a library for writing tests is that library's production code
     ("packages/testing-library/src/index.ts", None, ""),
     ("src/testing_library/render.py", None, ""),
-    ("src/test-utils/render.ts", None, ""),
+    # #3244: but a helper directory named for tests holds what only tests
+    # import, wherever it sits, read on its words run together like `testdata`
+    ("ui/src/test-helpers/load-styles.ts", None, "support"),
+    ("src/test_helpers/x.py", None, "support"),
+    ("src/testhelpers/x.ts", None, "support"),
+    ("src/test-utils/render.ts", None, "support"),
+    ("src/test_utils/x.py", None, "support"),
+    ("internal/testutils/x.go", None, "support"),
+    ("pkg/testutil/x.go", None, "support"),
+    ("src/test-support/x.ts", None, "support"),
+    ("src/test_support/x.rb", None, "support"),
+    ("tests/test-utils/x.ts", None, "support"),
+    # a test-shaped filename inside one is still a test
+    ("ui/src/test-helpers/foo.test.ts", None, "test"),
+    ("pkg/testutil/x_test.go", None, "test"),
+    # the bare words still need a test tree, and `testing` names shipped packages
+    ("src/helpers/x.ts", None, ""),
+    ("src/support/x.ts", None, ""),
+    ("src/utils/x.ts", None, ""),
+    ("tests/helpers/x.ts", None, "support"),
+    ("src/testing/x.py", None, ""),
+    ("src/latest-utils/x.py", None, ""),
+    # a helper directory that is a package root ships (preact's `test-utils/`);
+    # path-only, its own manifest is the evidence
+    ("test-utils/package.json", None, ""),
+    ("pkg/testutil/go.mod", None, ""),
     # `test-data` / `test_data` are golden data, the same as Go's `testdata`
     ("test-data/users.json", None, "support"),
     ("pkg/test_data/input.csv", None, "support"),
@@ -285,6 +310,21 @@ def test_test_and_support_are_never_both_true(
 @pytest.mark.parametrize(("path", "language", "expected"), _CORPUS, ids=lambda v: str(v))
 def test_related_is_the_union(path: str, language: str | None, expected: str) -> None:
     assert is_test_related_path(path, language) is (expected != "")
+
+
+def test_a_test_helper_directory_that_is_a_package_root_stays_production() -> None:
+    """#3244: preact's ``test-utils/`` is a package published as
+    ``preact/test-utils``. Only the caller knows the directory holds a manifest,
+    so it says so through *package_root*; path-only callers read it as support."""
+    roots = {"test-utils"}.__contains__
+    assert not is_test_related_path("test-utils/src/index.js", package_root=roots)
+    assert is_test_support_path("test-utils/src/index.js")
+    # Only the helper directory is asked about, so a package root elsewhere on
+    # the path does not rescue it, and a test file in a shipped package is a test.
+    assert is_test_support_path("src/test-utils/x.ts", package_root={"src"}.__contains__)
+    assert is_test_path("test-utils/test/index.test.js", package_root=roots)
+    # Golden data is not a package even beside a manifest (Go fixture modules).
+    assert is_test_support_path("testdata/mod/x.go", package_root=lambda _d: True)
 
 
 @pytest.mark.parametrize("path", ["", ".", "/"])
