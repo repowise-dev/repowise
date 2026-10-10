@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from textwrap import dedent
 
-from repowise.core.analysis.conftest_routes import conftest_use
+import pytest
+
+from repowise.core.analysis.conftest_routes import ConftestFacts, conftest_use
 
 ROUTE = ["src/app/store.py"]
 
@@ -28,20 +30,88 @@ def test_an_autouse_fixture_that_calls_the_route_keeps_every_test() -> None:
 
 
 def test_patching_or_lazily_importing_from_an_autouse_fixture_is_import_time_only() -> None:
+    """The import check runs every autouse fixture, so a patch that stops working fails there."""
     use = _use(
         """
         import pytest
 
         @pytest.fixture(autouse=True)
-        def _isolate(monkeypatch, tmp_path):
+        def _isolate(monkeypatch):
             import app.store as store
             monkeypatch.setattr(store, "_cache", None)
-            store._other = None
-            monkeypatch.setenv("HOME", str(tmp_path / store.DIR_NAME))
+            if hasattr(store, "_other"):
+                monkeypatch.delattr(store, "_other")
         """
     )
     assert use.run_all is None
     assert use.fixtures == frozenset()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'monkeypatch.setenv("HOME", str(tmp_path / store.DIR_NAME))',
+        "assert store.SIZE * 2",
+        "if store.FLAG:\n                pass",
+        'x = store.REGISTRY["a"]',
+        "for item in store.ITEMS:\n                pass",
+        'x = f"{store.NAME}"',
+        "x = store.LEVEL > 3",
+        "store._other = None",
+    ],
+)
+def test_reading_a_module_value_in_an_autouse_fixture_keeps_every_test(line: str) -> None:
+    """A changed constant changes what the fixture does for every test."""
+    use = _use(
+        f"""
+        import pytest
+        from app import store
+
+        @pytest.fixture(autouse=True)
+        def _isolate(monkeypatch, tmp_path):
+            {line}
+        """
+    )
+    assert use.run_all and "autouse fixture _isolate uses store" in use.run_all
+
+
+def test_a_requested_fixture_that_only_patches_the_route_still_reaches_its_users() -> None:
+    """Only autouse fixtures run in the import check, so a requested one's patch must."""
+    use = _use(
+        """
+        import pytest
+        from app import store
+
+        @pytest.fixture
+        def quiet(monkeypatch):
+            monkeypatch.setattr(store, "_cache", None)
+        """
+    )
+    assert use.fixtures == {"quiet"}
+
+
+def test_a_class_body_or_a_fixture_in_a_class_using_the_route_keeps_every_test() -> None:
+    body = _use(
+        """
+        from app import store
+
+        class Settings:
+            SIZE = store.SIZE
+        """
+    )
+    assert body.run_all and "module-level code" in body.run_all
+    nested = _use(
+        """
+        import pytest
+        from app import store
+
+        class Fixtures:
+            @pytest.fixture
+            def db(self):
+                return store.open()
+        """
+    )
+    assert nested.run_all and "class Fixtures defines fixtures or hooks" in nested.run_all
 
 
 def test_a_requested_fixture_that_calls_the_route_is_named() -> None:
@@ -90,7 +160,8 @@ def test_a_fixture_requesting_a_reaching_fixture_or_calling_a_reaching_helper_re
 
 
 def test_a_lazy_import_in_a_requested_fixture_counts_as_reaching() -> None:
-    use = _use(
+    """The import runs when the fixture does, so its users, not the import check, find it."""
+    returned = _use(
         """
         import pytest
 
@@ -100,7 +171,40 @@ def test_a_lazy_import_in_a_requested_fixture_counts_as_reaching() -> None:
             return store
         """
     )
-    assert use.fixtures == {"store"}
+    assert returned.fixtures == {"store"}
+    unread = _use(
+        """
+        import pytest
+
+        @pytest.fixture
+        def models():
+            import app.store  # registers the models
+            yield
+        """
+    )
+    assert unread.fixtures == {"models"}
+    autouse = _use(
+        """
+        import pytest
+
+        @pytest.fixture(autouse=True)
+        def models():
+            import app.store  # registers the models
+            yield
+        """
+    )
+    assert autouse.run_all and "autouse fixture models" in autouse.run_all
+
+
+def test_one_parse_answers_every_route() -> None:
+    facts = ConftestFacts.parse(
+        "import pytest\nfrom app import store, other\n\n"
+        "@pytest.fixture\ndef a():\n    return store.x\n\n"
+        "@pytest.fixture\ndef b():\n    return other.y\n",
+        "tests/conftest.py",
+    )
+    assert facts.use(["src/app/store.py"]).fixtures == {"a"}
+    assert facts.use(["src/app/other.py"]).fixtures == {"b"}
 
 
 def test_module_level_code_using_the_route_keeps_every_test() -> None:

@@ -89,3 +89,14 @@ def test_a_config_that_does_not_parse_is_recorded_as_unknown() -> None:
     assert roots.may_collect_name("pkg/tests/helpers.py")
     assert not roots.may_collect_name("other/tests/helpers.py")
     assert roots.may_collect_name("other/tests/test_x.py")
+
+
+def test_hidden_request_dirs_name_configs_requesting_fixtures_or_renaming_tests() -> None:
+    roots = read_pytest_roots(
+        [
+            ("pytest.ini", "[pytest]\nusefixtures = db\n"),
+            ("pkg/setup.cfg", "[tool:pytest]\npython_functions = check_*\n"),
+            ("plain/pytest.ini", "[pytest]\npython_functions = test\n"),
+        ]
+    )
+    assert roots.hidden_request_dirs() == ["", "pkg"]

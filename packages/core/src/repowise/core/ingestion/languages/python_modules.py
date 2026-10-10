@@ -78,6 +78,16 @@ def _is_package_dir(dir_posix: str, path_set: frozenset[str] | set[str]) -> bool
     return init in path_set
 
 
+def module_parts(path: str) -> tuple[str, ...]:
+    """The dotted-path segments of a Python file from the repository root (a package for ``__init__``).
+
+    Every tail of the result is a name the file may be imported under; which
+    one depends on the source root, which this does not decide.
+    """
+    parts = PurePosixPath(path).with_suffix("").parts
+    return parts[:-1] if parts and parts[-1] == "__init__" else parts
+
+
 def dotted_module_for(path: str, path_set: frozenset[str] | set[str]) -> str | None:
     """Return the dotted module name *path* is importable as, or ``None``.
 

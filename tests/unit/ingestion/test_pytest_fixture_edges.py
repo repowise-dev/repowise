@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import networkx as nx
+import pytest
 
 from repowise.core.ingestion import GraphBuilder
 from repowise.core.ingestion.framework_edges import add_framework_edges
@@ -33,7 +34,8 @@ def _file_info(rel: str, abs_path: str) -> FileInfo:
     )
 
 
-def _build(repo: Path) -> nx.DiGraph:
+def _build(repo: Path, roots=None) -> nx.DiGraph:
+    """The graph with framework edges; files under ``tests/`` or named for pytest are tests."""
     parser = ASTParser()
     parsed: dict[str, ParsedFile] = {}
     for src in sorted(repo.rglob("*.py")):
@@ -44,13 +46,17 @@ def _build(repo: Path) -> nx.DiGraph:
     for pf in parsed.values():
         builder.add_file(pf)
     graph = builder.build()
+    for rel in parsed:
+        name = Path(rel).name
+        if rel.startswith("tests/") or name.startswith("test_") or name == "conftest.py":
+            graph.nodes[rel]["is_test"] = True
 
     path_set = set(parsed)
     stem_map: dict[str, list[str]] = {}
     for p in path_set:
         stem_map.setdefault(Path(p).stem.lower(), []).append(p)
     ctx = ResolverContext(
-        path_set=path_set, stem_map=stem_map, graph=graph, repo_path=repo
+        path_set=path_set, stem_map=stem_map, graph=graph, repo_path=repo, pytest_roots=roots
     )
     add_framework_edges(graph, parsed, ctx, [])
     return graph
@@ -542,3 +548,123 @@ class TestEveryRequestForm:
         stamped = self._stamped(_build(tmp_path))
 
         assert ("sub/conftest.py::db", "conftest.py::db") in stamped
+
+
+class TestIndirectParametrize:
+    """``indirect`` hands a parametrize value to the fixture of that name: a request."""
+
+    def _bound_for(self, tmp_path: Path, decorator: str) -> set[tuple[str, str]]:
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef db(request):\n    return request.param\n"
+        )
+        (tmp_path / "test_x.py").write_text(
+            f"import pytest\n\n\n{decorator}\ndef test_x(db):\n    assert db\n"
+        )
+        return _bound(_build(tmp_path))
+
+    def test_indirect_true_and_named_lists_keep_the_request(self, tmp_path: Path) -> None:
+        for decorator in (
+            '@pytest.mark.parametrize("db", [1], indirect=True)',
+            '@pytest.mark.parametrize("db", [1], indirect=["db"])',
+            '@pytest.mark.parametrize("db", [1], indirect=FLAGS)',
+        ):
+            assert ("test_x.py::test_x", "conftest.py::db") in self._bound_for(tmp_path, decorator)
+
+    def test_a_plain_or_other_indirect_argname_is_supplied(self, tmp_path: Path) -> None:
+        for decorator in (
+            '@pytest.mark.parametrize("db", [1])',
+            '@pytest.mark.parametrize("db,other", [(1, 2)], indirect=["other"])',
+        ):
+            assert ("test_x.py::test_x", "conftest.py::db") not in self._bound_for(
+                tmp_path, decorator
+            )
+
+
+class TestUnrecordedRequests:
+    """A request no edge can record marks the conftest edges it could reach."""
+
+    def _hints(self, graph: nx.DiGraph) -> dict[str, str]:
+        return {
+            s: d.get("hint_source")
+            for s, t, d in graph.edges(data=True)
+            if t == "tests/conftest.py" and d.get("edge_type") == "framework"
+        }
+
+    def _repo(self, tmp_path: Path, body: str, helper: str = "") -> nx.DiGraph:
+        tests = tmp_path / "tests"
+        tests.mkdir()
+        (tests / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef db():\n    return 1\n"
+        )
+        (tests / "test_plain.py").write_text("def test_plain(db):\n    assert db\n")
+        (tests / "test_odd.py").write_text(body)
+        if helper:
+            (tmp_path / "helpers.py").write_text(helper)
+        return _build(tmp_path)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "def test_x(request):\n    request.getfixturevalue(NAME)\n",
+            "import pytest\n\n\n@pytest.mark.usefixtures(*NAMES)\ndef test_x():\n    pass\n",
+            "from base import Base\n\n\nclass TestX(Base):\n    pass\n",
+            "class TestX:\n    pytestmark = [MARK]\n\n    def test_x(self):\n        pass\n",
+            "import pytest\n\n\n@pytest.mark.parametrize('a', [pytest.param(1, "
+            "marks=pytest.mark.usefixtures('db'))])\ndef test_x(a):\n    pass\n",
+        ],
+    )
+    def test_a_hidden_request_marks_its_own_edge(self, tmp_path: Path, body: str) -> None:
+        hints = self._hints(self._repo(tmp_path, body))
+        assert hints["tests/test_odd.py"] == "pytest_conftest_unrecorded"
+        assert hints["tests/test_plain.py"] == "pytest_conftest"
+
+    def test_a_helper_asking_for_a_fixture_marks_every_edge(self, tmp_path: Path) -> None:
+        graph = self._repo(
+            tmp_path,
+            "def test_x():\n    pass\n",
+            helper="def get(request):\n    return request.getfixturevalue('db')\n",
+        )
+        assert set(self._hints(graph).values()) == {"pytest_conftest_unrecorded"}
+
+    def test_naming_the_call_in_prose_marks_nothing(self, tmp_path: Path) -> None:
+        graph = self._repo(
+            tmp_path,
+            "def test_x():\n    pass\n",
+            helper='"""Reads ``request.getfixturevalue`` names."""\n',
+        )
+        assert self._hints(graph)["tests/test_plain.py"] == "pytest_conftest"
+
+    def test_an_inherited_base_in_the_same_file_is_recorded(self, tmp_path: Path) -> None:
+        body = (
+            "import pytest\n\n\n@pytest.mark.usefixtures('db')\nclass Base:\n"
+            "    def test_shared(self):\n        pass\n\n\nclass TestX(Base):\n    pass\n"
+        )
+        graph = self._repo(tmp_path, body)
+        assert self._hints(graph)["tests/test_odd.py"] == "pytest_conftest"
+        assert ("tests/test_odd.py::Base::test_shared", "tests/conftest.py::db") in _bound(graph)
+
+    def test_a_config_requesting_fixtures_marks_the_tests_under_it(self, tmp_path: Path) -> None:
+        from repowise.core.pytest_roots import read_pytest_roots
+
+        roots = read_pytest_roots([("pytest.ini", "[pytest]\nusefixtures = db\n")])
+        tests = tmp_path / "tests"
+        tests.mkdir()
+        (tests / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef db():\n    return 1\n"
+        )
+        (tests / "test_plain.py").write_text("def test_plain():\n    pass\n")
+        hints = self._hints(_build(tmp_path, roots))
+        assert hints["tests/test_plain.py"] == "pytest_conftest_unrecorded"
+
+    def test_configured_python_files_are_linked(self, tmp_path: Path) -> None:
+        from repowise.core.pytest_roots import read_pytest_roots
+
+        roots = read_pytest_roots([("pytest.ini", "[pytest]\npython_files = check_*.py\n")])
+        tests = tmp_path / "tests"
+        tests.mkdir()
+        (tests / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef db():\n    return 1\n"
+        )
+        (tests / "check_api.py").write_text("def test_api(db):\n    assert db\n")
+        graph = _build(tmp_path, roots)
+        assert ("tests/check_api.py::test_api", "tests/conftest.py::db") in _bound(graph)

@@ -58,6 +58,9 @@ class PytestConfigUnreadableError(ValueError):
 class _Collection:
     testpaths: tuple[str, ...]
     python_files: tuple[str, ...]
+    # Options that request fixtures or pick test functions without a name in
+    # the test's own source: ``usefixtures`` and a non-default ``python_functions``.
+    hidden_requests: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +87,15 @@ class PytestRoots:
         return any(
             "/" in pat or fnmatchcase(p.name, pat) for pat in patterns or DEFAULT_PYTHON_FILES
         )
+
+    def hidden_request_dirs(self) -> list[str]:
+        """Directories whose config requests fixtures or collects functions outside the source.
+
+        ``usefixtures`` names fixtures for every test, and ``python_functions``
+        collects functions not named ``test*``; a config that did not parse may
+        do either.
+        """
+        return sorted({d for d, r in self.by_dir.items() if r.hidden_requests} | self.unreadable)
 
     def collects(self, path: str) -> bool | None:
         """Whether a bare ``pytest`` run collects *path*; ``None`` when no config governs it.
@@ -168,6 +180,8 @@ def pytest_roots(
             key: _Collection(
                 tuple(v.strip("/").removeprefix("./") or "." for v in _words(o.get("testpaths"))),
                 _words(o.get("python_files")),
+                bool(_words(o.get("usefixtures")))
+                or _words(o.get("python_functions")) not in ((), ("test",)),
             )
             for key, (_, o) in chosen.items()
         },

@@ -34,6 +34,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
+from ...ingestion.languages.python_modules import module_parts
 from ...ingestion.languages.python_strings import defines_top_level, is_python, live_text
 from ...test_paths import is_test_related_path
 from .models import DeadCodeFindingData, DeadCodeKind
@@ -44,12 +45,6 @@ _MODULE_STRING_RE = re.compile(
 )
 
 
-def _module_parts(path: str) -> tuple[str, ...]:
-    """The dotted-path segments of a Python file (a package for ``__init__``)."""
-    parts = PurePosixPath(path).with_suffix("").parts
-    return parts[:-1] if parts and parts[-1] == "__init__" else parts
-
-
 class _ModuleIndex:
     """The candidate modules, keyed by every dotted tail and by bare name."""
 
@@ -57,7 +52,7 @@ class _ModuleIndex:
         self.by_tail: dict[str, set[str]] = {}
         self.by_name: dict[str, set[str]] = {}
         for path in paths:
-            parts = _module_parts(path)
+            parts = module_parts(path)
             if not parts:
                 continue
             for start in range(len(parts) - 1):
