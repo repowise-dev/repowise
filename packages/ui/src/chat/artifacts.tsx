@@ -37,7 +37,7 @@ import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { Markdown } from "../shared/markdown";
 import { MermaidDiagram } from "../wiki/mermaid-diagram";
-import { getPageTypeLabel } from "../lib/page-types";
+import { derivedPageTitle, getPageTypeLabel } from "../lib/page-types";
 
 // ---------------------------------------------------------------------------
 // Shared atoms
@@ -609,27 +609,30 @@ export function SearchResultsRenderer({
   return (
     <div className="space-y-2">
       <SectionTitle icon={Search}>{data.query}</SectionTitle>
-      {data.results.map((r, i) => (
-        <div
-          key={`${r.page_id ?? r.title}:${i}`}
-          className="rounded-lg border border-[var(--color-border-default)] p-3"
-        >
-          <div className="text-xs font-medium text-[var(--color-text-primary)]">
-            {r.title}
-          </div>
-          <div className="text-[10px] text-[var(--color-text-tertiary)] mt-0.5">
-            {getPageTypeLabel(r.page_type)}
-            {typeof r.relevance_score === "number" && (
-              <> · score {(r.relevance_score as number).toFixed(2)}</>
+      {data.results.map((r, i) => {
+        const title = r.title ?? derivedPageTitle(r.page_type, r.target_path ?? r.path);
+        return (
+          <div
+            key={`${r.page_id ?? title}:${i}`}
+            className="rounded-lg border border-[var(--color-border-default)] p-3"
+          >
+            <div className="text-xs font-medium text-[var(--color-text-primary)]">
+              {title}
+            </div>
+            <div className="text-[10px] text-[var(--color-text-tertiary)] mt-0.5">
+              {getPageTypeLabel(r.page_type)}
+              {typeof r.relevance_score === "number" && (
+                <> · score {(r.relevance_score as number).toFixed(2)}</>
+              )}
+            </div>
+            {r.snippet && (
+              <p className="text-xs text-[var(--color-text-secondary)] mt-1 line-clamp-3">
+                {r.snippet}
+              </p>
             )}
           </div>
-          {r.snippet && (
-            <p className="text-xs text-[var(--color-text-secondary)] mt-1 line-clamp-3">
-              {r.snippet}
-            </p>
-          )}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

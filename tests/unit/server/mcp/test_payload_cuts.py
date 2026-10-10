@@ -15,13 +15,14 @@ the failure mode each of these changes was designed around.
 from __future__ import annotations
 
 from repowise.server.mcp_server._budget.budgeter import truncate_to_budget
+from repowise.server.mcp_server._page_paths import derivable_title
 from repowise.server.mcp_server.tool_answer.answer import (
     _build_best_guesses,
     _drop_duplicated_guess_excerpts,
     _trim_served_payload,
 )
-from repowise.server.mcp_server.tool_answer.retrieval import _CANDIDATE_LIMIT
-from repowise.server.mcp_server.tool_search import _drop_derivable_page_ids
+from repowise.server.mcp_server.tool_answer.retrieval import _CANDIDATE_LIMIT, serialize_hits
+from repowise.server.mcp_server.tool_search import _drop_derivable_fields
 
 # ---------------------------------------------------------------------------
 # search_codebase.results[].page_id — derivable from two of its own siblings
@@ -37,7 +38,7 @@ def test_page_id_dropped_when_page_type_and_target_path_rebuild_it():
             "title": "ansi",
         }
     ]
-    _drop_derivable_page_ids(results)
+    _drop_derivable_fields(results)
     assert "page_id" not in results[0]
     # Lossless: the consumer rebuilds it from what is still there.
     assert f"{results[0]['page_type']}:{results[0]['target_path']}" == "file_page:rich/ansi.py"
@@ -51,7 +52,7 @@ def test_page_id_kept_when_it_cannot_be_rebuilt():
     """
     orphan = {"page_id": "file_page:rich/gone.py", "page_type": "file_page", "target_path": ""}
     renamed = {"page_id": "module_page:rich", "page_type": "file_page", "target_path": "rich"}
-    _drop_derivable_page_ids([orphan, renamed])
+    _drop_derivable_fields([orphan, renamed])
     assert orphan["page_id"] == "file_page:rich/gone.py"
     assert renamed["page_id"] == "module_page:rich"
 
@@ -65,8 +66,51 @@ def test_symbol_qualified_page_ids_still_rebuild():
             "target_path": "rich/ansi.py::AnsiDecoder",
         }
     ]
-    _drop_derivable_page_ids(results)
+    _drop_derivable_fields(results)
     assert "page_id" not in results[0]
+
+
+# ---------------------------------------------------------------------------
+# title: a file page's "File: <path>" restates the path beside it
+# ---------------------------------------------------------------------------
+
+
+def _file_row(path: str, title: str) -> dict:
+    return {"page_type": "file_page", "path": path, "title": title, "snippet": "s"}
+
+
+def test_derivable_file_title_dropped_and_rest_of_row_untouched():
+    rows = [_file_row("src/app.ts", "File: src/app.ts"), _file_row("lib/x.go", "File: lib/x.go")]
+    before = [dict(r) for r in rows]
+    _drop_derivable_fields(rows)
+    for row, orig in zip(rows, before, strict=True):
+        assert "title" not in row
+        orig.pop("title")
+        assert row == orig
+        # Lossless: the consumer rebuilds it from what is still there.
+        assert derivable_title(row["page_type"], row["path"]) == f"File: {row['path']}"
+
+
+def test_informative_titles_kept():
+    localized = _file_row("src/app.py", "Datei: src/app.py")
+    other_path = _file_row("src/app.py", "File: src/old.py")
+    module = {"page_type": "module_page", "target_path": "src", "title": "Module: src"}
+    concept = {"page_type": "module_page", "target_path": "src/auth", "title": "Auth flow"}
+    symbol = {"page_type": "symbol_spotlight", "path": "a.py", "title": "File: a.py"}
+    rows = [localized, other_path, module, concept, symbol]
+    titles = [r["title"] for r in rows]
+    _drop_derivable_fields(rows)
+    assert [r["title"] for r in rows] == titles
+
+
+def test_answer_retrieval_drops_derivable_title_only():
+    hits = [
+        {"target_path": "src/app.py", "page_type": "file_page", "title": "File: src/app.py"},
+        {"target_path": "src/auth", "page_type": "module_page", "title": "Auth flow"},
+    ]
+    served = serialize_hits(hits)
+    assert served[0] == {"path": "src/app.py"}
+    assert served[1]["title"] == "Auth flow"
 
 
 # ---------------------------------------------------------------------------

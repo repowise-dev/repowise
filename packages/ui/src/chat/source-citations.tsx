@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import { ArrowUpRight } from "lucide-react";
-import { getPageTypeIcon } from "../lib/page-types";
+import { derivedPageTitle, getPageTypeIcon } from "../lib/page-types";
 import { filePageId } from "../shared/entity/routes";
 import type { ChatUIToolCall } from "@repowise-dev/types/chat";
 
@@ -69,7 +69,7 @@ export function extractSources(
         sources.push({
           id: `${tc.id}:${pageId}`,
           pageId,
-          title: (r.title as string) ?? pageId,
+          title: (r.title as string | undefined) ?? derivedPageTitle(pageType, targetPath) ?? pageId,
           pageType: (r.page_type as string) ?? "file_page",
           targetPath: targetPath ?? "",
           confidence: r.confidence_score as number | undefined,

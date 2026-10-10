@@ -112,11 +112,16 @@ def _project_result(item: dict, *, multi: bool) -> dict:
         path = item.get("path") or item.get("file") or ""
         out.update({"title": item.get("title") or "", "path": path})
     else:
+        from repowise.server.mcp_server._page_paths import derivable_title
+
+        path = item.get("path") or item.get("target_path") or ""
+        # The tool omits a title its row rebuilds; the table still shows one.
+        title = item.get("title") or derivable_title(item.get("page_type"), path)
         out.update(
             {
-                "title": item.get("title") or "",
+                "title": title or "",
                 "page_type": item.get("page_type") or "",
-                "path": item.get("path") or item.get("target_path") or "",
+                "path": path,
                 "snippet": item.get("snippet") or "",
             }
         )

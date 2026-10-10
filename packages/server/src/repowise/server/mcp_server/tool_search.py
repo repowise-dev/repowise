@@ -41,7 +41,12 @@ from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
 from repowise.server.mcp_server._line_hits import attach_line_hits
 from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._page_paths import add_row_paths, file_candidates, hit_file_path
+from repowise.server.mcp_server._page_paths import (
+    add_row_paths,
+    derivable_title,
+    file_candidates,
+    hit_file_path,
+)
 from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
 from repowise.server.mcp_server._query_shape import (
     _DECISION_DOWNWEIGHT,
@@ -549,8 +554,8 @@ def _attach_paths(output: list[dict], page_info: dict) -> None:
             item["file"] = item["target_path"]
 
 
-def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
-    """Strip ``page_id`` from every result that can rebuild it, in place.
+def _drop_derivable_fields(results: list[dict]) -> list[dict]:
+    """Strip ``page_id`` and ``title`` from every result that can rebuild them, in place.
 
     A page id is ``compute_page_id(page_type, target_path)`` — literally
     ``f"{page_type}:{target_path}"`` (``core/generation/models.py``) — and both
@@ -569,12 +574,17 @@ def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
 
     Consumers rebuild with the same expression; ``ui/src/chat/source-citations``
     does exactly that, and used to skip any row whose ``page_id`` was missing.
+
+    A file page's title is ``File: <path>`` (:func:`derivable_title`), the same
+    path again; it goes under the same rule, and a title that differs stays.
     """
     for item in results:
         target = item.get("target_path") or item.get("path") or ""
         derived = f"{item.get('page_type', '')}:{target}"
         if item.get("page_id") == derived:
             item.pop("page_id", None)
+        if item.get("title") and item["title"] == derivable_title(item.get("page_type"), target):
+            del item["title"]
     return results
 
 
@@ -835,7 +845,7 @@ async def _federated_search(
         response["candidates"] = candidates
     # Last, so nothing above has to know the field is on its way out.
     add_row_paths(output)
-    _drop_derivable_page_ids(output)
+    _drop_derivable_fields(output)
     return response
 
 
@@ -1140,7 +1150,7 @@ async def _structured_search(
     # Last, so nothing above has to know the field is on its way out. Paths
     # first, so a page whose target_path is dropped keeps its page_id.
     add_row_paths(results)
-    _drop_derivable_page_ids(results)
+    _drop_derivable_fields(results)
     return response
 
 
@@ -1340,5 +1350,5 @@ async def search_codebase(
     attach_ignored_arguments(response, ignored)
     # Last, so nothing above has to know the field is on its way out.
     add_row_paths(output)
-    _drop_derivable_page_ids(output)
+    _drop_derivable_fields(output)
     return response

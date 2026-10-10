@@ -44,6 +44,18 @@ export function getPageTypeLabel(pageType: string): string {
 }
 
 /**
+ * The title search omits from a row because the row rebuilds it: a file
+ * page's stored title is `File: <path>`. Mirrors the server's
+ * `derivable_title`; any other row keeps the title it was served.
+ */
+export function derivedPageTitle(
+  pageType: string | undefined,
+  target: string | undefined,
+): string | undefined {
+  return pageType === "file_page" && target ? `File: ${target}` : undefined;
+}
+
+/**
  * What to call a page, given the page rather than only its type.
  *
  * A chapter is a `module_page`, deliberately: it is a module page with a

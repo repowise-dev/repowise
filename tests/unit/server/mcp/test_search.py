@@ -1915,7 +1915,7 @@ class TestPathlessPagesInCodeLocationModes:
     @pytest.mark.parametrize("route", ["concept", "hybrid", "federated"])
     async def test_rows_drop_only_page_ids_their_fields_spell(self, setup_mcp, monkeypatch, route):
         import repowise.server.mcp_server as mcp_mod
-        from repowise.server.mcp_server import search_codebase, tool_search
+        from repowise.server.mcp_server import search_codebase
 
         await self._seed()
         spotlight = "symbol_spotlight:pkg/cmd/release/view.go::ViewRelease"
@@ -1933,6 +1933,18 @@ class TestPathlessPagesInCodeLocationModes:
             return [hit, *await pages(query, limit)]
 
         mcp_mod._vector_store.search = with_spotlight
+        kwargs = await self._route_kwargs(route, monkeypatch)
+        res = await search_codebase("listing releases in order", limit=5, **kwargs)
+        rows = [r for r in res["results"] if r.get("type") != "symbol"]
+        by_type = {r["page_type"]: r for r in rows}
+        assert "page_id" not in by_type["file_page"]
+        # The path names the file, not the symbol, so this id is not rebuildable.
+        assert by_type["symbol_spotlight"]["page_id"] == spotlight
+
+    @staticmethod
+    async def _route_kwargs(route, monkeypatch):
+        from repowise.server.mcp_server import tool_search
+
         kwargs = {"mode": "hybrid" if route == "hybrid" else "concept"}
         if route == "federated":
             ctx = await tool_search._resolve_repo_context(None)
@@ -1942,12 +1954,30 @@ class TestPathlessPagesInCodeLocationModes:
 
             monkeypatch.setattr(tool_search, "_resolve_all_contexts", one_context)
             kwargs["repo"] = "all"
+        return kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("route", ["concept", "hybrid", "federated"])
+    async def test_rows_drop_only_titles_their_path_spells(self, setup_mcp, monkeypatch, route):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        await self._seed()
+        view = "pkg/cmd/release/view.go"
+        await _seed_page(f"file_page:{view}", view)
+        pages = mcp_mod._vector_store.search
+
+        async def with_view(query, limit=10):
+            hit = _mk_result(f"file_page:{view}", f"File: {view}", "file_page", view, 0.95)
+            return [hit, *await pages(query, limit)]
+
+        mcp_mod._vector_store.search = with_view
+        kwargs = await self._route_kwargs(route, monkeypatch)
         res = await search_codebase("listing releases in order", limit=5, **kwargs)
-        rows = [r for r in res["results"] if r.get("type") != "symbol"]
-        by_type = {r["page_type"]: r for r in rows}
-        assert "page_id" not in by_type["file_page"]
-        # The path names the file, not the symbol, so this id is not rebuildable.
-        assert by_type["symbol_spotlight"]["page_id"] == spotlight
+        by_path = {r.get("path"): r for r in res["results"] if r.get("type") != "symbol"}
+        assert "title" not in by_path[view]
+        # A title that is not "File: <path>" carries information and stays.
+        assert by_path["pkg/cmd/release/list.go"]["title"] == "list.go"
 
     @pytest.mark.asyncio
     async def test_hybrid_keeps_them_when_pages_are_asked_for(self, setup_mcp):

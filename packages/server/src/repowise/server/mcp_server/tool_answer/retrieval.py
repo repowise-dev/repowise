@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import Page
-from repowise.server.mcp_server._page_paths import hit_file_path
+from repowise.server.mcp_server._page_paths import derivable_title, hit_file_path
 from repowise.server.mcp_server._query_terms import content_terms
 from repowise.server.mcp_server._retrieval_rank import rerank_by_context_coverage
 from repowise.server.mcp_server.tool_answer.config import (
@@ -172,7 +172,8 @@ def serialize_hits(
         # the openable file beside it.
         if target and "::" in target:
             entry["file"] = target.split("::", 1)[0]
-        if h.get("title"):
+        # ``File: <path>`` restates ``path``.
+        if h.get("title") and h["title"] != derivable_title(h.get("page_type"), target):
             entry["title"] = h["title"]
         summary = h.get("summary") or ""
         if summary_chars is not None and len(summary) > summary_chars:

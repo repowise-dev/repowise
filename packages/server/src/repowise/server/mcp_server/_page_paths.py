@@ -16,6 +16,8 @@ it.
 
 from __future__ import annotations
 
+from repowise.core.generation.structural_labels import structural_page_title
+
 # Page types whose ``target_path`` is a real repository-relative file path.
 #
 # ``symbol_spotlight`` is included because its target_path is ``file.py::Sym``:
@@ -47,6 +49,17 @@ def file_path_of(page_type: str | None, target_path: str | None) -> str | None:
         return None
     path = (target_path or "").split("::", 1)[0].strip()
     return path or None
+
+
+def derivable_title(page_type: str | None, target: str | None) -> str | None:
+    """The title a page row's type and target alone rebuild, or ``None``.
+
+    File pages only, and only the English form: a localized prefix is not on the
+    row, so a localized title is information and stays served.
+    """
+    if page_type != "file_page" or not target:
+        return None
+    return structural_page_title(None, "file_page", target)
 
 
 def hit_file_path(hit: dict) -> str | None:

@@ -147,6 +147,23 @@ describe("extractSources", () => {
     expect(sources[0]?.targetPath).toBe("src/a.py");
   });
 
+  it("labels a search row without a title the way the server stored it", () => {
+    const [served, trimmed, module] = extractSources(
+      [
+        searchCall([
+          { page_type: "file_page", path: "src/a.py", title: "File: src/a.py" },
+          { page_type: "file_page", path: "src/b.py" },
+          { page_type: "module_page", target_path: "src/auth", title: "Auth flow" },
+        ]),
+      ],
+      "repo1",
+    );
+
+    expect(served?.title).toBe("File: src/a.py");
+    expect(trimmed?.title).toBe("File: src/b.py");
+    expect(module?.title).toBe("Auth flow");
+  });
+
   it("omits confidence when the server sends no confidence_score", () => {
     const sources = extractSources(
       [searchCall([{ page_id: "file_page:a.py", title: "a.py", relevance_score: 9.1 }])],

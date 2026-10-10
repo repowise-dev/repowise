@@ -399,7 +399,8 @@ export interface ChangeRiskArtifact extends ArtifactEnvelopeIdentity {
 export interface SearchResultsArtifactData {
   query: string;
   results: Array<{
-    title: string;
+    /** Absent on a file page row: rebuild it with `derivedPageTitle`. */
+    title?: string;
     page_type: string;
     page_id?: string;
     /** Openable repo-relative file; absent when the hit names no file. */

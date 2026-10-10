@@ -142,6 +142,15 @@ describe("chat artifact renderers", () => {
     expect(screen.getByText("JWT-based auth pipeline.")).toBeInTheDocument();
   });
 
+  it("SearchResultsRenderer labels a file row the server sent without a title", () => {
+    render(
+      <SearchResultsRenderer
+        data={{ query: "q", results: [{ page_type: "file_page", path: "src/b.py" }] }}
+      />,
+    );
+    expect(screen.getByText("File: src/b.py")).toBeInTheDocument();
+  });
+
   it("SearchResultsRenderer handles empty results", () => {
     render(<SearchResultsRenderer data={{ query: "nope", results: [] }} />);
     expect(screen.getByText("No results found.")).toBeInTheDocument();
