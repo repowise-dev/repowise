@@ -949,7 +949,6 @@ class HealthAnalyzer:
         )
         with timed(timings, "analysis.health.walk"):
             walked = self._walk_files(self._target_files(changed_set), run.vocab, on_step)
-            self._save_walk_cache()
         return self._score(
             run,
             walked,
@@ -1077,6 +1076,7 @@ class HealthAnalyzer:
             # evaluate).
             if on_step:
                 on_step(pf.file_info.path)
+        self._save_walk_cache()
         return walked
 
     async def _walk_files_async(
@@ -1100,7 +1100,9 @@ class HealthAnalyzer:
                 on_step(pf.file_info.path)
             return pf, fcx
 
-        return list(await asyncio.gather(*[_one(pf) for pf in targets]))
+        walked = list(await asyncio.gather(*[_one(pf) for pf in targets]))
+        self._save_walk_cache()
+        return walked
 
     def _score(
         self,
