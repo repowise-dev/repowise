@@ -179,18 +179,21 @@ def settings_entries(tree: ast.Module) -> list[tuple[str, list[str]]]:
     found: list[tuple[str, list[str]]] = []
     for node in ast.walk(tree):
         # ``INSTALLED_APPS += [...]`` extends the setting in place.
-        if not isinstance(node, (ast.Assign, ast.AugAssign)):
-            continue
-        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        for target in targets:
-            if not (isinstance(target, ast.Name) and target.id in _SETTINGS_NAMES):
-                continue
-            if target.id == "ROOT_URLCONF":
-                module = _extract_string_value(node.value)
-                found.append((target.id, [module] if module else []))
-            else:
-                found.append((target.id, _extract_string_list(node.value)))
+        if isinstance(node, (ast.Assign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            found += [
+                (t.id, _setting_strings(t.id, node.value))
+                for t in targets
+                if isinstance(t, ast.Name) and t.id in _SETTINGS_NAMES
+            ]
     return found
+
+
+def _setting_strings(name: str, value: ast.expr) -> list[str]:
+    if name != "ROOT_URLCONF":
+        return _extract_string_list(value)
+    module = _extract_string_value(value)
+    return [module] if module else []
 
 
 def edge_strings(path: str, blob: bytes) -> list | None:
