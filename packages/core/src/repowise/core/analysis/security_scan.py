@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # the same way ``HEALTH_ANALYZER_VERSION`` forces a full health re-score
 # (#3072). Without this, a scanner fix only ever reaches a file a user
 # happens to edit.
-SECURITY_SCANNER_VERSION = 1
+SECURITY_SCANNER_VERSION = 2
 
 _CREDENTIAL_EXACT_PLACEHOLDERS: frozenset[str] = frozenset({"password", "changeit"})
 
