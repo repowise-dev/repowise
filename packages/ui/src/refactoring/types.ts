@@ -181,6 +181,9 @@ export interface ExtractMethodPlan {
    *  the span. Null when the helper's form is unknown or the plan predates it.
    *  `<name>` / `<type>` are placeholders to fill. */
   signature_text: string | null;
+  /** The helper's last line handing its outputs back; null without outputs
+   *  or on a plan stored before it. */
+  return_text: string | null;
   call_site: ExtractCallSite | null;
   /** What the texts cannot say (a value that may move, a call the host
    *  cannot await). */
@@ -211,6 +214,7 @@ export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
     typed_params: Array.isArray(sym.params) ? (sym.params as ExtractSlot[]) : [],
     typed_returns: Array.isArray(sym.returns) ? (sym.returns as ExtractSlot[]) : [],
     signature_text: typeof sym.signature_text === "string" ? sym.signature_text : null,
+    return_text: typeof sym.return_text === "string" ? sym.return_text : null,
     call_site: callSite(p.call_site),
     notes: Array.isArray(sym.notes) ? (sym.notes as string[]) : [],
   };
@@ -231,6 +235,82 @@ export const HELPER_TYPE_PLACEHOLDER = "<type>";
 /** A typed slot as `name: type`, or the bare name when the type is unknown. */
 export function slotLabel(slot: ExtractSlot): string {
   return slot.type ? `${slot.name}: ${slot.type}` : slot.name;
+}
+
+/** One helper of a staged Extract Method plan, in the order the function
+ *  calls them. `name` is null when nothing in the code anchors one. */
+export interface ExtractStage {
+  name: string | null;
+  span: { start: number; end: number };
+  ccn: number | null;
+  signature_text: string | null;
+  call_text: string | null;
+  return_text: string | null;
+  notes: string[];
+}
+
+/** The object carrying the values the stages share, declared once. */
+export interface ExtractParameterObject {
+  name: string;
+  declaration_text: string | null;
+  construct_text: string;
+  construct_before: number | null;
+}
+
+/** A positive whole line number: not a numeric string, a boolean or a float. */
+function isLine(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v > 0;
+}
+
+/** A staged plan's helpers (`plan.stages`) with valid line bounds; empty for
+ *  a single-span plan. */
+export function extractMethodStages(plan: RefactoringPlan): ExtractStage[] {
+  const raw = ((plan.plan ?? {}) as Record<string, unknown>).stages;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry): ExtractStage[] => {
+    const s = (entry ?? {}) as Record<string, unknown>;
+    const span = (s.span ?? {}) as Record<string, unknown>;
+    const start = span.start;
+    const end = span.end;
+    if (!isLine(start) || !isLine(end)) return [];
+    const sym = (s.new_symbol ?? {}) as Record<string, unknown>;
+    const site = callSite(s.call_site);
+    return [
+      {
+        name: typeof s.suggested_name === "string" ? s.suggested_name : null,
+        span: { start, end },
+        ccn: typeof s.ccn === "number" ? s.ccn : null,
+        signature_text: typeof sym.signature_text === "string" ? sym.signature_text : null,
+        call_text: site ? site.new_text : null,
+        return_text: typeof sym.return_text === "string" ? sym.return_text : null,
+        notes: Array.isArray(sym.notes) ? (sym.notes as string[]) : [],
+      },
+    ];
+  });
+}
+
+/** A staged plan's shared parameter object, or null without one. */
+export function extractParameterObject(plan: RefactoringPlan): ExtractParameterObject | null {
+  const raw = ((plan.plan ?? {}) as Record<string, unknown>).parameter_object as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  if (!raw || typeof raw !== "object" || typeof raw.construct_text !== "string") return null;
+  return {
+    name: typeof raw.name === "string" ? raw.name : HELPER_NAME_PLACEHOLDER,
+    declaration_text: typeof raw.declaration_text === "string" ? raw.declaration_text : null,
+    construct_text: raw.construct_text,
+    construct_before: typeof raw.construct_before === "number" ? raw.construct_before : null,
+  };
+}
+
+/** The function's cyclomatic complexity before and after a staged split. */
+export function extractOrchestrator(plan: RefactoringPlan): { before: number; after: number } | null {
+  const raw = ((plan.plan ?? {}) as Record<string, unknown>).orchestrator as
+    | Record<string, unknown>
+    | undefined;
+  if (!raw || typeof raw.ccn_before !== "number" || typeof raw.ccn_after !== "number") return null;
+  return { before: raw.ccn_before, after: raw.ccn_after };
 }
 
 /** The helper an extraction proposes, as one line: `async name(a, b) -> c`.

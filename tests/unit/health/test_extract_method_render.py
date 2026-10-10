@@ -217,7 +217,7 @@ def test_rust_borrows_a_value_the_host_reads_after_the_call():
         ),
         returns=(),
     )
-    sig, call, notes = render(shape)
+    sig, call, notes, _returns = render(shape)
     assert sig == "fn loadTotals(rows: &Vec<Row>, n: usize, cfg: <type>, tmp: String) {"
     assert call == "loadTotals(&rows, n, cfg, tmp);"
     assert notes == (
@@ -335,6 +335,28 @@ def test_param_modes_match_the_wire_type():
     match = re.search(r"export type ExtractParamMode =(.*?);", src, re.DOTALL)
     assert match
     assert set(re.findall(r'"([a-z_]+)"', match.group(1))) == set(PARAM_MODES)
+
+
+def test_recipe_step_symbol_keys_match_the_wire_type():
+    """``RecipeStep.new_symbol`` in the TS types names every key the recipe
+    writes for an Extract Method step, ``return_text`` included."""
+    from repowise.core.analysis.health.refactoring.recipe import recipe_steps
+
+    src = (pathlib.Path(__file__).resolve().parents[3] / "packages/types/src/refactoring.ts").read_text(
+        encoding="utf-8"
+    )
+    block = re.search(r"export interface RecipeStep \{.*?new_symbol\?: \{(.*?)\};", src, re.DOTALL)
+    assert block
+    ts_keys = set(re.findall(r"^\s*([a-z_]+)\??:", block.group(1), re.MULTILINE))
+    (step,) = recipe_steps(
+        {
+            "refactoring_type": "extract_method",
+            "file_path": "m.py",
+            "target_symbol": "f",
+            "plan": {"span": {"start": 2, "end": 5}, "params": [], "returns": ["x"]},
+        }
+    )
+    assert ts_keys == set(step["new_symbol"])
 
 
 def test_list_rows_leave_the_texts_to_plan_detail():

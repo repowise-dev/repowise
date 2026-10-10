@@ -125,13 +125,50 @@ def _s(count: int) -> str:
 
 
 def _extract_method(d: Mapping[str, Any], plan: Mapping[str, Any]) -> list[Step]:
+    stages = [_dict(stage) for stage in _list(plan.get("stages"))]
+    if stages:
+        return _staged_steps(d, plan, stages)
+    return [_extract_step(d, plan)]
+
+
+def _staged_steps(
+    d: Mapping[str, Any], plan: Mapping[str, Any], stages: list[dict[str, Any]]
+) -> list[Step]:
+    """A staged plan: the shared parameter object first, then one extract step
+    per stage in source order. Every line number is the original file's."""
+    steps: list[Step] = []
+    obj = _dict(plan.get("parameter_object"))
+    if obj:
+        text = (
+            f"Add `{obj.get('name')}` holding the values the stages share, and build it "
+            f"as `{obj.get('var')}` just above line {obj.get('construct_before')}: "
+            f"`{obj.get('construct_text')}`."
+        )
+        symbol = {
+            "name": obj.get("name"),
+            "kind": "class",
+            "async": False,
+            "params": [],
+            "returns": [],
+            "signature_text": obj.get("declaration_text"),
+            "notes": _strs(obj.get("notes")),
+        }
+        steps.append(_step("add_helper", d.get("file_path"), None, text, new_symbol=symbol))
+    for n, stage in enumerate(stages, 1):
+        step = _extract_step(d, stage)
+        step["text"] = f"Stage {n} of {len(stages)}: {step['text']}"
+        steps.append(step)
+    return steps
+
+
+def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
     span = _dict(plan.get("span"))
     where = _span(span.get("start"), span.get("end"))
     host = _short(d.get("target_symbol"))
     name = plan.get("suggested_name") or NAME_PLACEHOLDER
     if where is None:
         text = f"Extract a slice of `{host}` into a helper."
-        return [_step("extract", d.get("file_path"), None, text)]
+        return _step("extract", d.get("file_path"), None, text)
     symbol = _dict(plan.get("new_symbol"))
     is_async = bool(symbol.get("async", plan.get("needs_async")))
     named = (
@@ -143,24 +180,23 @@ def _extract_method(d: Mapping[str, Any], plan: Mapping[str, Any]) -> list[Step]
         f"Move lines {where['start']}-{where['end']} of `{host}` into a new helper "
         f"`{name}`{named} in the same scope, and replace them with one call to it."
     )
-    return [
-        _step(
-            "extract",
-            d.get("file_path"),
-            where,
-            text,
-            new_symbol={
-                "name": name,
-                "kind": symbol.get("kind"),
-                "async": is_async,
-                "params": _strs(plan.get("params")),
-                "returns": _strs(plan.get("returns")),
-                "signature_text": symbol.get("signature_text"),
-                "notes": _extract_notes(plan, symbol, is_async),
-            },
-            **({"call_site": plan["call_site"]} if _dict(plan.get("call_site")) else {}),
-        )
-    ]
+    return _step(
+        "extract",
+        d.get("file_path"),
+        where,
+        text,
+        new_symbol={
+            "name": name,
+            "kind": symbol.get("kind"),
+            "async": is_async,
+            "params": _strs(plan.get("params")),
+            "returns": _strs(plan.get("returns")),
+            "signature_text": symbol.get("signature_text"),
+            "return_text": symbol.get("return_text"),
+            "notes": _extract_notes(plan, symbol, is_async),
+        },
+        **({"call_site": plan["call_site"]} if _dict(plan.get("call_site")) else {}),
+    )
 
 
 def _extract_notes(
@@ -375,6 +411,13 @@ def recipe_steps(detail: Mapping[str, Any]) -> list[Step]:
 
 def _summary(d: Mapping[str, Any], steps: list[Step]) -> str:
     kind, plan = d.get("refactoring_type"), _dict(d.get("plan"))
+    if kind == "extract_method" and plan.get("stages"):
+        residual = _dict(plan.get("orchestrator"))
+        return (
+            f"Split `{_short(d.get('target_symbol'))}` into {len(_list(plan['stages']))} "
+            f"helpers it calls in order (cyclomatic complexity {residual.get('ccn_before')} "
+            f"-> {residual.get('ccn_after')})."
+        )
     if kind == "extract_method" and steps[0].get("span"):
         span, name = steps[0]["span"], steps[0]["new_symbol"]["name"]
         host = _short(d.get("target_symbol"))
@@ -498,12 +541,18 @@ def _does_not(d: Mapping[str, Any], steps: list[Step]) -> list[dict[str, str | N
     """What the edit must not do, each a phrase read after "Do not", with its reason."""
     out: list[dict[str, str | None]] = [dict(_KEEP_BEHAVIOUR)]
     kind = str(d.get("refactoring_type") or "")
-    span = steps[0].get("span")
+    # A staged plan's edits run from its first stage to its last.
+    spans = [s["span"] for s in steps if s.get("action") == "extract" and s.get("span")]
+    span = {"start": spans[0]["start"], "end": spans[-1]["end"]} if spans else None
     if kind == "extract_method" and span:
         lines = f"{span['start']}-{span['end']}"
+        added = (
+            "the calls that replace them (and the object the stages share, if any)"
+            if len(spans) > 1
+            else "the call that replaces them"
+        )
         out.append(
-            {"constraint": f"touch anything outside lines {lines} and the call that replaces them",
-             "reason": None}
+            {"constraint": f"touch anything outside lines {lines} and {added}", "reason": None}
         )
     elif kind in _DOES_NOT:
         constraint, reason = _DOES_NOT[kind]

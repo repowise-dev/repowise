@@ -76,6 +76,16 @@ Plan shape (open dict, no migration):
   and ``suggested_name`` is in the language's private form (Python ``_x``).
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` -- the size and
   complexity (code lines, decision points) the residual method sheds.
+- ``plan.stages`` -- only on a staged plan (``dataflow.stages``): a function
+  no single helper brings under the bar (CCN over twice a stage's cap, Python
+  and TS / JS) is split into helpers called in order. Each stage carries the
+  same keys as a single-span plan plus ``ccn``, ``nloc`` and
+  ``context_params`` (the names it reads through ``plan.parameter_object``,
+  the shared values' object, or None). The top-level keys repeat stage 1, so
+  a reader of a single-span plan reads the first step; ``orchestrator`` gives
+  the function's CCN before and after, and ``evidence`` sums the stages, so
+  the plan is credited the whole drop rather than one span's share. Detail
+  only (``render.list_plan``).
 - ``blast_radius`` = ``{"scope": "local"}`` -- extraction is local (a new
   private helper, the public method's signature is unchanged), so nothing
   outside the file moves. This is a *categorical* statement, not a count: it
@@ -88,6 +98,7 @@ Plan shape (open dict, no migration):
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from ..biomarkers.brain_method import BrainMethodDetector
@@ -96,7 +107,8 @@ from ..biomarkers.large_method import LargeMethodDetector
 from ..complexity.cyclomatic import _is_boolean_operator, is_markup
 from ..complexity.languages import get_language_map
 from ..complexity.nloc import is_string_stmt
-from ..dataflow import find_extractions, get_defuse_dialect
+from ..dataflow import Extraction, find_extractions, get_defuse_dialect
+from ..dataflow.stages import STAGE_MAX_CCN, StagePlan, find_stages
 from ..effort import effort_bucket
 from ..perf.dialects import PERF_DIALECTS
 from ..scoring import severity_deduction
@@ -107,7 +119,7 @@ from .registry import RefactoringDetector, register
 
 if TYPE_CHECKING:
     from ..complexity.languages import LanguageNodeMap
-    from ..dataflow import Definition, Extraction, FunctionAnalysis
+    from ..dataflow import Definition, FunctionAnalysis
     from ..dataflow.dialects.base import BaseDefUseDialect, Receiver
     from ..models import Severity
 
@@ -141,6 +153,11 @@ _MIN_OFFER_NLOC = 8
 # is safe but moves almost nothing.
 _HIGH_MIN_SHARE = 0.1
 
+# Above this no single helper of a stage's size brings the function under it.
+_STAGE_MIN_CCN = 2 * STAGE_MAX_CCN + 1
+# Keys a stage carries that the plan's own (stage 1) keys do not.
+_STAGE_ONLY_KEYS = ("ccn", "nloc", "context_params")
+
 
 @register
 class ExtractMethodDetector(RefactoringDetector):
@@ -168,7 +185,16 @@ class ExtractMethodDetector(RefactoringDetector):
             markers = {getattr(f, "biomarker_type", "") for f in matched}
             fn_node = analysis.fn_node
             receiver = dialect.receiver(fn_node, lmap) if dialect and fn_node else None
-            best = _choose(analysis, find_extractions(analysis, lmap, receiver), markers)
+            # The slicer's per-block walk, read again by a staged plan.
+            prefixes: dict[int, Any] = {}
+            candidates = find_extractions(analysis, lmap, receiver, prefixes)
+            best = _choose(analysis, candidates, markers)
+            staged = _staged(analysis, best, lmap, receiver, ctx.language, markers, prefixes)
+            if staged is not None:
+                out.append(
+                    self._staged_suggestion(ctx, analysis, staged, matched, names, receiver)
+                )
+                continue
             if best is None:
                 continue
             impact, share, source = self._impact_for(analysis, best, matched)
@@ -219,6 +245,41 @@ class ExtractMethodDetector(RefactoringDetector):
         # Stable order: biggest recovery first, then symbol, then span start.
         out.sort(key=lambda s: (-s.impact_delta, s.target_symbol, s.line_start or 0))
         return out
+
+    def _staged_suggestion(
+        self,
+        ctx: RefactoringContext,
+        analysis: FunctionAnalysis,
+        staged: StagePlan,
+        matched: list[Any],
+        names: ScopeNames,
+        receiver: Receiver | None,
+    ) -> RefactoringSuggestion:
+        """The plan for a staged split, credited the whole CCN drop."""
+        total = Extraction(
+            start_line=staged.stages[0].start_line,
+            end_line=staged.stages[-1].end_line,
+            params=(),
+            returns=(),
+            slice_nloc=staged.slice_nloc,
+            ccn_removed=staged.ccn_removed,
+        )
+        impact, _share, source = self._impact_for(analysis, total, matched)
+        return RefactoringSuggestion(
+            refactoring_type=self.name,
+            file_path=ctx.file_path,
+            target_symbol=analysis.name,
+            line_start=analysis.start_line,
+            line_end=analysis.end_line,
+            plan=_staged_fields(analysis, staged, ctx.language, names, receiver),
+            evidence={"slice_nloc": total.slice_nloc, "ccn_removed": total.ccn_removed},
+            impact_delta=round(float(impact), 3),
+            effort_bucket=effort_bucket(total.slice_nloc),
+            blast_radius={"scope": "local"},
+            # Several edits to one function: a reviewer reads the plan first.
+            confidence="medium",
+            source_biomarker=source,
+        )
 
     @staticmethod
     def _findings_for(analysis: FunctionAnalysis, findings: list[Any]) -> list[Any]:
@@ -290,6 +351,153 @@ def recovered_share(
     return min(1.0, ccn_share)
 
 
+def _staged(
+    analysis: FunctionAnalysis,
+    best: Extraction | None,
+    lmap: LanguageNodeMap,
+    receiver: Receiver | None,
+    language: str | None,
+    markers: set[str],
+    prefixes: dict[int, Any] | None = None,
+) -> StagePlan | None:
+    """The staged split, when the function is too complex for one helper and
+    the split lifts at least twice what the best single span does (several
+    edits for a point or two more is not the better plan); each stage must
+    clear the floor a single span does."""
+    # Only languages with a staged renderer, each with the outputs one call binds.
+    max_returns = render.staged_outputs(language)
+    if max_returns is None or analysis.ccn < _STAGE_MIN_CCN:
+        return None
+    plan = find_stages(analysis, lmap, receiver, max_returns=max_returns, prefixes=prefixes)
+    if not plan.stages or (best is not None and plan.ccn_removed < 2 * best.ccn_removed):
+        return None
+    if not all(_worth_extracting(analysis, x, markers) for x in plan.stages):
+        return None
+    return plan
+
+
+def _staged_fields(
+    analysis: FunctionAnalysis,
+    staged: StagePlan,
+    language: str | None,
+    names: ScopeNames,
+    receiver: Receiver | None,
+) -> dict[str, Any]:
+    """The staged plan: stage 1's keys, ``stages``, ``parameter_object`` and
+    ``orchestrator`` (module docstring)."""
+    lmap = get_language_map(language or "")
+    dialect = get_defuse_dialect(language or "")
+    obj = _parameter_object(analysis, staged, dialect, language, names)
+    # Without an object (no free variable name for it) the values stay plain.
+    context = staged.context if obj else ()
+    imports = names.imports(analysis.fn_node)
+    stages = []
+    for x, reimports in zip(staged.stages, staged.imports, strict=True):
+        name = render.private_name(
+            language, names.claim(analysis, helper_name(analysis, x, lmap, language, imports))
+        )
+        carried = [p for p in x.params if p in context]
+        own = replace(x, params=tuple(p for p in x.params if p not in context))
+        lead = (render.Slot(obj["var"], obj["name"]),) if obj and carried else ()
+        async_fields = _async_fields(analysis, x, lmap, language)
+        symbol = _render_fields(
+            analysis,
+            own,
+            dialect,
+            language,
+            name,
+            _symbol_fields(x, receiver),
+            async_host=async_fields.get("async_host", True),
+            leading=lead,
+        )
+        _add_stage_notes(symbol["new_symbol"], lead, carried, reimports, staged.moved_imports)
+        stages.append(
+            {
+                "span": {"start": x.start_line, "end": x.end_line},
+                "params": [s.name for s in lead] + list(own.params),
+                "returns": list(x.returns),
+                "suggested_name": name,
+                **async_fields,
+                **symbol,
+                "ccn": x.ccn_removed + 1,
+                "nloc": x.slice_nloc,
+                "context_params": carried,
+            }
+        )
+    head = {k: v for k, v in stages[0].items() if k not in _STAGE_ONLY_KEYS}
+    orchestrator = {"ccn_before": analysis.ccn, "ccn_after": analysis.ccn - staged.ccn_removed}
+    return {**head, "stages": stages, "parameter_object": obj, "orchestrator": orchestrator}
+
+
+def _add_stage_notes(
+    symbol: dict[str, Any],
+    lead: tuple[render.Slot, ...],
+    carried: list[str],
+    reimports: tuple[str, ...],
+    moved: frozenset[str],
+) -> None:
+    """What a stage's texts cannot say: the values it reads off the parameter
+    object, the function-local imports it must repeat, and which of those the
+    function no longer reads."""
+    notes = list(symbol.get("notes") or [])
+    if lead:
+        reads = ", ".join(f"{lead[0].name}.{p}" for p in carried)
+        notes.append(f"Read {', '.join(carried)} in the helper as {reads}.")
+    if reimports:
+        notes.append(
+            f"Import {', '.join(reimports)} in the helper: the function imports "
+            f"{'it' if len(reimports) == 1 else 'them'} inside its body."
+        )
+    gone = [n for n in reimports if n in moved]
+    if gone:
+        notes.append(
+            f"Remove {', '.join(gone)} from the function's own import: nothing left in it "
+            "reads " + ("it." if len(gone) == 1 else "them.")
+        )
+    if notes:
+        symbol["notes"] = notes
+
+
+def _parameter_object(
+    analysis: FunctionAnalysis,
+    staged: StagePlan,
+    dialect: BaseDefUseDialect | None,
+    language: str | None,
+    names: ScopeNames,
+) -> dict[str, Any] | None:
+    """The object carrying the stages' shared values, or None without one:
+    its type and variable name, typed fields, the declaration and the
+    statement building it just above stage 1's call."""
+    if not staged.context:
+        return None
+    first = staged.stages[0].start_line
+    probe = Extraction(first, first, staged.context, (), 0, 0)
+    types = _declared_types(analysis, probe, dialect)
+    fields = tuple(render.Slot(n, types.get(n)) for n in staged.context)
+    # Every name the function writes or reads (a module global ``ctx`` too).
+    def_use = analysis.def_use
+    taken = {d.var for d in def_use.definitions}
+    taken |= {u.name for bdu in def_use.blocks.values() for u in bdu.uses}
+    taken |= {u.name for u in def_use.captured.reads}
+    var = next((v for v in ("ctx", "context", "stage_ctx") if v not in taken), None)
+    if var is None:
+        return None
+    name = names.claim(analysis, render.context_name(language, analysis.name))
+    name = name or render.NAME_PLACEHOLDER
+    texts = render.render_context(language or "", name, var, fields)
+    if texts is None:
+        return None
+    return {
+        "name": name,
+        "var": var,
+        "fields": [{"name": f.name, "type": f.type} for f in fields],
+        "declaration_text": texts.declaration,
+        "construct_text": texts.construct,
+        "construct_before": first,
+        "notes": list(texts.notes),
+    }
+
+
 def _async_fields(
     analysis: FunctionAnalysis,
     extraction: Extraction,
@@ -341,19 +549,21 @@ def _render_fields(
     symbol: dict[str, Any],
     *,
     async_host: bool,
+    leading: tuple[render.Slot, ...] = (),
 ) -> dict[str, Any]:
     """*symbol* with ``new_symbol`` given its typed ``params`` / ``returns``,
     ``signature_text`` and any ``notes``, plus ``call_site`` (``render``).
     Types are read off the retained tree at each name's declaration, only for
     this plan's few names; the texts are None when the helper's form is
-    unknown, and ``call_site`` also when the host cannot await the helper."""
+    unknown, and ``call_site`` also when the host cannot await the helper.
+    *leading* slots come first (a staged plan's parameter object)."""
     new_symbol = symbol["new_symbol"]
     types = _declared_types(analysis, extraction, dialect)
     # Only a Rust value moves when passed, so only Rust asks what is read later.
     after = _read_after(analysis, extraction) if language == "rust" else set()
     # A method reaches its instance through the receiver, not an argument.
     own = new_symbol["receiver"] if new_symbol["kind"] == "method" else None
-    params = tuple(
+    params = leading + tuple(
         render.Slot(p, types.get(p), p in after) for p in extraction.params if p != own
     )
     returns = tuple(render.Slot(r, types.get(r)) for r in extraction.returns)
@@ -373,6 +583,8 @@ def _render_fields(
             out_declared=declared,
             out_written_before=before,
             out_rebound=rebound,
+            typed_host=fn_node is not None
+            and fn_node.child_by_field_name("return_type") is not None,
         )
     )
     rendered = {
@@ -380,6 +592,7 @@ def _render_fields(
         "params": render.symbol_params(params, returns),
         "returns": [{"name": r.name, "type": r.type} for r in returns],
         "signature_text": texts.signature if texts else None,
+        "return_text": texts.returns if texts else None,
     }
     if texts and texts.notes:
         rendered["notes"] = list(texts.notes)

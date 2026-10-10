@@ -239,6 +239,14 @@ Most plans answer a health finding, so per-path marker rules in
   replaces the span, in the file's language, with parameter types where the code
   declares them. Plan detail shows both with a copy button. Where the code names
   no helper or type, the text reads `<name>` or `<type>` for you to fill in.
+- A Python, TypeScript or JavaScript function too complex for one helper can
+  get a staged plan instead: several helpers the function calls in order, each
+  small enough to leave the finding behind. Plan detail lists them as steps,
+  with a shared parameter object when many values pass between them, and the
+  plan's estimated gain is the whole drop in the function's complexity. The
+  plan's own span, header and call are its first stage. When a function moves
+  between a single helper and a staged plan, or its stages change, the plan
+  gets a new id.
 - Move Method never targets a class the method only instantiates, or an ancestor of
   its own class.
 - Split File works on any language with call resolution and suggests a split only

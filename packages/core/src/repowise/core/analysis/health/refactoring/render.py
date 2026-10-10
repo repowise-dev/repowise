@@ -26,16 +26,19 @@ name is left out where the language allows it (Python, TS / JS) and written
 ``<type>`` where it does not (Go, Java, Rust, C / C++); a missing name is
 ``<name>``. Both are placeholders the agent must replace.
 
-Ceilings: one output at most, as the slicer never offers more
-(``dataflow.slice._MAX_RETURNS``); C7's staged plans bring tuple returns. A
-C++ method defined out of line (``A::f``) has an unknown receiver, so it gets
-no texts and the header is never qualified.
+Ceilings: one output at most, except Python, where a staged plan's helper
+may hand back a tuple (``a, b = _stage(...)``). A staged plan's parameter
+object is written by :func:`render_context`. A C++ method defined out of line
+(``A::f``) has an unknown receiver, so it gets no texts and the header is
+never qualified.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal, NamedTuple, get_args
+
+from .naming import split_words
 
 ParamMode = Literal["in", "inout"]
 #: ``inout``: the helper takes the value and hands its new value back.
@@ -61,6 +64,9 @@ _FAMILY: dict[str, str] = {
 #: Languages whose signatures need every type written.
 _TYPED = frozenset({"go", "java", "rust", "cpp"})
 #: Rust types that copy rather than move when passed by value.
+#: Outputs one call of a staged plan's helper can bind, per language with a
+#: staged renderer: a Python tuple, one TS / JS value.
+_STAGED_OUTPUTS: dict[str, int] = {"python": 3, "ts": 1, "js": 1}
 _RUST_COPY = frozenset(
     {
         *(f"{s}{n}" for s in "iu" for n in ("8", "16", "32", "64", "128", "size")),
@@ -93,7 +99,8 @@ class HelperShape:
     await the helper. ``out_declared``: the output is first declared in the
     span, so the call declares it; ``out_written_before``: it was written
     before the span (Go's ``:=`` would then declare nothing new);
-    ``out_rebound``: it is assigned again after the span.
+    ``out_rebound``: it is assigned again after the span. ``typed_host``: the
+    host declares its return type, so a helper with no output says so too.
     """
 
     language: str
@@ -108,12 +115,15 @@ class HelperShape:
     out_declared: bool = False
     out_written_before: bool = False
     out_rebound: bool = False
+    typed_host: bool = False
 
 
 class Rendered(NamedTuple):
     signature: str
     call: str | None
     notes: tuple[str, ...]
+    #: The helper's last line handing its outputs back, None without outputs.
+    returns: str | None = None
 
 
 def private_name(language: str | None, name: str | None) -> str | None:
@@ -123,6 +133,12 @@ def private_name(language: str | None, name: str | None) -> str | None:
     if name and _FAMILY.get(language or "") == "python" and not name.startswith("_"):
         return "_" + name
     return name
+
+
+def staged_outputs(language: str | None) -> int | None:
+    """How many outputs a staged plan's helper may return in *language*, None
+    where no staged plan is rendered."""
+    return _STAGED_OUTPUTS.get(_FAMILY.get(language or "", ""))
 
 
 def symbol_params(params: tuple[Slot, ...], returns: tuple[Slot, ...]) -> list[dict]:
@@ -151,12 +167,47 @@ def render(shape: HelperShape) -> Rendered | None:
             "The function holding these lines is not async, so the call cannot await "
             "the helper where it stands."
         )
-        return Rendered(sig(shape), None, tuple(notes))
-    return Rendered(sig(shape), call(shape), tuple(notes))
+        return Rendered(sig(shape), None, tuple(notes), _return_line(shape, family))
+    return Rendered(sig(shape), call(shape), tuple(notes), _return_line(shape, family))
+
+
+def _return_line(s: HelperShape, family: str) -> str | None:
+    """``return a, b`` (Python), ``return a;`` (C family), a Rust tail ``a``."""
+    if not s.returns:
+        return None
+    names = ", ".join(r.name for r in s.returns)
+    if family == "rust":
+        return names
+    return f"return {names}" if family in ("python", "go") else f"return {names};"
+
+
+def _undefined_arm_notes(s: HelperShape) -> list[str]:
+    """A TS / JS output the author declared ``T | undefined`` that the helper
+    always writes (it is not passed in): the declared type is kept, and the
+    note says the narrower return type is safe."""
+    taken = {p.name for p in s.params}
+    out = []
+    for r in s.returns:
+        arms = [a.strip() for a in (r.type or "").split("|")]
+        kept = [a for a in arms if a != "undefined"]
+        if r.name not in taken and kept and len(kept) < len(arms):
+            out.append(
+                f"{r.name} is declared `{r.type}`, but every path through these lines "
+                f"writes it, so the helper may return `{' | '.join(kept)}`."
+            )
+    return out
 
 
 def _notes(s: HelperShape, family: str) -> list[str]:
     out = []
+    if family in ("ts", "js"):
+        out.extend(_undefined_arm_notes(s))
+    if family == "ts":
+        untyped = [p.name for p in s.params if not p.type]
+        if untyped:
+            out.append(
+                f"Write the types of {', '.join(untyped)}: the code declares none for them."
+            )
     if family == "rust":
         unknown = [p.name for p in _rust_unsure(s)]
         if unknown:
@@ -184,7 +235,8 @@ def _args(shape: HelperShape) -> str:
     return ", ".join(p.name for p in shape.params)
 
 
-def _out(shape: HelperShape) -> Slot | None:
+def _single_out(shape: HelperShape) -> Slot | None:
+    """The one output every renderer but Python's binds (see the ceilings)."""
     return shape.returns[0] if shape.returns else None
 
 
@@ -199,8 +251,10 @@ def _py_sig(s: HelperShape) -> str:
     params = [f"{p.name}: {p.type}" if p.type else p.name for p in s.params]
     if _method(s) and s.receiver:
         params.insert(0, s.receiver)
-    out = _out(s)
-    ret = f" -> {out.type}" if out and out.type else ""
+    types = [r.type for r in s.returns]
+    ret = " -> None" if not types and s.typed_host else ""
+    if types and all(types):
+        ret = f" -> {types[0]}" if len(types) == 1 else f" -> tuple[{', '.join(map(str, types))}]"
     head = f"{'async ' if s.is_async else ''}def {_name(s)}({', '.join(params)}){ret}:"
     return ("@classmethod\n" + head) if _method(s) and s.receiver == "cls" else head
 
@@ -208,8 +262,7 @@ def _py_sig(s: HelperShape) -> str:
 def _py_call(s: HelperShape) -> str:
     target = f"{s.receiver}." if _method(s) and s.receiver else ""
     expr = f"{'await ' if s.is_async else ''}{target}{_name(s)}({_args(s)})"
-    out = _out(s)
-    return f"{out.name} = {expr}" if out else expr
+    return f"{', '.join(r.name for r in s.returns)} = {expr}" if s.returns else expr
 
 
 # -- TypeScript / JavaScript -------------------------------------------------
@@ -217,7 +270,7 @@ def _py_call(s: HelperShape) -> str:
 
 def _ts_sig(s: HelperShape, typed: bool) -> str:
     params = ", ".join(f"{p.name}: {p.type}" if p.type else p.name for p in s.params)
-    out = _out(s)
+    out = _single_out(s)
     ret = ""
     if out and out.type:
         ret = f": Promise<{out.type}>" if s.is_async else f": {out.type}"
@@ -230,7 +283,7 @@ def _ts_sig(s: HelperShape, typed: bool) -> str:
 def _ts_call(s: HelperShape) -> str:
     target = "this." if _method(s) else ""
     expr = f"{'await ' if s.is_async else ''}{target}{_name(s)}({_args(s)})"
-    out = _out(s)
+    out = _single_out(s)
     if out is None:
         return expr + ";"
     keyword = ("let " if s.out_rebound else "const ") if s.out_declared else ""
@@ -242,7 +295,7 @@ def _ts_call(s: HelperShape) -> str:
 
 def _go_sig(s: HelperShape) -> str:
     params = ", ".join(f"{p.name} {_type(p, 'go')}" for p in s.params)
-    out = _out(s)
+    out = _single_out(s)
     ret = f" {_type(out, 'go')}" if out else ""
     recv = f"{s.receiver_decl} " if _method(s) and s.receiver_decl else ""
     return f"func {recv}{_name(s)}({params}){ret} {{"
@@ -251,7 +304,7 @@ def _go_sig(s: HelperShape) -> str:
 def _go_call(s: HelperShape) -> str:
     target = f"{s.receiver}." if _method(s) and s.receiver else ""
     expr = f"{target}{_name(s)}({_args(s)})"
-    out = _out(s)
+    out = _single_out(s)
     if out is None:
         return expr
     # ``x, err :=`` in the span may only redeclare ``x``; alone it must assign.
@@ -267,7 +320,7 @@ def _type_first(s: HelperShape, family: str) -> str:
 
 
 def _java_sig(s: HelperShape) -> str:
-    out = _out(s)
+    out = _single_out(s)
     ret = _type(out, "java") if out else "void"
     static = "" if _method(s) else "static "
     return f"private {static}{ret} {_name(s)}({_type_first(s, 'java')}) {{"
@@ -280,7 +333,7 @@ def _java_call(s: HelperShape) -> str:
 def _declared_call(s: HelperShape, expr: str, inferred: str) -> str:
     """``T x = expr;`` for an output the span declared (*inferred* when its
     type is unknown), ``x = expr;`` for one declared before it."""
-    out = _out(s)
+    out = _single_out(s)
     if out is None:
         return expr + ";"
     if s.out_declared:
@@ -289,7 +342,7 @@ def _declared_call(s: HelperShape, expr: str, inferred: str) -> str:
 
 
 def _cpp_sig(s: HelperShape) -> str:
-    out = _out(s)
+    out = _single_out(s)
     if s.is_async:
         ret = TYPE_PLACEHOLDER  # the coroutine's own type (a note says so)
     elif out:
@@ -347,7 +400,7 @@ def _rust_sig(s: HelperShape) -> str:
     ]
     if _method(s):
         params.insert(0, _rust_self(s))
-    out = _out(s)
+    out = _single_out(s)
     ret = f" -> {_type(out, 'rust')}" if out else ""
     return f"{'async ' if s.is_async else ''}fn {_name(s)}({', '.join(params)}){ret} {{"
 
@@ -356,7 +409,7 @@ def _rust_call(s: HelperShape) -> str:
     target = "self." if _method(s) else ""
     args = ", ".join(f"&{p.name}" if _rust_borrowed(s, p) else p.name for p in s.params)
     expr = f"{target}{_name(s)}({args}){'.await' if s.is_async else ''}"
-    out = _out(s)
+    out = _single_out(s)
     if out is None:
         return expr + ";"
     if s.out_declared:
@@ -375,8 +428,53 @@ _RENDERERS = {
 }
 
 
+# -- a staged plan's parameter object ------------------------------------------
+
+
+class ContextText(NamedTuple):
+    """The parameter object's declaration (None where the language needs
+    none), the statement building it before the first stage, and notes."""
+
+    declaration: str | None
+    construct: str
+    notes: tuple[str, ...]
+
+
+def context_name(language: str | None, host: str) -> str:
+    """``_PersistContext`` for host ``persist`` in Python, ``PersistContext``
+    in TS / JS: a type name, private where the language spells it."""
+    words = [*split_words(host.rsplit(".", 1)[-1]), "context"]
+    return private_name(language, "".join(w.capitalize() for w in words)) or "Context"
+
+
+def render_context(
+    language: str, name: str, var: str, fields: tuple[Slot, ...]
+) -> ContextText | None:
+    """The object carrying *fields* to every stage, or None for a language
+    without a staged renderer."""
+    family = _FAMILY.get(language)
+    if family == "python":
+        lines = [f"    {f.name}: {f.type or 'Any'}" for f in fields]
+        notes = ["Import dataclass from dataclasses."]
+        if any(f.type is None for f in fields):
+            notes.append("Import Any from typing, or write the fields' real types.")
+        construct = f"{var} = {name}({', '.join(f'{f.name}={f.name}' for f in fields)})"
+        head = ["@dataclass(frozen=True)", f"class {name}:"]
+        return ContextText("\n".join([*head, *lines]), construct, tuple(notes))
+    if family not in ("ts", "js"):
+        return None
+    names = ", ".join(f.name for f in fields)
+    if family == "js":
+        return ContextText(None, f"const {var} = {{ {names} }};", ())
+    lines = [f"  {f.name}: {f.type or TYPE_PLACEHOLDER};" for f in fields]
+    declaration = "\n".join([f"interface {name} {{", *lines, "}"])
+    return ContextText(declaration, f"const {var}: {name} = {{ {names} }};", ())
+
+
 #: What the renderer adds to a stored plan, served on plan detail only.
-_DETAIL_SYMBOL_KEYS = ("params", "returns", "signature_text", "notes")
+_DETAIL_SYMBOL_KEYS = ("params", "returns", "signature_text", "return_text", "notes")
+#: A staged plan's stages, parameter object and residual sit on detail too.
+_DETAIL_PLAN_KEYS = ("call_site", "stages", "parameter_object", "orchestrator")
 
 
 def list_plan(plan: dict) -> dict:
@@ -384,11 +482,11 @@ def list_plan(plan: dict) -> dict:
     list serves every plan, and an agent reads the texts on one plan's
     detail."""
     symbol = plan.get("new_symbol")
-    if "call_site" not in plan and not (
+    if not any(k in plan for k in _DETAIL_PLAN_KEYS) and not (
         isinstance(symbol, dict) and any(k in symbol for k in _DETAIL_SYMBOL_KEYS)
     ):
         return plan
-    out = {k: v for k, v in plan.items() if k != "call_site"}
+    out = {k: v for k, v in plan.items() if k not in _DETAIL_PLAN_KEYS}
     if isinstance(symbol, dict):
         out["new_symbol"] = {k: v for k, v in symbol.items() if k not in _DETAIL_SYMBOL_KEYS}
     return out
@@ -408,13 +506,17 @@ __all__ = [
     "NAME_PLACEHOLDER",
     "PARAM_MODES",
     "TYPE_PLACEHOLDER",
+    "ContextText",
     "HelperShape",
     "ParamMode",
     "Rendered",
     "Slot",
     "brief",
+    "context_name",
     "list_plan",
     "private_name",
     "render",
+    "render_context",
+    "staged_outputs",
     "symbol_params",
 ]
