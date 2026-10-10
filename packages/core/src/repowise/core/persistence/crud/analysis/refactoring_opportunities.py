@@ -623,10 +623,12 @@ async def refactoring_step_counts(
 ) -> list[tuple[str, int]]:
     """Each matching opportunity's id and step count, in *order*: one narrow read,
     so a page of plans is located without decoding any details."""
+    from ....analysis.health.refactoring.serving import sort_keys
+
     rows = await session.execute(
         select(RefactoringOpportunity.opportunity_id, RefactoringOpportunity.step_count)
         .where(*_opportunity_filters(repository_id, **filters))
-        .order_by(*_order_by(order))
+        .order_by(*order_by(RefactoringOpportunity, sort_keys(order)))
     )
     return [(opportunity_id, int(steps or 0)) for opportunity_id, steps in rows.all()]
 
