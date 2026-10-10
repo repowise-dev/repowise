@@ -29,11 +29,12 @@ export class DeadCodeTreeProvider extends RepowiseTreeProvider {
   protected readonly name = "Dead Code";
 
   protected async loadRoots(repoId: string): Promise<RepoTreeNode[]> {
-    const [findings, summary] = await Promise.all([
-      this.cached(FINDINGS_KEY, () => listDeadCode(repoId, { limit: 500 })),
-      this.cached(SUMMARY_KEY, () => getDeadCodeSummary(repoId)),
-    ]);
+    const findings = await this.cached(FINDINGS_KEY, () =>
+      listDeadCode(repoId, { limit: 500 }),
+    );
     if (findings.length === 0) {
+      // A failed summary throws to the tree's error row, never to "clean".
+      const summary = await this.cached(SUMMARY_KEY, () => getDeadCodeSummary(repoId));
       // No findings only means "clean" once an analysis has actually run.
       return [
         summary.analyzed_at
