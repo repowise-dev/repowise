@@ -56,6 +56,8 @@ def test_follows_a_worktree_gitdir_pointer(tmp_path: Path) -> None:
     _write_config(main / ".git", f'[remote "origin"]\n\turl = {_ORIGIN}\n')
     worktree_gitdir = main / ".git" / "worktrees" / "feature"
     worktree_gitdir.mkdir(parents=True)
+    # git writes this into every linked worktree's gitdir.
+    (worktree_gitdir / "commondir").write_text("../..\n", encoding="utf-8")
 
     linked = tmp_path / "linked"
     linked.mkdir()

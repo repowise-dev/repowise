@@ -10,7 +10,6 @@ decisions slice, savings headline, and health KPIs.
 from __future__ import annotations
 
 import asyncio
-import configparser
 import contextlib
 import json
 from pathlib import Path
@@ -24,6 +23,7 @@ from repowise.core.analysis.health.aggregation import (
     severity_breakdown as health_severity_breakdown,
 )
 from repowise.core.analysis.health.scoring import hotspot_health
+from repowise.core.forges import read_remote_url, strip_credentials
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -35,7 +35,6 @@ from repowise.core.persistence.models import (
 from repowise.core.stats_highlights import file_mix
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers.git import _hotspot_from_row
-from repowise.server.schemas.repository import strip_credentials
 from repowise.server.services.attention import build_attention
 from repowise.server.services.knowledge_map import (
     compute_knowledge_silos,
@@ -95,58 +94,8 @@ def _remote_url(stored_url: str | None, local_path: str | None) -> str | None:
     and the UI falls back to initials. The value is sent to the browser, so it
     passes through ``strip_credentials`` first.
     """
-    return strip_credentials(_read_remote_url(stored_url, local_path))
-
-
-def _read_remote_url(stored_url: str | None, local_path: str | None) -> str | None:
-    if stored_url:
-        return stored_url
-    if not local_path:
-        return None
-
-    git_path = Path(local_path) / ".git"
-    # Worktrees and submodules use a `.git` FILE holding `gitdir: <path>`; the
-    # config lives in the main checkout, so follow the pointer before reading.
-    if git_path.is_file():
-        try:
-            pointer = git_path.read_text(encoding="utf-8").strip()
-        except OSError:
-            return None
-        if not pointer.startswith("gitdir:"):
-            return None
-        resolved = Path(pointer.split(":", 1)[1].strip())
-        if not resolved.is_absolute():
-            resolved = (Path(local_path) / resolved).resolve()
-        # A worktree's gitdir is `<main>/.git/worktrees/<name>`; config is two
-        # levels up. Fall back to the pointed-at dir for the submodule case.
-        git_path = resolved.parent.parent if resolved.parent.name == "worktrees" else resolved
-
-    config_path = git_path / "config"
-    if not config_path.is_file():
-        return None
-
-    # Both flags are load-bearing, not defensive boilerplate:
-    #
-    # strict=False — git tolerates duplicate keys and writes them routinely. A
-    # remote with two `fetch` refspecs is normal, and VS Code writes
-    # `vscode-merge-base` twice under a branch section. Strict parsing raises
-    # DuplicateOptionError on both, which would mean this project's own
-    # checkout never resolves a remote.
-    #
-    # interpolation=None — ConfigParser expands `%` at get() time, so a
-    # perfectly valid remote like `https://user%40company.com@dev.azure.com/...`
-    # raises InterpolationSyntaxError. Left on, that exception escapes the
-    # endpoint and turns the whole Overview into a 404 in order to render an
-    # avatar.
-    parser = configparser.ConfigParser(strict=False, interpolation=None)
-    try:
-        parser.read(config_path, encoding="utf-8")
-        for section in ('remote "origin"', 'remote "upstream"'):
-            if parser.has_option(section, "url"):
-                return parser.get(section, "url").strip() or None
-    except (OSError, configparser.Error):
-        return None
-    return None
+    url = stored_url or (read_remote_url(local_path) if local_path else None)
+    return strip_credentials(url) if url else None
 
 
 def _decision_slim(d: Any) -> dict:

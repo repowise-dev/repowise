@@ -1,67 +1,16 @@
-"""Repository request/response models."""
+﻿"""Repository request/response models."""
 
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime
 from pathlib import Path
 
 from pydantic import BaseModel, field_validator
 
 from repowise.core.docs_mode import DocsMode
+from repowise.core.forges import strip_credentials
 from repowise.core.index_scope import load_index_scope
-
-_URL_SCHEME_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*)://")
-_QUERY_RE = re.compile(r"[?#]")
-_SSH_SCHEMES = frozenset({"ssh", "git+ssh", "ssh+git"})
-
-
-def strip_credentials(url: str | None) -> str | None:
-    """Drop secrets from a remote before it leaves the server.
-
-    A token can sit in the userinfo (``https://user:glpat-x@host/...``,
-    ``git+https://ghp_x@host/...``) or the query (``?private_token=``). Every
-    scheme loses its query, fragment and userinfo, except that ssh keeps a bare
-    username: ``ssh://git@host/...`` and scp-style ``git@host:path`` name an
-    account, not a secret, and the UI's avatar parser expects ``git@``.
-    """
-    if not url:
-        return url
-    url = url.strip()
-    scheme_match = _URL_SCHEME_RE.match(url)
-    if not scheme_match:
-        # scp-style `user[:password]@host:path`. Git never sends a password here,
-        # but one typed in (even with a `/`) would still reach the browser. A
-        # local path (`/srv/a:b@c`, `.\x`, `C:\x`) is not a remote, and without a
-        # `host:` after the `@` the `@` is in the path (`host:org/repo@v1.git`).
-        userinfo, at, rest = url.partition("@")
-        local = "\\" in userinfo or userinfo[:1] in ("/", ".")
-        if at and ":" in userinfo and ":" in rest and not local:
-            return f"{userinfo.split(':', 1)[0]}@{rest}"
-        return url
-    scheme = scheme_match.group(1)
-    rest = url[scheme_match.end() :]
-    userinfo, hostpart = "", rest
-    # Userinfo is found before the query is cut, so a `?` or `#` typed into a
-    # password cannot split it and leave a prefix behind.
-    head = rest.split("/", 1)[0]
-    if "@" in head:
-        userinfo, _, host = head.rpartition("@")
-        hostpart = host + rest[len(head) :]
-    elif ":" in head:
-        # An unencoded `/` in a password moves the authority past the first
-        # `/`, and `user:123/x` even passes for host:port. Such a password
-        # always leaves a `:` before that `/`, so only then is a later `@` the
-        # end of the userinfo; `host/repo@v1.git` keeps its path. Ceiling:
-        # `host:8443/repo@v1.git` loses its host. A port plus a path `@` is
-        # rare, and losing a host beats a leak.
-        before_query = _QUERY_RE.split(rest, maxsplit=1)[0]
-        if "@" in before_query:
-            userinfo, _, hostpart = before_query.partition("@")
-    hostpart = _QUERY_RE.split(hostpart, maxsplit=1)[0]
-    user = userinfo.split(":", 1)[0] if scheme.lower() in _SSH_SCHEMES else ""
-    return f"{scheme}://{user + '@' if user else ''}{hostpart}"
 
 
 class RepoCreate(BaseModel):
@@ -105,7 +54,7 @@ class RepoResponse(BaseModel):
     settings: dict
     created_at: datetime
     updated_at: datetime
-    # Workspace context — populated when the server is running in
+    # Workspace context â€” populated when the server is running in
     # workspace mode. ``status`` indicates whether the repo has been
     # indexed yet; the web UI uses it to render "needs index" CTA cards
     # instead of silently dropping unindexed workspace repos from the
@@ -136,7 +85,7 @@ class RepoResponse(BaseModel):
         return cls(
             id=obj.id,  # type: ignore[attr-defined]
             name=obj.name,  # type: ignore[attr-defined]
-            url=strip_credentials(obj.url) or "",  # type: ignore[attr-defined]
+            url=strip_credentials(obj.url or ""),  # type: ignore[attr-defined]
             local_path=local_path,
             default_branch=obj.default_branch,  # type: ignore[attr-defined]
             head_commit=obj.head_commit,  # type: ignore[attr-defined]
@@ -180,7 +129,7 @@ class RepoSummaryRow(BaseModel):
     name: str
     local_path: str
     updated_at: datetime | None = None
-    #: "indexed" | "needs_index" | "missing_dir" — same vocabulary as
+    #: "indexed" | "needs_index" | "missing_dir" â€” same vocabulary as
     #: ``RepoResponse.workspace_status``, which the sidebar already renders.
     status: str = "indexed"
 
@@ -201,7 +150,7 @@ class RepoSummaryRow(BaseModel):
     tracked_file_count: int = 0
     hotspot_count: int = 0
 
-    #: Latest health snapshot. ``None`` when the repo has never been analysed —
+    #: Latest health snapshot. ``None`` when the repo has never been analysed â€”
     #: distinct from a score of 0, which would mean "analysed, and terrible".
     average_health: float | None = None
     hotspot_health: float | None = None
