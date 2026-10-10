@@ -18,7 +18,9 @@ Repo-level KPIs are computed from the final per-file metrics.
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -577,20 +579,23 @@ def _read_source_lines(abs_path: str, read_source: SourceReader) -> list[str] | 
     return text.splitlines()
 
 
+#: Partner files whose lines one analysis pass keeps (``_repo_lines``).
+_PARTNER_LINES_CACHE = 256
+
+
 def _clone_sources(
     file_path: str,
     own_lines: list[str],
     clones: list[ClonePair],
-    abs_paths: dict[str, str],
-    read_source: SourceReader,
+    read_lines: Callable[[str], list[str] | None],
 ) -> dict[str, list[str]]:
     """This file's lines plus each clone partner's, for text-level checks."""
     out = {file_path: own_lines}
     for clone in clones:
         for path in (clone.file_a, clone.file_b):
-            if path in out or path not in abs_paths:
+            if path in out:
                 continue
-            lines = _read_source_lines(abs_paths[path], read_source)
+            lines = read_lines(path)
             if lines is not None:
                 out[path] = lines
     return out
@@ -790,6 +795,9 @@ class HealthAnalyzer:
         self.git_meta_map = git_meta_map or {}
         self.parsed_files = list(parsed_files or [])
         self._abs_paths = {pf.file_info.path: pf.file_info.abs_path for pf in self.parsed_files}
+        # Clone partners' lines, shared by the test-clone gate and Extract
+        # Helper's reuse check. Bounded: partners cluster, a pass reads few.
+        self._repo_lines = functools.lru_cache(maxsize=_PARTNER_LINES_CACHE)(self._read_repo_lines)
         # Per-file coverage keyed by repo-relative POSIX path. Each value
         # is ``{line_coverage_pct, branch_coverage_pct, covered_lines,
         # total_coverable_lines}``. ``None``-equivalent files are simply
@@ -1620,7 +1628,7 @@ class HealthAnalyzer:
             _read_source_lines(pf.file_info.abs_path, self.read_source) if clones else None
         )
         clone_sources = (
-            _clone_sources(file_path, source_lines, clones, self._abs_paths, self.read_source)
+            _clone_sources(file_path, source_lines, clones, self._repo_lines)
             if source_lines is not None and pf.file_info.is_test
             else {}
         )
@@ -1743,6 +1751,8 @@ class HealthAnalyzer:
             commit_spans=commit_spans(fcx.functions, _commit_entries(fcx, file_git_meta)),
             # The Extract Helper snippet; ``None`` unless the file carries clones.
             source_lines=source_lines,
+            # Clone partners' lines, read only when one site may be a whole function.
+            read_lines=self._repo_lines,
         )
         suggestions = detect_refactorings(
             rctx,
@@ -1750,6 +1760,14 @@ class HealthAnalyzer:
             min_confidence=refactoring_min_confidence,
         )
         return metric, findings, suggestions
+
+    def _read_repo_lines(self, path: str) -> list[str] | None:
+        """*path*'s lines: the parsed file's own path, else under the repo root
+        (an update's parsed set is the whole tree, but a caller may pass less)."""
+        abs_path = self._abs_paths.get(path)
+        if abs_path is None and self.repo_root is not None:
+            abs_path = str(Path(self.repo_root) / path)
+        return _read_source_lines(abs_path, self.read_source) if abs_path else None
 
     def _is_hotspot(self, meta: dict | object) -> bool:
         if isinstance(meta, dict):
