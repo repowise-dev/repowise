@@ -914,5 +914,17 @@ describe("PerformanceView drawer, the fix itself", () => {
     const panel = await screen.findByRole("dialog");
     expect(await within(panel).findByText(/No for or while line within 15 lines/)).toBeTruthy();
   });
+
+  it("displays 1-based rank position in queue row and drawer", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    const [first] = await rows();
+    // First item has rank_position = 0 (or 1 in fixture), displayed as rank_position + 1
+    // In fixture, first item is perf2_planready with rank_position: 1 -> displays 2
+    expect(within(first!).getByText("2")).toBeTruthy();
+    fireEvent.click(first!);
+    const panel = await screen.findByRole("dialog");
+    expect(within(panel).getByText(/Position/)).toBeTruthy();
+    expect(within(panel).getByText("2", { selector: "span" })).toBeTruthy();
+  });
 });
 
