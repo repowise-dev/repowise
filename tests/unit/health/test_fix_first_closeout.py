@@ -7,7 +7,7 @@ import re
 import pytest
 
 from repowise.core.analysis.health.fix_first import FixFirstQueue, build_fix_first
-from repowise.core.analysis.health.fix_first.build import LOW_VALUE_KINDS
+from repowise.core.analysis.health.queue.eligibility import LOW_VALUE_KINDS
 from repowise.core.analysis.health.refactoring.performance_fix import fix_steps
 from tests.unit.health.fix_first_rows import FINDINGS, METRICS, _perf
 

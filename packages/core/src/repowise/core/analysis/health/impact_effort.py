@@ -21,8 +21,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
-from repowise.core.analysis.health.fix_first.build import MIN_WORTH
-from repowise.core.analysis.health.fix_first.model import TIER_RANK
+from repowise.core.analysis.health.queue.eligibility import MIN_WORTH
+from repowise.core.analysis.health.queue.order import TIER_RANK
 from repowise.core.analysis.health.rows import detail_map, field
 
 #: The vertical midline, in lines to change. The work queue's Medium effort

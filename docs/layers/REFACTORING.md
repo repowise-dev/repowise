@@ -102,11 +102,13 @@ Break Cycle out, matching the opportunities; `by_type` still counts it.
 Names are never invented. A suggested helper or file name is `null` when nothing
 in the code anchors one. A Split File or Extract Class plan with an unnamed group
 is held as `needs_design`, like a cycle: it is not a step and never reaches Fix
-first. Code only moves within a language family, so Java, Kotlin and Scala are
-separate. A callback is named after the call it is passed to. An Extract Method
-helper is named from a stage label, a banner comment, or `compute_<value>` when the
-span has no outside effects. A name already taken where the helper lands is
-dropped, so a `null` name means you name the helper.
+first. A plan led by Move Method or Extract Class stays in the full list but is
+kept out of Fix first and the default scope, counted as not yet audited, until
+that kind passes a per-language review. Code only moves within a language family,
+so Java, Kotlin and Scala are separate. A callback is named after the call it is
+passed to. An Extract Method helper is named from a stage label, a banner comment,
+or `compute_<value>` when the span has no outside effects. A name already taken
+where the helper lands is dropped, so a `null` name means you name the helper.
 
 An empty list means no detector found work that clears its gates. It does not mean
 the code needs no attention: check the findings in

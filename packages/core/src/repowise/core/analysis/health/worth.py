@@ -318,15 +318,6 @@ def cost_proof(row: Any) -> CostProof:
     return "unproven" if reason == "unmeasured_cost" else "proven"
 
 
-def perf_low_priority(row: Any) -> LowPriority | None:
-    """Why a performance opportunity can wait: it runs outside production
-    code, or :func:`lead_reason` holds it back."""
-    context = field(row, "execution_context")
-    if context != "production":
-        return "unknown_context" if context in (None, "unknown") else "not_production"
-    return lead_reason(field(row, "biomarker_type"), perf_facets(row))
-
-
 __all__ = [
     "CHAIN_SHARE",
     "COST_PROOFS",
@@ -350,6 +341,5 @@ __all__ = [
     "magnitude",
     "measure",
     "perf_facets",
-    "perf_low_priority",
     "worth_size",
 ]

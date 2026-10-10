@@ -15,10 +15,7 @@ from repowise.core.analysis.health.finding_identity import finding_public_id
 from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.models import HealthFindingData, Severity
 from repowise.core.analysis.health.perf.opportunities import build_performance_opportunities
-from repowise.core.analysis.health.perf.opportunity_rank import (
-    default_queue_counts,
-    default_queue_exclusion,
-)
+from repowise.core.analysis.health.queue.eligibility import perf_queue_counts, perf_queue_verdict
 from tests.unit.health.fix_first_rows import FINDINGS, METRICS, REFACTORING, _perf
 
 # The shape of ``decisions/evolution.py``: a documented kill switch, then a
@@ -250,8 +247,8 @@ def test_a_cause_in_a_gated_function_leaves_the_performance_default_queue() -> N
         None,
     )
     assert live.actionability_state != "expected"
-    assert default_queue_exclusion(gated) == "gated_off"
-    assert default_queue_counts([gated, live])["excluded"]["gated_off"] == 1
+    assert perf_queue_verdict(gated).reason == "gated_off"
+    assert perf_queue_counts([gated, live])["excluded"]["gated_off"] == 1
 
 
 def test_one_live_call_site_keeps_the_cause() -> None:

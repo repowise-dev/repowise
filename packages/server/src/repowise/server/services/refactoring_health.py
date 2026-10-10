@@ -18,13 +18,13 @@ index time; this module reads what the finalizer wrote.
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.queue.eligibility import Tally, Verdict
 from repowise.core.analysis.health.queue_rules import keep, sort_key
 from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 from repowise.core.analysis.health.refactoring.recommendations import (
@@ -335,8 +335,11 @@ class RefactoringHealthService:
         # The queue is keyed on the stores' newest write, so it has read every
         # open id; one written between the two reads is in neither count.
         shown = [i for i in matched if i in reasons and reasons[i] is None]
-        left_out = Counter(r for i in matched if (r := reasons.get(i)))
-        return shown, {"total": sum(left_out.values()), "by_reason": dict(left_out.most_common())}
+        left_out = Tally()
+        for i in matched:
+            if reason := reasons.get(i):
+                left_out.add(Verdict(reason))
+        return shown, {"total": left_out.total, "by_reason": left_out.by_reason()}
 
     # -- headline ---------------------------------------------------------
 

@@ -50,6 +50,7 @@ export const EXCLUSION_LABEL: Record<FixExclusion, string> = {
   small_function: "small functions",
   no_concrete_step: "with no concrete first edit",
   low_value_kind: "of a kind rarely worth doing",
+  kind_unaudited: "of a kind not yet audited for this list",
 };
 
 const EXCLUSION_ORDER: FixExclusion[] = [
@@ -72,6 +73,7 @@ const EXCLUSION_ORDER: FixExclusion[] = [
   "small_function",
   "no_concrete_step",
   "low_value_kind",
+  "kind_unaudited",
 ];
 
 /**

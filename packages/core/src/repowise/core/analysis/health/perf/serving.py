@@ -19,12 +19,17 @@ from typing import TYPE_CHECKING, Any, Literal
 from repowise.core.analysis.health import queue_rules
 from repowise.core.analysis.health.finding_identity import finding_public_id
 from repowise.core.analysis.health.fix_first.text import perf_cost
+from repowise.core.analysis.health.queue.eligibility import (
+    DEFAULT_QUEUE_PROOFS,
+    DEFAULT_QUEUE_STATES,
+)
+from repowise.core.analysis.health.queue.value import perf_low_priority
 from repowise.core.analysis.health.queue_rules import NULL_VALUE, Facet, FilterRule, SortKeys
 from repowise.core.analysis.health.rows import detail_map, field, json_field
-from repowise.core.analysis.health.worth import COST_PROOFS, LOW_PRIORITY_LABEL, perf_low_priority
+from repowise.core.analysis.health.worth import COST_PROOFS, LOW_PRIORITY_LABEL
 
 from .opportunities import PERFORMANCE_MODEL_VERSION
-from .opportunity_rank import DEFAULT_QUEUE_PROOFS, DEFAULT_QUEUE_STATES, NON_LEADING_MARKERS
+from .opportunity_rank import NON_LEADING_MARKERS
 
 if TYPE_CHECKING:
     from .opportunities import PerformanceOpportunity

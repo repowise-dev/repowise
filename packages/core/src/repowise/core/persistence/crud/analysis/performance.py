@@ -137,11 +137,8 @@ def _summary_payload(
     plans: dict[str, dict[str, Any]] | None = None,
 ) -> dict:
     """The compact current headline, written once and read by primary key."""
-    from ....analysis.health.perf.opportunity_rank import (
-        default_queue_counts,
-        default_queue_exclusion,
-    )
     from ....analysis.health.perf.serving import intervention_file
+    from ....analysis.health.queue.eligibility import perf_queue_counts, perf_queue_verdict
     from ....analysis.health.worth import cost_proof
 
     counts: dict[str, int] = {}
@@ -161,12 +158,12 @@ def _summary_payload(
         (
             o
             for o in opportunities
-            if default_queue_exclusion(o) is None and o.may_lead
+            if perf_queue_verdict(o).eligible and o.may_lead
         ),
         None,
     )
     return {
-        "default_queue": default_queue_counts(opportunities),
+        "default_queue": perf_queue_counts(opportunities),
         "actionability": counts,
         "context": contexts,
         "boundary": boundaries,

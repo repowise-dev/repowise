@@ -180,7 +180,7 @@ def test_findings_are_tiered_per_function_and_history_waits() -> None:
     ],
 )
 def test_a_perf_cause_leads_only_on_a_loop_that_grows(context, facets, expected) -> None:
-    from repowise.core.analysis.health.worth import perf_low_priority
+    from repowise.core.analysis.health.queue.value import perf_low_priority
 
     row = {"execution_context": context, "biomarker_type": "io_in_loop",
            "details": {"facets": facets}}
@@ -203,7 +203,7 @@ def test_a_perf_cause_leads_only_on_a_loop_that_grows(context, facets, expected)
     ],
 )
 def test_a_perf_cause_is_judged_by_its_kind(marker, facets, expected) -> None:
-    from repowise.core.analysis.health.worth import perf_low_priority
+    from repowise.core.analysis.health.queue.value import perf_low_priority
 
     row = {"execution_context": "production", "biomarker_type": marker,
            "details": {"facets": facets}}
@@ -224,14 +224,14 @@ def test_a_perf_cause_is_judged_by_its_kind(marker, facets, expected) -> None:
     ],
 )
 def test_only_an_unmeasured_loop_is_unproven(marker, facets, proof) -> None:
-    from repowise.core.analysis.health.perf.opportunity_rank import default_queue_exclusion
+    from repowise.core.analysis.health.queue.eligibility import perf_queue_verdict
     from repowise.core.analysis.health.worth import cost_proof
 
     row = {"execution_context": "production", "actionability_state": "advisory",
            "biomarker_type": marker, "details": {"facets": facets}}
     assert cost_proof(row) == proof
     # The default queue leaves an unproven cause out under the shared reason.
-    assert default_queue_exclusion(row) == ("unmeasured_cost" if proof == "unproven" else None)
+    assert perf_queue_verdict(row).reason == ("unmeasured_cost" if proof == "unproven" else None)
 
 
 def test_an_unknown_loop_ranks_no_higher_than_a_bounded_one() -> None:
@@ -242,7 +242,7 @@ def test_an_unknown_loop_ranks_no_higher_than_a_bounded_one() -> None:
 
 
 def test_the_default_queue_counts_an_unproven_cause_and_still_adds_up() -> None:
-    from repowise.core.analysis.health.perf.opportunity_rank import default_queue_counts
+    from repowise.core.analysis.health.queue.eligibility import perf_queue_counts
 
     def row(context: str, magnitude: str) -> dict:
         return {"execution_context": context, "actionability_state": "advisory",
@@ -251,7 +251,7 @@ def test_the_default_queue_counts_an_unproven_cause_and_still_adds_up() -> None:
 
     rows = [row("production", "grows_with_data"), row("production", "unknown"),
             row("test", "unknown")]
-    counts = default_queue_counts(rows)
+    counts = perf_queue_counts(rows)
     assert counts["total"] == 1
     assert counts["excluded"]["unmeasured_cost"] == 1 and counts["excluded"]["test"] == 1
     assert counts["total"] + sum(counts["excluded"].values()) == len(rows)

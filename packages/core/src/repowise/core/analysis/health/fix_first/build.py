@@ -49,7 +49,6 @@ Row shapes (field names are the SQL columns):
 
 from __future__ import annotations
 
-import functools
 import math
 import re
 from collections import Counter, defaultdict
@@ -60,38 +59,41 @@ from typing import Any
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.complexity.dispatch import DISPATCH_SHARE
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
-from repowise.core.analysis.health.perf.causal import code_context
-from repowise.core.analysis.health.perf.opportunity_rank import (
+from repowise.core.analysis.health.queue.eligibility import (
     DEFAULT_QUEUE_CONTEXTS,
-    strategy_exclusion,
+    Tally,
+    Verdict,
+    finding_verdict,
+    path_verdict,
+    perf_fix_verdict,
+    refactor_verdict,
+)
+from repowise.core.analysis.health.queue.order import LEVEL_RANK, order
+from repowise.core.analysis.health.queue.value import (
+    perf_low_priority,
+    perf_value,
+    shape_value,
+    size_value,
+    tier,
 )
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.scoring import biomarker_dimension
 from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.health.worth import (
-    LOW_PRIORITY_LABEL,
     SIZE_MARKERS,
     WORTH_MAGNITUDE,
-    dispatch_shaped,
-    dormant,
-    lead_reason,
     low_priority,
     magnitude,
     measure,
-    perf_low_priority,
     worth_size,
 )
 from repowise.core.analysis.next_call import ActionCommand
-from repowise.core.code_origin import path_origin
 
 from . import text
 from .model import (
-    EFFORT_RANK,
     FIX_EFFORTS,
     FIX_EXCLUSIONS,
     FIX_IMPROVES,
-    LEVEL_RANK,
-    TIER_RANK,
     FixAction,
     FixConfidence,
     FixContext,
@@ -115,67 +117,22 @@ Rows = Iterable[Any]
 #: A dead-code finding's ``(symbol, start line, end line)``; no symbol for a whole file.
 DeadSpan = tuple[str | None, int | None, int | None]
 
-#: A refactoring whose credited gain is under this is not worth an item. The
-#: refactoring model credits only the share of a finding a plan removes and
-#: drops trivial spans itself (minimum worth), so this floor is on the file.
-MIN_WORTH = 0.5
-#: Credited health gain cut points for value 1, 2 and 3.
-GAIN_CUTS = (0.5, 1.5, 3.0)
-#: Problem size, value 1 to 4, reads ``worth.SIZE_*``: health credit is
-#: calibrated per finding and saturates, so a function far past every bar
-#: would rank with a tidy one without them.
-#: A critical finding or a brain method is at least this size.
-SIZE_SEVERE = 2
 #: Measured size (CCN, lines or nesting alone, before the severity floor and
 #: the hot-file bonus) from which an item leads as "break up", naming the whole
 #: problem: CCN 40, 200 lines or nesting 6.
 SIZE_BREAK_UP = WORTH_MAGNITUDE
-#: The highest value any unit reaches.
-VALUE_MAX = 4
 #: A file in the top fifth of production files by churn or dependents is hot.
 HOT_QUANTILE = 0.8
 MAX_FACTS = 5
 MAX_TESTS = 5
 MAX_STEPS = 5
 MAX_CONTEXT = 3
-#: In the first HEAD places no kind takes more than HEAD_PER_KIND, unless the
-#: other kinds have nothing above the later tier.
-HEAD = 5
-HEAD_PER_KIND = 3
 DEFAULT_LIMIT = 10
-#: A function-level complexity unit needs this many code lines or this CCN.
-#: Picked on the dev labels (67 complexity rows): 30 / 15 drops 13 rejected
-#: small functions and 4 accepted ones; no cut that keeps every accepted row
-#: drops more than 4 rejected.
-SMALL_NLOC = 30
-SMALL_CCN = 15
 #: A dead-code finding this sure (or marked safe to delete) makes its target
 #: ``unreachable``: no plan beats deleting it.
 DEAD_CONFIDENCE = 0.8
 #: Class-level findings: a fix names member groups, which only a plan holds.
 CLASS_MARKERS = frozenset({"low_cohesion", "god_class"})
-#: Kinds the baseline raters found not worth doing: a refactoring led by one
-#: of these steps, or a plan-less finding led by one of these markers, is no
-#: candidate (it stays in the refactoring tab). Worth over rater labels, dev
-#: repos first, then all 17 baseline repos.
-LOW_VALUE_KINDS: dict[str, str] = {
-    "extract_class": "dev 0/6, all 0/14",
-    "move_method": "dev 0/14, all 0/34",
-    "low_cohesion": "dev 0/26, all 0/46",
-    "large_method": "dev 0/4, all 0/10",
-    # Thinly measured: one held-out item (two labels), none on the dev repos.
-    # A low-value maintainability nudge that otherwise fills a small repo's
-    # whole top three; revisit when more of it is labelled.
-    "primitive_obsession": "dev 0/0, all 0/2",
-}
-#: The same, for one detail ``kind`` of a marker whose other kinds stay. A Rust
-#: unwrap or panic is a crash path, not the hidden failure the error-handling
-#: item describes, and the raters found it not worth doing first. Both kinds
-#: were rated together on ripgrep, fd, serde and mini-redis.
-LOW_VALUE_DETAIL_KINDS: dict[tuple[str, str], str] = {
-    ("error_handling", "unsafe_unwrap"): "rust all 1/19",
-    ("error_handling", "panic_macro"): "rust all 1/19",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,57 +157,12 @@ class _Unit:
     may_lead: bool = True
 
 
-#: Code origins that do not ship, by the exclusion each counts as. A build
-#: script is tooling to a reader choosing what to fix.
-_ORIGIN_EXCLUSION = {
-    "test": "test",
-    "vendored": "vendored",
-    "docs_example": "docs_example",
-    "generated": "generated",
-    "tooling": "tooling",
-    "build": "tooling",
-}
-
-
 def _open(row: Any) -> bool:
     return (field(row, "status") or "open") == "open"
 
 
 def _num(value: Any) -> float:
     return float(value or 0.0)
-
-
-#: The shared path rules, memoised: they are pure on the path and the test
-#: check dominates a cold build.
-_code_context = functools.lru_cache(maxsize=65536)(code_context)
-
-
-def _path_exclusion(
-    path: str, is_test: bool | None, context: str | None = None, origin: str | None = None
-) -> str | None:
-    """Why a file is out of the queue, or ``None`` when it ships.
-
-    The stored ``code_origin`` decides first: it read the file's head, so it
-    knows a vendored library or a docs tutorial the path alone does not.
-    Then the same classifier on the path (an index stored before the origin
-    column, or a build file classed before build files were), then the path
-    context. Code-shape work reads :func:`code_context`, where a CLI ships. A
-    performance fix passes ``production``: its stored execution context is
-    judged by the performance default queue. The stored ``is_test`` flag also
-    marks a test.
-    """
-    if origin in _ORIGIN_EXCLUSION:
-        return _ORIGIN_EXCLUSION[origin]
-    ctx = context or _code_context(path)
-    if is_test or ctx == "test":
-        return "test"
-    if reason := _ORIGIN_EXCLUSION.get(path_origin(path)):
-        return reason
-    # ``unknown`` under a directory is docs, examples or demos at any depth:
-    # code that may not ship. A root-level file stays eligible.
-    if ctx == "tooling" or (ctx == "unknown" and "/" in path):
-        return "tooling"
-    return None
 
 
 def hot_cut_offset(count: int) -> int:
@@ -268,16 +180,6 @@ def _quantile_cut(values: list[int]) -> float:
     if not values:
         return math.inf
     return hot_cut(sorted(values)[hot_cut_offset(len(values))])
-
-
-def _gain_value(gain: float, hot: bool) -> int:
-    return min(3, sum(gain >= cut for cut in GAIN_CUTS) + int(hot))
-
-
-def _size_value(shape: Mapping[str, int], hot: bool) -> int:
-    """How big the problem is, 0 to 4; a hot file counts one more."""
-    base = max(magnitude(shape), SIZE_SEVERE if shape.get("severe") else 0)
-    return min(VALUE_MAX, base + int(hot and base > 0))
 
 
 def _risk(files_touched: int, dependents: int | None) -> FixRisk:
@@ -454,32 +356,6 @@ class _Files:
                 return True
         return False
 
-    def unit_exclusion(
-        self, path: str, symbol: str | None, complexity: bool, line: int | None = None
-    ) -> str | None:
-        """Why a unit on ``symbol`` is not a candidate, or ``None``.
-
-        Unreachable code is deleted, not fixed. A deprecated function is on its
-        way out, and a dormant one does not run. A complexity unit on a
-        function that is mostly one dispatch on one value is usually fine as
-        it is, unless a duplicate also sits in it; one on a small function is
-        not worth an item.
-        """
-        if self.unreachable(path, symbol, line):
-            return "unreachable"
-        shape = self.shape(path, symbol)
-        if shape.get("deprecated"):
-            return "deprecated"
-        if dormant(shape):
-            return "gated_off"
-        if not complexity:
-            return None
-        if dispatch_shaped(shape) and not self.cloned(path, shape):
-            return "inherent_dispatch"
-        if _small(shape):
-            return "small_function"
-        return None
-
     def why(
         self,
         path: str,
@@ -525,20 +401,6 @@ class _Files:
         return out
 
 
-def _tier(value: int, confidence: str, ready: bool, low: str | None) -> tuple[str, str]:
-    """The tier and its reason, from a value that leaves the hot-file bonus
-    out: history orders items within a tier but never lifts one. A problem
-    the shape rule calls lower priority (``worth.low_priority``) is ``later``
-    whatever its value."""
-    if low is not None:
-        return "later", LOW_PRIORITY_LABEL[low]
-    if value >= 2 and LEVEL_RANK.get(confidence, 0) >= 1 and ready:
-        return "now", "worth doing, and the plan is safe to start"
-    if value >= 2:
-        return "next", "worth doing; the fix needs judgment"
-    return "later", "smaller payoff"
-
-
 def _finish(
     *,
     kind: str,
@@ -557,14 +419,14 @@ def _finish(
 ) -> _Unit:
     confidence = confidence if confidence in LEVEL_RANK else "low"
     effort = effort if effort in FIX_EFFORTS else "M"
-    tier, why_tier = _tier(value if cold_value is None else cold_value, confidence, ready, low)
+    unit_tier, why_tier = tier(value if cold_value is None else cold_value, confidence, ready, low)
     item_id = fix_id(kind, source_id)
 
     def write(rank: int) -> FixItem:
         return FixItem(
             id=item_id,
             rank=rank,
-            tier=tier,
+            tier=unit_tier,
             kind=kind,
             improves=improves,
             why_ranked=(
@@ -576,7 +438,9 @@ def _finish(
             **fields(),
         )
 
-    return _Unit(item_id, kind, tier, value, score, confidence, effort, improves, write, may_lead)
+    return _Unit(
+        item_id, kind, unit_tier, value, score, confidence, effort, improves, write, may_lead
+    )
 
 
 # --- refactoring ----------------------------------------------------------------
@@ -751,7 +615,7 @@ def _refactor_unit(
     hot = files.hot(path)
     dimension = biomarker_dimension(marker) if marker else "maintainability"
     shape = files.shape(path, lead.get("target_symbol"))
-    size = _size_value(shape, hot)
+    size = size_value(shape, hot)
     cloned = lead_type == "extract_method" and files.cloned(path, shape)
     low = low_priority(marker, shape, function_size=lead_type == "extract_method")
 
@@ -861,8 +725,8 @@ def _refactor_unit(
     return _finish(
         kind="refactor",
         source_id=field(row, "opportunity_id"),
-        value=_value(gain, shape, cloned, hot=hot),
-        cold_value=_value(gain, shape, cloned, hot=False),
+        value=shape_value(gain, shape, cloned, hot=hot),
+        cold_value=shape_value(gain, shape, cloned, hot=False),
         ready=mechanical or confidence == "high",
         score=_num(field(row, "rank_score")),
         confidence=confidence if confidence in LEVEL_RANK else "medium",
@@ -877,14 +741,6 @@ def _refactor_unit(
         fields=fields,
         low=low,
     )
-
-
-def _value(gain: float, shape: Mapping[str, int], cloned: bool, *, hot: bool) -> int:
-    """The larger of the gain and the problem size, one step more when a
-    duplicate sits in the same function: raters accepted that shape almost
-    every time."""
-    value = max(_gain_value(gain, hot), _size_value(shape, hot))
-    return min(VALUE_MAX, value + 1) if cloned else value
 
 
 def _refactor_measure(
@@ -915,43 +771,6 @@ def _refactor_measure(
 
 
 # --- performance ----------------------------------------------------------------
-
-
-def _has_plan(row: Any) -> bool:
-    return field(row, "plan_state") == "available" and bool(field(row, "fix_strategy"))
-
-
-#: Causes whose cost is real only in shipped code over a loop that grows: a
-#: string built in a bounded loop, or in a script, costs nothing a user sees.
-GROWS_ONLY_MARKERS = frozenset({"string_concat_in_loop"})
-
-
-def _perf_worth(row: Any) -> bool:
-    """Whether a planned cause is worth an item at all."""
-    return field(row, "biomarker_type") not in GROWS_ONLY_MARKERS or perf_low_priority(row) is None
-
-
-def _perf_value(row: Any, facets: Mapping[str, Any]) -> int:
-    """0 to :data:`VALUE_MAX`. A production, entry-reachable database or
-    network call in a loop that grows with the data is the costliest kind of
-    work Fix first holds, so it shares the top band with the largest
-    functions; capped below it, it never reached a top ten that size fills."""
-    production = field(row, "execution_context") == "production"
-    reachable = facets.get("exposure") == "entry_reachable"
-    reason = lead_reason(field(row, "biomarker_type"), facets)
-    if (
-        production
-        and reachable
-        and facets.get("loop_magnitude") == "grows_with_data"
-        and field(row, "boundary_kind") in ("db", "network")
-    ):
-        return VALUE_MAX
-    value = 2 if production and reason is None else 1
-    # No traffic data: a loop of unknown size that no entry point reaches is
-    # most often an admin or maintenance path, where an N+1 is cheap.
-    if reason == "unmeasured_cost" and not reachable:
-        value -= 1
-    return value
 
 
 def _perf_step_text(step: Mapping[str, Any], path: str) -> str:
@@ -1114,7 +933,7 @@ def _perf_unit(
         kind="perf_fix",
         may_lead=details.get("may_lead") is not False,
         source_id=f"{path}::{symbol or path}",
-        value=_perf_value(lead, facets),
+        value=perf_value(lead, facets),
         ready=ready or mechanical,
         score=_num(field(lead, "rank_score")),
         confidence=confidence,
@@ -1145,7 +964,7 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep, validate: Validate |
     public_id = field(lead, "public_id")
     dimension = biomarker_dimension(marker)
     shape = files.shape(path, function)
-    size = _size_value(shape, hot)
+    size = size_value(shape, hot)
     cloned = marker in SIZE_MARKERS and files.cloned(path, shape)
     low = low_priority(marker, shape, error_kind=detail_map(lead).get("kind"))
 
@@ -1203,8 +1022,8 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep, validate: Validate |
     return _finish(
         kind="finding",
         source_id=public_id or f"{path}::{marker}::{function or ''}",
-        value=_value(impact, shape, cloned, hot=hot),
-        cold_value=_value(impact, shape, cloned, hot=False),
+        value=shape_value(impact, shape, cloned, hot=hot),
+        cold_value=shape_value(impact, shape, cloned, hot=False),
         ready=False,
         score=impact,
         confidence="medium",
@@ -1225,59 +1044,6 @@ def _severity(severity: str | None, low: str | None) -> str:
     """The detector's severity; on a later item it says the tier overrides it."""
     severity = severity or "unknown"
     return severity if low is None else f"{severity} by the detector; lower priority by shape"
-
-
-def _small(shape: Mapping[str, int]) -> bool:
-    """Under both size floors. A function whose size findings carry no line
-    count is measured by its span, which bounds its code lines from above; one
-    with neither is not judged small."""
-    nloc = shape.get("nloc")
-    if not nloc and shape.get("start") and shape.get("end"):
-        nloc = shape["end"] - shape["start"] + 1
-    if not nloc:
-        return False
-    return nloc < SMALL_NLOC and shape.get("ccn", 0) < SMALL_CCN
-
-
-def _refactor_exclusion(
-    gain: float,
-    steps: list[Mapping[str, Any]],
-    plans: Mapping[str, Any],
-    files: _Files,
-    path: str,
-) -> str | None:
-    """Why an open refactoring opportunity in scope is no candidate, or ``None``."""
-    if gain < MIN_WORTH or not steps:
-        return "below_min_worth"
-    lead = steps[0]
-    if lead.get("refactoring_type") in LOW_VALUE_KINDS:
-        return "low_value_kind"
-    reason = files.unit_exclusion(
-        path,
-        lead.get("target_symbol"),
-        complexity=lead.get("refactoring_type") == "extract_method",
-        line=lead.get("line_start"),
-    )
-    if reason is None and not _concrete(lead, plans.get(lead.get("plan_id"))):
-        return "no_concrete_step"
-    return reason
-
-
-def _finding_exclusion(finding: Any, files: _Files) -> str | None:
-    marker = field(finding, "biomarker_type")
-    if marker in LOW_VALUE_KINDS or (
-        (marker, detail_map(finding).get("kind")) in LOW_VALUE_DETAIL_KINDS
-    ):
-        return "low_value_kind"
-    reason = files.unit_exclusion(
-        field(finding, "file_path"),
-        field(finding, "function_name"),
-        complexity=field(finding, "biomarker_type") in SIZE_MARKERS,
-        line=field(finding, "line_start"),
-    )
-    if reason is None and files.first_step(finding) is None:
-        return "no_concrete_step"
-    return reason
 
 
 def _dead_spans(rows: Rows) -> dict[str, list[DeadSpan]]:
@@ -1307,48 +1073,6 @@ def _clone_spans(plans: Iterable[Any]) -> dict[str, list[tuple[int, int]]]:
             if isinstance(occ, dict) and occ.get("line_start") and occ.get("line_end"):
                 out[occ.get("file") or ""].append((occ["line_start"], occ["line_end"]))
     return dict(out)
-
-
-# --- order ------------------------------------------------------------------------
-
-
-def _order(units: list[_Unit]) -> list[_Unit]:
-    ranked = sorted(
-        units,
-        key=lambda u: (
-            u.tier == "later",
-            -u.value,
-            TIER_RANK[u.tier],
-            -LEVEL_RANK.get(u.confidence, 0),
-            EFFORT_RANK.get(u.effort, 1),
-            -u.score,
-            u.id,
-        ),
-    )
-    head: list[_Unit] = []
-    taken: Counter[str] = Counter()
-    while ranked and len(head) < HEAD:
-        pick = ranked[0]
-        if taken[pick.kind] >= HEAD_PER_KIND:
-            pick = next(
-                (
-                    u
-                    for u in ranked
-                    if u.tier != "later"
-                    and u.kind != pick.kind
-                    and taken[u.kind] < HEAD_PER_KIND
-                ),
-                pick,
-            )
-        ranked.remove(pick)
-        head.append(pick)
-        taken[pick.kind] += 1
-    out = head + ranked
-    # A cause that may not lead stays in the list, behind the first that may.
-    first = next((i for i, u in enumerate(out) if u.may_lead), 0)
-    if first:
-        out.insert(0, out.pop(first))
-    return out
 
 
 def _by_function(findings: Iterable[Any]) -> dict[tuple[str, str], list[Any]]:
@@ -1406,7 +1130,6 @@ def build_fix_first(
     metrics = list(metrics)
     findings = list(findings)
     keep_tests = scope == "all"
-    excluded = dict.fromkeys(FIX_EXCLUSIONS, 0)
     hidden = excluded_types()
 
     by_file: dict[str, list[Any]] = defaultdict(list)
@@ -1429,25 +1152,24 @@ def build_fix_first(
         _extractions(plans),
         _dead_spans(dead_code),
     )
-    dormant_functions: set[tuple[str, str | None]] = set()
+    tally = Tally(FIX_EXCLUSIONS)
 
-    def exclude(reason: str, path: str, symbol: str | None) -> None:
-        excluded[reason] += 1
-        if reason == "gated_off":
-            dormant_functions.add((path, text.short_symbol(symbol)))
+    def exclude(verdict: Verdict, path: str, symbol: str | None = None) -> bool:
+        return tally.add(verdict, (path, text.short_symbol(symbol)))
 
-    def scope_reason(path: str, context: str | None = None) -> str | None:
-        """Why ``path`` is out of scope, counted; ``None`` when it is in."""
-        reason = _path_exclusion(path, files.is_test(path), context, files.origin(path))
-        if reason is None or (reason == "test" and keep_tests):
-            return None
-        excluded[reason] += 1
-        return reason
-
-    def out_of_scope(path: str, context: str | None = None) -> bool:
-        return scope_reason(path, context) is not None
+    def scope_verdict(path: str, context: str | None = None) -> Verdict:
+        """Why ``path`` is out of scope, counted; eligible when it is in."""
+        verdict = path_verdict(
+            path, files.is_test(path), context, files.origin(path), keep_tests=keep_tests
+        )
+        tally.add(verdict)
+        return verdict
 
     plan_rows = {field(p, "public_id"): p for p in plans}
+
+    def concrete(step: Mapping[str, Any]) -> bool:
+        return _concrete(step, plan_rows.get(step.get("plan_id")))
+
     units: list[_Unit] = []
     planned_files: set[str] = set()
     refactoring_reasons: dict[str, str | None] = {}
@@ -1456,16 +1178,15 @@ def build_fix_first(
         key=lambda r: (field(r, "rank_position") or 0, field(r, "opportunity_id")),
     ):
         path = field(row, "file_path")
-        reason = scope_reason(path)
+        verdict = scope_verdict(path)
         details = detail_map(row)
         steps = list(details.get("steps") or [])
         gain = _num(field(row, "recoverable_health"))
-        if reason is None:
-            reason = _refactor_exclusion(gain, steps, plan_rows, files, path)
-            if reason is not None:
-                exclude(reason, path, steps[0].get("target_symbol") if steps else None)
-        refactoring_reasons[field(row, "opportunity_id")] = reason
-        if reason is not None:
+        if verdict.eligible:
+            verdict = refactor_verdict(gain, steps, files, path, concrete)
+            exclude(verdict, path, steps[0].get("target_symbol") if steps else None)
+        refactoring_reasons[field(row, "opportunity_id")] = verdict.reason
+        if not verdict.eligible:
             continue
         units.append(_refactor_unit(row, details, steps, gain, plan_rows, files))
         # Only a plan that became an item speaks for the file's findings; an
@@ -1479,31 +1200,22 @@ def build_fix_first(
         if _open(row):
             path = field(row, "file_path") or ""
             groups[(path, field(row, "intervention_symbol") or path)].append(row)
-    # The performance queue's context and actionability rule decides which
-    # causes are work; an unproven cost stays in, tiered later by
-    # ``perf_low_priority``. Fix first adds its path rules and needs a stored
-    # plan to quote.
     perf_contexts = DEFAULT_QUEUE_CONTEXTS | {"test"} if keep_tests else DEFAULT_QUEUE_CONTEXTS
+    lines = symbol_lines or {}
     for (path, symbol), rows in groups.items():
-        if out_of_scope(path, "production"):
+        if not scope_verdict(path, "production").eligible:
             continue
         rows.sort(key=lambda r: (field(r, "rank_position") or 0, field(r, "opportunity_id")))
-        reasons = [strategy_exclusion(r, perf_contexts) for r in rows]
-        queued = [r for r, reason in zip(rows, reasons, strict=True) if reason is None]
-        ready = [r for r in queued if _has_plan(r)]
-        if not ready:
-            # Dormant only when every row is: one live row speaks for the group.
-            live = [r for r in reasons if r != "gated_off"]
-            exclude("no_plan" if queued else (live[0] if live else "gated_off"), path, symbol)
-            continue
-        worth = [r for r in ready if _perf_worth(r)]
-        if not worth:
-            excluded["below_min_worth"] += 1
-            continue
-        if files.unreachable(path, symbol, (symbol_lines or {}).get(symbol)):
-            excluded["unreachable"] += 1
-            continue
-        units.append(_perf_unit(worth, files, symbol_lines))
+        verdict, worth = perf_fix_verdict(
+            rows,
+            perf_contexts,
+            lambda path=path, symbol=symbol: files.unreachable(path, symbol, lines.get(symbol)),
+        )
+        if not exclude(verdict, path, symbol):
+            units.append(_perf_unit(worth, files, symbol_lines))
+
+    def first_step(finding: Any) -> bool:
+        return files.first_step(finding) is not None
 
     for path, (shape, history) in split.items():
         if path in planned_files:
@@ -1511,22 +1223,24 @@ def build_fix_first(
         lead = primary_finding(shape)
         if lead is None and not history:
             continue  # advisory only: nothing to fix, nothing to count
-        if out_of_scope(path):
+        if not scope_verdict(path).eligible:
             continue
         if lead is None:
-            excluded["history_only"] += 1
+            tally.add(Verdict("history_only"))
             continue
         # A finding that is no candidate leaves the file's others to compete;
         # the file is counted under its own lead's reason when none is left.
-        reasons = {id(f): _finding_exclusion(f, files) for f in shape}
-        eligible = primary_finding([f for f in shape if reasons[id(f)] is None])
+        verdicts = {id(f): finding_verdict(f, files, first_step) for f in shape}
+        eligible = primary_finding([f for f in shape if verdicts[id(f)].eligible])
         if eligible is None:
-            culprit = lead if reasons[id(lead)] else next(f for f in shape if reasons[id(f)])
-            exclude(reasons[id(culprit)], path, field(culprit, "function_name"))
+            culprit = lead if not verdicts[id(lead)].eligible else next(
+                f for f in shape if not verdicts[id(f)].eligible
+            )
+            exclude(verdicts[id(culprit)], path, field(culprit, "function_name"))
             continue
         units.append(_finding_unit(eligible, files, files.first_step(eligible), validate))
 
-    ordered = _order(units)
+    ordered = order(units)
     if item_id is not None:
         shown = [(i, u) for i, u in enumerate(ordered) if u.id == item_id]
     else:
@@ -1536,11 +1250,11 @@ def build_fix_first(
     return FixFirstQueue(
         items=tuple(u.write(rank) for rank, u in shown),
         totals=FixTotals(
-            candidates=len(units) + sum(excluded.values()),
+            candidates=len(units) + tally.total,
             eligible=len(units),
             shown=len(shown),
-            excluded=excluded,
-            dormant=len(dormant_functions),
+            excluded=tally.excluded,
+            dormant=len(tally.dormant),
         ),
         by_improves={k: by_improves.get(k, 0) for k in FIX_IMPROVES},
         basis=dict(basis) if basis is not None else _basis(metrics),
@@ -1553,16 +1267,7 @@ __all__ = [
     "DEAD_CONFIDENCE",
     "DEFAULT_LIMIT",
     "DISPATCH_SHARE",
-    "GAIN_CUTS",
-    "GROWS_ONLY_MARKERS",
-    "HEAD",
-    "HEAD_PER_KIND",
-    "LOW_VALUE_DETAIL_KINDS",
-    "LOW_VALUE_KINDS",
-    "MIN_WORTH",
     "SIZE_MARKERS",
-    "SMALL_CCN",
-    "SMALL_NLOC",
     "build_fix_first",
     "hot_cut",
     "hot_cut_offset",

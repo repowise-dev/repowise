@@ -125,9 +125,19 @@ def test_fix_first_vocabularies_match_python() -> None:
 
 
 def test_performance_queue_exclusions_match_python() -> None:
-    from repowise.core.analysis.health.perf.opportunity_rank import DEFAULT_QUEUE_EXCLUSIONS
+    from repowise.core.analysis.health.queue.eligibility import DEFAULT_QUEUE_EXCLUSIONS
 
     assert _union_members("PerformanceQueueExclusion", "health.ts") == set(DEFAULT_QUEUE_EXCLUSIONS)
+
+
+def test_every_surface_counts_in_the_one_reason_vocabulary() -> None:
+    from repowise.core.analysis.health.fix_first import FIX_EXCLUSIONS
+    from repowise.core.analysis.health.queue.eligibility import (
+        DEFAULT_QUEUE_EXCLUSIONS,
+        REASONS,
+    )
+
+    assert set(FIX_EXCLUSIONS) | set(DEFAULT_QUEUE_EXCLUSIONS) == set(REASONS)
 
 
 def test_performance_cost_proofs_match_python() -> None:

@@ -58,6 +58,7 @@ def test_each_exclusion_is_counted_by_reason() -> None:
         "small_function": 0,
         "no_concrete_step": 0,
         "low_value_kind": 0,
+        "kind_unaudited": 0,
     }
     assert queue.totals.dormant == 0
     assert queue.totals.eligible == 3

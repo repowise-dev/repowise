@@ -482,7 +482,7 @@ def test_a_module_scope_cause_reads_module_scope_of_its_file() -> None:
 
 
 def test_a_production_reachable_growing_db_loop_is_in_the_top_band() -> None:
-    from repowise.core.analysis.health.fix_first.build import VALUE_MAX
+    from repowise.core.analysis.health.queue.value import VALUE_MAX
 
     assert _value(loop_magnitude="grows_with_data", exposure="entry_reachable") == str(VALUE_MAX)
 
@@ -526,11 +526,13 @@ def test_a_one_line_block_reads_as_one_line() -> None:
 # --- kinds the baseline raters found not worth doing -------------------------------
 
 
-def test_extract_class_and_move_method_plans_are_low_value() -> None:
+def test_extract_class_and_move_method_plans_wait_for_their_audit() -> None:
     plan = {"groups": [{"methods": ["load", "save"], "fields": ["db"]}]}
-    assert _refactor_queue("extract_class", plan).totals.excluded["low_value_kind"] == 1
+    split = _refactor_queue("extract_class", plan)
+    assert split.items == () and split.totals.excluded["kind_unaudited"] == 1
     moved = _refactor_queue("move_method", {"to_class": "Ledger"})
-    assert moved.items == () and moved.totals.excluded["low_value_kind"] == 1
+    assert moved.items == () and moved.totals.excluded["kind_unaudited"] == 1
+    assert moved.totals.excluded["low_value_kind"] == 0
 
 
 def test_large_method_and_low_cohesion_findings_are_low_value() -> None:

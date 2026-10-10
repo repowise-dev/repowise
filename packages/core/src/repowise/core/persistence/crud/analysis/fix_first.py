@@ -41,11 +41,10 @@ from repowise.core.analysis.health.fix_first import (
 )
 from repowise.core.analysis.health.fix_first.build import (
     DEAD_CONFIDENCE,
-    MIN_WORTH,
     hot_cut,
     hot_cut_offset,
 )
-from repowise.core.analysis.health.perf.opportunity_rank import DEFAULT_QUEUE_STATES
+from repowise.core.analysis.health.queue.eligibility import DEFAULT_QUEUE_STATES, MIN_WORTH
 from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 from repowise.core.analysis.health.refactoring.models import (
     RefactoringSuggestion as PlanSuggestion,
