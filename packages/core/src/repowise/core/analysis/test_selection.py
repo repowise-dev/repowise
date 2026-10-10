@@ -350,7 +350,6 @@ def file_namers(
     caller decides what too many means. Ceiling: code that globs a directory
     names no file.
     """
-    from .namer_paths import names_file
 
     by_name: dict[str, list[str]] = {}
     for f in files:
@@ -365,12 +364,22 @@ def file_namers(
                 for doc in docs:
                     out.setdefault(doc, []).insert(0, path)
             continue
-        for name, same in by_name.items():
-            if name in text:
-                for f in same:
-                    if f != path and (exact is None or not exact(f) or names_file(text, path, f)):
-                        out.setdefault(f, []).append(path)
+        for f in _named_in(text, path, by_name, exact):
+            out.setdefault(f, []).append(path)
     return {f: n for f, n in out.items() if n}
+
+
+def _named_in(
+    text: str,
+    path: str,
+    by_name: Mapping[str, list[str]],
+    exact: Callable[[str], bool] | None,
+) -> list[str]:
+    """The files of *by_name* that *path*'s *text* names (see :func:`file_namers`)."""
+    from .namer_paths import names_file
+
+    held = [f for name, same in by_name.items() if name in text for f in same if f != path]
+    return [f for f in held if not (exact and exact(f)) or names_file(text, path, f)]
 
 
 def plugin_loader(sources: Iterable[tuple[str, str]]) -> str | None:
