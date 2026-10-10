@@ -1,6 +1,6 @@
 # Language Support
 
-**26 languages parsed to a full AST, 40 on the five-rung support ladder, and
+**27 languages parsed to a full AST, 41 on the five-rung support ladder, and
 framework-aware edges where an ecosystem handler exists.** Every language lands
 on one rung, and the rung tells you which parts of the pipeline produce real
 output for it. Files in any other language still appear in the wiki and are
@@ -14,6 +14,7 @@ resolution and health markers are all static.
   <img src="https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black" alt="JavaScript" />
   <img src="https://img.shields.io/badge/Svelte-FF3E00?style=flat-square&logo=svelte&logoColor=white" alt="Svelte" />
   <img src="https://img.shields.io/badge/Vue-42B883?style=flat-square&logo=vuedotjs&logoColor=white" alt="Vue" />
+  <img src="https://img.shields.io/badge/Astro-BC52EE?style=flat-square&logo=astro&logoColor=white" alt="Astro" />
   <img src="https://img.shields.io/badge/Java-ED8B00?style=flat-square&logo=openjdk&logoColor=white" alt="Java" />
   <img src="https://img.shields.io/badge/Kotlin-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" />
   <img src="https://img.shields.io/badge/Go-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go" />
@@ -56,15 +57,15 @@ resolution and health markers are all static.
 
 | Tier | Languages | What you get |
 |------|-----------|--------------|
-| **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
+| **Full** (14) | Python · TypeScript · JavaScript · Svelte · Vue · Astro · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
 | **Good** (11) | C · Swift · PHP · Dart · Object Pascal · COBOL · GDScript · VB.NET · Elixir · F# · Objective-C | Everything above except the full health suite. Dart and Object Pascal get health markers; C, F# and Objective-C get the complexity-derived ones; the rest get none yet |
 | **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo and `.luaurc` aware), no health markers. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers, no import edges yet |
 | **Lightweight** (6) | Clojure · Haskell · Lean 4 · Erlang · HTML · QML | A real file-to-file import graph, no symbol-level claims |
 | **Structural** (8) | R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only: blame, hotspots, co-change. No AST parsing |
 
-Tree-sitter parsing covers the first three rungs: those are the **26 languages
+Tree-sitter parsing covers the first three rungs: those are the **27 languages
 parsed to a full AST**. The bottom two rungs come from git history and import
-extraction, and all five together make the **40** on the ladder.
+extraction, and all five together make the **41** on the ladder.
 
 [SQL / dbt](#sql--dbt) and [shell](#shell) sit outside the ladder on purpose,
 because neither fits a rung: SQL gets symbols and health markers but no call
@@ -209,8 +210,8 @@ files, so framework-invoked code is not reported as unreachable.
 
 ### Single-file components and Razor
 
-A `.svelte` or `.vue` file is projected into TypeScript at the same byte
-offsets, so components get the TypeScript queries and health markers, and every
+A `.svelte`, `.vue` or `.astro` file is projected into TypeScript at the same
+byte offsets (for Astro, the `---` frontmatter and every `<script>` body), so components get the TypeScript queries and health markers, and every
 line number points at the real source. Razor (`.razor`, `.cshtml`) does the same
 with its `@code` blocks projected into C#; it sits on the Partial rung because
 it has no import edges yet.
@@ -294,7 +295,7 @@ This table is why a language is Full and not Good.
 |----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Python | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | TypeScript / JavaScript | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Svelte · Vue | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
+| Svelte · Vue · Astro | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
 | Java | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
 | Go | ✅ | n/a | ✅ | no | no | ✅ | ✅ |
 | Rust · C++ | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |

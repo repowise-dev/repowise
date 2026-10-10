@@ -21,7 +21,7 @@ few optional extras, and never switches a layer on.
 
 ## 1. Graph: what is connected to what
 
-Every file, symbol, import and call in the repository, parsed from an AST in 26
+Every file, symbol, import and call in the repository, parsed from an AST in 27
 languages. Each call edge is stamped with how it was resolved (one of 39 named
 resolution origins) and how far to trust it, across 17 edge types. Communities,
 centrality, cycles and execution flows from each entry point are computed on top.
@@ -36,7 +36,7 @@ code through graph edges.
 | Dead code | Unreachable files, unused exports, unused packages, by confidence tier | [DEAD_CODE.md](DEAD_CODE.md) |
 | Inferred test links | Which tests reach a file, without a coverage report | [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md) |
 | Cross-repo contracts | HTTP, gRPC, topic and OpenAPI contracts matched between repositories, with breaking-change detection | [WORKSPACES.md](../scale/WORKSPACES.md) |
-| Language coverage | What each of the 40 supported languages gets | [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md) |
+| Language coverage | What each of the 41 supported languages gets | [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md) |
 
 ## 2. Git history: where change and breakage concentrate
 

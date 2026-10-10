@@ -144,10 +144,10 @@ QUERIES_DIR = Path(__file__).parent / "queries"
 # it would misfire on the parent lexical_declaration kind mapping.
 _MODULE_ANCHORED_NODE_TYPES = frozenset({"assignment", "variable_declarator"})
 
-# Languages whose source reaches the parser as TypeScript/JavaScript. The two
+# Languages whose source reaches the parser as TypeScript/JavaScript. The
 # SFC tags are here because ``sfc_source`` projects their <script> blocks into
 # a TS buffer at identical offsets, so every TS/JS code path applies verbatim.
-_TS_JS_LANGUAGES = ("typescript", "javascript", "svelte", "vue")
+_TS_JS_LANGUAGES = ("typescript", "javascript", "svelte", "vue", "astro")
 
 # Languages whose query defines the ``@reference.*`` captures. Every other
 # language would only scan the whole match list to find nothing, so the check

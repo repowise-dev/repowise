@@ -590,7 +590,7 @@ with different words.
 
 ## Multi-language files (the SFC pattern)
 
-Some file types hold more than one language. A `.svelte` or `.vue` component is
+Some file types hold more than one language. A `.svelte`, `.vue` or `.astro` component is
 TS/JS in its `<script>` blocks, framework-flavoured HTML in its markup, and CSS
 in `<style>`. The markup grammars parse the file but return each `<script>` body
 as one opaque `raw_text` node, so a `.scm` query against them captures no symbol,
@@ -639,13 +639,13 @@ the regions are found by walking the bytes. The blanking, fencing, caching
 and offset invariants are shared; adding a markup language means adding a
 `Locator`, not a second copy of the walker.
 
-| | Svelte | Vue | Razor |
-|---|---|---|---|
-| Grammar | `tree-sitter-svelte` | `tree-sitter-html` | none; byte scan, projected to C# |
-| Expression nodes | `svelte_raw_text` under `expression` / `if_start` / `key_start` / `html_tag` | `attribute_value` inside `quoted_attribute_value`; `{{ … }}` scanned inside `text` | brace-matched `@code { }`, `@functions { }`, `@{ }` interiors |
-| Fence bytes | the surrounding `{` `}` | the surrounding `"` or `'` | the surrounding `{` `}` |
-| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` | `@using`, `@inject`, `@bind`, `@on*`, `@model`, inline `@expr` |
-| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling | lowercase elements; anything inside `@* *@` or `<!-- -->` |
+| | Svelte | Vue | Razor | Astro |
+|---|---|---|---|---|
+| Grammar | `tree-sitter-svelte` | `tree-sitter-html` | none; byte scan, projected to C# | none; byte scan, projected to TS |
+| Expression nodes | `svelte_raw_text` under `expression` / `if_start` / `key_start` / `html_tag` | `attribute_value` inside `quoted_attribute_value`; `{{ … }}` scanned inside `text` | brace-matched `@code { }`, `@functions { }`, `@{ }` interiors | the `---` frontmatter and every JS `<script>` body (plain, `is:inline`, `type="module"`, `define:vars`); markup `{expr}` is blanked |
+| Fence bytes | the surrounding `{` `}` | the surrounding `"` or `'` | the surrounding `{` `}` | none |
+| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` | `@using`, `@inject`, `@bind`, `@on*`, `@model`, inline `@expr` | markup `{expr}` |
+| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling | lowercase elements; anything inside `@* *@` or `<!-- -->` | lowercase elements, `<Fragment>`; anything inside `<!-- -->` or a `<script>` |
 
 There is no `tree-sitter-vue` on PyPI. The HTML grammar parses a Vue SFC cleanly
 anyway, because `<template>`, `<script>` and `<style>` are ordinary elements to
@@ -662,6 +662,12 @@ component call edges, and the file becomes a symbol named after its filename. Th
 ceiling is that the C# body lands at top level with no enclosing class, so
 `@code` members are call targets rather than symbols, and every directive is
 blanked, which is why a Razor file carries no import edges.
+
+Astro has no grammar on PyPI either, so its locator is a byte scan too, projecting
+into TypeScript: the leading `---` frontmatter and every JS `<script>` body keep
+their bytes, a `<script>` whose `type` is data (`application/ld+json`) or that
+sits in an HTML comment is blanked, and PascalCase tags mint component call edges.
+Frontmatter imports are ordinary ESM, so an Astro file does carry import edges.
 
 **Plain HTML deliberately has no locator.** It reuses the same grammar but not
 the projection, and the distinction is the point: a projection exists to turn a

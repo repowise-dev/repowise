@@ -22,6 +22,7 @@ _NODE_FRAMEWORKS: dict[str, tuple[str, str]] = {
     "react": ("React", "framework"),
     "vue": ("Vue.js", "framework"),
     "svelte": ("Svelte", "framework"),
+    "astro": ("Astro", "framework"),
     "@angular/core": ("Angular", "framework"),
     "express": ("Express", "framework"),
     "fastify": ("Fastify", "framework"),
