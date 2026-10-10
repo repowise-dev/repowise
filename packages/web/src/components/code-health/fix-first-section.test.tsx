@@ -111,7 +111,8 @@ describe("FixFirstSection", () => {
   it("asks for the production queue first, and the whole one when tests are included", async () => {
     getFixFirst.mockResolvedValue(queue([item({})]));
     renderSection();
-    expect(await screen.findByText(/1 of 4 eligible items\. Excluded: 3 in tests/)).toBeTruthy();
+    expect(await screen.findByText("1 of 4 eligible items.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "6 excluded" })).toBeTruthy();
     expect(getFixFirst).toHaveBeenCalledWith("r1", { limit: 10, scope: "production" });
     fireEvent.click(screen.getByLabelText("Include tests"));
     await waitFor(() => expect(getFixFirst).toHaveBeenCalledWith("r1", { limit: 10, scope: "all" }));
