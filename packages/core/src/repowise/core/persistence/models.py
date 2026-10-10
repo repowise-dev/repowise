@@ -1755,7 +1755,8 @@ class QueueVerdict:
     ``queue_eligible`` is NULL until the first judgement (a store written
     before the columns), ``False`` with the one ``queue_reason`` that kept the
     unit out, or ``True``; ``queue_value`` (0-4) and ``queue_tier`` are set on
-    eligible units only.
+    eligible units only. ``queue_value`` is the reach-aware band: a central
+    file (top fifth by importers) adds a step, churn does not.
     """
 
     queue_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

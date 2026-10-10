@@ -292,8 +292,9 @@ def perf_facets(row: Any) -> Mapping[str, Any]:
 
 
 def execution_role(row: Any) -> str:
-    """The role running a cause's loop (``execution_roles``): the stored column,
-    else its facet; ``unknown`` on an index stored before roles were."""
+    """The role running a cause's loop: the stored column, else its facet;
+    ``unknown`` on an index stored before roles were. Which role a function
+    gets is decided in :mod:`repowise.core.analysis.execution_roles`."""
     return field(row, "execution_role") or perf_facets(row).get("execution_role") or "unknown"
 
 

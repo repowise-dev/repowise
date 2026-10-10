@@ -19,6 +19,7 @@ function action(id: string, title: string, tier: NextAction["tier"] = "plan"): N
     effort: "M",
     confidence: "high",
     value: 3,
+    priority: 1.5,
     done_when: "Coverage reaches 80%.",
     command: null,
     marker: null,

@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import math
 import posixpath
 from collections import defaultdict
 from datetime import datetime
 
 from ..context import HISTORY_TOO_SHORT, RepoContext
 from ..facts import FileFacts, RepoFacts
-from ..model import Action, ActionCommand, ActionDetail, RuleOutcome, WhyFact, fingerprint
+from ..model import (
+    Action,
+    ActionCommand,
+    ActionDetail,
+    RuleOutcome,
+    WhyFact,
+    fingerprint,
+    shared_priority,
+)
 from ._text import code, plural
 
 #: Files that tell the week's story as well as the quarter's: busy fragile
@@ -522,10 +531,17 @@ def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
     if "fix_first" in facts.unavailable:
         return RuleOutcome(rule, "unavailable", facts.unavailable["fix_first"])
     actions = []
+    # Do next's number for each item, held to the queue's order: a later item
+    # never outranks an earlier one, whatever its effort.
+    ceiling = math.inf
     for item in facts.fix_first:
         tier = _FIX_FIRST_TIER.get(item.tier)
         if tier is None:
             continue
+        effort = _effort(item.effort.bucket)
+        confidence = "high" if item.confidence.level == "high" else "medium"
+        severity = "high" if tier == "act_now" else "medium"
+        ceiling = min(ceiling, shared_priority(item.value, severity, confidence, effort))
         target = item.target
         symbol = target.symbol
         actions.append(
@@ -533,7 +549,7 @@ def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 rule=rule,
                 tier=tier,
                 horizons=("week", "quarter"),
-                severity="high" if tier == "act_now" else "medium",
+                severity=severity,
                 title=item.title,
                 impact=item.why,
                 why=(
@@ -545,11 +561,12 @@ def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 target_symbol=symbol,
                 identity=item.id,
                 surface="performance" if item.kind == "perf_fix" else "findings",
-                effort=_effort(item.effort.bucket),
-                confidence="high" if item.confidence.level == "high" else "medium",
+                effort=effort,
+                confidence=confidence,
                 done_when="It leaves Fix first on the next update.",
                 weight=float(len(facts.fix_first) - item.rank),
                 value=item.value,
+                priority=ceiling,
                 evidence_ids=tuple(
                     x for x in (item.source.opportunity_id, *item.source.finding_ids) if x
                 ),

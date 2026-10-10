@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 from repowise.core.analysis.actions import ActionStateRecord, RepoFacts, compose_actions
 from repowise.core.analysis.actions.context import build_context
-from repowise.core.analysis.actions.engine import HEAD, KEEP_PER_HORIZON, rank_actions
+from repowise.core.analysis.actions.engine import KEEP_PER_HORIZON, rank_actions
 from repowise.core.analysis.actions.facts import (
     CoverageState,
     DeadFacts,
@@ -21,7 +21,7 @@ from repowise.core.analysis.actions.facts import (
     RecentFinding,
     SecretFacts,
 )
-from repowise.core.analysis.actions.model import TIER_RANK, Action
+from repowise.core.analysis.actions.model import SEVERITY_VALUE, TIER_RANK, Action
 from repowise.core.analysis.actions.rules import code, hygiene, signal
 
 ANCHOR = datetime(2026, 9, 28, 12, 0)
@@ -541,21 +541,50 @@ def test_engine_ranks_a_tier_by_value_confidence_and_effort() -> None:
     assert [a["value"] for a in quarter] == [4, 1, 3]
 
 
-def test_engine_keeps_a_head_place_for_the_fix_first_lead() -> None:
-    secrets = [_act("live_secret", "act_now", f"src/s{i}.py", effort="S") for i in range(4)]
-    lead = _act("fix_first", "plan", "src/big.py", value=4, weight=3.0)
-    second = _act("fix_first", "plan", "src/other.py", value=4, effort="S", weight=2.0)
-    view = rank_actions(_ruled(*secrets, second, lead), now=NOW)
+def test_the_fix_first_lead_leads_its_tier_and_never_crosses_one() -> None:
+    secrets = [_act("live_secret", "act_now", f"src/s{i}.py", effort="S") for i in range(3)]
+    fragile = _act("fragile_file", "plan", "src/hot.py", confidence="high")  # priority 1.5
+    lead = _act("fix_first", "plan", "src/big.py", value=4, weight=3.0, priority=1.0)
+    second = _act("fix_first", "plan", "src/other.py", value=4, weight=2.0, priority=1.0)
+    view = rank_actions(_ruled(*secrets, fragile, second, lead), now=NOW)
     for horizon in ("week", "quarter"):
         actions = view["horizons"][horizon]["actions"]
-        # The lead, not the cheaper second item, takes the last head place.
-        assert actions[HEAD - 1]["target"]["path"] == "src/big.py"
-        assert [a["rule"] for a in actions[:HEAD]].count("live_secret") == HEAD - 1
+        # Every act_now row stays above it; the lead opens the plan block.
+        assert [a["tier"] for a in actions[:3]] == ["act_now"] * 3
+        assert [a["target"]["path"] for a in actions[3:]] == [
+            "src/big.py", "src/hot.py", "src/other.py",
+        ]
+
+
+def test_fix_first_actions_keep_the_queue_order() -> None:
+    items = _fix_items()
+    actions = _run(code.fix_first, _facts(fix_first=items)).actions
+    priorities = [a.effective_priority for a in actions]
+    # A later item never outranks an earlier one, whatever its effort.
+    assert priorities == sorted(priorities, reverse=True)
+    assert [a["priority"] for a in (x.as_dict() for x in actions)] == [
+        round(p, 4) for p in priorities
+    ]
+
+
+def test_an_older_fix_first_snapshot_ranks_on_severity() -> None:
+    from repowise.core.analysis.health.fix_first import FixFirstQueue
+    from repowise.core.persistence.read_snapshots import decode_or_none
+
+    stored = FixFirstQueue(items=_fix_items()).as_dict()
+    for item in stored["items"]:
+        del item["value"]
+    old = decode_or_none(FixFirstQueue, stored)
+    assert old is not None and all(i.value is None for i in old.items)
+    actions = _run(code.fix_first, _facts(fix_first=old.items)).actions
+    assert [a.effective_value for a in actions] == [
+        SEVERITY_VALUE[a.severity] for a in actions
+    ]
 
 
 def test_a_stored_action_without_a_value_ranks_on_its_severity() -> None:
     old = _act("stale_decision", "plan", "docs/d.md", severity="critical").as_dict()
-    del old["value"]
+    del old["value"], old["priority"]
     new = _act("fix_concentration", "plan", "src/").as_dict()
     ruled = {**_ruled(), "actions": [(0.0, new), (0.0, old)]}
     quarter = rank_actions(ruled, now=NOW)["horizons"]["quarter"]["actions"]

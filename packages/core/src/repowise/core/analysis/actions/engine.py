@@ -10,11 +10,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
-from repowise.core.analysis.health.queue.order import priority
-
 from .context import RepoContext, build_context
 from .facts import RepoFacts
-from .model import HORIZONS, RULE_RANK, SEVERITY_VALUE, TIER_RANK, Action, RuleOutcome
+from .model import HORIZONS, RULE_RANK, TIER_RANK, Action, RuleOutcome, shared_priority
 from .rules import code, hygiene, signal
 from .summary import summarize
 
@@ -43,9 +41,8 @@ KEEP_PER_HORIZON = 20
 #: every other rule with something to say has had one.
 PER_RULE_HEAD = 2
 
-#: The places every surface shows first (the overview's next actions). One of
-#: them is kept for the Fix first lead when it is due, so the two agree on it.
-HEAD = 3
+#: The places every surface shows first: the overview's next actions.
+NEXT_ACTIONS_HEAD = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,15 +74,18 @@ def _naive(value: datetime) -> datetime:
 
 
 def _priority(action: dict[str, Any]) -> float:
-    """The queue's ``value x confidence / effort``. A view stored before
-    actions carried a value reads its severity's."""
-    value = action.get("value")
-    if value is None:
-        value = SEVERITY_VALUE.get(action["severity"], 1)
-    return priority(value, action["confidence"], action["effort"])
+    """The action's stored priority; a view stored before actions carried one
+    reads :func:`shared_priority` from its value or severity."""
+    stored = action.get("priority")
+    if stored is not None:
+        return stored
+    return shared_priority(
+        action.get("value"), action["severity"], action["confidence"], action["effort"]
+    )
 
 
 def _order(actions: list[Ranked]) -> list[Ranked]:
+    # Priority orders a tier; rule rank and the rule's own weight only break ties.
     ranked = sorted(
         actions,
         key=lambda r: (
@@ -114,15 +114,22 @@ def _order(actions: list[Ranked]) -> list[Ranked]:
 
 
 def _reserve_fix_first(ordered: list[Ranked]) -> list[Ranked]:
-    """The Fix first lead (its rule's heaviest action) moved up into the last
-    :data:`HEAD` place when the order left it below. The rule emits only due
-    items."""
-    leads = [(r.weight, i) for i, r in enumerate(ordered) if r.action["rule"] == "fix_first"]
-    at = max(leads, key=lambda lead: (lead[0], -lead[1]))[1] if leads else None
-    if at is None or at < HEAD:
+    """The Fix first lead first in its tier's block, so Do next and Fix first
+    lead with the same work. It never moves across tiers: an ``act_now`` row
+    stays above a ``plan`` lead. The rule emits only due items, and its
+    priorities follow the queue's order, so the lead has the highest."""
+    leads = [
+        (_priority(r.action), r.weight, -i)
+        for i, r in enumerate(ordered)
+        if r.action["rule"] == "fix_first"
+    ]
+    if not leads:
         return ordered
+    at = -max(leads)[2]
+    tier = ordered[at].action["tier"]
+    first = next(i for i, r in enumerate(ordered) if r.action["tier"] == tier)
     out = list(ordered)
-    out.insert(HEAD - 1, out.pop(at))
+    out.insert(first, out.pop(at))
     return out
 
 

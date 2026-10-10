@@ -23,6 +23,7 @@ function action(overrides: Partial<NextAction> = {}): NextAction {
     effort: "M",
     confidence: "high",
     value: 3,
+    priority: 1.5,
     done_when: "Line coverage on this file reaches 80%.",
     command: null,
     marker: null,

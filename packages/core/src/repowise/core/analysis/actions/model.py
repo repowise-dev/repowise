@@ -10,6 +10,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Literal, get_args
 
+from repowise.core.analysis.health.queue.order import priority as queue_priority
 from repowise.core.analysis.next_call import ActionCommand
 
 #: Bumped when a rule's output changes meaning or shape; stored views built
@@ -87,6 +88,20 @@ RULE_RANK: dict[str, int] = {rule: i for i, rule in enumerate(ACTION_RULES)}
 SEVERITY_VALUE: dict[str, int] = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 
 
+def effective_value(value: int | None, severity: str) -> int:
+    """An action's value: its own, else its severity's (also for a view
+    stored before actions carried one)."""
+    return value if value is not None else SEVERITY_VALUE.get(severity, 1)
+
+
+def shared_priority(
+    value: int | None, severity: str, confidence: str, effort: str
+) -> float:
+    """The number Do next orders a tier on: the queue's ``value x confidence /
+    effort`` (``queue.order.priority``)."""
+    return queue_priority(effective_value(value, severity), confidence, effort)
+
+
 @dataclass(frozen=True, slots=True)
 class WhyFact:
     label: str
@@ -150,6 +165,9 @@ class Action:
     weight: float = 0.0
     #: The shared value every rule ranks on; ``None`` reads :data:`SEVERITY_VALUE`.
     value: int | None = None
+    #: The number Do next orders the tier on; ``None`` reads :func:`shared_priority`.
+    #: Set by a rule whose own queue already orders its actions (Fix first).
+    priority: float | None = None
     target_symbol: str | None = None
     #: What makes this action the same action next time, when the target alone
     #: does not: two performance opportunities can share a symbol, and a
@@ -170,6 +188,16 @@ class Action:
     details: tuple[ActionDetail, ...] = ()
     details_total: int = 0
     commands: tuple[ActionCommand, ...] = ()
+
+    @property
+    def effective_value(self) -> int:
+        return effective_value(self.value, self.severity)
+
+    @property
+    def effective_priority(self) -> float:
+        if self.priority is not None:
+            return self.priority
+        return shared_priority(self.value, self.severity, self.confidence, self.effort)
 
     @property
     def action_id(self) -> str:
@@ -195,7 +223,8 @@ class Action:
             "surface": self.surface,
             "effort": self.effort,
             "confidence": self.confidence,
-            "value": self.value if self.value is not None else SEVERITY_VALUE[self.severity],
+            "value": self.effective_value,
+            "priority": round(self.effective_priority, 4),
             "done_when": self.done_when,
             "command": self.command,
             "marker": self.marker,
