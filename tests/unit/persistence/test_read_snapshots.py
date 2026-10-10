@@ -1,16 +1,19 @@
 """Read snapshots: the Fix first queue and the actions view stored at index time.
 
-Written once the stores are final, served while their key holds, ignored once
-any store they read moves, equal to a live build, and never written on read.
+Written once the stores are final, served while current, dropped by any write
+to a store they read, equal to a live build, and never written on read.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import asdict, dataclass
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text, update
 
+from repowise.core.analysis.health.fix_first import FIX_KINDS, FixFirstQueue, build_fix_first
 from repowise.core.persistence.crud.analysis import actions as actions_loader
 from repowise.core.persistence.crud.analysis import fix_first as fix_first_loader
 from repowise.core.persistence.crud.analysis.actions import (
@@ -18,11 +21,19 @@ from repowise.core.persistence.crud.analysis.actions import (
     set_action_state,
     write_read_snapshots,
 )
+from repowise.core.persistence.crud.analysis.coverage_map import save_test_coverage
 from repowise.core.persistence.crud.analysis.fix_first import (
     clear_fix_first_cache,
     load_fix_first,
 )
-from repowise.core.persistence.models import HealthFinding, ReadSnapshot, SecurityFinding
+from repowise.core.persistence.models import (
+    GraphEdge,
+    HealthFinding,
+    ReadSnapshot,
+    SecurityFinding,
+)
+from repowise.core.persistence.read_snapshots import decode, decode_or_none
+from tests.unit.health.fix_first_rows import FINDINGS, METRICS, PERFORMANCE, PLANS, REFACTORING
 from tests.unit.persistence.test_actions_loader import NOW, _seed
 
 
@@ -101,28 +112,113 @@ async def test_a_persons_answer_applies_to_the_stored_view(async_session, no_liv
     assert after["hidden"] == first["hidden"] + 1
 
 
-@pytest.mark.parametrize("change", ["triage", "new_store_row"])
-async def test_a_stale_snapshot_is_ignored(async_session, change) -> None:
+async def _triage(session, rid) -> None:
+    finding = (
+        await session.execute(select(HealthFinding).where(HealthFinding.function_name == "run"))
+    ).scalar_one()
+    finding.status = "dismissed"
+
+
+async def _new_secret(session, rid) -> None:
+    session.add(
+        SecurityFinding(repository_id=rid, file_path="src/cfg.py", kind="hardcoded_secret",
+                        line_number=3, snippet='KEY = "sk_live_9"', severity="high", commit_sha="")
+    )
+
+
+async def _coverage_ingest(session, rid) -> None:
+    record = SimpleNamespace(test_id="tests/test_core.py::test_run", test_file="tests/test_core.py",
+                             file_path="src/core.py", covered_lines=[12, 13])
+    await save_test_coverage(session, rid, [record], source_format="coverage.py")
+
+
+async def _graph_text_write(session, rid) -> None:
+    await session.execute(
+        text("UPDATE graph_nodes SET start_line = 7 WHERE repository_id = :r"), {"r": rid}
+    )
+
+
+async def _graph_bulk_write(session, rid) -> None:
+    await session.execute(
+        update(GraphEdge).where(GraphEdge.repository_id == rid).values(edge_type="calls")
+    )
+
+
+@pytest.mark.parametrize(
+    "change", [_triage, _new_secret, _coverage_ingest, _graph_text_write, _graph_bulk_write]
+)
+async def test_a_write_to_an_input_drops_the_snapshots(async_session, change) -> None:
     rid = await _seed(async_session)
     await write_read_snapshots(async_session, rid)
-    before = await _live(async_session, rid)
-    if change == "triage":
-        finding = (
-            await async_session.execute(
-                select(HealthFinding).where(HealthFinding.function_name == "run")
-            )
-        ).scalar_one()
-        finding.status = "dismissed"
-    else:
-        async_session.add(
-            SecurityFinding(repository_id=rid, file_path="src/cfg.py", kind="hardcoded_secret",
-                            line_number=3, snippet='KEY = "sk_live_9"', severity="high", commit_sha="")
-        )
     await async_session.commit()
+    assert await _snapshot_rows(async_session) == 2
 
+    await change(async_session, rid)
+    await async_session.commit()
+    assert await _snapshot_rows(async_session) == 0
     view, queue, _ = await _live(async_session, rid)
-    # The stored views now describe stores that moved: serving them would be wrong.
-    assert (view, queue)[change == "triage"] != before[change == "triage"]
+    assert _wire((await load_fix_first(async_session, rid, limit=None)).as_dict()) == queue
+    assert _wire(await load_actions_view(async_session, rid, now=NOW)) == view
+
+
+async def test_a_dropped_snapshot_would_have_been_wrong(async_session) -> None:
+    rid = await _seed(async_session)
+    before = await _live(async_session, rid)
+    await _triage(async_session, rid)
+    await _new_secret(async_session, rid)
+    await async_session.commit()
+    view, queue, _ = await _live(async_session, rid)
+    assert view != before[0] and queue != before[1]
+
+
+async def test_writes_elsewhere_keep_the_snapshots(async_session) -> None:
+    rid = await _seed(async_session)
+    await write_read_snapshots(async_session, rid)
+    await async_session.commit()
+    await async_session.execute(
+        text("UPDATE repositories SET head_commit = 'abc' WHERE id = :r"), {"r": rid}
+    )
+    async with async_session.begin_nested():
+        await async_session.execute(select(HealthFinding.id))  # a read in a savepoint
+    await async_session.commit()
+    assert await _snapshot_rows(async_session) == 2
+
+
+async def test_writes_before_the_snapshot_in_one_session_keep_it(async_session) -> None:
+    rid = await _seed(async_session)  # pending input rows in this session
+    await _new_secret(async_session, rid)
+    await write_read_snapshots(async_session, rid)
+    await async_session.commit()
+    assert await _snapshot_rows(async_session) == 2
+
+
+async def _stored_payload(session, kind: str) -> dict:
+    row = await session.get(ReadSnapshot, (await _repo_id(session), kind))
+    return json.loads(row.payload_json)
+
+
+async def _repo_id(session) -> str:
+    return (await session.execute(select(ReadSnapshot.repository_id))).scalars().first()
+
+
+async def _replace_payload(session, kind: str, payload: dict) -> None:
+    row = await session.get(ReadSnapshot, (await _repo_id(session), kind))
+    row.payload_json = json.dumps(payload)
+    await session.flush()
+
+
+@pytest.mark.parametrize("kind", ["fix_first", "actions"])
+async def test_a_payload_an_older_build_wrote_is_a_miss(async_session, kind) -> None:
+    rid = await _seed(async_session)
+    view, queue, _ = await _live(async_session, rid)
+    await write_read_snapshots(async_session, rid)
+    payload = await _stored_payload(async_session, kind)
+    if kind == "fix_first":
+        del payload["items"][0]["verify"]
+    else:
+        del payload["actions"][0][1]["tier"]
+    await _replace_payload(async_session, kind, payload)
+
     clear_fix_first_cache()
     assert _wire((await load_fix_first(async_session, rid, limit=None)).as_dict()) == queue
     assert _wire(await load_actions_view(async_session, rid, now=NOW)) == view
@@ -137,11 +233,41 @@ async def test_a_read_never_writes_a_snapshot(async_session) -> None:
 
 
 async def test_a_store_without_the_table_builds_live(async_session) -> None:
-    from sqlalchemy import text
-
     rid = await _seed(async_session)
     await async_session.execute(text("DROP TABLE read_snapshots"))
     await async_session.commit()
     view = await load_actions_view(async_session, rid, now=NOW)
     assert view["unavailable"] == {}
     assert (await load_fix_first(async_session, rid, limit=None)).items
+
+
+def test_decode_inverts_asdict_over_every_item_kind() -> None:
+    profile = {"via": "call", "tests": ["tests/test_core.py"], "total": 3, "basis": "inferred",
+               "commands": ["pytest tests/test_core.py"]}
+    queue = build_fix_first(metrics=METRICS, findings=FINDINGS, refactoring=REFACTORING,
+                            performance=PERFORMANCE, plans=PLANS, limit=None,
+                            validate=lambda *_: profile)
+    assert {i.kind for i in queue.items} == set(FIX_KINDS)
+    assert any(i.verify.tests for i in queue.items) and queue.refactoring_reasons
+    stored = json.loads(json.dumps(asdict(queue)))
+    assert decode(FixFirstQueue, stored) == queue
+
+
+@dataclass(frozen=True)
+class Leaf:
+    n: int
+
+
+@dataclass(frozen=True)
+class Node:
+    pair: tuple[str, Leaf]
+    either: Leaf | str | None
+    many: tuple[Leaf, ...] = ()
+
+
+def test_decode_fixed_tuples_and_unions() -> None:
+    raw = {"pair": ["a", {"n": 1}], "either": {"n": 2}, "many": [{"n": 3}]}
+    assert decode(Node, raw) == Node(("a", Leaf(1)), Leaf(2), (Leaf(3),))
+    assert decode(Node, {**raw, "either": "text"}).either == "text"
+    assert decode_or_none(Node, {**raw, "pair": ["a"]}) is None
+    assert decode_or_none(Node, {"either": None}) is None

@@ -23,6 +23,7 @@ from .model import (
     ACTION_STATES,
     ACTION_SURFACES,
     ACTION_TIERS,
+    ACTIONS_MODEL_VERSION,
     FACT_BASES,
     HORIZONS,
     RULE_STATUSES,
@@ -33,6 +34,7 @@ from .model import (
 )
 
 __all__ = [
+    "ACTIONS_MODEL_VERSION",
     "ACTION_RULES",
     "ACTION_STATES",
     "ACTION_SURFACES",

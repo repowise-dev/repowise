@@ -29,6 +29,7 @@ from sqlalchemy.pool import NullPool, StaticPool
 from sqlalchemy.schema import CreateIndex, CreateTable
 from sqlalchemy.sql import text
 
+from . import read_snapshots  # noqa: F401  (a write to a view's input drops the stored view)
 from .models import Base
 
 log = structlog.get_logger(__name__)

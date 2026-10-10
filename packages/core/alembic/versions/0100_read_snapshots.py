@@ -3,16 +3,15 @@
 Both were built on the first read of every process: on a 21k-file repository
 the next-actions view cost 4.6 s of file facts and 3.7 s of Fix first before
 the first row printed. Index and update now store each as one row keyed by
-what it was built from (code version, analyzed commit, newest write to each
-store it reads); a reader serves the row while the key holds and builds live
-otherwise. Derived state: an existing store upgrades empty and fills on its
-next index or update.
+the code that built it; a write to any store a view reads deletes the rows in
+the same transaction, and a reader with no row builds live. Derived state: an
+existing store upgrades empty and fills on its next index or update.
 
 Local SQLite stores get the table from ``init_db``'s ``create_all``; this
 migration covers managed Postgres.
 
 Revision ID: 0100
-Revises: 0098
+Revises: 0099
 Create Date: 2026-10-10
 """
 
@@ -24,7 +23,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0100"
-down_revision: str | None = "0098"
+down_revision: str | None = "0099"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -41,7 +40,12 @@ def upgrade() -> None:
         sa.Column("kind", sa.String(32), primary_key=True),
         sa.Column("key", sa.Text(), nullable=False),
         sa.Column("payload_json", sa.Text(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
     )
 
 

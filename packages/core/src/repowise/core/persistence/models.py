@@ -28,6 +28,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     false,
+    func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -2366,12 +2367,11 @@ class ActionState(Base):
 class ReadSnapshot(Base):
     """A read view built at index or update time, served while its key holds.
 
-    ``kind`` names the view (the Fix first queue, the next-actions view).
-    ``key`` is what the view was built from: the code version that built it,
-    the analyzed commit and the newest write to each store it reads. A reader
-    recomputes the key and serves ``payload_json`` only on a match, so a
-    triage or an upgrade between updates falls back to building live rather
-    than serving a stale view. Derived data: losing a row costs one build.
+    ``kind`` names the view (the Fix first queue, the next-actions view) and
+    ``key`` the code that built it (repowise and model versions). Any write
+    to a store a view reads deletes the rows in the same transaction
+    (``persistence.read_snapshots``), so a row that exists is current and a
+    missing one is built live. Derived data: losing a row costs one build.
     """
 
     __tablename__ = "read_snapshots"
@@ -2385,7 +2385,11 @@ class ReadSnapshot(Base):
     key: Mapped[str] = mapped_column(Text, nullable=False)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+        DateTime(timezone=True),
+        nullable=False,
+        default=_now_utc,
+        onupdate=_now_utc,
+        server_default=func.now(),
     )
 
 

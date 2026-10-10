@@ -62,6 +62,7 @@ from .persistence import (
     heal_commit_offsets,
     health_analyzer_changed,
     parser_changed,
+    refresh_read_snapshots,
     stamp_head_commit,
 )
 from .reporting import (
@@ -189,13 +190,8 @@ def _refresh_editor_stamp(
     Runs on every update outcome — including the "already up to date" and
     "no changed files" fast paths, matching the workspace flow — so the
     "Last indexed" stamp always reflects the latest successful sync check
-    instead of freezing at the last content-changing run. The read snapshots
-    are refreshed first, on the same outcomes: every store is final here, and
-    the editor files then read Fix first from the snapshot.
+    instead of freezing at the last content-changing run.
     """
-    from .persistence import refresh_read_snapshots
-
-    refresh_read_snapshots(repo_path)
     try:
         from repowise.cli.editor_integrations.defaults import get_default_project_file_overrides
         from repowise.cli.editor_setup import EditorSetupOptions, refresh_editor_project_files
@@ -1086,6 +1082,7 @@ def run_update(
                     # A capture added after this repo was indexed would otherwise wait
                     # for the next commit to land, which on a quiet repo is never.
                     heal_commit_offsets(repo_path)
+                    refresh_read_snapshots(repo_path)
                     _refresh_editor_stamp(repo_path, agents_md)
                     # The index is current, so any pending marker a bailed update left
                     # is by definition caught-up (or older); drop it here too rather
@@ -1330,6 +1327,7 @@ def run_update(
         # This path skips the git phase, so its offset backfill never runs.
         if not dry_run:
             heal_commit_offsets(repo_path)
+            refresh_read_snapshots(repo_path)
         _refresh_editor_stamp(repo_path, agents_md)
         # We hold the lock and have advanced to head; drop any stale pending
         # marker a bailed update left behind.
@@ -1412,6 +1410,7 @@ def run_update(
         # disk and advances the row itself. It re-reads rather than being told,
         # so it is a no-op in a linked worktree or a non-git checkout — both
         # pre-existing, and neither is what this change is about.
+        refresh_read_snapshots(repo_path)
         _refresh_editor_stamp(repo_path, agents_md)
         consume_update_pending(repo_path, head)
         if emitter is not None:
@@ -1808,6 +1807,7 @@ def run_update(
             if emitter is not None:
                 emitter.error(str(exc))
             raise
+        refresh_read_snapshots(repo_path)
         _refresh_editor_stamp(repo_path, agents_md, degraded)
         # Index-only is the post-commit hook's hot path; clear any stale pending
         # marker here too, not just on the full-docs path.
@@ -2501,7 +2501,9 @@ def run_update(
             if run_full_security_rescan(repo_path, exclude_patterns):
                 state["security_scanner_version"] = SECURITY_SCANNER_VERSION
 
-    # ---- Editor project files (best-effort) ----
+    # ---- Stored read views, then the editor files that quote them ----
+    with timed(timings, "read_snapshots"):
+        refresh_read_snapshots(repo_path)
     with timed(timings, "editor_files"):
         _refresh_editor_stamp(repo_path, agents_md, degraded)
 
