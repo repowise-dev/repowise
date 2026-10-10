@@ -305,6 +305,37 @@ MERGE_CASES = [
         None,
         id="shared-alias-two-names-stays-apart",
     ),
+    pytest.param(
+        # A GitLab noreply address joins its owner's real email by full name,
+        # and is never folded into another account that reused the login.
+        [
+            ("Jane Doe", "12-jdoe@users.noreply.gitlab.com"),
+            ("Jane Doe", "jane@corp.com"),
+            ("Jim Doe", "99-jdoe@users.noreply.gitlab.com"),
+        ],
+        [
+            {"12-jdoe@users.noreply.gitlab.com", "jane@corp.com"},
+            {"99-jdoe@users.noreply.gitlab.com"},
+        ],
+        None,
+        id="gitlab-noreply-joins-by-name",
+    ),
+    pytest.param(
+        # One login on two GitLab ids or hosts may be two accounts: a shared
+        # real email must not bridge them.
+        [
+            ("john", "5-john@users.noreply.gitlab.com"),
+            ("john", "9-john@users.noreply.corp.example"),
+            ("john", "john@corp.com"),
+        ],
+        [
+            {"5-john@users.noreply.gitlab.com"},
+            {"9-john@users.noreply.corp.example"},
+            {"john@corp.com"},
+        ],
+        None,
+        id="gitlab-same-login-two-ids-stays-apart",
+    ),
 ]
 
 
@@ -341,6 +372,9 @@ KIND_CASES = [
     ("github-actions", "ci@acme.io", "bot"),
     ("renovate", "", "bot"),
     ("Deploy Bot", "deploy@acme.io", "bot"),
+    ("deploy token", "project_42_bot_3f2a@noreply.gitlab.com", "bot"),
+    ("Project Collection Build Service (contoso)", "build@contoso.com", "bot"),
+    ("bitbucket-pipelines", "commits-noreply@bitbucket.org", "bot"),
     ("Dana White", "dana@acme.io", "human"),
     # Near misses stay people: no loose substring or first-name rules.
     ("Claudette Moreau", "claudette@acme.io", "human"),

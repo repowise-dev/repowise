@@ -7,6 +7,12 @@ from repowise.core.author_identity import (
     author_identity_key,
     build_identity_resolver,
     canonicalize_author_email,
+    is_noreply,
 )
 
-__all__ = ["author_identity_key", "build_identity_resolver", "canonicalize_author_email"]
+__all__ = [
+    "author_identity_key",
+    "build_identity_resolver",
+    "canonicalize_author_email",
+    "is_noreply",
+]

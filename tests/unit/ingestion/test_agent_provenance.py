@@ -79,6 +79,12 @@ def test_bot_author_email_is_tier1() -> None:
     assert prov.confidence == "high"
 
 
+def test_agent_login_on_another_forge_is_a_person() -> None:
+    """The agent logins are GitHub accounts; the same login on GitLab is nobody's."""
+    prov = _classify(an="Copilot", ae="198982749-copilot@users.noreply.gitlab.com")
+    assert prov.agent is None
+
+
 def test_service_email_author_is_tier1() -> None:
     prov = _classify(an="Cursor Agent", ae="cursoragent@cursor.com")
     assert (prov.agent, prov.autonomy_tier) == ("cursor", 1)
