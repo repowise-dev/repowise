@@ -173,13 +173,17 @@ class RepoIndex:
         from .extractor import prose_lines
 
         found: set[str] = set()
+        # GitHub suffixes repeated heading anchors: the second ``## Usage``
+        # becomes ``#usage-1``, the third ``#usage-2``. Registering only the
+        # bare slug reported every link to a repeated heading as broken.
+        slug_repeats: dict[str, int] = {}
         previous = ""
         for _lineno, line in prose_lines(self._doc_text.get(rel, "")):
             m = _HEADING_RE.match(line)
             if m:
-                found.add(github_slug(m.group(1)))
+                found.add(_declare_slug(slug_repeats, github_slug(m.group(1))))
             elif previous.strip() and _SETEXT_UNDERLINE_RE.match(line):
-                found.add(github_slug(previous))
+                found.add(_declare_slug(slug_repeats, github_slug(previous)))
             for groups in _HTML_ANCHOR_RE.findall(line):
                 value = next((g for g in groups if g), "")
                 found.add(value.strip().lower())
@@ -189,6 +193,14 @@ class RepoIndex:
         frozen = frozenset(found)
         self._doc_anchors[rel] = frozen
         return frozen
+
+
+def _declare_slug(seen: dict[str, int], slug: str) -> str:
+    """The anchor GitHub assigns to a heading: the bare slug for the first
+    occurrence, ``slug-1`` for the second, ``slug-2`` for the third."""
+    n = seen.get(slug, 0)
+    seen[slug] = n + 1
+    return slug if n == 0 else f"{slug}-{n}"
 
 
 def _suffix(path: str) -> str:
