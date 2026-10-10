@@ -85,7 +85,7 @@ def test_tiers_follow_the_strength_of_the_evidence() -> None:
     ]
 
 
-def test_within_a_tier_hops_then_co_change_then_failure_then_path() -> None:
+def test_within_a_tier_failure_then_hops_then_co_change_then_path() -> None:
     tiers = dict.fromkeys(["t/a.py", "t/b.py", "t/c.py", "t/d.py", "t/e.py"], "transitive")
     ranked = rank(
         ["t/e.py", "t/d.py", "t/c.py", "t/b.py", "t/a.py"],
@@ -94,12 +94,13 @@ def test_within_a_tier_hops_then_co_change_then_failure_then_path() -> None:
         co_change={"t/d.py": 3},
         failed={"t/c.py::test_x"},
     )
-    assert [r.test for r in ranked] == ["t/e.py", "t/d.py", "t/c.py", "t/a.py", "t/b.py"]
-    assert ranked[1].reason == (
+    # The last run's failure leads its tier, even two hops out.
+    assert [r.test for r in ranked] == ["t/c.py", "t/e.py", "t/d.py", "t/a.py", "t/b.py"]
+    assert ranked[2].reason == (
         "reaches a changed file through other files; 2 hop(s); "
         "3 shared change(s) with the changed files"
     )
-    assert ranked[2].failed and ranked[2].reason.endswith("failed in the last run")
+    assert ranked[0].failed and ranked[0].reason.endswith("failed in the last run")
     # A node id fails only on its own record, a whole file on any of its ids.
     ids = ["t/c.py::test_y", "t/c.py::test_x", "t/c.py"]
     by_test = {r.test: r.failed for r in rank(ids, tiers, failed={"t/c.py::test_x"})}

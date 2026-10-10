@@ -1098,9 +1098,9 @@ first (`--format list` without `--prioritize` keeps the report's order). Tiers, 
 order: a test the change edits; one the per-test map runs on a changed line, then on
 a changed file; one whose calls, fixtures or direct import reach the change; one
 reaching it through other files; tests that run with every subset. Within a tier:
-fewer graph hops (when measured), more changes shared with the changed files, a
-failure in the last local pytest run (`.pytest_cache`, ids relative to the repository
-root), more changed files reached, then path. `--format json` lists each test under
+a failure in the last local pytest run (`.pytest_cache`, ids relative to the
+repository root), fewer graph hops (when measured), more changes shared with the
+changed files, more changed files reached, then path. `--format json` lists each test under
 `order` with its `tier`, `hops`, `co_change` and `failed_last_run`. With
 `--prioritize`, a file selected only by some node ids runs whole at its place.
 

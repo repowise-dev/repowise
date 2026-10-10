@@ -13,11 +13,12 @@ ordered by, in turn:
    to this change: they are there because the graph cannot see into them, and
    a head meant to fail fast should be the tests evidence points at. With
    *everything* (:func:`rank_selection`) the unselected tests follow.
-2. graph distance: fewer hops first, when the collection measured them.
-3. co-change: the commits that touched both the test and a changed file, read
+2. a failure in the last local pytest run (pytest's own last-failed cache):
+   a test that just failed is the likeliest to fail again.
+3. graph distance: fewer hops first, when the collection measured them.
+4. co-change: the commits that touched both the test and a changed file, read
    from the partners the indexer stored per file. Both ends are read, since
    each file keeps only its strongest partners.
-4. a failure in the last local pytest run (pytest's own last-failed cache).
 5. how many changed files the test reaches, then its path.
 
 No model and no score: every key is a count a reader can check, and
@@ -233,7 +234,7 @@ def rank(
 
     def key(r: RankedTest) -> tuple:
         far = r.hops if r.hops is not None else sys.maxsize
-        return _TIER_INDEX[r.tier], far, -r.co_change, not r.failed, -r.reach, r.test
+        return _TIER_INDEX[r.tier], not r.failed, far, -r.co_change, -r.reach, r.test
 
     return sorted(ranked, key=key)
 
