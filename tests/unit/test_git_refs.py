@@ -269,6 +269,9 @@ class TestFindPathRemoval:
         "https://github.com/pallets/flask.git",
         "git@github.com:pallets/flask.git",
         "https://gitlab.example.com/group/sub/flask/",
+        "https://gitlab.com/group/flask/-/tree/main",
+        "git@ssh.dev.azure.com:v3/org/project/flask",
+        "/srv/git/flask.git",
     ],
 )
 def test_remote_name_is_the_last_url_segment(tmp_path: Path, url: str) -> None:
@@ -277,6 +280,12 @@ def test_remote_name_is_the_last_url_segment(tmp_path: Path, url: str) -> None:
     _run(root, "init", "-b", "main")
     _run(root, "remote", "add", "origin", url)
     assert remote_name(str(root)) == "flask"
+
+
+def test_remote_name_unescapes_a_name_with_spaces(tmp_path: Path) -> None:
+    _run(tmp_path, "init", "-b", "main")
+    _run(tmp_path, "remote", "add", "origin", "https://dev.azure.com/org/p/_git/My%20Repo")
+    assert remote_name(str(tmp_path)) == "My Repo"
 
 
 def test_remote_name_is_empty_without_a_remote(tmp_path: Path) -> None:

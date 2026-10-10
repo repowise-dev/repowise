@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 from .analysis.change_risk.features import _git, split_revspec
+from .forges import parse_remote
 
 __all__ = [
     "BranchRef",
@@ -79,10 +80,14 @@ def remote_name(repo_path: str) -> str:
     """The repository's name on its ``origin`` remote, ``""`` when it has none.
 
     The checkout folder is not the name in a worktree or a renamed clone; the
-    remote URL's last segment is, for every host's URL shape.
+    remote's repo is. A remote no forge parses (a local path) falls back to
+    its last segment.
     """
-    url = _read(repo_path, ["config", "--get", "remote.origin.url"]).rstrip("/")
-    name = url.replace("\\", "/").replace(":", "/").rsplit("/", 1)[-1]
+    url = _read(repo_path, ["config", "--get", "remote.origin.url"])
+    ref = parse_remote(url)
+    if ref is not None:
+        return ref.repo
+    name = url.rstrip("/").replace("\\", "/").replace(":", "/").rsplit("/", 1)[-1]
     return name[: -len(".git")] if name.endswith(".git") else name
 
 

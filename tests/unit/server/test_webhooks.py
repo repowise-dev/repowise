@@ -401,3 +401,23 @@ def test_normalize_scm_url_variants() -> None:
         _normalize_scm_url("https://github.com/org/repowise.git")
     )
     assert _normalize_scm_url("") == ""
+    assert _normalize_scm_url("/srv/git/repo.git") == ""
+
+
+def test_normalize_scm_url_folds_azure_shapes_to_one_key() -> None:
+    """An Azure push names the repo by one URL shape, the stored repo may use another."""
+    from repowise.server.routers.webhooks import _normalize_scm_url
+
+    key = "dev.azure.com/org/my%20project/_git/repo"
+    for url in (
+        "https://org@dev.azure.com/org/My%20Project/_git/repo",
+        "git@ssh.dev.azure.com:v3/org/My%20Project/repo",
+        "https://org.visualstudio.com/DefaultCollection/My Project/_git/repo",
+    ):
+        assert _normalize_scm_url(url) == key
+
+
+def test_normalize_scm_url_drops_gitlab_web_routes() -> None:
+    from repowise.server.routers.webhooks import _normalize_scm_url
+
+    assert _normalize_scm_url("https://gitlab.com/G/Sub/P/-/tree/main") == "gitlab.com/g/sub/p"
