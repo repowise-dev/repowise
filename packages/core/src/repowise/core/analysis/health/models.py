@@ -238,3 +238,7 @@ class HealthReport:
     # against the merged stored set, and need this configuration to get there.
     # Typed ``Any`` for the same reason as ``refactoring_suggestions``.
     performance_plan_policy: Any | None = None
+    # ``execution_roles.ExecutionRoles`` over the whole graph, so the writer can
+    # restamp stored performance findings this run did not rescan. Typed ``Any``
+    # for the same reason as ``refactoring_suggestions``.
+    execution_roles: Any | None = None

@@ -136,6 +136,7 @@ def test_display_only_fields_are_outside_the_opportunity_kernel(field, value) ->
         ("resource_invariant", True),
         ("reliable_entry_reachability", True),
         ("execution_role", "request"),
+        ("role_owner", "src/app.py::run"),
         ("resolution_basis", "name-fallback"),
     ],
 )

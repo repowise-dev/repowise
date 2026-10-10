@@ -1,3 +1,4 @@
+import { PERFORMANCE_EXECUTION_ROLES } from "@repowise-dev/types/health";
 import type {
   PerformanceActionabilityState,
   PerformanceContextFilter,
@@ -58,18 +59,8 @@ const ACTIONABILITIES: readonly PerformanceActionabilityState[] = [
   "investigate",
   "expected",
 ];
-const PROOFS: readonly PerformanceCostProof[] = ["proven", "unproven"];
-const ROLES: readonly (PerformanceExecutionRole | "all")[] = [
-  "all",
-  "request",
-  "event_consumer",
-  "scheduled_job",
-  "startup",
-  "cli",
-  "tooling",
-  "test",
-  "unknown",
-];
+const PROOFS: readonly PerformanceCostProof[] = ["proven", "unproven", "background_unproven"];
+const ROLES: readonly (PerformanceExecutionRole | "all")[] = ["all", ...PERFORMANCE_EXECUTION_ROLES];
 const CONTEXTS: readonly PerformanceContextFilter[] = [
   "all",
   "production",

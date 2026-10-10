@@ -14,7 +14,7 @@ from sqlalchemy import select
 from repowise.core.analysis.health.models import HealthFindingData, Severity
 from repowise.core.analysis.health.perf.opportunities import link_performance_findings
 from repowise.core.persistence import crud
-from repowise.core.persistence.models import PerformanceOpportunity
+from repowise.core.persistence.models import HealthFinding, PerformanceOpportunity
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -562,7 +562,37 @@ async def test_cold_and_unproven_background_roles_sit_one_filter_away(
 
     asked = await _page(client, repo_id, role="cli")
     assert [item["intervention_symbol"] for item in asked["items"]] == ["src/e.py::run"]
-    unproven = await _page(client, repo_id, proof="unproven")
+    unproven = await _page(client, repo_id, proof="background_unproven")
     assert [item["intervention_symbol"] for item in unproven["items"]] == ["src/f.py::run"]
     everything = await _page(client, repo_id, role="all")
     assert everything["total"] == 2
+
+
+async def test_a_stored_finding_takes_the_role_this_run_found(app, client: AsyncClient) -> None:
+    """A seed that moves in another file restamps a finding this run did not rescan."""
+    from repowise.core.analysis.execution_roles import ExecutionRoles
+
+    finding = _finding("src/c.py", 40, ["src/c.py::run", "src/db.py::fetch"])
+    finding.details.update(execution_role="cli", role_owner="src/c.py::run")
+    repo_id, _ = await _seed(app, client, [finding])
+    assert (await _page(client, repo_id))["total"] == 0
+
+    async with app.state.session_factory() as session:
+        await crud.finalize_performance_opportunities(
+            session,
+            repo_id,
+            analyzed_commit="a" * 40,
+            execution_roles=ExecutionRoles({"src/c.py::run": "request"}),
+        )
+        await session.commit()
+    page = await _page(client, repo_id)
+    assert [item["facets"]["execution_role"] for item in page["items"]] == ["request"]
+    async with app.state.session_factory() as session:
+        stored = (
+            await session.execute(
+                select(HealthFinding.details_json).where(
+                    HealthFinding.repository_id == repo_id
+                )
+            )
+        ).scalar_one()
+    assert '"execution_role":"request"' in stored

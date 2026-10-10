@@ -57,7 +57,7 @@ graph and the import graph. An opportunity with a supported shared fix links to 
 The default queue holds production opportunities in the `plan_ready` and
 `advisory` states. They are ranked by cost first; state only breaks ties.
 Only opportunities whose cost is measured are in it. A loop whose size nothing measured is `cost_proof = unproven`, never leads, and shows only with the `proof=unproven` filter.
-Each opportunity also says what runs its loop (`execution_role`: request, event consumer, scheduled job, startup, CLI, tooling, test or unknown), and loops run per request rank above the rest. Roles are read for Python and TypeScript/JavaScript; other languages show `unknown`. The `role` filter lists any one role, or `all`.
+Each opportunity also says what runs its loop (`execution_role`: request, event consumer, scheduled job, startup, CLI, UI, tooling, test or unknown), and loops run per request rank above the rest. Roles are read for Python and TypeScript/JavaScript; other languages show `unknown`. The `role` filter lists any one role, or `all`.
 
 Everything else is counted by reason, not hidden:
 
@@ -70,8 +70,8 @@ Everything else is counted by reason, not hidden:
 | `gated_off` | The function is switched off by a constant flag; see [dormant functions](CODE_HEALTH.md#fix-first) |
 | `cold_path` | The function is named for a migration, startup, shutdown or crash recovery, so it runs rarely |
 | `no_strategy` | The state is `investigate`: there is no supported fix to offer |
-| `cold_role` | Only startup, a CLI command, tooling or tests run the loop, so it runs once per process |
-| `background_unproven` | A scheduled job runs the loop and nothing shows it grows with the data; listed under `proof=unproven` |
+| `cold_role` | Only startup, a CLI command, tooling, tests or client UI code run the loop, so no server pays it per request |
+| `background_unproven` | A scheduled job runs the loop and nothing shows it grows with the data; listed under `proof=background_unproven` |
 
 To see them, widen the filter (below). Performance work also appears in
 [Fix first](CODE_HEALTH.md#fix-first), where it competes with other kinds of work.

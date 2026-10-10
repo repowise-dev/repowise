@@ -23,12 +23,13 @@ from repowise.core.analysis.health.fix_first.text import perf_cost
 from repowise.core.analysis.health.queue.eligibility import (
     DEFAULT_QUEUE_PROOFS,
     DEFAULT_QUEUE_STATES,
+    QUEUE_PROOFS,
     QUEUE_ROLES,
     perf_low_priority,
 )
 from repowise.core.analysis.health.queue_rules import NULL_VALUE, Facet, FilterRule, SortKeys
 from repowise.core.analysis.health.rows import detail_map, field, json_field
-from repowise.core.analysis.health.worth import COST_PROOFS, LOW_PRIORITY_LABEL
+from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL
 
 from .opportunities import PERFORMANCE_MODEL_VERSION
 from .opportunity_rank import NON_LEADING_MARKERS
@@ -306,7 +307,7 @@ def parse_query(
             boundary=pick("performance_boundary", boundary, BOUNDARIES),
             confidence=pick("performance_confidence", confidence, CONFIDENCES),
             actionability=pick("performance_actionability", actionability, ACTIONABILITIES),
-            proof=pick("performance_proof", proof, COST_PROOFS),
+            proof=pick("performance_proof", proof, QUEUE_PROOFS),
             role=pick("performance_role", role, ROLES),
             view=pick("performance_view", view, CANONICAL_VIEWS) or "detail",
             sort=pick("performance_sort", sort, CANONICAL_SORTS) or DEFAULT_SORT,
@@ -511,7 +512,8 @@ def rescope_summary(
     proof: dict[str, int] = {}
     total = 0
     with_plan = 0
-    for execution_context, boundary_kind, _confidence, state, plan_state, cost, _role, count in groups:
+    for group in groups:
+        execution_context, boundary_kind, _confidence, state, plan_state, cost, _role, count = group
         if execution_context not in contexts:
             continue
         total += count

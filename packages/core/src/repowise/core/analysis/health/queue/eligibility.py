@@ -25,7 +25,6 @@ from ..perf.causal import code_context
 from ..rows import detail_map, field
 from ..worth import (
     SIZE_MARKERS,
-    CostProof,
     LowPriority,
     cost_proof,
     dispatch_shaped,
@@ -436,10 +435,20 @@ def _role_reason(item: Any) -> Reason | None:
     return None
 
 
-def queue_proof(item: Any) -> CostProof:
-    """The stored proof the queue filters on: a background job without proven
-    growth is as unproven as an unmeasured loop, and listed beside it."""
-    return "unproven" if _role_reason(item) == "background_unproven" else cost_proof(item)
+QueueProof = Literal["proven", "unproven", "background_unproven"]
+QUEUE_PROOFS: tuple[str, ...] = get_args(QueueProof)
+"""The stored ``cost_proof`` column: :data:`worth.COST_PROOFS` plus a scheduled
+job whose loop is not shown to grow. Only ``proven`` is in the default queue, so
+the column and :func:`perf_queue_verdict` agree on what it holds."""
+
+
+def queue_proof(item: Any) -> QueueProof:
+    """The proof the queue filters on, checked in the verdict's order: an
+    unmeasured loop first, then a background job without proven growth."""
+    proof = cost_proof(item)
+    if proof == "proven" and _role_reason(item) == "background_unproven":
+        return "background_unproven"
+    return proof
 
 
 def perf_queue_verdict(item: Any) -> Verdict:
@@ -522,6 +531,7 @@ __all__ = [
     "LOW_VALUE_KINDS",
     "MIN_WORTH",
     "ORIGIN_EXCLUSION",
+    "QUEUE_PROOFS",
     "QUEUE_ROLES",
     "REASONS",
     "SCOPE_EXCLUSIONS",
@@ -529,6 +539,7 @@ __all__ = [
     "SMALL_NLOC",
     "UNAUDITED_KINDS",
     "DeadSpan",
+    "QueueProof",
     "Reason",
     "Tally",
     "UnitFacts",

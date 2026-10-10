@@ -71,6 +71,7 @@ export const FACET_LABEL: Record<PerformanceFacetKey, string> = {
 const PROOF_LABEL: Record<PerformanceCostProof, string> = {
   proven: "Measured",
   unproven: "Unproven: loop size unknown",
+  background_unproven: "Unproven: scheduled job, growth not shown",
 };
 
 // "Stored plan", not "Plan ready": that name belongs to the actionability

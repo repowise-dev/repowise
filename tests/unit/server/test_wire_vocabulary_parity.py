@@ -141,15 +141,18 @@ def test_every_surface_counts_in_the_one_reason_vocabulary() -> None:
 
 
 def test_performance_cost_proofs_match_python() -> None:
-    from repowise.core.analysis.health.worth import COST_PROOFS
+    from repowise.core.analysis.health.queue.eligibility import QUEUE_PROOFS
 
-    assert _union_members("PerformanceCostProof", "health.ts") == set(COST_PROOFS)
+    assert _union_members("PerformanceCostProof", "health.ts") == set(QUEUE_PROOFS)
 
 
 def test_performance_execution_roles_match_python() -> None:
     from repowise.core.analysis.execution_roles import EXECUTION_ROLES
 
-    assert _union_members("PerformanceExecutionRole", "health.ts") == set(EXECUTION_ROLES)
+    text = (_TYPES_SRC / "health.ts").read_text(encoding="utf-8")
+    match = re.search(r"export const PERFORMANCE_EXECUTION_ROLES = \[(.*?)\] as const;", text, re.S)
+    assert match, "PERFORMANCE_EXECUTION_ROLES is not declared in health.ts"
+    assert re.findall(r'"([a-z_]+)"', match.group(1)) == list(EXECUTION_ROLES)
 
 
 def test_agent_prompt_flavors_match_python() -> None:

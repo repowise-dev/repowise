@@ -14,6 +14,7 @@ for the same reason - they can no longer describe the current tree.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from sqlalchemy import delete, func, select, update
@@ -31,6 +32,7 @@ from ...sql import order_by, rule_predicate
 from .refactoring import _refactoring_row_kwargs
 
 if TYPE_CHECKING:
+    from ....analysis.execution_roles import ExecutionRoles
     from ....analysis.health.perf.opportunities import (
         PerformanceOpportunity as OpportunityModel,
     )
@@ -202,6 +204,7 @@ async def finalize_performance_opportunities(
     *,
     analyzed_commit: str | None = None,
     plan_policy: PerformancePlanPolicy | None = None,
+    execution_roles: ExecutionRoles | None = None,
 ) -> int:
     """Rebuild this repository's performance read model from stored findings.
 
@@ -209,6 +212,10 @@ async def finalize_performance_opportunities(
     own rows land and inside their transaction, so the queue can never describe
     a set of findings that was never committed. Returns the number of open
     opportunities.
+
+    *execution_roles* is this run's role map over the whole graph. A role can
+    change in a file the run did not rescan (a seed or call moved elsewhere),
+    so every stored finding is restamped from it before grouping.
     """
     # Deferred throughout this module: the analysis package imports
     # persistence, so a module-level import here would close the cycle.
@@ -227,6 +234,8 @@ async def finalize_performance_opportunities(
             )
         ).all()
     )
+    if execution_roles is not None:
+        rows = await _restamp_roles(session, rows, execution_roles)
     opportunities = build_performance_opportunities(rows, evidence_limit=_EVIDENCE_LIMIT)
 
     await _restamp_findings(session, rows)
@@ -236,6 +245,29 @@ async def finalize_performance_opportunities(
     )
     await _write_summary(session, repository_id, opportunities, plan_states, analyzed_commit, plans)
     return len(opportunities)
+
+
+async def _restamp_roles(
+    session: AsyncSession, rows: list[Any], roles: ExecutionRoles
+) -> list[Any]:
+    """Each stored finding with its loop owner's current role; changed rows are written."""
+    out: list[Any] = []
+    changed = []
+    for row in rows:
+        details = json.loads(row.details_json or "{}")
+        if "role_owner" not in details:
+            out.append(row)
+            continue
+        role = roles.role_of(details["role_owner"], row.file_path)
+        if details.get("execution_role") == role:
+            out.append(row)
+            continue
+        details_json = json.dumps({**details, "execution_role": role}, separators=(",", ":"))
+        changed.append({"id": row.id, "details_json": details_json})
+        out.append(SimpleNamespace(**{**row._mapping, "details_json": details_json}))
+    if changed:
+        await session.execute(update(HealthFinding), changed)
+    return out
 
 
 async def _restamp_findings(session: AsyncSession, rows: list[Any]) -> None:

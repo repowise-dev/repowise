@@ -1345,6 +1345,7 @@ async def persist_partial_health(
             repo_id,
             analyzed_commit=analyzed_commit,
             plan_policy=getattr(report, "performance_plan_policy", None),
+            execution_roles=getattr(report, "execution_roles", None),
         )
         # Repository-wide, like the queue above and for the same reason: an
         # opportunity folds a file's plans, and a file this run did not touch
@@ -2223,6 +2224,7 @@ async def persist_incremental_index(
                         repo_id,
                         analyzed_commit=analyzed_commit,
                         plan_policy=getattr(partial_health_report, "performance_plan_policy", None),
+                        execution_roles=getattr(partial_health_report, "execution_roles", None),
                     )
                     await finalize_refactoring_opportunities(
                         session, repo_id, analyzed_commit=analyzed_commit

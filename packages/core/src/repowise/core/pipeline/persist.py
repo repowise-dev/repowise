@@ -1953,6 +1953,7 @@ async def save_full_health_report(
             repo_id,
             analyzed_commit=analyzed_commit,
             plan_policy=getattr(hr, "performance_plan_policy", None),
+            execution_roles=getattr(hr, "execution_roles", None),
         )
         # Fold the plans just written into per-file opportunities. Last in the
         # savepoint because it composes over the stored rows, so it has to see
