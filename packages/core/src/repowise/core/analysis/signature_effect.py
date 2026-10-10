@@ -329,6 +329,28 @@ def _parse_signature(sig: str, lang: str | None, kind: str | None) -> _Signature
     return _Signature(params=params, returns=returns, receiver=receiver)
 
 
+def parameter_names(
+    signature: str, language: str | None = None, kind: str | None = None
+) -> tuple[str | None, list[str]] | None:
+    """The receiver (Python's ``self`` / ``cls``, a Rust ``&self``, a Go
+    receiver; None when there is none) and the names a call passes in order.
+
+    None when the list cannot be parsed or a call could not fill it by
+    position alone: a variadic, a keyword-only marker or argument, or a
+    destructured parameter.
+    """
+    lang = (language or "").lower() or None
+    parsed = _parse_signature(_normalize(signature, lang), lang, kind)
+    if parsed is None:
+        return None
+    names: list[str] = []
+    for param in parsed.params:
+        if param.kind != "param" or param.keyword_only or not param.name.isidentifier():
+            return None
+        names.append(param.name)
+    return parsed.receiver, names
+
+
 def _split_default(text: str, lang: str | None, param: _Param) -> str:
     at = _find_top(text, lang, "=")
     if at is None:

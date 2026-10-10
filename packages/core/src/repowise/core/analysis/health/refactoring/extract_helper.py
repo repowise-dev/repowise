@@ -43,6 +43,7 @@ still worth extracting but ranks ``medium``.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 from ....code_origin import is_migration_path, is_vendored_or_generated_path
@@ -52,6 +53,7 @@ from ..effort import effort_bucket
 from .language_family import same_language_family
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, register
+from .reuse import find_reuse
 
 # The biomarker this detector answers — the recovered impact is read off it.
 _SOURCE_BIOMARKER = "dry_violation"
@@ -373,10 +375,12 @@ class ExtractHelperDetector(RefactoringDetector):
 
         impact_lookup = self._impact_for_dry_violation(ctx)
         spans_cache: dict[str, list[tuple[int, int]]] = {}
+        read = _cached_reader(ctx)
         out: list[RefactoringSuggestion] = []
         for block in blocks:
             suggestion = self._build_suggestion(ctx, block, impact_lookup, spans_cache)
             if suggestion is not None:
+                suggestion.plan.update(_reuse_fields(ctx, suggestion.plan["occurrences"], read))
                 out.append(suggestion)
 
         # Stable order: biggest recovery first, then — because dry_violation
@@ -629,6 +633,36 @@ class ExtractHelperDetector(RefactoringDetector):
             if start <= f_end and end >= f_start and impact > best:
                 best = impact
         return best
+
+
+def _cached_reader(ctx: RefactoringContext) -> Callable[[str], list[str] | None] | None:
+    """``ctx.read_lines`` reading each file once per pass, this file from the
+    lines already held; None when no reader was provided."""
+    read_lines = ctx.read_lines
+    if read_lines is None:
+        return None
+    cache: dict[str, list[str] | None] = {ctx.file_path: ctx.source_lines}
+
+    def read(path: str) -> list[str] | None:
+        if path not in cache:
+            cache[path] = read_lines(path)
+        return cache[path]
+
+    return read
+
+
+def _reuse_fields(
+    ctx: RefactoringContext,
+    occurrences: list[dict[str, Any]],
+    read: Callable[[str], list[str] | None] | None,
+) -> dict[str, Any]:
+    """``{"reuse": ...}`` when one site already is a function the others can
+    call (no second copy of it is asked for), else ``{}``."""
+    if read is None:
+        return {}
+    sites = [(o["file"], o["line_start"], o["line_end"]) for o in occurrences]
+    reuse = find_reuse(ctx.graph, ctx.language, sites, read).plan
+    return {"reuse": reuse} if reuse else {}
 
 
 def _cross_file_lines(ctx: RefactoringContext) -> int:
