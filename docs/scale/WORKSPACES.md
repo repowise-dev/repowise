@@ -197,13 +197,21 @@ contracts:
     - "generated/**"
 ```
 
-Test files and their fixtures, mocks and snapshots are excluded, decided by the same
-classifier that marks files as tests in the index: test trees (`tests/`, `test/`,
-`__tests__/`, `e2e/`, `src/test/java`, .NET `Foo.Tests/`), test-named source files in any
-language (`test_*.py`, `*_test.go`, `*.test.*`, `*.spec.*`, `*.e2e.*`, `FooTest.java`),
-`conftest.py`, and `__mocks__/`. A `spec/` directory is excluded only when its files
-look like tests, so an OpenAPI `spec/` is still scanned. A route or topic that
-exists only in a test is a fixture, not a service contract. Calls to a literal
+Test material is excluded, using the index's test classifier with one rule on top:
+a file is never dropped on a guess that could lose a real contract.
+
+- Anything inside a named test tree is excluded: `tests/`, `test/`, `__tests__/`,
+  `e2e/`, `src/test/java`, .NET `Foo.Tests/`.
+- Outside one, a source file is excluded by a test or support name (`*.test.ts`,
+  `*.spec.ts`, `*.e2e.ts`, `*_test.go`, `FooTest.java`, `test_*.py`, `conftest.py`) or
+  by sitting under `__mocks__/`. Under `src`, a Python `test_*.py` is scanned: it is
+  a module named for what it does unless pytest collects it.
+- Outside one, a non-source file (`openapi.yaml`, `.proto`, `.graphql`) is always
+  scanned, so `spec/openapi.yaml`, `testdata/openapi.yaml`, `Foo.Specs/openapi.yaml`
+  and `users.spec.yaml` keep their contracts.
+
+A route or topic that exists only in a test is a fixture, not a service contract.
+Calls to a literal
 third-party host (Stripe, Formspree, ...) that is not a workspace service are
 excluded from matching and reported under the `external_host` diagnostics reason.
 

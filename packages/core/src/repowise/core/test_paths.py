@@ -69,6 +69,8 @@ if TYPE_CHECKING:
 # whatever the filename. ``__test__`` is the Jest variant of ``__tests__``;
 # ``integration_test`` is the directory Flutter's integration tests must live in;
 # ``testsuite`` is the one-word suite directory (``gcc/testsuite/``, ``flask/testsuite/``).
+# Ceiling: a product package named ``testsuite`` (a library for running suites)
+# reads as test material too; none seen so far.
 _TEST_DIR_TOKENS: frozenset[str] = frozenset(
     {"test", "tests", "__tests__", "__test__", "e2e", "integration_test", "testsuite"}
 )
@@ -187,6 +189,7 @@ class _Conventions:
     dir_paths: tuple[tuple[str, ...], ...]
     dir_wildcards: tuple[tuple[str, str], ...]
     dir_suffixes: tuple[str, ...]
+    unambiguous_dir_suffixes: tuple[str, ...]
     lang_dir_tokens: dict[str, frozenset[str]]
 
 
@@ -223,6 +226,12 @@ def _conventions() -> _Conventions:
         ),
         # Case-sensitive .NET sibling project dirs (Foo.Tests/, Foo.Specs/).
         dir_suffixes=REGISTRY.test_dir_suffixes(),
+        # Without the ``spec`` forms, which also name specification projects.
+        unambiguous_dir_suffixes=tuple(
+            s
+            for s in REGISTRY.test_dir_suffixes()
+            if s.lstrip(".").lower() not in _AMBIGUOUS_TEST_DIR_TOKENS
+        ),
         lang_dir_tokens=REGISTRY.test_dir_tokens_by_language(),
     )
 
@@ -293,7 +302,7 @@ def _is_test_dir(
 ) -> bool:
     """Whether any directory segment marks this path as sitting in a test tree."""
     return _has_test_segment(segments, original, filename, language) or _has_test_layout(
-        segments, original
+        segments, original, _conventions().dir_suffixes
     )
 
 
@@ -318,16 +327,24 @@ def _has_test_segment(
 
 
 def _is_test_segment(seg: str, orig: str, lang_tokens: frozenset[str], corroborated: bool) -> bool:
+    if _is_named_test_dir(seg):
+        return True
     words = _words(seg)
     head = words[-1] if words else ""
-    if seg in _TEST_DIR_TOKENS or head in _TEST_DIR_HEAD_WORDS:
-        return True
     if head in _AMBIGUOUS_TEST_DIR_TOKENS and (head in lang_tokens or corroborated):
         return True
     return _CAMEL_TESTS_HEAD_RE.search(orig) is not None
 
 
-def _has_test_layout(segments: list[str], original: list[str]) -> bool:
+def _is_named_test_dir(seg: str) -> bool:
+    """Whether a directory's name alone says it holds tests (``tests``, ``e2e-tests``)."""
+    words = _words(seg)
+    return seg in _TEST_DIR_TOKENS or (bool(words) and words[-1] in _TEST_DIR_HEAD_WORDS)
+
+
+def _has_test_layout(
+    segments: list[str], original: list[str], dir_suffixes: tuple[str, ...]
+) -> bool:
     """Whether the directories form a known test layout (``src/test/java``)."""
     rules = _conventions()
     return (
@@ -338,7 +355,7 @@ def _has_test_layout(segments: list[str], original: list[str]) -> bool:
             _has_wildcard_pair(segments, original, prefix_seg, camel_suffix)
             for prefix_seg, camel_suffix in rules.dir_wildcards
         )
-        or any(seg.endswith(rules.dir_suffixes) for seg in original)
+        or any(seg.endswith(dir_suffixes) for seg in original)
     )
 
 
@@ -484,6 +501,39 @@ def is_unambiguous_test_path(path: str, language: str | None = None) -> bool:
     if _is_test_dir(lowered[:-1], original[:-1], original[-1], language):
         return True
     return "src" not in lowered[:-1]
+
+
+def is_skippable_test_path(path: str) -> bool:
+    """Whether a scan that drops test material should drop *path*.
+
+    For callers that skip files outright, such as contract extraction, where a
+    wrong yes silently loses a real contract. Stricter than
+    :func:`is_test_related_path` in three ways:
+
+    - A non-source file (``openapi.yaml``, ``api.proto``) counts only inside a
+      named test tree (``tests/``, ``e2e/``, ``src/test/java``, ``Foo.Tests/``):
+      not under ``spec/``, ``testdata/``, ``Foo.Specs/`` or ``LoadTests/``.
+    - A source file needs a named test tree, a test or support filename, or a
+      ``__mocks__``-style dir; a PascalCase ``LoadTests/`` folder is not enough.
+    - Under ``src``, a Python test-shaped name alone does not count
+      (``src/api/test_routes.py``), as in :func:`is_unambiguous_test_path`;
+      other toolchains' names (``client.test.ts``, ``FooTest.kt``) still do.
+    """
+    if not is_test_related_path(path):
+        return False
+    original, lowered = _parts(path)
+    filename, segments = original[-1], lowered[:-1]
+    rules = _conventions()
+    if any(_is_named_test_dir(seg) for seg in segments) or _has_test_layout(
+        segments, original[:-1], rules.unambiguous_dir_suffixes
+    ):
+        return True
+    ext = PurePosixPath(filename.lower()).suffix
+    if ext not in rules.source_exts:
+        return False
+    if _is_support_name(filename) or any(_is_support_anywhere_dir(seg) for seg in segments):
+        return True
+    return _is_test_name(filename) and (ext != ".py" or "src" not in segments)
 
 
 def is_test_to_production_pair(

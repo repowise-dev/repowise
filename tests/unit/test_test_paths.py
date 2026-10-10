@@ -12,6 +12,7 @@ import pytest
 
 from repowise.core.pytest_roots import read_pytest_roots
 from repowise.core.test_paths import (
+    is_skippable_test_path,
     is_test_path,
     is_test_related_path,
     is_test_support_path,
@@ -345,6 +346,28 @@ def test_unambiguous_test_paths_need_more_than_a_test_shaped_name_under_src(
     path: str, expected: bool
 ) -> None:
     assert is_unambiguous_test_path(path) is expected
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("tests/api/openapi.yaml", True),
+        ("Foo.Tests/Clients/Orders.cs", True),
+        ("src/api/client.test.ts", True),
+        ("src/__mocks__/api.ts", True),
+        ("pkg/server/handler_test.go", True),
+        # non-source files need a named test tree
+        ("Foo.Specs/openapi.yaml", False),
+        ("spec/support/openapi.yaml", False),
+        ("testdata/openapi.yaml", False),
+        # a PascalCase suite folder alone, or a Python test name under src
+        ("LoadTests/Runner.cs", False),
+        ("src/api/test_routes.py", False),
+        ("src/app/main.ts", False),
+    ],
+)
+def test_skippable_test_paths_never_drop_a_possible_contract(path: str, expected: bool) -> None:
+    assert is_skippable_test_path(path) is expected
 
 
 _ROOTS = read_pytest_roots(

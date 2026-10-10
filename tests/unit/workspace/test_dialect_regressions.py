@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repowise.core.workspace.extractors.base import (
     ScanContext,
     make_exclude_predicate,
@@ -133,19 +135,42 @@ class TestExtractorSelfExclusion:
         assert skip("Foo.Worker.Tests/OrderPlacedTests.cs")
         assert skip("src/Billing.Tests/Consumers/InvoiceConsumerTests.vb")
 
-    def test_test_material_follows_the_shared_classifier(self) -> None:
-        # One answer with ingestion's is_test flag: SpecFlow `.Specs` projects,
-        # PascalCase suite folders, `.e2e.` helpers and colocated tests are
-        # skipped, while an OpenAPI `spec/` and a shipped `.Testing` library
-        # are still scanned.
-        skip = make_exclude_predicate()
-        assert skip("Foo.Specs/Steps/OrderSteps.cs")
-        assert skip("LoadTests/Runner.cs")
-        assert skip("src/gateway/test-helpers.e2e.ts")
-        assert skip("src/api/client.test.ts")
-        assert skip("src/__mocks__/api.ts")
-        assert not skip("spec/openapi/users.yaml")
-        assert not skip("src/Foo.Testing/Clients/OrdersClient.cs")
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "src/gateway/test-helpers.e2e.ts",
+            "src/api/client.test.ts",  # colocated tests stay skipped
+            "src/__mocks__/api.ts",
+            "test/scripts/probe.ts",
+            "scripts/e2e/lib/client.mjs",
+            "tests/contracts/openapi.yaml",  # a named test tree takes any file
+            "apps/android/app/src/testThirdParty/java/x/SmsManagerTest.kt",
+            "conftest.py",
+        ],
+    )
+    def test_test_material_is_skipped(self, path: str) -> None:
+        assert make_exclude_predicate()(path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            # Contract files outside a named test tree can be the real thing.
+            "spec/openapi.yaml",
+            "spec/support/openapi.yaml",
+            "Foo.Specs/openapi.yaml",
+            "testdata/openapi.yaml",
+            "api/users.spec.yaml",
+            # A PascalCase suite folder or a shipped `.Testing` library is not
+            # enough for a source file without a test name.
+            "LoadTests/Runner.cs",
+            "src/Foo.Testing/Clients/OrdersClient.cs",
+            # A Python test-shaped name under `src` is a module named for what
+            # it does unless pytest collects it.
+            "src/api/test_routes.py",
+        ],
+    )
+    def test_real_contracts_are_still_scanned(self, path: str) -> None:
+        assert not make_exclude_predicate()(path)
 
     def test_dotnet_test_projects_are_scanned_when_tests_are_included(self) -> None:
         skip = make_exclude_predicate(exclude_tests=False)

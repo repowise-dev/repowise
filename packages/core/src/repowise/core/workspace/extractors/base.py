@@ -18,7 +18,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from repowise.core.test_paths import is_test_related_path
+from repowise.core.test_paths import is_skippable_test_path
 
 if TYPE_CHECKING:
     from repowise.core.workspace.repo_index import RepoIndex
@@ -48,9 +48,9 @@ def make_exclude_predicate(
 ) -> Callable[[str], bool]:
     """Build a ``rel_path -> bool`` skip predicate for contract extraction.
 
-    Skips test material and its fixtures and mocks (unless *exclude_tests* is
-    False): a route handler or topic publisher that exists only there is a
-    fixture, not a real service contract. Also skips the
+    Skips test material per :func:`is_skippable_test_path` (unless
+    *exclude_tests* is False): a route handler or topic publisher that exists
+    only there is a fixture, not a real service contract. Also skips the
     extractors' own source tree (see :data:`_SELF_EXCLUDE_GLOBS`), plus any
     user-supplied ``extra_globs`` (matched against the full POSIX path and the
     bare filename).
@@ -58,7 +58,7 @@ def make_exclude_predicate(
     globs = _SELF_EXCLUDE_GLOBS + tuple(extra_globs)
 
     def skip(rel_path: str) -> bool:
-        if exclude_tests and is_test_related_path(rel_path):
+        if exclude_tests and is_skippable_test_path(rel_path):
             return True
         name = rel_path.rsplit("/", 1)[-1]
         return any(fnmatch(rel_path, g) or fnmatch(name, g) for g in globs)
