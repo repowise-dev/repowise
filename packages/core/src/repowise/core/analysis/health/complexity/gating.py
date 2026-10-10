@@ -23,9 +23,16 @@ if TYPE_CHECKING:
 _FALSY = frozenset({"false", "none", "null", "undefined", "integer", "number"})
 _FALSE = frozenset({"false"})
 _ECMASCRIPT = frozenset({"typescript", "tsx", "javascript", "jsx", "svelte", "vue"})
-#: Plain statements a guard may follow (``summary = {...}`` before the ``if``).
+#: Plain assignments a guard may follow (``summary = {...}`` before the ``if``).
 _LEAD_STATEMENTS = 2
-_SIMPLE = frozenset({"expression_statement", "lexical_declaration", "variable_declaration"})
+_DECLARATIONS = frozenset({"lexical_declaration", "variable_declaration"})
+_ASSIGNMENTS = frozenset({"assignment", "assignment_expression"})
+#: Node kinds that do work: an assignment holding one is no plain assignment.
+_WORK = frozenset(
+    {"call", "call_expression", "new_expression", "await", "await_expression", "yield"}
+)
+#: A line this long is minified or generated: read as written rather than scanned.
+_LONG_LINE = 2000
 
 
 def _text(node: Node) -> str:
@@ -71,6 +78,8 @@ def _written_again(name: str, source: str) -> bool:
     A text scan, deliberately loose: a keyword argument or a local of the same
     name reads as a write, which only keeps a function in the queue.
     """
+    if any(len(line) > _LONG_LINE for line in source.splitlines()):
+        return True
     word = re.escape(name)
     write = re.compile(
         rf"\b(?:global|nonlocal|for|as)\b[^\n]*\b{word}\b"
@@ -101,7 +110,8 @@ def _unwrap(node: Node | None) -> Node | None:
 
 
 def _negates(cond: Node, consts: dict[str, str]) -> bool:
-    """``not FLAG`` / ``!FLAG`` for any falsy flag; ``FLAG is False`` / ``== false`` for ``False``."""
+    """``not FLAG`` / ``!FLAG`` for any falsy flag; ``FLAG is False`` /
+    ``== false`` for a ``False`` one."""
     if cond.type in ("not_operator", "unary_expression"):
         arg = _unwrap(cond.child_by_field_name("argument"))
         operator = cond.child_by_field_name("operator")
@@ -128,6 +138,23 @@ def _only_returns(block: Node | None) -> bool:
         return True
     body = [c for c in block.named_children if "comment" not in c.type]
     return len(body) == 1 and body[0].type == "return_statement"
+
+
+def _plain_assignment(stmt: Node) -> bool:
+    """An assignment or declaration that calls nothing: ``summary = {...}``."""
+    if stmt.type == "expression_statement":
+        named = stmt.named_children
+        if len(named) != 1 or named[0].type not in _ASSIGNMENTS:
+            return False
+    elif stmt.type not in _DECLARATIONS:
+        return False
+    stack = [stmt]
+    while stack:
+        node = stack.pop()
+        if node.type in _WORK:
+            return False
+        stack.extend(node.named_children)
+    return True
 
 
 def _statements(body: Node) -> list[Node]:
@@ -167,6 +194,6 @@ def is_gated_off(body: Node, consts: dict[str, str]) -> bool:
                 and _only_returns(stmt.child_by_field_name("consequence"))
                 and stmt.child_by_field_name("alternative") is None
             )
-        if stmt.type not in _SIMPLE:
+        if not _plain_assignment(stmt):
             return False
     return False

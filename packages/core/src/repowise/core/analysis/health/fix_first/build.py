@@ -437,16 +437,17 @@ class _Files:
 
     def unreachable(self, path: str, symbol: str | None, line: int | None) -> bool:
         """Whether a sure dead-code finding covers ``symbol`` (at ``line``) in
-        ``path``: the whole file, the symbol's lines, or, with no lines on one
-        side, the symbol's name."""
-        tail = (symbol or "").rsplit(".", 1)[-1]
+        ``path``: the whole file, the line inside the finding's span, or, for a
+        finding stored with no lines, the same name as written (``Old.run`` is
+        not ``New.run``)."""
+        name_here = text.short_symbol(symbol)
         for name, start, end in self.dead.get(path, ()):
             if name is None:
                 return True
-            if line and start and end:
-                if start <= line <= end:
+            if start and end:
+                if line and start <= line <= end:
                     return True
-            elif tail and name.rsplit(".", 1)[-1] == tail:
+            elif name_here and name == name_here:
                 return True
         return False
 
@@ -1287,7 +1288,8 @@ def _dead_spans(rows: Rows) -> dict[str, list[DeadSpan]]:
         whole = field(row, "kind") == "unreachable_file"
         name = None if whole else field(row, "symbol_name")
         if _open(row) and sure and (whole or name):
-            out[field(row, "file_path")].append((name, field(row, "start_line"), field(row, "end_line")))
+            span = (name, field(row, "start_line"), field(row, "end_line"))
+            out[field(row, "file_path")].append(span)
     return dict(out)
 
 
@@ -1488,13 +1490,15 @@ def build_fix_first(
         queued = [r for r, reason in zip(rows, reasons, strict=True) if reason is None]
         ready = [r for r in queued if _has_plan(r)]
         if not ready:
-            exclude("no_plan" if queued else reasons[0] or "no_plan", path, symbol)
+            # Dormant only when every row is: one live row speaks for the group.
+            live = [r for r in reasons if r != "gated_off"]
+            exclude("no_plan" if queued else (live[0] if live else "gated_off"), path, symbol)
             continue
         worth = [r for r in ready if _perf_worth(r)]
         if not worth:
             excluded["below_min_worth"] += 1
             continue
-        if files.unreachable(path, text.short_symbol(symbol), None):
+        if files.unreachable(path, symbol, (symbol_lines or {}).get(symbol)):
             excluded["unreachable"] += 1
             continue
         units.append(_perf_unit(worth, files, symbol_lines))

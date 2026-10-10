@@ -245,3 +245,11 @@ def test_an_expected_cause_says_there_is_nothing_to_change():
         intervention_symbol=None,
     )
     assert "inherent_to_boundary" not in _suggestion(SimpleNamespace(), perf)
+
+
+def test_a_gated_cause_says_a_constant_flag_switches_it_off():
+    perf = SimpleNamespace(
+        actionability_state="expected", actionability_reason="gated_off", intervention_symbol=None
+    )
+    text = _suggestion(SimpleNamespace(), perf)
+    assert "constant-False flag" in text and "inherent" not in text

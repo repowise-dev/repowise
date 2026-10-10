@@ -197,7 +197,9 @@ switches off. A function counts as switched off when its body opens with
 module-level `False`, `0` or `None` (`const FLAG = false` in TypeScript or
 JavaScript) that nothing in the same file assigns again. Those functions are
 counted as **dormant** next to the excluded totals rather than dropped silently.
-A flag imported from another file is not followed.
+Only the file itself is read: a flag imported from another module, or flipped
+from outside with `setattr` or a test's monkeypatch, still reads as off, and the
+function is counted as dormant, not hidden.
 
 Items rank by value first (health recovered, or how far the code sits past size
 and complexity bars), then by tier: `now` (worth doing, safe to start), `next`

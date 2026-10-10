@@ -283,7 +283,10 @@ def assess_fix(
 
 
 def actionability(
-    assessment: FixAssessment, evidence_confidence: OpportunityConfidence, *, gated_off: bool = False
+    assessment: FixAssessment,
+    evidence_confidence: OpportunityConfidence,
+    *,
+    gated_off: bool = False,
 ) -> Actionability:
     """What to do with this group next, and why not more.
 

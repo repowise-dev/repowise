@@ -275,15 +275,17 @@ async def _refactoring(session: AsyncSession, repo_id: str) -> list[Any]:
 
 async def _performance(session: AsyncSession, repo_id: str) -> list[Any]:
     p = PerformanceOpportunity
-    # Details are decoded only for a cause the builder can make an item of,
-    # and for an ``expected`` one, whose reason says whether it is dormant.
-    ready = or_(
-        and_(
-            p.actionability_state.in_(DEFAULT_QUEUE_STATES),
-            p.plan_state == "available",
-            p.fix_strategy.is_not(None),
-        ),
+    # Details are decoded only for a cause the builder can make an item of.
+    ready = and_(
+        p.actionability_state.in_(DEFAULT_QUEUE_STATES),
+        p.plan_state == "available",
+        p.fix_strategy.is_not(None),
+    )
+    # The reason is no column; a dormant cause is told apart from other
+    # ``expected`` ones by the writer's compact JSON, with no decode.
+    gated = and_(
         p.actionability_state == "expected",
+        p.details_json.contains('"actionability_reason":"gated_off"'),
     )
     return _plain(
         await session.execute(
@@ -304,6 +306,7 @@ async def _performance(session: AsyncSession, repo_id: str) -> list[Any]:
                 p.affected_call_sites_total,
                 p.affected_files_total,
                 p.status,
+                case((gated, "gated_off")).label("actionability_reason"),
                 case((ready, p.details_json)).label("details_json"),
             )
             .where(p.repository_id == repo_id, p.status == "open")
@@ -403,6 +406,12 @@ async def _symbol_lines(session: AsyncSession, repo_id: str, performance: list[A
         if row.details
         for step in (row.details.get("plan") or {}).get("steps") or ()
         if not step.get("line") and "::" in (step.get("symbol") or "")
+    }
+    # And each cause's own function, which the dead-code join places by line.
+    wanted |= {
+        row.intervention_symbol
+        for row in performance
+        if row.details and "::" in (row.intervention_symbol or "")
     }
     if not wanted:
         return {}
@@ -584,8 +593,9 @@ async def _build(
     # Ceiling: a plan whose details carry no steps is not an item, so its
     # file is read in full like any other.
     planned = {r.file_path for r in refactoring if r.details and r.details.get("steps")}
-    fixable = {p.file_path for p in performance if p.details and p.actionability_state != "expected"}
-    full = heavy | fixable | ({r.file_path for r in refactoring if r.details} - planned)
+    full = heavy | {p.file_path for p in performance if p.details} | (
+        {r.file_path for r in refactoring if r.details} - planned
+    )
     functions = {s["target_symbol"] for s in steps if s.get("target_symbol")}
     findings = await _findings(session, repository_id, full, planned, functions)
     paths = full | planned | {r.file_path for r in history_only}

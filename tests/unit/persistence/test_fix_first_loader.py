@@ -284,3 +284,29 @@ async def test_a_finding_item_with_no_tests_stays_unknown(async_session) -> None
     loaded = await load_fix_first(async_session, rid)
     walk = next(i for i in loaded.items if i.target.file_path == "src/plain.py")
     assert (walk.verify.tests, walk.verify.basis) == ((), "unknown")
+
+
+async def test_loader_counts_dormant_causes_and_dead_code(async_session) -> None:
+    from repowise.core.persistence.models import DeadCodeFinding
+    from tests.unit.health.fix_first_rows import _perf
+
+    rid = (await insert_repo(async_session)).id
+    async_session.add(HealthFileMetric(repository_id=rid, file_path="src/repo.py", score=8.0,
+                                       nloc=90, is_test=False))
+    gated = _perf("perf3_gated", "x", actionability_state="expected", plan_state="no_safe_plan",
+                  fix_strategy=None, intervention_symbol="src/repo.py::off")
+    # The writer's compact JSON, which the loader reads the reason from.
+    gated["details_json"] = json.dumps({"actionability_reason": "gated_off"}, separators=(",", ":"))
+    del gated["details"]
+    live = _perf("perf3_live", "y")
+    async_session.add_all([
+        PerformanceOpportunity(repository_id=rid, **gated),
+        PerformanceOpportunity(repository_id=rid, **_with_json(live, "details")),
+        DeadCodeFinding(repository_id=rid, kind="unused_internal", file_path="src/repo.py",
+                        symbol_name="load_all", confidence=0.9, status="open"),
+    ])
+    await async_session.flush()
+    queue = await load_fix_first(async_session, rid)
+    assert queue.items == ()
+    assert queue.totals.excluded["gated_off"] == 1 and queue.totals.dormant == 1
+    assert queue.totals.excluded["unreachable"] == 1

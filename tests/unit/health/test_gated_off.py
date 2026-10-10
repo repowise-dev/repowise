@@ -324,3 +324,60 @@ def test_a_cause_in_dead_code_is_unreachable() -> None:
     queue = build_fix_first(metrics=[METRICS[3]], performance=[_perf("perf3_a", "s")],
                             dead_code=[dead])
     assert queue.items == () and queue.totals.excluded["unreachable"] == 1
+
+
+def test_only_a_plain_assignment_may_come_before_the_guard() -> None:
+    source = _EVOLUTION + """
+
+def works_before_the_guard(session):
+    session.execute("delete from t")
+    if not SEMANTIC_SUPERSESSION_ENABLED:
+        return
+
+
+def calls_in_an_assignment(session):
+    rows = session.execute("select 1")
+    if not SEMANTIC_SUPERSESSION_ENABLED:
+        return rows
+"""
+    gated = _gated("python", "/tmp/evolution.py", source)
+    assert not gated & {"works_before_the_guard", "calls_in_an_assignment"}
+    assert "detect_supersessions_and_conflicts" in gated
+
+
+def test_a_minified_file_is_read_as_written() -> None:
+    source = "const ENABLED = false;\nfunction f() { if (!ENABLED) return; work(); }\n"
+    assert _gated("javascript", "/tmp/a.js", source) == {"f"}
+    assert _gated("javascript", "/tmp/a.js", source + "var x = 1;" * 300 + "\n") == set()
+
+
+def test_dead_code_on_one_method_leaves_its_same_named_sibling() -> None:
+    # ``Old.run`` (lines 10-20) is dead; ``New.run`` (line 40) is live.
+    dead = [_dead(symbol_name="run", start_line=10, end_line=20)]
+    live = {**_fix_finding(), "function_name": "New.run", "line_start": 40, "line_end": 70}
+    queue = build_fix_first(metrics=METRICS[:1], findings=[live], dead_code=dead)
+    assert len(queue.items) == 1 and queue.totals.excluded["unreachable"] == 0
+    named = [_dead(symbol_name="Old.run", start_line=None, end_line=None)]
+    queue = build_fix_first(metrics=METRICS[:1], findings=[live], dead_code=named)
+    assert len(queue.items) == 1
+
+
+def test_a_perf_cause_is_placed_by_its_function_line() -> None:
+    dead = [_dead(file_path="src/repo.py", symbol_name="run", start_line=10, end_line=20)]
+    rows = [_perf("perf3_new", "s", intervention_symbol="src/repo.py::New.run")]
+    lines = {"src/repo.py::New.run": 40}
+    queue = build_fix_first(metrics=[METRICS[3]], performance=rows, dead_code=dead,
+                            symbol_lines=lines)
+    assert len(queue.items) == 1
+    queue = build_fix_first(metrics=[METRICS[3]], performance=rows, dead_code=dead,
+                            symbol_lines={"src/repo.py::New.run": 12})
+    assert queue.items == () and queue.totals.excluded["unreachable"] == 1
+
+
+def test_one_live_row_keeps_a_perf_group_out_of_the_dormant_count() -> None:
+    gated = _perf("perf3_a", "x", actionability_state="expected", plan_state="no_safe_plan",
+                  fix_strategy=None, details={"actionability_reason": "gated_off"})
+    other = _perf("perf3_b", "y", actionability_state="investigate", plan_state="no_safe_plan",
+                  fix_strategy=None, rank_position=1)
+    queue = build_fix_first(metrics=[METRICS[3]], performance=[gated, other])
+    assert queue.totals.excluded["no_strategy"] == 1 and queue.totals.dormant == 0

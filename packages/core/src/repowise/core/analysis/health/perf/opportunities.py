@@ -179,7 +179,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
     acted = actionability(
         assessment,
         evidence_confidence,
-        gated_off=all(dormant(facts.details) for facts in members),
+        gated_off=bool(members) and all(dormant(facts.details) for facts in members),
     )
     magnitude = loop_magnitude(marker, [facts.details for facts in members])
     factors = rank_factors(
