@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from repowise.core.analysis.health.impact_effort import WORK_QUEUE_SORTS
 from repowise.core.analysis.health.models import Severity
 from repowise.core.analysis.health.scoring import biomarker_weight, severity_deduction
 from repowise.server.routers.code_health import (
-    _SORT_KEYS,
     _finding_base_deduction,
     _leads_by_file,
     _primary_and_magnitude,
@@ -44,7 +44,7 @@ def test_worst_score_sort_breaks_floored_ties_by_impact() -> None:
         _target("m.py", 1.0, 5.0),
         _target("ok.py", 6.0, 40.0),
     ]
-    targets.sort(key=_SORT_KEYS["score"])
+    targets.sort(key=WORK_QUEUE_SORTS["score"])
     assert [t["file_path"] for t in targets] == ["z.py", "m.py", "a.py", "ok.py"]
 
 
@@ -52,7 +52,7 @@ def test_worst_score_sort_is_a_total_order() -> None:
     """Equal score and equal impact still order deterministically, so a
     ``limit`` boundary does not shuffle between requests."""
     targets = [_target("b.py", 1.0, 3.0), _target("a.py", 1.0, 3.0)]
-    targets.sort(key=_SORT_KEYS["score"])
+    targets.sort(key=WORK_QUEUE_SORTS["score"])
     assert [t["file_path"] for t in targets] == ["a.py", "b.py"]
 
 

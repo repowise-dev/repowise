@@ -27,6 +27,8 @@ async def resolve_local_repo(
 
 async def local_repo_path(session: AsyncSession, repo_id: str) -> Path:
     """The repo's on-disk checkout, or a 404: a local-``serve`` capability."""
+    # Unlike ``resolve_local_repo``, the 404 says which of the two is missing;
+    # the settings routes have always answered with these two messages.
     repo = await crud.get_repository(session, repo_id)
     if repo is None or not repo.local_path:
         raise HTTPException(status_code=404, detail=f"repository not found: {repo_id}")

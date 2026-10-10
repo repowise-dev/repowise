@@ -16,10 +16,9 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from repowise.core.analysis.health.effort import EFFORT_ORDER
 from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.perf.ranking import _percentile_threshold
-from repowise.core.analysis.health.queue_rules import FilterRule, SortKeys
+from repowise.core.analysis.health.queue_rules import FilterRule
 from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.analysis.test_reachability import (
@@ -1008,8 +1007,6 @@ class Recommendation:
     file_nloc: int
     file_weighted_deficit: int
     validation: ValidationPlan
-    # The reads a rank-only pass made, so detailing a page reuses them.
-    inputs: ValidationInputs | None = field(default=None, repr=False, compare=False)
     # What other layers say about the target (:mod:`.annotations`), stored at
     # finalize and served on plan detail only; ``None`` when never checked.
     annotations: PlanAnnotations | None = field(default=None, repr=False, compare=False)
@@ -1138,28 +1135,13 @@ def stored_recommendation(row: Any) -> Recommendation | None:
     )
 
 
-#: Each bucket's place in the shared effort scale, for the ``effort`` sort.
-EFFORT_RANK = {bucket: rank for rank, bucket in enumerate(EFFORT_ORDER)}
-#: Where a bucket outside the scale sorts: with ``L``.
-UNKNOWN_EFFORT = EFFORT_RANK["L"]
-
 #: The plan list's filters, read in SQL on a ranked store
 #: (``persistence.sql.rule_predicate``) and in memory on the live path
 #: (``queue_rules.keep``), so the two cannot disagree.
 PLAN_FILTERS = (
     FilterRule("refactoring_types", "refactoring_type", "in", "set"),
     FilterRule("file_path", "file_path", "eq", "set"),
-    FilterRule("confidences", "confidence", "in", "truthy"),
-    FilterRule("efforts", "effort_bucket", "in", "truthy"),
 )
-
-#: The plan list's field sorts; every one but ``file`` breaks ties by the view
-#: order. ``effort`` reads :data:`EFFORT_RANK` and ``canonical`` is the view.
-PLAN_SORTS: dict[str, SortKeys] = {
-    "health": (("impact_delta", True),),
-    "blast": (("blast_size", True),),
-    "file": (("file_path", False), ("target_symbol", False), ("id", False)),
-}
 
 
 def plan_types(refactoring_type: str | None) -> tuple[str, ...] | None:
@@ -1167,22 +1149,6 @@ def plan_types(refactoring_type: str | None) -> tuple[str, ...] | None:
     if refactoring_type == "structural":
         return tuple(sorted(STRUCTURAL_TYPES))
     return (refactoring_type,) if refactoring_type else None
-
-
-def matches_search(suggestion: RefactoringSuggestion, query: str) -> bool:
-    """Whether lower-cased *query* occurs in the plan's searchable text."""
-    plan = suggestion.plan or {}
-    haystack = " ".join(
-        (
-            suggestion.file_path,
-            suggestion.target_symbol,
-            suggestion.refactoring_type,
-            suggestion.source_biomarker,
-            str(plan.get("strategy") or ""),
-            str(plan.get("intervention_symbol") or ""),
-        )
-    ).lower()
-    return query in haystack
 
 
 def _priority_components(
@@ -1346,10 +1312,7 @@ __all__ = [
     "CONFIDENCE_RISK",
     "DEFAULT_TEST_LIMIT",
     "EFFORT_COST",
-    "EFFORT_RANK",
     "PLAN_FILTERS",
-    "PLAN_SORTS",
-    "UNKNOWN_EFFORT",
     "Recommendation",
     "RecommendationView",
     "ValidationEvidence",
@@ -1366,7 +1329,6 @@ __all__ = [
     "detector_native_benefit",
     "enrich_blast_radius",
     "hub_files",
-    "matches_search",
     "plan_types",
     "priority_score",
     "rehydrate_suggestion",

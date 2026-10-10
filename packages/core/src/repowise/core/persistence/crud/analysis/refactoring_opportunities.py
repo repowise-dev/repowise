@@ -846,11 +846,45 @@ async def refactoring_facet_counts(
     return fold_facets(rows.all(), selection)
 
 
+async def owning_refactoring_opportunity(
+    session: AsyncSession, repository_id: str, public_id: str | None, file_path: str
+) -> RefactoringOpportunity | None:
+    """The open opportunity holding plan *public_id*, found through its file.
+
+    One indexed lookup on ``(repository_id, status, file_path)``: a plan
+    belongs to at most one file's opportunity, so the file narrows it to a
+    single candidate and the step list confirms it.
+    """
+    from ....analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
+    from ....analysis.health.rows import detail_map
+
+    if not public_id:
+        return None
+    rows = (
+        await session.execute(
+            select(RefactoringOpportunity)
+            .where(
+                RefactoringOpportunity.repository_id == repository_id,
+                RefactoringOpportunity.status == "open",
+                RefactoringOpportunity.refactoring_model_version == REFACTORING_MODEL_VERSION,
+                RefactoringOpportunity.file_path == file_path,
+            )
+            .limit(5)
+        )
+    ).scalars()
+    for row in rows:
+        steps = detail_map(row).get("steps") or []
+        if any(step.get("plan_id") == public_id for step in steps):
+            return row
+    return None
+
+
 __all__ = [
     "finalize_refactoring_opportunities",
     "get_refactoring_opportunity",
     "get_refactoring_summary",
     "list_refactoring_opportunities",
+    "owning_refactoring_opportunity",
     "refactoring_facet_counts",
     "refactoring_opportunities_by_id",
     "refactoring_reason_counts",

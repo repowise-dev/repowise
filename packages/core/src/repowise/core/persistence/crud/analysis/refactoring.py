@@ -635,3 +635,21 @@ async def summarize_open_plans(
         )
     )
     return summarize_plans(rows.all())
+
+
+async def refactoring_suggestions_by_public_id(
+    session: AsyncSession, repository_id: str, public_ids: list[str]
+) -> list[RefactoringSuggestion]:
+    """The plans named by *public_ids*, in that order, in one indexed query."""
+    if not public_ids:
+        return []
+    rows = (
+        await session.execute(
+            select(RefactoringSuggestion).where(
+                RefactoringSuggestion.repository_id == repository_id,
+                RefactoringSuggestion.public_id.in_(public_ids),
+            )
+        )
+    ).scalars()
+    by_id = {row.public_id: row for row in rows}
+    return [by_id[pid] for pid in public_ids if pid in by_id]

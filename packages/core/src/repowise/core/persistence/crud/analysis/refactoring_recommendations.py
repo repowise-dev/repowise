@@ -12,7 +12,7 @@ import dataclasses
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
@@ -46,7 +46,7 @@ from repowise.core.analysis.test_reachability import (
     tests_reaching_by_tier,
 )
 
-from ...models import GraphNode
+from ...models import GraphMetric, GraphNode, HealthFileMetric
 from ..graph import get_graph_metrics
 from .coverage_map import tests_covering_files
 from .health import get_health_metrics
@@ -245,4 +245,41 @@ async def _validation_evidence(
     )
 
 
-__all__ = ["hydrate_recommendations", "validation_inputs"]
+async def plan_rank_inputs(
+    session: AsyncSession, repository_id: str, file_path: str
+) -> tuple[dict[str, Any], dict[str, float]]:
+    """The two rank inputs for one file, as seeks rather than repo reads.
+
+    ``build_recommendations`` wants a metric per path and an in-degree per
+    node. Serving one plan used to load every metric row and every graph
+    metric in the repository to supply them for a single file.
+    """
+    metric = (
+        await session.execute(
+            select(HealthFileMetric).where(
+                HealthFileMetric.repository_id == repository_id,
+                HealthFileMetric.file_path == file_path,
+            )
+        )
+    ).scalar_one_or_none()
+    rows = (
+        await session.execute(
+            select(GraphMetric.node_id, GraphMetric.in_degree).where(
+                GraphMetric.repository_id == repository_id,
+                or_(
+                    GraphMetric.node_id == file_path,
+                    # The separator matters: a bare ``f"{file_path}%"`` also
+                    # matches a sibling whose name extends this one, so
+                    # ``Component.ts`` would absorb ``Component.tsx``.
+                    GraphMetric.node_id.like(f"{file_path}::%"),
+                ),
+            )
+        )
+    ).all()
+    return (
+        {metric.file_path: metric} if metric is not None else {},
+        {node_id: float(in_degree or 0.0) for node_id, in_degree in rows},
+    )
+
+
+__all__ = ["hydrate_recommendations", "plan_rank_inputs", "validation_inputs"]

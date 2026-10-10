@@ -21,12 +21,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.queue.counts import NOT_JUDGED
 from repowise.core.analysis.health.queue_rules import keep
-from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 from repowise.core.analysis.health.refactoring.recommendations import (
     PLAN_FILTERS,
     plan_types,
@@ -50,12 +48,14 @@ from repowise.core.persistence.crud.analysis.queue_counts import any_unjudged, u
 from repowise.core.persistence.crud.analysis.refactoring import (
     get_refactoring_suggestions,
     ranked_refactoring_suggestions,
+    refactoring_suggestions_by_public_id,
     summarize_open_plans,
 )
 from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
     get_refactoring_opportunity,
     get_refactoring_summary,
     list_refactoring_opportunities,
+    owning_refactoring_opportunity,
     refactoring_facet_counts,
     refactoring_opportunities_by_id,
     refactoring_reason_counts,
@@ -63,8 +63,8 @@ from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
 )
 from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
     hydrate_recommendations,
+    plan_rank_inputs,
 )
-from repowise.core.persistence.models import RefactoringOpportunity, RefactoringSuggestion
 
 
 def _hidden(left_out: dict[str, int]) -> dict[str, Any]:
@@ -369,7 +369,12 @@ class RefactoringHealthService:
         payload["lead_finding_ids"] = list(details.get("lead_finding_ids") or [])
         payload["next_actions"] = next_actions(row, page)
         if with_plans and page:
-            payload["plans"] = await self._plans_for([s["plan_id"] for s in page])
+            payload["plans"] = [
+                plan_payload(row)
+                for row in await refactoring_suggestions_by_public_id(
+                    self._session, self._repository_id, [s["plan_id"] for s in page]
+                )
+            ]
         # Ordered steps carry ``relocated_by``; a surface that renders them must
         # say the symbol has to be located again before the step is applied.
         if any(step.get("relocated_by") for step in page):
@@ -391,7 +396,9 @@ class RefactoringHealthService:
         row = await get_refactoring_suggestion(self._session, self._repository_id, plan_id)
         if row is None:
             return {"resolved": False, "plan_id": plan_id, "reason": "unknown_plan_id"}
-        owner = await self._owning_opportunity(row.public_id, row.file_path)
+        owner = await owning_refactoring_opportunity(
+            self._session, self._repository_id, row.public_id, row.file_path
+        )
         payload = (await self.plan_recommendation(row, owner=owner)).detail_dict()
         payload["id"] = row.public_id or row.id
         payload["status"] = row.status
@@ -464,8 +471,12 @@ class RefactoringHealthService:
         if stored is not None:
             return stored
         if owner is None:
-            owner = await self._owning_opportunity(row.public_id, row.file_path)
-        metric_by_path, centrality = await self._rank_inputs(row.file_path)
+            owner = await owning_refactoring_opportunity(
+                self._session, self._repository_id, row.public_id, row.file_path
+            )
+        metric_by_path, centrality = await plan_rank_inputs(
+            self._session, self._repository_id, row.file_path
+        )
         return build_recommendations(
             [rehydrate_suggestion(row)],
             metric_by_path=metric_by_path,
@@ -497,95 +508,6 @@ class RefactoringHealthService:
         )
         profile = (detail_map(owner).get("plan") or {}).get("validation") if owner else None
         return validation_from_profile(profile) if profile else None
-
-    async def _rank_inputs(self, file_path: str) -> tuple[dict[str, Any], dict[str, float]]:
-        """The two rank inputs for one file, as seeks rather than repo reads.
-
-        ``build_recommendations`` wants a metric per path and an in-degree per
-        node. Serving one plan used to load every metric row and every graph
-        metric in the repository to supply them for a single file.
-        """
-        from repowise.core.persistence.models import GraphMetric, HealthFileMetric
-
-        metric = (
-            await self._session.execute(
-                select(HealthFileMetric).where(
-                    HealthFileMetric.repository_id == self._repository_id,
-                    HealthFileMetric.file_path == file_path,
-                )
-            )
-        ).scalar_one_or_none()
-        rows = (
-            await self._session.execute(
-                select(GraphMetric.node_id, GraphMetric.in_degree).where(
-                    GraphMetric.repository_id == self._repository_id,
-                    or_(
-                        GraphMetric.node_id == file_path,
-                        # The separator matters: a bare ``f"{file_path}%"`` also
-                        # matches a sibling whose name extends this one, so
-                        # ``Component.ts`` would absorb ``Component.tsx``.
-                        GraphMetric.node_id.like(f"{file_path}::%"),
-                    ),
-                )
-            )
-        ).all()
-        return (
-            {metric.file_path: metric} if metric is not None else {},
-            {node_id: float(in_degree or 0.0) for node_id, in_degree in rows},
-        )
-
-    # -- internals --------------------------------------------------------
-
-    async def _owning_opportunity(self, public_id: str | None, file_path: str) -> Any | None:
-        """The opportunity holding this plan, found through its file.
-
-        One indexed lookup on ``(repository_id, status, file_path)``: a plan
-        belongs to at most one file's opportunity, so the file narrows it to a
-        single candidate and the step list confirms it.
-        """
-        if not public_id:
-            return None
-        rows = list(
-            (
-                await self._session.execute(
-                    select(RefactoringOpportunity)
-                    .where(
-                        RefactoringOpportunity.repository_id == self._repository_id,
-                        RefactoringOpportunity.status == "open",
-                        RefactoringOpportunity.refactoring_model_version
-                        == REFACTORING_MODEL_VERSION,
-                        RefactoringOpportunity.file_path == file_path,
-                    )
-                    .limit(5)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for row in rows:
-            steps = detail_map(row).get("steps") or []
-            if any(step.get("plan_id") == public_id for step in steps):
-                return row
-        return None
-
-    async def _plans_for(self, plan_ids: list[str]) -> list[dict[str, Any]]:
-        """The member plans' payloads, in one indexed query over the page."""
-        if not plan_ids:
-            return []
-        rows = list(
-            (
-                await self._session.execute(
-                    select(RefactoringSuggestion).where(
-                        RefactoringSuggestion.repository_id == self._repository_id,
-                        RefactoringSuggestion.public_id.in_(plan_ids),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        by_id = {row.public_id: row for row in rows}
-        return [plan_payload(by_id[pid]) for pid in plan_ids if pid in by_id]
 
 
 __all__ = ["RefactoringHealthService", "RefactoringPage", "RefactoringPlanPage"]

@@ -169,6 +169,7 @@ def build_impact_effort(
     )
 
 
+# Not ``aggregation.SEVERITY_ORDER``: there an unknown severity sorts last, here it counts as low.
 _SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
 #: The work queue's orders over :func:`work_queue_targets` rows.

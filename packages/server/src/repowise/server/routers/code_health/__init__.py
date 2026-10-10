@@ -13,10 +13,6 @@ every cross-module helper unchanged.
 
 from __future__ import annotations
 
-from repowise.core.analysis.health.impact_effort import (  # noqa: F401
-    WORK_QUEUE_SORTS as _SORT_KEYS,
-)
-
 # import route modules for their decorator side-effects (attach routes to the shared router)
 from . import (
     badge,  # noqa: F401

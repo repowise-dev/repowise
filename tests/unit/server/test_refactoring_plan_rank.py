@@ -121,7 +121,7 @@ def _no_live_ranking(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(service, "hydrate_recommendations", refuse)
     # The one-plan rebuild from seeks is the fallback too.
     monkeypatch.setattr(recommendations, "build_recommendations", refuse)
-    monkeypatch.setattr(service.RefactoringHealthService, "_rank_inputs", refuse)
+    monkeypatch.setattr(service, "plan_rank_inputs", refuse)
 
 
 async def test_stored_rank_answers_every_query_as_live_ranking_did(
