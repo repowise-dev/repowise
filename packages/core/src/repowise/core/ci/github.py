@@ -1,14 +1,15 @@
 """GitHub Actions workflow commands: the one place they are built and escaped.
 
 Pure string builders, so a CLI gate and a hosted check render identical
-annotations. GitHub shows at most 10 warning and 10 error annotations per
+annotations, and the one job-summary append every CI script shares. GitHub shows at most 10 warning and 10 error annotations per
 step and drops the rest silently, which is why :func:`cap_annotations` counts
 what it cut instead of emitting it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import os
+from collections.abc import Mapping, Sequence
 
 #: Annotations GitHub displays per level per step.
 ANNOTATION_LIMIT = 10
@@ -90,3 +91,16 @@ def cap_shared(
             notice(f"{rest} more {noun}; the first {limit} are listed in the job summary")
         )
     return kept
+
+
+def append_step_summary(markdown: str, *, env: Mapping[str, str] | None = None) -> bool:
+    """Add *markdown* to the GitHub Actions job summary; ``False`` when not in Actions."""
+    target = (os.environ if env is None else env).get("GITHUB_STEP_SUMMARY")
+    if not target:
+        return False
+    try:
+        with open(target, "a", encoding="utf-8") as fh:
+            fh.write(markdown.rstrip("\n") + "\n")
+    except OSError:
+        return False
+    return True

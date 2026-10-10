@@ -59,7 +59,19 @@ jobs:
         if: matrix.python-version == '3.12'
         env:
           COVERAGE_CORE: sysmon
-        run: uv run --with pytest-cov pytest tests/unit/ -n auto --dist loadfile -v --tb=short --durations=25 --cov=packages --cov-report=xml
+        run: uv run --with pytest-cov pytest tests/unit/ -n auto --dist loadfile -v --tb=short --durations=25 --cov=packages --cov-report=xml --junitxml=junit.xml
+
+      # Read by the impacted-tests-compare job below; recorded only, never fails.
+      - name: Upload the test report for the selection record
+        if: always() && matrix.python-version == '3.12' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: impacted-tests-junit
+          path: junit.xml
+          if-no-files-found: ignore
+          retention-days: 30
+          overwrite: true
 
       - name: Upload coverage to Repowise
         if: always() && matrix.python-version == '3.12'
@@ -84,6 +96,201 @@ jobs:
             -F "event=$GITHUB_EVENT_NAME" -F "run_url=$RUN_URL" -F "workspace=$GITHUB_WORKSPACE" \
             https://api.repowise.dev/ci/coverage \
             || echo "::warning::Repowise: coverage upload failed; see the message above."
+
+  # ---------------------------------------------------------------------------
+  # Test selection, recorded only. Every test above still runs; these jobs note
+  # which tests `repowise impacted-tests` would have picked and whether a
+  # failing test fell outside them. They run beside the tests, not before them,
+  # and every step continues on error, so none of them can fail a run.
+  # ---------------------------------------------------------------------------
+  repowise-index:
+    name: Repowise index (main)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    continue-on-error: true
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        continue-on-error: true
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Install dependencies
+        continue-on-error: true
+        timeout-minutes: 15
+        run: uv sync --all-packages
+
+      # The newest earlier index, brought up to this commit.
+      - name: Restore the previous index
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: .repowise
+          key: repowise-index-${{ github.sha }}
+          restore-keys: repowise-index-
+
+      - name: Build the index
+        id: build
+        continue-on-error: true
+        timeout-minutes: 30
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          if [ -f .repowise/state.json ]; then
+            uv run repowise update --index-only
+          else
+            uv run repowise init --yes --no-prose --no-editor-setup --no-hook
+          fi
+
+      - name: Save the index
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .repowise
+          key: repowise-index-${{ github.sha }}
+
+  impacted-tests-shadow:
+    name: Test selection (recorded only)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    continue-on-error: true
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        continue-on-error: true
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Install dependencies
+        continue-on-error: true
+        timeout-minutes: 15
+        run: uv sync --all-packages
+
+      # A pull request checks out its merge commit, whose first parent is the
+      # target branch; on main the first parent is the previous commit. Either
+      # way it is the base the tests ran against.
+      - name: Find the base
+        id: base
+        continue-on-error: true
+        run: echo "sha=$(git rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
+
+      # Read-only: pull requests, forks included, restore main's index and
+      # never save one. An older index is used as is.
+      - name: Restore the main index
+        id: index
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: .repowise
+          key: repowise-index-${{ steps.base.outputs.sha }}
+          restore-keys: repowise-index-
+
+      - name: Select tests
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          BASE: ${{ steps.base.outputs.sha }}
+          CACHE_HIT: ${{ steps.index.outputs.cache-hit }}
+          CACHE_KEY: ${{ steps.index.outputs.cache-matched-key }}
+          PYTHONUTF8: "1"
+        run: |
+          mkdir -p shadow
+          SECONDS=0
+          code=0
+          uv run repowise impacted-tests "$BASE...HEAD" --format json --runner pytest --prioritize \
+            > shadow/selection.json 2> shadow/selection.log || code=$?
+          seconds=$SECONDS
+          cache=none
+          if [ "$CACHE_HIT" = "true" ]; then cache=exact; elif [ -n "$CACHE_KEY" ]; then cache=older; fi
+          printf '{"base": "%s", "selector_exit": %d, "selector_seconds": %d, "index_cache": "%s"}\n' \
+            "$BASE" "$code" "$seconds" "$cache" > shadow/selector.json
+          tail -n 20 shadow/selection.log
+          exit 0
+
+      - name: Upload the selection
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: impacted-tests-selection
+          path: shadow/
+          if-no-files-found: ignore
+          retention-days: 30
+          overwrite: true
+
+  impacted-tests-compare:
+    name: Test selection compared (recorded only)
+    runs-on: ubuntu-latest
+    needs: [impacted-tests-shadow, test-python]
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') }}
+    continue-on-error: true
+    permissions:
+      contents: read
+
+    steps:
+      # The script needs only the standard library and the shared CI helpers.
+      - uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          sparse-checkout: |
+            scripts
+            packages/core/src/repowise/core/ci
+
+      - name: Download the selection
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: impacted-tests-selection
+          path: shadow
+
+      - name: Download the test report
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: impacted-tests-junit
+          path: shadow
+
+      - name: Compare
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          PYTHONPATH: packages/core/src
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python3 scripts/impacted_tests_shadow.py --selection shadow/selection.json \
+            --meta shadow/selector.json --junit shadow/junit.xml --out shadow/record.json \
+            || echo "Test selection comparison could not run." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the record
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: impacted-tests-record
+          path: shadow/
+          if-no-files-found: ignore
+          retention-days: 30
+          overwrite: true
 
   # ---------------------------------------------------------------------------
   # tree-sitter floor — installs the declared minimum tree-sitter version and
