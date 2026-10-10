@@ -263,3 +263,46 @@ def test_a_swallowed_pipeline_failure_is_now_reported(phase_fn: str) -> None:
 
     assert "skipped (boom)" in buf.getvalue()
     assert callback.warnings and "skipped (boom)" in callback.warnings[0]
+
+
+def test_notices_are_shown_but_not_recorded_as_degradation() -> None:
+    """Size-skip lines and progress tips are informational, not degradations.
+
+    ``init`` persists ``callback.warnings`` as ``state["degraded"]`` and the MCP
+    server serves it on every reply, so a ``notice`` must render but never be
+    collected (#3185).
+    """
+    console, buf = _non_tty_console()
+    with Progress(TextColumn("{task.description}"), console=console) as bar:
+        callback = RichProgressCallback(bar, console)
+        callback.on_message("notice", "  Not indexed: big.cs (9,745 KB, over the 2,048 KB limit)")
+        callback.on_message("warning", "Execution flow tracing skipped (boom)")
+
+    assert "Not indexed: big.cs" in buf.getvalue()
+    assert callback.warnings == ["Execution flow tracing skipped (boom)"]
+
+
+def test_size_skipped_files_do_not_reach_state_degraded() -> None:
+    """End to end through init's collection: a skipped large file leaves
+    ``state["degraded"]`` empty, while a real degradation still lands there."""
+    from repowise.core.ingestion.traverser import SkippedSourceFile
+    from repowise.core.pipeline.phases.ingestion import _emit_traversal_summary
+
+    class _Stats:
+        total_paths_walked = 10
+        lang_counts: ClassVar[dict] = {}
+        skipped_source_files: ClassVar[list] = [
+            SkippedSourceFile("src/TestData.g.cs", 9745, "over_max_size"),
+            SkippedSourceFile("src/hw.h", 520, "minified"),
+        ]
+        skipped_source_files_truncated = True
+
+    console, buf = _non_tty_console()
+    with Progress(TextColumn("{task.description}"), console=console) as bar:
+        callback = RichProgressCallback(bar, console)
+        _emit_traversal_summary(callback, _Stats(), included=8)
+        assert callback.warnings == []
+        callback.on_message("warning", "Git indexing skipped: boom")
+
+    assert "Not indexed: src/TestData.g.cs" in buf.getvalue()
+    assert callback.warnings == ["Git indexing skipped: boom"]

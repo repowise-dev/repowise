@@ -13,6 +13,11 @@ from rich.text import Text
 
 from repowise.cli.ui.brand import ERR, WARN, print_phase_header
 
+# Message levels that mean "this run degraded". ``notice`` is deliberately not
+# here: it is visible (warning-styled) but informational, e.g. a file skipped on
+# size or a "this may take a while" tip.
+_DEGRADING_LEVELS = frozenset({"warning", "error"})
+
 # Top-level stage → (phase number, title, subtitle). The pipeline announces the
 # stage; how it is numbered and worded is the screen's business, and the screen
 # is the only side that knows generation and persistence follow.
@@ -211,9 +216,15 @@ class RichProgressCallback:
         # 12,431 files", "Languages: …"), and rendering those in the same green
         # as "✓ Database updated" made green mean "the pipeline said something"
         # rather than "this succeeded".
-        style_map = {"warning": WARN, "error": ERR}
+        #
+        # ``notice`` is rendered with the warning style so it stays visible, but
+        # it is not a degradation: size-skip lines and progress tips are
+        # informational. Only ``warning`` and ``error`` are collected into
+        # ``self.warnings``, which ``init`` persists as ``state["degraded"]`` and
+        # the MCP server then reports on every reply.
+        style_map = {"warning": WARN, "error": ERR, "notice": WARN}
         style = style_map.get(level, "")
-        if level in style_map:
+        if level in _DEGRADING_LEVELS:
             self.warnings.append(redact_secrets(text))
         # Insight lines (indented with →) get special formatting
         if text.lstrip().startswith("→"):

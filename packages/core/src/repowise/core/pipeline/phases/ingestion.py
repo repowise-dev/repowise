@@ -209,12 +209,12 @@ def _emit_traversal_summary(
                 "unreadable": "could not be read",
             }.get(skipped_source.reason, f"over the {ceiling_kb:,} KB limit")
             progress.on_message(
-                "warning",
+                "notice",
                 f"  Not indexed: {skipped_source.path} "
                 f"({skipped_source.size_kb:,} KB, {detail})",
             )
         if getattr(stats, "skipped_source_files_truncated", False):
-            progress.on_message("warning", "  ...and more source files skipped on size")
+            progress.on_message("notice", "  ...and more source files skipped on size")
 
     if stats.lang_counts:
         ranked = sorted(stats.lang_counts.items(), key=lambda item: -item[1])
@@ -634,12 +634,14 @@ async def _run_ingestion(
     # opaque "graph 0/1" spinner.
     if progress and len(file_infos) >= _SLOW_GRAPH_BUILD_FILES:
         # Reassurance before the longest silent stretch of the run, so it is
-        # warning-weight rather than another dim stat — which is also why it is
+        # rendered warning-weight rather than another dim stat (a "notice", not
+        # a "warning": it is not a degradation and must not be persisted into
+        # state.json["degraded"]) — which is also why it is
         # gated: on a small repo the build is over in under a second, and a
         # yellow "this may take several minutes" there is a false alarm made
         # louder.
         progress.on_message(
-            "warning",
+            "notice",
             "Graph build can take several minutes on a first run. Safe to Ctrl-C — "
             "re-run 'repowise init --resume' to continue where it stopped.",
         )

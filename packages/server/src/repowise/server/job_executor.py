@@ -202,7 +202,8 @@ class JobProgressCallback:
     def on_message(self, level: str, text: str) -> None:
         if self._events is not None:
             self._events.add(level, text)
-        getattr(logger, level, logger.info)(text, job_id=self._job_id, phase=self._phase)
+        log_level = "info" if level == "notice" else level
+        getattr(logger, log_level, logger.info)(text, job_id=self._job_id, phase=self._phase)
 
     def _sync_job_status(self, *, force: bool = False) -> None:
         """Fire-and-forget progress update in the current event loop.
