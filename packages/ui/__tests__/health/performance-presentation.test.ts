@@ -110,6 +110,14 @@ describe("performance presentation", () => {
     expect(none.label).toBe("No safe plan");
   });
 
+  it("names a stored plan apart from the plan-ready actionability state", () => {
+    // The row mark counts with the "With a stored plan" tile; "Plan ready" is
+    // the actionability state its own tile counts.
+    expect(planPresentation(opportunity()).label).toBe("Stored plan");
+    expect(facetValueLabel("plan_state", "available")).toBe("Stored plan");
+    expect(facetValueLabel("actionability", "plan_ready")).toBe("Plan ready");
+  });
+
   it("never calls a plan actionable without an id to fetch it with", () => {
     expect(planPresentation(opportunity({ plan_id: null })).actionable).toBe(false);
   });

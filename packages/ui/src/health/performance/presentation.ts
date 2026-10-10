@@ -65,8 +65,11 @@ export const FACET_LABEL: Record<PerformanceFacetKey, string> = {
   plan_state: "Plan",
 };
 
+// "Stored plan", not "Plan ready": that name belongs to the actionability
+// state, which the Plan ready tile counts. A stored plan is counted by the
+// "With a stored plan" tile, so the row mark and its tile share one predicate.
 const PLAN_STATE_LABEL: Record<string, string> = {
-  available: "Plan ready",
+  available: "Stored plan",
   no_safe_plan: "No safe plan",
   not_persisted: "Needs an index refresh",
 };
@@ -314,7 +317,7 @@ export interface PlanPresentation {
 export function planPresentation(opportunity: PerformanceOpportunity): PlanPresentation {
   if (opportunity.plan_status === "available" && opportunity.plan_id) {
     return {
-      label: "Structured plan ready",
+      label: PLAN_STATE_LABEL.available!,
       detail: opportunity.plan_reason,
       actionable: true,
     };
