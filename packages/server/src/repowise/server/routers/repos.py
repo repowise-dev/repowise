@@ -894,7 +894,7 @@ async def get_file_content(
         raise HTTPException(status_code=404, detail="File not found")
 
     try:
-        content = target.read_text(errors="replace")
+        content = target.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
