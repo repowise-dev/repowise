@@ -330,11 +330,8 @@
   /* Soft saturated -> pale warm gradient (the "smooth two-tone" style):
      brand orange melting into a warm peach. For brand chips, icon blobs,
      small accent panels, avatars, selected/active art. Dark text reads on
-     the whole sweep. `--gradient-warm-wash` is the ultra-subtle background
-     version (theme-aware) for hero washes and section bands; product empty
-     states stay on the neutral planes. */
+     the whole sweep. Product empty states stay on the neutral planes. */
   --gradient-warm: linear-gradient(135deg, #f59520 0%, #ffd9b0 100%);
-  --gradient-warm-wash: linear-gradient(160deg, #fff4ea 0%, #ffe6cf 55%, #ffd9bd 100%);
 
   /* ================================================================== */
   /* Elevation — warm/plum-tinted shadows (LIGHT; `.dark` overrides)    */
@@ -620,10 +617,6 @@
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
   --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.07);
   --shadow-button: 0 1px 2px rgba(0, 0, 0, 0.4);
-
-  /* Dark soft wash — neutral graphite with a faint lift at the end. Tracks the
-     surface ramp: the wash reads as a lit panel only if it starts at the base. */
-  --gradient-warm-wash: linear-gradient(160deg, #101012 0%, #16161a 55%, #1f1f23 100%);
 }
 
 /* -------------------------------------------------------------------- */

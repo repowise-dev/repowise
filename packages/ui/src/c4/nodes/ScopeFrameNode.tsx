@@ -32,13 +32,13 @@ function ScopeFrameNodeImpl(props: NodeProps) {
         position: "relative",
       }}
     >
-      {/* Faint warm wash inside the boundary — garnish, sits behind cards. */}
+      {/* Faint neutral ground inside the boundary, behind cards. */}
       <div
         style={{
           position: "absolute",
           inset: 0,
           borderRadius: 16,
-          backgroundImage: "var(--gradient-warm-wash)",
+          background: "var(--color-bg-surface)",
           opacity: 0.4,
         }}
       />
