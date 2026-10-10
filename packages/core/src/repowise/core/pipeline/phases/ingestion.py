@@ -687,7 +687,10 @@ async def _run_ingestion(
         dynamic_edges = await loop.run_in_executor(
             None,
             lambda: registry.extract_all(
-                repo_path, dotnet_index=graph_builder.dotnet_index, file_paths=hint_paths
+                repo_path,
+                dotnet_index=graph_builder.dotnet_index,
+                file_paths=hint_paths,
+                source_map=source_map,
             ),
         )
         graph_builder.add_dynamic_edges(dynamic_edges)

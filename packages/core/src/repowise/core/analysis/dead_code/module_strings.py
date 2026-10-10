@@ -29,14 +29,12 @@ fixture app it loads by name), never a member path (a ``mock.patch`` target).
 
 from __future__ import annotations
 
-import io
 import re
-import tokenize
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from ...ingestion.languages.registry import REGISTRY
+from ...ingestion.languages.python_strings import defines_top_level, is_python, live_text
 from ...test_paths import is_test_related_path
 from .models import DeadCodeFindingData, DeadCodeKind
 
@@ -80,10 +78,6 @@ def _directory(path: str) -> str:
     return "" if parent == "." else parent
 
 
-def _is_python(path: str) -> bool:
-    return REGISTRY.from_extension(PurePosixPath(path).suffix) == "python"
-
-
 def drop_named_modules(
     findings: list[DeadCodeFindingData],
     source_map: dict[str, bytes],
@@ -104,7 +98,7 @@ def drop_named_modules(
 
 def _is_candidate(finding: DeadCodeFindingData) -> bool:
     kinds = (DeadCodeKind.UNREACHABLE_FILE, DeadCodeKind.UNUSED_EXPORT)
-    return finding.kind in kinds and _is_python(finding.file_path)
+    return finding.kind in kinds and is_python(finding.file_path)
 
 
 def _is_named(
@@ -132,7 +126,7 @@ def _named_by_strings(
         # Tokenize only a file whose raw text names a candidate at all.
         if next(reader.uses(blob), None) is None:
             continue
-        for target, attr in reader.uses(_live_text(path, blob)):
+        for target, attr in reader.uses(live_text(path, blob)):
             named.add(target)
             if attr:
                 attrs.add((target, attr))
@@ -169,56 +163,4 @@ class _Reader:
         """For ``"pkg.module.Name"``: the modules ``pkg.module`` names that define ``Name``."""
         parent, _, name = module.rpartition(".")
         owners = self._resolve(parent) if parent else set()
-        return {t for t in owners if _defines_top_level(members.get(t, b""), name)}, name
-
-
-def _defines_top_level(blob: bytes, name: str) -> bool:
-    """Whether a Python module defines *name* at top level (def, class, assignment).
-
-    A re-export (``from x import Name``) or a tuple target is not seen, so such
-    a member stays reported.
-    """
-    word = re.escape(name.encode("ascii"))
-    pattern = (
-        rb"^(?:(?:async[ \t]+)?def|class)[ \t]+" + word + rb"\b"
-        rb"|^" + word + rb"[ \t]*(?::[^=\n]*)?=(?!=)"
-    )
-    return re.search(pattern, blob, re.MULTILINE) is not None
-
-
-#: Tokens after which a string starts an expression statement (a docstring).
-_STATEMENT_START = frozenset(
-    {tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENCODING}
-)
-_TRIVIA = frozenset({tokenize.NL, tokenize.COMMENT})
-_COMMENT_LINE_RE = re.compile(rb"^[ \t]*#.*$", re.MULTILINE)
-
-
-def _live_text(path: str, blob: bytes) -> bytes:
-    """*blob* without comments and, for Python, without docstrings.
-
-    Python keeps only its string literals that are not a statement on their
-    own; other files drop only ``#`` comment lines. Python that does not tokenize
-    is kept whole, as before this filter.
-    """
-    if not _is_python(path):
-        return _COMMENT_LINE_RE.sub(b"", blob)
-    try:
-        tokens = [
-            t for t in tokenize.tokenize(io.BytesIO(blob).readline) if t.type not in _TRIVIA
-        ]
-    except (tokenize.TokenError, SyntaxError, ValueError):
-        return blob
-    return b"\n".join(
-        tok.string.encode("utf-8")
-        for i, tok in enumerate(tokens)
-        if tok.type == tokenize.STRING and not _is_statement(tokens, i)
-    )
-
-
-def _is_statement(tokens: list[tokenize.TokenInfo], i: int) -> bool:
-    """Whether ``tokens[i]`` is a statement on its own (a docstring)."""
-    # ENDMARKER always closes the stream, so ``i + 1`` exists.
-    if tokens[i - 1].type not in _STATEMENT_START:
-        return False
-    return tokens[i + 1].type in (tokenize.NEWLINE, tokenize.ENDMARKER)
+        return {t for t in owners if defines_top_level(members.get(t, b""), name)}, name

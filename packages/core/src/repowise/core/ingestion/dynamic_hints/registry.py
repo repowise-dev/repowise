@@ -84,6 +84,7 @@ class HintRegistry:
         *,
         dotnet_index: object | None = None,
         file_paths: Iterable[str] | None = None,
+        source_map: dict[str, bytes] | None = None,
     ) -> list[DynamicEdge]:
         """Run every registered extractor and merge their edges.
 
@@ -106,6 +107,9 @@ class HintRegistry:
         (``*.Designer.cs``) can no longer produce edges to files the index
         does not contain. Omitted (tests, standalone use), the registry
         falls back to its own pruned walk.
+
+        *source_map* is ingestion's ``{repo-relative path: raw bytes}``; an
+        extractor that reads whole files takes them from it instead of disk.
         """
         edges: list[DynamicEdge] = []
         if not self._extractors:
@@ -129,6 +133,7 @@ class HintRegistry:
         for ex in self._extractors:
             ex._walk_snapshot = snapshot
             ex._dotnet_index = dotnet_index
+            ex._source_map = source_map
 
         try:
             with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
@@ -148,6 +153,7 @@ class HintRegistry:
             for ex in self._extractors:
                 ex._walk_snapshot = None
                 ex._dotnet_index = None
+                ex._source_map = None
         # Thread-completion order varies run-to-run; sort so downstream graph
         # construction (and therefore the exported KG) stays deterministic.
         edges.sort(key=lambda e: (e.source, e.target, e.edge_type, e.hint_source, e.weight))

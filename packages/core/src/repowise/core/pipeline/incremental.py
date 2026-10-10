@@ -234,6 +234,7 @@ def build_repo_graph(
                 Path(repo_path),
                 dotnet_index=graph_builder.dotnet_index,
                 file_paths=[fi.path for fi in file_infos],
+                source_map=source_map or None,
             )
             graph_builder.add_dynamic_edges(dynamic_edges)
         if dynamic_edges:
