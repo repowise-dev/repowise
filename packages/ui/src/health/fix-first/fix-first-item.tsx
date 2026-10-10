@@ -3,8 +3,9 @@
 /**
  * One Fix-first item: the change to make, where, why, and what it buys.
  *
- * Collapsed, it is two compact lines: tier and title, then file:line and gain.
- * Expanded, it adds the why, effort, confidence and risk, then the work
+ * Collapsed, it is two compact lines: tier and title, then file:line and gain;
+ * a due item adds its first step. Expanded, it adds the why, effort,
+ * confidence and risk, then the work
  * itself: the steps in order with which ones are mechanical, how to
  * verify the change, the history around the file (muted, never ranked on), and
  * the actions. Every word and number is the payload's; this component chooses
@@ -13,9 +14,11 @@
 
 import { useState, type ElementType } from "react";
 import { ChevronDown } from "lucide-react";
-import type { FixItem, FixTier } from "@repowise-dev/types/fix-first";
+import type { FixItem, FixStep, FixTier } from "@repowise-dev/types/fix-first";
 import type { OpportunityStatus } from "@repowise-dev/types/refactoring";
 
+import { getLanguageFromPath } from "../../c4/panels/CodeViewer";
+import { HighlightedCodeBlock } from "../../shared/code-block";
 import { CommandLine } from "../../shared/command-line";
 import { AiPromptButton } from "../ai-prompt-button";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, STATUS_LABEL } from "../labels";
@@ -74,6 +77,7 @@ export function FixFirstItem({
   const location = fixLocation(item);
   const href = fileHref?.(item.target.file_path, item.target.line_start);
   const reason = tierReason(item);
+  const firstStep = item.tier !== "later" ? item.action.steps[0] : undefined;
 
   return (
     <li className="py-1.5">
@@ -122,6 +126,12 @@ export function FixFirstItem({
               Gain <span className="text-[var(--color-text-secondary)]">{item.gain.text}</span>
             </span>
           </p>
+          {/* Open, the steps below say it in full. */}
+          {firstStep && !expanded ? (
+            <p className="mt-0.5 min-w-0 text-xs leading-4 text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
+              First step <span className="text-[var(--color-text-secondary)]">{firstStep.text}</span>
+            </p>
+          ) : null}
 
           {expanded ? (
             <div id={panelId} className="mt-3 mb-2 flex flex-col gap-4">
@@ -224,6 +234,7 @@ function Steps({
                     <span className="text-[var(--color-text-tertiary)]">{where}</span>
                   )}
                 </p>
+                <StepCode step={step} />
               </div>
             </li>
           );
@@ -238,15 +249,45 @@ function Steps({
   );
 }
 
+/** What a step writes (a helper's header, the call that replaces the span)
+ * and the command that checks it when it differs from the item's. */
+function StepCode({ step }: { step: FixStep }) {
+  const language = getLanguageFromPath(step.file_path);
+  return (
+    <>
+      {step.signature ? (
+        <HighlightedCodeBlock
+          code={step.signature}
+          language={language}
+          label="New helper"
+          compact
+          className="mb-0 mt-2"
+        />
+      ) : null}
+      {step.call ? (
+        <HighlightedCodeBlock
+          code={step.call}
+          language={language}
+          label="Call"
+          compact
+          className="mb-0 mt-2"
+        />
+      ) : null}
+      {step.command ? <CommandLine command={step.command} /> : null}
+    </>
+  );
+}
+
 /** How to know the change held: the tests that guard it and the command to run them. */
 export function FixVerify({ item }: { item: Pick<FixItem, "verify"> }) {
-  const { tests, tests_total, command } = item.verify;
+  const { tests, tests_total, command, prerequisite } = item.verify;
   return (
     <section>
       <h4 className={MICRO}>Verify</h4>
       {tests.length === 0 ? (
         <p className="mt-1.5 text-xs text-[var(--color-text-secondary)]">
-          No guarding tests found. Write one that pins the current behaviour before changing it.
+          {prerequisite ??
+            "No guarding tests found. Write one that pins the current behaviour before changing it."}
         </p>
       ) : (
         <>

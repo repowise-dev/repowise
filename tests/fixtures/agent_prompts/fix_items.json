@@ -135,6 +135,50 @@
         },
         "why_ranked": []
       }
+    },
+    {
+      "name": "helper_texts_and_prerequisite",
+      "repo_name": "r",
+      "item": {
+        "id": "fix1_00000000000000000004",
+        "rank": 0,
+        "tier": "now",
+        "kind": "refactor",
+        "improves": "maintainability",
+        "title": "Extract lines 20-35 of run into <name>",
+        "target": {"file_path": "src/core.py", "symbol": "run", "line_start": 20, "line_end": 60},
+        "why": "run has many independent paths through it.",
+        "facts": [],
+        "action": {
+          "summary": "1 step, 0 mechanical",
+          "steps": [
+            {"order": 1, "text": "Extract lines 20-35 of run into <name>(rows) -> total; name it for what the lines do", "file_path": "src/core.py", "line": 20, "mechanical": false, "signature": "def _<name>(rows):", "call": "total = _<name>(rows)", "command": "pytest tests/test_core.py"}
+          ],
+          "steps_total": 1,
+          "mechanical": false
+        },
+        "gain": {"kind": "health_points", "value": 1.0, "text": "+1.0 health on this file"},
+        "effort": {"bucket": "S", "basis": "sized by the stored plan"},
+        "risk": {"level": "low", "dependents": null, "files_touched": 1, "text": "Touches 1 file."},
+        "confidence": {"level": "medium", "reason": "0 of 1 step proven mechanical by the plan"},
+        "verify": {
+          "tests": [],
+          "tests_total": 0,
+          "command": null,
+          "basis": "unknown",
+          "prerequisite": "No test reaches this; add a characterization test for `run` before the edit."
+        },
+        "context": [],
+        "source": {"opportunity_id": "refop2_core", "plan_ids": [], "finding_ids": []},
+        "next_call": {
+          "purpose": "The full plan",
+          "mcp": "get_health()",
+          "cli": null,
+          "tool": "get_health",
+          "arguments": {}
+        },
+        "why_ranked": []
+      }
     }
   ]
 }

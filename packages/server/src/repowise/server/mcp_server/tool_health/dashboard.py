@@ -10,7 +10,7 @@ from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.server.mcp_server.tool_health.loading import HealthData
 from repowise.server.mcp_server.tool_health.paging import Pager
-from repowise.server.mcp_server.tool_health.request import HealthRequest
+from repowise.server.mcp_server.tool_health.request import FIX_FIRST_CAP, HealthRequest
 from repowise.server.mcp_server.tool_health.serialize import _serialize_finding, _serialize_metric
 from repowise.server.mcp_server.tool_health.summary import _compute_kpis, _gap_analysis
 from repowise.server.mcp_server.tool_health.targeted import ModeTotals
@@ -112,12 +112,18 @@ def _fix_first_block(data: HealthData, req: HealthRequest, pager: Pager) -> dict
     ``items_total`` is the eligible queue the items were cut from, starting at
     ``cursor``. Only the lead carries ``next_call``: it is the bulk of a compact
     item, every item's is one ``fix_id`` call away, and without it a named page
-    of 25 fits the default budget.
+    of 25 fits the default budget. A due item carries its ``first_step`` and
+    ``verify`` within the first :data:`FIX_FIRST_CAP` of a page, for the same
+    reason; the lead's are on ``lead`` only, not repeated in ``items``.
     """
     page, full = data.fix_first, data.fix_first_full
     block = page.as_dict(compact=True)
-    for item in block["items"]:
+    lead_id = full.lead.id if full.lead is not None else None
+    for at, item in enumerate(block["items"]):
         item.pop("next_call", None)
+        if item["id"] == lead_id or at >= FIX_FIRST_CAP:
+            item.pop("first_step", None)
+            item.pop("verify", None)
     # Zero reasons say nothing an agent reads; ``counts.excluded`` omits them too.
     totals = block["totals"]
     totals["excluded"] = {reason: n for reason, n in totals["excluded"].items() if n}

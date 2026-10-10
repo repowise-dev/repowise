@@ -87,6 +87,7 @@ from repowise.core.analysis.health.queue.value import (
     tier,
     worth,
 )
+from repowise.core.analysis.health.refactoring.render import NAME_PLACEHOLDER
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.scoring import biomarker_dimension
 from repowise.core.analysis.health.suggestions import suggestion_for
@@ -223,7 +224,25 @@ def _verify(profile: Mapping[str, Any] | None) -> FixVerify:
         int(profile.get("total") or len(tests)),
         commands[0] if commands else None,
         basis if basis in ("measured", "inferred") else "unknown",
+        None if tests else profile.get("prerequisite"),
     )
+
+
+def _step_command(check: Mapping[str, Any] | None, item_command: str | None) -> str | None:
+    """A step's own command (a validation profile, or a plan step's ``verify``),
+    kept only when it differs from the item's."""
+    commands = (check or {}).get("commands") or []
+    return commands[0] if commands and commands[0] != item_command else None
+
+
+def _helper_code(body: Mapping[str, Any]) -> dict[str, str | None]:
+    """An Extract Method plan's rendered helper header and call, when it wrote them."""
+    symbol = body.get("new_symbol") or {}
+    site = body.get("call_site") or {}
+    return {
+        "signature": symbol.get("signature_text") if isinstance(symbol, dict) else None,
+        "call": site.get("new_text") if isinstance(site, dict) else None,
+    }
 
 
 class _Files:
@@ -336,7 +355,13 @@ class _Files:
                 list(body.get("returns") or []),
                 is_async=bool(body.get("needs_async", False)),
             )
-            return FixStep(1, f"Extract lines {start}-{end} of {tail} into {into}", path, start)
+            return FixStep(
+                1,
+                f"Extract lines {start}-{end} of {tail} into {into}",
+                path,
+                start,
+                **_helper_code(body),
+            )
         shape = self.shape(path, function)
         start, end = shape.get("deep_start"), shape.get("deep_end")
         if start and end:
@@ -471,12 +496,16 @@ def _span(plan: Any) -> tuple[int | None, int | None]:
     return None, None
 
 
-def _refactor_step(order: int, step: Mapping[str, Any], plan: Any) -> FixStep:
+def _refactor_step(
+    order: int, step: Mapping[str, Any], plan: Any, command: str | None = None
+) -> FixStep:
     kind = step.get("refactoring_type") or ""
     path = step.get("file_path") or ""
     sym = text.short_symbol(step.get("target_symbol")) or text.basename(path)
     start, end = _span(plan)
+    code: dict[str, str | None] = {}
     if kind == "extract_method":
+        code = _helper_code(_plan_body(plan))
         body = _plan_body(plan)
         into = text.signature(
             body.get("suggested_name"),
@@ -524,7 +553,9 @@ def _refactor_step(order: int, step: Mapping[str, Any], plan: Any) -> FixStep:
     else:
         line_text = f"Apply the {text.humanize(kind)} step to {sym}"
     mechanical = (step.get("applicability") or {}).get("classification") == "mechanical"
-    return FixStep(order, line_text, path, start or step.get("line_start"), mechanical)
+    return FixStep(
+        order, line_text, path, start or step.get("line_start"), mechanical, **code, command=command
+    )
 
 
 def _uncut_cycle_text(path: str, plan: Any) -> str:
@@ -643,7 +674,7 @@ def _refactor_unit(
                 f"Start breaking up {sym} ({text.size_brief(shape)}): first lift lines "
                 f"{start}-{end}"
             )
-            into = f" into {body.get('suggested_name') or 'a helper'}"
+            into = f" into {body.get('suggested_name') or NAME_PLACEHOLDER}"
             if len(title + into) <= text.TITLE_MAX:
                 title += into
         else:
@@ -657,13 +688,24 @@ def _refactor_unit(
                 file=text.basename(path),
                 start=start,
                 end=end,
-                name=body.get("suggested_name") or "a helper",
+                name=body.get("suggested_name") or NAME_PLACEHOLDER,
             )
             if len(steps) > 1:
                 title += f" (+{text.plural(len(steps) - 1, 'more step')})"
         dependents = deps
+        profiles = {p.get("id"): p for p in details.get("validation_profiles") or []}
+        profile = profiles.get(lead.get("validation_profile_id")) or next(
+            iter(profiles.values()), None
+        )
+        verify = _verify(profile)
         fix_steps = tuple(
-            _refactor_step(i + 1, s, plans.get(s.get("plan_id"))) for i, s in enumerate(steps)
+            _refactor_step(
+                i + 1,
+                s,
+                plans.get(s.get("plan_id")),
+                _step_command(profiles.get(s.get("validation_profile_id")), verify.command),
+            )
+            for i, s in enumerate(steps)
         )
         size_text = text.size_line(shape)
         facts = [
@@ -676,10 +718,6 @@ def _refactor_unit(
         nloc = files.nloc(path)
         if nloc:
             facts.append(FixFact("file size", f"{nloc} lines"))
-        profiles = {p.get("id"): p for p in details.get("validation_profiles") or []}
-        profile = profiles.get(lead.get("validation_profile_id")) or next(
-            iter(profiles.values()), None
-        )
         plan_ids = tuple(s.get("plan_id") for s in steps if s.get("plan_id"))
         return {
             "title": text.clip(title),
@@ -713,7 +751,7 @@ def _refactor_unit(
                 f"{mechanical_n} of {text.plural(len(steps), 'step')} proven mechanical "
                 "by the plan",
             ),
-            "verify": _verify(profile),
+            "verify": verify,
             "context": files.context(path),
             "source": FixSource(
                 field(row, "opportunity_id"),
@@ -893,6 +931,7 @@ def _perf_unit(
         sinks = sorted({field(r, "terminal_sink") for r in rows if field(r, "terminal_sink")})
         if len(sinks) > 1:
             facts.append(FixFact("sinks this fix covers", str(len(sinks))))
+        verify = _verify(plan.get("validation"))
         steps = tuple(
             FixStep(
                 int(s.get("order") or i + 1),
@@ -900,6 +939,7 @@ def _perf_unit(
                 s.get("file_path") or path,
                 s.get("line") or lines.get(s.get("symbol") or ""),
                 s.get("applicability") == "mechanical",
+                command=_step_command(s.get("verify"), verify.command),
             )
             for i, s in enumerate(plan_steps)
         )
@@ -938,7 +978,7 @@ def _perf_unit(
                 details.get("fix_rationale")
                 or f"{text.humanize(field(lead, 'actionability_state'))} plan",
             ),
-            "verify": _verify(plan.get("validation")),
+            "verify": verify,
             "context": files.context(path),
             "source": FixSource(field(lead, "opportunity_id")),
             "next_call": ActionCommand.call(

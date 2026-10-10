@@ -281,3 +281,88 @@ def test_fix_first_counts_only_in_its_own_reasons() -> None:
 def _step_kind(kind: str) -> dict:
     return {"plan_id": "refac2_mv", "refactoring_type": kind, "target_symbol": "src/move.py::run",
             "file_path": "src/move.py", "line_start": 5}
+
+
+def test_a_due_item_carries_its_first_step_and_verify_inline() -> None:
+    by_kind = {i.kind: i for i in _build().items}
+    refactor, perf, finding = by_kind["refactor"], by_kind["perf_fix"], by_kind["finding"]
+    assert refactor.compact()["first_step"] == {
+        "action": "Extract lines 20-35 of run into sum_rows(rows, limit) -> total",
+        "line": 20,
+    }
+    assert refactor.compact()["verify"] == {"command": "pytest tests/test_core_0.py"}
+    assert perf.compact()["first_step"] == {
+        "action": "Collect the keys before the loop (load_all)",
+        "line": 12,
+    }
+    assert "verify" not in perf.compact()  # the plan names no command
+    # A later item is a list row only; its plan is one lookup away.
+    assert finding.tier == "later"
+    assert not {"first_step", "verify"} & set(finding.compact())
+
+
+def test_a_step_names_its_own_command_only_when_it_differs() -> None:
+    perf = _perf("perf2_a", "s")
+    perf["details"]["plan"] = {
+        **perf["details"]["plan"],
+        "validation": {"basis": "inferred", "total": 2, "tests": ["tests/test_a.py"],
+                       "commands": ["pytest tests/test_a.py"]},
+        "steps": [
+            {"order": 1, "action": "Collect the keys before the loop", "file_path": "src/repo.py",
+             "line": 12, "applicability": "judgment",
+             "verify": {"commands": ["pytest tests/test_b.py"], "tests": ["tests/test_b.py"],
+                        "coverage": "inferred"}},
+            {"order": 2, "action": "Fetch them in one call", "file_path": "src/repo.py",
+             "line": 14, "applicability": "judgment"},
+        ],
+    }
+    item = next(i for i in _build(performance=[perf]).items if i.kind == "perf_fix")
+    assert item.verify.command == "pytest tests/test_a.py"
+    assert [s.command for s in item.action.steps] == ["pytest tests/test_b.py", None]
+    assert item.compact()["verify"] == {"command": "pytest tests/test_b.py"}
+
+
+def test_an_extract_method_step_carries_the_helper_header_and_call() -> None:
+    plans = copy.deepcopy(PLANS)
+    plans[0]["plan"]["new_symbol"] = {"signature_text": "def _sum_rows(rows, limit):"}
+    plans[0]["plan"]["call_site"] = {"replace_span": {"start": 20, "end": 35},
+                                     "new_text": "total = _sum_rows(rows, limit)"}
+    core = next(i for i in _build(plans=plans).items if i.kind == "refactor")
+    first, second = core.action.steps
+    assert (first.signature, first.call) == ("def _sum_rows(rows, limit):",
+                                             "total = _sum_rows(rows, limit)")
+    assert (second.signature, second.call) == (None, None)
+    assert core.compact()["first_step"]["text"] == "def _sum_rows(rows, limit):"
+    # A finding with no plan of its own takes the same texts from the span it starts at.
+    plans[0].update(file_path="src/core.py", target_symbol="src/core.py::run")
+    lone = _build(plans=plans, refactoring=[], performance=[]).lead
+    assert lone.action.steps[0].signature == "def _sum_rows(rows, limit):"
+
+
+def test_an_unnamed_helper_reads_as_the_placeholder_in_titles() -> None:
+    plans = copy.deepcopy(PLANS)
+    del plans[0]["plan"]["suggested_name"]
+    core = next(i for i in _build(plans=plans).items if i.kind == "refactor")
+    assert core.title == "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 into <name>"
+    small = [{**FINDINGS[1], "details": {"ccn": 12, "nloc": 50}}]
+    row = copy.deepcopy(REFACTORING[0])
+    row["details"]["steps"] = row["details"]["steps"][:1]
+    core = next(i for i in _build(plans=plans, findings=small, refactoring=[row]).items
+                if i.kind == "refactor")
+    assert core.title == "Extract lines 20-35 of run into <name>"
+
+
+def test_an_item_no_test_reaches_says_to_pin_its_behaviour_first() -> None:
+    first = "No test reaches this; add a characterization test for `run` before the edit."
+    row = copy.deepcopy(REFACTORING[0])
+    row["details"]["validation_profiles"] = [
+        {"id": "validation_1", "basis": "unknown", "total": 0, "tests": [], "commands": [],
+         "prerequisite": first}
+    ]
+    core = next(i for i in _build(refactoring=[row]).items if i.kind == "refactor")
+    assert (core.verify.tests, core.verify.command, core.verify.prerequisite) == ((), None, first)
+    assert core.compact()["verify"] == {"prerequisite": first}
+    # A finding the validate callback found no test for takes the same step.
+    queue = _build(validate=lambda *_: {"prerequisite": first})
+    walk = next(i for i in queue.items if i.target.file_path == "src/plain.py")
+    assert (walk.verify.basis, walk.verify.prerequisite) == ("unknown", first)

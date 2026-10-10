@@ -106,6 +106,12 @@ class FixStep:
     file_path: str
     line: int | None = None
     mechanical: bool = False
+    #: An Extract Method helper's header and the statement that replaces the
+    #: span, in the file's language, when the plan wrote them.
+    signature: str | None = None
+    call: str | None = None
+    #: The command that checks this step, when it differs from the item's.
+    command: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +161,8 @@ class FixVerify:
     tests_total: int
     command: str | None
     basis: FixFactBasis
+    #: What to do before the edit when no test reaches it.
+    prerequisite: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,8 +218,31 @@ class FixItem:
             "gain": self.gain.text,
             "effort": self.effort.bucket,
             "confidence": self.confidence.level,
+            **(self._inline_plan() if self.tier in DUE_TIERS else {}),
             "next_call": self.next_call.as_dict(),
         }
+
+    def _inline_plan(self) -> dict[str, Any]:
+        """A due item's first edit and how to check it, so it can be started
+        without the lookup. ``file`` only when the step edits another file,
+        ``line`` only when it names one."""
+        out: dict[str, Any] = {}
+        step = self.action.steps[0] if self.action.steps else None
+        if step is not None:
+            first: dict[str, Any] = {"action": step.text}
+            if step.line is not None:
+                first["line"] = step.line
+            if step.file_path != self.target.file_path:
+                first["file"] = step.file_path
+            if step.signature:
+                first["text"] = step.signature
+            out["first_step"] = first
+        command = (step.command if step else None) or self.verify.command
+        if command:
+            out["verify"] = {"command": command}
+        elif self.verify.prerequisite:
+            out["verify"] = {"prerequisite": self.verify.prerequisite}
+        return out
 
 
 def _exclusions() -> dict[str, int]:

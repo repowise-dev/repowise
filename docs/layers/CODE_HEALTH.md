@@ -121,6 +121,8 @@ worth doing.
 | `next` | Worth doing, needs judgment |
 | `later` | Real but can wait; the reason is shown |
 
+A `now` or `next` item shows its first step and the command that checks it without opening it, on the card and in `get_health()`. When no test reaches the code, Verify says to add a characterization test first. An Extract Method step shows the helper's header and the call that replaces the lines, ready to copy.
+
 Findings, performance causes, refactoring plans and Fix first items are counted the
 same way everywhere: open in the inventory, in scope, eligible, due (tier `now` or
 `next`) and shown, with every exclusion named by its reason. The numbers on the

@@ -341,7 +341,7 @@ Code-health scores and findings from the stored analysis, across defect risk, ma
 
 Only one of `fix_id`, `finding_id`, `plan_id`, `opportunity_id` per call; passing two returns `mode: "conflict"`.
 
-**Key return fields:** `mode`, `fix_first` (`lead` with its `next_call`, up to five `items`, `counts`, `totals`), `kpis`, `gap_analysis`, `worst_files`, `high_leverage_files` (ranked by `weighted_deficit`), `top_findings`, `unresolved`, and the opt-in blocks you named. `_meta.health_analysis` says whether stored analysis exists and which commit it describes.
+**Key return fields:** `mode`, `fix_first` (`lead` with its `next_call`, up to five `items`, `counts`, `totals`; a due item carries its `first_step` and `verify` command, so it can be started without a `fix_id` call), `kpis`, `gap_analysis`, `worst_files`, `high_leverage_files` (ranked by `weighted_deficit`), `top_findings`, `unresolved`, and the opt-in blocks you named. `_meta.health_analysis` says whether stored analysis exists and which commit it describes.
 
 The response is bounded. Pair `include` with `only` to keep one block, e.g. `get_health(include=["refactoring"], only=["refactoring_opportunities"])`.
 

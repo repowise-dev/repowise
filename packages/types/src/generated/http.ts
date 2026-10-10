@@ -1650,6 +1650,9 @@ export interface FixStep {
   file_path: string;
   line?: number | null;
   mechanical?: boolean;
+  signature?: string | null;
+  call?: string | null;
+  command?: string | null;
 }
 
 export interface FixTarget {
@@ -1677,6 +1680,7 @@ export interface FixVerify {
   tests_total: number;
   command: string | null;
   basis: "measured" | "inferred" | "unknown";
+  prerequisite?: string | null;
 }
 
 /** Optional per-call provider/model overrides, as chat accepts. */

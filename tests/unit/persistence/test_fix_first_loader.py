@@ -20,6 +20,15 @@ from tests.unit.health.fix_first_rows import FINDINGS, METRICS, PERFORMANCE, PLA
 from tests.unit.persistence.helpers import insert_repo
 
 
+def no_tests(path, function, start, end) -> dict:
+    """What the loader's test lookup answers for a finding no seeded test reaches."""
+    return {
+        "prerequisite": (
+            f"No test reaches this; add a characterization test for `{function}` before the edit."
+        )
+    }
+
+
 def _with_json(row: dict, name: str) -> dict:
     out = {k: v for k, v in row.items() if k != name}
     out[f"{name}_json"] = json.dumps(row.get(name) or {})
@@ -77,6 +86,7 @@ async def test_loader_matches_the_builder_over_rows(async_session) -> None:
         refactoring=REFACTORING,
         performance=PERFORMANCE,
         plans=PLANS,
+        validate=no_tests,
     )
     assert loaded == built
     # The seed exercises every kind, so equality is not over an empty queue.
@@ -130,6 +140,7 @@ async def test_loader_reads_the_stored_code_origin(async_session) -> None:
         refactoring=REFACTORING,
         performance=PERFORMANCE,
         plans=PLANS,
+        validate=no_tests,
     )
     assert loaded.totals.excluded["docs_example"] == 1
     # The update moved the metric's ``updated_at``, so only the basis differs.
@@ -180,6 +191,7 @@ async def test_loader_reads_verified_duplicates_as_a_fact(async_session) -> None
         refactoring=REFACTORING,
         performance=PERFORMANCE,
         plans=[*PLANS, helper],
+        validate=no_tests,
     )
     loaded = await load_fix_first(async_session, rid)
     assert "src/core.py" in {i.target.file_path for i in loaded.items}
@@ -218,6 +230,7 @@ async def test_loader_reads_extractions_for_a_finding_without_a_plan(async_sessi
         refactoring=REFACTORING,
         performance=PERFORMANCE,
         plans=[*PLANS, extraction],
+        validate=no_tests,
     )
     assert (loaded.items, loaded.totals) == (built.items, built.totals)
 
@@ -237,7 +250,7 @@ async def test_every_limit_and_id_is_a_slice_of_one_build(async_session, monkeyp
     monkeypatch.setattr(loader, "_build", counting)
     loader.clear_fix_first_cache()
     rows = {"metrics": METRICS, "findings": FINDINGS, "refactoring": REFACTORING,
-            "performance": PERFORMANCE, "plans": PLANS}
+            "performance": PERFORMANCE, "plans": PLANS, "validate": no_tests}
 
     full = await load_fix_first(async_session, rid, limit=None)
     assert full == build_fix_first(**rows, limit=None)
@@ -283,7 +296,11 @@ async def test_a_finding_item_with_no_tests_stays_unknown(async_session) -> None
     rid = await seed_fix_first(async_session)
     loaded = await load_fix_first(async_session, rid)
     walk = next(i for i in loaded.items if i.target.file_path == "src/plain.py")
-    assert (walk.verify.tests, walk.verify.basis) == ((), "unknown")
+    assert (walk.verify.tests, walk.verify.basis, walk.verify.command) == ((), "unknown", None)
+    # The step to take before the edit, since no test pins today's behaviour.
+    assert walk.verify.prerequisite == (
+        "No test reaches this; add a characterization test for `walk` before the edit."
+    )
 
 
 async def test_loader_counts_dormant_causes_and_dead_code(async_session) -> None:
@@ -344,7 +361,8 @@ async def test_an_unverified_read_skips_the_test_lookup(async_session, monkeypat
     assert calls == 0
     assert [i.id for i in bare.items] == [i.id for i in (await load_fix_first(async_session, rid)).items]
     assert calls == 1
-    assert (await load_fix_first(async_session, rid, limit=None, verify=False)).items == (
-        await load_fix_first(async_session, rid, limit=None)
-    ).items
+    unverified = await load_fix_first(async_session, rid, limit=None, verify=False)
+    assert [i.id for i in unverified.items] == [
+        i.id for i in (await load_fix_first(async_session, rid, limit=None)).items
+    ]
     assert calls == 1

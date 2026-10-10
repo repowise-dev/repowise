@@ -1604,6 +1604,53 @@ async def test_fix_first_named_page_honours_limit_and_cursor(setup_mcp, health_d
 
 
 @pytest.mark.asyncio
+async def test_due_items_carry_their_first_step_once_and_only_in_the_head(
+    setup_mcp, health_data, monkeypatch
+):
+    """A due item's first step and verify ride on the compact item, the lead's
+    on ``lead`` only, and a page past the dashboard's five leaves the rest to
+    ``fix_id``."""
+    from dataclasses import replace
+
+    from repowise.core.analysis.health.fix_first.model import FixStep
+    from repowise.server.mcp_server import get_health
+    from repowise.server.mcp_server.tool_health import loading
+
+    real = loading.load_fix_first
+
+    async def due(session, repository_id, **kwargs):
+        queue = await real(session, repository_id, **kwargs)
+        head = queue.items[0]
+        step = FixStep(1, "Extract lines 5-9 of run into _load(path)", "src/other.py", 5)
+        items = tuple(
+            replace(
+                head,
+                id=f"fix1_{index:020d}",
+                rank=index,
+                tier="next",
+                action=replace(head.action, steps=(step,)),
+                verify=replace(head.verify, command="pytest tests/test_run.py"),
+            )
+            for index in range(8)
+        )
+        return replace(queue, items=items, totals=replace(queue.totals, eligible=8, shown=8))
+
+    monkeypatch.setattr(loading, "load_fix_first", due)
+
+    block = (await get_health())["fix_first"]
+    assert block["lead"]["first_step"] == {
+        "action": "Extract lines 5-9 of run into _load(path)",
+        "line": 5,
+        "file": "src/other.py",
+    }
+    assert block["lead"]["verify"] == {"command": "pytest tests/test_run.py"}
+    assert not {"first_step", "verify"} & set(block["items"][0])
+    assert all("first_step" in item and "verify" in item for item in block["items"][1:])
+    page = (await get_health(only=["fix_first"], limit=25))["fix_first"]["items"]
+    assert [("first_step" in item) for item in page] == [False, *[True] * 4, *[False] * 3]
+
+
+@pytest.mark.asyncio
 async def test_fix_first_page_grows_only_when_limit_is_passed(
     setup_mcp, health_data, monkeypatch
 ):

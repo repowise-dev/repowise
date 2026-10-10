@@ -148,6 +148,37 @@ describe("Fix first items", () => {
     expect(screen.getByText(/No guarding tests found/)).toBeTruthy();
   });
 
+  it("shows a due item's first step on the closed row, and the plan's own words when open", () => {
+    const first = "No test reaches this; add a characterization test for `run` before the edit.";
+    const step = {
+      ...REFACTOR.action.steps[0]!,
+      signature: "def _compute_info(repo_path):",
+      call: "info = _compute_info(repo_path)",
+      command: "pytest tests/unit/cli/test_repo_scanner.py",
+    };
+    const item: FixItem = {
+      ...REFACTOR,
+      action: { ...REFACTOR.action, steps: [step] },
+      verify: { tests: [], tests_total: 0, command: null, basis: "unknown", prerequisite: first },
+    };
+    renderList({ queue: { ...FIX_FIRST_QUEUE, items: [item], lead: item } });
+    expect(screen.getByText(step.text)).toBeTruthy();
+    openRow(item);
+    // Open, the line gives way to the step itself, with what it writes and checks.
+    expect(screen.getAllByText(step.text).length).toBe(1);
+    expect(screen.getByText("New helper")).toBeTruthy();
+    expect(screen.getByText("info = _compute_info(repo_path)")).toBeTruthy();
+    expect(screen.getByText(step.command)).toBeTruthy();
+    expect(screen.getByText(first)).toBeTruthy();
+  });
+
+  it("keeps a later item's closed row to two lines", () => {
+    const later: FixItem = { ...FINDING, tier: "later" };
+    renderList({ queue: { ...FIX_FIRST_QUEUE, items: [later], lead: later } });
+    expect(screen.queryByText("First step")).toBeNull();
+    expect(screen.queryByText(later.action.steps[0]!.text)).toBeNull();
+  });
+
   it("names the plan by its unit, and offers none for a bare finding", () => {
     expect(fixPlanLabel(REFACTOR)).toBe("Open the refactoring plan");
     expect(fixPlanLabel(PERF)).toBe("Open the performance fix");

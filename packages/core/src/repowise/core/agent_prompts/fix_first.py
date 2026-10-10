@@ -39,7 +39,9 @@ def render_verify_lines(item: Mapping[str, Any]) -> str:
     verify = item["verify"]
     tests = verify["tests"]
     if not tests:
-        return "No guarding tests found. Write a test that pins the current behaviour before you change anything."
+        return verify.get("prerequisite") or (
+            "No guarding tests found. Write a test that pins the current behaviour before you change anything."
+        )
     listed = "\n".join(
         f"- `{t['path']}`" + (f": {t['reason']}" if t.get("reason") else "") for t in tests
     )
@@ -57,7 +59,12 @@ def _step(s: Mapping[str, Any]) -> str:
     line = s.get("line")
     loc = f"{s['file_path']}{f':{line}' if line else ''}"
     tag = " [mechanical]" if s.get("mechanical") else " [judgment]"
-    return f"{s['order']}. {s['text']} (`{loc}`){tag}"
+    extra = [
+        f"   {label}: `{s[key]}`"
+        for key, label in (("signature", "Helper"), ("call", "Call"), ("command", "Check"))
+        if s.get(key)
+    ]
+    return "\n".join([f"{s['order']}. {s['text']} (`{loc}`){tag}", *extra])
 
 
 def render_fix_item(item: Mapping[str, Any], flavor: str = "generic", repo_name: str | None = None) -> str:

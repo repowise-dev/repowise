@@ -69,6 +69,21 @@ export interface FixStep {
   file_path: string;
   line: number | null;
   mechanical: boolean;
+  /** An Extract Method helper's header and the statement that replaces the span. */
+  signature?: string | null;
+  call?: string | null;
+  /** The command that checks this step, when it differs from the item's. */
+  command?: string | null;
+}
+
+/** A due item's first edit, inline in the compact projection. */
+export interface FixFirstStep {
+  action: string;
+  line?: number;
+  /** Only when the step edits a file other than the item's target. */
+  file?: string;
+  /** The helper header the step writes, when the plan wrote one. */
+  text?: string;
 }
 
 export interface FixItem {
@@ -94,6 +109,8 @@ export interface FixItem {
     tests_total: number;
     command: string | null;
     basis: FixFactBasis;
+    /** What to do before the edit when no test reaches it. */
+    prerequisite?: string | null;
   };
   /** History signals: shown beside the item, never ranked on. */
   context: { label: string; value: string }[];
@@ -116,6 +133,9 @@ export interface FixItemCompact {
   gain: string;
   effort: FixEffort;
   confidence: FixLevel;
+  /** Due items only (tier `now` or `next`). */
+  first_step?: FixFirstStep;
+  verify?: { command?: string; prerequisite?: string };
   next_call: ActionCommand;
 }
 
