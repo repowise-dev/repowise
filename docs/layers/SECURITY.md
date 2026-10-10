@@ -193,6 +193,14 @@ lists. There is no next-line or whole-file form. A silenced finding never fails
 the gate and is still reported as suppressed. Exact rules are in the
 [CLI reference](../reference/CLI_REFERENCE.md#repowise-security-check-revspec).
 
+The scanner also honours detect-secrets comments: `# pragma: allowlist secret`
+on the finding's line, or `# pragma: allowlist nextline secret` on the line
+above it (`//` and `/*` comments work too). Unlike the Repowise gate-only
+marker, allowlisted secret findings are excluded from the stored scan and
+the gate; they do not appear in the gate's suppressed count. Non-secret
+findings on the same line still report. A marker inside a string does not
+silence a finding.
+
 ### Baselines
 
 `--write-baseline FILE` records the change's findings in a committed JSON file

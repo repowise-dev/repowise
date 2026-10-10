@@ -100,6 +100,32 @@ class TestScanFile:
         assert findings == []
 
     @pytest.mark.parametrize(
+        "allowed",
+        [
+            'password = "actualcredential123"  # pragma: allowlist secret\n',
+            '# pragma: allowlist nextline secret\npassword = "actualcredential123"\n',
+        ],
+    )
+    def test_detect_secrets_pragmas_exclude_findings_before_storage(self, allowed: str) -> None:
+        source = allowed + 'password = "anothercredential456"\n'
+        findings = scan_source("config.py", source)
+        assert [(f["kind"], f["line"]) for f in findings] == [
+            ("hardcoded_password", len(allowed.splitlines()) + 1)
+        ]
+
+    def test_detect_secrets_pragma_inside_a_string_does_not_allowlist(self) -> None:
+        source = 'password = "actualcredential123 # pragma: allowlist secret"\n'
+        assert [(f["kind"], f["line"]) for f in scan_source("config.py", source)] == [
+            ("hardcoded_password", 1)
+        ]
+
+    def test_detect_secrets_pragma_does_not_hide_non_secret_calls(self) -> None:
+        source = 'password = "actualcredential123"; eval(payload)  # pragma: allowlist secret\n'
+        assert [(f["kind"], f["line"]) for f in scan_source("config.py", source)] == [
+            ("eval_call", 1)
+        ]
+
+    @pytest.mark.parametrize(
         ("source", "expected"),
         [
             ("eval(payload)\n", {"eval_call"}),

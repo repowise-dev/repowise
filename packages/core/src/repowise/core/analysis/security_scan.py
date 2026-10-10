@@ -41,7 +41,31 @@ logger = logging.getLogger(__name__)
 # the same way ``HEALTH_ANALYZER_VERSION`` forces a full health re-score
 # (#3072). Without this, a scanner fix only ever reaches a file a user
 # happens to edit.
-SECURITY_SCANNER_VERSION = 2
+SECURITY_SCANNER_VERSION = 3
+
+# detect-secrets allows a marker on the finding's line or the line above.
+_ALLOWLIST_SAME_RE = re.compile(r"(?:#|//|/\*)\s*pragma:\s*allowlist\s+secret\b")
+_ALLOWLIST_NEXT_RE = re.compile(
+    r"(?:#|//|/\*)\s*pragma:\s*allowlist\s+nextline\s+secret\b"
+)
+
+
+def _detect_secrets_allowlisted(
+    lines: list[str], uncommented: list[str], lineno: int
+) -> bool:
+    """Whether a pragma in a comment (not a string) allowlists this line."""
+
+    def marked(index: int, pattern: re.Pattern[str]) -> bool:
+        return any(
+            uncommented[index][m.start() : m.end()] != m.group()
+            for m in pattern.finditer(lines[index])
+        )
+
+    return 0 < lineno <= len(lines) and (
+        marked(lineno - 1, _ALLOWLIST_SAME_RE)
+        or (lineno > 1 and marked(lineno - 2, _ALLOWLIST_NEXT_RE))
+    )
+
 
 _CREDENTIAL_EXACT_PLACEHOLDERS: frozenset[str] = frozenset({"password", "changeit"})
 
@@ -1000,7 +1024,16 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 }
             )
 
-    return findings
+    uncommented = (
+        source_lines(_mask_comments_and_strings(source, strings=False))
+        if "pragma: allowlist" in source
+        else lines
+    )
+    return [
+        f for f in findings
+        if f["kind"] not in SECRET_KINDS
+        or not _detect_secrets_allowlisted(lines, uncommented, f["line"])
+    ]
 
 
 def scan_source_map(
