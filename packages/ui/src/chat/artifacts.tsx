@@ -342,6 +342,11 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
       : null;
   const findings = delta?.top_findings ?? [];
   const tests = data.impacted_tests?.tests_to_run ?? [];
+  // No subset can be vouched for: the list is only what to run first.
+  const runAll =
+    data.impacted_tests?.run_all === true
+      ? (data.impacted_tests.reasons?.[0] ?? data.impacted_tests.summary ?? "")
+      : null;
   const fragile = data.fix_history?.files ?? [];
   const partial = delta ? delta.status !== "available" : false;
 
@@ -402,14 +407,19 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
         {fragile.length > 0 && (
           <ContextItem label="Fragile" value={`${fragile.length} files`} />
         )}
-        {tests.length > 0 && (
-          <ContextItem label="Tests" value={`${tests.length} to run`} />
+        {runAll !== null ? (
+          <ContextItem label="Tests" value="Run every test" />
+        ) : (
+          tests.length > 0 && (
+            <ContextItem label="Tests" value={`${tests.length} to run`} />
+          )
         )}
       </dl>
 
       {(directive?.next_actions?.length ||
         delta ||
         tests.length > 0 ||
+        runAll !== null ||
         fragile.length > 0 ||
         data.classification) && (
         <details>
@@ -427,9 +437,19 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
                 </ul>
               </div>
             ) : null}
+            {runAll !== null && (
+              <p
+                role="status"
+                className="text-[10px] text-[var(--color-warning)]"
+              >
+                Run every test{runAll ? `: ${runAll}` : ""}
+              </p>
+            )}
             {tests.length > 0 && (
               <div>
-                <SectionTitle icon={CheckCircle2}>Tests to run</SectionTitle>
+                <SectionTitle icon={CheckCircle2}>
+                  {runAll !== null ? "Run these first" : "Tests to run"}
+                </SectionTitle>
                 <ul className="space-y-0.5 font-mono text-[10px] text-[var(--color-text-secondary)]">
                   {tests.slice(0, 10).map((test) => (
                     <li key={test} className="truncate" title={test}>

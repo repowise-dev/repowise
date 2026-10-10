@@ -45,7 +45,7 @@ const data: RiskReportArtifactData = {
     findings_emitted: 1,
     scope: { changed: 3, eligible: 3, analyzed: 3, skipped: 0, failed: 0 },
   },
-  impacted_tests: { tests_to_run: ["tests/test_app.py"], status: "map_present" },
+  impacted_tests: { tests_to_run: ["tests/test_app.py"], status: "selected", run_all: false },
 };
 
 describe("change risk artifact", () => {
@@ -135,6 +135,28 @@ describe("change risk artifact", () => {
     expect(status).toHaveTextContent("Compared 2 of 3 changed files");
     expect(screen.getByText("Not established")).toBeInTheDocument();
     expect(screen.queryByText("What this change made worse")).toBeNull();
+  });
+
+  it("says every test must run, and why, when no subset is vouched for", () => {
+    const reason = "package.json changed: build or test configuration can change any test.";
+    render(
+      <RiskReportRenderer
+        data={{
+          ...data,
+          impacted_tests: {
+            status: "run_all",
+            run_all: true,
+            reasons: [reason],
+            tests_to_run: ["tests/test_app.py"],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Run every test")).toBeInTheDocument();
+    expect(screen.getByText(`Run every test: ${reason}`)).toBeInTheDocument();
+    expect(screen.getByText("Run these first")).toBeInTheDocument();
+    expect(screen.queryByText("1 to run")).not.toBeInTheDocument();
   });
 
   it("reports an error with an alert role", () => {

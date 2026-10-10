@@ -320,6 +320,9 @@ carries a discriminator beside the list:
   | `unknown` | The git or index read failed |
   | `config_invalid` | `tests.*` in `.repowise/config.yaml` does not parse |
   | `timeout` | The selection took over 30 seconds; `repowise impacted-tests` gives the same answer |
+  | `busy` | A selection for this repository is still running |
+
+  Every status but `selected` carries `run_all: true`: nothing vouches for a subset.
   | `no_source_line_changes` | No changed source lines to map |
 
 - `get_risk` keeps coverage availability, freshness and map presence explicit

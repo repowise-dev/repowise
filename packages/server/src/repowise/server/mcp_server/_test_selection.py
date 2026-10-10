@@ -11,6 +11,8 @@ each test is in it, and which evidence decided each changed file.
 from __future__ import annotations
 
 import asyncio
+import threading
+from pathlib import Path
 from typing import Any
 
 from repowise.core.analysis.test_selection import Selection, selected_by_change
@@ -25,6 +27,16 @@ _BASIS_LIMIT = 10
 #: minutes on a 2k-test repository); loading the graph once per call is the
 #: upgrade that lifts it.
 SELECTION_TIMEOUT_SECONDS = 30.0
+
+#: What a failed selection tells the reader: it vouches for no subset.
+UNAVAILABLE_REASON = (
+    "The test selection is unavailable, so run every test (or `repowise impacted-tests`)."
+)
+
+#: Repository path -> the cancel flag of a selection still running there. One
+#: at a time per repository: a selection past its budget keeps its threads
+#: until they notice the flag, and a second one would only add to them.
+_IN_FLIGHT: dict[str, threading.Event] = {}
 
 
 class SelectionUnavailableError(Exception):
@@ -51,20 +63,42 @@ async def select_change_tests(
         config = TestSelectionConfig.from_repo_config(load_repo_config(repo_path))
     except (RepoConfigError, ValueError) as exc:
         raise SelectionUnavailableError("config_invalid", f"tests config is invalid: {exc}") from exc
-    try:
-        return await asyncio.wait_for(
-            _select(repo_path, session_factory, change, config),
-            timeout=SELECTION_TIMEOUT_SECONDS,
+    key = str(Path(repo_path).resolve())
+    if key in _IN_FLIGHT:
+        raise SelectionUnavailableError(
+            "busy",
+            "A test selection for this repository is still running; run "
+            "`repowise impacted-tests` for this change.",
         )
-    except TimeoutError as exc:
+    cancel = _IN_FLIGHT[key] = threading.Event()
+    task = asyncio.ensure_future(_select(repo_path, session_factory, change, config, cancel))
+    # Released when the selection ends, not when the caller stops waiting.
+    task.add_done_callback(lambda done: _release(key, done))
+    try:
+        done, _ = await asyncio.wait({task}, timeout=SELECTION_TIMEOUT_SECONDS)
+    except asyncio.CancelledError:
+        cancel.set()
+        raise
+    if not done:
+        cancel.set()
         raise SelectionUnavailableError(
             "timeout",
             f"Selecting tests took over {SELECTION_TIMEOUT_SECONDS:.0f} s; run "
             "`repowise impacted-tests` for this change.",
-        ) from exc
+        )
+    return task.result()
 
 
-async def _select(repo_path: Any, session_factory: Any, change: Any, config: Any) -> tuple:
+def _release(key: str, task: asyncio.Future) -> None:
+    _IN_FLIGHT.pop(key, None)
+    # An abandoned selection ends in SelectionCancelledError; nobody reads it.
+    if not task.cancelled():
+        task.exception()
+
+
+async def _select(
+    repo_path: Any, session_factory: Any, change: Any, config: Any, cancel: threading.Event
+) -> tuple:
     from repowise.core.analysis.test_collection import read_checkout, select_for_change
     from repowise.core.persistence.database import get_session
     from repowise.server.mcp_server._helpers import _get_repo
@@ -80,6 +114,7 @@ async def _select(repo_path: Any, session_factory: Any, change: Any, config: Any
             config,
             checkout,
             indexed_commit=repository.head_commit,
+            cancelled=cancel.is_set,
         )
     return result, selection, checkout
 
@@ -90,13 +125,12 @@ def files_change(repo_path: Any, paths: list[str]) -> Any:
     A path the checkout lacks reads as deleted. With no lines every file is
     matched by file, so coverage at any commit names the tests touching it.
     """
-    from pathlib import Path
-
     from repowise.core import git_refs
     from repowise.core.analysis.changed_lines import ChangeSet, FileDiff
 
     root = Path(repo_path)
-    present = {p for p in paths if (root / p).exists()}
+    paths = [p.replace("\\", "/").removeprefix("./") for p in paths]
+    present = {p for p in paths if (root / p).is_file()}
     return ChangeSet(
         files={p: FileDiff(path=p) for p in sorted(present)},
         deleted=set(paths) - present,

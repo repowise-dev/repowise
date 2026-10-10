@@ -72,6 +72,7 @@ from repowise.server.mcp_server._test_impact import (
     tests_block_for,
 )
 from repowise.server.mcp_server._test_selection import (
+    UNAVAILABLE_REASON,
     SelectionUnavailableError,
     select_change_tests,
     selection_block,
@@ -768,16 +769,17 @@ def _cross_repo_block(
 
 
 def _empty_impacted(status: str, summary: str) -> dict[str, Any]:
-    """Uniform impacted-tests block for the degraded (no tests to name) paths.
+    """Uniform impacted-tests block for the paths where no selection was made.
 
-    ``basis`` says which signal named the tests (``none`` here). With nothing
-    named there is no ``tests_to_run_kind``, and ``map_present`` and
-    ``line_coverage`` are the measured block's alone: ``status`` and ``basis``
-    already say there is no map. The inferred path sets the kind itself, a
-    ``test_file``; the measured one a coverage-map ``test_id``.
+    Nothing vouches for a subset there, so the block says ``run_all`` with the
+    reason, like a selection that cannot vouch for one. ``basis`` is ``none``
+    and nothing is named, so there is no ``tests_to_run_kind``, ``map_present``
+    or ``line_coverage``.
     """
     return {
         "status": status,
+        "run_all": True,
+        "reasons": [summary, UNAVAILABLE_REASON],
         "basis": "none",
         "tests_to_run": [],
         "total": 0,
@@ -1314,8 +1316,8 @@ async def _impacted_tests_block(
     manifest, a conftest or a test that walks the source tree weighs here as it
     does in CI. ``line_coverage`` classifies the scored files' lines against
     the per-test map, on the side of the diff the map was measured at.
-    Degrades to a ``status`` string rather than raising, so it never fails the
-    surrounding score.
+    Any failure degrades to a ``status`` string with ``run_all`` true and never
+    raises, so it cannot fail the surrounding score.
     """
     from repowise.core.analysis.changed_lines import change_set
     from repowise.core.analysis.missing_test_signal import detect_missing_tests
@@ -1338,7 +1340,7 @@ async def _impacted_tests_block(
                 working_tree=working_tree,
             )
         )
-    except (ValueError, subprocess.SubprocessError, OSError):
+    except Exception:  # git refused the change, or could not run
         return _empty_impacted("unknown", "Could not read the change from git.")
     try:
         result, selection, _ = await select_change_tests(ctx.path, session_factory, change)
@@ -1359,4 +1361,7 @@ async def _impacted_tests_block(
         return _empty_impacted("no_index", "No indexed repository; run `repowise init`.")
     except SQLAlchemyError:
         return _empty_impacted("unknown", "Could not read the index.")
+    except Exception as exc:  # a selection bug must not take the score with it
+        log.warning("impacted_tests_failed", error=f"{type(exc).__name__}: {exc}")
+        return _empty_impacted("unknown", f"Selecting tests failed ({type(exc).__name__}).")
     return block

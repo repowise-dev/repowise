@@ -31,7 +31,12 @@ from repowise.server.mcp_server._helpers import (
     filter_path_list,
     is_excluded,
 )
-from repowise.server.mcp_server._test_selection import basis_of, run_kind, run_order
+from repowise.server.mcp_server._test_selection import (
+    UNAVAILABLE_REASON,
+    basis_of,
+    run_kind,
+    run_order,
+)
 
 
 def _as_path(entry: Any) -> str | None:
@@ -575,7 +580,13 @@ def _tests_to_run(
     """
     selection = tests.selection
     if selection is None:
-        return [], "none", {"tests_status": tests.status, "tests_status_reason": tests.message}
+        # Nothing vouches for a subset, so the answer is every test.
+        return [], "none", {
+            "tests_run_all": True,
+            "tests_run_all_reasons": [tests.message, UNAVAILABLE_REASON],
+            "tests_status": tests.status,
+            "tests_status_reason": tests.message,
+        }
     population = run_order(tests.result, selection)
     reasons = list(selection.reasons)
     if len(reasons) > _RUN_ALL_REASONS_LIMIT:

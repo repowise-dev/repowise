@@ -93,18 +93,29 @@ export function isRetryable(action: { type: string; reason?: string }): boolean 
   return action.type === "reviewFailed" && action.reason !== "timeout";
 }
 
-/** The tests the review names, with how it knows them; null when it names none. */
-export function testsToRun(
-  risk: ChangeRisk,
-): { tests: string[]; total: number; truncated: boolean; files: boolean; measured: boolean } | null {
+/**
+ * The tests the review names, with how it knows them; null when it names none.
+ * `runAll` is the reason every test must run: the named tests are then only
+ * the ones to run first.
+ */
+export function testsToRun(risk: ChangeRisk): {
+  tests: string[];
+  total: number;
+  truncated: boolean;
+  files: boolean;
+  measured: boolean;
+  runAll: string | null;
+} | null {
   const block = risk.impacted_tests;
   const tests = block?.tests_to_run ?? [];
-  if (block === undefined || tests.length === 0) return null;
+  const runAll = block?.run_all === true ? (block.reasons?.[0] ?? block.summary ?? "") : null;
+  if (block === undefined || (tests.length === 0 && runAll === null)) return null;
   return {
     tests,
     total: block.total ?? tests.length,
     truncated: block.truncated === true,
     files: block.tests_to_run_kind === "test_file",
     measured: block.basis === "measured",
+    runAll,
   };
 }

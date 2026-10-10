@@ -6,7 +6,7 @@
       "1 changed file were not analysed, so this is not a clean bill."
     ],
     "next_actions": [
-      "No measured test map; run the suite covering the changed files.",
+      "Run every test: src/requests/_internal_utils.py: no coverage, no test reaching it in the graph, no paired test.",
       "Review the skipped files by hand; they were not compared."
     ]
   },
@@ -71,20 +71,24 @@
   "exclude_patterns": [],
   "is_fix": false,
   "impacted_tests": {
-    "status": "no_map",
+    "status": "run_all",
+    "run_all": true,
+    "reasons": [
+      "src/requests/_internal_utils.py: no coverage, no test reaching it in the graph, no paired test."
+    ],
+    "reasons_total": 1,
     "basis": "none",
     "map_present": false,
     "tests_to_run": [],
     "tests_to_run_kind": null,
     "total": 0,
     "truncated": false,
-    "line_coverage": {
-      "untested_changes": [],
-      "stale_test_candidates": [],
-      "covered": [],
-      "no_coverage_data": []
+    "always_run_total": 0,
+    "why": {},
+    "basis_by_file": {
+      "src/requests/_internal_utils.py": "unknown"
     },
-    "summary": "No per-test coverage map ingested and no test reaches the changed files in the graph; run the full suite. Inferred from the dependency graph, not measured. For the line-precise answer build the map with `coverage run --contexts=test` then `repowise coverage add`."
+    "summary": "Run every test: src/requests/_internal_utils.py: no coverage, no test reaching it in the graph, no paired test."
   },
   "branch_overlap": {
     "base": "origin/main",

@@ -95,11 +95,22 @@ describe("review model", () => {
       truncated: false,
       files: true,
       measured: false,
+      runAll: null,
     });
-    expect(testsToRun(risk("unavailable"))).toBeNull();
+    // No subset vouched for: every test runs, and that is the answer.
+    expect(testsToRun(risk("unavailable"))?.runAll).toBe(
+      "src/requests/_internal_utils.py: no coverage, no test reaching it in the graph, no paired test.",
+    );
     expect(testsToRun(risk("nothing-to-score"))).toBeNull();
     const measured = { impacted_tests: { basis: "measured", tests_to_run: ["t::a"], tests_to_run_kind: "test_id" } } as ChangeRisk;
-    expect(testsToRun(measured)).toEqual({ tests: ["t::a"], total: 1, truncated: false, files: false, measured: true });
+    expect(testsToRun(measured)).toEqual({
+      tests: ["t::a"],
+      total: 1,
+      truncated: false,
+      files: false,
+      measured: true,
+      runAll: null,
+    });
   });
 });
 
@@ -160,6 +171,7 @@ describe("review card beneath the answer", () => {
       "Change review (working tree, 1 changed file)",
       "Health: not compared: No changed file is health-analyzable, so nothing was compared",
       "Diff shape: bigger than 34% of this repo's recent commits; size, not danger",
+      "Run every test: src/requests/_internal_utils.py: no coverage, no test reaching it in the graph, no paired test.",
       "Branches: ◦ 2 other branches also edit tox.ini (origin/3.0, origin/proposed/3.0.0)",
     ]);
   });
@@ -267,7 +279,11 @@ describe("review band row", () => {
       ["review · health: partly compared, no new findings", " · ◦ 2 other branches edit these files", "1: Run tests", "3: Details"],
       [],
     ],
-    ["unavailable", ["review · health: not compared", " · ◦ 2 other branches edit these files", "3: Details"], []],
+    [
+      "unavailable",
+      ["review · health: not compared", " · ◦ 2 other branches edit these files", "1: Run tests", "3: Details"],
+      [],
+    ],
   ])("%s: health word in a health color only, then the buttons", (name, expected, expectedColors) => {
     const row = reviewBandRow(done(name), 120);
     expect(drawn(row)).toEqual(expected);
@@ -342,7 +358,9 @@ describe("review buttons", () => {
     expect(runTestsText({ phase: "done", risk: measured })).toBe(
       "Run the tests Repowise names for this change, measured by stored coverage: tests/a.py::t",
     );
-    expect(runTestsText(done("unavailable"))).toBeNull();
+    expect(runTestsText(done("unavailable"))).toBe(
+      "Run the whole test suite for this change. Repowise cannot vouch for a smaller set: src/requests/_internal_utils.py: no coverage, no test reaching it in the graph, no paired test.",
+    );
     expect(runTestsText({ phase: "none" })).toBeNull();
   });
 

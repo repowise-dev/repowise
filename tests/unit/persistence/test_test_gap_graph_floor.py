@@ -3,7 +3,7 @@
 Issue #1740: two filename heuristics answered "does this file have a test" and
 disagreed - ``pr_blast._find_test_gaps`` and ``assessment._check_test_gap``.
 Both now call ``pr_blast.untested_files``, which consults the graph before
-falling back to a name, so the answer comes from a recorded edge rather than
+falling back to a name, so the answer comes from a recorded edge, not
 from whichever pattern each happened to implement.
 
 Pinned here for both call sites at once, because the defect was precisely that

@@ -70,7 +70,7 @@ def read_checkout(repo_path) -> Checkout:
         except OSError:
             return None
 
-    tracked = git_refs.tracked_paths(str(root))
+    tracked = sorted(git_refs.tracked_paths(str(root)))
     texts = [
         (p, text)
         for p in tracked
@@ -81,6 +81,20 @@ def read_checkout(repo_path) -> Checkout:
     return Checkout(tracked, texts, roots, read, lambda p: (root / p).is_file())
 
 
+class SelectionCancelledError(Exception):
+    """The caller gave up on this selection; whatever it had found is discarded."""
+
+
+def _never() -> bool:
+    return False
+
+
+def _stop(cancelled: Callable[[], bool]) -> bool:
+    if cancelled():
+        raise SelectionCancelledError
+    return False
+
+
 class Plan(NamedTuple):
     """Who names each changed doc or asset, the scope each scoped file runs, and its routes."""
 
@@ -89,8 +103,14 @@ class Plan(NamedTuple):
     routes: list[str]
 
 
-def plan_scopes(change, config, checkout: Checkout) -> Plan:
-    """The change's scopes, reading the sources once and only when a file needs its namers."""
+def plan_scopes(
+    change, config, checkout: Checkout, cancelled: Callable[[], bool] = _never
+) -> Plan:
+    """The change's scopes, reading the sources once and only when a file needs its namers.
+
+    *cancelled* is polled between file reads, so an abandoned selection stops
+    reading the checkout.
+    """
     from .selection_scopes import (
         keeps_full_run,
         needs_namers,
@@ -108,7 +128,7 @@ def plan_scopes(change, config, checkout: Checkout) -> Plan:
         texts = (
             (p, known[p]) if p in known else (p, checkout.read(p) or "")
             for p in checkout.tracked
-            if is_scan_source(p)
+            if is_scan_source(p) and not _stop(cancelled)
         )
         namers = file_namers(asked, texts)
     scopes = trigger_scopes(paths, checkout.tracked, namers, config)
@@ -559,7 +579,12 @@ def select(change, result: dict, config, checkout: Checkout, plan: Plan) -> Sele
             map_truncated=result["map_truncated"],
             index_gap=result["index_gap"],
             gap=result["gap"],
-            index_problem=result["index_problem"],
+            index_problem=result["index_problem"]
+            or (
+                None
+                if tracked
+                else "git could not list the checkout's files, so its tests are unknown."
+            ),
             graph_error=result["graph_error"],
             missing={f for f in named if not checkout.exists(f)},
             go_test_dirs=go_test_dirs,
@@ -582,10 +607,15 @@ async def select_for_change(
     checkout: Checkout,
     *,
     indexed_commit: str | None = None,
+    cancelled: Callable[[], bool] = _never,
 ) -> tuple[dict[str, Any], Selection]:
-    """:func:`plan_scopes`, :func:`collect` then :func:`select`: what *change* needs, and why."""
+    """:func:`plan_scopes`, :func:`collect` then :func:`select`: what *change* needs, and why.
+
+    Raises :class:`SelectionCancelledError` once *cancelled* turns true.
+    """
     # The namer search reads every source when a doc or asset changed: off the loop.
-    plan = await asyncio.to_thread(plan_scopes, change, config, checkout)
+    plan = await asyncio.to_thread(plan_scopes, change, config, checkout, cancelled)
+    _stop(cancelled)
     result = await collect(
         session,
         repo_id,
@@ -599,6 +629,7 @@ async def select_for_change(
         indexed_commit=indexed_commit,
     )
     result["diff"] = change.label
+    _stop(cancelled)
     return result, await asyncio.to_thread(select, change, result, config, checkout, plan)
 
 
@@ -607,16 +638,17 @@ async def narrow_scopes(
 ) -> dict[str, list[str]]:
     """*reached* with each conftest or test package a walk stopped at replaced by its tests.
 
-    For surfaces that walk a few hops rather than select: a conftest reached
+    For surfaces that walk a few hops and do not select: a conftest reached
     only through its imports stands for the tests the selection narrows it to
     (:mod:`repowise.core.analysis.conftest_routes`, the same graph walk), and
     any other scope for every runnable test under its directory. The walk runs
-    only for targets that reached a scope, reading conftests and pytest configs
-    from the indexed checkout; one it cannot read keeps every test under it.
-    Keys may be symbol ids (``path::name``); the walk starts at their file.
+    only for targets that reached a scope. The conftests and pytest configs
+    (nested ones included) come from :func:`read_checkout` of the indexed
+    checkout. A target the walk gives nothing for, or a checkout that cannot
+    be read, keeps every test under each scope it reached. Keys may be symbol
+    ids (``path::name``); the walk starts at their file.
     """
     from ..persistence.models import Repository
-    from ..pytest_roots import PYTEST_CONFIG_NAMES
     from .test_selection import expand_test_scopes, scope_kind
 
     scoped = {t: list(v) for t, v in reached.items() if any(scope_kind(x) for x in v)}
@@ -624,15 +656,13 @@ async def narrow_scopes(
     if not scoped:
         return out
     local = await session.get(Repository, repo_id)
-    root = Path(local.local_path) if local is not None and local.local_path else None
     texts: dict[str, str] = {}
-    if root is not None:
-        names = [p for p in test_files if p.endswith("conftest.py")] + sorted(PYTEST_CONFIG_NAMES)
-        for path in names:
-            try:
-                texts[path] = (root / path).read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                continue
+    if local is not None and local.local_path and Path(local.local_path).is_dir():
+        try:
+            checkout = await asyncio.to_thread(read_checkout, local.local_path)
+            texts = dict(checkout.pytest_texts)
+        except Exception as exc:  # unread conftests keep every test under them
+            log.debug("narrow_scopes_checkout_failed", error=str(exc))
     files = sorted({t.split("::", 1)[0] for t in scoped})
     try:
         candidates, _, _ = await _graph_candidates(session, repo_id, files, pytest_texts=texts)
@@ -644,8 +674,6 @@ async def narrow_scopes(
         dirs = {str(PurePosixPath(s).parent) for s in scopes}
         picked = [t for t, _ in candidates.get(target.split("::", 1)[0], ())]
         under = [t for t in picked if any(d == "." or t.startswith(f"{d}/") for d in dirs)]
-        if not candidates:
-            under = scopes
         kept = [x for x in tests if not scope_kind(x)]
-        out[target] = expand_test_scopes([*kept, *under], test_files)
+        out[target] = expand_test_scopes([*kept, *(under or scopes)], test_files)
     return out

@@ -84,7 +84,10 @@
   "exclude_patterns": [],
   "is_fix": false,
   "impacted_tests": {
-    "status": "inferred",
+    "status": "selected",
+    "run_all": false,
+    "reasons": [],
+    "reasons_total": 0,
     "basis": "inferred",
     "map_present": false,
     "tests_to_run": [
@@ -94,13 +97,15 @@
     "tests_to_run_kind": "test_file",
     "total": 2,
     "truncated": false,
-    "line_coverage": {
-      "untested_changes": [],
-      "stale_test_candidates": [],
-      "covered": [],
-      "no_coverage_data": []
+    "always_run_total": 0,
+    "why": {
+      "tests/test_requests.py": "src/requests/_internal_utils.py changed (import-graph)",
+      "tests/test_utils.py": "src/requests/_internal_utils.py changed (import-graph)"
     },
-    "summary": "2 test file(s) reach the changed files in the graph. Inferred from the dependency graph, not measured. For the line-precise answer build the map with `coverage run --contexts=test` then `repowise coverage add`."
+    "basis_by_file": {
+      "src/requests/_internal_utils.py": "import-graph"
+    },
+    "summary": "2 test(s) to run for this change; the rest can be skipped."
   },
   "branch_overlap": {
     "base": "origin/main",

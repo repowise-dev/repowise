@@ -534,10 +534,15 @@ async def test_narrow_scopes_resolves_a_reached_conftest_as_the_selection_does(
     async_session, tmp_path
 ) -> None:
     """A few-hop walk that stopped at the conftest gets the test that can break."""
+    import subprocess
+
     from repowise.core.analysis.test_collection import narrow_scopes
 
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests/conftest.py").write_text(_CONFTEST, encoding="utf-8")
+    # The conftests come from the checkout's tracked files.
+    for args in (["init", "-q"], ["add", "tests/conftest.py"]):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
     repo = await insert_repo(async_session, local_path=str(tmp_path))
     await _conftest_graph(async_session, repo.id, stamped=True)
     test_files = {"tests/conftest.py", "tests/test_a.py", "tests/test_b.py", "tests/test_c.py"}
@@ -566,3 +571,19 @@ async def test_narrow_scopes_keeps_every_test_under_a_conftest_it_cannot_read(
     )
 
     assert out == {"src/app/util.py": ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py"]}
+
+
+async def test_narrow_scopes_keeps_the_whole_scope_for_a_target_the_walk_does_not_answer(
+    async_session, tmp_path
+) -> None:
+    from repowise.core.analysis.test_collection import narrow_scopes
+
+    repo = await insert_repo(async_session, local_path=str(tmp_path))
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    test_files = {"tests/conftest.py", "tests/test_a.py", "tests/test_b.py", "tests/test_c.py"}
+
+    out = await narrow_scopes(
+        async_session, repo.id, {"src/unindexed.py": ["tests/conftest.py"]}, test_files
+    )
+
+    assert out == {"src/unindexed.py": ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py"]}

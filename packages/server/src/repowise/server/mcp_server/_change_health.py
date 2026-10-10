@@ -16,6 +16,7 @@ from repowise.core.analysis.review_directive import (
     ReviewDirective,
     review_directive,
 )
+from repowise.server.mcp_server._test_selection import UNAVAILABLE_REASON
 
 #: Actionable findings carried in the default response. The rest are counted
 #: and recoverable by an exact call, never silently dropped.
@@ -55,7 +56,7 @@ def _test_evidence(tests: dict[str, Any] | None) -> CoveringTestEvidence:
     state = "unavailable" if tests.get("status") == "no_index" else "available"
     run_all = None
     if tests.get("run_all"):
-        run_all = (tests.get("reasons") or ["the selection cannot vouch for a subset."])[0]
+        run_all = (tests.get("reasons") or [UNAVAILABLE_REASON])[0]
     return CoveringTestEvidence(
         state=state, tests_to_run=to_run, basis=tests.get("basis"), run_all=run_all
     )

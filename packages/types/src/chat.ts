@@ -288,7 +288,11 @@ export interface RiskReportArtifactData {
   };
   impacted_tests?: {
     tests_to_run?: string[];
+    /** `selected`, `run_all`, or why nothing was selected (`no_index`, `timeout`, ...). */
     status?: string;
+    /** No subset can be vouched for: every test must run (`reasons` says why). */
+    run_all?: boolean;
+    reasons?: string[];
     summary?: string;
     /** `measured` from stored coverage, `inferred` from the dependency graph. */
     basis?: "measured" | "inferred" | "none";

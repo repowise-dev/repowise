@@ -74,16 +74,22 @@ The response carries its own `directive` block, per file rather than per change
 - **`missing_cochanges`** — files that historically change together with the
   changed files but were left untouched. Often a forgotten update.
 - **`missing_tests`** — changed code with a test gap. Flag for new/updated tests.
-- **`tests_to_run`**: the positive complement of `missing_tests`, the tests that
-  exercise the changed files. Recommend running these to validate the change.
-  Read **`tests_to_run_basis`** with it: `measured` means a coverage map proves
-  those tests execute the changed files (pytest-runnable ids); `inferred` means
-  the call graph shows those test *files* reaching the change, with the import
-  graph filling in where it is silent, which needs no coverage ingest but is a
-  candidate list, so say so rather than presenting it as proof; `none` with an empty list is "unknown", never "no tests exist".
+- **`tests_to_run`**: the tests the change needs, from the same selection
+  `repowise impacted-tests` makes, with **`tests_to_run_why`** giving each one's
+  reason (the changed file and its evidence, or "runs with every subset").
+  Check **`tests_run_all`** first: when it is true no smaller set can be
+  vouched for, **`tests_run_all_reasons`** says why, and the list is only what
+  to run first; recommend the whole suite. When it is false the list is the
+  set to run. **`tests_to_run_basis`** is `measured` when stored per-test
+  coverage decided a changed file and `inferred` when only the dependency graph
+  or a rule did; say which. **`tests_status`** appears only when no selection
+  could be made (`timeout`, `config_invalid`, `unknown`, ...), and then every
+  test must run.
 
-`include=["blast"]` adds `pr_blast_radius`, the fuller dossier behind those lists (including the
-per-changed-file `guarding_tests` breakdown behind `tests_to_run`).
+`get_change_risk` carries the same answer as **`impacted_tests`**: `status`
+(`selected` or `run_all`, or why nothing was selected), `run_all`, `reasons`,
+`tests_to_run` and `why`. `include=["blast"]` on `get_risk` adds
+`pr_blast_radius`, the fuller dossier behind the directive's lists.
 
 For the line-precise version from a terminal, `repowise impacted-tests <revspec>`
 maps each changed line to the tests whose recorded coverage touches it, then

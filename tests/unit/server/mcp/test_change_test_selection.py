@@ -335,3 +335,82 @@ async def test_a_selection_over_its_time_budget_says_so(tmp_path, monkeypatch) -
     assert directive["tests_to_run"] == []
     assert directive["tests_status"] == "timeout"
     assert "repowise impacted-tests" in directive["tests_status_reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_path_the_checkout_lacks_fails_closed_and_backslashes_are_paths(
+    tmp_path, monkeypatch
+) -> None:
+    repo, base = _repo(tmp_path, _STATUS)
+    factory = await _index(
+        base,
+        {"src/status.py": False, "tests/test_status.py": True, "tests/test_walks.py": True},
+        [
+            ("tests/test_status.py", "src/status.py", "imports"),
+            ("tests/test_walks.py", "src/status.py", "imports"),
+        ],
+    )
+
+    missing = await _risk_directive(monkeypatch, repo, factory, ["src/nope.py"])
+    assert missing["tests_run_all"] is True
+    assert missing["tests_run_all_reasons"][0].startswith("src/nope.py was deleted")
+
+    windows = await _risk_directive(monkeypatch, repo, factory, ["src\status.py"])
+    assert windows["tests_run_all"] is False
+    assert sorted(windows["tests_to_run"]) == ["tests/test_status.py", "tests/test_walks.py"]
+
+
+def test_a_checkout_git_could_not_list_does_not_read_as_no_tests() -> None:
+    from repowise.core.analysis.changed_lines import ChangeSet, FileDiff
+    from repowise.core.analysis.test_collection import Checkout, Plan, empty_result, select
+    from repowise.core.analysis.test_selection import TestSelectionConfig
+    from repowise.core.pytest_roots import PytestRoots
+
+    change = ChangeSet({"src/a.py": FileDiff(path="src/a.py")}, set(), "HEAD", None, None)
+    result = empty_result(1)
+    result.update(
+        index_gap=[],
+        placed_tests=set(),
+        inferred=[{"source_file": "src/a.py", "test_file": "tests/test_a.py", "via": "import-graph"}],
+    )
+    empty = Checkout([], [], PytestRoots(), lambda _p: None, lambda _p: True)
+
+    selection = select(change, result, TestSelectionConfig(), empty, Plan({}, {}, []))
+
+    assert selection.run_all is True
+    assert any("git could not list" in r for r in selection.reasons)
+
+
+@pytest.mark.asyncio
+async def test_workspace_get_risk_selects_in_the_member_repository(tmp_path, monkeypatch) -> None:
+    """In a workspace the selection reads the aliased member's checkout and index."""
+    import repowise.server.mcp_server as mcp_mod
+
+    get_risk_mod = importlib.import_module("repowise.server.mcp_server.tool_risk.get_risk")
+
+    repo, base = _repo(tmp_path, _STATUS)
+    factory = await _index(
+        base,
+        {"src/status.py": False, "tests/test_status.py": True},
+        [("tests/test_status.py", "src/status.py", "imports")],
+    )
+    member = SimpleNamespace(alias="backend", path=repo, session_factory=factory)
+    seen: list[str | None] = []
+
+    async def _context(alias: str | None = None) -> SimpleNamespace:
+        seen.append(alias)
+        return member
+
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(other))
+    monkeypatch.setattr(get_risk_mod, "_resolve_repo_context", _context)
+
+    directive = (await get_risk_mod.get_risk(changed_files=["src/status.py"], repo="backend"))[
+        "directive"
+    ]
+
+    assert seen == ["backend"]
+    # test_walks.py is tracked there but not indexed, so it runs with every subset.
+    assert directive["tests_to_run"] == ["tests/test_status.py", "tests/test_walks.py"]
+    assert directive["tests_run_all"] is False

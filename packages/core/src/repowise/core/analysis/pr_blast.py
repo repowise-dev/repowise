@@ -41,7 +41,7 @@ def rank_tests_by_reach(by_file: Mapping[str, Iterable[str]]) -> list[str]:
     return sorted(reach, key=lambda t: (-reach[t], t))
 
 
-#: Prefixes that name a module for its slot in a dispatch table rather than for
+#: Prefixes that name a module for its slot in a dispatch table, not for
 #: its subject, so its tests are named after the subject alone: ``tool_dead_code``
 #: is tested by ``test_dead_code``, not ``test_tool_dead_code``.
 _ROLE_PREFIXES = ("tool_", "get_")
@@ -72,7 +72,7 @@ async def untested_files(session: AsyncSession, repo_id: str, paths: list[str]) 
     1. A per-test coverage row (from ``repowise coverage add``) is
        execution-*proof*: never a gap.
     2. A test file reaching it in the dependency graph is evidence, not proof,
-       but a recorded edge rather than a guess, and it finds the suites that
+       but a recorded edge, not a guess, and it finds the suites that
        name their tests for behaviour instead of for the file under test.
     3. Otherwise a test named for it by convention (``tests_matching_by_name``,
        also tried with a dispatch-role prefix stripped), an honest "unknown",
@@ -96,7 +96,7 @@ async def untested_files(session: AsyncSession, repo_id: str, paths: list[str]) 
     if not candidates:
         return []
     covered = await covered_source_files(session, repo_id, set(candidates))
-    # Degrades to "no signal" rather than raising: a failed walk must not
+    # Degrades to "no signal" and never raises: a failed walk must not
     # turn into a false accusation.
     try:
         reached = set(await tests_reaching(session, repo_id, candidates, test_files=test_files))
