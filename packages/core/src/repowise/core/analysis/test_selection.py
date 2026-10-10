@@ -340,6 +340,7 @@ def file_namers(files: Collection[str], sources: Iterable[tuple[str, str]]) -> d
     ``--doctest-glob`` turns every doc into a test, so the config declaring
     one names each doc (first). One substring test per distinct file name and
     source, and every namer is listed: a caller decides what too many means.
+    Each group is sorted by path, so the order never depends on the order of *sources*.
     Ceiling: code that globs a directory names no file.
     """
     by_name: dict[str, list[str]] = {}
@@ -359,9 +360,11 @@ def file_namers(files: Collection[str], sources: Iterable[tuple[str, str]]) -> d
         for name in by_name:
             if name in text:
                 found.setdefault(name, []).append(path)
+    for doc in out:
+        out[doc].sort()
     for name, namers in found.items():
         for f in by_name[name]:
-            out.setdefault(f, []).extend(n for n in namers if n != f)
+            out.setdefault(f, []).extend(sorted(n for n in namers if n != f))
     return {f: n for f, n in out.items() if n}
 
 

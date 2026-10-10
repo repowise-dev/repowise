@@ -209,10 +209,38 @@ def test_file_namers_lists_every_file_naming_one() -> None:
     ]
     files = ["web/src/styles/layout.css", "other/layout.css"]
     assert file_namers(files, sources)["other/layout.css"] == [
-        "web/src/app.ts",
         "src/other.py",
+        "web/src/app.ts",
         "web/src/more.ts",
     ]
+
+
+def test_file_namers_order_does_not_depend_on_source_order() -> None:
+    files = ["README.md", "package.json"]
+    sources = [
+        ("tox.ini", "[pytest]\naddopts = --doctest-glob='*.md'\n"),
+        ("tests/test_pkg.py", 'Path("package.json") / "README.md"\n'),
+        ("pytest.ini", "[pytest]\naddopts = --doctest-glob='*.md'\n"),
+        ("scripts/name.py", 'open("package.json"); "README.md"\n'),
+    ]
+    want = {
+        "README.md": ["pytest.ini", "tox.ini", "scripts/name.py", "tests/test_pkg.py"],
+        "package.json": ["scripts/name.py", "tests/test_pkg.py"],
+    }
+    assert file_namers(files, sources) == want
+    assert file_namers(files, sources[::-1]) == want
+
+
+def test_a_manifest_scope_quotes_the_same_namer_whatever_the_source_order() -> None:
+    sources = [
+        ("tests/test_pkg.py", 'Path("package.json")\n'),
+        ("tests/helpers.py", 'open("package.json")\n'),
+        ("scripts/name.py", 'open("package.json")\n'),
+    ]
+    one = _scopes(["package.json"], file_namers(["package.json"], sources))
+    two = _scopes(["package.json"], file_namers(["package.json"], sources[::-1]))
+    assert one["package.json"] == two["package.json"]
+    assert one["package.json"].namers[0] == "scripts/name.py"
 
 
 def test_a_js_package_manifest_runs_its_tests_and_those_reaching_its_code() -> None:
