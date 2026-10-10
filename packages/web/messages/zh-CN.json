@@ -797,7 +797,7 @@
       "scanned": "扫描于{when}。",
       "scanTimeUnknown": "未记录扫描时间。",
       "elsewhere": "测试和文档",
-      "elsewhereHint": "位于 test、spec、fixture、mock、example 或 docs 路径下，以及 Markdown 或文本文件中的匹配。",
+      "elsewhereHint": "位于 test、spec、fixture、mock、example 或 docs 路径下，以及 Markdown 文件中的匹配。",
       "high": "高",
       "highSub": "{count} 处在交付代码中",
       "loading": "正在加载安全发现项",

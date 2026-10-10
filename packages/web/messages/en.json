@@ -797,7 +797,7 @@
       "scanned": "Scanned {when}.",
       "scanTimeUnknown": "Scan time not recorded.",
       "elsewhere": "Tests and docs",
-      "elsewhereHint": "Matches under test, spec, fixture, mock, example or docs paths, and in Markdown or text files.",
+      "elsewhereHint": "Matches under test, spec, fixture, mock, example or docs paths, and in Markdown files.",
       "high": "High",
       "highSub": "{count} in shipped source",
       "loading": "Loading security findings",

@@ -27,7 +27,7 @@ const TEST_SEGMENTS = new Set([
 ]);
 const DOCS_SEGMENTS = new Set(["docs", "doc", "documentation", "example", "examples"]);
 const TEST_FILE = /(^test_|_test\.|\.test\.|\.spec\.|_spec\.)/i;
-const DOCS_FILE = /\.(md|mdx|rst|adoc|txt)$/i;
+const DOCS_FILE = /\.(md|mdx|rst|adoc)$/i;
 
 /** Shipped source, tests, or docs, judged from the path. */
 export function securityPathClass(path: string): SecurityPathClass {
@@ -122,7 +122,7 @@ export const DEFAULT_SECURITY_POSTURE_LABELS: SecurityPostureLabels = {
   scanTimeUnknown: "Scan time not recorded.",
   all: "All findings",
   elsewhere: "Tests and docs",
-  elsewhereHint: "Matches under test, spec, fixture, mock, example or docs paths, and in Markdown or text files.",
+  elsewhereHint: "Matches under test, spec, fixture, mock, example or docs paths, and in Markdown files.",
   high: "High",
   highSub: (v) => `${n(v)} in shipped source`,
 };
