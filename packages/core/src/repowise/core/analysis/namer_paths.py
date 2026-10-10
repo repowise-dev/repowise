@@ -5,7 +5,7 @@ text, and every workspace has many files of that name. A mention written with
 its directory says which one it means. Each mention is reduced to its written
 path, with leading ``/``, ``./`` and ``../`` steps and inner ``a/../`` folded
 away (a relative path depends on the working directory, which the text does
-not give), and compared to the file's path, case-insensitively:
+not give), and compared to the file's path, case-insensitively (the name too):
 
 - a written path names every file whose path ends in it
   (``ui/package.json`` names ``packages/ui/package.json``), and every file
@@ -48,7 +48,7 @@ def mentions(text: str, name: str) -> list[str | None]:
     A mention that is only part of a longer name is left out.
     """
     out: list[str | None] = []
-    for match in re.finditer(re.escape(name), text):
+    for match in re.finditer(re.escape(name), text, re.IGNORECASE):
         if _continues(text, match.end()):
             continue
         prefix = _directory_part(text, match.start())

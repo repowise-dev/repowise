@@ -91,7 +91,7 @@ _GREP_TIMEOUT_SECONDS = 30
 
 
 def _git_holding(root: Path, needles: Collection[str]) -> set[str] | None:
-    """Tracked files whose working-tree bytes hold any of *needles*: one ``git grep``.
+    """Tracked files whose bytes hold any of *needles*, ignoring case: one ``git grep``.
 
     The names go in on stdin (``-f -``), so no argument list grows with them.
     ``None`` when git cannot answer in time, or for a needle that is not plain
@@ -105,7 +105,7 @@ def _git_holding(root: Path, needles: Collection[str]) -> set[str] | None:
         return None
     patterns = "".join(f"{n}\n" for n in needles).encode("utf-8")
     ran = git_run(
-        root, "grep", "-l", "-z", "-F", "--no-color", "-f", "-", "--",
+        root, "grep", "-l", "-z", "-F", "-i", "--no-color", "-f", "-", "--",
         stdin=patterns, timeout=_GREP_TIMEOUT_SECONDS,
     )  # fmt: skip
     # Exit 1 is "no file holds any".
@@ -144,13 +144,14 @@ def plan_scopes(
     *cancelled* is polled between file reads, so an abandoned selection stops
     reading the checkout.
     """
+    from .fixture_readers import with_fixture_readers
     from .selection_scopes import (
         is_manifest,
         keeps_full_run,
         needs_namers,
         trigger_scopes,
     )
-    from .test_selection import file_namers
+    from .test_selection import file_namers, is_runnable_test
 
     paths = [*change.files, *change.deleted]
     # A file that runs everything anyway makes every namer search moot.
@@ -159,6 +160,8 @@ def plan_scopes(
     namers: dict[str, list[str]] = {}
     if asked:
         namers = file_namers(asked, _scan_texts(checkout, asked, cancelled), is_manifest)
+        tests = [p for p in checkout.tracked if is_runnable_test(p, checkout.roots)]
+        namers = with_fixture_readers(namers, tests, checkout.read, checkout.holding)
     scopes = trigger_scopes(paths, checkout.tracked, namers, config)
     routes = sorted({r for scope in scopes.values() for r in scope.routes} - set(paths))
     return Plan(namers, scopes, routes)

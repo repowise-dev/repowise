@@ -316,6 +316,7 @@ def _namer_checkout(tmp_path):
         "web/src/app.test.ts": "readFileSync('package.json')\n",
         "tools/build.py": "print('web/package.json', 'README.md')\n",
         "tools/data.py": "open('docs/data.md')\n",
+        "tools/upper.py": "open('WEB/PACKAGE.JSON')\n",
         "docs/a.md": "# a\n",
         "docs/data.md": "# data\n",
         "src/mod.py": "x = 1\n",
@@ -348,8 +349,10 @@ def test_plan_scopes_names_the_same_files_from_git_grep_as_from_reading_them(tmp
     assert checkout.holding is not None
     grepped = plan_scopes(change, _NONE, checkout)
     assert grepped == plan_scopes(change, _NONE, replace(checkout, holding=None))
+    # The name is matched ignoring case, in the grep and in the read alike.
     assert grepped.namers["web/package.json"] == [
         "tools/build.py",
+        "tools/upper.py",
         "web/src/app.test.ts",
         "web/src/app.ts",
     ]
