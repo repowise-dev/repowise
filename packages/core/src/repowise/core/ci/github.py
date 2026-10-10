@@ -1,9 +1,11 @@
 """GitHub Actions workflow commands: the one place they are built and escaped.
 
 Pure string builders, so a CLI gate and a hosted check render identical
-annotations, and the one job-summary append every CI script shares. GitHub shows at most 10 warning and 10 error annotations per
+annotations. GitHub shows at most 10 warning and 10 error annotations per
 step and drops the rest silently, which is why :func:`cap_annotations` counts
 what it cut instead of emitting it.
+
+Also the one job-summary append every CI script shares.
 """
 
 from __future__ import annotations

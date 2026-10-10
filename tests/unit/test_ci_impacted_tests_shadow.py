@@ -33,7 +33,8 @@ SELECTION = {
     "reasons": [],
     "indexed_commit": "abc",
     "selected": {
-        "test_files": ["tests/unit/test_a.py"],
+        # The files behind ``tests``: test_b is picked by one node id only.
+        "test_files": ["tests/unit/test_a.py", "tests/unit/test_b.py"],
         "tests": ["tests/unit/test_b.py::TestB::test_bad"],
         "always_run": ["tests/unit/test_e.py"],
     },
@@ -48,9 +49,12 @@ SELECTION = {
 }
 
 
-def test_module_file_drops_class_parts() -> None:
-    assert shadow.module_file("tests.unit.sub.test_c.TestC") == "tests/unit/sub/test_c.py"
-    assert shadow.module_file("tests.unit.test_d") == "tests/unit/test_d.py"
+def test_split_classname_drops_class_parts() -> None:
+    assert shadow.split_classname("tests.unit.sub.test_c.TestC") == (
+        "tests/unit/sub/test_c.py",
+        ["TestC"],
+    )
+    assert shadow.split_classname("tests.unit.test_d") == ("tests/unit/test_d.py", [])
 
 
 def test_read_junit_maps_cases_to_files() -> None:
@@ -62,8 +66,12 @@ def test_read_junit_maps_cases_to_files() -> None:
         "tests/unit/test_d.py",
         "tests/unit/test_e.py",
     }
-    # A skipped case is not a failure; a collection error is.
-    assert failing == {"tests/unit/test_b.py", "tests/unit/sub/test_c.py", "tests/unit/test_d.py"}
+    # A skipped case is not a failure; a collection error is, for the whole file.
+    assert failing == {
+        "tests/unit/test_b.py::TestB::test_bad",
+        "tests/unit/sub/test_c.py::TestC::test_err",
+        "tests/unit/test_d.py",
+    }
 
 
 def test_run_order_and_first_rank() -> None:
@@ -114,9 +122,11 @@ def test_main_never_fails(tmp_path, monkeypatch) -> None:
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     bad = tmp_path / "selection.json"
-    bad.write_text("{not json", encoding="utf-8")
-    assert shadow.main(["--selection", str(bad), "--out", str(tmp_path / "r.json")]) == 0
+    bad.write_text('{"selected": ["not", "a", "mapping"]}', encoding="utf-8")
+    out = tmp_path / "r.json"
+    assert shadow.main(["--selection", str(bad), "--out", str(out)]) == 0
     assert "could not run" in summary.read_text(encoding="utf-8")
+    assert "error" in json.loads(out.read_text(encoding="utf-8"))
 
 
 def test_main_writes_record(tmp_path, monkeypatch) -> None:
@@ -129,3 +139,47 @@ def test_main_writes_record(tmp_path, monkeypatch) -> None:
     assert shadow.main(["--selection", str(sel), "--junit", str(junit), "--out", str(out)]) == 0
     rec = json.loads(out.read_text(encoding="utf-8"))
     assert rec["missed"] == ["tests/unit/sub/test_c.py", "tests/unit/test_d.py"]
+
+
+def test_a_node_pick_misses_the_other_failing_nodes_of_its_file() -> None:
+    junit = """<testsuites><testsuite>
+      <testcase classname="tests.unit.test_b.TestB" name="test_bad"><failure/></testcase>
+      <testcase classname="tests.unit.test_b.TestB" name="test_other[1]"><failure/></testcase>
+      <testcase classname="tests.unit.test_a" name="test_x[2]"><failure/></testcase>
+    </testsuite></testsuites>"""
+    rec = shadow.build_record(SELECTION, {}, shadow.read_junit(junit), {})
+    # test_a is picked whole; test_b only through test_bad.
+    assert rec["missed_tests"] == ["tests/unit/test_b.py::TestB::test_other[1]"]
+    assert rec["missed"] == ["tests/unit/test_b.py"]
+
+
+def test_selected_by_matches_parameters_and_classes() -> None:
+    nodes = {"t.py::TestK", "u.py::test_p"}
+    assert shadow.selected_by("t.py::TestK::test_any", set(), nodes)
+    assert shadow.selected_by("u.py::test_p[3]", set(), nodes)
+    assert shadow.selected_by("u.py", set(), nodes)  # a collection error in a picked file
+    assert not shadow.selected_by("u.py::test_q", set(), nodes)
+    assert shadow.selected_by("w.py::test_q", {"w.py"}, nodes)
+
+
+def test_bad_selection_output_keeps_the_selector_facts(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
+    sel = tmp_path / "selection.json"
+    sel.write_text("Traceback (most recent call last):", encoding="utf-8")
+    meta = tmp_path / "selector.json"
+    meta.write_text('{"base": "b0", "selector_exit": 1, "selector_seconds": 3}', encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text("<not xml", encoding="utf-8")
+    out = tmp_path / "record.json"
+    args = ["--selection", str(sel), "--meta", str(meta), "--junit", str(junit), "--out", str(out)]
+    assert shadow.main(args) == 0
+    rec = json.loads(out.read_text(encoding="utf-8"))
+    assert rec["has_selection"] is False and rec["has_junit"] is False
+    assert (rec["base"], rec["selector_exit"], rec["selector_seconds"]) == ("b0", 1, 3)
+
+
+def test_an_older_index_is_noted() -> None:
+    rec = shadow.build_record(SELECTION, {"index_cache": "older"}, None, {})
+    assert "index predates the base" in shadow.render_summary(rec)
+    rec = shadow.build_record(SELECTION, {"index_cache": "exact"}, None, {})
+    assert "predates" not in shadow.render_summary(rec)

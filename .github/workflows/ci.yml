@@ -106,6 +106,7 @@ jobs:
   repowise-index:
     name: Repowise index (main)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     continue-on-error: true
     permissions:
@@ -175,6 +176,7 @@ jobs:
   impacted-tests-shadow:
     name: Test selection (recorded only)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     continue-on-error: true
     permissions:
@@ -253,6 +255,7 @@ jobs:
   impacted-tests-compare:
     name: Test selection compared (recorded only)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [impacted-tests-shadow, test-python]
     if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') }}
     continue-on-error: true

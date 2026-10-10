@@ -19,11 +19,12 @@ later, from main's own records.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
 import xml.etree.ElementTree as ET
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -34,28 +35,33 @@ from repowise.core.ci.markdown import ROW_LIMIT, code, details, more_line, plura
 RECORD_VERSION = 1
 
 
-def module_file(dotted: str) -> str:
-    """``tests.unit.test_x.TestY`` -> ``tests/unit/test_x.py``: the path a JUnit classname names.
+def split_classname(dotted: str) -> tuple[str, list[str]]:
+    """``tests.unit.test_x.TestY`` -> (``tests/unit/test_x.py``, ``["TestY"]``).
 
     pytest's default report has no ``file`` attribute. Trailing capitalised
     parts are taken as classes; a collection error names the module alone.
     """
     parts = dotted.split(".")
+    classes: list[str] = []
     while len(parts) > 1 and parts[-1][:1].isupper():
-        parts.pop()
-    return "/".join(parts) + ".py"
+        classes.insert(0, parts.pop())
+    return "/".join(parts) + ".py", classes
 
 
 def read_junit(xml_text: str) -> tuple[set[str], set[str]]:
-    """Test files a JUnit report ran, and those with a failing or erroring case."""
+    """Test files a JUnit report ran, and the node ids that failed or errored.
+
+    A collection error has no test name, so its node id is the file alone.
+    """
     ran: set[str] = set()
     failing: set[str] = set()
     for case in ET.fromstring(xml_text).iter("testcase"):
-        path = case.get("file") or module_file(case.get("classname") or case.get("name") or "")
-        path = path.replace("\\", "/")
+        classname = case.get("classname") or ""
+        path, classes = split_classname(classname or case.get("name") or "")
+        path = (case.get("file") or path).replace("\\", "/")
         ran.add(path)
         if any(child.tag in ("failure", "error") for child in case):
-            failing.add(path)
+            failing.add("::".join([path, *classes, case.get("name") or ""]) if classname else path)
     return ran, failing
 
 
@@ -64,14 +70,32 @@ def file_of(test: str) -> str:
     return test.split("::", 1)[0]
 
 
-def selected_files(selection: Mapping[str, Any]) -> set[str]:
-    """Every test file the selection names: files, node ids' files and always-run entries."""
+def picks(selection: Mapping[str, Any]) -> tuple[set[str], set[str]]:
+    """``(whole files, node ids)`` the selection runs.
+
+    ``tests`` holds node ids where coverage named them, else files;
+    ``test_files`` are the files behind both, so a file picked only through
+    node ids is not a whole-file pick.
+    """
     sel = selection.get("selected") or {}
-    return {
-        *sel.get("test_files", ()),
-        *sel.get("always_run", ()),
-        *(file_of(t) for t in sel.get("tests", ())),
-    }
+    nodes = {t for t in sel.get("tests", ()) if "::" in t}
+    node_files = {file_of(t) for t in nodes}
+    whole = {t for t in sel.get("tests", ()) if "::" not in t}
+    whole |= set(sel.get("always_run", ())) | (set(sel.get("test_files", ())) - node_files)
+    return whole, nodes
+
+
+def selected_by(node: str, whole: set[str], nodes: set[str]) -> bool:
+    """Whether a failing *node* ran in the selection: its file whole, or it, its
+    unparametrized form or an enclosing class named. A file-level failure (a
+    collection error) counts when any test of the file is picked."""
+    path = file_of(node)
+    if path in whole:
+        return True
+    if node == path:
+        return any(file_of(n) == path for n in nodes)
+    parts = node.split("[", 1)[0].split("::")
+    return node in nodes or any("::".join(parts[:i]) in nodes for i in range(2, len(parts) + 1))
 
 
 def run_order(args: Iterable[str]) -> list[str]:
@@ -91,7 +115,8 @@ def build_record(
     context: Mapping[str, Any],
 ) -> dict[str, Any]:
     """The one-line record kept per run. Missing inputs leave their fields ``None``."""
-    ran, failing = junit if junit is not None else (set(), set())
+    ran, failing_nodes = junit if junit is not None else (set(), set())
+    failing = {file_of(n) for n in failing_nodes}
     record: dict[str, Any] = {
         "version": RECORD_VERSION,
         **context,
@@ -105,20 +130,24 @@ def build_record(
         "indexed_commit": None,
         "selected_ran_files": None,
         "missed": [],
+        "missed_tests": [],
         "first_failing_rank": None,
         "order_length": None,
     }
     if selection is None:
         return record
-    picked = selected_files(selection)
-    order = run_order(selection.get("args") or ())
+    whole, nodes = picks(selection)
     run_all = bool(selection.get("run_all"))
+    outside = [] if run_all else sorted(n for n in failing_nodes if not selected_by(n, whole, nodes))
+    picked_files = whole | {file_of(n) for n in nodes}
+    order = run_order(selection.get("args") or ())
     record.update(
         run_all=run_all,
         reasons=list(selection.get("reasons") or ()),
         indexed_commit=selection.get("indexed_commit"),
-        selected_ran_files=len(ran) if run_all else len(ran & picked),
-        missed=[] if run_all else sorted(failing - picked),
+        selected_ran_files=len(ran) if run_all else len(ran & picked_files),
+        missed=sorted({file_of(n) for n in outside}),
+        missed_tests=outside,
         first_failing_rank=first_rank(order, failing),
         order_length=len(order),
     )
@@ -164,6 +193,11 @@ def render_summary(record: Mapping[str, Any]) -> str:
         _selection_line(record),
         *_failure_lines(record),
     ]
+    if record.get("index_cache") == "older":
+        lines.append(
+            "- The index predates the base, so the pick may be smaller than a current "
+            "index would make it."
+        )
     if record.get("selector_seconds") is not None:
         lines.append(
             f"- Selector time: {record['selector_seconds']} s "
@@ -179,10 +213,12 @@ def render_summary(record: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _read(path: str | None) -> str | None:
-    if not path or not Path(path).is_file():
+def _load(path: str | None, parse: Callable[[str], Any]) -> Any:
+    """*parse* of the file at *path*; ``None`` when it is missing or does not parse."""
+    try:
+        return parse(Path(path).read_text(encoding="utf-8")) if path else None
+    except Exception:  # one bad input must not cost the record the others
         return None
-    return Path(path).read_text(encoding="utf-8")
 
 
 def _context(env: Mapping[str, str]) -> dict[str, Any]:
@@ -196,13 +232,12 @@ def _context(env: Mapping[str, str]) -> dict[str, Any]:
 
 
 def compare(args: argparse.Namespace, env: Mapping[str, str]) -> dict[str, Any]:
-    selection_text = _read(args.selection)
-    junit_text = _read(args.junit)
-    meta_text = _read(args.meta)
+    meta = _load(args.meta, json.loads)
+    selection = _load(args.selection, json.loads)
     return build_record(
-        json.loads(selection_text) if selection_text else None,
-        json.loads(meta_text) if meta_text else {},
-        read_junit(junit_text) if junit_text else None,
+        selection if isinstance(selection, dict) else None,
+        meta if isinstance(meta, dict) else {},
+        _load(args.junit, read_junit),
         _context(env),
     )
 
@@ -216,12 +251,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         record = compare(args, os.environ)
         summary = render_summary(record)
-        if args.out:
-            Path(args.out).write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
     except Exception as exc:
-        append_step_summary(f"Test selection comparison could not run: {exc!r}")
-        print(notice(f"Test selection comparison could not run: {exc!r}"))
-        return 0
+        record = {"version": RECORD_VERSION, **_context(os.environ), "error": repr(exc)}
+        summary = f"Test selection comparison could not run: {exc!r}"
+        print(notice(summary))
+    if args.out:
+        with contextlib.suppress(OSError):
+            Path(args.out).write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
     append_step_summary(summary)
     print(summary)
     return 0

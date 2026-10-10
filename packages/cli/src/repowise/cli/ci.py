@@ -131,4 +131,3 @@ def _reading_change(what: str, *, shallow_hint: bool = True) -> Iterator[None]:
         ) from exc
     except (subprocess.SubprocessError, OSError) as exc:
         raise CannotEvaluateError("git_failed", f"Could not run git: {exc}") from exc
-
