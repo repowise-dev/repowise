@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BaseDefUseDialect, Occurrence, StatementDefUse
+from .base import BaseDefUseDialect, Occurrence, StatementDefUse, _written_before_read
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -67,7 +67,7 @@ _SCOPE_BOUNDARIES = frozenset(
 )
 
 # Callee node kinds that name a function/method, not a variable.
-_CALLEE_NAME_KINDS = frozenset({"identifier", "generic_name", "qualified_name"})
+_CALLEE_NAME_KINDS = frozenset({"generic_name", "qualified_name"})
 
 
 class CSharpDefUseDialect(BaseDefUseDialect):
@@ -198,8 +198,10 @@ class CSharpDefUseDialect(BaseDefUseDialect):
             self._process(node.child_by_field_name("right"), defs, uses)
             return
         if t in _UPDATE_KINDS:  # ``x++`` / ``--x`` -- read-modify-write
-            op = node.child_by_field_name("operator")
-            if op is not None and op.text in (b"++", b"--"):
+            has_update = any(
+                c.type in ("++", "--") or c.text in (b"++", b"--") for c in node.children
+            )
+            if has_update:
                 arg = node.child_by_field_name("argument") or (
                     node.named_children[0] if node.named_children else None
                 )
@@ -276,6 +278,10 @@ class CSharpDefUseDialect(BaseDefUseDialect):
             return
         if self._is_scope_boundary(node):
             self.boundary_def(node, defs)
+            if node.type in ("lambda_expression", "anonymous_method_expression"):
+                writes, reads = self._closure_def_use(node)
+                bound = self._closure_bound_names(node) | _written_before_read(writes, reads)
+                defs.extend(w for w in writes if w.name not in bound)
             return
         for child in node.named_children:
             self._process(child, defs, uses)

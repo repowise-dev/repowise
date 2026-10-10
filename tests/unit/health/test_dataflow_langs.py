@@ -1336,11 +1336,10 @@ def test_csharp_def_use_classification():
     assert "z" not in defs
     uses = _use_names(fn)
     assert {"baseVal", "input", "seen", "a", "b", "acc", "obj", "refCount", "r", "s"} <= uses
-    # Method names (open, DoOut, DoRef, Length) are never variable reads.
-    assert "open" not in uses
-    assert "DoOut" not in uses
-    assert "DoRef" not in uses
+    # Member names (Length) are never variable reads; bare callee identifiers (open, DoOut, DoRef)
+    # are recorded as uses so delegate invocations (cb(n)) are captured as reads.
     assert "Length" not in uses
+    assert {"open", "DoOut", "DoRef"} <= uses
 
 
 def test_csharp_compound_assign_reads_target():
@@ -2519,4 +2518,76 @@ def test_csharp_switch_arm_binder_inside_the_span_is_not_a_param():
     assert spans
     for s in spans:
         assert "armVal" not in s.params
+
+
+def test_csharp_delegate_call_records_callee_as_read():
+    src = """
+        class Demo {
+            int M(Func<int, int> cb, int n) {
+                var r = 0;
+                if (n > 0) {
+                    r = cb(n);
+                    r += 1;
+                }
+                return r;
+            }
+        }
+        """
+    fn = _first("csharp", src)
+    from repowise.core.analysis.health.dataflow.slice import _infer_in_out, _var_lines
+
+    dl, ul = _var_lines(fn.def_use)
+    params, returns = _infer_in_out(dl, ul, 5, 8)
+    assert "cb" in params
+    assert "n" in params
+    assert returns == ("r",)
+
+
+def test_csharp_update_expression_inside_if_records_def():
+    src = """
+        class Demo {
+            int M(int a) {
+                int tryCount = 0;
+                int waitDuration = 0;
+                if (a > 0) {
+                    tryCount++;
+                    waitDuration = 5;
+                }
+                return tryCount + waitDuration;
+            }
+        }
+        """
+    fn = _first("csharp", src)
+    lmap = get_language_map("csharp")
+    from repowise.core.analysis.health.dataflow.slice import _infer_in_out, _var_lines
+
+    dl, ul = _var_lines(fn.def_use)
+    _, returns = _infer_in_out(dl, ul, 5, 8)
+    assert "tryCount" in returns
+    assert "waitDuration" in returns
+    extractions = find_extractions(fn, lmap)
+    assert not any(x.start_line <= 5 and x.end_line >= 8 for x in extractions)
+
+
+def test_csharp_lambda_writing_outer_local_records_def():
+    src = """
+        class Demo {
+            int M(int a) {
+                int tryCount = 0;
+                Action act = () => { tryCount++; };
+                act();
+                return tryCount;
+            }
+        }
+        """
+    fn = _first("csharp", src)
+    lmap = get_language_map("csharp")
+    from repowise.core.analysis.health.dataflow.slice import _infer_in_out, _var_lines
+
+    dl, ul = _var_lines(fn.def_use)
+    _, returns = _infer_in_out(dl, ul, 4, 5)
+    assert "tryCount" in returns
+    extractions = find_extractions(fn, lmap)
+    assert not any(x.start_line <= 4 and x.end_line >= 5 for x in extractions)
+
 
