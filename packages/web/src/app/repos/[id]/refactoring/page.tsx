@@ -388,6 +388,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         fileHref={fileHref}
         readSource={readSource}
         onGenerateCode={onGenerateCode}
+        modelSetting={modelSetting}
         related={related?.files?.[0]}
         relatedWorkHref={toRelated}
         onNavigate={(href) => router.push(href)}
