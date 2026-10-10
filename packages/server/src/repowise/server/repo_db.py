@@ -81,7 +81,7 @@ async def ensure_repo_registration(
     *,
     local_path: str,
     name: str,
-    url: str = "",
+    url: str | None = None,
     default_branch: str = "main",
     settings: dict | None = None,
     repo_id: str | None = None,
@@ -223,7 +223,8 @@ async def upsert_registry_row(
         )
     else:
         existing.name = name
-        existing.url = url
+        if url is not None:
+            existing.url = url
         existing.default_branch = default_branch
         if settings is not None:
             existing.settings_json = _json.dumps(settings)

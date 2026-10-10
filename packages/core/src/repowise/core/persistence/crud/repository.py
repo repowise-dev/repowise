@@ -34,7 +34,7 @@ async def upsert_repository(
     *,
     name: str,
     local_path: str,
-    url: str = "",
+    url: str | None = None,
     default_branch: str = "main",
     settings: dict | None = None,
     head_commit: str | None = None,
@@ -43,6 +43,14 @@ async def upsert_repository(
     """Create or update a repository record.
 
     Lookup is by ``local_path`` (the canonical key for local repositories).
+
+
+    ``url`` is tri-state. ``None`` (the default, used by index/update callers
+    that do not know the remote) preserves a stored URL on an existing row
+    and, on create, fills from the checkout's ``origin`` remote when that
+    URL can be read from git config. An explicit string, including ``""``,
+    replaces the stored value. Callers that previously relied on the empty
+    default to clear a URL must pass ``""``.
 
     ``repo_id`` fixes the primary key when the row is *created*. The server
     keeps a registry row for each repo in its primary database and the
@@ -62,13 +70,14 @@ async def upsert_repository(
     repo = result.scalar_one_or_none()
 
     resolved_head = head_commit or _read_head_commit(local_path)
+    resolved_url = url if url is not None else (_read_origin_url(local_path) or "")
 
     if repo is None:
         repo = Repository(
             id=repo_id or _new_uuid(),
             name=name,
             local_path=local_path,
-            url=url,
+            url=resolved_url,
             default_branch=default_branch,
             settings_json=json.dumps(settings or {}),
             head_commit=resolved_head,
@@ -76,7 +85,8 @@ async def upsert_repository(
         session.add(repo)
     else:
         repo.name = name
-        repo.url = url
+        if url is not None:
+            repo.url = url
         repo.default_branch = default_branch
         if settings is not None:
             repo.settings_json = json.dumps(settings)
@@ -88,6 +98,62 @@ async def upsert_repository(
 
     await session.flush()
     return repo
+
+
+
+def _read_origin_url(local_path: str) -> str | None:
+    """Return ``remote.origin.url`` from git config, or None.
+
+    File I/O only, matching ``_read_head_commit``. Follows a worktree
+    ``.git`` gitdir pointer far enough to find ``config``. Does not invoke
+    git and does not treat a missing remote as an error.
+    """
+    try:
+        git_path = Path(local_path) / ".git"
+        config_path = _git_config_path(git_path)
+        if config_path is None or not config_path.is_file():
+            return None
+        return _origin_url_from_config(config_path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+
+
+def _git_config_path(git_path: Path) -> Path | None:
+    if git_path.is_dir():
+        return git_path / "config"
+    if not git_path.is_file():
+        return None
+    raw = git_path.read_text(encoding="utf-8").strip()
+    if not raw.startswith("gitdir:"):
+        return None
+    git_dir = Path(raw.split(":", 1)[1].strip())
+    if not git_dir.is_absolute():
+        git_dir = (git_path.parent / git_dir).resolve()
+    if (git_dir / "config").is_file():
+        return git_dir / "config"
+    commondir = git_dir / "commondir"
+    if commondir.is_file():
+        common = Path(commondir.read_text(encoding="utf-8").strip())
+        if not common.is_absolute():
+            common = (git_dir / common).resolve()
+        return common / "config"
+    return git_dir.parent.parent / "config"
+
+
+def _origin_url_from_config(text: str) -> str | None:
+    in_origin = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_origin = line.lower() == '[remote "origin"]'
+            continue
+        if not in_origin or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key.strip() == "url":
+            value = value.strip()
+            return value or None
+    return None
 
 
 def _read_head_commit(local_path: str) -> str | None:
