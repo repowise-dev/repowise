@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 import { PlanDetail } from "../../src/refactoring/plan-detail";
+import { extractMethodStages } from "../../src/refactoring/types";
 
 function stage(start: number, end: number, name: string | null, out: string[]) {
   return {
@@ -88,5 +89,46 @@ describe("PlanDetail for a staged Extract Method plan", () => {
     expect(folds).toHaveLength(2);
     expect(folds[0]!.open).toBe(true);
     expect(folds[1]!.open).toBe(false);
+  });
+});
+
+describe("extractMethodStages bounds", () => {
+  const withBounds = (start: unknown, end: unknown) =>
+    ({
+      ...plan,
+      plan: { ...plan.plan, stages: [{ ...first, span: { start, end } }, second] },
+    }) as unknown as RefactoringPlan;
+
+  it.each([
+    ["a numeric string", "10", 30],
+    ["a boolean", true, 30],
+    ["a float", 10.5, 30],
+    ["zero", 0, 30],
+    ["an end that is a string", 10, "30"],
+  ])("drops a stage whose bound is %s", (_label, start, end) => {
+    const stages = extractMethodStages(withBounds(start, end));
+    expect(stages.map((s) => s.span)).toEqual([{ start: 34, end: 60 }]);
+  });
+
+  it("keeps whole positive line numbers", () => {
+    expect(extractMethodStages(withBounds(10, 30)).map((s) => s.span.start)).toEqual([10, 34]);
+  });
+});
+
+describe("PlanDetail with fewer than two valid stages", () => {
+  it("renders the single-span view for one stage", () => {
+    const single = { ...plan, plan: { ...plan.plan, stages: [first] } } satisfies RefactoringPlan;
+    render(<PlanDetail plan={single} />);
+    expect(screen.queryByText(/helpers it calls in order/)).toBeNull();
+    expect(screen.getByText("Extract span")).toBeTruthy();
+  });
+
+  it("renders the single-span view when invalid bounds leave one stage", () => {
+    const broken = {
+      ...plan,
+      plan: { ...plan.plan, stages: [{ ...first, span: { start: "10", end: 30 } }, second] },
+    } as unknown as RefactoringPlan;
+    render(<PlanDetail plan={broken} />);
+    expect(screen.queryByText(/helpers it calls in order/)).toBeNull();
   });
 });

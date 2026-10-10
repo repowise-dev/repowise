@@ -542,7 +542,8 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
 
   if (plan.refactoring_type === "extract_method") {
     const stages = extractMethodStages(plan);
-    if (stages.length) {
+    // Two or more valid stages, as Fix first counts them; else the single span.
+    if (stages.length >= 2) {
       return <StagedExtract plan={plan} fileHref={fileHref} hideIntro={hideIntro} stages={stages} />;
     }
     const em = extractMethodPlan(plan);
