@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ActionsResponse, NextAction } from "@repowise-dev/types/actions";
 
-import { NextActions, actionsStatus } from "../../src/overview/next-actions.js";
+import { NextActions } from "../../src/overview/next-actions.js";
 import { actionHref } from "../../src/overview/action-href.js";
 
 function action(overrides: Partial<NextAction> = {}): NextAction {
@@ -160,21 +160,21 @@ describe("the action drawer", () => {
   });
 });
 
-describe("actionsStatus", () => {
-  it("names the window by its last indexed commit and counts work only", () => {
-    const now = action({ tier: "act_now", horizons: ["week"] });
-    const signal = action({ id: "s", tier: "improve_signal", horizons: ["week"] });
-    const text = actionsStatus(response([now, signal], []), "week");
-    expect(text).toMatch(/^1 thing worth doing in the week to /);
-    expect(text).toMatch(/1 of them now\.$/);
+describe("the status sentence", () => {
+  it("renders the sentence core wrote for the open time frame", () => {
+    const data = {
+      ...response([], [action()]),
+      summary: { week: "Core wording, week.", quarter: "Core wording, quarter." },
+    };
+    render(<NextActions data={data} hrefFor={() => null} />);
+    expect(screen.getByText("Core wording, quarter.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /This week/ }));
+    expect(screen.getByText("Core wording, week.")).toBeInTheDocument();
   });
 
-  it("points to the other time frame when this one is clear", () => {
-    expect(actionsStatus(response([], [action()]), "week")).toBe(
-      "Nothing needs you in the week to " +
-        new Date("2026-09-28T09:45:08").toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
-        ", the last indexed commit. 1 thing is worth planning this quarter.",
-    );
+  it("shows no sentence from a server that predates it", () => {
+    render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
+    expect(screen.queryByText(/worth doing|Nothing/)).toBeNull();
   });
 });
 

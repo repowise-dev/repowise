@@ -85,6 +85,8 @@ export interface ActionsResponse {
   week_start: string | null;
   context: ActionContext;
   horizons: Record<string, ActionHorizon>;
+  /** Where things stand in each horizon, in one sentence. */
+  summary: Record<string, string>;
   rules: ActionRuleStatus[];
   unavailable: Record<string, string>;
 }

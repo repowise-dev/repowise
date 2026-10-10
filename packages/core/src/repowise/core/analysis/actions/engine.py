@@ -14,6 +14,7 @@ from .context import RepoContext, build_context
 from .facts import RepoFacts
 from .model import HORIZONS, RULE_RANK, TIER_RANK, Action, RuleOutcome
 from .rules import code, hygiene, signal
+from .summary import summarize
 
 Rule = Callable[[RepoFacts, RepoContext], RuleOutcome]
 
@@ -137,5 +138,6 @@ def compose_actions(
             "history_too_short": ctx.history_too_short,
         },
         "horizons": horizons,
+        "summary": summarize(horizons, facts.anchor),
         "rules": [o.as_dict() for o in outcomes],
     }

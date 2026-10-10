@@ -25,6 +25,13 @@ export type ActionHorizonKey = "week" | "quarter";
 /** `act_now` is wrong or got worse; `plan` is worth scheduling; `improve_signal` sharpens the other two. */
 export type ActionTier = "act_now" | "plan" | "improve_signal";
 
+/** The heading each tier is listed under; core's `TIER_LABELS`, pinned by the parity test. */
+export const ACTION_TIER_LABELS: Record<ActionTier, string> = {
+  act_now: "Now",
+  plan: "Worth planning",
+  improve_signal: "Improve what Repowise can see",
+};
+
 /** `unknown` is printed as a fact, never read as zero. */
 export type ActionFactBasis = "measured" | "inferred" | "unknown";
 
@@ -139,6 +146,11 @@ export interface ActionsResponse {
     history_too_short: boolean;
   };
   horizons: Record<ActionHorizonKey, ActionHorizon>;
+  /**
+   * Where things stand in each horizon, in one sentence, worded by core so
+   * every surface says the same thing. Absent from a server that predates it.
+   */
+  summary?: Record<ActionHorizonKey, string>;
   rules: ActionRuleReport[];
   /** Store name to why it could not be read. */
   unavailable: Record<string, string>;

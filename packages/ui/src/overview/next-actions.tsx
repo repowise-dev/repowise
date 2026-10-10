@@ -3,12 +3,13 @@
 import { Fragment, useMemo, useState, type ElementType, type ReactNode } from "react";
 import { BellOff, Check, PanelRight, X } from "lucide-react";
 import { toast } from "sonner";
-import type {
-  ActionHorizonKey,
-  ActionsResponse,
-  ActionStateValue,
-  ActionTier,
-  NextAction,
+import {
+  ACTION_TIER_LABELS,
+  type ActionHorizonKey,
+  type ActionsResponse,
+  type ActionStateValue,
+  type ActionTier,
+  type NextAction,
 } from "@repowise-dev/types/actions";
 
 import { EFFORT_LABEL } from "../health/labels";
@@ -22,19 +23,16 @@ import { OverviewSection } from "./section";
 /** Rows shown before "Show all"; the response carries up to 20 per horizon. */
 const PREVIEW = 5;
 
-const TIER_HEADING: Record<ActionTier, string> = {
-  act_now: "Now",
-  plan: "Worth planning",
-  improve_signal: "Improve what Repowise can see",
-};
-
 export interface NextActionsProps {
   /** `null` when the server predates actions; the section then renders nothing. */
   data: ActionsResponse | null;
   hrefFor: (action: NextAction) => string | null;
   /** A file's own page, for the files an opened action names. */
   fileHref?: ((path: string) => string | null) | undefined;
-  /** Persist a dismissal, snooze, done, or (null) an undo. Omit to hide those verbs. */
+  /**
+   * Persist a dismissal, snooze, done, or (null) an undo. Omit to hide those verbs.
+   * The sentence over the list is the server's, so pass fresh `data` after a write.
+   */
   onSetState?: (action: NextAction, state: ActionStateValue | null) => Promise<void>;
   /** An action's agent prompt as core renders it. Omit to hide the prompt. */
   loadPrompt?: ActionDrawerProps["loadPrompt"];
@@ -63,50 +61,6 @@ export function renderActionTitle(title: string): ReactNode {
 
 function plural(n: number, noun: string): string {
   return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
-}
-
-function formatDay(iso: string | null): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? null
-    : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-/**
- * The one sentence that says where things stand. Counts the list as the reader
- * sees it, and names the window, because "this week" means the repository's
- * last week of commits, which is not always the calendar's.
- */
-export function actionsStatus(
-  data: ActionsResponse,
-  horizon: ActionHorizonKey,
-  answered: ReadonlySet<string> = new Set(),
-): string {
-  const h = data.horizons[horizon];
-  const gone = (tier: ActionTier) =>
-    h.actions.filter((a) => a.tier === tier && answered.has(a.id)).length;
-  const now = (h.by_tier.act_now ?? 0) - gone("act_now");
-  const work = now + (h.by_tier.plan ?? 0) - gone("plan");
-  const until = formatDay(data.anchor);
-  const window =
-    horizon === "week"
-      ? until
-        ? `in the week to ${until}, the last indexed commit`
-        : "this week"
-      : "this quarter";
-  if (work === 0) {
-    const other = horizon === "week" ? data.horizons.quarter : data.horizons.week;
-    const otherWork = (other.by_tier.act_now ?? 0) + (other.by_tier.plan ?? 0);
-    return otherWork > 0
-      ? `Nothing needs you ${window}. ${plural(otherWork, "thing")} ${
-          horizon === "week"
-            ? `${otherWork === 1 ? "is" : "are"} worth planning this quarter`
-            : "came up this week"
-        }.`
-      : `Nothing stands out ${window}.`;
-  }
-  return `${plural(work, "thing")} worth doing ${window}${now ? `, ${now} of them now` : ""}.`;
 }
 
 export function NextActions({
@@ -178,7 +132,7 @@ export function NextActions({
   return (
     <OverviewSection
       title="Do next"
-      description={actionsStatus(data, horizon, answered)}
+      description={data.summary?.[horizon] ?? ""}
       action={
         <Segmented
           label="Time frame"
@@ -205,7 +159,7 @@ export function NextActions({
           {groupByTier(shown).map(([tier, items]) => (
             <div key={tier} className="flex flex-col">
               <h3 className="pb-1 pt-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] first:pt-0">
-                {TIER_HEADING[tier]}
+                {ACTION_TIER_LABELS[tier]}
               </h3>
               <ul className="flex flex-col divide-y divide-[var(--color-border-default)]">
                 {items.map((action) => (

@@ -89,6 +89,9 @@ class ActionsResponse(BaseModel):
     week_start: str | None
     context: ActionContext
     horizons: dict[Literal["week", "quarter"], ActionHorizon]
+    summary: dict[Literal["week", "quarter"], str] = Field(
+        description="Where things stand in each horizon, in one sentence."
+    )
     rules: list[ActionRuleStatus]
     unavailable: dict[str, str]
 

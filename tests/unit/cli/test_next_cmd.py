@@ -17,6 +17,7 @@ from click.testing import CliRunner
 
 from repowise.cli.commands import next_cmd, status_cmd
 from repowise.cli.commands.next_cmd import next_command
+from repowise.core.analysis.actions.summary import summarize
 
 
 def _action(n: int, tier: str, title: str, **extra: Any) -> dict[str, Any]:
@@ -52,12 +53,14 @@ def _horizon(actions: list[dict[str, Any]], total: int | None = None) -> dict[st
 
 
 def _view(week: list[dict], quarter: list[dict], **extra: Any) -> dict[str, Any]:
+    horizons = {"week": _horizon(week), "quarter": _horizon(quarter)}
     return {
         "status": "available",
         "anchor": "2026-09-28T12:00:00",
         "week_start": "2026-09-21T12:00:00",
         "context": {},
-        "horizons": {"week": _horizon(week), "quarter": _horizon(quarter)},
+        "horizons": horizons,
+        "summary": summarize(horizons, datetime.datetime(2026, 9, 28, 12)),
         "rules": [],
         "unavailable": {},
         **extra,
@@ -74,6 +77,16 @@ def canned(monkeypatch: pytest.MonkeyPatch):
 
 def _run(*args: str) -> Any:
     return CliRunner().invoke(next_command, [*args, "--no-workspace"], catch_exceptions=False)
+
+
+def test_prints_the_sentence_the_view_carries(canned, tmp_path: Path) -> None:
+    view = _view([_action(1, "plan", "Do it")], [])
+    view["summary"] = {"week": "Core wording, week.", "quarter": "Core wording, quarter."}
+    canned(view)
+
+    assert _run(str(tmp_path)).output.startswith("Core wording, week.")
+    assert _run(str(tmp_path), "--horizon", "quarter").output.startswith("Core wording, quarter.")
+    assert status_cmd._next_actions_lines(view)[0].endswith("Core wording, week.")
 
 
 def test_groups_by_tier_under_the_status_sentence(canned, tmp_path: Path) -> None:

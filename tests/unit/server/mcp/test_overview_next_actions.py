@@ -84,10 +84,14 @@ def test_compact_view_keeps_three_rows_and_names_unavailable_stores():
             "week": {"actions": rows, "total": 9, "hidden": 0, "by_tier": {"plan": 9}},
             "quarter": {"actions": [], "total": 0, "hidden": 0, "by_tier": {}},
         },
+        "summary": {"week": "9 things worth doing this week.", "quarter": "Nothing."},
         "unavailable": {"security": "why", "performance": "why"},
     }
 
     block = compact_actions_view(view)
+
+    # The agent reads counts; the sentence stays on the human surfaces.
+    assert "summary" not in block
 
     assert [a["id"] for a in block["week"]["actions"]] == ["act_0", "act_1", "act_2"]
     assert block["week"]["total"] == 9

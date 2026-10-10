@@ -85,6 +85,15 @@ def test_action_vocabularies_match_python() -> None:
         assert _union_members(alias, "actions.ts") == set(values), alias
 
 
+def test_action_tier_labels_match_python() -> None:
+    from repowise.core.analysis.actions import TIER_LABELS
+
+    text = (_TYPES_SRC / "actions.ts").read_text(encoding="utf-8")
+    match = re.search(r"export const ACTION_TIER_LABELS[^=]*= \{(.*?)\};", text, re.DOTALL)
+    assert match, "ACTION_TIER_LABELS is not declared in actions.ts"
+    assert dict(re.findall(r'(\w+): "([^"]+)"', match.group(1))) == TIER_LABELS
+
+
 def test_fix_first_vocabularies_match_python() -> None:
     from repowise.core.analysis.health.fix_first import (
         FIX_EFFORTS,

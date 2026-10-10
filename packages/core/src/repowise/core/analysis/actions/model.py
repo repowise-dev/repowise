@@ -36,6 +36,13 @@ HORIZONS: tuple[str, ...] = get_args(Horizon)
 ActionTier = Literal["act_now", "plan", "improve_signal"]
 ACTION_TIERS: tuple[str, ...] = get_args(ActionTier)
 
+#: The heading each tier is listed under, on every surface.
+TIER_LABELS: dict[str, str] = {
+    "act_now": "Now",
+    "plan": "Worth planning",
+    "improve_signal": "Improve what Repowise can see",
+}
+
 #: Where a fact came from. ``unknown`` is a fact too: "coverage unknown" is
 #: printed, never read as zero.
 FactBasis = Literal["measured", "inferred", "unknown"]

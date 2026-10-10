@@ -19,6 +19,7 @@ from .model import (
     HORIZONS,
     RULE_STATUSES,
     TARGET_KINDS,
+    TIER_LABELS,
     Action,
     RuleOutcome,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "RULES",
     "RULE_STATUSES",
     "TARGET_KINDS",
+    "TIER_LABELS",
     "Action",
     "ActionStateRecord",
     "RepoFacts",
