@@ -132,6 +132,29 @@ export interface RefactoringPlan {
   recipe?: RefactoringRecipe;
 }
 
+/** What an Extract Helper reuse plan does at a site: replace the lines with a
+ *  call to the existing function, or delete a whole copy of it. Mirrors
+ *  ``refactoring.reuse.REUSE_SITE_ACTIONS``. */
+export type ReuseSiteAction = "replace_with_call" | "delete";
+
+/** An Extract Helper plan's `plan.reuse`, on plan detail only: one site is
+ *  already a function the others call instead of a new helper. */
+export interface ExtractHelperReuse {
+  existing_symbol: string;
+  file: string;
+  span: { start: number; end: number };
+  reason: string;
+  sites: Array<{
+    file: string;
+    span: { start: number; end: number };
+    action: ReuseSiteAction;
+    /** The statement that replaces the span; null for a deleted copy. */
+    new_text: string | null;
+    /** The copy's symbol id, when the site is a whole copy. */
+    replaces: string | null;
+  }>;
+}
+
 /** What one recipe step does to the code. Mirrors ``refactoring.recipe.RECIPE_ACTIONS``. */
 export type RecipeAction =
   | "extract"

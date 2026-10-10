@@ -145,3 +145,22 @@ def build_methods_by_file(graph: Any) -> dict[str, tuple[str, ...]]:
         if methods:
             out[file_path] = tuple(sorted(methods))
     return out
+
+
+def defined_symbols(graph: Any, file_path: str) -> list[tuple[str, dict[str, Any]]]:
+    """``(id, node)`` for each declaration *file_path* defines (``defines``
+    edges), the synthetic module symbol left out, with a whole line span.
+    Empty when the graph has no node for the file."""
+    if graph is None or file_path not in graph:
+        return []
+    out = []
+    for _u, target, data in graph.out_edges(file_path, data=True):
+        if data.get("edge_type") != "defines":
+            continue
+        node = graph.nodes[target]
+        if node.get("node_type") != "symbol" or node.get("kind") == "module":
+            continue
+        start, end = node.get("start_line"), node.get("end_line")
+        if isinstance(start, int) and isinstance(end, int) and end >= start:
+            out.append((target, node))
+    return out
