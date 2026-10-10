@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import sys
 from io import StringIO
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -83,7 +85,9 @@ def test_prompt_setup_can_reuse_existing_key(monkeypatch: Any) -> None:
     assert api_key == "existing-secret"
 
 
-def test_persist_setup_saves_endpoint_and_key_with_consent(monkeypatch: Any, tmp_path: Any) -> None:
+def test_persist_setup_saves_endpoint_and_key_with_consent(
+    monkeypatch: Any, tmp_path: Any
+) -> Path:
     monkeypatch.setenv(NO_SAVE_KEY_ENV, "")
     monkeypatch.setattr(openai_compatible.click, "confirm", lambda *_a, **_k: True)
     console, _ = _console()
@@ -100,6 +104,16 @@ def test_persist_setup_saves_endpoint_and_key_with_consent(monkeypatch: Any, tmp
     contents = env_file.read_text(encoding="utf-8")
     assert "OPENAI_BASE_URL=http://localhost:20128/v1" in contents
     assert "OPENAI_API_KEY=router-secret" in contents
+    return env_file
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_persist_setup_env_file_is_owner_only(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    env_file = test_persist_setup_saves_endpoint_and_key_with_consent(
+        monkeypatch, tmp_path
+    )
     assert env_file.stat().st_mode & 0o777 == 0o600
 
 

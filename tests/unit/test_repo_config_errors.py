@@ -8,6 +8,8 @@ and every run used defaults with no explanation.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from repowise.core.repo_config import (
@@ -59,6 +61,7 @@ def test_absent_config_is_still_an_empty_dict(tmp_path) -> None:
     assert load_repo_env(tmp_path) == {}
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
 def test_unreadable_env_raises_typed_error(tmp_path) -> None:
     """An existing-but-unreadable .env must not read as 'no keys'."""
     env_file = tmp_path / ".repowise" / ".env"
