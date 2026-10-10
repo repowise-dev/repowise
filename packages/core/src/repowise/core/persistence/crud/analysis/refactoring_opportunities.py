@@ -291,7 +291,7 @@ async def _rank_live_plans(session: AsyncSession, repository_id: str) -> list[An
         session, repository_id, [item.suggestion for item in ranked]
     )
     ranked = [
-        dataclasses.replace(item, annotations=annotate(item.suggestion, facts) or None)
+        dataclasses.replace(item, annotations=annotate(item.suggestion, facts))
         for item in ranked
     ]
     await store_plan_ranks(session, repository_id, ranked)
@@ -362,11 +362,15 @@ async def finalize_refactoring_opportunities(
     # used to be rebuilt on every request for every open plan, which is the
     # single largest cost the serving path used to carry.
     ranked = await _rank_live_plans(session, repository_id)
+    # Every ranked non-performance plan is a live plan, so the lookup is total;
+    # a miss raises rather than leaving a governed step mechanical.
     public_of = {row.id: row.public_id for row in live_plans}
     governed = {
         public_of[item.id]
         for item in ranked
-        if item.annotations and item.annotations.governed_by and item.id in public_of
+        if item.suggestion.refactoring_type != _PERF_TYPE
+        and item.annotations is not None
+        and item.annotations.governed_by
     }
 
     # Findings let each step name the diagnosis its own target answers, so an

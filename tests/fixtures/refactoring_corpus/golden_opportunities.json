@@ -41,7 +41,9 @@
             "reasons": [
               "dataflow_proved_local_extraction"
             ],
-            "unknowns": []
+            "unknowns": [
+              "governed_by_decision"
+            ]
           },
           "confidence": "high",
           "effort_bucket": "S",
@@ -108,7 +110,9 @@
             "reasons": [
               "dataflow_proved_local_extraction"
             ],
-            "unknowns": []
+            "unknowns": [
+              "governed_by_decision"
+            ]
           },
           "confidence": "high",
           "effort_bucket": "S",
@@ -204,7 +208,9 @@
             "reasons": [
               "dataflow_proved_local_extraction"
             ],
-            "unknowns": []
+            "unknowns": [
+              "governed_by_decision"
+            ]
           },
           "confidence": "high",
           "effort_bucket": "S",
@@ -229,7 +235,9 @@
             "reasons": [
               "dataflow_proved_local_extraction"
             ],
-            "unknowns": []
+            "unknowns": [
+              "governed_by_decision"
+            ]
           },
           "confidence": "high",
           "effort_bucket": "S",
@@ -254,7 +262,9 @@
             "reasons": [
               "dataflow_proved_local_extraction"
             ],
-            "unknowns": []
+            "unknowns": [
+              "governed_by_decision"
+            ]
           },
           "confidence": "high",
           "effort_bucket": "S",

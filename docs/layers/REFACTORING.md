@@ -94,6 +94,7 @@ plan: an accepted decision that governs the file, callers or importers of what
 the plan moves, a target nothing reaches (delete it instead), and recent commits
 on the same lines. A governed plan's steps are `judgment`, and its
 `blast_radius.co_change_partners` names the files that usually change with it.
+A newly accepted decision shows here after the next index or update.
 
 Break Cycle is advisory. Its plan names edges to cut, not which symbols cross
 them or how to move them, so an opportunity carries it as `evidence` rather than

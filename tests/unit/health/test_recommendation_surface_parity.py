@@ -40,9 +40,6 @@ def test_golden_surface_fields_and_order_are_identical(fixtures_dir, capsys) -> 
     mcp = [_serialize_refactoring(item) for item in recommendations]
     _render_refactoring_targets([], [], mcp, fmt="json")
     cli = json.loads(capsys.readouterr().out)["refactoring_plans"]
-    # One plan in full also carries what other layers say about it; the list never does.
-    for row in (*mcp, *cli):
-        assert (row.pop("governed_by"), row.pop("risks")) == ([], [])
 
     assert rest == mcp == cli
     assert [row["target_symbol"] for row in rest] == golden["canonical_order"]

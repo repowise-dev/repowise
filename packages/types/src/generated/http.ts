@@ -2743,7 +2743,8 @@ export interface RefactoringOpportunityStatusUpdate {
 
 /**
  * One plan read alone: what other layers say about its target. Lists stay
- * on :class:`RefactoringPlanResponse` and never carry these.
+ * on :class:`RefactoringPlanResponse` and never carry these; both are absent
+ * on a plan that was never checked.
  */
 export interface RefactoringPlanDetailResponse {
   id: string;
@@ -2768,8 +2769,8 @@ export interface RefactoringPlanDetailResponse {
   file_nloc?: number;
   file_weighted_deficit?: number;
   validation?: Record<string, unknown>;
-  governed_by?: string[];
-  risks?: PlanRiskResponse[];
+  governed_by?: string[] | null;
+  risks?: PlanRiskResponse[] | null;
 }
 
 /** Bounded product page; the legacy targets response remains unpaged. */

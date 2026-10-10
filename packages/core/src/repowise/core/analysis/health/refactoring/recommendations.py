@@ -1018,7 +1018,7 @@ class Recommendation:
     # The reads a rank-only pass made, so detailing a page reuses them.
     inputs: ValidationInputs | None = field(default=None, repr=False, compare=False)
     # What other layers say about the target (:mod:`.annotations`), stored at
-    # finalize and served on plan detail only.
+    # finalize and served on plan detail only; ``None`` when never checked.
     annotations: PlanAnnotations | None = field(default=None, repr=False, compare=False)
 
     @property
@@ -1063,7 +1063,10 @@ class Recommendation:
                 **payload["plan"],
                 "steps": steps_with_verify(steps, self.validation),
             }
-        notes = self.annotations or PlanAnnotations()
+        notes = self.annotations
+        if notes is None:
+            # Never checked (an older or unfinalized row): absent, not "none found".
+            return payload
         payload["governed_by"] = list(notes.governed_by)
         payload["risks"] = [risk.as_dict() for risk in notes.risks]
         if notes.co_change_partners:
@@ -1088,7 +1091,11 @@ class Recommendation:
             "blast_radius": self.suggestion.blast_radius or {},
             "validation": self.validation.as_dict(),
             **({"step_verify": self.validation.step_verify} if self.validation.step_verify else {}),
-            **({"annotations": self.annotations.as_dict()} if self.annotations else {}),
+            **(
+                {"annotations": self.annotations.as_dict()}
+                if self.annotations is not None
+                else {}
+            ),
         }
 
 

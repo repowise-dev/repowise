@@ -101,10 +101,11 @@ class PlanRiskResponse(BaseModel):
 
 class RefactoringPlanDetailResponse(RefactoringPlanResponse):
     """One plan read alone: what other layers say about its target. Lists stay
-    on :class:`RefactoringPlanResponse` and never carry these."""
+    on :class:`RefactoringPlanResponse` and never carry these; both are absent
+    on a plan that was never checked."""
 
-    governed_by: list[str] = Field(default_factory=list)
-    risks: list[PlanRiskResponse] = Field(default_factory=list)
+    governed_by: list[str] | None = None
+    risks: list[PlanRiskResponse] | None = None
 
 
 class RefactoringTypeCount(BaseModel):
@@ -506,7 +507,10 @@ async def update_refactoring_settings(
 
 
 @router.get(
-    "/{repo_id}/refactoring/{suggestion_id}", response_model=RefactoringPlanDetailResponse
+    "/{repo_id}/refactoring/{suggestion_id}",
+    response_model=RefactoringPlanDetailResponse,
+    # Unset annotations stay absent: "never checked" is not "none found".
+    response_model_exclude_unset=True,
 )
 async def get_refactoring_plan(
     repo_id: str,

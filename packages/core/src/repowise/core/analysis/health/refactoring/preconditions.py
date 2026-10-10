@@ -48,6 +48,9 @@ JUDGMENT_REASONS = (
     "unclassified_refactoring_type",
 )
 
+# Named in ``unknowns`` when composition was not told which plans a decision governs.
+_GOVERNANCE = "governed_by_decision"
+
 # The categorical blast radius Extract Method publishes: extraction adds a
 # private helper and changes no signature, so nothing outside the file moves.
 _LOCAL_SCOPE = "local"
@@ -183,11 +186,15 @@ _JUDGMENT_BY_TYPE: dict[str, tuple[str, ...]] = {
 }
 
 
-def classify_step(suggestion: RefactoringSuggestion, *, governed: bool = False) -> StepApplicability:
+def classify_step(
+    suggestion: RefactoringSuggestion, *, governed: bool | None = None
+) -> StepApplicability:
     """Whether *suggestion* is safe to automate, and the facts behind that.
 
     *governed* says an accepted decision governs the target's file: whatever
-    the shape proves, a person checks the decision allows the change.
+    the shape proves, a person checks the decision allows the change. ``None``
+    means nobody looked (composition from detector rows), and is named in
+    ``unknowns`` rather than read as "not governed".
     """
     facts, unknowns = step_facts(suggestion)
     kind = suggestion.refactoring_type
@@ -208,7 +215,7 @@ def classify_step(suggestion: RefactoringSuggestion, *, governed: bool = False) 
         classification="mechanical" if mechanical else "judgment",
         reasons=tuple(reasons),
         facts=facts,
-        unknowns=unknowns,
+        unknowns=(*unknowns, _GOVERNANCE) if governed is None else unknowns,
     )
 
 

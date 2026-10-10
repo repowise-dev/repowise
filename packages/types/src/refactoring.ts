@@ -104,9 +104,11 @@ export interface RefactoringPlan {
   file_nloc?: number;
   file_weighted_deficit?: number;
   validation?: RecommendationValidation;
-  /** Plan detail only: ids of the accepted decisions governing the file. */
+  /** Plan detail only: ids of the accepted decisions governing the file.
+   *  Absent when the plan was never checked (not yet re-indexed). */
   governed_by?: string[];
-  /** Plan detail only: what to check before applying it. */
+  /** Plan detail only: what to check before applying it. Absent when the
+   *  plan was never checked; empty when nothing was found. */
   risks?: PlanRisk[];
 }
 

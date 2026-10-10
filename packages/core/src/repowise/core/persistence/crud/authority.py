@@ -49,7 +49,7 @@ from repowise.core.analysis.decisions.lifecycle import (
 from repowise.core.analysis.decisions.lifecycle import (
     record_blockers as _record_blockers,
 )
-from repowise.core.analysis.decisions.scope import SCOPE_BASIS_STATED
+from repowise.core.analysis.decisions.scope import SCOPE_BASIS_STATED, binds_to_paths
 
 from ..decision_graph import (
     set_record_scope,
@@ -79,6 +79,7 @@ __all__ = [
     "decision_fields",
     "decision_signatures",
     "dismiss_candidate",
+    "governing_decisions_by_file",
     "is_accepted",
     "latest_acceptance",
     "list_candidates",
@@ -254,6 +255,46 @@ async def decision_currencies(
             continue
         out[record.id] = _record_currency(currency, record)
     return out
+
+
+async def governing_decisions_by_file(
+    session: AsyncSession, repository_id: str
+) -> dict[str, list[tuple[str, str]]]:
+    """``(id, title)`` of the governing decisions naming each file, by id.
+
+    The bulk form of "what governs this path": accepted, at a governing
+    currency (``needs_review`` included: a decision whose code moved still
+    binds until someone re-reads it), with a scope basis that binds to paths.
+    Files are matched as named. A record's module list is derived from those
+    files, so reading it would let a decision about two files govern their
+    whole directory.
+    """
+    records = [
+        record
+        for record in (
+            await session.execute(
+                select(DecisionRecord)
+                .where(DecisionRecord.repository_id == repository_id)
+                .order_by(DecisionRecord.id)
+            )
+        ).scalars()
+        if binds_to_paths(record.scope_basis)
+    ]
+    currencies = await decision_currencies(session, repository_id, records)
+    out: dict[str, list[tuple[str, str]]] = {}
+    for record in records:
+        if record.id in currencies and is_governing(currencies[record.id]):
+            for path in dict.fromkeys(_named_files(record.affected_files_json)):
+                out.setdefault(path, []).append((record.id, record.title))
+    return out
+
+
+def _named_files(raw: Any) -> list[str]:
+    try:
+        value = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [item for item in value if isinstance(item, str) and item] if isinstance(value, list) else []
 
 
 def _record_currency(stored: str, record: DecisionRecord) -> str:

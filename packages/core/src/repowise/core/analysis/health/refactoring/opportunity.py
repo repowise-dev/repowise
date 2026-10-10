@@ -372,7 +372,7 @@ def _step_of(
     plan_id: str,
     relocated_by: str | None,
     findings: Sequence[Any] | None,
-    governed: Collection[str] = frozenset(),
+    governed: Collection[str] | None = None,
 ) -> OpportunityStep:
     finding_ids = None
     if findings is not None and any(field(f, "public_id") for f in findings):
@@ -393,7 +393,9 @@ def _step_of(
         impact_delta=float(suggestion.impact_delta or 0.0),
         source_biomarker=suggestion.source_biomarker,
         relocated_by=relocated_by,
-        applicability=classify_step(suggestion, governed=plan_id in governed),
+        applicability=classify_step(
+            suggestion, governed=None if governed is None else plan_id in governed
+        ),
         finding_ids=finding_ids,
     )
 
@@ -415,7 +417,7 @@ def _evidence_of(suggestion: RefactoringSuggestion, plan_id: str) -> Opportunity
 def _sequence(
     step_rows: Sequence[tuple[RefactoringSuggestion, str]],
     findings: Sequence[Any] | None,
-    governed: Collection[str] = frozenset(),
+    governed: Collection[str] | None = None,
 ) -> list[OpportunityStep]:
     """Build the steps in execution order, marking the ones a move displaces.
 
@@ -439,7 +441,7 @@ def _compose_one(
     members: Sequence[tuple[RefactoringSuggestion, str]],
     primary_biomarker: str | None,
     findings: Sequence[Any] | None,
-    governed: Collection[str] = frozenset(),
+    governed: Collection[str] | None = None,
 ) -> RefactoringOpportunity | None:
     ordered = sorted(members, key=_member_sort_key)
     step_rows = [row for row in ordered if _is_step(row[0])]
@@ -511,7 +513,7 @@ def compose_opportunities(
     *,
     primary_biomarker_by_file: Mapping[str, str] | None = None,
     findings: Iterable[Any] | None = None,
-    governed: Collection[str] = frozenset(),
+    governed: Collection[str] | None = None,
 ) -> list[RefactoringOpportunity]:
     """Fold plans into one ranked opportunity per file.
 
@@ -532,6 +534,7 @@ def compose_opportunities(
 
     *governed* are the plan ids an accepted decision governs, found once at
     finalize; each of those steps is a judgment call (:func:`.preconditions.classify_step`).
+    Omitting it leaves governance unknown on every step, never "not governed".
 
     A plan whose ``source_biomarker`` the finding registry withholds is left
     out, as a step and as evidence; the plan row itself stays stored.

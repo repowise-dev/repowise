@@ -215,6 +215,48 @@ UNAUDITED_KINDS: dict[str, str] = {
 }
 
 
+#: A dead-code finding's ``(symbol, start line, end line)``; no symbol for a whole file.
+DeadSpan = tuple[str | None, int | None, int | None]
+#: A dead-code finding this sure (or marked safe to delete) makes its target
+#: ``unreachable``: no plan beats deleting it.
+DEAD_CONFIDENCE = 0.8
+
+
+def dead_spans(rows: Iterable[Any]) -> dict[str, list[DeadSpan]]:
+    """Sure, open dead-code findings by file: ``(symbol, start, end)``, the
+    symbol ``None`` for an unreachable file."""
+    out: dict[str, list[DeadSpan]] = {}
+    for row in rows:
+        sure = float(field(row, "confidence") or 0.0) >= DEAD_CONFIDENCE or field(
+            row, "safe_to_delete"
+        )
+        whole = field(row, "kind") == "unreachable_file"
+        name = None if whole else field(row, "symbol_name")
+        if (field(row, "status") or "open") == "open" and sure and (whole or name):
+            span = (name, field(row, "start_line"), field(row, "end_line"))
+            out.setdefault(field(row, "file_path"), []).append(span)
+    return out
+
+
+def dead_target(
+    spans: Mapping[str, Iterable[DeadSpan]], path: str, symbol: str | None, line: int | None
+) -> bool:
+    """Whether a sure dead-code finding covers ``symbol`` (at ``line``) in
+    ``path``: the whole file, the line inside the finding's span, or, for a
+    finding stored with no lines, the same name as written (``Old.run`` is
+    not ``New.run``)."""
+    name_here = symbol.rsplit("::", 1)[-1] if symbol else None
+    for name, start, end in spans.get(path, ()):
+        if name is None:
+            return True
+        if start and end:
+            if line and start <= line <= end:
+                return True
+        elif name_here and name == name_here:
+            return True
+    return False
+
+
 class UnitFacts(Protocol):
     """What the code-shape ladders read about a function beyond its row."""
 
@@ -438,6 +480,7 @@ def perf_fix_verdict(
 
 
 __all__ = [
+    "DEAD_CONFIDENCE",
     "DEFAULT_QUEUE_CONTEXTS",
     "DEFAULT_QUEUE_EXCLUSIONS",
     "DEFAULT_QUEUE_PROOFS",
@@ -453,10 +496,13 @@ __all__ = [
     "SMALL_CCN",
     "SMALL_NLOC",
     "UNAUDITED_KINDS",
+    "DeadSpan",
     "Reason",
     "Tally",
     "UnitFacts",
     "Verdict",
+    "dead_spans",
+    "dead_target",
     "finding_verdict",
     "path_verdict",
     "perf_fix_verdict",

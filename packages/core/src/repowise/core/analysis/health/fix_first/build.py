@@ -60,9 +60,13 @@ from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.complexity.dispatch import DISPATCH_SHARE
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.queue.eligibility import (
+    DEAD_CONFIDENCE,
     DEFAULT_QUEUE_CONTEXTS,
+    DeadSpan,
     Tally,
     Verdict,
+    dead_spans,
+    dead_target,
     finding_verdict,
     path_verdict,
     perf_fix_verdict,
@@ -114,8 +118,6 @@ from .model import (
 )
 
 Rows = Iterable[Any]
-#: A dead-code finding's ``(symbol, start line, end line)``; no symbol for a whole file.
-DeadSpan = tuple[str | None, int | None, int | None]
 
 #: Measured size (CCN, lines or nesting alone, before the severity floor and
 #: the hot-file bonus) from which an item leads as "break up", naming the whole
@@ -128,9 +130,6 @@ MAX_TESTS = 5
 MAX_STEPS = 5
 MAX_CONTEXT = 3
 DEFAULT_LIMIT = 10
-#: A dead-code finding this sure (or marked safe to delete) makes its target
-#: ``unreachable``: no plan beats deleting it.
-DEAD_CONFIDENCE = 0.8
 #: Class-level findings: a fix names member groups, which only a plan holds.
 CLASS_MARKERS = frozenset({"low_cohesion", "god_class"})
 
@@ -345,16 +344,7 @@ class _Files:
         ``path``: the whole file, the line inside the finding's span, or, for a
         finding stored with no lines, the same name as written (``Old.run`` is
         not ``New.run``)."""
-        name_here = text.short_symbol(symbol)
-        for name, start, end in self.dead.get(path, ()):
-            if name is None:
-                return True
-            if start and end:
-                if line and start <= line <= end:
-                    return True
-            elif name_here and name == name_here:
-                return True
-        return False
+        return dead_target(self.dead, path, symbol, line)
 
     def why(
         self,
@@ -1049,15 +1039,7 @@ def _severity(severity: str | None, low: str | None) -> str:
 def _dead_spans(rows: Rows) -> dict[str, list[DeadSpan]]:
     """Sure, open dead-code findings by file: ``(symbol, start, end)``, the
     symbol ``None`` for an unreachable file."""
-    out: dict[str, list[DeadSpan]] = defaultdict(list)
-    for row in rows:
-        sure = _num(field(row, "confidence")) >= DEAD_CONFIDENCE or field(row, "safe_to_delete")
-        whole = field(row, "kind") == "unreachable_file"
-        name = None if whole else field(row, "symbol_name")
-        if _open(row) and sure and (whole or name):
-            span = (name, field(row, "start_line"), field(row, "end_line"))
-            out[field(row, "file_path")].append(span)
-    return dict(out)
+    return dead_spans(rows)
 
 
 def _clone_spans(plans: Iterable[Any]) -> dict[str, list[tuple[int, int]]]:

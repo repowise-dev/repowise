@@ -17,9 +17,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....co_change import parse_partners
+from ....persistence.crud.analysis.dead_code import get_dead_code_findings
+from ....persistence.crud.authority import governing_decisions_by_file
+from ....persistence.crud.git import get_git_metadata_bulk
+from ....persistence.models import GitCommit, GitFunctionBlame
+from ..queue.eligibility import DeadSpan, dead_spans, dead_target
 from .extract_helper import ACTIVE_CO_CHANGE
 from .models import RefactoringSuggestion
 
@@ -36,6 +42,9 @@ MAX_CO_CHANGE_PARTNERS = 5
 _MAX_DECISION_RISKS = 3
 #: Kinds that move a symbol out of its file, so its consumers see the change.
 _RELOCATING = frozenset({"split_file", "extract_class", "move_method"})
+#: The blast-radius key each file-level builder writes its dependents under.
+_DEPENDENTS_KEY = {"split_file": "dependent_count", "extract_class": "dependents_count"}
+_BATCH = 500
 
 FunctionCommits = tuple[int, int, tuple[str, ...]]
 
@@ -59,11 +68,8 @@ class PlanAnnotations:
     risks: tuple[PlanRisk, ...] = ()
     co_change_partners: tuple[tuple[str, int], ...] = ()
 
-    def __bool__(self) -> bool:
-        return bool(self.governed_by or self.risks or self.co_change_partners)
-
     def as_dict(self) -> dict[str, Any]:
-        """Only the non-empty parts, so an unannotated plan stores nothing."""
+        """Only the non-empty parts; ``{}`` still says the plan was checked."""
         out: dict[str, Any] = {}
         if self.governed_by:
             out["governed_by"] = list(self.governed_by)
@@ -75,6 +81,7 @@ class PlanAnnotations:
 
     @classmethod
     def from_dict(cls, stored: Any) -> PlanAnnotations | None:
+        """``None`` when nothing was stored: the plan was never checked."""
         if not isinstance(stored, Mapping):
             return None
         risks = tuple(
@@ -88,7 +95,7 @@ class PlanAnnotations:
             if isinstance(row, Mapping) and isinstance(row.get("file_path"), str)
         )
         governed = tuple(str(item) for item in stored.get("governed_by") or ())
-        return cls(governed, risks, partners) or None
+        return cls(governed, risks, partners)
 
 
 def partner_rows(partners: Sequence[tuple[str, int]]) -> list[dict[str, Any]]:
@@ -99,24 +106,22 @@ def partner_rows(partners: Sequence[tuple[str, int]]) -> list[dict[str, Any]]:
 class AnnotationFacts:
     """The repository facts every plan's annotations are read from.
 
-    ``decisions`` maps each file or module a decision names to ``(id, title)`` pairs.
-    ``recent`` is each commit inside the active-edit window, ``sha ->
+    ``decisions`` maps each file a governing decision names to ``(id, title)``
+    pairs. ``recent`` is each commit inside the active-edit window, ``sha ->
     (committed_at, author)``; ``None`` when history is too shallow to tell
-    recent from all, which is no signal rather than a quiet target.
+    recent from all, which is no signal rather than a quiet target. ``dead``
+    is the sure dead-code spans by file (:func:`..queue.eligibility.dead_spans`).
     """
 
     decisions: Mapping[str, list[tuple[str, str]]] = field(default_factory=dict)
     partners: Mapping[str, tuple[tuple[str, int], ...]] = field(default_factory=dict)
     functions: Mapping[str, list[FunctionCommits]] = field(default_factory=dict)
     recent: Mapping[str, tuple[datetime, str]] | None = None
-    dead: Any = None
+    dead: Mapping[str, list[DeadSpan]] = field(default_factory=dict)
 
 
 def annotate(suggestion: RefactoringSuggestion, facts: AnnotationFacts) -> PlanAnnotations:
     """*suggestion*'s annotations from *facts*. Pure."""
-    # Named exactly, as ``get_why`` reads one path. A record's module list is
-    # derived from its files, so a module prefix would let a decision about two
-    # files govern every plan in their directory.
     decisions = list(facts.decisions.get(suggestion.file_path, ()))
     risks = [
         PlanRisk(
@@ -140,10 +145,12 @@ def annotate(suggestion: RefactoringSuggestion, facts: AnnotationFacts) -> PlanA
     )
 
 
-def _dead_code_risk(suggestion: RefactoringSuggestion, dead: Any) -> PlanRisk | None:
+def _dead_code_risk(
+    suggestion: RefactoringSuggestion, dead: Mapping[str, list[DeadSpan]]
+) -> PlanRisk | None:
     """A target a sure dead-code finding covers, by the rule Fix first excludes it with."""
-    if dead is None or not dead.unreachable(
-        suggestion.file_path, suggestion.target_symbol or None, suggestion.line_start
+    if not dead_target(
+        dead, suggestion.file_path, suggestion.target_symbol or None, suggestion.line_start
     ):
         return None
     what = f"`{suggestion.target_symbol}`" if suggestion.target_symbol else "this file"
@@ -156,20 +163,18 @@ def _public_api_risk(suggestion: RefactoringSuggestion) -> PlanRisk | None:
     if kind not in _RELOCATING:
         return None
     blast = suggestion.blast_radius or {}
-    plan = suggestion.plan or {}
     if kind == "move_method":
         callers = _count(blast.get("callers"))
         method = suggestion.target_symbol.rsplit(".", 1)[-1]
         if not callers or method.startswith("_"):
             return None
+        to_class = (suggestion.plan or {}).get("to_class") or "its new class"
         return PlanRisk(
             "public_api",
             f"`{suggestion.target_symbol}` has {callers} caller{_s(callers)}; each has to "
-            f"reach it through `{plan.get('to_class') or 'its new class'}` after the move.",
+            f"reach it through `{to_class}` after the move.",
         )
-    dependents = _count(
-        blast.get("dependent_count", blast.get("dependents_count"))
-    ) or len(blast.get("dependent_files") or ())
+    dependents = _count(blast.get(_DEPENDENTS_KEY[kind]))
     if not dependents:
         return None
     files = "1 file" if dependents == 1 else f"{dependents} files"
@@ -185,18 +190,19 @@ def _public_api_risk(suggestion: RefactoringSuggestion) -> PlanRisk | None:
 def _active_edit_risk(suggestion: RefactoringSuggestion, facts: AnnotationFacts) -> PlanRisk | None:
     """Recent commits on the functions the plan's lines sit in. Function blame is
     the finest stored grain, so a span inside a long function counts all of it."""
-    if facts.recent is None:
+    recent = facts.recent
+    if recent is None:
         return None
     shas = {
         sha
         for _start, _end, commits in _target_functions(suggestion, facts.functions)
         for sha in commits
-        if sha in facts.recent
+        if sha in recent
     }
     if len(shas) < ACTIVE_EDIT_MIN_COMMITS:
         return None
-    latest = max(shas, key=lambda sha: facts.recent[sha][0])  # type: ignore[index]
-    authors = sorted({facts.recent[sha][1] for sha in shas})  # type: ignore[index]
+    latest = max(shas, key=lambda sha: recent[sha][0])
+    authors = sorted({recent[sha][1] for sha in shas})
     who = authors[0] if len(authors) == 1 else f"{len(authors)} authors"
     return PlanRisk(
         "active_edit",
@@ -232,21 +238,16 @@ async def load_annotation_facts(
     session: AsyncSession, repository_id: str, suggestions: Sequence[RefactoringSuggestion]
 ) -> AnnotationFacts:
     """Every fact :func:`annotate` reads, for the whole plan set at once."""
-    from ....persistence.crud import get_dead_code_findings, get_git_metadata_bulk
-    from ..fix_first.build import _dead_spans, _Files
-
     files = sorted({item.file_path for item in suggestions if item.file_path})
     metadata = await get_git_metadata_bulk(session, repository_id, files)
     dead = await get_dead_code_findings(session, repository_id)
     recent = await _recent_commits(session, repository_id)
     return AnnotationFacts(
-        decisions=await _governing_decisions(session, repository_id),
+        decisions=await governing_decisions_by_file(session, repository_id),
         partners={path: _partners(meta) for path, meta in metadata.items()},
         functions=await _function_commits(session, repository_id, files) if recent else {},
         recent=recent,
-        # Fix first's own dead-span rule, so a plan and a Fix first unit agree on
-        # what is dead. Moving it to a shared module belongs to the Fix first lane.
-        dead=_Files([], {}, {}, (0.0, 0.0), dead=_dead_spans(dead)),
+        dead=dead_spans(dead),
     )
 
 
@@ -263,37 +264,6 @@ def _partners(meta: Any) -> tuple[tuple[str, int], ...]:
     return tuple(strong[:MAX_CO_CHANGE_PARTNERS])
 
 
-async def _governing_decisions(
-    session: AsyncSession, repository_id: str
-) -> dict[str, list[tuple[str, str]]]:
-    """Accepted, governing decisions by each file and module they name."""
-    from sqlalchemy import select
-
-    from ....analysis.decisions.lifecycle import is_governing
-    from ....analysis.decisions.scope import binds_to_paths
-    from ....persistence.crud.authority import decision_currencies
-    from ....persistence.models import DecisionRecord
-
-    records = [
-        record
-        for record in (
-            await session.execute(
-                select(DecisionRecord).where(DecisionRecord.repository_id == repository_id)
-            )
-        ).scalars()
-        if binds_to_paths(record.scope_basis)
-    ]
-    currencies = await decision_currencies(session, repository_id, records)
-    out: dict[str, list[tuple[str, str]]] = {}
-    for record in sorted(records, key=lambda item: item.id):
-        if not is_governing(currencies.get(record.id, "")):
-            continue
-        scopes = {*_json_list(record.affected_files_json), *_json_list(record.affected_modules_json)}
-        for scope in scopes:
-            out.setdefault(scope, []).append((record.id, record.title))
-    return out
-
-
 def _json_list(raw: Any) -> list[str]:
     try:
         value = json.loads(raw or "[]")
@@ -306,11 +276,14 @@ async def _recent_commits(
     session: AsyncSession, repository_id: str
 ) -> dict[str, tuple[datetime, str]] | None:
     """Commits in the window before the newest indexed one, or ``None`` when
-    stored history does not reach back far enough to tell."""
-    from sqlalchemy import func, select
+    stored history does not reach back far enough to tell.
 
-    from ....persistence.models import GitCommit
-
+    The guard measures the span of the stored ``git_commits`` rows, which a
+    commit cap can shorten; a short span reads as no signal, never as quiet.
+    A shallow clone's boundary commit, which blame credits with every older
+    line, is the oldest stored row (or, capped, not stored at all), so the
+    span guard already keeps it two windows clear of this one.
+    """
     newest, oldest = (
         await session.execute(
             select(func.max(GitCommit.committed_at), func.min(GitCommit.committed_at)).where(
@@ -334,17 +307,13 @@ async def _function_commits(
     session: AsyncSession, repository_id: str, files: Sequence[str]
 ) -> dict[str, list[FunctionCommits]]:
     """Each function's blame commits, for the plans' files."""
-    from sqlalchemy import select
-
-    from ....persistence.models import GitFunctionBlame
-
     blame = GitFunctionBlame
     out: dict[str, list[FunctionCommits]] = {}
-    for index in range(0, len(files), 500):
+    for index in range(0, len(files), _BATCH):
         rows = await session.execute(
             select(blame.file_path, blame.start_line, blame.end_line, blame.commit_shas_json).where(
                 blame.repository_id == repository_id,
-                blame.file_path.in_(list(files[index : index + 500])),
+                blame.file_path.in_(list(files[index : index + _BATCH])),
                 blame.commit_shas_json.is_not(None),
             )
         )
