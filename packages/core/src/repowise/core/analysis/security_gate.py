@@ -48,8 +48,13 @@ SEVERITIES = ("low", "med", "high")
 _RANK = {s: i for i, s in enumerate(SEVERITIES)}
 
 #: Secret kinds matched by the value's own vendor format rather than a variable
-#: name; see :func:`fingerprint_of`.
-_KEY_SHAPE_KINDS = SECRET_KINDS - {"hardcoded_password", "hardcoded_secret"}
+#: name; see :func:`fingerprint_of`. A remote URL password can be as weak as
+#: any other, so it stays out.
+_KEY_SHAPE_KINDS = SECRET_KINDS - {
+    "hardcoded_password",
+    "hardcoded_secret",
+    "git_url_credentials",
+}
 
 
 class ShallowHistoryError(ValueError):
@@ -92,6 +97,9 @@ _RULE_TEXT: dict[str, str] = {
     "slack_token": "A Slack token.",
     "google_api_key": "A Google API key.",
     "stripe_key": "A Stripe secret or restricted key.",
+    "gitlab_token": "A GitLab token (personal, deploy, runner, trigger, CI job or OAuth).",
+    "azure_devops_pat": "An Azure DevOps personal access token.",
+    "git_url_credentials": "A password or token embedded in a git remote URL.",
     "private_key_pem": "A PEM private key with its body.",
     "fstring_sql": "An f-string holding SQL and an interpolation.",
     "concat_sql": "SQL built by string concatenation.",

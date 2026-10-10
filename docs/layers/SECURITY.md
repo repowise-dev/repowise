@@ -1,7 +1,7 @@
 # Security signals
 
 Repowise records security signals while it indexes: matches from a registry of
-22 patterns over source text, plus a scan for security-relevant symbol names.
+25 patterns over source text, plus a scan for security-relevant symbol names.
 It also scans git history for leaked credentials, and gates pull requests on
 what a change adds.
 
@@ -40,7 +40,7 @@ page, and over REST at `GET /api/repos/{repo_id}/security`.
 
 ### What the registry catches
 
-22 pattern kinds plus the symbol-name scan: 23 kinds in all, in three
+25 pattern kinds plus the symbol-name scan: 26 kinds in all, in three
 severities. Severity is fixed per kind, with one exception: a finding in test
 material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 `fixtures`, `__fixtures__`, `spec`, `specs`, `mock`, `mocks`, `__mocks__`,
@@ -60,6 +60,9 @@ material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 | `slack_token` | high | `xoxb-`, `xoxa-`, `xoxp-`, `xoxr-`, `xoxs-` tokens |
 | `google_api_key` | high | `AIza` + 35 chars, not from inside a base64 run |
 | `stripe_key` | high | `sk_` or `rk_` then `live_`/`test_`/`prod_`. Publishable `pk_` keys do not fire |
+| `gitlab_token` | high | `glpat-` (classic and routable), `gldt-`, `glrt-`, `glptt-`, `gloas-`, `glimt-`, `glcbt-` and `GR1348941` runner registration tokens |
+| `azure_devops_pat` | high | the 84-char Azure DevOps PAT with `AZDO` at offset 76. The legacy 52-char PAT is only caught by `hardcoded_secret` |
+| `git_url_credentials` | high | a password in a git remote URL (`https://user:password@host/repo`): a GitHub, GitLab, Bitbucket or Azure DevOps host, or a path ending in `.git`. Database URLs, local and `example.*` hosts, `$VAR`/`${VAR}`/`%VAR%`/`<slot>` and word-like passwords do not fire |
 | `private_key_pem` | high | a `-----BEGIN ... PRIVATE KEY-----` header followed by a base64 body line (an escaped `\n` counts) |
 | `public_env_secret` | high | `API_KEY`/`SECRET`/`TOKEN`/`PASSWORD` behind `NEXT_PUBLIC_` or `VITE_`, excluding `..._ANON_...` |
 | `new_function_call` | high | `new Function(...)` |
@@ -75,8 +78,9 @@ material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 `security_sensitive_symbol` is informational: it marks where security code
 lives, not a problem.
 
-The eight **secret kinds** are `hardcoded_password`, `hardcoded_secret` and
-the six vendor shapes (AWS, GitHub, Slack, Google, Stripe, PEM). History mode
+The eleven **secret kinds** are `hardcoded_password`, `hardcoded_secret`,
+`git_url_credentials` and the eight vendor shapes (AWS, GitHub, GitLab, Azure
+DevOps, Slack, Google, Stripe, PEM). History mode
 and the in-change commit scan report only these by default.
 
 ### What fires and what does not
@@ -231,7 +235,7 @@ result with that in mind.
   idioms. On Go, Rust or Java, `eval`/`exec` and the secret kinds are most of
   what can fire, and a quiet report reflects the registry's shape.
 - **Secret detection is shallow.** No entropy scoring; providers outside the
-  six vendor shapes are invisible unless you add custom patterns. Use gitleaks
+  eight vendor shapes are invisible unless you add custom patterns. Use gitleaks
   or trufflehog for secret scanning proper.
 - **No dependency or CVE scanning.**
 - **False positives happen.** `weak_hash` fires on `md5` in a comment.

@@ -324,6 +324,12 @@ def test_every_gating_kind_has_a_sarif_rule():
     assert kinds == set(security_gate._RULE_TEXT)
 
 
+def test_only_high_entropy_shapes_hash_their_material():
+    # A URL password can be weak enough to guess back from its hash.
+    assert "git_url_credentials" not in security_gate._KEY_SHAPE_KINDS
+    assert {"gitlab_token", "azure_devops_pat"} <= security_gate._KEY_SHAPE_KINDS
+
+
 # ---------------------------------------------------------------------------
 # Review regressions
 # ---------------------------------------------------------------------------

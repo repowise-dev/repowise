@@ -240,6 +240,27 @@ def test_a_key_quoted_back_by_a_provider_is_not_written_to_disk() -> None:
 
 
 @pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("auth failed: glpat" + "-0123456789abcdefghij", "auth failed: [redacted]"),
+        ("pat " + "0123456789ABCDEFGHIJ" * 3 + "0123456789abcdef" + "AZDO0123", "pat [redacted]"),
+        (
+            "fatal: could not read https://ci:Zq8vT2mLw9@git.internal/r.git",
+            "fatal: could not read https://***@git.internal/r.git",
+        ),
+        # Nothing to hide: a username alone, an scp-style remote, a plain URL.
+        ("ssh://git@github.com/o/r.git", "ssh://git@github.com/o/r.git"),
+        ("git@github.com:o/r.git", "git@github.com:o/r.git"),
+        ("see https://host:8443/a@b", "see https://host:8443/a@b"),
+    ],
+)
+def test_forge_tokens_and_url_credentials_are_redacted(text: str, expected: str) -> None:
+    from repowise.cli.ui.progress import redact_secrets
+
+    assert redact_secrets(text) == expected
+
+
+@pytest.mark.parametrize(
     "phase_fn",
     [
         pytest.param("flows", id="execution-flow-tracing"),

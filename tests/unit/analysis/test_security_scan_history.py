@@ -310,6 +310,9 @@ def test_secret_kinds_are_the_genuine_credential_patterns() -> None:
         "slack_token",
         "google_api_key",
         "stripe_key",
+        "gitlab_token",
+        "azure_devops_pat",
+        "git_url_credentials",
         "private_key_pem",
     } == SECRET_KINDS
 

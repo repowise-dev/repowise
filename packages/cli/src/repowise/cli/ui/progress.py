@@ -43,7 +43,11 @@ _SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"),  # OpenAI / Anthropic
     re.compile(r"\bAIza[A-Za-z0-9_-]{10,}"),  # Google
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{10,}"),  # GitHub
+    re.compile(r"\bgl(?:pat|dt|rt|ptt|oas|imt|cbt)-[\w.-]{10,}"),  # GitLab
+    re.compile(r"\b[0-9A-Za-z]{76}AZDO[0-9A-Za-z]{4}\b"),  # Azure DevOps
 )
+# A git remote quoted in a clone or fetch error carries its credentials.
+_URL_USERINFO = re.compile(r"://[^\s/@:]+:[^\s/@]+@")
 
 
 def redact_secrets(text: str) -> str:
@@ -56,7 +60,7 @@ def redact_secrets(text: str) -> str:
     """
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub("[redacted]", text)
-    return text
+    return _URL_USERINFO.sub("://***@", text)
 
 
 class MaybeCountColumn(ProgressColumn):
