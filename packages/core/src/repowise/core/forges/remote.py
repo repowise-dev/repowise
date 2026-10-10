@@ -131,6 +131,8 @@ def split_remote(url: str) -> RemoteParts | None:
         return None
     transport, _, path = located
     host, port = hp
+    if transport == "scp" and len(host) == 1:
+        return None  # `C:/repos/x` is a drive letter, as git itself reads it
     shown = f"[{host}]" if ":" in host else host
     if transport in ("http", "https"):
         web_origin = f"{transport}://{shown}{':' + port if port else ''}"

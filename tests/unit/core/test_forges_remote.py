@@ -237,6 +237,18 @@ def test_a_path_named_scm_is_only_folded_on_bitbucket(url: str, key: str) -> Non
     assert canonical_key(url) == key
 
 
+@pytest.mark.parametrize(
+    ("url", "key"),
+    [
+        ("https://a/g/p.git", "a/g/p"),
+        ("ssh://git@b:2222/g/p.git", "b/g/p"),
+    ],
+)
+def test_a_single_character_host_parses_outside_scp_form(url: str, key: str) -> None:
+    """Only the scp form reads `c:path` as a drive letter, which is how git reads it."""
+    assert canonical_key(url) == key
+
+
 def test_an_override_accepts_a_plain_string_kind_and_any_key_case() -> None:
     ref = parse_remote("git@Git.Corp.com:g/p.git", hosts={"GIT.CORP.COM": "gitlab"})  # type: ignore[dict-item]
     assert ref is not None and ref.forge is GL

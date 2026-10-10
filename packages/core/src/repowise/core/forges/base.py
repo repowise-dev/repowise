@@ -82,7 +82,7 @@ def split_host_port(authority: str) -> tuple[str, str] | None:
     else:
         host, _, port = authority.partition(":")
     host = host.lower()
-    if len(host) < 2 or not _HOST_RE.fullmatch(host) or (port and not port.isdigit()):
+    if not _HOST_RE.fullmatch(host) or (port and not port.isdigit()):
         return None
     return host, port
 
