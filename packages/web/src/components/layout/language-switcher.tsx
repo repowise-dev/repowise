@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * LanguageSwitcher — the 中 / EN control in the shell tool area.
+ * LanguageSwitcher — one compact button showing the current language that
+ * opens a menu of every locale in `LOCALES`.
  *
  * Switching is cookie-first: `NEXT_LOCALE` is what the server reads on the
  * next request, so writing it and calling `router.refresh()` re-renders the
@@ -16,7 +17,8 @@
 import * as React from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
-import { Languages } from "lucide-react";
+import { Check, Globe } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@repowise-dev/ui/ui/popover";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils/cn";
 import {
@@ -31,19 +33,18 @@ import {
 /** One year, in seconds. */
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
 
-/** Short marks for the compact control, in each language's own script. */
+/** Short marks for the trigger, in each language's own script. */
 const SHORT_LABEL: Record<Locale, string> = {
   en: "EN",
-  "zh-CN": "中",
+  "zh-CN": "中文",
 };
 
 export interface LanguageSwitcherProps {
-  /** Icon-scale control: short marks and no icon, for the sidebar footer. */
-  compact?: boolean;
   className?: string;
 }
 
-export function LanguageSwitcher({ compact = false, className }: LanguageSwitcherProps) {
+export function LanguageSwitcher({ className }: LanguageSwitcherProps) {
+  const [open, setOpen] = React.useState(false);
   const active = useLocale() as Locale;
   const t = useTranslations("language");
   const router = useRouter();
@@ -78,6 +79,7 @@ export function LanguageSwitcher({ compact = false, className }: LanguageSwitche
   }, []);
 
   const select = (next: Locale) => {
+    setOpen(false);
     if (next === active || pending) return;
     document.cookie = cookieFor(next);
     try {
@@ -93,41 +95,42 @@ export function LanguageSwitcher({ compact = false, className }: LanguageSwitche
   };
 
   return (
-    <div
-      role="radiogroup"
-      aria-label={t("label")}
-      className={cn("inline-flex items-center gap-1 rounded-lg p-0.5", className)}
-    >
-      {!compact && (
-        <Languages
-          className="mx-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]"
-          aria-hidden
-        />
-      )}
-      {LOCALES.map((locale) => {
-        const selected = locale === active;
-        return (
-          <button
-            key={locale}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            aria-label={LOCALE_LABELS[locale]}
-            title={LOCALE_LABELS[locale]}
-            onClick={() => select(locale)}
-            className={cn(
-              "inline-flex items-center justify-center rounded-md text-xs font-medium transition-colors",
-              compact ? "px-1.5 py-1" : "px-2.5 py-1.5",
-              selected
-                ? "bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] shadow-[var(--shadow-sm)]"
-                : "bg-transparent text-[var(--color-text-secondary)] shadow-none hover:text-[var(--color-text-primary)]",
-            )}
-          >
-            {compact ? SHORT_LABEL[locale] : LOCALE_LABELS[locale]}
-          </button>
-        );
-      })}
-    </div>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={`${t("label")}: ${LOCALE_LABELS[active]}`}
+          className={cn(
+            "inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-md px-1.5 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]",
+            className,
+          )}
+        >
+          <Globe className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>{SHORT_LABEL[active]}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" side="top" className="w-44 p-1">
+        <ul aria-label={t("label")} className="flex flex-col">
+          {LOCALES.map((locale) => {
+            const selected = locale === active;
+            return (
+              <li key={locale}>
+                <button
+                  type="button"
+                  aria-current={selected ? "true" : undefined}
+                  lang={locale}
+                  onClick={() => select(locale)}
+                  className="flex min-h-8 w-full items-center justify-between gap-2 rounded px-2 text-left text-sm text-[var(--color-text-primary)] hover:bg-[var(--color-bg-wash-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                >
+                  {LOCALE_LABELS[locale]}
+                  {selected && <Check className="h-3.5 w-3.5" aria-hidden />}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </PopoverContent>
+    </Popover>
   );
 }
 

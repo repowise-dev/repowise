@@ -456,7 +456,7 @@ export function Sidebar({
           version were unreachable without expanding first. */}
       {isIconOnly ? (
         <div className="flex flex-col items-center gap-1 border-t border-[var(--color-border-default)] py-1.5">
-          <LanguageSwitcher compact />
+          <LanguageSwitcher />
           <ThemeToggle compact />
         </div>
       ) : (
@@ -468,7 +468,7 @@ export function Sidebar({
           <div className="flex items-center justify-between gap-2">
             <VersionFooter />
             <div className="flex items-center gap-1">
-              <LanguageSwitcher compact />
+              <LanguageSwitcher />
               <ThemeToggle compact />
             </div>
           </div>

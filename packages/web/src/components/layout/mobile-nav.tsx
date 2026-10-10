@@ -280,7 +280,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
             <div className="flex items-center justify-between gap-2">
               <VersionFooter />
               <div className="flex items-center gap-1">
-                <LanguageSwitcher compact />
+                <LanguageSwitcher />
                 <ThemeToggle compact />
               </div>
             </div>
