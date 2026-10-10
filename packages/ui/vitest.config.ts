@@ -41,6 +41,7 @@ export default defineConfig({
       "@repowise-dev/types/overview": path.resolve(__dirname, "../types/src/overview.ts"),
       "@repowise-dev/types/actions": path.resolve(__dirname, "../types/src/actions.ts"),
       "@repowise-dev/types/fix-first": path.resolve(__dirname, "../types/src/fix-first.ts"),
+      "@repowise-dev/types/queue": path.resolve(__dirname, "../types/src/queue.ts"),
       "@repowise-dev/types/agent-prompts": path.resolve(
         __dirname,
         "../types/src/agent-prompts.ts",
