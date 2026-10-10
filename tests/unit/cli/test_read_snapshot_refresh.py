@@ -39,3 +39,34 @@ def test_index_writes_and_update_restores_the_snapshots(tmp_path: Path) -> None:
         db.execute("DELETE FROM read_snapshots")
     refresh_read_snapshots(repo)
     assert _kinds(repo) == ["actions", "fix_first"]
+
+
+def test_every_update_outcome_ends_in_one_helper() -> None:
+    """Each outcome of ``repowise update`` refreshes the views through one exit."""
+    import inspect
+
+    from repowise.cli.commands.update_cmd import command
+
+    source = inspect.getsource(command)
+    assert source.count("_refresh_editor_stamp(repo_path") == 1  # only inside the helper
+    assert source.count("refresh_read_snapshots(repo_path)") == 1
+    assert source.count("_finish_outcome(repo_path") == 5
+
+
+def test_the_up_to_date_outcome_refreshes_the_views(tmp_path: Path, monkeypatch) -> None:
+    from repowise.cli.commands.update_cmd import command as upd_cmd
+    from tests.unit.cli.test_update_up_to_date_lock import (
+        _indexed_repo,
+        _install_recorders,
+        _invoke_update,
+    )
+
+    repo, _head = _indexed_repo(tmp_path)
+    calls: dict[str, int] = {}
+    _install_recorders(monkeypatch, calls)
+    monkeypatch.setattr(upd_cmd, "try_acquire_update_lock", lambda *_: None)
+    monkeypatch.setattr(
+        upd_cmd, "refresh_read_snapshots", lambda _p: calls.update(views=calls.get("views", 0) + 1)
+    )
+    _invoke_update(repo)
+    assert calls.get("views") == 1

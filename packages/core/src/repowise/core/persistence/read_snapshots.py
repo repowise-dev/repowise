@@ -5,24 +5,25 @@ first queue, the next-actions view) is written once, by the writer that last
 touched its stores, under a key naming the code that built it (repowise
 version and the view's model version).
 
-Freshness is kept on the write side rather than measured on read: any session
-that writes a store a view could read deletes every stored view in the same
-transaction (:func:`_invalidate`), so a stored row is current by
-construction. Measuring it instead (newest write and row count per store) cost
-about a second per read on a 21k-file repository, mostly over the graph
-tables, whose upserts carry no write time, and would still miss an in-place
-update. The rule is conservative on purpose: a table it does not know is
-treated as an input (:data:`UNRELATED_TABLES` lists the ones that are not),
-a write in a savepoint that rolled back still invalidates, and a write to one
-repository drops every repository's rows in a shared store. A view missing
-for any of these reasons is built live, exactly as before. Readers never write.
+Freshness is kept on the write side: any session that writes a store a view
+could read deletes every stored view in the same transaction
+(:func:`_invalidate`), so a stored row is current by construction and a
+missing one is built live. The rule fails closed: a table it does not know
+is an input (:data:`UNRELATED_TABLES` lists the ones that are not), a write
+in a savepoint that rolled back still invalidates, and a write to one
+repository drops every repository's rows in a shared store. Readers never
+write. The builders read only the stores; settings that shape them
+(``.repowise/health-rules.json``, the exclude spec, scope) reach a view
+through the store writes they cause.
 
-The builders read only the stores. Settings that shape what is stored
-(``.repowise/health-rules.json``, the exclude spec, scope) are applied when
-the stores are written, so a change to them reaches a view through that
-write. Ceiling: a write made by a process that never imported this module (an
-older repowise against the same store) does not invalidate; the version in the
-key covers an upgrade, not a downgrade followed by a return.
+Ceilings: SQLite serialises writers, so it is safe; on Postgres under READ
+COMMITTED a writer building while another session commits an input write
+can store one stale build, which the next input write drops. Writes that
+bypass a ``Session`` (``engine.connect()`` / ``engine.begin()`` callers, today
+only FTS and schema setup) and processes that never import
+``persistence.database`` (an older repowise against the same store) do not
+invalidate; the version in the key covers an upgrade, not a downgrade
+followed by a return.
 """
 
 from __future__ import annotations
@@ -31,10 +32,8 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import fields, is_dataclass
 from functools import cache
-from types import UnionType
-from typing import Any, Union, get_args, get_origin, get_type_hints
+from typing import Any
 
 from sqlalchemy import delete, event, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,7 +46,9 @@ from .models import ReadSnapshot
 logger = logging.getLogger(__name__)
 
 #: Tables no stored view reads: writing them leaves the views current. Any
-#: other table, including one added later, counts as an input.
+#: other table, including one added later, counts as an input. Person-level
+#: answers (``action_states``, ``set_action_state``) are applied on every
+#: read, so they are not inputs.
 UNRELATED_TABLES = frozenset(
     {
         "action_states",
@@ -81,12 +82,15 @@ UNRELATED_TABLES = frozenset(
 #: ``session.info`` flag: this transaction wrote a store a view reads.
 _STALE = "read_snapshots_stale"
 
-_TEXT_WRITE = re.compile(
-    r"^\s*(?:insert(?:\s+or\s+\w+)?\s+into|replace\s+into|update(?:\s+or\s+\w+)?|delete\s+from)"
-    r"\s+[\"`\[]?(\w+)",
+# Fail-safe: any text statement that is not a plain read counts as a write,
+# and one whose target cannot be named counts as a write to an input.
+_COMMENTS = re.compile(r"^(?:\s+|--[^\n]*\n?|/\*.*?\*/)+", re.DOTALL)
+_TEXT_READ = re.compile(r"(?:select|pragma|explain)\b", re.IGNORECASE)
+_TEXT_TARGET = re.compile(
+    r"(?:insert(?:\s+or\s+\w+)?\s+into|replace\s+into|update(?:\s+or\s+\w+)?|delete\s+from)"
+    r"\s+(?:[\"`\[]?\w+[\"`\]]?\.)?[\"`\[]?(\w+)",
     re.IGNORECASE,
 )
-_TEXT_VERB = re.compile(r"^\s*(?:insert|replace|update|delete)\b", re.IGNORECASE)
 
 
 def _written_table(statement: Any) -> str | None:
@@ -95,10 +99,13 @@ def _written_table(statement: Any) -> str | None:
     if getattr(statement, "is_dml", False):
         return getattr(getattr(statement, "table", None), "name", "")
     sql = getattr(statement, "text", None)
-    if isinstance(sql, str) and _TEXT_VERB.match(sql):
-        found = _TEXT_WRITE.match(sql)
-        return found.group(1).lower() if found else ""
-    return None
+    if not isinstance(sql, str):
+        return None
+    sql = _COMMENTS.sub("", sql, count=1)
+    if _TEXT_READ.match(sql):
+        return None
+    found = _TEXT_TARGET.match(sql)
+    return found.group(1).lower() if found else ""
 
 
 @event.listens_for(Session, "do_orm_execute")
@@ -128,13 +135,20 @@ def _invalidate(session: Session) -> None:
     """Drop the stored views in the transaction that changed their inputs."""
     if session.in_nested_transaction():
         return  # a savepoint release is not the commit; the outer one decides
-    if not (session.info.pop(_STALE, False) or _pending_input(session)):
+    if not stale(session):
         return
     try:
         with session.begin_nested():
             session.execute(delete(ReadSnapshot))
     except Exception as exc:  # a store from before the table holds no views
         logger.debug("read snapshots not cleared: %s", exc)
+    # Popped after the delete: the savepoint's autoflush can set it again.
+    session.info.pop(_STALE, None)
+
+
+def stale(session: Session) -> bool:
+    """Whether this transaction wrote, or is about to write, a view's input."""
+    return bool(session.info.get(_STALE)) or _pending_input(session)
 
 
 async def mark_current(session: AsyncSession) -> None:
@@ -157,8 +171,8 @@ async def read_snapshot(session: AsyncSession, repo_id: str, kind: str, key: str
     """The stored payload for ``kind`` when it was built under ``key``.
 
     Any failure is a miss and the caller builds live: a store from before
-    this table, or a row another build wrote. The savepoint keeps that
-    failure off the caller's session.
+    this table, a row another build wrote, a payload that does not parse.
+    The savepoint keeps that failure off the caller's session.
     """
     try:
         async with session.begin_nested():
@@ -169,12 +183,12 @@ async def read_snapshot(session: AsyncSession, repo_id: str, kind: str, key: str
                     )
                 )
             ).first()
+        if row is None or row.key != key:
+            return None
+        return json.loads(row.payload_json)
     except Exception as exc:  # build live instead
         logger.debug("read_snapshot %s unavailable: %s", kind, exc)
         return None
-    if row is None or row.key != key:
-        return None
-    return json.loads(row.payload_json)
 
 
 async def refresh_snapshot(
@@ -185,14 +199,16 @@ async def refresh_snapshot(
     build: Callable[[], Awaitable[Any]],
 ) -> bool:
     """Store ``await build()`` (JSON-ready) as the ``kind`` row under ``key``,
-    unless the row already holds that key. Returns whether it wrote.
+    unless the row already holds that key and this transaction has written
+    no input (such a row would be dropped at commit). Returns whether it
+    wrote.
 
     Two writers racing on one row (two updates of one store) can fail on the
     primary key; the caller treats any failure as "no snapshot", which a
     reader answers by building live.
     """
     row = await session.get(ReadSnapshot, (repo_id, kind))
-    if row is not None and row.key == key:
+    if row is not None and row.key == key and not stale(session.sync_session):
         return False
     text = json.dumps(await build(), ensure_ascii=False)
     if row is None:
@@ -204,56 +220,31 @@ async def refresh_snapshot(
 
 
 @cache
-def _hints(cls: type) -> dict[str, Any]:
-    return get_type_hints(cls)
+def _adapter(tp: type) -> Any:
+    # pydantic ships with repowise; imported here so opening a store stays cheap.
+    from pydantic import TypeAdapter
+
+    return TypeAdapter(tp)
 
 
-def decode(tp: Any, value: Any) -> Any:
-    """``value`` (``dataclasses.asdict`` through JSON) back as type ``tp``.
+def decode_or_none(tp: type, value: Any) -> Any | None:
+    """``value`` (``dataclasses.asdict`` through JSON) back as a ``tp``, or
+    ``None`` for a payload that does not fit (an older or newer build's)."""
+    from pydantic import ValidationError
 
-    Frozen dataclasses, tuples (``tuple[X, ...]`` and fixed ``tuple[A, B]``),
-    optionals and unions (a mapping goes to the union's dataclass member when
-    it has one), and plain JSON values (``dict`` / ``Mapping`` / ``Literal`` /
-    ``Any``), which come back as they are. A payload that does not fit the
-    type raises; :func:`decode_or_none` turns that into a miss.
-    """
-    if value is None:
-        return None
-    if is_dataclass(tp):
-        hints = _hints(tp)
-        return tp(**{f.name: decode(hints[f.name], value[f.name]) for f in fields(tp) if f.init})
-    origin = get_origin(tp)
-    if origin is tuple:
-        args = get_args(tp)
-        if len(args) == 2 and args[1] is Ellipsis:
-            return tuple(decode(args[0], v) for v in value)
-        if len(args) != len(value):
-            raise ValueError(f"expected {len(args)} values, got {len(value)}")
-        return tuple(decode(a, v) for a, v in zip(args, value, strict=True))
-    if origin in (Union, UnionType):
-        members = [a for a in get_args(tp) if a is not type(None)]
-        classes = [m for m in members if is_dataclass(m)]
-        if isinstance(value, dict) and classes:
-            return decode(classes[0], value)
-        return decode(members[0], value) if len(members) == 1 else value
-    return value
-
-
-def decode_or_none(tp: Any, value: Any) -> Any | None:
-    """:func:`decode`, or ``None`` for a payload an older or newer build wrote."""
     try:
-        return decode(tp, value)
-    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        return _adapter(tp).validate_python(value)
+    except (ValidationError, TypeError, ValueError) as exc:
         logger.info("stored %s no longer fits the model: %s", getattr(tp, "__name__", tp), exc)
         return None
 
 
 __all__ = [
     "UNRELATED_TABLES",
-    "decode",
     "decode_or_none",
     "mark_current",
     "read_snapshot",
     "refresh_snapshot",
     "snapshot_key",
+    "stale",
 ]

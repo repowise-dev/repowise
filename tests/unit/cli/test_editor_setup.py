@@ -1223,17 +1223,19 @@ def test_claude_refresh_project_files_skips_when_options_disable_file(
 
 
 def test_update_command_uses_editor_refresh_abstraction() -> None:
-    from repowise.cli.commands.update_cmd.command import _refresh_editor_stamp
+    from repowise.cli.commands.update_cmd.command import _finish_outcome, _refresh_editor_stamp
 
     command_source = inspect.getsource(run_update)
+    finish_source = inspect.getsource(_finish_outcome)
     stamp_source = inspect.getsource(_refresh_editor_stamp)
 
-    # The command routes every editor-file write through the shared stamp
-    # helper, which in turn uses the refresh abstraction — never the raw
-    # generator/fetcher internals.
-    assert "_refresh_editor_stamp" in command_source
+    # The command routes every editor-file write through the shared exit
+    # helper and its stamp helper, which in turn uses the refresh abstraction —
+    # never the raw generator/fetcher internals.
+    assert "_finish_outcome" in command_source
+    assert "_refresh_editor_stamp" in finish_source
     assert "refresh_editor_project_files" in stamp_source
-    for source in (command_source, stamp_source):
+    for source in (command_source, finish_source, stamp_source):
         assert "ClaudeMdGenerator" not in source
         assert "EditorFileDataFetcher" not in source
         assert "claude_md" not in source

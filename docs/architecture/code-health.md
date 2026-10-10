@@ -661,11 +661,12 @@ Full method and data:
 
 ### 6.3 Fix first ranking (`fix_first/`, `worth.py`)
 
+Index and update save the queue and the Do next list, so these surfaces open without rebuilding them.
+
 Fix first is built once in `analysis/health/fix_first/build.py` from stored rows
 and rendered unchanged by `get_health`, `repowise health`, the dashboard and the
-generated CLAUDE.md. Index and update save the queue and the Do next list, so
-these surfaces open without rebuilding them. Every
-excluded unit is counted in `totals.excluded` under one reason:
+generated CLAUDE.md. Every excluded unit is counted in `totals.excluded` under one
+reason:
 
 | Reason | What it leaves out |
 |---|---|

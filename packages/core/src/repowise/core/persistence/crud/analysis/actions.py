@@ -457,7 +457,11 @@ async def set_action_state(
     fingerprint: str = "",
     until: datetime | None = None,
 ) -> None:
-    """Record, replace, or (``state=None``) clear a person's answer to one action."""
+    """Record, replace, or (``state=None``) clear a person's answer to one action.
+
+    Not a stored view's input (``read_snapshots.UNRELATED_TABLES``): answers
+    apply on every read, so writing one keeps the stored views.
+    """
     row = (
         await session.execute(
             select(ActionState).where(
@@ -509,6 +513,7 @@ async def write_read_snapshots(session: AsyncSession, repo_id: str) -> None:
     wrote them or a later one. Best-effort, each in its own savepoint: a view
     that fails to build is built live on read instead.
     """
+    written = True
     for kind, write in (
         ("fix_first", write_fix_first_snapshot),
         (SNAPSHOT_KIND, write_actions_snapshot),
@@ -518,8 +523,11 @@ async def write_read_snapshots(session: AsyncSession, repo_id: str) -> None:
                 await write(session, repo_id)
         except Exception as exc:  # a reader builds live instead
             logger.warning("read snapshot %s not written: %s", kind, exc)
-    # Built after this session's own writes, so its commit must keep them.
-    await mark_current(session)
+            written = False
+    # Built after this session's own writes, so its commit may keep them; a
+    # kind that failed may have left an older row, which the commit drops.
+    if written:
+        await mark_current(session)
 
 
 def _view(ruled: dict[str, Any], states: dict[str, ActionStateRecord], now: datetime) -> dict:

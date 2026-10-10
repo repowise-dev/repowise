@@ -32,7 +32,7 @@ from repowise.core.persistence.models import (
     ReadSnapshot,
     SecurityFinding,
 )
-from repowise.core.persistence.read_snapshots import decode, decode_or_none
+from repowise.core.persistence.read_snapshots import _written_table, decode_or_none
 from tests.unit.health.fix_first_rows import FINDINGS, METRICS, PERFORMANCE, PLANS, REFACTORING
 from tests.unit.persistence.test_actions_loader import NOW, _seed
 
@@ -250,7 +250,7 @@ def test_decode_inverts_asdict_over_every_item_kind() -> None:
     assert {i.kind for i in queue.items} == set(FIX_KINDS)
     assert any(i.verify.tests for i in queue.items) and queue.refactoring_reasons
     stored = json.loads(json.dumps(asdict(queue)))
-    assert decode(FixFirstQueue, stored) == queue
+    assert decode_or_none(FixFirstQueue, stored) == queue
 
 
 @dataclass(frozen=True)
@@ -267,7 +267,97 @@ class Node:
 
 def test_decode_fixed_tuples_and_unions() -> None:
     raw = {"pair": ["a", {"n": 1}], "either": {"n": 2}, "many": [{"n": 3}]}
-    assert decode(Node, raw) == Node(("a", Leaf(1)), Leaf(2), (Leaf(3),))
-    assert decode(Node, {**raw, "either": "text"}).either == "text"
+    assert decode_or_none(Node, raw) == Node(("a", Leaf(1)), Leaf(2), (Leaf(3),))
+    assert decode_or_none(Node, {**raw, "either": "text"}).either == "text"
     assert decode_or_none(Node, {**raw, "pair": ["a"]}) is None
     assert decode_or_none(Node, {"either": None}) is None
+
+
+async def test_a_rewrite_in_the_writing_session_replaces_a_current_row(async_session) -> None:
+    """Re-index: the stores and the views written in one session, over a row
+    whose key still matches. The views must be rebuilt, not kept."""
+    rid = await _seed(async_session)
+    await write_read_snapshots(async_session, rid)
+    await async_session.commit()
+
+    await _triage(async_session, rid)  # an input write, not yet committed
+    await write_read_snapshots(async_session, rid)
+    await async_session.commit()
+    assert await _snapshot_rows(async_session) == 2
+    view, queue, _ = await _live(async_session, rid)
+    clear_fix_first_cache()
+    stored = await load_fix_first(async_session, rid, limit=None)
+    assert _wire(stored.as_dict()) == queue
+    assert "src/core.py" not in {i.target.file_path for i in stored.items}
+    assert _wire(await load_actions_view(async_session, rid, now=NOW)) == view
+
+
+async def test_a_failed_view_write_leaves_nothing_stale(async_session, monkeypatch) -> None:
+    rid = await _seed(async_session)
+    await write_read_snapshots(async_session, rid)
+    await async_session.commit()
+
+    async def broken(*_args):
+        raise RuntimeError("build failed")
+
+    monkeypatch.setattr(actions_loader, "write_actions_snapshot", broken)
+    await _triage(async_session, rid)
+    await write_read_snapshots(async_session, rid)
+    await async_session.commit()
+    assert await _snapshot_rows(async_session) == 0
+
+
+async def test_a_rolled_back_savepoint_still_invalidates(async_session) -> None:
+    rid = await _seed(async_session)
+    await write_read_snapshots(async_session, rid)
+    await async_session.commit()
+    savepoint = await async_session.begin_nested()
+    await _graph_text_write(async_session, rid)
+    await savepoint.rollback()
+    await async_session.commit()
+    assert await _snapshot_rows(async_session) == 0
+
+
+async def test_one_sessions_write_does_not_mark_another(async_session, session_factory) -> None:
+    rid = await _seed(async_session)
+    await write_read_snapshots(async_session, rid)
+    await async_session.commit()
+    async with session_factory() as other:
+        await _graph_text_write(other, rid)  # flagged, never committed
+        async with session_factory() as reader:
+            await reader.execute(select(HealthFinding.id))
+            await reader.commit()
+        await other.rollback()
+    assert await _snapshot_rows(async_session) == 2
+
+
+async def test_a_corrupt_payload_is_a_miss(async_session) -> None:
+    rid = await _seed(async_session)
+    view, queue, _ = await _live(async_session, rid)
+    await write_read_snapshots(async_session, rid)
+    for kind in ("fix_first", "actions"):
+        row = await async_session.get(ReadSnapshot, (rid, kind))
+        row.payload_json = "{not json"
+    await async_session.flush()
+    clear_fix_first_cache()
+    assert _wire((await load_fix_first(async_session, rid, limit=None)).as_dict()) == queue
+    assert _wire(await load_actions_view(async_session, rid, now=NOW)) == view
+
+
+@pytest.mark.parametrize(
+    ("sql", "table"),
+    [
+        ("SELECT 1", None),
+        ("  -- note\n select 2", None),
+        ("/* x */ PRAGMA table_info(t)", None),
+        ("EXPLAIN SELECT 1", None),
+        ("WITH r AS (SELECT 1) UPDATE git_metadata SET a = 1", ""),
+        ("UPDATE main.graph_nodes SET x = 1", "graph_nodes"),
+        ('DELETE FROM "wiki_pages"', "wiki_pages"),
+        ("-- note\nUPDATE wiki_pages SET x = 1", "wiki_pages"),
+        ("DROP TABLE x", ""),
+        ("VACUUM", ""),
+    ],
+)
+def test_text_sql_counts_as_a_write_unless_it_is_a_plain_read(sql, table) -> None:
+    assert _written_table(text(sql)) == table

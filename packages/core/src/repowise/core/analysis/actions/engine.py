@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 from .context import RepoContext, build_context
 from .facts import RepoFacts
@@ -49,8 +49,11 @@ class ActionStateRecord:
     until: datetime | None = None
 
 
-#: One ranked unit: the rule's ordering weight and the action as served.
-Ranked = tuple[float, dict[str, Any]]
+class Ranked(NamedTuple):
+    """One ranked unit: the rule's ordering weight and the action as served."""
+
+    weight: float
+    action: dict[str, Any]
 
 
 def _hidden(action: dict[str, Any], record: ActionStateRecord | None, now: datetime) -> bool:
@@ -70,21 +73,26 @@ def _naive(value: datetime) -> datetime:
 def _order(actions: list[Ranked]) -> list[Ranked]:
     ranked = sorted(
         actions,
-        key=lambda wa: (TIER_RANK[wa[1]["tier"]], RULE_RANK[wa[1]["rule"]], -wa[0], wa[1]["id"]),
+        key=lambda r: (
+            TIER_RANK[r.action["tier"]],
+            RULE_RANK[r.action["rule"]],
+            -r.weight,
+            r.action["id"],
+        ),
     )
     out: list[Ranked] = []
-    for tier in sorted({a["tier"] for _, a in ranked}, key=TIER_RANK.__getitem__):
-        in_tier = [wa for wa in ranked if wa[1]["tier"] == tier]
+    for tier in sorted({r.action["tier"] for r in ranked}, key=TIER_RANK.__getitem__):
+        in_tier = [r for r in ranked if r.action["tier"] == tier]
         head: list[Ranked] = []
         rest: list[Ranked] = []
         taken: dict[str, int] = {}
-        for wa in in_tier:
-            rule = wa[1]["rule"]
+        for r in in_tier:
+            rule = r.action["rule"]
             if taken.get(rule, 0) < PER_RULE_HEAD:
-                head.append(wa)
+                head.append(r)
                 taken[rule] = taken.get(rule, 0) + 1
             else:
-                rest.append(wa)
+                rest.append(r)
         out.extend(head + rest)
     return out
 
@@ -127,28 +135,30 @@ def rank_actions(
     now: datetime,
 ) -> dict[str, Any]:
     """The view: :func:`rule_actions`' output per horizon, answered and ranked."""
-    actions: list[Ranked] = [(weight, action) for weight, action in ruled["actions"]]
+    actions = [Ranked(weight, action) for weight, action in ruled["actions"]]
     states = states or {}
     horizons: dict[str, Any] = {}
     for horizon in HORIZONS:
-        pool = [wa for wa in actions if horizon in wa[1]["horizons"]]
+        pool = [r for r in actions if horizon in r.action["horizons"]]
         # A folder action speaks for the fragile files inside it, in the time
         # frame it appears in; listing both there tells one story twice. The
         # week's regression roll-up names files too, but only as a starting
         # point, so it absorbs nothing.
-        absorbed = {p for _, a in pool if a["rule"] == "fix_concentration" for p in a["includes"]}
+        absorbed = {
+            p for r in pool if r.action["rule"] == "fix_concentration" for p in r.action["includes"]
+        }
         pool = [
-            wa
-            for wa in pool
-            if not (wa[1]["rule"] == "fragile_file" and wa[1]["target"]["path"] in absorbed)
+            r
+            for r in pool
+            if not (r.action["rule"] == "fragile_file" and r.action["target"]["path"] in absorbed)
         ]
-        visible = [wa for wa in pool if not _hidden(wa[1], states.get(wa[1]["id"]), now)]
+        visible = [r for r in pool if not _hidden(r.action, states.get(r.action["id"]), now)]
         ordered = _order(visible)
         by_tier: dict[str, int] = {}
-        for _, a in ordered:
-            by_tier[a["tier"]] = by_tier.get(a["tier"], 0) + 1
+        for r in ordered:
+            by_tier[r.action["tier"]] = by_tier.get(r.action["tier"], 0) + 1
         horizons[horizon] = {
-            "actions": [a for _, a in ordered[:KEEP_PER_HORIZON]],
+            "actions": [r.action for r in ordered[:KEEP_PER_HORIZON]],
             "total": len(ordered),
             "hidden": len(pool) - len(visible),
             "by_tier": by_tier,
