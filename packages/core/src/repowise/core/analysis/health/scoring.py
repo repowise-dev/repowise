@@ -935,13 +935,15 @@ def hotspot_health(
 
 
 def _empty_kpis(unanalysed: int) -> dict[str, object]:
-    """KPIs with no scored file. An empty repository keeps its historical 10.0
-    floors (the snapshot columns need a number); a repository whose files are
-    all unscored has no average to report, so its headline is ``None``."""
-    floor = None if unanalysed else SCORE_MAX
+    """KPIs with no scored file: the headline is ``None``, never 10.0.
+
+    Data, markup and config files never get a metric row (``scope.scores_language``),
+    so a repository of only those arrives here with no rows at all, the same as
+    an empty one. Neither has code to score. ``snapshot_fields`` writes no trend
+    point for a ``None`` average, so no column needs a stand-in number."""
     return {
-        "hotspot_health": floor,
-        "average_health": floor,
+        "hotspot_health": None,
+        "average_health": None,
         "unanalysed_file_count": unanalysed,
         "worst_performer_path": None,
         "worst_performer_score": None,

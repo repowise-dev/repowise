@@ -313,6 +313,25 @@ def rewrite_install(
             save_distill_commands_enabled(target.repo_path, enabled=True)
 
     _install_codex_surfaces(target)
+    _install_cursor_hook()
+
+
+def _install_cursor_hook() -> None:
+    """Cursor side of ``rewrite install``; skipped when there is no ``~/.cursor``."""
+    from repowise.cli.agent_adapters.cursor import CursorAdapter
+
+    cursor = CursorAdapter()
+    if not cursor.detect():
+        return
+    cursor_path = cursor.install_rewrite_hook()
+    if cursor_path:
+        console.print(f"Cursor rewrite hook: [green]installed[/green] ({cursor_path})")
+        console.print(
+            "  [dim]Cursor does not enforce `ask` on preToolUse, so only families "
+            "set to `permission: allow` are rewritten there.[/dim]"
+        )
+    else:
+        console.print("Cursor rewrite hook: [red]install failed[/red]")
 
 
 def _install_codex_surfaces(target) -> None:
@@ -400,6 +419,15 @@ def rewrite_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> 
             f"Codex rewrite hook: {'[green]removed[/green]' if codex_removed else 'not installed'}"
         )
 
+    from repowise.cli.agent_adapters.cursor import CursorAdapter
+
+    cursor = CursorAdapter()
+    if cursor.detect():
+        cursor_removed = cursor.uninstall_rewrite_hook()
+        console.print(
+            f"Cursor rewrite hook: {'[green]removed[/green]' if cursor_removed else 'not installed'}"
+        )
+
     target = _hook_target(path, workspace, no_workspace)
     for repo_path in _target_repo_paths(target):
         if remove_agents_md_distill_section(repo_path):
@@ -439,6 +467,12 @@ def rewrite_status(path: str | None, workspace: bool, no_workspace: bool) -> Non
     from repowise.cli.agent_adapters.codex import CodexAdapter
 
     _print_rewrite_hook_status("claude-code", ClaudeCodeAdapter().rewrite_hook_status())
+
+    from repowise.cli.agent_adapters.cursor import CursorAdapter
+
+    cursor = CursorAdapter()
+    if cursor.detect():
+        _print_rewrite_hook_status("cursor", cursor.rewrite_hook_status())
 
     codex = CodexAdapter()
     if not codex.detect():

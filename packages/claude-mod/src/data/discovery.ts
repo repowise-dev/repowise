@@ -8,7 +8,7 @@ import { getHealth } from "@repowise-dev/api-client/health";
 import { listRepos } from "@repowise-dev/api-client/repos";
 import { ApiClientError } from "@repowise-dev/api-client";
 import { normalizeRepoPath } from "@repowise-dev/types/repos";
-import { isServeLock, type ServeLock } from "@repowise-dev/types/serve-lock";
+import { isLoopbackUrl, isServeLock, type ServeLock } from "@repowise-dev/types/serve-lock";
 import type { Host } from "../host";
 import type { IndexFreshness, LiteReason, Mode } from "../model/session";
 import { connectApiClient, withTimeout } from "./transport";
@@ -71,22 +71,6 @@ async function readJson(host: Host, path: string): Promise<unknown> {
 export async function readServeLock(host: Host, repoRoot: string): Promise<ServeLock | null> {
   const parsed = await readJson(host, join(repoRoot, ".repowise/serve.lock.json"));
   return isServeLock(parsed) ? parsed : null;
-}
-
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
-
-/**
- * Whether the lock points at plain http on this machine. The lock sits in the
- * repo, so a cloned repo can carry one naming any host, and a pid gate is no
- * defence (some pids are always alive). Lens probes nothing else.
- */
-export function isLoopbackUrl(url: string): boolean {
-  try {
-    const u = new URL(url);
-    return u.protocol === "http:" && LOOPBACK_HOSTS.has(u.hostname);
-  } catch {
-    return false;
-  }
 }
 
 /**

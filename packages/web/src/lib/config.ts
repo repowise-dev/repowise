@@ -39,13 +39,14 @@ export const config = {
   getApiUrl: () => read(KEYS.apiUrl),
   setApiUrl: (v: string) => write(KEYS.apiUrl, v),
 
-  getProvider: () => read(KEYS.provider) || "litellm",
+  /** "" when unset; the settings page then shows the server's active one. */
+  getProvider: () => read(KEYS.provider),
   setProvider: (v: string) => write(KEYS.provider, v),
 
   getModel: () => read(KEYS.model),
   setModel: (v: string) => write(KEYS.model, v),
 
-  getEmbedder: () => read(KEYS.embedder) || "mock",
+  getEmbedder: () => read(KEYS.embedder),
   setEmbedder: (v: string) => write(KEYS.embedder, v),
 
   /** Weekend-days preset id; "" means unset, which resolves to Sat/Sun. */

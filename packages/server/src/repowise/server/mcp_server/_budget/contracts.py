@@ -100,6 +100,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "pr_blast_radius",
             "directive.test_recommendations[]",
             "directive.tests_to_run[]",
+            "directive.tests_to_update[]",
             "directive.may_break[]",
             "directive.next_calls[]",
             "targets[]",
@@ -113,14 +114,16 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         ),
         requested_projections=(
             (
+                # The cards are the changed files, so they outlive the blast
+                # block, which stays first to go even when asked for.
                 "changed_files",
                 (
                     "directive.test_recommendations[]",
                     "directive.tests_to_run[]",
+                    "directive.tests_to_update[]",
                     "directive.may_break[]",
                     "directive.next_calls[]",
-                    "pr_blast_radius",
-                    "pr_blast_radius.guarding_tests",
+                    "targets[]",
                 ),
             ),
             # targets is required, so it is always asked for. Without this the
@@ -147,7 +150,6 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "patch_coverage.files[]",
             "patch_coverage",
             "impacted_tests",
-            "health_delta.limits",
             "health_delta.skipped",
             "health_delta.top_findings[]",
         ),
@@ -373,6 +375,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "verified",
             "continuation",
             "continuation_reference",
+            "members",
             "error",
         ),
     ),

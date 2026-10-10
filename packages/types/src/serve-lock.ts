@@ -27,3 +27,20 @@ export function isServeLock(value: unknown): value is ServeLock {
     typeof v.started_at === "string"
   );
 }
+
+const LOOPBACK_V4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+
+/**
+ * Whether a URL is plain http(s) on this machine: `localhost`, 127.0.0.0/8 or
+ * `::1`. The lockfile sits in the repo, so a cloned repo can carry one naming
+ * any host; consumers check this before probing or talking to `url`.
+ */
+export function isLoopbackUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    return u.hostname === "localhost" || u.hostname === "[::1]" || LOOPBACK_V4.test(u.hostname);
+  } catch {
+    return false;
+  }
+}

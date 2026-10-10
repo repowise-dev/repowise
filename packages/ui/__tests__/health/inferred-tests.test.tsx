@@ -87,20 +87,17 @@ describe("RiskCoverageScatter, inferred basis", () => {
     expect(screen.queryByText("a test reaches it")).not.toBeInTheDocument();
   });
 
-  it("paints the dots by column in the sunset pair, never the health ramp", () => {
-    // Health is already the Y axis, so a health-banded dot would re-say its own
-    // position and leave nothing carrying the split. It would also paint a
-    // static reading in the colours reserved for measured health bands.
+  it("keeps dots neutral and colours only weak files nothing reaches", () => {
     const { container } = render(
       <RiskCoverageScatter basis="inferred" points={points} />,
     );
-    const fillOf = (path: string) =>
-      container.querySelector(`circle[data-file="${path}"]`)?.getAttribute("fill");
+    const classOf = (path: string) =>
+      container.querySelector(`circle[data-file="${path}"]`)?.getAttribute("class") ?? "";
 
-    expect(fillOf("src/a.py")).toBe("var(--color-accent-fill)");
-    expect(fillOf("src/b.py")).toBe("var(--color-accent-secondary)");
-    // src/b.py scores 3, which on the measured chart would be the error band.
-    expect(container.innerHTML).not.toContain("--color-error");
+    // src/a.py is reached by a test: quiet neutral mark.
+    expect(classOf("src/a.py")).toContain("--color-text-tertiary");
+    // src/b.py scores 3 and nothing reaches it: the one coloured kind.
+    expect(classOf("src/b.py")).toContain("--color-error");
     expect(container.innerHTML).not.toContain("--color-success");
   });
 

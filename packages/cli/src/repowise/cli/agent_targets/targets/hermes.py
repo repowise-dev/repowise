@@ -827,9 +827,7 @@ class HermesTarget:
         convention two other agents also write, so reading it as evidence the
         user has Hermes would pre-tick this agent for anyone using Codex.
         """
-        import shutil
-
-        if shutil.which("hermes") is not None:
+        if IDENTITY.is_installed():
             return True
         return hermes_home().is_dir()
 

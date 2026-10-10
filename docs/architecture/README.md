@@ -14,6 +14,7 @@ curious; you don't need them to *use* repowise (start with
 | [decisions.md](decisions.md) | Decision capture internals: the source registry, evidence verification, confidence, currency, session mining and hook delivery |
 | [test-intelligence.md](test-intelligence.md) | The inferred test tier: call and import walks, their measured precision and recall, the resolution-origin filter, and why nothing is stored |
 | [language-support.md](language-support.md) | The language pipeline internals and the step-by-step recipe for adding a new language |
+| [agent-platform.md](agent-platform.md) | Agent identities, provider specs, integration targets and adapters, and the recipes for adding an agent integration or an agent CLI indexing backend |
 | [graph-algorithms.md](graph-algorithms.md) | The graph algorithms (PageRank, betweenness, Tarjan SCC, Leiden/Louvain community detection, shortest path) with the math and complexity |
 | [refactoring.md](refactoring.md) | Refactoring intelligence internals: detector registration, plan shape, ranking, REST routes, and code generation |
 | [savings-accounting.md](savings-accounting.md) | The savings accounting contract: what counts as a measured reduction versus an inferred avoidance, and what a total may claim |

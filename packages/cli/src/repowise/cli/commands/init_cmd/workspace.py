@@ -241,14 +241,17 @@ def _run_workspace_deterministic_generation(
 def _workspace_generation_provider_for_repo(provider: Any, repo_path: Path) -> Any:
     """Return a generation provider bound to the current workspace repo.
 
-    The Codex CLI provider shells out ``codex exec --cd <repo>``, so it must be
-    re-resolved against each repo's path; all other providers are path-agnostic
-    and returned unchanged.
+    A provider that runs its CLI in the repo's directory (``needs_repo_cwd``)
+    is re-resolved against each repo's path; all other providers are
+    path-agnostic and returned unchanged.
     """
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
 
-    if getattr(provider, "provider_name", None) != "codex_cli":
+    name = getattr(provider, "provider_name", None)
+    spec = PROVIDER_SPECS.get(name) if isinstance(name, str) else None
+    if spec is None or not spec.needs_repo_cwd:
         return provider
-    return resolve_provider("codex_cli", getattr(provider, "model_name", None), repo_path)
+    return resolve_provider(name, getattr(provider, "model_name", None), repo_path)
 
 
 @dataclass

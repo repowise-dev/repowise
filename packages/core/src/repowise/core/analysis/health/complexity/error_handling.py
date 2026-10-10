@@ -231,6 +231,29 @@ def _eh_go_hit(node: Node) -> bool:
     return False
 
 
+def _eh_java_try_ends_in_fail(catch_clause: Node, language: str) -> bool:
+    """True when the enclosing Java try block's last real statement is a fail(...) call."""
+    parent = catch_clause.parent
+    if parent is None or parent.type not in ("try_statement", "try_with_resources_statement"):
+        return False
+    try_body = parent.child_by_field_name("body")
+    if try_body is None:
+        return False
+    real = _eh_real_stmts(try_body, language)
+    if not real:
+        return False
+    last = real[-1]
+    if last.type != "expression_statement":
+        return False
+    inv = last.child_by_field_name("expression") or (
+        _eh_named(last)[0] if _eh_named(last) else None
+    )
+    if inv is None or inv.type != "method_invocation":
+        return False
+    name_node = inv.child_by_field_name("name")
+    return name_node is not None and _eh_text(name_node) == "fail"
+
+
 # The node types ``_eh_rust_hit`` / ``_eh_go_hit`` can fire on.
 _EH_RUST_KINDS = frozenset({"call_expression", "macro_invocation"})
 _EH_GO_KINDS = frozenset({"if_statement", "short_var_declaration", "assignment_statement"})
@@ -291,6 +314,7 @@ def _eh_visit(
             block is not None
             and _eh_body_is_swallowed(block, language)
             and swallowed_unsuppressed
+            and not (language == "java" and _eh_java_try_ends_in_fail(node, language))
         ):
             hits.append(ErrorHandlingHit("swallowed_catch", node.start_point[0] + 1))
         if (
@@ -317,4 +341,3 @@ def _eh_visit(
             _eh_rust_append(node, hits)
     elif language == "go" and _eh_go_hit(node):
         hits.append(ErrorHandlingHit("go_swallow", node.start_point[0] + 1))
-

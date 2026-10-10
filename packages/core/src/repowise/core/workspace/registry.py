@@ -36,7 +36,8 @@ class RepoContext:
     fts: Any  # FullTextSearch
     vector_store: Any  # LanceDB or InMemoryVectorStore
     decision_store: Any  # LanceDB or InMemoryVectorStore
-    vector_store_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    # None: readiness is not tracked, so searches do not wait for it.
+    vector_store_ready: asyncio.Event | None = field(default_factory=asyncio.Event)
     _engine: Any = field(default=None, repr=False)  # AsyncEngine, for dispose
 
 

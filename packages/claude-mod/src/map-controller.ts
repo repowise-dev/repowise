@@ -231,8 +231,8 @@ export class LensMap {
   }
 
   /** The person's `prefersReducedMotion` setting: resting frames only. */
-  setReducedMotion(on: boolean): void {
-    this.reducedMotion = on;
+  setReducedMotion(reduced: boolean): void {
+    this.reducedMotion = reduced;
   }
 
   dispose(): void {
@@ -423,9 +423,9 @@ export class LensMap {
 
   /** Whether an animation would show anything: a map on screen, motion allowed, a ripple with somewhere to go. */
   private canAnimate(kind: Anim["kind"]): boolean {
-    const on = this.drawn;
-    if (this.reducedMotion || on === null) return false;
-    return kind === "flash" || rippleRadius(on.layout, resolveLit(on.layout, this.lighting().lit)) > 0;
+    const drawn = this.drawn;
+    if (this.reducedMotion || drawn === null) return false;
+    return kind === "flash" || rippleRadius(drawn.layout, resolveLit(drawn.layout, this.lighting().lit)) > 0;
   }
 
   /**
@@ -439,12 +439,12 @@ export class LensMap {
 
   /** The current trail on the drawn map at one step, or null once the map is off screen. */
   private frame(step: Step): Frame {
-    const on = this.drawn;
+    const drawn = this.drawn;
     const anim = mapStep(step);
-    if (on === null || anim === undefined) return null;
+    if (drawn === null || anim === undefined) return null;
     // The selection was checked against this layout when it was drawn.
-    const cells = frameCells(on.layout, resolveLit(on.layout, this.lighting().lit, this.selected), anim);
-    return { key: MAP_KEY, cells, columns: on.layout.columns, rows: on.layout.rows };
+    const cells = frameCells(drawn.layout, resolveLit(drawn.layout, this.lighting().lit, this.selected), anim);
+    return { key: MAP_KEY, cells, columns: drawn.layout.columns, rows: drawn.layout.rows };
   }
 }
 

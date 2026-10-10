@@ -81,6 +81,26 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("spec/models/user.rb", None, ""),
     ("spec/openapi/users.yaml", None, ""),
     ("spec/support/helper.rb", None, "support"),
+    # perl-style t/: `t/` is a test tree for python whatever the filename
+    # (celery layout), and needs a test-shaped filename otherwise — same
+    # ambiguous-token mechanism as `spec/` above (#2962)
+    ("t/unit/app/test_app.py", "python", "test"),
+    ("t/unit/conftest.py", "python", "support"),
+    ("t/unit/tasks/task_config.py", "python", "test"),
+    ("t/integration/tasks.py", "python", "test"),
+    ("t/smoke/tasks.py", "python", "test"),
+    ("t/unit/contrib/proj/foo/tasks.py", "python", "test"),
+    # ...so without the language, only a corroborating filename counts
+    ("t/unit/app/test_app.py", None, "test"),
+    ("t/unit/tasks/task_config.py", None, ""),
+    # ...a non-source file under t/ stays as it is without corroboration
+    ("t/data/expected.json", None, ""),
+    ("t/assets/image.png", None, ""),
+    # ...and a bare `t` that is not a directory segment stays production
+    ("src/t.py", None, ""),
+    ("src/t.py", "python", ""),
+    ("latest/x.py", None, ""),
+    ("contest/x.py", None, ""),
     # e2e suites
     ("e2e/login.ts", None, "test"),
     # production code that merely contains the word: the unanchored
@@ -204,6 +224,24 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("util/env_posix_test_helper.h", None, "test"),
     ("absl/strings/str_cat.h", None, ""),
     ("crates/searcher/src/searcher/util.rs", None, ""),
+    # #2662: Jest manual mocks live in a root `__mocks__/` beside node_modules or
+    # beside the mocked module, never in a test tree, so the dunder dir counts
+    # wherever it sits, like `__fixtures__`. Bare `mocks` stays tree-gated: this
+    # repo's analysis/health/mocks/ and ktor-client-mock are product code.
+    ("__mocks__/axios.js", None, "support"),
+    ("src/__mocks__/api.ts", None, "support"),
+    ("src/__mocks__/api.test.ts", None, "test"),  # a test-shaped name still wins
+    ("src/mocks/handlers.ts", None, ""),
+    ("packages/core/src/repowise/core/analysis/health/mocks/lexicon.py", None, ""),
+    ("ktor-client-mock/common/src/io/ktor/client/engine/mock/MockEngine.kt", None, ""),
+    # #2662: .NET test projects are also named Foo.UnitTests, Foo.IntegrationTests
+    # and Foo.FuzzTests (PowerToys). A shipped Foo.Testing library is not one, and a
+    # scaffolding dir inside a test project is support, as under tests/.
+    ("Settings.UI.UnitTests/ViewModelTests/General.cs", None, "test"),
+    ("Hosts.FuzzTests/Fuzz.cs", None, "test"),
+    ("Foo.IntegrationTests/Sql/Db.cs", None, "test"),
+    ("Foo.IntegrationTests/Helpers/Db.cs", None, "support"),
+    ("src/Polly.Testing/ResiliencePipelineExtensions.cs", None, ""),
 )
 
 

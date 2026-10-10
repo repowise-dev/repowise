@@ -150,6 +150,11 @@ def build_enrichment_provider(
     import os
 
     from repowise.core.providers import get_provider
+    from repowise.core.providers.llm.registry import (
+        PROVIDER_AUTODETECT_ORDER,
+        provider_credentials_present,
+        provider_kwargs,
+    )
     from repowise.core.repo_config import load_repo_config, load_repo_env
 
     cfg = load_repo_config(repo_path)
@@ -161,38 +166,19 @@ def build_enrichment_provider(
     name = provider_name or cfg.get("provider")
     chosen_model = model or cfg.get("model")
 
-    # Map provider -> the env var carrying its key.
-    key_vars = {
-        "anthropic": "ANTHROPIC_API_KEY",
-        "openai": "OPENAI_API_KEY",
-        "openrouter": "OPENROUTER_API_KEY",
-        "deepseek": "DEEPSEEK_API_KEY",
-        "kimi": "KIMI_API_KEY",
-        "gemini": "GEMINI_API_KEY",
-        "litellm": "LITELLM_API_KEY",
-    }
-
     # Auto-detect from whichever key is present when the config names none.
     if name is None:
-        for candidate, var in key_vars.items():
-            if _env(var):
-                name = candidate
-                break
+        name = next(
+            (c for c in PROVIDER_AUTODETECT_ORDER if provider_credentials_present(c, _env)),
+            None,
+        )
     if name is None:
         raise ValueError(
             "No LLM provider configured for refactoring enrichment. Set "
             "'provider' in .repowise/config.yaml or an API key env var."
         )
 
-    kwargs: dict[str, Any] = {}
-    if chosen_model:
-        kwargs["model"] = chosen_model
-    key_var = key_vars.get(name)
-    if key_var and _env(key_var):
-        kwargs["api_key"] = _env(key_var)
-    if name == "gemini" and not kwargs.get("api_key") and _env("GOOGLE_API_KEY"):
-        kwargs["api_key"] = _env("GOOGLE_API_KEY")
-
+    kwargs = provider_kwargs(name, model=chosen_model, repo_path=repo_path, getenv=_env)
     return get_provider(name, **kwargs)
 
 

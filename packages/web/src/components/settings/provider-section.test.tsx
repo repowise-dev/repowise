@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(),
   getProvider: vi.fn(() => "gemini"),
+  getEmbedder: vi.fn(() => "mock"),
 }));
 
 vi.mock("@/lib/api/providers", () => ({ getProviders: mocks.getProviders }));
@@ -14,7 +15,7 @@ vi.mock("@/lib/config", () => ({
   config: {
     getProvider: mocks.getProvider,
     getModel: () => "",
-    getEmbedder: () => "mock",
+    getEmbedder: mocks.getEmbedder,
     setProvider: vi.fn(),
     setModel: vi.fn(),
     setEmbedder: vi.fn(),
@@ -63,6 +64,7 @@ describe("ProviderSection server provider", () => {
     expect(
       screen.getByText("Used when you trigger init or sync from this dashboard."),
     ).toBeTruthy();
+    expect(await screen.findByText(/Could not load the provider list/)).toBeTruthy();
   });
 });
 
@@ -97,6 +99,7 @@ describe("ProviderSection provider catalog", () => {
         { id: "gemini", name: "Google Gemini", default_model: "gemini-3.5-flash-lite" },
         { id: "codex_cli", name: "Codex CLI", default_model: "codex_cli/gpt-5.6-luna" },
       ],
+      flag_only_providers: ["mock"],
     });
 
     render(<ProviderSection />);
@@ -145,9 +148,9 @@ describe("ProviderSection provider catalog", () => {
     );
   });
 
-  it("lets the server's default model beat a stale built-in placeholder", async () => {
-    // The local table is a hardcoded guess that has already drifted once. When
-    // the server reports a different default, the server is right.
+  it("takes the model placeholder from the server catalog", async () => {
+    // The page keeps no table of its own; the catalog is derived from the
+    // provider specs, so the server's default is the one to show.
     mocks.getProviders.mockResolvedValue({
       active: { provider: "gemini", model: null },
       providers: [{ id: "gemini", name: "Google Gemini", default_model: "gemini-4-pro" }],
@@ -159,7 +162,7 @@ describe("ProviderSection provider catalog", () => {
     await waitFor(() => expect(model.placeholder).toBe("gemini-4-pro"));
   });
 
-  it("falls back to the built-in placeholder when the catalog has no default", async () => {
+  it("falls back to a generic placeholder when the catalog has no default", async () => {
     mocks.getProviders.mockResolvedValue({
       active: { provider: "gemini", model: null },
       providers: [{ id: "gemini", name: "Google Gemini", default_model: null }],
@@ -168,8 +171,79 @@ describe("ProviderSection provider catalog", () => {
     render(<ProviderSection />);
 
     await waitFor(() => expect(mocks.getProviders).toHaveBeenCalledOnce());
-    expect(screen.getByLabelText<HTMLInputElement>("Model").placeholder).toBe(
-      "gemini-3.5-flash-lite",
+    expect(screen.getByLabelText<HTMLInputElement>("Model").placeholder).toBe("model name");
+  });
+
+  it("shows the env vars and setup hint the catalog carries", async () => {
+    mocks.getProviders.mockResolvedValue({
+      active: { provider: "gemini", model: null },
+      providers: [
+        {
+          id: "gemini",
+          name: "Google Gemini",
+          default_model: "gemini-3.5-flash-lite",
+          env_vars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+          setup_hint: "pip install google-genai",
+        },
+      ],
+    });
+
+    render(<ProviderSection />);
+
+    expect(await screen.findByText("pip install google-genai")).toBeTruthy();
+    expect(screen.getByText(/GEMINI_API_KEY/)).toBeTruthy();
+  });
+});
+
+describe("ProviderSection server defaults", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Element.prototype.hasPointerCapture = vi.fn(() => false);
+    Element.prototype.releasePointerCapture = vi.fn();
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  it("shows the server's provider and embedder when nothing is saved", async () => {
+    mocks.getProvider.mockReturnValue("");
+    mocks.getEmbedder.mockReturnValue("");
+    mocks.getProviders.mockResolvedValue({
+      active: { provider: "openai", model: null, embedder: "gemini" },
+      providers: [{ id: "openai", name: "OpenAI", default_model: "gpt-5.6-luna" }],
+      embedders: [
+        { id: "gemini", env_vars: ["GEMINI_API_KEY"], semantic: true },
+        { id: "mock", env_vars: [], semantic: false },
+      ],
+    });
+
+    render(<ProviderSection />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: "Provider" }).textContent).toContain("openai"),
     );
+    expect(screen.getByRole("combobox", { name: "Embedder" }).textContent).toContain("gemini");
+    expect(screen.getByText(/GEMINI_API_KEY/)).toBeTruthy();
+  });
+
+  it("offers the server's embedders and says when one carries no signal", async () => {
+    mocks.getProvider.mockReturnValue("openai");
+    mocks.getEmbedder.mockReturnValue("mock");
+    mocks.getProviders.mockResolvedValue({
+      active: { provider: "openai", model: null, embedder: "mock" },
+      providers: [],
+      embedders: [
+        { id: "voyage", env_vars: [], semantic: true },
+        { id: "mock", env_vars: [], semantic: false },
+      ],
+    });
+
+    render(<ProviderSection />);
+
+    expect(await screen.findByText(/Semantic search is off/)).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Embedder" }), {
+      key: "Enter",
+      code: "Enter",
+    });
+    await waitFor(() => expect(screen.queryAllByRole("option").length).toBeGreaterThan(0));
+    expect(screen.queryAllByRole("option").map((o) => o.textContent)).toEqual(["voyage", "mock"]);
   });
 });

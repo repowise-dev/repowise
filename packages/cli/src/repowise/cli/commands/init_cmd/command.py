@@ -61,6 +61,7 @@ from repowise.cli.ui import (
     WARN,
     MaybeCountColumn,
     RichProgressCallback,
+    agent_providers_set_up,
     interactive_advanced_config,
     interactive_customize_offer,
     interactive_fast_mode_offer,
@@ -78,6 +79,7 @@ from repowise.cli.ui import (
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
+from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles, resolve_style
@@ -415,8 +417,10 @@ def _run_generation_phase(
         console.print(f"  Languages: {', '.join(lang_parts)}")
 
     # Warn when a local provider runs with default concurrency
-    local_providers = ("ollama", "codex_cli", "claude_cli", "opencode")
-    if provider.provider_name in local_providers and concurrency > 4:
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    spec = PROVIDER_SPECS.get(provider.provider_name)
+    if spec is not None and spec.local and concurrency > 4:
         warn(
             f"  {provider.provider_name} is a local provider "
             f"running with concurrency={concurrency}. "
@@ -1178,6 +1182,7 @@ def init_command(
                 reasoning,
                 repo_path=repo_path,
                 save_key=save_key,
+                prefer=agent_providers_set_up(repo_path),
             )
             provider_name = selection.provider_name
             model = selection.model
@@ -1930,6 +1935,9 @@ def init_command(
         # their stamp. Without it `health_analyzer_changed` reads absent-as-
         # unchanged and the version trigger never fires for them.
         base_state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+        # Same reasoning for the security scanner (#3072): this run just
+        # scanned every file, so start tracking its version here too.
+        base_state["security_scanner_version"] = SECURITY_SCANNER_VERSION
         # This run just scored every file, so the periodic re-score cadence
         # starts now. Without the stamp the gate reads "never re-scored" and the
         # very next update re-scores the whole repo init had only just scored.

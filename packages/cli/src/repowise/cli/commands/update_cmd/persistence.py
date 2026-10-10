@@ -19,6 +19,7 @@ from typing import Any
 import structlog
 
 from repowise.cli.helpers import (
+    as_commit_id,
     console,
     head_commit_ts,
     load_config,
@@ -27,6 +28,7 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 from repowise.core.pipeline import PhaseTimings, timed
 
 from .incremental import _build_repo_graph
@@ -355,6 +357,8 @@ def resolve_repair_base(
     from_commit = marker.get("from_commit") if isinstance(marker, dict) else None
     if not from_commit or from_commit == base_ref:
         return base_ref, None
+    if as_commit_id(from_commit) is None or as_commit_id(base_ref) is None:
+        return base_ref, None
 
     def _git(*args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -362,7 +366,7 @@ def resolve_repair_base(
         )
 
     try:
-        if _git("merge-base", "--is-ancestor", from_commit, base_ref).returncode != 0:
+        if _git("merge-base", "--is-ancestor", "--end-of-options", from_commit, base_ref).returncode != 0:
             # Non-zero covers both "not an ancestor" (rebased, force-pushed,
             # branch switched) and "cannot resolve that object" (gc'd, or a
             # shallow clone that never fetched it), and git does not
@@ -371,7 +375,7 @@ def resolve_repair_base(
                 f"the recorded commit {from_commit[:8]} is not an ancestor of this "
                 "branch's history, or is not present in this clone"
             )
-        counted = _git("rev-list", "--count", f"{from_commit}..{head or 'HEAD'}")
+        counted = _git("rev-list", "--count", "--end-of-options", f"{from_commit}..{head or 'HEAD'}")
         if counted.returncode == 0 and int(counted.stdout.strip() or 0) > _REPAIR_MAX_COMMITS:
             return base_ref, (
                 f"the range has grown past {_REPAIR_MAX_COMMITS} commits, which is "
@@ -497,11 +501,20 @@ def _persist_index_only_update(
             "fingerprint was retained so the next update retries."
         )
 
+    # Same drift check for the security scanner (#3072): a version bump means
+    # every unchanged file's stored findings may be stale, since the normal
+    # persist above only rescanned the changed files.
+    security_scanner_version = state.get("security_scanner_version")
+    if security_scanner_changed(state):
+        with timed(timings, "security_rescan"):
+            if run_full_security_rescan(repo_path, exclude_patterns or []):
+                security_scanner_version = SECURITY_SCANNER_VERSION
     new_state = {
         **state,
         "last_sync_commit": head,
         "last_full_rescore_at": last_full_rescore_at,
         "health_analyzer_version": health_analyzer_version,
+        "security_scanner_version": security_scanner_version,
         "config_fingerprint": config_fingerprint(repo_path),
         "config_dependency_fingerprints": (
             dependency_fingerprints
@@ -1648,6 +1661,41 @@ def _full_rescore_interval_days() -> float:
     return _FULL_RESCORE_INTERVAL_DAYS
 
 
+def parser_changed(repo_path: Path) -> bool:
+    """Whether the stored graph edges were written by a different parser.
+
+    Compares the fingerprint ``persist_incremental_edges`` stamped on the repo
+    row with the running ``parser_fingerprint()``. An unstamped row, or a store
+    that cannot be read, is **not** a change, for the reason
+    :func:`health_analyzer_changed` gives: the next commit's widen stamps it.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.ingestion.parse_cache import parser_fingerprint
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_repository_by_path,
+        get_session,
+    )
+
+    async def _stored() -> str | None:
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                return repo.graph_edges_parser_fingerprint if repo is not None else None
+        finally:
+            await engine.dispose()
+
+    try:
+        stored = run_async(_stored())
+    except Exception as exc:
+        log.debug("parser_change_check_failed", error=str(exc))
+        return False
+    return stored is not None and stored != parser_fingerprint()
+
+
 def health_analyzer_changed(state: dict) -> bool:
     """Whether the stored health rows were written by a different analyzer.
 
@@ -1659,6 +1707,17 @@ def health_analyzer_changed(state: dict) -> bool:
     """
     stored = state.get("health_analyzer_version")
     return stored is not None and stored != HEALTH_ANALYZER_VERSION
+
+
+def security_scanner_changed(state: dict) -> bool:
+    """Whether the stored security findings were written by a different scanner.
+
+    Mirrors :func:`health_analyzer_changed`: a legacy state file with no stamp
+    is not a change, it picks the stamp up on its first full security rescan
+    (#3072).
+    """
+    stored = state.get("security_scanner_version")
+    return stored is not None and stored != SECURITY_SCANNER_VERSION
 
 
 def full_rescore_due(state: dict, head_ts: float | None) -> bool:
@@ -1707,3 +1766,58 @@ def run_decay_health_rescore(
     except Exception as exc:
         console.print(f"[yellow]Idle-file health re-score skipped: {exc}[/yellow]")
         return False
+
+
+def run_full_security_rescan(repo_path: Any, exclude_patterns: list[str]) -> bool:
+    """Rescan every tracked working-tree file against the current scanner (#3072).
+
+    Unlike the health decay rescore, there is no stored structural fact to
+    replay from the DB: a security finding comes from the raw source text, so
+    this does its own full parse (``collect_sources=True``) rather than reusing
+    the update's changed-files-only ``parsed_files``. Best-effort: returns True
+    on success so the caller can stamp ``security_scanner_version``; a failure
+    is logged and leaves the stamp so the next update retries.
+    """
+    try:
+        run_async(_security_rescan_from_full_parse(repo_path, exclude_patterns))
+        return True
+    except Exception as exc:
+        console.print(f"[yellow]Full security rescan skipped: {exc}[/yellow]")
+        return False
+
+
+async def _security_rescan_from_full_parse(repo_path: Any, exclude_patterns: list[str]) -> None:
+    """Full-replace security rescan over every tracked working-tree file.
+
+    Symbol-name findings (``SYMBOL_NAME_KINDS``) need the parsed symbols, so
+    this does its own full repo parse with ``collect_sources=True`` rather
+    than the changed-files-only ``parsed_files`` the rest of ``update`` works
+    from, the same way ``init`` has the full source available for its first
+    scan. ``replace_findings`` only ever deletes/replaces working-tree rows
+    (``commit_sha`` empty); history rows from ``scan --history`` are untouched.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.analysis.security_scan import SecurityScanner, scan_source_map
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+
+    parsed_files, source_map, _graph_builder, _repo_structure, _file_count = _build_repo_graph(
+        repo_path, exclude_patterns, collect_sources=True
+    )
+
+    url = get_db_url_for_repo(repo_path)
+    engine = create_engine(url)
+    try:
+        await init_db(engine)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            findings_by_file, scanned_paths = scan_source_map(parsed_files, source_map)
+            await SecurityScanner(session, repo.id).replace_findings(findings_by_file, scanned_paths)
+    finally:
+        await engine.dispose()

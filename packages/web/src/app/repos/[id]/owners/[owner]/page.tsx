@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { getTranslations } from "next-intl/server";
 import { Users } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { OwnerAvatar } from "@repowise-dev/ui/owners/owner-avatar";
@@ -9,7 +10,10 @@ import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { formatDate, formatRelativeTimeOrNull } from "@repowise-dev/ui/lib/format";
 import { getOwnerProfile } from "@/lib/api/owners";
 
-export const metadata: Metadata = { title: "Contributor" };
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("views.contributors");
+  return { title: t("profileTitle") };
+}
 
 /**
  * A server component, where this was a client component behind one SWR wave.
@@ -26,6 +30,7 @@ export default async function OwnerProfilePage({
   params: Promise<{ id: string; owner: string }>;
 }) {
   const { id, owner } = await params;
+  const t = await getTranslations("views.contributors");
   const base = `/repos/${id}`;
   const ownerKey = decodeURIComponent(owner);
 
@@ -35,18 +40,18 @@ export default async function OwnerProfilePage({
     return (
       <PageShell
         icon={<Users className="h-5 w-5 text-[var(--color-accent-primary)]" />}
-        title="Contributor"
+        title={t("profileTitle")}
       >
         <EmptyState
           icon={<Users className="h-6 w-6" />}
-          title="No profile for this contributor"
-          description="Nobody by this name or address appears in the indexed git history. They may have committed under a different address, or the history may not have been synced yet."
+          title={t("profileEmptyTitle")}
+          description={t("profileEmptyDescription")}
         />
       </PageShell>
     );
   }
 
-  const displayName = profile.name || profile.email || "unknown";
+  const displayName = profile.name || profile.email || t("unknownName");
   const lastTouched = formatRelativeTimeOrNull(profile.last_commit_at);
 
   // Tenure as a sentence rather than a "new to this repo" badge. That badge
@@ -55,9 +60,9 @@ export default async function OwnerProfilePage({
   // dates says the same thing without dressing it as a verdict.
   const tenure = [
     profile.first_commit_at
-      ? `Committing here since ${formatDate(profile.first_commit_at)}`
+      ? t("tenureSince", { date: formatDate(profile.first_commit_at) })
       : null,
-    lastTouched ? `last touched ${lastTouched}` : null,
+    lastTouched ? t("tenureLastTouched", { time: lastTouched }) : null,
   ]
     .filter(Boolean)
     .join(", ");

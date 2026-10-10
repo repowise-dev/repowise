@@ -228,5 +228,8 @@ async def test_get_change_risk_carries_the_split_end_to_end(tmp_path, monkeypatc
 
 def test_the_diff_shape_line_ranks_without_naming_a_raw_score():
     assert "42%" in _diff_shape_sentence({"risk_percentile": 42.0}, {})
+    assert "42%" in _diff_shape_sentence({"risk_percentile": 42.9}, {})
+    assert "bigger than 99%" in _diff_shape_sentence({"risk_percentile": 99.5}, {})
+    assert "bigger than 99%" in _diff_shape_sentence({"risk_percentile": 100.0}, {})
     assert "unranked" in _diff_shape_sentence({"risk_percentile": None}, {})
     assert "diagnostics" in _diff_shape_sentence({"risk_percentile": 42.0}, {"score": 3.0})

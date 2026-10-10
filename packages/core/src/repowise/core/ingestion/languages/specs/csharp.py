@@ -7,9 +7,21 @@ SPEC = LanguageSpec(
     display_name="C#",
     import_support="full",
     # xUnit/NUnit conventions: FooTest(s)/FooSpec(s); sibling Foo.Tests/
-    # and BDD-style Foo.Specs/ projects (Polly's test/Polly.Specs).
+    # and BDD-style Foo.Specs/ projects (Polly's test/Polly.Specs), plus the
+    # Foo.UnitTests / Foo.IntegrationTests / Foo.FunctionalTests / Foo.FuzzTests
+    # spellings (PowerToys' Settings.UI.UnitTests, Hosts.FuzzTests) and the
+    # singular Foo.UnitTest (#2662). Case-sensitive whole-suffix matches, so a
+    # shipped Foo.Testing/ library stays production code.
     test_camel_suffixes=("Test", "Tests", "Spec", "Specs"),
-    test_dir_suffixes=(".Tests", ".Specs"),
+    test_dir_suffixes=(
+        ".Tests",
+        ".Specs",
+        ".UnitTests",
+        ".IntegrationTests",
+        ".FunctionalTests",
+        ".FuzzTests",
+        ".UnitTest",
+    ),
     # Clean-architecture project-dir suffixes (Foo.Api/, Foo.Domain/,
     # Foo.Infrastructure/) — not yet verified against a live .NET repo.
     layer_dir_hints=((".Api", "API"), (".Domain", "Service"), (".Infrastructure", "Data")),

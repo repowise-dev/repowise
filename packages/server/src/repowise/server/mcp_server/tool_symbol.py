@@ -42,6 +42,8 @@ Returns a flat dict (not wrapped in `targets`) so the agent can pipe the
 
 from __future__ import annotations
 
+import functools
+import json
 import re
 import sqlite3
 import time
@@ -55,6 +57,7 @@ from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import WikiSymbol
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import register_post_shed
+from repowise.server.mcp_server._budget.contracts import DEFAULT_RESPONSE_CHARS
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -82,7 +85,11 @@ from repowise.server.mcp_server._symbol_lookup import (
     resolve_symbol_rows,
     symbol_id_variants,
 )
-from repowise.server.mcp_server._verify import check_symbol_bounds, heal_symbol_row
+from repowise.server.mcp_server._verify import (
+    check_symbol_bounds,
+    heal_symbol_row,
+    parse_live_symbols,
+)
 
 _log = __import__("logging").getLogger("repowise.mcp.symbol")
 
@@ -94,6 +101,18 @@ _log = __import__("logging").getLogger("repowise.mcp.symbol")
 # token cost (S1 dogfood). The rare overflow gets a clean `continuation`
 # token rather than a guessed range read.
 _MAX_SOURCE_LINES = 600
+
+# A container whose served body would exceed this is outlined instead: its
+# header plus each member's signature, lines and id. Half the default reply
+# budget, so smaller classes keep the one-call whole body, while a class big
+# enough to crowd out the rest of the reply is usually wanted for its shape.
+_OUTLINE_MIN_CHARS = DEFAULT_RESPONSE_CHARS // 2
+_CONTAINER_KINDS = frozenset({"class", "interface", "struct", "enum", "trait", "impl", "module"})
+# Header lines (decorators, declaration, docstring head) served above members.
+_OUTLINE_HEADER_LINES = 12
+_OUTLINE_SUMMARY_CHARS = 160
+# Serialized chars of member rows listed; the rest are counted in members_total.
+_OUTLINE_MEMBER_CHARS = DEFAULT_RESPONSE_CHARS // 2
 
 # Range-read dispatch: "path/to/file.py:140-180". A single colon followed by
 # a numeric range never collides with "{path}::{name}" (double colon) or an
@@ -109,6 +128,20 @@ _MAX_RANGE_LINES = 200
 # Dead-end recovery: max grep matches returned when a symbol lookup misses
 # but the file exists on disk.
 _MAX_FALLBACK_MATCHES = 8
+
+# A matched line that declares the name rather than using it: a definition
+# keyword at line start, after decorators and modifiers. Keyword-based, so a
+# definition without one (``const f = () =>``) reads as a plain match.
+_DEF_KEYWORDS = r"(?:def|class|function\*?|func|fn|struct|interface|enum|trait|type|module|sub)"
+_DEF_MODIFIERS = (
+    r"(?:(?:export|default|pub(?:\([^)]*\))?|public|private|protected|internal|static"
+    r"|abstract|final|override|virtual|async|unsafe|extern|inline|open|sealed|partial|data)\s+)*"
+)
+_COMMENT_PREFIXES = ("#", "//", "/*", "*", "--", ";")
+
+# Rows read when matching a name across files. A scan that fills it is not
+# exhaustive, so its single survivor is never taken as the only match.
+_NAME_SCAN_CAP = 20
 
 # When a lookup is ambiguous (overloads, re-exports, conditional defs) every
 # candidate body is served in ONE response — a silently-picked wrong candidate
@@ -637,12 +670,18 @@ def _live_grep_fallback(repo_root: Path, file_path: str, name: str) -> list[dict
     bare = _bare_name(name)
     if not bare:
         return []
+    defines = re.compile(
+        rf"^\s*(?:@\S+\s+)*{_DEF_MODIFIERS}{_DEF_KEYWORDS}\s+(?:\([^)]*\)\s*)?{re.escape(bare)}\b"
+    )
     lines = text.splitlines()
     matches: list[dict] = []
     for i, line in enumerate(lines, 1):
         if bare in line:
             lo, hi = max(1, i - 2), min(len(lines), i + 2)
-            matches.append({"line": i, "context": _number_lines("\n".join(lines[lo - 1 : hi]), lo)})
+            match = {"line": i, "context": _number_lines("\n".join(lines[lo - 1 : hi]), lo)}
+            if not line.lstrip().startswith(_COMMENT_PREFIXES) and defines.match(line):
+                match["defines"] = True
+            matches.append(match)
             if len(matches) >= _MAX_FALLBACK_MATCHES:
                 break
     return matches
@@ -660,6 +699,31 @@ _order_candidates = order_candidates
 _resolve_symbol = resolve_symbol_rows
 
 
+async def _symbols_named(
+    session, repo_id: str, symbol_id: str, exclude_spec
+) -> tuple[list[str], bool]:
+    """Non-excluded ids of symbols carrying the name in *symbol_id*.
+
+    The second value says whether the scan saw every row with that name, so a
+    caller can tell "exactly one" from "one survivor of a capped scan".
+    """
+    qualified = "::" in symbol_id
+    # A bare name is matched whole: it has no path half to strip.
+    name = _parse_symbol_id(symbol_id)[1] if qualified else symbol_id.strip()
+    if not name:
+        return [], True
+    bare = _bare_name(name) if qualified else name
+    res = await session.execute(
+        select(WikiSymbol.symbol_id, WikiSymbol.file_path)
+        .where(WikiSymbol.repository_id == repo_id, WikiSymbol.name == bare)
+        .order_by(WikiSymbol.symbol_id)
+        .limit(_NAME_SCAN_CAP)
+    )
+    rows = res.all()
+    ids = [sid for sid, fpath in rows if sid and not is_excluded(fpath, exclude_spec)]
+    return list(dict.fromkeys(ids)), len(rows) < _NAME_SCAN_CAP
+
+
 async def _symbol_suggestions(session, repo_id: str, symbol_id: str, exclude_spec) -> list[str]:
     """Concrete symbol_ids to retry when a lookup misses entirely.
 
@@ -668,24 +732,8 @@ async def _symbol_suggestions(session, repo_id: str, symbol_id: str, exclude_spe
     the agent can pass straight back to get_symbol — a bare "not found" would
     otherwise send it to get_context or a whole-file Read.
     """
-    _, name = _parse_symbol_id(symbol_id)
-    if not name:
-        return []
-    bare = _bare_name(name)
-    res = await session.execute(
-        select(WikiSymbol.symbol_id, WikiSymbol.file_path)
-        .where(WikiSymbol.repository_id == repo_id, WikiSymbol.name == bare)
-        .limit(20)
-    )
-    out: list[str] = []
-    seen: set[str] = set()
-    for sid, fpath in res.all():
-        if sid and sid not in seen and not is_excluded(fpath, exclude_spec):
-            seen.add(sid)
-            out.append(sid)
-            if len(out) >= 5:
-                break
-    return out
+    ids, _ = await _symbols_named(session, repo_id, symbol_id, exclude_spec)
+    return ids[:5]
 
 
 def _read_file_text(repo_path: Path, file_path: str) -> str | None:
@@ -735,6 +783,73 @@ def _number_lines(source: str, start_line: int) -> str:
     instead of re-Reading the file to "see the real format".
     """
     return "\n".join(f"{n:>6}\t{line}" for n, line in enumerate(source.splitlines(), start_line))
+
+
+async def _container_outline(
+    session_factory: Any, repo_id: str, row: WikiSymbol, text: str, start: int, end: int
+) -> tuple[list[dict[str, Any]], int, int] | None:
+    """Direct members of the container *row* spanning ``start``-``end``, as outline rows.
+
+    Returns the listed rows (capped at ``_OUTLINE_MEMBER_CHARS``), the line the
+    first member starts on and the member total, or None when the index holds
+    no members to outline. Each member is verified against the live file,
+    parsing it at most once for the whole set.
+
+    Members are matched by parent name inside the container's own lines, so
+    Rust impl blocks and Go receiver methods declared outside a struct do not
+    outline it.
+    """
+    async with get_session(session_factory) as session:
+        res = await session.execute(
+            select(WikiSymbol).where(
+                WikiSymbol.repository_id == repo_id,
+                WikiSymbol.file_path == row.file_path,
+                WikiSymbol.parent_name == row.name,
+                WikiSymbol.id != row.id,
+            )
+        )
+        rows = list(res.scalars().all())
+    _parsed = functools.cache(lambda: parse_live_symbols(row, text))
+    members: list[dict[str, Any]] = []
+    for member in rows:
+        check = check_symbol_bounds(member, text, _parsed)
+        # A same-named container elsewhere in the file shares the parent name;
+        # an unverified member is judged by its indexed range instead.
+        if check.approximate:
+            if not start <= member.start_line <= member.end_line <= end:
+                continue
+        elif not start <= check.start_line <= end:
+            continue
+        entry: dict[str, Any] = {
+            "symbol_id": symbol_identity(member.symbol_id),
+            "kind": member.kind,
+            "signature": _clean_symbol_signature(member.signature),
+            "start_line": check.start_line,
+            "end_line": check.end_line,
+        }
+        summary = (member.docstring or "").strip().splitlines()
+        if summary:
+            entry["summary"] = summary[0][:_OUTLINE_SUMMARY_CHARS]
+        if check.approximate:
+            entry["bounds"] = "approximate"
+        members.append(entry)
+    if not members:
+        return None
+    members.sort(key=lambda m: m["start_line"])
+    # Overloads share one id, and get_symbol on it already serves every one.
+    unique: dict[str, dict[str, Any]] = {}
+    for entry in members:
+        unique.setdefault(entry["symbol_id"], entry)
+    members = list(unique.values())
+    first = min((m["start_line"] for m in members if "bounds" not in m), default=end + 1)
+    listed: list[dict[str, Any]] = []
+    remaining = _OUTLINE_MEMBER_CHARS
+    for entry in members:
+        remaining -= len(json.dumps(entry)) + 2
+        if remaining < 0:
+            break
+        listed.append(entry)
+    return listed, first, len(members)
 
 
 async def _render_ambiguous(
@@ -891,7 +1006,8 @@ async def get_symbol(
             live range, or an omission ref.
         context_lines: extra lines before/after (0-50).
         repo: usually omitted.
-        query: omission refs only, regex/substring filter on lines.
+        query: omission refs only, regex/substring filter on lines. With
+            no id given, it is read as ``symbol_id``.
         id: accepted alias for ``symbol_id``.
         depth: 1 (default) is this symbol alone; 2-3 also returns the bodies
             it calls, transitively, in ``callee_bodies``.
@@ -920,10 +1036,14 @@ async def get_symbol(
     # are given.
     if not symbol_id and id:
         symbol_id = id
+    elif not symbol_id and query and query.strip():
+        # Hosts that defer tool schemas let a model guess ``query`` for the id.
+        # The line filter needs an id to apply to, so alone it is the id.
+        symbol_id, query = query, None
     if not symbol_id or not symbol_id.strip():
         return {
             "symbol_id": symbol_id,
-            "error": "symbol_id is required",
+            "error": 'get_symbol requires `symbol_id`, e.g. "path/to/file.py::Name".',
             "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
         }
 
@@ -980,6 +1100,14 @@ async def get_symbol(
 
     exclude_spec = _get_exclude_spec(ctx.path)
     rows = [r for r in rows if not is_excluded(r.file_path, exclude_spec)]
+    if not rows and "::" not in symbol_id:
+        # A bare name one symbol carries is that symbol; several stay suggestions.
+        async with get_session(ctx.session_factory) as session:
+            named, complete = await _symbols_named(
+                session, repository.id, symbol_id, exclude_spec
+            )
+            if complete and len(named) == 1:
+                rows = await _resolve_symbol(session, repository.id, named[0])
     if not rows:
         # Dead-end recovery: constants/imports/aliases between indexed
         # symbols miss the index but live in the file — grep the live file
@@ -989,6 +1117,12 @@ async def get_symbol(
             if file_part and name_part and not is_excluded(file_part, exclude_spec):
                 matches = _live_grep_fallback(Path(str(ctx.path)), file_part, name_part)
                 if matches:
+                    likely = (
+                        "defined here, so likely added after the last index; "
+                        "run `repowise update` to index it"
+                        if any(m.get("defines") for m in matches)
+                        else "likely a constant, import, or alias"
+                    )
                     return {
                         "symbol_id": symbol_id,
                         "file": file_part,
@@ -997,9 +1131,8 @@ async def get_symbol(
                         "verified": True,
                         "note": (
                             "Not an indexed symbol, but the name matches these "
-                            "live-file lines (likely a constant, import, or "
-                            "alias). For surrounding source use a range read: "
-                            f'"{file_part}:<start>-<end>".'
+                            f"live-file lines ({likely}). For surrounding source "
+                            f'use a range read: "{file_part}:<start>-<end>".'
                         ),
                         "_meta": _build_meta(
                             timing_ms=(time.perf_counter() - t0) * 1000,
@@ -1073,10 +1206,36 @@ async def get_symbol(
         await heal_symbol_row(ctx.session_factory, row, check.start_line, check.end_line)
 
     source, start, end, _total = _slice_text(text, check.start_line, check.end_line, context_lines)
+    numbered = _number_lines(source, start)
 
     truncated = (end - start + 1) >= _MAX_SOURCE_LINES and (
         check.end_line - check.start_line + 1 + 2 * context_lines
     ) > _MAX_SOURCE_LINES
+
+    outline = None
+    if row.kind in _CONTAINER_KINDS and check.verified:
+        # Sized on the body alone, so context_lines never tips a class into an outline.
+        bare, bare_start, _e, _t = _slice_text(text, check.start_line, check.end_line, 0)
+        if len(_number_lines(bare, bare_start)) > _OUTLINE_MIN_CHARS:
+            outline = await _container_outline(
+                ctx.session_factory, repository.id, row, text, check.start_line, check.end_line
+            )
+    if outline is not None:
+        members, first_member, members_total = outline
+        header_end = min(
+            first_member - 1, check.start_line + _OUTLINE_HEADER_LINES - 1, check.end_line
+        )
+        # context_lines widens the header upward only; below it are the members.
+        source, start, end, _total = _slice_text(
+            text,
+            max(1, check.start_line - context_lines),
+            max(check.start_line, header_end),
+            0,
+        )
+        source = source.rstrip()
+        end = start + len(source.splitlines()) - 1 if source else start
+        numbered = _number_lines(source, start)
+        truncated = False
 
     response = {
         "symbol_id": symbol_identity(row.symbol_id),
@@ -1090,7 +1249,7 @@ async def get_symbol(
         "end_line": end,
         "symbol_start_line": check.start_line,
         "symbol_end_line": check.end_line,
-        "source": _number_lines(source, start),
+        "source": numbered,
         "truncated": truncated,
         "verified": check.verified,
         "_meta": _build_meta(
@@ -1101,7 +1260,24 @@ async def get_symbol(
             targets=[row.file_path],
         ),
     }
-    if not truncated and check.verified:
+    if outline is not None:
+        # An outline is not the body, so it never claims ``_meta.complete``.
+        response["outlined"] = True
+        response["members"] = members
+        response["note"] = (
+            f"Body ({check.start_line}-{check.end_line}) outlined: header plus "
+            f"{len(members)} members. Fetch one member with get_symbol on its "
+            f"symbol_id, or Read {row.file_path} lines "
+            f"{check.start_line}-{check.end_line} for the whole body."
+        )
+        if members_total > len(members):
+            response["members_total"] = members_total
+            last = members[-1]["end_line"] if members else check.start_line
+            response["note"] += (
+                f" {members_total - len(members)} more members are not listed;"
+                f" they start after line {last}."
+            )
+    elif not truncated and check.verified:
         # The whole body was served against live bytes, so nothing is left to
         # fetch for this symbol.
         response["_meta"]["complete"] = _completeness_line(bodies=1)
@@ -1133,7 +1309,8 @@ async def get_symbol(
             "the indexed line range from the current file contents; verify "
             "before citing."
         )
-    if depth > 1:
+    # An outline answers for the shape; callee bodies would undo its size.
+    if depth > 1 and outline is None:
         async with get_session(ctx.session_factory) as session:
             callee_block = await _expand_callees(
                 session,

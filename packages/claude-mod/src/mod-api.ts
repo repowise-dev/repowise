@@ -115,16 +115,6 @@ export interface ToolCallEvent {
   [arg: string]: unknown;
 }
 
-export interface ToolCheckEvent {
-  tool: string;
-  input: unknown;
-  /** Absent on a query (`$.tool.check`). */
-  tool_use_id?: string;
-}
-
-/** `next` of `tool.check` also says whose call is being decided. */
-export type CheckNext = ((e: ToolCheckEvent) => Promise<unknown>) & { origin: { plugin: string; tier?: string } };
-
 export interface SpinnerEvent {
   props: { word: string; message: string | null; suffix: string; mode: string };
 }
@@ -173,7 +163,6 @@ export interface On {
   (event: "turn.start", hook: Hook<TurnStartEvent>): unknown;
   (event: "ui.render", matcher: { component: "AbovePrompt" }, hook: Hook<RenderEvent>): unknown;
   (event: "tool.call", hook: Hook<ToolCallEvent>): unknown;
-  (event: "tool.check", hook: ($: ModApi, e: ToolCheckEvent, next: CheckNext) => Promise<unknown>): unknown;
   (event: "ui.render", matcher: { component: "Spinner" }, hook: Hook<SpinnerEvent>): unknown;
   (event: "ui.render", matcher: { component: "ToolResult" }, hook: Hook<ToolResultEvent>): unknown;
   (event: "ui.render", matcher: { component: "ToolUse" }, hook: Hook<ToolUseEvent>): unknown;

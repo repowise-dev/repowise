@@ -15,6 +15,7 @@ the failure mode each of these changes was designed around.
 from __future__ import annotations
 
 from repowise.server.mcp_server._budget.budgeter import truncate_to_budget
+from repowise.server.mcp_server._page_paths import add_row_paths
 from repowise.server.mcp_server.tool_answer.answer import (
     _build_best_guesses,
     _drop_duplicated_guess_excerpts,
@@ -41,6 +42,27 @@ def test_page_id_dropped_when_page_type_and_target_path_rebuild_it():
     assert "page_id" not in results[0]
     # Lossless: the consumer rebuilds it from what is still there.
     assert f"{results[0]['page_type']}:{results[0]['target_path']}" == "file_page:rich/ansi.py"
+
+
+def test_page_id_dropped_after_add_row_paths_moved_target_path_to_path():
+    """The shape every search response actually has at this point.
+
+    ``add_row_paths`` runs first and deletes ``target_path`` where it equals
+    ``path``, so an ordinary file row reaches the drop with only ``path``.
+    """
+    results = [
+        {
+            "page_id": "file_page:rich/ansi.py",
+            "page_type": "file_page",
+            "target_path": "rich/ansi.py",
+            "title": "ansi",
+        }
+    ]
+    add_row_paths(results)
+    assert "target_path" not in results[0]
+    _drop_derivable_page_ids(results)
+    assert "page_id" not in results[0]
+    assert f"{results[0]['page_type']}:{results[0]['path']}" == "file_page:rich/ansi.py"
 
 
 def test_page_id_kept_when_it_cannot_be_rebuilt():

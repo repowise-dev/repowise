@@ -116,11 +116,12 @@ def test_a_repository_of_only_unscored_files_has_no_average() -> None:
     assert snapshot_fields(kpis, [_metric("A.php", None)], []) is None
 
 
-def test_an_empty_repository_keeps_its_old_kpis() -> None:
-    """Control: no rows at all is not the same answer as no scored rows."""
+def test_an_empty_repository_has_no_average_either() -> None:
+    """No rows at all is also no score: a repository of only data and config
+    files arrives with no rows, since those files never get one."""
     kpis = compute_kpis([], set())
-    assert kpis["average_health"] == 10.0
-    assert snapshot_fields(kpis, [], []) is not None
+    assert kpis["average_health"] is None
+    assert snapshot_fields(kpis, [], []) is None
 
 
 def test_unscored_files_are_never_the_worst_or_a_hotspot() -> None:

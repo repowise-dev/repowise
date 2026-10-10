@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CheckNext, Hook, McpToolResult, ModApi, On, ToolCheckEvent } from "../src/mod-api";
+import type { Hook, McpToolResult, ModApi, On } from "../src/mod-api";
 import { DARK } from "@repowise-dev/ui/brand";
 import { TimeoutError } from "../src/data/transport";
 import { buttonsOf, fixture, mcpResult } from "./fake-host";
@@ -167,7 +167,6 @@ describe("register", () => {
       "session.start",
       "session.end",
       "tool.call",
-      "tool.check",
       "turn.complete",
       "turn.start",
       "ui.input:lens-ask",
@@ -279,35 +278,6 @@ describe("register", () => {
 const SESSIONS = JSON.parse(fixture("mcp/get_context-sessions.json")) as McpToolResult;
 const READ = { tool: "Read", tool_use_id: "toolu_01", file_path: "/work/app/src/requests/sessions.py" };
 const SPINNER = { props: { word: "Sauteing", message: null, suffix: "…", mode: "tool-use" } };
-
-function checkNext(plugin: string, verdict: unknown): CheckNext {
-  return Object.assign(async (_e: ToolCheckEvent) => verdict, { origin: { plugin, tier: "user" } });
-}
-
-describe("tool.check", () => {
-  const own = { tool: "mcp__plugin_repowise_repowise__get_context", input: {}, tool_use_id: "toolu_plugin_1" };
-  const core = { decision: "ask", reason: "core" };
-
-  it("approves Lens's own lookup", async () => {
-    const { $ } = fakeDollar();
-    expect(await hooks["tool.check"]!($, own, checkNext("repowise", core))).toMatchObject({ decision: "allow" });
-    const review = { ...own, tool: "mcp__plugin_repowise_repowise__get_change_risk" };
-    expect(await hooks["tool.check"]!($, review, checkNext("repowise", core))).toMatchObject({ decision: "allow" });
-  });
-
-  it("returns the engine's verdict for Claude's call, another plugin's call, and any other tool", async () => {
-    const { $ } = fakeDollar();
-    const asks = [
-      [{ ...own, tool_use_id: "toolu_01abc" }, "engine"],
-      [own, "someone-else"],
-      [{ ...own, tool: "mcp__plugin_repowise_repowise__get_dead_code" }, "repowise"],
-      [{ ...own, tool: "Bash", input: { command: "rm -rf /" } }, "repowise"],
-    ] as const;
-    for (const [e, plugin] of asks) {
-      expect(await hooks["tool.check"]!($, e, checkNext(plugin, core))).toBe(core);
-    }
-  });
-});
 
 describe("tool.call and the spinner", () => {
   async function indexedSession(mcp?: () => Promise<McpToolResult>) {

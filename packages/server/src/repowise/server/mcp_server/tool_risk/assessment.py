@@ -310,19 +310,6 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
         return []
 
 
-def _co_change_direction(conf_ab: float | None, conf_ba: float | None) -> str:
-    """Which side of a pair leads, where ``a`` is the target and ``b`` the partner.
-
-    A higher ``conf_ab`` means the target seldom changes without the partner, so
-    the target is the antecedent. Equal confidences, or an index written before
-    the two commit totals were recorded, stay ``undirected`` rather than having
-    a lead broken arbitrarily.
-    """
-    if conf_ab is None or conf_ba is None or conf_ab == conf_ba:
-        return "undirected"
-    return "a_to_b" if conf_ab > conf_ba else "b_to_a"
-
-
 def _build_co_changes(
     meta: Any, structural_related: Any, exclude_spec: Any
 ) -> tuple[list[dict], int]:
@@ -331,12 +318,9 @@ def _build_co_changes(
     Larger lists make MCP responses verbose without adding signal: top-5 captures
     the bulk of the temporal-coupling mass and keeps tool output tight for agents.
 
-    The strength field is emitted as ``weight``, not ``count``: the stored value
-    is a recency-decayed sum (``exp(-age_days / tau)`` per shared commit), so it
-    is fractional. Named ``count`` it read as "5.52 co-changes" to every agent.
-
-    ``conf_ab`` and ``conf_ba`` are the two directional confidences behind
-    ``direction``, omitted when the commit totals are unknown.
+    Row order stays by recency-decayed ``weight``. Each row carries ``file_path``,
+    ``support`` (shared commit count, when known), ``conf_ab`` (share of target's
+    commits that touched partner, when known), and ``has_import_link``.
     """
     partners_sorted = parse_partners(meta.co_change_partners_json)
     relation_types = structural_related if isinstance(structural_related, dict) else {}
@@ -346,37 +330,23 @@ def _build_co_changes(
         path = partner.file_path
         types = sorted(relation_types.get(path, ()))
         conf_ab = confidence_ratio(partner.support, partner.self_commits)
-        conf_ba = confidence_ratio(partner.support, partner.partner_commits)
-        row = {
+        row: dict[str, Any] = {
             "file_path": path,
-            "weight": partner.weight,
-            "last_co_change": partner.last_co_change,
-            "relationship_type": "co_change",
-            "direction": _co_change_direction(conf_ab, conf_ba),
-            "evidence_kind": "historical",
-            "provenance": "git_history",
-            "has_structural_link": path in related_paths,
-            # Compatibility field: unlike the broader structural flag, this is
-            # true only for an actual imports edge.
             "has_import_link": "imports" in types if types else path in related_paths,
         }
-        if types:
-            row["structural_relationship_types"] = types
         if partner.support:
             row["support"] = partner.support
         if conf_ab is not None:
             row["conf_ab"] = conf_ab
-        if conf_ba is not None:
-            row["conf_ba"] = conf_ba
         rows.append(row)
     population = filter_dicts_by_key(rows, "file_path", exclude_spec)
     return population, len(population)
 
 
-def fix_annotation(meta: Any) -> dict | None:
-    """Counted fixes, their age, and the magnet flag, or ``None`` for silence.
+def fix_annotation(meta: Any, now: datetime | None = None) -> dict | None:
+    """The shared count/age/magnet fix block used by context and risk.
 
-    The compact form every fix-history surface shares, so the recency contract
+    Centralized so the two tools agree on the wire format and the age contract
     is enforced once: the ``bug_magnet`` flag rides on the age and is never
     emitted alone. ``bug_magnet`` is a claim about RECENT fix pressure, so with
     no timestamp to anchor it the same word would describe a file fixed four
@@ -392,8 +362,13 @@ def fix_annotation(meta: Any) -> dict | None:
     last_fix_at = getattr(meta, "last_fix_at", None)
     if isinstance(last_fix_at, datetime):
         # Rows are stored naive-UTC; compare on the same footing.
+        ref = (
+            datetime.now(UTC)
+            if now is None
+            else (now if now.tzinfo else now.replace(tzinfo=UTC))
+        )
         moment = last_fix_at if last_fix_at.tzinfo else last_fix_at.replace(tzinfo=UTC)
-        out["last_fix_days_ago"] = max(0, (datetime.now(UTC) - moment).days)
+        out["last_fix_days_ago"] = max(0, (ref - moment).days)
         if getattr(meta, "bug_magnet", False):
             out["bug_magnet"] = True
     return out
@@ -412,11 +387,11 @@ def _fix_clause(profile: dict | None) -> str:
     magnet = " (bug magnet)" if profile.get("bug_magnet") else ""
     return (
         f"{n} bug fix{'es' if n != 1 else ''} in 6mo, "
-        f"last {profile['last_fix_days_ago']}d ago{magnet}, "
+        f"last {profile['last_fix_days_ago']}d before the indexed commit{magnet}, "
     )
 
 
-def _defect_profile(meta: Any) -> dict | None:
+def _defect_profile(meta: Any, now: datetime | None = None) -> dict | None:
     """What this file's counted bug fixes say about it, or ``None`` for silence.
 
     Built from the fix-event rollup already loaded on the ``GitMetadata`` row,
@@ -433,7 +408,7 @@ def _defect_profile(meta: Any) -> dict | None:
     string repeated once per target is exactly the per-file cost the lean-MCP
     work went to some trouble to remove.
     """
-    profile = fix_annotation(meta)
+    profile = fix_annotation(meta, now=now)
     if profile is None:
         return None
     profile["window"] = "6 months"
@@ -506,6 +481,7 @@ async def _assess_one_target(
     team_size: int | None = None,
     collector: OmissionCollector | None = None,
     include_graph: bool = False,
+    as_of_ts: datetime | None = None,
 ) -> dict:
     """Assess risk for a single target file.
 
@@ -737,7 +713,7 @@ async def _assess_one_target(
     if merge_commit_count > 0:
         result_data["merge_commit_count_90d"] = merge_commit_count
 
-    defect_profile = _defect_profile(meta)
+    defect_profile = _defect_profile(meta, now=as_of_ts)
     if defect_profile is not None:
         result_data["defect_profile"] = defect_profile
 

@@ -2,12 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   callTool,
   fetchFileContext,
-  isOwnLensCall,
   LENS_TOOLS,
   mcpReady,
-  PLUGIN_NAME,
   resetMcp,
-  toolName,
   warmMcp,
 } from "../src/data/mcp";
 import type { McpToolResult } from "../src/mod-api";
@@ -161,43 +158,8 @@ describe("fetchFileContext", () => {
   });
 });
 
-describe("isOwnLensCall", () => {
-  const own = { tool: "mcp__plugin_repowise_repowise__get_context", tool_use_id: "toolu_plugin_ab12" };
-
-  it("approves Lens's own call to an allowlisted tool on this plugin's server", () => {
-    expect(isOwnLensCall(own, PLUGIN_NAME)).toBe(true);
-  });
-
-  it("refuses a call another plugin made, or the engine", () => {
-    expect(isOwnLensCall(own, "other-plugin")).toBe(false);
-    expect(isOwnLensCall(own, "engine")).toBe(false);
-    expect(isOwnLensCall(own, undefined)).toBe(false);
-  });
-
-  it("refuses Claude's own call to the same tool, and a query with no call id", () => {
-    expect(isOwnLensCall({ ...own, tool_use_id: "toolu_01abc" }, PLUGIN_NAME)).toBe(false);
-    expect(isOwnLensCall({ tool: own.tool }, PLUGIN_NAME)).toBe(false);
-  });
-
-  it("refuses a tool outside the allowlist, or on another server", () => {
-    expect(isOwnLensCall({ ...own, tool: "mcp__plugin_repowise_repowise__get_dead_code" }, PLUGIN_NAME)).toBe(false);
-    expect(isOwnLensCall({ ...own, tool: "mcp__evil__get_context" }, PLUGIN_NAME)).toBe(false);
-    expect(isOwnLensCall({ ...own, tool: "Bash" }, PLUGIN_NAME)).toBe(false);
-  });
-
-  it("approves both forms of this plugin's server and never a name connect resolved to elsewhere", async () => {
-    expect(isOwnLensCall({ ...own, tool: toolName("plugin:repowise:repowise", "get_context") }, PLUGIN_NAME)).toBe(true);
-    await warmed(fakeHost({ server: "repowise" }));
-    expect(isOwnLensCall({ ...own, tool: toolName("repowise", "get_context") }, PLUGIN_NAME)).toBe(false);
-  });
-
-  it("allowlists only the tools a shipped feature calls", () => {
+describe("LENS_TOOLS", () => {
+  it("lists only the read-only tools a shipped feature calls", () => {
     expect(LENS_TOOLS).toEqual(["get_context", "get_change_risk", "get_why", "get_answer"]);
-    expect(isOwnLensCall({ ...own, tool: "mcp__plugin_repowise_repowise__get_why" }, PLUGIN_NAME)).toBe(true);
-    expect(isOwnLensCall({ ...own, tool: "mcp__plugin_repowise_repowise__get_answer" }, PLUGIN_NAME)).toBe(true);
-  });
-
-  it("spells a server's tools the way tool.check names them", () => {
-    expect(toolName("plugin:repowise:repowise", "get_context")).toBe("mcp__plugin_repowise_repowise__get_context");
   });
 });

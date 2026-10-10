@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { AlertTriangle, RefreshCw, ArrowLeft } from "lucide-react";
 import { Button } from "@repowise-dev/ui/ui/button";
 
@@ -12,6 +13,8 @@ export default function RepoError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const t = useTranslations("errors");
+
   useEffect(() => {
     console.error(error);
   }, [error]);
@@ -23,21 +26,21 @@ export default function RepoError({
       </div>
       <div>
         <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
-          Failed to load repository
+          {t("repoErrorTitle")}
         </h2>
         <p className="mt-1 text-sm text-[var(--color-text-secondary)] max-w-sm">
-          {error.message || "Could not load repository data. The backend may be unavailable."}
+          {error.message || t("repoErrorFallback")}
         </p>
       </div>
       <div className="flex items-center gap-2">
         <Button onClick={reset} size="sm" variant="secondary" className="gap-2">
           <RefreshCw className="h-3.5 w-3.5" />
-          Retry
+          {t("retry")}
         </Button>
         <Button asChild size="sm" variant="ghost" className="gap-2">
           <Link href="/">
             <ArrowLeft className="h-3.5 w-3.5" />
-            Dashboard
+            {t("dashboard")}
           </Link>
         </Button>
       </div>

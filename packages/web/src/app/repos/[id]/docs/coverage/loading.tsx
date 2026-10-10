@@ -1,3 +1,4 @@
+import { getTranslations } from "next-intl/server";
 import { StatGridSkeleton } from "@repowise-dev/ui/shared/loading-skeletons";
 import { SkeletonRegion, Skeleton } from "@repowise-dev/ui/ui/skeleton";
 
@@ -7,9 +8,10 @@ import { SkeletonRegion, Skeleton } from "@repowise-dev/ui/ui/skeleton";
  * `MetricCard` boxes via `StatGridSkeleton`, so they do not resize on
  * arrival the way a guessed height would.
  */
-export default function DocsCoverageLoading() {
+export default async function DocsCoverageLoading() {
+  const t = await getTranslations("loading");
   return (
-    <SkeletonRegion className="flex h-full flex-col" label="Loading coverage">
+    <SkeletonRegion className="flex h-full flex-col" label={t("coverage")}>
       <div className="shrink-0 border-b border-[var(--color-border-default)] px-4 py-3 sm:px-6">
         <Skeleton className="h-6 w-56 max-w-full" />
       </div>

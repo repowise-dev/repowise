@@ -149,3 +149,27 @@ def test_temp_root_repowise_is_ignored(tmp_path, monkeypatch) -> None:
     repo = fake_tmp / "checkout"
     (repo / ".repowise").mkdir(parents=True)
     assert _shared._find_repo_root(repo) == repo.resolve()
+
+
+@pytest.mark.parametrize("bad", ["--output=/tmp/x", "-p", "--no-index", "HEAD~1", "abc", "g" * 40, ""])
+def test_changed_file_count_rejects_non_commit_ids(tmp_path, monkeypatch, bad) -> None:
+    import subprocess
+
+    calls: list = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+    assert session_start._changed_file_count(tmp_path, bad, _LIVE) is None
+    assert calls == []
+
+
+def test_changed_file_count_valid_id_passes_end_of_options(tmp_path, monkeypatch) -> None:
+    import subprocess
+
+    seen: list = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="a.py\nb.py\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert session_start._changed_file_count(tmp_path, "AbC1234", _LIVE) == 2
+    assert seen == [["git", "diff", "--name-only", "--end-of-options", "AbC1234", _LIVE]]

@@ -35,6 +35,7 @@ from repowise.core.persistence.search import FullTextSearch
 from repowise.core.providers.embedding import is_semantic_embedder
 from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
+from repowise.core.providers.embedding.registry import DEFAULT_EMBEDDER
 from repowise.server import __version__
 from repowise.server.routers import (
     actions,
@@ -121,7 +122,7 @@ def _build_embedder():
         openrouter — OpenRouterEmbedder via OPENROUTER_API_KEY env var
         edenai     — EdenAIEmbedder via EDENAI_API_KEY env var
     """
-    name = os.environ.get("REPOWISE_EMBEDDER", "mock").lower()
+    name = os.environ.get("REPOWISE_EMBEDDER", DEFAULT_EMBEDDER).lower()
     if name == "ollama":
         from repowise.core.providers.embedding.ollama import OllamaEmbedder
 

@@ -235,11 +235,13 @@ server {
 
 ## Database migrations
 
-repowise uses Alembic for PostgreSQL schema management. Migrations run automatically at startup. To run them manually:
+On startup the API brings the schema up to the running version on both SQLite and PostgreSQL: it creates missing tables, adds missing columns and indexes, drops NOT NULL from columns that became optional, and widens text columns that got longer. The Docker image needs no separate migration step for an upgrade.
+
+PostgreSQL schema history is also kept as Alembic migrations, which add what startup does not: the pgvector `embedding` column and the full-text search index. On a database that Alembic created, apply them from a source checkout:
 
 ```bash
-cd packages/server
-alembic upgrade head
+cd packages/core
+DATABASE_URL=postgresql://user:pass@host/dbname alembic upgrade head
 ```
 
 ---

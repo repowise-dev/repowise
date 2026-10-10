@@ -149,6 +149,7 @@ def _remove_repo_files(repo_path: Path, plan: Plan) -> list[Result]:
     from .generated_files import generated_blocks, remove_block
 
     by_path = {item.path: item for item in plan.for_groups(frozenset({Group.REPO_FILES}))}
+    block_paths = {block.path(repo_path) for block in generated_blocks()}
     results: list[Result] = []
     for block in generated_blocks():
         item = by_path.get(block.path(repo_path))
@@ -168,7 +169,50 @@ def _remove_repo_files(repo_path: Path, plan: Plan) -> list[Result]:
         results.append(
             Result(group=Group.REPO_FILES, path=path, action=action, label=label, reason=reason)
         )
+
+    # The post-commit hook is grouped with the generated blocks (its only job
+    # is `repowise update`, useless with no index) but is not one of them:
+    # `generated_blocks()` describes marker-bracketed sections in tracked
+    # files, and the hook lives under `.git/hooks`, outside the working tree.
+    for path, item in by_path.items():
+        if path in block_paths:
+            continue
+        results.append(_remove_hook(repo_path, item))
     return results
+
+
+def _remove_hook(repo_path: Path, item: Item) -> Result:
+    from repowise.cli import hooks
+
+    if item.blocked:
+        return Result(
+            group=Group.REPO_FILES,
+            path=item.path,
+            action=FileAction.KEPT,
+            label=item.label,
+            reason=item.blocked,
+        )
+    if not item.exists:
+        return Result(
+            group=Group.REPO_FILES, path=item.path, action=FileAction.NOT_FOUND, label=item.label
+        )
+    outcome = hooks.uninstall(repo_path)
+    if outcome.startswith("removed"):
+        reason = "other hook content preserved" if "preserved" in outcome else None
+        return Result(
+            group=Group.REPO_FILES,
+            path=item.path,
+            action=FileAction.REMOVED,
+            label=item.label,
+            reason=reason,
+        )
+    return Result(
+        group=Group.REPO_FILES,
+        path=item.path,
+        action=FileAction.FAILED,
+        label=item.label,
+        reason=outcome,
+    )
 
 
 def _is_link(path: Path) -> bool:

@@ -37,6 +37,7 @@ _LAZY: dict[str, str] = {
     "ProviderSelection": "provider_selection",
     "RepoScanInfo": "repo_scanner",
     "RichProgressCallback": "progress",
+    "agent_providers_set_up": "provider_selection",
     "banner_text": "mascot",
     "build_completion_panel": "result_panels",
     "build_contextual_next_steps": "result_panels",

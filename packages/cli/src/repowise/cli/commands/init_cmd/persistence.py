@@ -27,6 +27,7 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.models import count_stub_fallbacks
 from repowise.core.index_scope import (
@@ -525,6 +526,9 @@ def save_full_state_and_config(
     # tracking it here — otherwise a fresh install carries no stamp and the
     # first analyzer change after it cannot tell it needs a re-score.
     state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+    # Same reasoning for the security scanner (#3072): this run just scanned
+    # every file, so start tracking its version here too.
+    state["security_scanner_version"] = SECURITY_SCANNER_VERSION
     # This run just scored every file, so the periodic re-score cadence starts
     # now. Without the stamp the gate reads "never re-scored" and the very next
     # update re-scores the whole repo that init had only just finished scoring.

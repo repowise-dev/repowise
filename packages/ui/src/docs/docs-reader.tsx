@@ -581,9 +581,9 @@ function DocsReaderBody({
                 after. Collapsed by default — it answers a question, it does not
                 raise one. */}
             {sources.length > 0 && (
-              <details className="group mb-6 rounded-lg border border-[var(--color-border-default)]">
+              <details className="group/toc mb-6 rounded-lg border border-[var(--color-border-default)]">
                 <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2 text-xs text-[var(--color-text-secondary)]">
-                  <ChevronRight className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)] transition-transform group-open:rotate-90" />
+                  <ChevronRight className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)] transition-transform group-open/toc:rotate-90" />
                   <span>
                     Built from {sources.length} source{sources.length === 1 ? "" : " files"}
                   </span>

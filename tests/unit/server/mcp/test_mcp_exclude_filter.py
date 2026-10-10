@@ -209,7 +209,7 @@ async def test_risk_raw_pr_blast_radius_excludes_filtered(setup_mcp, tmp_path, m
     from repowise.server.mcp_server import get_risk
 
     args = (["src/auth/service.py"],)
-    kwargs = {"changed_files": ["src/auth/service.py"]}
+    kwargs = {"changed_files": ["src/auth/service.py"], "include": ["blast"]}
 
     # Baseline (no exclude config) — confirm the path is present, so the test
     # below is not vacuous.

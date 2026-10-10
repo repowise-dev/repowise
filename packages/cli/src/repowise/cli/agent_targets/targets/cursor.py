@@ -1,9 +1,8 @@
 """Cursor as an agent target.
 
-Good tier, structurally: it names neither a hook adapter nor a transcript
-adapter, so :func:`derive_tier` cannot place it at Full however many files it
-writes. Cursor exposes no hook protocol repowise can intercept tool calls
-through, and no transcript format to mine.
+Good tier: it names a hook adapter (:mod:`repowise.cli.agent_adapters.cursor`,
+the ``preToolUse`` rewrite in ``~/.cursor/hooks.json``, the one user-scope write)
+but no transcript adapter, so :func:`derive_tier` cannot place it at Full.
 
 Cursor is **not** a flag on the VS Code target despite the fork lineage. It does
 not read ``.vscode/mcp.json``; it reads ``.cursor/mcp.json``, and the two files
@@ -33,7 +32,7 @@ shared generator has always emitted. That is a load-bearing accident, so
 ``test_agent_targets`` pins it: if the generator ever drops the positional path,
 this target breaks in a way that looks like an indexing bug.
 
-**Project scope only.** Cursor does read ``~/.cursor/mcp.json``, but one global
+**Project scope only, for MCP.** Cursor does read ``~/.cursor/mcp.json``, but one global
 entry can only name one repo, and the workaround for that is a
 ``${workspaceFolder}`` token repowise cannot verify Cursor expands inside an
 argument array. Writing a user-scope entry that silently points every workspace
@@ -72,7 +71,7 @@ PROJECT_FILE_ID = "cursor_rules"
 METHODS = (
     InstallMethod(
         id="direct",
-        provides=frozenset({Capability.MCP, Capability.INSTRUCTIONS}),
+        provides=frozenset({Capability.MCP, Capability.HOOKS, Capability.INSTRUCTIONS}),
         managed_by="repowise",
         preferred=True,
     ),
@@ -330,18 +329,53 @@ def _prune_empty_dirs(repo_path: Path) -> None:
             candidate.rmdir()
 
 
-def detect(repo_path: Path | None = None) -> list[Registration]:
-    """Whether the workspace MCP config names repowise.
+def _install_rewrite_hook(result: WriteResult) -> WriteResult:
+    """Merge the rewrite entry into ``~/.cursor/hooks.json``, observed not assumed."""
+    from repowise.cli.agent_adapters.cursor import install_cursor_rewrite_hook, user_hooks_path
 
-    Project scope only, matching what this target writes. Returning nothing for
-    an unparseable file is deliberate: it may well be wired up, and reporting
-    "not configured" would be a guess.
+    from ..formats.observe import observed_action, read_bytes
+
+    hooks_path = user_hooks_path()
+    before = read_bytes(hooks_path)
+    if install_cursor_rewrite_hook():
+        result.record(hooks_path, observed_action(before, read_bytes(hooks_path)))
+    else:
+        result.record(hooks_path, FileAction.KEPT, "not valid JSON, or could not be written")
+        result.note(f"{hooks_path} left unchanged; fix it by hand and re-run.")
+    return result
+
+
+def cursor_rewrite_hook_present() -> bool:
+    """Our entry is registered, or the file is unreadable and still names it."""
+    from repowise.cli.agent_adapters.cursor import cursor_rewrite_hook_matcher, user_hooks_path
+
+    from ..formats.json_merge import is_damaged
+
+    if cursor_rewrite_hook_matcher() is not None:
+        return True
+    path = user_hooks_path()
+    try:
+        return is_damaged(path) and b"repowise-rewrite" in path.read_bytes()
+    except OSError:
+        return False
+
+
+def detect(repo_path: Path | None = None) -> list[Registration]:
+    """The user-scope rewrite hook, and whether the workspace MCP config names repowise.
+
+    Returning nothing for an unparseable file is deliberate: it may well be
+    wired up, and reporting "not configured" would be a guess.
     """
+    from repowise.cli.agent_adapters.cursor import cursor_rewrite_hook_matcher, user_hooks_path
+
+    found: list[Registration] = []
+    if cursor_rewrite_hook_matcher() is not None:
+        found.append(Registration(method="direct", scope=Scope.USER, config_path=user_hooks_path()))
     if repo_path is None:
-        return []
+        return found
     config_path = mcp_config_path(repo_path)
     if not config_path.exists():
-        return []
+        return found
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -350,11 +384,12 @@ def detect(repo_path: Path | None = None) -> list[Registration]:
         # JSONDecodeError alone let the decode failure escape a probe whose
         # whole contract is that it never raises, and detection runs on paths
         # (``resolve_target_flag``) that do not catch for it.
-        return []
+        return found
     servers = data.get("mcpServers")
     if not isinstance(servers, dict) or "repowise" not in servers:
-        return []
-    return [Registration(method="direct", scope=Scope.PROJECT, config_path=config_path)]
+        return found
+    found.append(Registration(method="direct", scope=Scope.PROJECT, config_path=config_path))
+    return found
 
 
 class CursorTarget:
@@ -369,8 +404,8 @@ class CursorTarget:
     project_file_id = PROJECT_FILE_ID
 
     def supports_scope(self, scope: Scope) -> bool:
-        """Project scope only. See the module docstring for why not user scope."""
-        return scope is Scope.PROJECT
+        """Both: user scope writes only the rewrite hook. See the module docstring."""
+        return True
 
     def is_present(self, repo_path: Path | None = None) -> bool:
         """A ``.cursor/`` in the repo, the ``cursor`` shim on PATH, or ``~/.cursor``.
@@ -380,11 +415,9 @@ class CursorTarget:
         workspace carrying one is worth configuring even from a machine where
         the editor was never installed.
         """
-        import shutil
-
         if repo_path is not None and (repo_path / ".cursor").is_dir():
             return True
-        if shutil.which("cursor") is not None:
+        if IDENTITY.is_installed():
             return True
         return (Path.home() / ".cursor").is_dir()
 
@@ -399,8 +432,8 @@ class CursorTarget:
         repo_path: Path | None = None,
     ) -> WriteResult:
         result = WriteResult()
-        if scope is not Scope.PROJECT:
-            return result
+        if scope is Scope.USER:
+            return _install_rewrite_hook(result)
         if repo_path is None:
             raise ValueError("project-scope install needs a repo_path")
 
@@ -464,9 +497,25 @@ class CursorTarget:
         return result
 
     def uninstall(self, scope: Scope, *, repo_path: Path | None = None) -> WriteResult:
-        """Remove the server entry and the rules file, because install writes both."""
+        """Remove what install wrote at *scope*: the hook, or the server entry and rules."""
         result = WriteResult()
-        if scope is not Scope.PROJECT or repo_path is None:
+        if scope is Scope.USER:
+            from repowise.cli.agent_adapters.cursor import (
+                uninstall_cursor_rewrite_hook,
+                user_hooks_path,
+            )
+
+            removed = uninstall_cursor_rewrite_hook()
+            # Asked of the file, not the boolean, which is also False for "could
+            # not parse" and "write failed".
+            if cursor_rewrite_hook_present():
+                result.record(user_hooks_path(), FileAction.KEPT, "our rewrite hook is still there")
+            else:
+                result.record(
+                    user_hooks_path(), FileAction.REMOVED if removed else FileAction.NOT_FOUND
+                )
+            return result
+        if repo_path is None:
             return result
         result.record(*_remove_server_entry(mcp_config_path(repo_path)))
         result.record(*_remove_rules_file(repo_path))
@@ -480,24 +529,41 @@ class CursorTarget:
         )
 
     def describe_paths(self, scope: Scope, *, repo_path: Path | None = None) -> list[str]:
-        if scope is not Scope.PROJECT:
-            return []
+        if scope is Scope.USER:
+            from repowise.cli.agent_adapters.cursor import user_hooks_path
+
+            return [str(user_hooks_path())]
         repo = repo_path or Path.cwd()
         return [str(mcp_config_path(repo)), str(rules_path(repo))]
 
     def doctor(self) -> DoctorReport:
-        """Health is repo-scoped, so a bare call can only report the honest answer.
+        """Health of the one user-level surface, the rewrite hook.
 
-        Same shape as VS Code's, and for the same reason: ``doctor()`` takes no
-        repo path, and there is nothing user-level this target writes. Reporting
-        ``OK`` would be a claim nothing checked.
+        The MCP config and rules file are workspace-local and ``doctor()`` takes
+        no repo path, so they are not judged here.
         """
-        return DoctorReport(
-            target_id=ID,
-            status=DoctorStatus.NOT_INSTALLED,
-            issues=("Cursor wiring is workspace-local; run this from a repo to check it.",),
-            fix_command="repowise agents add --target=cursor",
-        )
+        from repowise.cli.agent_adapters.cursor import cursor_rewrite_hook_matcher, user_hooks_path
+
+        from ..formats.json_merge import is_damaged
+
+        hooks = user_hooks_path()
+        fix = "repowise agents add --target=cursor --scope=user"
+        if is_damaged(hooks):
+            return DoctorReport(
+                target_id=ID,
+                status=DoctorStatus.BROKEN,
+                issues=(f"{hooks} is not valid JSON, so Cursor loads none of its hooks.",),
+                fix_command=fix,
+                repairable=False,
+            )
+        if cursor_rewrite_hook_matcher() is None:
+            return DoctorReport(
+                target_id=ID,
+                status=DoctorStatus.NOT_INSTALLED,
+                issues=("The distill rewrite hook is not installed for Cursor.",),
+                fix_command=fix,
+            )
+        return DoctorReport(target_id=ID, status=DoctorStatus.OK)
 
 
 TARGET = CursorTarget()

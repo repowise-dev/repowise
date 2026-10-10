@@ -18,6 +18,7 @@ redirect, so neither layer is optional.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -616,3 +617,105 @@ def test_the_two_agents_md_blocks_are_removed_independently(repo: Path) -> None:
     remaining = agents.read_text(encoding="utf-8") if agents.exists() else ""
     assert "REPOWISE_AGENTS:START" not in remaining
     assert "REPOWISE_DISTILL:START" not in remaining
+
+
+def _git(*args: str, cwd: Path) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+class TestPostCommitHookRemoval:
+    """``repowise uninstall`` must also take the auto-sync hook with it (#2469)."""
+
+    def test_all_removes_the_post_commit_hook(self, repo: Path) -> None:
+        from repowise.cli import hooks
+
+        _git("init", "-q", cwd=repo)
+        assert hooks.install(repo) == "installed"
+
+        result = _invoke(["uninstall", str(repo), "--all"])
+
+        assert result.exit_code == 0
+        assert hooks.status(repo) == "not installed"
+
+    def test_keep_index_also_removes_the_hook(self, repo: Path) -> None:
+        """It is grouped with the generated blocks, not the index (Raghav's call)."""
+        from repowise.cli import hooks
+
+        _git("init", "-q", cwd=repo)
+        assert hooks.install(repo) == "installed"
+
+        _invoke(["uninstall", str(repo), "--keep-index"])
+
+        assert hooks.status(repo) == "not installed"
+        assert (repo / ".repowise" / "wiki.db").exists()
+
+    def test_no_hook_installed_reports_nothing_to_do(self, repo: Path) -> None:
+        _git("init", "-q", cwd=repo)
+
+        payload = _payload(["uninstall", str(repo), "--all"])
+
+        hook_rows = [
+            r for r in payload["results"] if "hook" in r["label"] and r["group"] == "repo-files"
+        ]
+        assert hook_rows and hook_rows[0]["action"] == "not-found"
+
+    def test_a_global_hooks_path_is_blocked_and_named(self, repo: Path) -> None:
+        from repowise.cli import hooks
+
+        _git("init", "-q", cwd=repo)
+        outside = repo.parent / "shared-hooks"
+        outside.mkdir()
+        _git("config", "core.hooksPath", str(outside), cwd=repo)
+        assert hooks.install(repo) == "installed"
+
+        result = _invoke(["uninstall", str(repo), "--all", "--format", "json"])
+        payload = json.loads(result.output)
+
+        assert hooks.status(repo).startswith("installed")
+        hook_row = next(r for r in payload["results"] if "hook" in r["label"])
+        assert hook_row["action"] == "kept"
+        assert "outside this repo" in hook_row["reason"]
+        assert result.exit_code == 3
+
+    def test_a_worktree_hook_is_blocked_and_names_the_main_checkout(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from repowise.cli import hooks
+
+        _git("init", "-q", cwd=repo)
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git("add", "seed.txt", cwd=repo)
+        _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "seed", cwd=repo)
+        assert hooks.install(repo) == "installed"
+
+        wt = tmp_path / "wt"
+        _git("worktree", "add", "-b", "feature", str(wt), cwd=repo)
+
+        payload = _payload(["uninstall", str(wt), "--all"])
+
+        hook_row = next(r for r in payload["results"] if "hook" in r["label"])
+        assert hook_row["action"] == "kept"
+        assert str(repo) in hook_row["reason"]
+        assert hooks.status(repo).startswith("installed")
+
+    def test_an_unreadable_hook_is_named_rather_than_crashing_the_plan(self, repo: Path) -> None:
+        """Regression: binary/non-UTF-8 hook content used to raise while building the plan.
+
+        `hooks.status` decoded the whole file as UTF-8 with no guard, so a
+        valid executable hook holding arbitrary bytes (or one merely unreadable)
+        took the entire `uninstall` inventory down with it instead of being
+        reported and left alone.
+        """
+        from repowise.cli import hooks
+
+        _git("init", "-q", cwd=repo)
+        hooks_dir = hooks._hooks_dir(repo)
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        (hooks_dir / "post-commit").write_bytes(b"#!/bin/sh\n\xff\xfe\x00binary garbage")
+
+        payload = _payload(["uninstall", str(repo), "--all"])
+
+        hook_row = next(r for r in payload["results"] if "hook" in r["label"])
+        assert hook_row["action"] == "kept"
+        assert "could not be read" in hook_row["reason"]
+        assert (hooks_dir / "post-commit").exists()

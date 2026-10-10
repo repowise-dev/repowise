@@ -126,7 +126,7 @@ def change_risk_scales() -> list[dict[str, Any]]:
             "kind": "classification",
             "unit": "category",
             "range": None,
-            "measures": "repo-relative review-priority tercile",
+            "measures": "repo-relative tercile of diff size and spread, not a verdict",
             "deterministic": True,
             "thresholds": {
                 "moderate_percentile": REVIEW_PRIORITY_MODERATE_PERCENTILE,

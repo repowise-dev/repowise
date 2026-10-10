@@ -4,7 +4,6 @@ import {
   discover,
   findIndexedRoot,
   isPidAlive,
-  isLoopbackUrl,
   isWindowsPath,
   mcpReachable,
   probeServer,
@@ -40,23 +39,6 @@ function server(status = 200) {
 
 const inWorkTree = (argv: readonly string[]) =>
   argv.join(" ") === "git rev-parse --is-inside-work-tree" ? ok("true\n") : failed;
-
-describe("isLoopbackUrl", () => {
-  it.each(["http://127.0.0.1:7411", "http://localhost:7411/", "http://[::1]:7411"])("accepts %s", (url) => {
-    expect(isLoopbackUrl(url)).toBe(true);
-  });
-
-  it.each([
-    "https://127.0.0.1:7411",
-    "http://evil.example:7411",
-    "http://127.0.0.1.evil.example",
-    "http://10.0.0.5:7411",
-    "file:///etc/passwd",
-    "not a url",
-  ])("refuses %s", (url) => {
-    expect(isLoopbackUrl(url)).toBe(false);
-  });
-});
 
 function host(o: FakeHostOptions = {}) {
   return fakeHost({ cwd: ROOT, files: { [STATE]: JSON.stringify({ last_sync_commit: indexedAt }) }, run: tasklist, ...o });

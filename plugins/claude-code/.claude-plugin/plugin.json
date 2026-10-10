@@ -1,7 +1,8 @@
 {
   "name": "repowise",
-  "description": "Codebase intelligence for Claude Code. Indexes your codebase into five layers (Graph, Git, Docs, Decisions, Code Health) and exposes them through ten task-shaped MCP tools — so Claude understands architecture, ownership, hotspots, why code is built the way it is, and where the defect risk lives.",
-  "version": "0.54.0",
+  "displayName": "Repowise",
+  "description": "Codebase intelligence for Claude Code. Indexes your codebase into five layers (Graph, Git, Docs, Decisions, Code Health) and exposes them through task-shaped MCP tools, so Claude understands architecture, ownership, hotspots, why code is built the way it is, and where the defect risk lives.",
+  "version": "0.55.0",
   "author": {
     "name": "Repowise",
     "email": "hello@repowise.dev",
@@ -10,6 +11,11 @@
   "homepage": "https://repowise.dev",
   "repository": "https://github.com/repowise-dev/repowise",
   "license": "AGPL-3.0",
+  "icon": "./.claude-plugin/icon.png",
+  "documentationUrl": "https://docs.repowise.dev",
+  "supportUrl": "https://github.com/repowise-dev/repowise/issues",
+  "privacyPolicyUrl": "https://repowise.dev/legal/privacy",
+  "termsOfServiceUrl": "https://repowise.dev/legal/terms",
   "userConfig": {
     "lens_margin": {
       "type": "boolean",

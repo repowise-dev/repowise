@@ -70,6 +70,30 @@ _FIXTURES = [
     ),
     (
         "java",
+        b"class A { void m(){ try { go(); fail(\"x\"); } catch (Exception e) {} } }\n",
+        {},
+        "Java try ending in fail() -> expected exception idiom, not swallowed",
+    ),
+    (
+        "java",
+        b"class A { void m(){ try { go(); Assert.fail(\"x\"); } catch (Exception e) { // expected\n } } }\n",
+        {},
+        "Java try ending in Assert.fail() -> clean",
+    ),
+    (
+        "java",
+        b"class A { void m(){ try (var r = open()) { go(); Assertions.fail(\"x\"); } catch (Exception e) {} } }\n",
+        {},
+        "Java try-with-resources ending in Assertions.fail() -> clean",
+    ),
+    (
+        "java",
+        b"class A { void m(){ try { fail(\"x\"); go(); } catch (Exception e) {} } }\n",
+        {"swallowed_catch": 1},
+        "Java fail() not last in try -> swallowed",
+    ),
+    (
+        "java",
         b"class A { void m(){ try { go(); } catch (Exception e) { log(e); } } }\n",
         {},
         "handled Java catch",

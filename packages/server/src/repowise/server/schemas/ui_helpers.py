@@ -42,6 +42,22 @@ class ProviderEntry(BaseModel):
     default_model: str | None = None
     #: Has a key, or needs none.
     configured: bool = False
+    #: Takes an API key; ``False`` hides the key field.
+    requires_key: bool = True
+    #: Env vars a user sets to make the provider usable.
+    env_vars: list[str] = []
+    #: One line on how to install or set it up.
+    setup_hint: str = ""
+
+
+class EmbedderEntry(BaseModel):
+    """One registered embedder, as the settings picker renders it."""
+
+    id: str
+    #: Env vars a user sets to make the embedder usable.
+    env_vars: list[str] = []
+    #: ``False`` for the keyless embedder, whose vectors carry no signal.
+    semantic: bool = True
 
 
 class ActiveProviderSelection(BaseModel):
@@ -49,11 +65,19 @@ class ActiveProviderSelection(BaseModel):
 
     provider: str | None = None
     model: str | None = None
+    #: USD per 1K tokens for ``model``; ``None`` when no model resolves.
+    input_cost_per_1k: float | None = None
+    output_cost_per_1k: float | None = None
+    #: The embedder this server runs with.
+    embedder: str | None = None
 
 
 class ProviderStatusResponse(BaseModel):
     active: ActiveProviderSelection
     providers: list[ProviderEntry] = []
+    #: Registerable providers the catalog leaves out (picker_rank ``None``).
+    flag_only_providers: list[str] = []
+    embedders: list[EmbedderEntry] = []
 
 
 class ProviderValidationResponse(BaseModel):
