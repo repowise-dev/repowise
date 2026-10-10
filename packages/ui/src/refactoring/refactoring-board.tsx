@@ -107,6 +107,7 @@ export interface RefactoringBoardProps {
   structuralOpportunities?: RefactoringOpportunity[] | undefined;
   serverState: RefactoringBoardServerState;
   onServerStateChange: (change: Partial<RefactoringBoardServerState>) => void;
+  indexedFileCount?: number | undefined;
   onOpen?: ((opportunity: RefactoringOpportunity) => void) | undefined;
   onAiPrompt?: ((opportunity: RefactoringOpportunity) => void) | undefined;
   onStatusChange?:
@@ -134,6 +135,7 @@ export function RefactoringBoard({
   structuralOpportunities,
   serverState,
   onServerStateChange,
+  indexedFileCount,
   onOpen,
   onAiPrompt,
   onStatusChange,
@@ -202,6 +204,7 @@ export function RefactoringBoard({
       {showLede ? (
         <RefactoringLede
           summary={summary}
+          indexedFileCount={indexedFileCount}
           facets={facets}
           quickWinsActive={quickWinsActive}
           onToggleQuickWins={toggleQuickWins}
