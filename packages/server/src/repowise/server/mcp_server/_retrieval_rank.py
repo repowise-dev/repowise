@@ -8,6 +8,7 @@ import re
 from collections import Counter
 from collections.abc import Mapping
 
+from repowise.server.mcp_server._page_paths import PAGELESS_FILE
 from repowise.server.mcp_server._query_terms import content_terms, split_humps
 
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -150,6 +151,58 @@ def rerank_by_context_coverage(
         hit[score_key] = raw * ranking_multiplier
     hits.sort(key=lambda hit: hit.get(score_key, 0.0), reverse=True)
     return hits
+
+
+def rerank_pages_first(
+    hits: list[dict],
+    query: str,
+    *,
+    score_key: str,
+    floor: float,
+    absolute_stopwords: set[str] | None = None,
+) -> list[dict]:
+    """:func:`rerank_by_context_coverage` whose page order comes from the pages alone.
+
+    The weights are relative to the window, so rows for files without a page
+    would reorder the pages among themselves. Pages are reranked on their own;
+    each pageless row takes the place the whole window gives it among them, with
+    its score kept in the same ratio to the nearest page.
+    """
+    kwargs = {"score_key": score_key, "floor": floor, "absolute_stopwords": absolute_stopwords}
+    pageless = [hit for hit in hits if hit.get("page_type") == PAGELESS_FILE]
+    if not pageless:
+        return rerank_by_context_coverage(hits, query, **kwargs)
+    pages = [hit for hit in hits if hit.get("page_type") != PAGELESS_FILE]
+    copies = {id(copy): copy for copy in (dict(hit) for hit in pages)}
+    copy_of = dict(zip((id(hit) for hit in pages), copies.values(), strict=True))
+    window = rerank_by_context_coverage([*copies.values(), *pageless], query, **kwargs)
+    pages = rerank_by_context_coverage(pages, query, **kwargs)
+
+    above = 0  # pages the whole window ranks above the current row
+    slots: dict[int, list[dict]] = {}
+    for row in window:
+        if id(row) in copies:
+            above += 1
+        else:
+            slots.setdefault(above, []).append(row)
+    out: list[dict] = []
+    for i in range(len(pages) + 1):
+        for row in slots.get(i, ()):
+            # Same ratio to the nearest page as in the whole window, kept between
+            # that page and the one above so the pages keep their order.
+            anchor = pages[min(i, len(pages) - 1)] if pages else None
+            if anchor is not None:
+                base = copy_of[id(anchor)].get(score_key) or 0.0
+                score = anchor.get(score_key, 0.0) * (row.get(score_key, 0.0) / base if base else 1.0)
+                if i < len(pages):
+                    score = max(score, anchor.get(score_key, 0.0))
+                if i > 0:
+                    score = min(score, pages[i - 1].get(score_key, 0.0))
+                row[score_key] = score
+            out.append(row)
+        if i < len(pages):
+            out.append(pages[i])
+    return out
 
 
 # A query word naming a file lifts it by the word's squared rarity among indexed

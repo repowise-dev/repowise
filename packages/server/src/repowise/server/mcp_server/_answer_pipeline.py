@@ -225,8 +225,9 @@ _SYMBOL_LEG_MAX_PAGES = 8
 # but it cannot outvote them.
 _SYMBOL_LEG_RRF_K = 180
 
-# The filename leg is a name match too, weighted like the symbol leg. A name of
-# three or more words the question spells in full is fused at the page legs' k.
+# The filename leg is a name match too, weighted like the symbol leg. A name the
+# question spells in full (``full_cover``, see ``_prose_symbols``) is fused at the
+# page legs' k.
 _FILENAME_LEG_RRF_K = _SYMBOL_LEG_RRF_K
 
 
@@ -381,14 +382,16 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
         entry["score"] = entry.get("score", 0.0) + 1.0 / (rank + _RRF_K)
         entry["_sources"].add("vector")
         entry["_vec_rank"] = rank
-    for rank, h in enumerate(sym_results):
+    for rank, h in leg_ranks(sym_results):
         entry = fused.setdefault(h.page_id, _hit_dict_from_result(h))
         entry["score"] = entry.get("score", 0.0) + 1.0 / (rank + _SYMBOL_LEG_RRF_K)
         entry["_sources"].add("symbol")
         entry["_sym_rank"] = rank
         entry["_symbol_names"] = h.symbol_names
     # Adds files the other legs missed and never reorders a page they found.
-    for rank, (h, full) in enumerate(name_results):
+    # Search fuses the same rows into its own entry shape, crediting a symbol
+    # page of the file; here every leg is keyed by page id, as above.
+    for rank, (h, full) in leg_ranks(name_results):
         if h.page_id in fused and h.page_type != PAGELESS_FILE:
             continue
         entry = fused.setdefault(h.page_id, _hit_dict_from_result(h))
@@ -413,12 +416,17 @@ def stamp_hybrid_rank(hits: list[dict]) -> None:
     """Record each hit's 0-based file rank in the fused order, before any rerank.
 
     This is the order ``search_codebase`` serves; confidence reads it to tell
-    when the reranked lead left it. Symbol pages share their file's rank.
+    when the reranked lead left it. Symbol pages share their file's rank. Files
+    are ranked among pages: a file with no page shares the rank of the page
+    below it, so it never pushes a page down.
     """
     files: dict[str, int] = {}
     for h in hits:
         path = (h.get("target_path") or "").split("::", 1)[0]
-        h["_hybrid_rank"] = files.setdefault(path, len(files))
+        if h.get("page_type") == PAGELESS_FILE:
+            h["_hybrid_rank"] = len(files)
+        else:
+            h["_hybrid_rank"] = files.setdefault(path, len(files))
 
 
 async def _safe_fts_search(ctx: Any, question: str) -> list[Any]:
@@ -620,6 +628,23 @@ async def _safe_filename_search(ctx: Any, question: str) -> list[tuple[_SymbolLe
     ]
 
 
+def leg_ranks(results: list[Any]) -> list[tuple[int, Any]]:
+    """Each result of a leg with its rank among that leg's pages.
+
+    A file with no page takes the rank of the page below it, so it never costs
+    a page its place in the leg: the pages fuse exactly as they would without it.
+    Items may be results or ``(result, extra)`` pairs.
+    """
+    ranked: list[tuple[int, Any]] = []
+    pages = 0
+    for item in results:
+        result = item[0] if isinstance(item, tuple) else item
+        ranked.append((pages, item))
+        if result.page_type != PAGELESS_FILE:
+            pages += 1
+    return ranked
+
+
 def _hit_dict_from_result(result: Any) -> dict:
     """Convert a retriever result object to the pipeline's dict shape."""
     return {
@@ -783,7 +808,10 @@ async def apply_pagerank_bias(hits: list[dict], ctx: Any) -> None:
 
     if not pr_by_path:
         return
-    max_pr = max(pr_by_path.values(), default=0.0)
+    # Normalised over the pages, so a file with no page cannot change their bias.
+    paged = {h.get("target_path") for h in hits if h.get("page_type") != PAGELESS_FILE}
+    max_pr = max((pr for path, pr in pr_by_path.items() if path in paged), default=0.0)
+    max_pr = max_pr or max(pr_by_path.values(), default=0.0)
     if max_pr <= 0:
         return
 
@@ -791,7 +819,7 @@ async def apply_pagerank_bias(hits: list[dict], ctx: Any) -> None:
         pr = pr_by_path.get(h.get("target_path"), 0.0)
         # Normalised in [0, 1] then scaled to a multiplicative bias in
         # [1.0, 1 + _PAGERANK_BIAS_MAX].
-        bias = 1.0 + _PAGERANK_BIAS_MAX * (pr / max_pr)
+        bias = 1.0 + _PAGERANK_BIAS_MAX * min(pr / max_pr, 1.0)
         h["_pagerank"] = pr
         h["_pagerank_bias"] = round(bias, 3)
         h["score"] = h.get("score", 0.0) * bias
@@ -883,7 +911,9 @@ async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dic
     """
     if not hits:
         return hits
-    seed_paths = [h.get("target_path") for h in hits[:_GRAPH_EXPAND_TOP_N] if h.get("target_path")]
+    # Seeded from pages only, so a file with no page cannot change what pages add.
+    seeds = [h for h in hits if h.get("page_type") != PAGELESS_FILE][:_GRAPH_EXPAND_TOP_N]
+    seed_paths = [h.get("target_path") for h in seeds if h.get("target_path")]
     if not seed_paths:
         return hits
     existing = {h.get("target_path") for h in hits}
@@ -952,7 +982,7 @@ async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dic
     # the strongest parent each child connects to (taking the max parent
     # score is conservative — favors well-connected neighbors).
     strongest_parent = max(
-        hits[:_GRAPH_EXPAND_TOP_N], key=lambda hit: hit.get("score", 0.0), default={}
+        seeds, key=lambda hit: hit.get("score", 0.0), default={}
     )
     parent_score = strongest_parent.get("score", 0.0)
     confidence_factor = strongest_parent.get("_confidence_score_factor")

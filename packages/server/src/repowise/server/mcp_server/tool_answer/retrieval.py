@@ -20,7 +20,7 @@ from repowise.core.persistence.models import Page
 from repowise.core.persistence.search import strip_leading_headings
 from repowise.server.mcp_server._page_paths import PAGELESS_FILE, hit_file_path
 from repowise.server.mcp_server._query_terms import content_terms
-from repowise.server.mcp_server._retrieval_rank import rerank_by_context_coverage
+from repowise.server.mcp_server._retrieval_rank import rerank_pages_first
 from repowise.server.mcp_server.tool_answer.config import (
     _BACKEND_PATH_PREFIXES,
     _BACKEND_QUESTION_TOKENS,
@@ -402,7 +402,7 @@ def _rerank_by_coverage(hits: list[dict], question: str) -> list[dict]:
     replacement score. Counters BM25 ranking one strongly-matched constraint
     above a hit that matches every constraint moderately.
     """
-    return rerank_by_context_coverage(
+    return rerank_pages_first(
         hits,
         question,
         score_key="score",

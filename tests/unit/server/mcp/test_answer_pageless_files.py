@@ -117,17 +117,8 @@ async def test_a_pageless_test_file_ranks_below_its_source(pageless_mcp, monkeyp
     assert files.index(_TS_TARGET) < files.index(test_file)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "question",
-    ["how does the auth service authenticate users", "how does the AuthService login work"],
-)
-async def test_paged_answers_are_unchanged_by_pageless_files(pageless_mcp, monkeypatch, question):
-    from repowise.server.mcp_server import get_answer
-
-    _keyless(monkeypatch)
-    with_rows = await get_answer(question)
-
+def _pages_only(monkeypatch) -> None:
+    """Restrict both legs to paged rows: retrieval as it was before pageless files."""
     symbol_search = _answer_pipeline._safe_symbol_search
     name_search = _answer_pipeline._safe_filename_search
 
@@ -139,8 +130,95 @@ async def test_paged_answers_are_unchanged_by_pageless_files(pageless_mcp, monke
 
     monkeypatch.setattr(_answer_pipeline, "_safe_symbol_search", symbols_paged_only)
     monkeypatch.setattr(_answer_pipeline, "_safe_filename_search", names_paged_only)
-    without = await get_answer(question)
 
-    paged = [p for p in _ranked(with_rows) if p not in _PAGELESS_PATHS]
-    assert paged
-    assert paged == _ranked(without)[: len(paged)]
+
+async def _paged_pool(question: str, repo_id: str) -> list[tuple]:
+    from repowise.server.mcp_server.tool_answer.answer import _run_retrieval_pipeline
+
+    retrieved = await _run_retrieval_pipeline(
+        question, await _ctx(), scope=None, exclude_spec=None, repo_id=repo_id
+    )
+    return [
+        (h["target_path"], h.get("_hybrid_rank"), round(h["score"], 6))
+        for h in retrieved.resolved_pool
+        if h.get("page_type") != "file"
+    ]
+
+
+# Each spells a pageless file name and reaches several pages.
+_MIXED_QUESTIONS = [
+    "auth service middleware exec command highlighting",
+    "database models and the retry backoff policy for auth service login",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question", _MIXED_QUESTIONS)
+async def test_pageless_files_leave_the_pages_alone(pageless_mcp, monkeypatch, question):
+    from repowise.server.mcp_server import get_answer
+
+    _keyless(monkeypatch)
+    with_rows = await _paged_pool(question, pageless_mcp)
+    with_answer = await get_answer(question)
+    assert any(p in _PAGELESS_PATHS for p in _ranked(with_answer))
+
+    _pages_only(monkeypatch)
+    without = await _paged_pool(question, pageless_mcp)
+    without_answer = await get_answer(question)
+
+    # Same pages, same order, same hybrid ranks and scores.
+    assert len(with_rows) > 2
+    assert with_rows == without
+    assert with_answer["confidence"] == without_answer["confidence"]
+    paged = [p for p in _ranked(with_answer) if p not in _PAGELESS_PATHS]
+    assert paged == _ranked(without_answer)[: len(paged)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [TimeoutError, RuntimeError])
+async def test_a_failed_filename_leg_is_reported(pageless_mcp, monkeypatch, failure):
+    from repowise.server.mcp_server import get_answer
+
+    async def broken(*_args, **_kwargs):
+        raise failure
+
+    _keyless(monkeypatch)
+    monkeypatch.setattr(_answer_pipeline, "filename_backed_pages", broken)
+    result = await get_answer("exec command highlighting")
+    assert "filename" in result["_meta"]["retrieval_degraded"]
+
+
+def test_rerank_keeps_page_order_and_places_pageless_rows_by_the_whole_window():
+    from repowise.server.mcp_server._retrieval_rank import (
+        rerank_by_context_coverage,
+        rerank_pages_first,
+    )
+
+    def rows():
+        pages = [
+            {"page_type": "file_page", "target_path": f"pkg/{name}.py", "score": s}
+            for name, s in (("retry_queue", 3.0), ("backoff_policy", 2.9), ("misc_util", 2.8))
+        ]
+        pageless = {
+            "page_type": "file",
+            "target_path": "pkg/retry_backoff_policy.go",
+            "score": 2.7,
+        }
+        return pages, pageless
+
+    def paths(ranked):
+        return [h["target_path"] for h in ranked]
+
+    question = "retry backoff policy"
+    kwargs = {"score_key": "score", "floor": 0.5}
+    pages, _ = rows()
+    alone = paths(rerank_by_context_coverage(pages, question, **kwargs))
+    pages, pageless = rows()
+    whole = paths(rerank_by_context_coverage([*pages, pageless], question, **kwargs))
+    pages, pageless = rows()
+    mixed = rerank_pages_first([*pages, pageless], question, **kwargs)
+    order = paths(mixed)
+    assert [p for p in order if p != pageless["target_path"]] == alone
+    # The pageless row spells every word, so the whole window ranks it first.
+    assert whole[0] == order[0] == pageless["target_path"]
+    assert [h["score"] for h in mixed] == sorted((h["score"] for h in mixed), reverse=True)

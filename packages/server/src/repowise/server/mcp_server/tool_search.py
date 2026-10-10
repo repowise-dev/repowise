@@ -28,6 +28,7 @@ from repowise.server.mcp_server._answer_pipeline import (
     _SYMBOL_LEG_RRF_K,
     _safe_filename_search,
     _safe_symbol_search,
+    leg_ranks,
 )
 from repowise.server.mcp_server._budget import (
     OmissionCollector,
@@ -81,7 +82,7 @@ from repowise.server.mcp_server._query_shape import (
 from repowise.server.mcp_server._references import path_identity, symbol_identity
 from repowise.server.mcp_server._retrieval_rank import (
     boost_named_paths,
-    rerank_by_context_coverage,
+    rerank_pages_first,
 )
 from repowise.server.mcp_server.tool_search_symbols import (
     _MAX_CANDIDATES,
@@ -777,14 +778,14 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
         entry["_sources"].add("fts")
     # Files whose symbol names the query's words spell, paged or not. Weighted
     # below the page legs, as in get_answer; it has no raw score to floor.
-    for rank, r in enumerate(sym_results):
+    for rank, r in leg_ranks(sym_results):
         entry = fused.setdefault(_symbol_leg_target(fused, r.page_id), _fused_entry(r))
         entry["_rrf"] += 1.0 / (rank + _SYMBOL_LEG_RRF_K)
         entry["_sources"].add("symbol")
     # Files whose file name the query's words spell, weighted as a name match.
     # It adds files the other legs missed and never reorders a page they found.
     # A name of three or more words the query spells in full weighs like a page hit.
-    for rank, (r, full) in enumerate(name_results):
+    for rank, (r, full) in leg_ranks(name_results):
         target = _symbol_leg_target(fused, r.page_id)
         if target in fused and r.page_type != PAGELESS_FILE:
             continue
@@ -801,28 +802,6 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
         output.append(entry)
     output.sort(key=lambda item: item["relevance_score"], reverse=True)
     return output
-
-
-def _rerank_pages_first(output: list[dict], query: str) -> list[dict]:
-    """Coverage rerank whose window weights come from the pages alone.
-
-    The weights are relative to the window, so rows for files without a page
-    would reorder the pages among themselves. They are scored against a copy
-    of the pages instead, and only take their own place among them.
-    """
-    pages = [item for item in output if item.get("page_type") != PAGELESS_FILE]
-    pageless = [item for item in output if item.get("page_type") == PAGELESS_FILE]
-    if pageless:
-        rerank_by_context_coverage(
-            [dict(item) for item in pages] + pageless,
-            query,
-            score_key="relevance_score",
-            floor=0.5,
-        )
-    pages = rerank_by_context_coverage(pages, query, score_key="relevance_score", floor=0.5)
-    if not pageless:
-        return pages
-    return sorted(pages + pageless, key=lambda item: item.get("relevance_score", 0.0), reverse=True)
 
 
 async def _search_single_repo(
@@ -1362,7 +1341,7 @@ async def search_codebase(
         # Re-sort by adjusted relevance with retrieval noise (decisions on
         # non-why queries, test pages on non-test queries) hard-demoted, then
         # collapse near-duplicate decisions to one.
-        output = _rerank_pages_first(output, query)
+        output = rerank_pages_first(output, query, score_key="relevance_score", floor=0.5)
         # After the coverage rerank, whose window-relative weights cannot tell
         # a word rare across the repo from one rare in these few hits.
         boost_named_paths(
