@@ -96,25 +96,9 @@ Break Cycle out, matching the opportunities; `by_type` still counts it.
 
 Names are never invented. A suggested helper or file name is `null` when nothing
 in the code anchors one. A Split File or Extract Class plan with an unnamed group
-says what to separate but not what the result is, so its applicability carries
-`needs_design` and an opportunity holds it as `evidence` (or, when it is the
-file's only plan, it is unattached), the same way as a cycle: it is not a step
-and never reaches Fix first. Extract Class does not name its groups yet, so
-every Extract Class plan is held this way. Both the plan list and the rollup
-count these plans as `design_total`: `structural_total` minus `design_total` is
-the structural plans the opportunities take as steps, and the CLI marks them
-"needs design" under unattached observations.
-
-Code only moves within a language family: TypeScript, JavaScript and the
-single-file components that host them; C, C++, their headers and Objective-C;
-C# with Razor; every other language on its own, so Java, Kotlin and Scala are
-separate families and a move between them is not proposed. A Move Method target
-or an Extract Helper site in another family is never proposed, even when the
-call graph or the clone index paired the two files.
-
-A plan's `target_symbol` names code, not an expression. A callback is named
-after the dotted path of the call it is passed to (`it.each callback`,
-`z.object.strict.superRefine callback`), without its arguments.
+is held as `needs_design`, like a cycle: it is not a step and never reaches Fix
+first. Code only moves within a language family, so Java, Kotlin and Scala are
+separate. A callback is named after the call it is passed to.
 
 An empty list means no detector found work that clears its gates. It does not mean
 the code needs no attention: check the findings in
