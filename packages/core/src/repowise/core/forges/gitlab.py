@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from .base import (
     BaseForge,
+    CiSystem,
     ForgeKind,
     RemoteParts,
     RemoteRef,
@@ -59,7 +60,16 @@ register(
         kind=ForgeKind.GITLAB,
         label="GitLab",
         change_term="merge request",
-        ci_env_markers=("GITLAB_CI",),
+        ci=CiSystem(
+            name="gitlab_ci",
+            markers=("GITLAB_CI",),
+            base_branch=("CI_MERGE_REQUEST_TARGET_BRANCH_NAME",),
+            # The merge base, so a merged-results pipeline still diffs only the MR.
+            base_sha=("CI_MERGE_REQUEST_DIFF_BASE_SHA",),
+            head_sha=("CI_COMMIT_SHA",),
+            change_number=("CI_MERGE_REQUEST_IID",),
+            repo_url=(("CI_PROJECT_URL",),),
+        ),
         route_markers=frozenset({"-"}),
     )
 )

@@ -11,7 +11,7 @@ from __future__ import annotations
 # Forge modules register themselves on import. Their host claims are
 # disjoint, so the order does not matter; generic claims none and is the fallback.
 from . import azure, bitbucket, generic, github, gitlab  # noqa: F401
-from .base import BaseForge, Forge, ForgeKind, RemoteRef
+from .base import BaseForge, CiSystem, Forge, ForgeKind, RemoteRef
 from .detect import detect_forge, read_remote_url
 from .registry import HOSTS_ENV_VAR, all_forges, forge_hosts, get_forge, register
 from .remote import canonical_key, parse_remote, strip_credentials
@@ -19,6 +19,7 @@ from .remote import canonical_key, parse_remote, strip_credentials
 __all__ = [
     "HOSTS_ENV_VAR",
     "BaseForge",
+    "CiSystem",
     "Forge",
     "ForgeKind",
     "RemoteRef",

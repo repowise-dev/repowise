@@ -77,6 +77,6 @@ def detect_forge(
         if ref is not None and ref.forge is not ForgeKind.GENERIC:
             return ref.forge
     for forge in all_forges():
-        if any(env.get(var) for var in forge.ci_env_markers):
+        if forge.ci is not None and forge.ci.active(env):
             return forge.kind
     return ForgeKind.GENERIC

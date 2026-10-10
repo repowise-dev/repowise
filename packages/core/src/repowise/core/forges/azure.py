@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 from .base import (
     BaseForge,
+    CiSystem,
     ForgeKind,
     RemoteParts,
     RemoteRef,
@@ -113,6 +114,28 @@ register(
     Azure(
         kind=ForgeKind.AZURE,
         label="Azure DevOps",
-        ci_env_markers=("TF_BUILD", "SYSTEM_TEAMFOUNDATIONCOLLECTIONURI"),
+        ci=CiSystem(
+            name="azure_pipelines",
+            markers=("TF_BUILD", "SYSTEM_TEAMFOUNDATIONCOLLECTIONURI"),
+            # TARGETBRANCH is the full ref; the NAME form is newer and bare.
+            base_branch=("SYSTEM_PULLREQUEST_TARGETBRANCHNAME", "SYSTEM_PULLREQUEST_TARGETBRANCH"),
+            head_sha=("BUILD_SOURCEVERSION",),
+            # NUMBER is set only for GitHub repos, whose ID is an internal id
+            # rather than the number; for Azure Repos the ID is the number.
+            change_number=(
+                "SYSTEM_PULLREQUEST_PULLREQUESTNUMBER",
+                "SYSTEM_PULLREQUEST_PULLREQUESTID",
+            ),
+            repo_url=(("BUILD_REPOSITORY_URI",),),
+            # Pipelines builds repos hosted anywhere; "Git" (any other host) is
+            # left to the repo URL.
+            provider_var="BUILD_REPOSITORY_PROVIDER",
+            providers=(
+                ("tfsgit", ForgeKind.AZURE),
+                ("github", ForgeKind.GITHUB),
+                ("githubenterprise", ForgeKind.GITHUB),
+                ("bitbucket", ForgeKind.BITBUCKET),
+            ),
+        ),
     )
 )

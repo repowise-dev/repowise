@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from .base import (
     BaseForge,
+    CiSystem,
     ForgeKind,
     RemoteParts,
     RemoteRef,
@@ -55,6 +56,13 @@ register(
     GitHub(
         kind=ForgeKind.GITHUB,
         label="GitHub",
-        ci_env_markers=("GITHUB_ACTIONS",),
+        ci=CiSystem(
+            name="github_actions",
+            markers=("GITHUB_ACTIONS",),
+            base_branch=("GITHUB_BASE_REF",),
+            head_sha=("GITHUB_SHA",),
+            change_number=("GITHUB_REF",),  # refs/pull/N/merge on a pull request
+            repo_url=(("GITHUB_SERVER_URL", "GITHUB_REPOSITORY"),),
+        ),
     )
 )

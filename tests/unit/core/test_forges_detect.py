@@ -81,6 +81,7 @@ def test_no_git_dir_reads_as_no_remote(tmp_path: Path) -> None:
         ({"TF_BUILD": "True"}, ForgeKind.AZURE),
         ({"SYSTEM_TEAMFOUNDATIONCOLLECTIONURI": "https://dev.azure.com/org/"}, ForgeKind.AZURE),
         ({"BITBUCKET_BUILD_NUMBER": "42"}, ForgeKind.BITBUCKET),
+        ({"GITHUB_ACTIONS": "false"}, ForgeKind.GENERIC),
         ({}, ForgeKind.GENERIC),
     ],
 )

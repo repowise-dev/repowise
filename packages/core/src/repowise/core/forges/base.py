@@ -9,6 +9,7 @@ in that forge's module.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -109,6 +110,38 @@ def join_url(origin: str, *segments: str) -> str:
     return "/".join([origin, *(quote_segment(s) for s in segments)])
 
 
+def env_flag(value: str | None) -> bool:
+    """Whether a CI variable is on: set, and not blank, ``false`` or ``0``."""
+    return (value or "").strip().lower() not in ("", "false", "0")
+
+
+@dataclass(frozen=True, slots=True)
+class CiSystem:
+    """Where one CI system keeps its facts about a build, as env var names.
+
+    Each tuple is read in order and the first non-blank value wins.
+    ``repo_url`` entries are groups joined with ``/``, for a CI that splits
+    the URL (GitHub's server and repository). ``read_ci`` in ``forges.ci``
+    turns these into a ``CiContext``.
+    """
+
+    name: str
+    markers: tuple[str, ...]  # any one on means a run of this CI
+    base_branch: tuple[str, ...] = ()
+    base_sha: tuple[str, ...] = ()
+    head_sha: tuple[str, ...] = ()
+    change_number: tuple[str, ...] = ()
+    repo_url: tuple[tuple[str, ...], ...] = ()
+    #: A var naming where the repo is hosted, for a CI that builds repos from
+    #: other forges, and its lowercased values. Unmapped values fall back to
+    #: parsing the repo URL.
+    provider_var: str = ""
+    providers: tuple[tuple[str, ForgeKind], ...] = ()
+
+    def active(self, env: Mapping[str, str]) -> bool:
+        return any(env_flag(env.get(var)) for var in self.markers)
+
+
 @dataclass(frozen=True, slots=True)
 class BaseForge:
     """Shared defaults; a forge module subclasses this and calls ``register``."""
@@ -116,8 +149,8 @@ class BaseForge:
     kind: ForgeKind
     label: str
     change_term: str = "pull request"
-    #: Env vars whose presence means a CI run on this forge.
-    ci_env_markers: tuple[str, ...] = ()
+    #: The CI system this forge runs, if it has one.
+    ci: CiSystem | None = None
     #: Path segments that start a web route on this forge and never name a
     #: group or repo, so they are cut from a URL on any host.
     route_markers: frozenset[str] = frozenset()

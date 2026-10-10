@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 from .base import (
     BaseForge,
+    CiSystem,
     ForgeKind,
     RemoteParts,
     RemoteRef,
@@ -104,6 +105,13 @@ register(
     Bitbucket(
         kind=ForgeKind.BITBUCKET,
         label="Bitbucket",
-        ci_env_markers=("BITBUCKET_BUILD_NUMBER",),
+        ci=CiSystem(
+            name="bitbucket_pipelines",
+            markers=("BITBUCKET_BUILD_NUMBER",),
+            base_branch=("BITBUCKET_PR_DESTINATION_BRANCH",),
+            head_sha=("BITBUCKET_COMMIT",),
+            change_number=("BITBUCKET_PR_ID",),
+            repo_url=(("BITBUCKET_GIT_HTTP_ORIGIN",),),
+        ),
     )
 )
