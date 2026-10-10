@@ -122,18 +122,29 @@ const PLAN = {
 describe("OpportunityDrawer reach, verification and code", () => {
   it("states the blast radius for every type, importers included when stored", () => {
     renderDrawer(detail({ affected_files_total: 2, dependents: 4 }));
-    expect(screen.getByText("Touches 2 files; 4 files import it.")).toBeTruthy();
+    expect(screen.getByText(/^Touches 2 files; 4 files import it\./)).toBeTruthy();
   });
 
   it("says when importers were not recorded instead of implying none", () => {
     renderDrawer(detail());
-    expect(screen.getByText("Touches 1 file; importers not recorded.")).toBeTruthy();
+    expect(
+      screen.getByText("Touches 1 file; importers not recorded. No guarding tests found."),
+    ).toBeTruthy();
   });
 
   it("always shows Verify, with the explicit message when nothing guards the file", () => {
     renderDrawer(detail());
-    expect(screen.getByText("Verify")).toBeTruthy();
-    expect(screen.getByText(/No guarding tests found/)).toBeTruthy();
+    const verify = screen.getByRole("button", { name: /Verify/ });
+    expect(verify.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(verify);
+    expect(screen.getByText(/Write one that pins the current behaviour/)).toBeTruthy();
+  });
+
+  it("keeps the agent id collapsed until asked for", () => {
+    renderDrawer(detail());
+    expect(screen.queryByText(/get_health\(opportunity_id=/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Ask for this by id/ }));
+    expect(screen.getByText(/get_health\(opportunity_id=/)).toBeTruthy();
   });
 
   it("reads the step's span from the file for an inline excerpt", async () => {

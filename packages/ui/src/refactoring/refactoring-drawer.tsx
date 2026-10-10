@@ -22,6 +22,7 @@
 import type { ReactNode } from "react";
 import { Layers, Sparkles, TrendingUp, Wand2 } from "lucide-react";
 
+import { CollapsibleSection } from "../shared/collapsible-section";
 import { Sheet, SheetContent, SheetTitle } from "../ui/sheet";
 import { Skeleton, SkeletonRegion } from "../ui/skeleton";
 import { formatNumber } from "../lib/format";
@@ -179,23 +180,6 @@ function DrawerBody({
           <PlanComparison plan={plan} fileHref={fileHref} />
         </section>
 
-        <section>
-          <h4 className="mb-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-            Priority
-          </h4>
-          <PriorityExplanation plan={plan} />
-        </section>
-
-        <section>
-          <h4 className="mb-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-            Validation
-          </h4>
-          <ValidationSummary
-            validation={plan.validation}
-            fileHref={(path) => fileHref?.(path, null)}
-          />
-        </section>
-
         {onGenerateCode ? (
           <section>
             <div className="mb-3 flex items-center justify-between gap-3">
@@ -244,10 +228,7 @@ function DrawerBody({
         ) : null}
 
         {evidence.length > 0 ? (
-          <section>
-            <h4 className="mb-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-              Why this was flagged
-            </h4>
+          <CollapsibleSection title="Why this was flagged">
             <dl className="grid grid-cols-2 sm:grid-cols-4">
               {evidence.map((row) => (
                 <div
@@ -263,15 +244,19 @@ function DrawerBody({
                 </div>
               ))}
             </dl>
-          </section>
+          </CollapsibleSection>
         ) : null}
 
         {blast.length > 0 ? (
-          <section>
-            <h4 className="mb-2 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-              <Layers className="h-3.5 w-3.5" />
-              Also affected
-            </h4>
+          <CollapsibleSection
+            title={
+              <span className="flex items-center gap-1.5">
+                <Layers className="h-3.5 w-3.5" aria-hidden="true" />
+                Also affected
+              </span>
+            }
+            hint={blast.length.toLocaleString()}
+          >
             <ul className="space-y-1">
               {blast.map((f) => {
                 const href = fileHref?.(f, null);
@@ -293,8 +278,22 @@ function DrawerBody({
                 );
               })}
             </ul>
-          </section>
+          </CollapsibleSection>
         ) : null}
+
+        <CollapsibleSection
+          title="Validation"
+          hint={plan.validation ? `${plan.validation.total.toLocaleString()} tests` : undefined}
+        >
+          <ValidationSummary
+            validation={plan.validation}
+            fileHref={(path) => fileHref?.(path, null)}
+          />
+        </CollapsibleSection>
+
+        <CollapsibleSection title="Priority">
+          <PriorityExplanation plan={plan} />
+        </CollapsibleSection>
       </div>
 
       {onAiPrompt ? (

@@ -19,6 +19,12 @@ const openFirstRow = async () => {
   return first!;
 };
 
+
+/** Open a collapsed drawer section by its toggle's name. */
+function expand(panel: HTMLElement, name: string | RegExp) {
+  fireEvent.click(within(panel).getByRole("button", { name }));
+}
+
 describe("PerformanceView queue", () => {
   it("leads with the canonical rollup rather than flat context counters", async () => {
     render(<PerformanceView adapter={adapter()} />);
@@ -213,6 +219,7 @@ describe("PerformanceView drawer", () => {
     render(<PerformanceView adapter={adapter()} />);
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
+    expand(panel, "What the evidence shows");
     expect(within(panel).getByText("Evidence confidence")).toBeTruthy();
     expect(within(panel).getByText("Actionability confidence")).toBeTruthy();
     expect(within(panel).getByText("Fix safety")).toBeTruthy();
@@ -224,6 +231,7 @@ describe("PerformanceView drawer", () => {
     render(<PerformanceView adapter={adapter()} />);
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
+    expand(panel, "What the evidence shows");
     expect(within(panel).getByText("Loop magnitude")).toBeTruthy();
     expect(within(panel).getByText("Grows with data")).toBeTruthy();
     expect(within(panel).getByText("self._sem")).toBeTruthy();
@@ -239,12 +247,14 @@ describe("PerformanceView drawer", () => {
     await openFirstRow();
     await waitFor(() => expect(getDetail).toHaveBeenCalled());
     const panel = await screen.findByRole("dialog");
+    expand(panel, "What the evidence shows");
     expect(within(panel).queryByText("Loop magnitude")).toBeNull();
   });
 
   it("carries the exact drill-down an agent should call", async () => {
     render(<PerformanceView adapter={adapter()} />);
     await openFirstRow();
+    expand(await screen.findByRole("dialog"), "Hand this to an agent");
     expect(await screen.findByText('get_health(opportunity_id="perf2_planready")')).toBeTruthy();
   });
 
@@ -256,7 +266,8 @@ describe("PerformanceView drawer", () => {
       expect(getDetail).toHaveBeenCalledWith("perf2_planready", { evidenceLimit: 8 }),
     );
     const panel = await screen.findByRole("dialog");
-    expect(within(panel).getByText(/Analyzed at/)).toBeTruthy();
+    expand(panel, "Hand this to an agent");
+    expect(await within(panel).findByText(/Analyzed at/)).toBeTruthy();
   });
 
   it("says a cause is no longer observed instead of showing it as open", async () => {
@@ -616,6 +627,7 @@ describe("PerformanceView drawer plan steps and validation", () => {
     );
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
+    expand(panel, /^Tests/);
     expect(within(panel).getByText(/Measured coverage/)).toBeTruthy();
     expect(within(panel).getByText(/via call graph/)).toBeTruthy();
     expect(within(panel).getByText("tests/test_a.py")).toBeTruthy();
@@ -643,6 +655,7 @@ describe("PerformanceView drawer plan steps and validation", () => {
     );
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
+    expand(panel, /^Tests/);
     expect(within(panel).getByText(/via name match/)).toBeTruthy();
   });
 
@@ -662,6 +675,7 @@ describe("PerformanceView drawer plan steps and validation", () => {
     );
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
+    expand(panel, /^Tests/);
     expect(within(panel).getByText("Validation gap")).toBeTruthy();
     expect(within(panel).getByText(/Treat this as explicit validation work/)).toBeTruthy();
   });
@@ -671,6 +685,7 @@ describe("PerformanceView drawer plan steps and validation", () => {
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
     expect(within(panel).queryByText(/guarding test/)).toBeNull();
+    expect(within(panel).queryByRole("button", { name: /^Tests/ })).toBeNull();
     expect(within(panel).queryByText(/Validation gap/)).toBeNull();
   });
 });
@@ -886,6 +901,7 @@ describe("PerformanceView drawer, the fix itself", () => {
     render(<PerformanceView adapter={adapter()} />);
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
+    expand(panel, "What the evidence shows");
     for (const facet of ["amplification", "exposure", "leverage", "change risk", "loop magnitude"]) {
       expect(within(panel).getByRole("button", { name: `What ${facet} means` })).toBeTruthy();
     }
