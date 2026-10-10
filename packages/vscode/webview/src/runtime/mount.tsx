@@ -14,6 +14,7 @@ import type {
   WebviewViewId,
 } from "../../../src/shared/webviewMessages";
 import { createHost, type WebviewHost } from "./rpc";
+import { ApiError, OrbLoader, ORB_STATE } from "@repowise-dev/ui/shared";
 import { PanelChrome } from "./chrome";
 import { initTheme, setThemePreference } from "./theme";
 
@@ -78,8 +79,8 @@ function Bootstrap<V extends WebviewViewId>({ view, host, App }: BootstrapProps<
 
   if (!init || !repo) {
     return (
-      <div role="status" className="flex h-screen items-center justify-center text-[var(--color-text-tertiary)]">
-        Loading Repowise…
+      <div className="flex h-screen items-center justify-center">
+        <OrbLoader state={ORB_STATE.page} size={64} label="Loading Repowise" />
       </div>
     );
   }
@@ -121,10 +122,12 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
   render(): ReactNode {
     if (this.state.error) {
       return (
-        <div role="alert" className="m-6 rounded-lg border border-[var(--color-error)] p-4 text-[15px]">
-          <p className="font-medium text-[var(--color-error)]">This view hit an error.</p>
-          <p className="mt-2 text-[var(--color-text-secondary)]">{this.state.error.message}</p>
-        </div>
+        <ApiError
+          className="m-6"
+          title="This view hit an error."
+          message={this.state.error.message}
+          onRetry={() => this.setState({ error: null })}
+        />
       );
     }
     return this.props.children;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ArrowLeft, Layers, Sparkles } from "lucide-react";
+import { ApiError, EmptyState, OrbLoader, ORB_STATE } from "@repowise-dev/ui/shared";
 import {
   CONFIDENCE_DOT,
   CONFIDENCE_LABEL,
@@ -99,18 +100,23 @@ function OpportunityDetailView({
     [opportunityId, refreshToken],
   );
 
-  if (state.status === "loading") return <CenteredNote>Loading opportunity…</CenteredNote>;
+  if (state.status === "loading") return <LoadingNote label="Loading opportunity" />;
   if (state.status === "error") {
     return <ErrorNote title="Could not load the opportunity.">{state.message}</ErrorNote>;
   }
   const detail = state.data;
   if (!detail.found) {
     return (
-      <ErrorNote title="Opportunity unavailable.">
-        {detail.model_state?.state === "stale_model"
-          ? "It was written by an older analysis model. Re-index and open it again."
-          : "It may have been resolved by a later analysis."}
-      </ErrorNote>
+      <div className="p-6">
+        <EmptyState
+          title="Opportunity unavailable"
+          description={
+            detail.model_state?.state === "stale_model"
+              ? "It was written by an older analysis model. Re-index and open it again."
+              : "It may have been resolved by a later analysis."
+          }
+        />
+      </div>
     );
   }
 
@@ -250,7 +256,7 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
   const state = useAsync(() => host.api.refactoringPlan(planId), [planId, refreshToken]);
   const onFileClick = useFileClickHandler(host);
 
-  if (state.status === "loading") return <CenteredNote>Loading plan…</CenteredNote>;
+  if (state.status === "loading") return <LoadingNote label="Loading plan" />;
   if (state.status === "error") {
     return <ErrorNote title="Could not load this refactoring plan.">{state.message}</ErrorNote>;
   }
@@ -476,7 +482,7 @@ function PlanListView({ host, filePath, refreshToken, onOpen }: PlanListViewProp
   );
 
   if (state.status === "loading") {
-    return <CenteredNote>Loading refactoring opportunities…</CenteredNote>;
+    return <LoadingNote label="Loading refactoring opportunities" />;
   }
   if (state.status === "error") {
     return <ErrorNote title="Could not load refactoring opportunities.">{state.message}</ErrorNote>;
@@ -485,11 +491,15 @@ function PlanListView({ host, filePath, refreshToken, onOpen }: PlanListViewProp
   const page = state.data;
   if (page.items.length === 0) {
     return (
-      <CenteredNote>
-        {filePath
-          ? `No refactoring opportunities for ${filePath}.`
-          : "No refactoring opportunities found."}
-      </CenteredNote>
+      <div className="p-6">
+        <EmptyState
+          title={
+            filePath
+              ? `No refactoring opportunities for ${filePath}`
+              : "No refactoring opportunities found"
+          }
+        />
+      </div>
     );
   }
 
@@ -567,19 +577,14 @@ function Badge({
   );
 }
 
-function CenteredNote({ children }: { children: ReactNode }) {
+function LoadingNote({ label }: { label: string }) {
   return (
-    <div className="flex h-full items-center justify-center px-6 text-center text-[15px] text-[var(--color-text-tertiary)]">
-      {children}
+    <div className="flex h-full items-center justify-center">
+      <OrbLoader state={ORB_STATE.analysing} size={64} label={label} />
     </div>
   );
 }
 
-function ErrorNote({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div role="alert" className="m-6 rounded-lg border border-[var(--color-error)] p-4 text-[15px]">
-      <p className="font-medium text-[var(--color-error)]">{title}</p>
-      <p className="mt-2 text-[var(--color-text-secondary)]">{children}</p>
-    </div>
-  );
+function ErrorNote({ title, children }: { title: string; children: string }) {
+  return <ApiError className="m-6" title={title} message={children} />;
 }

@@ -10,6 +10,7 @@ import {
   GraphFlow,
   type GraphFlowProps as GraphFlowShellProps,
 } from "@repowise-dev/ui/graph/graph-flow";
+import { ApiError } from "@repowise-dev/ui/shared";
 import { PathFinderPanel } from "@repowise-dev/ui/graph/path-finder-panel";
 import { GraphCommunityPanel } from "@repowise-dev/ui/graph/graph-community-panel";
 import type {
@@ -57,12 +58,7 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"graph">) {
       <div className="relative min-h-0 flex-1">
         {data.error ? (
           <div className="flex h-full items-center justify-center p-6">
-            <div role="alert" className="max-w-md rounded-lg border border-[var(--color-error)] bg-[var(--color-bg-elevated)] p-4 text-[15px]">
-              <p className="font-medium text-[var(--color-error)]">
-                Could not load the knowledge graph.
-              </p>
-              <p className="mt-2 text-[var(--color-text-secondary)]">{data.error}</p>
-            </div>
+            <ApiError title="Could not load the knowledge graph." message={data.error} />
           </div>
         ) : (
           <GraphFlow
