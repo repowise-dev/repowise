@@ -10,10 +10,24 @@ from repowise.core.ingestion.traverser import load_gitignore_spec
 
 from .source_files import _SKIP_DIRS
 
-# Conventional ADR homes. Every ``.md`` directly inside one is a candidate
-# regardless of filename. Directories matching these names or suffix paths
-# at any depth (e.g. ``dev/breeze/doc/adr`` or ``go-sdk/adr``) are recognized.
-_ADR_DIR_NAMES = frozenset({"adr", "adrs", "decisions", "architecture"})
+# Conventional ADR homes at the repo root. Every ``.md`` directly inside one
+# is a candidate regardless of filename.
+_CONVENTIONAL_ROOT_DIRS = frozenset(
+    {
+        "adr",
+        "adrs",
+        "docs/adr",
+        "docs/adrs",
+        "docs/decisions",
+        "decisions",
+        "architecture",
+        "doc/adr",
+    }
+)
+# Nested ADR homes recognized at arbitrary directory depths. Deliberately
+# excludes "architecture" (#3057) to avoid sweeping up general design notes
+# in package subdirectories.
+_ADR_DIR_NAMES = frozenset({"adr", "adrs", "decisions"})
 _ADR_SUFFIXES = frozenset(
     {
         "doc/adr",
@@ -22,17 +36,17 @@ _ADR_SUFFIXES = frozenset(
         "docs/adrs",
         "doc/decisions",
         "docs/decisions",
-        "doc/architecture",
-        "docs/architecture",
     }
 )
 _MAX_ADR_FILES = 60
 
 
 def _is_adr_dir(rel_dir: str) -> bool:
-    """Return True if rel_dir is a recognized ADR directory at any depth."""
+    """Return True if rel_dir is a recognized ADR directory."""
     if not rel_dir:
         return False
+    if rel_dir in _CONVENTIONAL_ROOT_DIRS:
+        return True
     parts = rel_dir.lower().split("/")
     return parts[-1] in _ADR_DIR_NAMES or (
         len(parts) >= 2 and f"{parts[-2]}/{parts[-1]}" in _ADR_SUFFIXES

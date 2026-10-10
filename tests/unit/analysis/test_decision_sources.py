@@ -94,6 +94,9 @@ async def test_discover_adrs_maps_superseded_status_from_frontmatter(tmp_path):
     d = decisions[0]
     assert d.status == "superseded"
     assert d.title == "Adopt gRPC for service-to-service calls"
+    assert "Adopt gRPC" in d.decision
+
+
 async def test_discover_adrs_in_nested_directories(tmp_path):
     breeze_adr = tmp_path / "dev" / "breeze" / "doc" / "adr"
     breeze_adr.mkdir(parents=True)
@@ -110,6 +113,17 @@ async def test_discover_adrs_in_nested_directories(tmp_path):
     titles = {d.title for d in decisions}
     assert "1. Use PostgreSQL for primary storage" in titles
     assert "Adopt gRPC for service-to-service calls" in titles
+
+
+async def test_nested_architecture_notes_folder_is_not_treated_as_adr(tmp_path):
+    arch_dir = tmp_path / "packages" / "core" / "architecture"
+    arch_dir.mkdir(parents=True)
+    (arch_dir / "overview.md").write_text("# Overview\n\nSome notes.\n", encoding="utf-8")
+
+    ex = DecisionExtractor(repo_path=tmp_path)
+    decisions = await ex.discover_adrs()
+
+    assert decisions == []
 
 
 def test_conventional_adrs_win_the_cap_over_earlier_loose_matches(tmp_path, monkeypatch):
