@@ -219,13 +219,19 @@ def _coverage_fact(f: FileFacts, facts: RepoFacts) -> WhyFact:
     return WhyFact("line coverage", "Unknown, not in the report", "unknown")
 
 
-def _reach_fact(f: FileFacts, facts: RepoFacts) -> WhyFact:
-    if f.tests_reaching is None:
-        why = ", the test map could not be read" if "test_map" in facts.unavailable else ""
-        return WhyFact("tests that reach it", f"Unknown{why}", "unknown")
-    if f.tests_reaching == 0:
+def _reach_fact(f: FileFacts) -> WhyFact:
+    if not f.tests_reaching:
         return WhyFact("tests that reach it", "None in the code graph", "inferred")
-    return WhyFact("tests that reach it", plural(f.tests_reaching, "test file"), "inferred")
+    via = (f.tests_reaching_via or "code graph").replace("-", " ")
+    return WhyFact(
+        "tests that reach it", f"{plural(f.tests_reaching, 'test file')}, {via}", "inferred"
+    )
+
+
+def _lead_name(f: FileFacts) -> str | None:
+    """The lead function's name, unless the parser could only call it anonymous."""
+    name = f.lead.function if f.lead else None
+    return None if not name or name.startswith("<anonymous") else name
 
 
 def _fragile_step(f: FileFacts) -> tuple[str, str, str] | None:
@@ -242,7 +248,11 @@ def _fragile_step(f: FileFacts) -> tuple[str, str, str] | None:
             "Line coverage on this file reaches 80%.",
             "raise",
         )
-    if cov is None and not f.tests_reaching:
+    if cov is None and f.tests_reaching is None:
+        # Unknown is not zero: with no coverage and no test map, neither "add
+        # tests" nor "tests reach it" is a claim the facts support.
+        return None
+    if cov is None and f.tests_reaching == 0:
         return (
             f"Add tests around {code(f.path)} before its next change",
             "A coverage report includes it at 80% or more.",
@@ -250,7 +260,8 @@ def _fragile_step(f: FileFacts) -> tuple[str, str, str] | None:
         )
     if f.lead is None:
         return None
-    where = code(f.lead.function) + " in " if f.lead.function else ""
+    name = _lead_name(f)
+    where = code(name) + " in " if name else ""
     tested = "it is tested" if cov is not None else "tests reach it"
     return (
         f"Simplify {where}{code(f.path)}: {tested}, and fixes keep landing",
@@ -301,7 +312,7 @@ def fragile_file(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             _coverage_fact(f, facts),
         ]
         if f.line_coverage_pct is None:
-            why.append(_reach_fact(f, facts))
+            why.append(_reach_fact(f))
         impact = (
             f"Changed {f.commits_90d} times in 90 days, and {f.fix_commits_90d} "
             "of those commits were bug fixes."
@@ -320,9 +331,7 @@ def fragile_file(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 why=tuple(why),
                 target_kind="file",
                 target_path=f.path,
-                target_symbol=(
-                    f.lead.function if variant in ("simplify", "reached") and f.lead else None
-                ),
+                target_symbol=_lead_name(f) if variant in ("simplify", "reached") else None,
                 identity=f.path,
                 surface="file",
                 effort="M" if (f.nloc or 0) < 600 else "L",

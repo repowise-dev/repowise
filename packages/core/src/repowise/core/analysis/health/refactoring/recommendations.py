@@ -25,8 +25,8 @@ from repowise.core.analysis.test_reachability import (
     MAX_TESTS_PER_TARGET,
     ReachDistance,
     ReachedBy,
+    cached_test_files,
     imported_names_by_test,
-    load_test_files,
     rank_tests,
     reach_into_symbols,
     tests_matching_by_name,
@@ -1038,7 +1038,7 @@ async def _validation_inputs(
         for file_path, lines in _line_ranges(suggestion).items():
             if not _measured_labels(measured.get(file_path, []), lines):
                 unanswered.add(file_path)
-    test_files = await load_test_files(session, repository_id)
+    test_files = await cached_test_files(session, repository_id)
     inferred = (
         await tests_reaching_by_tier(
             session, repository_id, sorted(unanswered), test_files=test_files

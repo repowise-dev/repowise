@@ -227,13 +227,16 @@ see** (steps such as adding a coverage report that make other answers sharper).
 Run `repowise update` to refresh the list after you change code.
 
 A fragile file says "add tests" only when it has no measured coverage and no
-test reaches it in the code graph (the walks `repowise impacted-tests` uses);
-when tests do reach it, the row asks to simplify its lead function instead, and
-says the reach is inferred. Measured coverage below 80% still reads "raise test
-coverage". When the index holds fewer than five commits (a one-commit import, a
-shallow clone), the rules that rank files by history (fragile files, bug-fix
-concentration, knowledge loss) stand down and the view sets
-`context.history_too_short`.
+test reaches it in the code graph: the call and import walks impacted tests use,
+plus one more import hop through a module only tests import (test support such
+as a `*.test-support.ts`). When tests do reach it, the row asks to simplify its
+lead function instead and names the walk that found them, as an inferred fact.
+If the walk fails, the file gets neither row. Measured coverage below 80% still
+reads "raise test coverage". When the index holds fewer than five commits (a
+one-commit import, a shallow clone), the rules that rank files by history
+(fragile files, bug-fix concentration, knowledge loss) stand down and the view
+sets `context.history_too_short`; an index with no git history at all is not
+flagged.
 
 ## Performance findings
 

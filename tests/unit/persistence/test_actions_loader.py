@@ -303,6 +303,7 @@ async def test_coverage_state_reads_the_ingest_record(async_session) -> None:
 
 async def test_a_test_reaching_through_a_helper_turns_add_tests_into_simplify(async_session) -> None:
     """openclaw's attempt.ts: tests load it through a support module two imports away."""
+    from repowise.core.analysis.test_reachability import clear_test_map_cache
     from repowise.core.persistence.crud.analysis.actions import load_repo_facts
     from repowise.core.persistence.models import GraphEdge, GraphNode
 
@@ -327,9 +328,52 @@ async def test_a_test_reaching_through_a_helper_turns_add_tests_into_simplify(as
             GraphEdge(repository_id=rid, source_node_id=src, target_node_id=dst, edge_type="imports")
         )
     await async_session.commit()
+    # The graph changed without an index run, which is what moves the cache stamp.
+    clear_test_map_cache()
 
     facts = await load_repo_facts(async_session, rid)
-    assert facts.files["src/core.py"].tests_reaching == 1
+    core = facts.files["src/core.py"]
+    assert (core.tests_reaching, core.tests_reaching_via) == (1, "import-graph")
+
+    # Once production code imports the middle file it is a hub, not test
+    # support, and the second hop no longer counts.
+    async_session.add(GraphNode(repository_id=rid, node_id="src/app.py", node_type="file"))
+    async_session.add(
+        GraphEdge(repository_id=rid, source_node_id="src/app.py",
+                  target_node_id="src/core.test-support.py", edge_type="imports")
+    )
+    await async_session.commit()
+    clear_test_map_cache()
+    facts = await load_repo_facts(async_session, rid)
+    assert facts.files["src/core.py"].tests_reaching == 0
+
+
+async def test_a_failed_test_map_walk_is_unknown_not_zero(async_session, monkeypatch) -> None:
+    from repowise.core.persistence.crud.analysis import actions as loader
+
+    rid = await _seed(async_session)
+
+    async def broken(*_a, **_k):
+        raise RuntimeError("graph_edges unreadable")
+
+    monkeypatch.setattr(loader, "any_tests_reaching", broken)
+    facts = await loader.load_repo_facts(async_session, rid)
+    assert "test_map" in facts.unavailable
+    assert facts.files["src/core.py"].tests_reaching is None
+
+
+async def test_an_index_without_git_has_no_history_count(async_session) -> None:
+    from repowise.core.persistence.crud.analysis.actions import load_repo_facts
+
+    rid = await _seed(async_session)
+    await async_session.execute(text("DELETE FROM git_commits"))
+    await async_session.commit()
+    assert (await load_repo_facts(async_session, rid)).history_commits == 0
+
+    await async_session.execute(text("DELETE FROM git_metadata"))
+    await async_session.commit()
+    facts = await load_repo_facts(async_session, rid)
+    assert facts.history_commits is None
 
 
 async def test_a_one_commit_index_is_flagged_and_history_rules_stand_down(async_session) -> None:

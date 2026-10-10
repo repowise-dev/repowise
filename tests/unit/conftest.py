@@ -18,3 +18,14 @@ def cursor_hooks_json(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(cursor, "user_hooks_path", lambda: hooks)
     monkeypatch.setattr(cursor.CursorAdapter, "detect", lambda self: False)
     return hooks
+
+
+@pytest.fixture(autouse=True)
+def fresh_test_map_cache():
+    """In-memory stores reuse one URL and seed graph rows without moving the
+    index stamp, so the process-wide test-map cache starts empty per test."""
+    from repowise.core.analysis.test_reachability import clear_test_map_cache
+
+    clear_test_map_cache()
+    yield
+    clear_test_map_cache()

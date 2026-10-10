@@ -45,6 +45,7 @@ def _file(path: str, **kw) -> FileFacts:
         owner_name=None,
         owner_pct=None,
         dependents=None,
+        tests_reaching=0,
     )
     base.update(kw)
     return FileFacts(**base)
@@ -611,13 +612,14 @@ _LEAD = LeadFinding("complex_method", "high", "runEmbeddedAttempt", 40, "CCN 90"
 def test_fragile_reached_by_tests_says_simplify_not_add_tests() -> None:
     """openclaw's attempt.ts: no coverage report, but tests reach it in the graph."""
     path = "src/agents/embedded-agent-runner/run/attempt.ts"
-    (a,) = _run(code.fragile_file, _facts([_file(path, lead=_LEAD, tests_reaching=36)])).actions
+    f = _file(path, lead=_LEAD, tests_reaching=36, tests_reaching_via="import-graph")
+    (a,) = _run(code.fragile_file, _facts([f])).actions
     assert not a.title.startswith("Add tests")
     assert a.title == (
         f"Simplify `runEmbeddedAttempt` in `{path}`: tests reach it, and fixes keep landing"
     )
     reach = next(w for w in a.why if w.label == "tests that reach it")
-    assert (reach.value, reach.basis) == ("36 test files", "inferred")
+    assert (reach.value, reach.basis) == ("36 test files, import graph", "inferred")
     assert a.confidence == "medium"
     assert a.target_symbol == "runEmbeddedAttempt"
 
@@ -634,13 +636,22 @@ def test_fragile_no_test_reaches_says_add_tests() -> None:
     assert (reach.value, reach.basis) == ("None in the code graph", "inferred")
 
 
-def test_fragile_add_tests_says_when_the_test_map_could_not_be_read() -> None:
-    facts = _facts([_file("src/a.py")], unavailable={"test_map": "Not in this index yet."})
-    (a,) = _run(code.fragile_file, facts).actions
-    assert a.title.startswith("Add tests around")
-    reach = next(w for w in a.why if w.label == "tests that reach it")
-    assert reach.basis == "unknown"
-    assert "could not be read" in reach.value
+def test_fragile_unknown_reach_is_not_zero() -> None:
+    """A failed test-map walk claims neither "add tests" nor "tests reach it"."""
+    lead = LeadFinding("complex_method", "high", "run", 10, "")
+    unknown = _file("src/a.py", lead=lead, tests_reaching=None)
+    facts = _facts([unknown], unavailable={"test_map": "Not in this index yet."})
+    assert _run(code.fragile_file, facts).actions == ()
+    (zero,) = _run(code.fragile_file, _facts([replace(unknown, tests_reaching=0)])).actions
+    assert zero.title.startswith("Add tests around")
+
+
+def test_an_anonymous_lead_function_is_left_out_of_the_title() -> None:
+    lead = LeadFinding("complex_method", "high", "<anonymous@3167>", 3167, "")
+    f = _file("src/gateway/chat.ts", lead=lead, tests_reaching=3)
+    (a,) = _run(code.fragile_file, _facts([f])).actions
+    assert a.title == "Simplify `src/gateway/chat.ts`: tests reach it, and fixes keep landing"
+    assert a.target_symbol is None
 
 
 def test_measured_coverage_wins_over_the_test_map() -> None:

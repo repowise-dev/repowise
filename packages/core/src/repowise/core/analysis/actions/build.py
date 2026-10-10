@@ -49,8 +49,9 @@ Row shapes (the field names are the SQL columns):
     One mapping: ``files_measured``, ``ingested_at``, ``ingested_commit_sha``,
     ``partial``.
 ``test_map``
-    One mapping of path to how many test files reach it in the code graph
-    (``repowise.core.analysis.test_reachability``), for :func:`reach_paths`.
+    One mapping of path to ``total`` (test files that reach it in the code
+    graph) and ``via`` (the walk), for :func:`reach_paths`; see
+    ``repowise.core.analysis.test_reachability.any_tests_reaching``.
 """
 
 from __future__ import annotations
@@ -240,16 +241,21 @@ def reach_paths(files: Mapping[str, FileFacts]) -> list[str]:
 
 
 def with_test_reach(
-    files: Mapping[str, FileFacts], reaching: Mapping[str, int]
+    files: Mapping[str, FileFacts], reaching: Mapping[str, Any]
 ) -> dict[str, FileFacts]:
-    """``files`` with each :func:`reach_paths` file's count of reaching test files.
+    """``files`` with each :func:`reach_paths` file's reaching test files.
 
-    ``reaching`` maps a path to how many test files reach it; a looked-up path
-    it does not name has none.
+    ``reaching`` maps a path to a row with ``total`` and ``via``; a looked-up
+    path it does not name has none.
     """
     out = dict(files)
     for path in reach_paths(files):
-        out[path] = replace(out[path], tests_reaching=int(reaching.get(path, 0)))
+        row = reaching.get(path)
+        out[path] = replace(
+            out[path],
+            tests_reaching=int(field(row, "total") or 0) if row is not None else 0,
+            tests_reaching_via=field(row, "via") if row is not None else None,
+        )
     return out
 
 
@@ -460,7 +466,7 @@ def build_repo_facts(
     dead_code: Rows | None = None,
     decisions: Mapping[str, Any] | None = None,
     coverage: Mapping[str, Any] | None = None,
-    test_map: Mapping[str, int] | None = None,
+    test_map: Mapping[str, Any] | None = None,
     history_commits: int | None = None,
     unavailable: Mapping[str, str] | None = None,
     absent_reason: str = ABSENT,

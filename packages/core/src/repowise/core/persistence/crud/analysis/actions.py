@@ -11,7 +11,6 @@ The reads here only narrow; the row-to-fact rule is the pure builder in
 from __future__ import annotations
 
 import logging
-import sys
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -49,11 +48,7 @@ from repowise.core.analysis.actions.rules.code import FIX_FIRST_ACTIONS
 from repowise.core.analysis.actions.rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.finding_registry import excluded_types
-from repowise.core.analysis.test_reachability import (
-    DEFAULT_CALL_DEPTH,
-    load_test_files,
-    tests_reaching_by_tier,
-)
+from repowise.core.analysis.test_reachability import any_tests_reaching
 
 from ...models import (
     ActionState,
@@ -232,47 +227,24 @@ async def _recent(
     return build_recent(rows, week=since, open_findings=open_findings, files=files)
 
 
-#: ``(call depth, import depth)`` per walk, cheapest first; the last is the
-#: unbounded closure.
-_REACH_WALKS = ((0, 1), (DEFAULT_CALL_DEPTH, 0), (0, 2), (0, sys.maxsize))
-
-
 async def _history(session: AsyncSession, repo_id: str) -> dict[str, Any]:
     count = select(func.count()).select_from(GitCommit).where(GitCommit.repository_id == repo_id)
-    return {"history_commits": (await session.execute(count)).scalar_one()}
+    commits = (await session.execute(count)).scalar_one()
+    if not commits:
+        # No commit rows and no per-file history: git was never indexed, which
+        # is unknown, not a short history.
+        indexed = select(GitMetadata.file_path).where(GitMetadata.repository_id == repo_id)
+        if (await session.execute(indexed.limit(1))).first() is None:
+            return {"history_commits": None}
+    return {"history_commits": commits}
 
 
 async def _test_map(session: AsyncSession, repo_id: str, files: dict[str, FileFacts]) -> dict:
-    """Reaching test files for the few files that could become "add tests".
-
-    The walks ``repowise impacted-tests`` runs, call graph and the whole
-    reverse-import closure (a test importing a helper that imports the file
-    runs it too). Only a file none of them reaches is told to add tests. The
-    question is whether any test reaches, so the cheap walks go first and each
-    later one sees only what the earlier ones left: on a 21k-file repository
-    the closure alone takes seconds per file a hub module pulls in. Ceiling:
-    walked per request (about a second there); storing the reach at index time
-    is the upgrade path.
-    """
-    pending = reach_paths(files)
-    if not pending:
+    """Only a file no test reaches may be told to add tests, so only those few are walked."""
+    paths = reach_paths(files)
+    if not paths:
         return {}
-    test_files = await load_test_files(session, repo_id)
-    reached: dict[str, Any] = {}
-    for call_depth, import_depth in _REACH_WALKS:
-        found = await tests_reaching_by_tier(
-            session,
-            repo_id,
-            pending,
-            call_depth=call_depth,
-            import_depth=import_depth,
-            test_files=test_files,
-        )
-        reached |= found
-        pending = [p for p in pending if p not in found]
-        if not pending:
-            break
-    return {"files": with_test_reach(files, {p: r.total for p, r in reached.items()})}
+    return {"files": with_test_reach(files, await any_tests_reaching(session, repo_id, paths))}
 
 
 async def _fix_first(session: AsyncSession, repo_id: str) -> dict[str, Any]:

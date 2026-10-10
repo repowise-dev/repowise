@@ -50,6 +50,8 @@ class FileFacts:
     #: Test files the code graph says reach this file; ``None`` when not looked
     #: up (only fragile files with no measured coverage are) or the map failed.
     tests_reaching: int | None = None
+    #: Which walk found them (``call-graph`` or ``import-graph``).
+    tests_reaching_via: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

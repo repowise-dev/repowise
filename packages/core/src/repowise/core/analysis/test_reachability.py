@@ -148,12 +148,13 @@ over data already in the database.
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal, NamedTuple, TypeAlias
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.execution_graph import (
@@ -162,7 +163,7 @@ from repowise.core.analysis.execution_graph import (
     file_of_symbol,
 )
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
-from repowise.core.persistence.models import GraphNode
+from repowise.core.persistence.models import GraphNode, HealthFileMetric, Repository
 from repowise.core.test_paths import paired_test_names
 
 from .dead_code.file_reachability import BARREL_FILENAMES
@@ -196,8 +197,11 @@ __all__ = [
     "CallGraphView",
     "ReachDistance",
     "ReachedBy",
+    "any_tests_reaching",
+    "cached_test_files",
     "call_graph_from_db",
     "call_graph_from_graph",
+    "clear_test_map_cache",
     "direct_dependents",
     "files_reached_by_tests",
     "files_with_paired_tests",
@@ -208,6 +212,7 @@ __all__ = [
     "tests_matching_by_name",
     "tests_reaching",
     "tests_reaching_by_tier",
+    "tests_reaching_through_helpers",
 ]
 
 
@@ -414,6 +419,119 @@ async def load_test_files(session: AsyncSession, repo_id: str) -> set[str]:
         )
     )
     return {row[0] for row in res.all()}
+
+
+# Answers kept in process per (database, repository, index stamp), so one
+# request reads the test files once whoever asks: Fix first's validation and
+# Do next both walk from them. Ceiling: Do next's per-file reach is still
+# walked once per index; persisting it at index time (the engine's
+# ``_files_reached_by_tests`` set, stored as a per-file bool) is the upgrade path.
+_CACHE_SIZE = 32
+_cache: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
+
+
+async def _index_stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
+    """What moves when an index run rewrites the graph: the repository row and
+    the file metrics written beside the graph rows (the stamp Fix first uses)."""
+    repo = (
+        await session.execute(
+            select(
+                Repository.head_commit,
+                Repository.updated_at,
+                Repository.graph_edges_parser_fingerprint,
+            ).where(Repository.id == repo_id)
+        )
+    ).one_or_none()
+    metrics = (
+        await session.execute(
+            select(func.max(HealthFileMetric.updated_at), func.count()).where(
+                HealthFileMetric.repository_id == repo_id
+            )
+        )
+    ).one()
+    return (*(repo or ()), *metrics)
+
+
+async def _cache_key(session: AsyncSession, repo_id: str, *parts: Any) -> tuple[Any, ...]:
+    bind = str(session.bind.url) if session.bind is not None else None
+    return (bind, repo_id, await _index_stamp(session, repo_id), *parts)
+
+
+def _remember(key: tuple[Any, ...], value: Any) -> Any:
+    _cache[key] = value
+    while len(_cache) > _CACHE_SIZE:
+        _cache.popitem(last=False)
+    return value
+
+
+def clear_test_map_cache() -> None:
+    _cache.clear()
+
+
+async def cached_test_files(session: AsyncSession, repo_id: str) -> frozenset[str]:
+    """:func:`load_test_files`, read once per index state; frozen because it is shared."""
+    key = await _cache_key(session, repo_id, "test_files")
+    if key in _cache:
+        _cache.move_to_end(key)
+        return _cache[key]
+    return _remember(key, frozenset(await load_test_files(session, repo_id)))
+
+
+async def any_tests_reaching(
+    session: AsyncSession, repo_id: str, targets: Collection[str]
+) -> dict[str, ReachedBy]:
+    """Whether any test reaches each target: the default tiers, then a test-only helper.
+
+    The first walk is :func:`tests_reaching_by_tier` at its defaults, the one
+    impacted-tests runs, so the two never disagree about a file it answers.
+    For the rest, :func:`tests_reaching_through_helpers`. Cached per index state.
+    """
+    seeds = tuple(sorted(set(targets)))
+    key = await _cache_key(session, repo_id, "any_reach", seeds)
+    if key in _cache:
+        _cache.move_to_end(key)
+        return _cache[key]
+    test_files = set(await cached_test_files(session, repo_id))
+    found = await tests_reaching_by_tier(session, repo_id, list(seeds), test_files=test_files)
+    rest = [s for s in seeds if s not in found]
+    if rest:
+        found |= await tests_reaching_through_helpers(session, repo_id, rest, test_files)
+    return _remember(key, found)
+
+
+async def tests_reaching_through_helpers(
+    session: AsyncSession, repo_id: str, targets: list[str], test_files: set[str]
+) -> dict[str, ReachedBy]:
+    """Tests that import a file only tests import, which imports the target.
+
+    A second import hop, kept off hubs: a blanket second hop was measured and
+    rejected (see Depth), but a module nothing outside the test suite imports
+    is test support whatever its name (``attempt.spawn-workspace.test-support.ts``
+    loading ``attempt.ts`` for 30-odd tests), so walking through it claims
+    nothing a hub would.
+    """
+    edge_types = sorted(FILE_DEPENDENCY_EDGE_TYPES)
+    middles: dict[str, set[str]] = {}
+    for dependent, target in await _edges_into(session, repo_id, targets, edge_types, frozenset()):
+        if dependent not in test_files:
+            middles.setdefault(dependent, set()).add(target)
+    importers: dict[str, set[str]] = {}
+    for dependent, middle in await _edges_into(
+        session, repo_id, sorted(middles), edge_types, frozenset()
+    ):
+        importers.setdefault(middle, set()).add(dependent)
+    reached: dict[str, set[str]] = {}
+    for middle, who in importers.items():
+        if who <= test_files:
+            for target in middles[middle]:
+                reached.setdefault(target, set()).update(who)
+    out: dict[str, ReachedBy] = {}
+    for target, tests in reached.items():
+        ordered = tuple(rank_tests(target, tests))
+        out[target] = ReachedBy(
+            list(ordered[:MAX_TESTS_PER_TARGET]), "import-graph", len(ordered), ordered
+        )
+    return out
 
 
 async def placed_test_files(session: AsyncSession, repo_id: str) -> set[str]:
