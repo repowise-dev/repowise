@@ -1425,6 +1425,7 @@ class HealthAnalyzer:
                             facts.receiver_assigns is not None if facts else None
                         ),
                         "early_exits": facts.early_exits if facts else None,
+                        **fc.stored_metrics(),
                     }
                 )
         return rows
