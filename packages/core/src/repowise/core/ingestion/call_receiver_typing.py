@@ -246,7 +246,7 @@ class ReceiverTypingMixin:
             found = self._typed_receiver_lookup(file_path, call, caller_id, type_name)
             if found is not None and found[1] != "global":
                 return found
-        return self._typed_receiver_lookup(file_path, call, caller_id, bare)
+        return self._typed_receiver_lookup(file_path, call, caller_id, bare, type_name)
 
     def _typed_receiver_lookup(
         self,
@@ -254,6 +254,7 @@ class ReceiverTypingMixin:
         call: CallSite,
         caller_id: str,
         type_name: str,
+        spelled: str | None = None,
     ) -> tuple[str, str] | None:
         key = (type_name, call.target_name)
         # What an import binds is the written name, never its arity.
@@ -286,7 +287,7 @@ class ReceiverTypingMixin:
         if hit is not None:
             return hit.callee_id, "same_package"
 
-        return self._receiver_pair_match(file_path, key)
+        return self._receiver_pair_match(file_path, key, spelled)
 
     def _import_bound_method(
         self, file_path: str, bound: str, key: tuple[str, str]

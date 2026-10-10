@@ -265,6 +265,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         )
         self._ancestors: dict[str, tuple[str, ...]] = {}
         self._mros: dict[str, tuple[str, ...] | None] = {}
+        # {type name: [(file, identity, arity)]}, filled by ``_declared_types_named``.
+        self._declared_types: dict[str, list[tuple[str, tuple[str, ...], int]]] = {}
         # Per-file symbol index: {file_path: {symbol_name: symbol_id}}
         self._file_symbols: dict[str, dict[str, str]] = {}
 
@@ -1886,12 +1888,14 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         self,
         file_path: str,
         key: tuple[str, str],
+        spelled: str | None = None,
     ) -> tuple[str, str] | None:
         """The symbol a ``(class, method)`` pair names, and the scope that held it.
 
         No class declares the pair unless the global method index holds it, and
         that check also keeps the merged-import view from being built for a
-        pair that cannot be in it.
+        pair that cannot be in it. *spelled* is the type as the call site
+        wrote it when that carries a C# arity (``Policy`1``) the key drops.
         """
         if key not in self._global_methods:
             return None
@@ -1904,20 +1908,65 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if key in merged_methods:
             return merged_methods[key], "import"
 
-        # Trait method dispatch — the method may be defined on a trait's impl
-        # block in another file. The global index preserves file-insertion
-        # match order; the caller's own file is skipped.
-        for path, sym_id in self._global_methods[key]:
-            if path != file_path:
-                return sym_id, "global"
+        return self._repo_wide_method(key, spelled or key[0])
 
-        return None
+    def _repo_wide_method(self, key: tuple[str, str], spelled: str) -> tuple[str, str] | None:
+        """The global tier: the one method *key* can name anywhere, or None.
+
+        Nothing at this scope tells two same-named types apart, so it answers
+        only when one repository type can be meant and one method of it
+        matches. Otherwise a call on one project's ``MainWindow`` binds to
+        whichever ``MainWindow`` sorts first, even one that merely inherits
+        the method. A file declaring only a type the call cannot mean (another
+        arity of a C# generic) holds no candidate; any other file, including
+        one with no type of that name (a trait ``impl``, an out-of-line C++
+        body), still does.
+        """
+        bare, _, arity = spelled.partition("`")
+        declared = self._declared_types_named(bare)
+        meant = {identity for _, identity, count in declared if count == int(arity or 0)}
+        if len(meant) > 1:
+            return None
+        owners: dict[str, set[tuple[str, ...]]] = defaultdict(set)
+        for path, identity, _ in declared:
+            owners[path].add(identity)
+        candidates = self._collapse_declarations(
+            [
+                sym_id
+                for path, sym_id in self._global_methods[key]
+                if len(owners.get(path, ())) != 1 or owners[path] <= meant
+            ]
+        )
+        if len(candidates) != 1:
+            return None
+        return next(iter(candidates)), "global"
+
+    def _declared_types_named(self, name: str) -> list[tuple[str, tuple[str, ...], int]]:
+        """``(file, identity, arity)`` for each repository type declared as *name*.
+
+        The fragments of one ``partial`` type share an identity. A forward
+        declaration and a Rust ``impl`` block declare no type.
+        """
+        found = self._declared_types.get(name)
+        if found is not None:
+            return found
+        found = []
+        for sym_id in self._global_symbols.get(name, ()):
+            symbol = self._symbols_by_id[sym_id]
+            if symbol.kind not in _TYPE_KINDS or symbol.kind == "impl" or symbol.is_declaration:
+                continue
+            path = self._symbol_paths_by_id[sym_id]
+            arity = symbol.type_parameter_count or 0
+            identity = self._partial_fragments.get((path, name)) or (sym_id,)
+            found.append((path, (*identity, str(arity)), arity))
+        self._declared_types[name] = found
+        return found
 
     def _answers_for_a_foreign_type(self, file_path: str, receiver_name: str) -> bool:
         """Is the repo-wide tier about to answer a call on a type we do not own?
 
-        Asked only of the ``global`` tier, which takes the first file-order
-        match for a ``(type, method)`` pair with no uniqueness check. A
+        Asked only of the ``global`` tier, which answers whenever the
+        repository declares one type of that name with the method. A
         repository that writes ``impl Trait for Vec<Entity>`` declares a
         ``Vec::new``, and without this every ``Vec::new()`` in the tree would
         bind to it. The narrower tiers are grounded in the caller's own file or
