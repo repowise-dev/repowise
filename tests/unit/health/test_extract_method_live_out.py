@@ -257,20 +257,79 @@ int f(int a, int b, int c) {
 }
 """,
     ),
+    (
+        # A block-local ``let x`` inside the closure does not make the
+        # closure's later ``x = y`` its own: scopes are ranges, not names.
+        "typescript",
+        "ts",
+        """
+function f(a: number, b: number, c: number): number {
+  let x = 0;
+  let y = a + b;
+  if (y > c) {
+    y = c;
+  }
+  const bump = () => { if (y) { let x = 1; log(x); } x = y; }; // W
+  bump();
+  log(y);
+  log(a);
+  return x; // R
+}
+""",
+    ),
+    (
+        # An awaiting span is refused like any other.
+        "typescript",
+        "ts",
+        """
+async function f(a: number, b: number, c: number): Promise<number> {
+  let x = 0;
+  let y = a + b;
+  if (y > c) {
+    y = await g(c);
+  }
+  const bump = () => { x = y; }; // W
+  bump();
+  log(y);
+  log(a);
+  return x; // R
+}
+""",
+    ),
+    (
+        # The counter pattern: declared in the span with its closure, read after.
+        "typescript",
+        "ts",
+        """
+function f(a: number, b: number, c: number): number {
+  log(a);
+  let x = 0;
+  const inc = () => { x++; }; // W
+  if (a > b) {
+    inc();
+  }
+  if (b > c) {
+    inc();
+  }
+  log(b);
+  log(c);
+  return x; // R
+}
+""",
+    ),
 ]
 
 
 @pytest.mark.parametrize(
-    ("language", "ext", "src"), _CLOSURE_WRITES, ids=[r[0] for r in _CLOSURE_WRITES]
+    ("language", "ext", "src"),
+    _CLOSURE_WRITES,
+    ids=["typescript", "go", "rust", "cpp", "ts-inner-shadow", "ts-await", "ts-counter"],
 )
 def test_closure_write_in_span_is_refused(language: str, ext: str, src: str):
-    # A span that declares ``x`` too keeps the closure's variable with it and
-    # may return it; one that leaves the declaration behind must not be offered.
+    # Returning ``x`` does not help either: the closure may run again later.
     leaking, returning = _leaks(language, ext, "x", src)
     assert leaking == []
-    lines = textwrap.dedent(src).splitlines()
-    declared = next(i for i, line in enumerate(lines, 1) if "x = 0" in line or "x := 0" in line)
-    assert all(x.start_line <= declared for x in returning)
+    assert returning == []
 
 
 # The parseAnsi shape: a closure above the loop reads state a span sets.
@@ -408,3 +467,167 @@ function f(a: number, b: number, c: number): number[] {
     leaking, returning = _leaks("typescript", "ts", "x", src)
     assert leaking == []
     assert returning
+
+
+# A span binding the name itself is waived only for a real new binding at its
+# top level. Each fixture's closure reads the outer ``x``; the span writes ``x``.
+_NOT_A_NEW_BINDING = [
+    (
+        # The span's ``let x`` is in a nested block; its ``x = b`` is the outer x.
+        "typescript",
+        "ts",
+        """
+function f(a: number, b: number): number {
+  let x = 0;
+  const show = () => log(x); // C
+  if (a > b) {
+    let x = a;
+    log(x);
+  }
+  x = b; // W
+  if (b > a) {
+    log(a);
+  }
+  log(b);
+  show(); // R
+  return 0;
+}
+""",
+    ),
+    (
+        # ``var`` hoists: the span's ``var x`` is the closure's x.
+        "typescript",
+        "ts",
+        """
+function f(xs: number[], b: number): number {
+  var x = 0;
+  const show = () => log(x); // C
+  for (const a of xs) {
+    log(a);
+    var x = a; // W
+    if (a > b) {
+      x = b;
+    }
+    log(b);
+    log(a);
+    show(); // R
+  }
+  return 0;
+}
+""",
+    ),
+    (
+        # Go ``v, err := h(b)`` in the block that declared ``err`` assigns it.
+        "go",
+        "go",
+        """
+package m
+func f(a int, b int) int {
+	err := g(a)
+	report := func() { log(err) } // C
+	log(a)
+	v, err := h(b) // W
+	if v > a {
+		log(v)
+	}
+	log(b)
+	log(a)
+	report() // R
+	return v
+}
+""",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("language", "ext", "src"), _NOT_A_NEW_BINDING, ids=["ts-nested-let", "ts-var", "go-redeclare"]
+)
+def test_name_bound_elsewhere_is_not_the_spans_own(language: str, ext: str, src: str):
+    var = "err" if language == "go" else "x"
+    leaking, _ = _leaks(language, ext, var, src)
+    assert leaking == []
+
+
+def test_a_real_shadowing_let_is_still_offered():
+    """The ``var`` fixture with ``let``: the span's x is a new binding, so the
+    closure's reads of the outer x do not refuse it."""
+    src = textwrap.dedent(_NOT_A_NEW_BINDING[1][2]).replace("var x = a;", "let x = a;")
+    writes = _marked(src, "W")
+    assert any(x.start_line <= writes[0] <= x.end_line for x in _spans("typescript", "ts", src))
+
+
+def test_closure_loop_binder_is_not_an_outer_variable():
+    """A closure's ``for (const x of ...)`` binds its own x, so a span writing
+    the outer x is not refused for it."""
+    src = textwrap.dedent(
+        """
+function f(xs: number[], a: number, b: number): number {
+  let x = 0;
+  const dump = () => { for (const x of xs) { log(x); } };
+  if (a > b) {
+    x = a; // W
+  } else {
+    x = b;
+  }
+  log(a);
+  log(b);
+  dump();
+  return x;
+}
+"""
+    )
+    writes = _marked(src, "W")
+    assert any(
+        x.start_line <= writes[0] <= x.end_line and "x" in x.returns
+        for x in _spans("typescript", "ts", src)
+    )
+
+
+def test_spans_without_shared_closure_state_are_unchanged():
+    """The gate is a no-op for a function no closure shares a local with: its
+    offered spans are identical with the gate on and off."""
+    from repowise.core.analysis.health.complexity.languages import get_language_map
+
+    from .refactoring_corpus_fixture import CASE_FILES, source_for
+
+    sources = [(lang, f"m.{ext}", textwrap.dedent(src).encode()) for lang, ext, src in _RETURNED]
+    sources += [(lang, name, source_for(name)) for lang, name in CASE_FILES]
+    checked = 0
+    for language, name, data in sources:
+        lmap = get_language_map(language)
+        for fn in analyze_file(name, language, data, flagged_only=False).functions:
+            if fn.def_use.captured.shared or fn.def_use.captured.writes:
+                continue
+            with mock.patch.object(slicer, "_MAX_BODY_SHARE", float("inf")):
+                on = slicer.find_extractions(fn, lmap)
+                with mock.patch.object(slicer, "_closure_state_crosses", lambda *a: False):
+                    off = slicer.find_extractions(fn, lmap)
+            assert on == off, (name, fn.name)
+            checked += 1
+    assert checked
+
+
+def test_a_nested_loop_binder_of_the_same_name_is_still_offered():
+    """openclaw ``setup-registry.ts``: a closure in the first loop reads that
+    loop's ``id``; the span's own ``for (const id of ...)`` binds another."""
+    src = textwrap.dedent(
+        """
+function f(xs: string[], ys: string[], out: string[]): void {
+  for (const id of xs) {
+    out.push(...ys.filter((y) => y === id));
+  }
+  const seen = new Set(ys);
+  if (seen.size > 0) {
+    for (const id of xs) { // W
+      if (!seen.has(id)) {
+        out.push(id);
+      }
+    }
+  }
+  log(out);
+}
+"""
+    )
+    writes = _marked(src, "W")
+    assert any(x.start_line <= writes[0] <= x.end_line for x in _spans("typescript", "ts", src))

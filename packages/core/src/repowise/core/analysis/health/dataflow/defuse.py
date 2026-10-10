@@ -61,21 +61,17 @@ class FunctionDefUse:
 
     ``blocks`` is keyed by block id; ``definitions`` is every write site ordered
     by ``index`` (so ``definitions[i].index == i``); ``params`` is the parameter
-    occurrences seeded at the entry block. ``captured`` holds the reads made
-    inside nested closures, kept apart from the per-block uses because they
-    run when the closure is called, not where it is written; code that moves
-    statements (the Extract Method slicer) still has to count them.
-    ``captured_shared`` / ``captured_writes`` are the reads and assignments
-    nested closures make of variables they do not bind themselves, kept apart
-    for the same reason.
+    occurrences seeded at the entry block. ``captured`` is what nested
+    closures read and write of this function's variables (see
+    :class:`Captured`), kept apart from the per-block uses because a closure
+    runs when it is called, not where it is written; code that moves
+    statements (the Extract Method slicer) still has to count it.
     """
 
     blocks: dict[int, BlockDefUse]
     definitions: list[Definition]
     params: tuple[Occurrence, ...]
-    captured: tuple[Occurrence, ...] = ()
-    captured_shared: tuple[Occurrence, ...] = ()
-    captured_writes: tuple[Occurrence, ...] = ()
+    captured: Captured = field(default_factory=Captured)
 
     def block(self, block_id: int) -> BlockDefUse | None:
         return self.blocks.get(block_id)
@@ -131,12 +127,7 @@ def compute_def_use(
             bdu.uses.extend(sdu.uses)
 
     captured = Captured()
-    dialect.collect_captured(fn_node.child_by_field_name("body"), captured)
+    dialect.collect_captured(fn_node.child_by_field_name("body"), captured, lmap)
     return FunctionDefUse(
-        blocks=blocks,
-        definitions=definitions,
-        params=params,
-        captured=tuple(captured.reads),
-        captured_shared=tuple(captured.shared),
-        captured_writes=tuple(captured.writes),
+        blocks=blocks, definitions=definitions, params=params, captured=captured
     )

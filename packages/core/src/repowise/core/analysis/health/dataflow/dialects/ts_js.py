@@ -33,6 +33,9 @@ _AUG_KINDS = frozenset({"augmented_assignment_expression"})
 _UPDATE_KINDS = frozenset({"update_expression"})  # ``x++`` / ``--x``
 _DECL_KINDS = frozenset({"lexical_declaration", "variable_declaration"})
 _DECLARATOR = "variable_declarator"
+# ``var`` hoists to the function scope, so it creates no block-scoped binding.
+_VAR_DECL = "variable_declaration"
+_VAR = "var"
 # Destructuring patterns and their parts.
 _ARRAY_PATTERN = "array_pattern"
 _OBJECT_PATTERN = "object_pattern"
@@ -114,7 +117,8 @@ class TsJsDefUseDialect(BaseDefUseDialect):
             if left is not None or right is not None:  # for-of / for-in binder
                 start = len(defs)
                 self._targets(left, defs, uses)
-                if node.child_by_field_name("kind") is not None:  # const / let / var
+                kind = node.child_by_field_name("kind")
+                if kind is not None and kind.type != _VAR:  # ``const`` / ``let``
                     self._loop_scoped(defs, start)
                 self._process(right, defs, uses)
                 return
@@ -154,7 +158,7 @@ class TsJsDefUseDialect(BaseDefUseDialect):
                     continue
                 start = len(defs)
                 self._targets(declarator.child_by_field_name("name"), defs, uses)
-                self._declare(defs, start, declarator)
+                self._declare(defs, start, declarator, binds=t != _VAR_DECL)
                 self._process(declarator.child_by_field_name("value"), defs, uses)
             return
         if t in self.member_access_kinds:

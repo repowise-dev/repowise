@@ -1734,7 +1734,7 @@ def test_ts_closure_parameter_is_not_a_read_of_the_outer_name():
     assert spans
     assert all("x" in e.params for e in spans)  # the condition reads the outer x
     fn = _first("typescript", src)
-    captured = {u.name for u in fn.def_use.captured}
+    captured = {u.name for u in fn.def_use.captured.reads}
     assert "x" not in captured and "items" not in captured
 
 
@@ -1794,7 +1794,7 @@ def test_ts_closure_parameter_is_not_a_read_of_the_outer_name():
 )
 def test_closure_reads_are_captured_per_language(language, src, captured, not_captured):
     fn = _first(language, src)
-    names = {u.name for u in fn.def_use.captured}
+    names = {u.name for u in fn.def_use.captured.reads}
     assert captured <= names
     assert not (not_captured & names)
 
@@ -1815,7 +1815,7 @@ def test_a_closure_local_shadowing_an_outer_name_is_not_a_capture():
         }
         """
     fn = _first("typescript", src)
-    assert "t2" not in {u.name for u in fn.def_use.captured}
+    assert "t2" not in {u.name for u in fn.def_use.captured.reads}
 
 
 # == Spans a helper cannot carry =================================================
