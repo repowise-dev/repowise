@@ -876,6 +876,15 @@ def test_explain_says_what_selected_a_test_or_that_nothing_did() -> None:
     )
 
 
+
+def test_explain_names_a_conftest_import_check() -> None:
+    from repowise.core.analysis.test_selection import explain_test
+
+    tiers = _tiers(inferred=[_inferred("src/a.py", "tests/test_a.py", "conftest-import-check")])
+    selected, lines = explain_test(_select(["src/a.py"], tiers), "tests/test_a.py")
+    assert selected
+    assert "this test is that conftest's import check" in lines[0]
+
 def test_a_test_named_module_pytest_does_not_collect_is_not_runnable() -> None:
     """``core/test_paths.py`` is test-shaped, but a bare pytest never collects it."""
     config = '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'

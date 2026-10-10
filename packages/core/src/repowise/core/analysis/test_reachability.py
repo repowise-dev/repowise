@@ -242,6 +242,9 @@ class ReachedBy:
     # How close each test came, for the call tier only: the import and name
     # tiers have no hop count to report.
     reach: Mapping[str, ReachDistance] | None = None
+    # Import tier only: the files each test was reached through, i.e. the
+    # dependencies of that test on the route to the target.
+    entries: Mapping[str, frozenset[str]] | None = None
 
 
 def call_graph_from_graph(graph: Any) -> CallGraphView:
@@ -594,11 +597,17 @@ async def tests_reaching_by_tier(
 
     unanswered = [seed for seed in seeds if seed not in out]
     if unanswered and import_depth >= 1:
-        found = await _import_reaching(session, repo_id, unanswered, test_files, import_depth)
+        found, entries = await _import_reaching(
+            session, repo_id, unanswered, test_files, import_depth
+        )
         for seed, tests in found.items():
             ordered = tuple(rank_tests(seed.split("::", 1)[0], tests))
             out[seed] = ReachedBy(
-                list(ordered[:MAX_TESTS_PER_TARGET]), "import-graph", len(ordered), ordered
+                list(ordered[:MAX_TESTS_PER_TARGET]),
+                "import-graph",
+                len(ordered),
+                ordered,
+                entries={t: frozenset(via) for t, via in entries[seed].items()},
             )
     return out
 
@@ -772,10 +781,14 @@ async def _import_reaching(
     seeds: list[str],
     test_files: set[str],
     max_depth: int,
-) -> dict[str, set[str]]:
-    """Tests that import each seed file, directly or within *max_depth* hops."""
+) -> tuple[dict[str, set[str]], dict[str, dict[str, set[str]]]]:
+    """Tests that import each seed file, directly or within *max_depth* hops.
+
+    Also ``{seed: {test: the files it imports on a route to the seed}}``.
+    """
     origins: dict[str, set[str]] = {s: {s} for s in seeds}
     found: dict[str, set[str]] = {}
+    entries: dict[str, dict[str, set[str]]] = {}
     seed_set = set(seeds)
     frontier = list(seeds)
 
@@ -793,6 +806,7 @@ async def _import_reaching(
             if dependent in test_files:
                 for seed in carried:
                     found.setdefault(seed, set()).add(dependent)
+                    entries.setdefault(seed, {}).setdefault(dependent, set()).add(dependency)
                 continue
             if dependent in seed_set:
                 continue
@@ -807,7 +821,7 @@ async def _import_reaching(
             if dependent not in queued:
                 queued.add(dependent)
                 frontier.append(dependent)
-    return found
+    return found, entries
 
 
 async def direct_dependents(
@@ -831,6 +845,15 @@ async def direct_dependents(
         if (source := file_of_symbol(caller)) != owner[callee]:
             out.setdefault(owner[callee], set()).add(source)
     return out
+
+
+# Indexes built before the conftest -> test hint was removed still hold edges
+# that point from a conftest to each test using one of its fixtures, which made
+# the conftest read as that test's importer. The test -> conftest edge already
+# records the relation. Upgrade path: drop this once such indexes are rebuilt.
+_LEGACY_CONFTEST_FILTER = (
+    " AND NOT (edge_type = 'dynamic_uses' AND COALESCE(hint_source, '') = 'pytest_conftest')"
+)
 
 
 def _in_clause(prefix: str, values: list[str], params: dict[str, Any]) -> str:
@@ -889,6 +912,7 @@ async def _edges_into(
             "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
             "WHERE repository_id = :repo_id "
             f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets}){origin_filter}"
+            f"{_LEGACY_CONFTEST_FILTER}"
         ),
         params,
     )

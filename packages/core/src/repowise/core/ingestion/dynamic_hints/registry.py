@@ -32,7 +32,6 @@ from .jvm import JvmDynamicHints
 from .luau import LuauDynamicHints
 from .node import NodeDynamicHints
 from .php import PhpDynamicHints
-from .pytest_hints import PytestDynamicHints
 from .python_imports import PythonDynamicHints
 from .ruby import RubyDynamicHints
 from .rust import RustDynamicHints
@@ -58,7 +57,6 @@ class HintRegistry:
     ) -> None:
         self._extractors = extractors or [
             DjangoDynamicHints(),
-            PytestDynamicHints(),
             PythonDynamicHints(),
             NodeDynamicHints(),
             AlpineDynamicHints(),

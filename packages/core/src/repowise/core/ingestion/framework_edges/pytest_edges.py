@@ -3,16 +3,26 @@
 Two conventions, both invisible to a static import graph: a ``conftest.py`` is
 imported by collection rather than by any statement, and a test's parameter
 names are fixture requests resolved at run time.
+
+Every way a test or fixture asks for a fixture by name becomes a
+``framework_binds`` edge stamped :data:`FIXTURE_HINT`: a test's parameters, a
+fixture's own parameters, ``@pytest.mark.usefixtures(...)`` on a test or its
+class, a module's ``pytestmark`` usefixtures, and ``request.getfixturevalue``
+with a literal name. Test selection reads these edges to find every test that
+uses a fixture, and trusts them only when the stamp shows all of these forms
+were recorded. Ceiling: a ``getfixturevalue`` with a computed name is not seen.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..resolvers import ResolverContext
+from ..source_text import source_text
 from ..type_names import strip_type_arguments
 from .base import (
     DetectionContext,
@@ -36,6 +46,16 @@ _QUOTED_RE = re.compile(r"""["']([^"']*)["']""")
 # top-level keyword only: a `name=` nested in a params list is not the
 # fixture's name.
 _NAME_KWARG_ARG_RE = re.compile(r"""^name\s*=\s*["']([^"']+)["']$""")
+_USEFIXTURES_RE = re.compile(r"^@(?:[\w.]+\.)?usefixtures\b")
+# A module-level `pytestmark = pytest.mark.usefixtures("a")` (or a list of
+# marks): the statement up to the next top-level line.
+_PYTESTMARK_RE = re.compile(r"^pytestmark\b[^\n]*(?:\n[ \t)\]][^\n]*)*", re.MULTILINE)
+_USEFIXTURES_CALL_RE = re.compile(r"usefixtures\(([^)]*)\)")
+_GETFIXTUREVALUE_RE = re.compile(r"""getfixturevalue\(\s*["'](\w+)["']""")
+
+# Stamped on every fixture-request edge, so a reader can tell an index that
+# records all request forms from one built before they were recorded.
+FIXTURE_HINT = "pytest_fixture"
 
 # pytest's own `python_files` default, and deliberately not the shared
 # `is_test_path`. A fixture is injected only into a file pytest actually
@@ -314,15 +334,51 @@ def _requested_fixtures(sym: Any) -> list[str]:
     return names
 
 
-def _add_fixture_injection_edges(
-    graph: nx.DiGraph, parsed_files: dict[str, Any], repo_path: Path | None = None
-) -> int:
-    """Link each test function to the fixture it asks for by name.
+def _usefixtures_names(decorators: list[str]) -> list[str]:
+    """Fixture names a ``@pytest.mark.usefixtures(...)`` decorator requests."""
+    names: list[str] = []
+    for dec in decorators:
+        if _USEFIXTURES_RE.match(dec.strip()):
+            for arg in _call_arguments(dec):
+                names.extend(_QUOTED_RE.findall(arg))
+    return names
 
-    Scope follows pytest's own rule, innermost first: the test's own class, then
-    its module, then the nearest ``conftest.py`` at or above it. Nothing else is
-    searched, so a plugin-provided fixture stays unclaimed rather than being
-    bound to a same-named local one.
+
+def _module_usefixtures(text: str) -> list[str]:
+    """Fixture names a module-level ``pytestmark`` applies to every test in the file."""
+    names: list[str] = []
+    for mark in _PYTESTMARK_RE.findall(text):
+        for call in _USEFIXTURES_CALL_RE.findall(mark):
+            names.extend(_QUOTED_RE.findall(call))
+    return names
+
+
+def _runtime_requests(text: str, symbols: list[Any]) -> list[tuple[Any, str]]:
+    """``(enclosing function, name)`` for each ``getfixturevalue("name")`` in *text*."""
+    out: list[tuple[Any, str]] = []
+    functions = [s for s in symbols if s.kind in ("function", "method")]
+    for match in _GETFIXTUREVALUE_RE.finditer(text):
+        line = text.count("\n", 0, match.start()) + 1
+        enclosing = [s for s in functions if s.start_line <= line <= s.end_line]
+        if enclosing:
+            out.append((max(enclosing, key=lambda s: s.start_line), match.group(1)))
+    return out
+
+
+def _add_fixture_injection_edges(
+    graph: nx.DiGraph,
+    parsed_files: dict[str, Any],
+    repo_path: Path | None = None,
+    read: Callable[[str], str | None] | None = None,
+) -> int:
+    """Link each test and fixture to every fixture it asks for by name.
+
+    Scope follows pytest's own rule, innermost first: the requester's own class,
+    then its module, then the nearest ``conftest.py`` at or above it. Nothing
+    else is searched, so a plugin-provided fixture stays unclaimed rather than
+    being bound to a same-named local one. A fixture asking for its own name
+    (an override) gets the next one out. *read* returns a file's text, for the
+    module ``pytestmark`` and ``getfixturevalue`` forms.
     """
     # Only a conftest's module-level fixtures are visible to other files; one
     # declared inside a class there serves that class alone.
@@ -341,35 +397,90 @@ def _add_fixture_injection_edges(
 
     count = 0
     for path, parsed in parsed_files.items():
-        if parsed.file_info.language != "python" or not _TEST_FILE_RE.search(path):
+        is_conftest = Path(path).name == "conftest.py"
+        if parsed.file_info.language != "python" or not (
+            is_conftest or _TEST_FILE_RE.search(path)
+        ):
             continue
-
-        own = _declared_fixtures(parsed)
-        # Nearest-first: the deepest conftest directory that is a prefix of this
-        # file's directory shadows the ones above it, as pytest does.
-        chain = sorted(
-            (d for d in conftests if path.startswith(f"{d}/") or d == "."),
-            key=len,
-            reverse=True,
-        )
-
-        for sym in parsed.symbols:
-            if sym.kind not in ("function", "method") or not sym.name.startswith("test_"):
-                continue
-            if sym.parent_name and not any(
-                fnmatch(sym.parent_name, g) for g in class_globs
-            ):
-                continue
-            scopes = _fixture_scopes(parsed, sym.parent_name)
-            for name in _requested_fixtures(sym):
-                target = next(
-                    (own[(s, name)] for s in scopes if (s, name) in own), None
-                ) or next(
-                    (conftests[d][name] for d in chain if name in conftests[d]), None
-                )
-                if target and add_symbol_edge(graph, sym.id, target):
-                    count += 1
+        count += _link_file(graph, path, parsed, conftests, class_globs, read)
     return count
+
+
+def _link_file(
+    graph: nx.DiGraph,
+    path: str,
+    parsed: Any,
+    conftests: dict[str, dict[str, str]],
+    class_globs: tuple[str, ...],
+    read: Callable[[str], str | None] | None,
+) -> int:
+    """The fixture-request edges leaving one test module or conftest."""
+    is_conftest = Path(path).name == "conftest.py"
+    own = _declared_fixtures(parsed)
+    fixture_ids = set(own.values())
+    # Nearest-first: the deepest conftest directory that is a prefix of this
+    # file's directory shadows the ones above it, as pytest does.
+    chain = sorted(
+        (d for d in conftests if path.startswith(f"{d}/") or d == "."),
+        key=len,
+        reverse=True,
+    )
+
+    def link(sym: Any, names: list[str]) -> int:
+        scopes = _fixture_scopes(parsed, sym.parent_name)
+        added = 0
+        for name in names:
+            hits = [own[(s, name)] for s in scopes if (s, name) in own]
+            hits += [conftests[d][name] for d in chain if name in conftests[d]]
+            target = next((h for h in hits if h != sym.id), None)
+            if target and add_symbol_edge(graph, sym.id, target):
+                graph[sym.id][target]["hint_source"] = FIXTURE_HINT
+                added += 1
+        return added
+
+    class_marks = {
+        sym.name: _usefixtures_names(sym.decorators)
+        for sym in parsed.symbols
+        if sym.kind == "class"
+    }
+    count = 0
+    tests = []
+    for sym in parsed.symbols:
+        if sym.kind not in ("function", "method"):
+            continue
+        if sym.id in fixture_ids:
+            count += link(sym, _requested_fixtures(sym))
+            continue
+        if is_conftest or not sym.name.startswith("test_"):
+            continue
+        if sym.parent_name and not any(fnmatch(sym.parent_name, g) for g in class_globs):
+            continue
+        tests.append(sym)
+        marks = _usefixtures_names(sym.decorators) + class_marks.get(sym.parent_name, [])
+        count += link(sym, _requested_fixtures(sym) + marks)
+
+    text = read(path) if read is not None else None
+    if not text:
+        return count
+    if tests and "pytestmark" in text:
+        module_marks = _module_usefixtures(text)
+        for sym in tests:
+            count += link(sym, module_marks)
+    if "getfixturevalue" in text:
+        for sym, name in _runtime_requests(text, parsed.symbols):
+            count += link(sym, [name])
+    return count
+
+
+def _source_reader(ctx: ResolverContext) -> Callable[[str], str | None]:
+    """Text of an indexed file, from the bytes ingestion already read."""
+
+    def read(path: str) -> str | None:
+        if ctx.repo_path is None and path not in (ctx.source_map or {}):
+            return None
+        return source_text(path, (ctx.repo_path or Path()) / path, ctx.source_map)
+
+    return read
 
 
 class _FixtureInjectionHandler:
@@ -385,7 +496,9 @@ class _FixtureInjectionHandler:
         ctx: ResolverContext,
         path_set: set[str],
     ) -> int:
-        return _add_fixture_injection_edges(graph, parsed_files, ctx.repo_path)
+        return _add_fixture_injection_edges(
+            graph, parsed_files, ctx.repo_path, _source_reader(ctx)
+        )
 
 
 class _ConftestHandler:

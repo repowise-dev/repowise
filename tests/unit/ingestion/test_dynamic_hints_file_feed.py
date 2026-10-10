@@ -39,12 +39,6 @@ def repo(tmp_path: Path) -> Path:
     _write(tmp_path, "config/settings/base.py", 'INSTALLED_APPS = ["myapp"]\n')
     _write(tmp_path, "package.json", '{"name": "x", "main": "./index.js"}\n')
     _write(tmp_path, "index.js", "module.exports = {}\n")
-    _write(
-        tmp_path,
-        "conftest.py",
-        "import pytest\n@pytest.fixture\ndef db():\n    return 1\n",
-    )
-    _write(tmp_path, "test_app.py", "def test_x(db):\n    assert db\n")
     _write(tmp_path, "src/Foo.cs", "public class Foo { }\npublic interface IFoo { }\n")
     _write(
         tmp_path,
@@ -70,7 +64,6 @@ class TestFileFeedEquivalence:
         sources = {e.hint_source for e in walked}
         assert "django_settings" in sources
         assert "node_package" in sources
-        assert "pytest_conftest" in sources
         assert any(s.startswith("dotnet") for s in sources)
 
     def test_excluded_files_emit_no_edges(self, repo: Path) -> None:

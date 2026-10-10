@@ -146,7 +146,7 @@ ingestion/
   dynamic_hints/       # Per-language dynamic-edge extractors
     base.py            #   DynamicHintExtractor + DynamicEdge
     registry.py        #   HintRegistry
-    django.py  pytest_hints.py  python_imports.py  node.py  dotnet.py
+    django.py  python_imports.py  node.py  dotnet.py
     spring.py  ruby.py  php.py  scala.py  swift.py  c.py  cpp.py  luau.py  go.py  jvm.py
   sfc_source.py        # Multi-language-file (SFC) projection (see below)
   parser.py            # ASTParser (language-agnostic orchestration)

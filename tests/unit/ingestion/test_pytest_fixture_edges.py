@@ -493,3 +493,52 @@ def test_unknown_collection_keeps_every_conftest_edge() -> None:
         graph = _conftest_graph("tests/conftest.py", "tests/helpers.py")
         _add_conftest_edges(graph, set(graph.nodes), roots)
         assert graph.has_edge("tests/helpers.py", "tests/conftest.py")
+
+
+class TestEveryRequestForm:
+    """Each way of asking for a fixture is an edge, stamped so selection can trust the set."""
+
+    def _stamped(self, graph: nx.DiGraph) -> set[tuple[str, str]]:
+        return {
+            (s, t)
+            for s, t, d in graph.edges(data=True)
+            if d.get("edge_type") == "framework_binds" and d.get("hint_source") == "pytest_fixture"
+        }
+
+    def test_fixture_parameters_usefixtures_pytestmark_and_getfixturevalue(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n"
+            "@pytest.fixture\ndef db():\n    return 1\n\n\n"
+            "@pytest.fixture\ndef client(db):\n    return db\n\n\n"
+            "@pytest.fixture\ndef env():\n    return 2\n"
+        )
+        (tmp_path / "test_marks.py").write_text(
+            "import pytest\n\n"
+            'pytestmark = pytest.mark.usefixtures("env")\n\n\n'
+            '@pytest.mark.usefixtures("db")\ndef test_marked():\n    pass\n\n\n'
+            '@pytest.mark.usefixtures("client")\nclass TestGroup:\n'
+            "    def test_in_class(self):\n        pass\n\n\n"
+            "def test_runtime(request):\n"
+            '    request.getfixturevalue("client")\n'
+        )
+        stamped = self._stamped(_build(tmp_path))
+
+        assert ("conftest.py::client", "conftest.py::db") in stamped
+        assert ("test_marks.py::test_marked", "conftest.py::db") in stamped
+        assert ("test_marks.py::test_marked", "conftest.py::env") in stamped
+        assert ("test_marks.py::TestGroup::test_in_class", "conftest.py::client") in stamped
+        assert ("test_marks.py::test_runtime", "conftest.py::client") in stamped
+
+    def test_an_overriding_fixture_requests_the_one_it_overrides(self, tmp_path: Path) -> None:
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef db():\n    return 1\n"
+        )
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef db(db):\n    return db\n"
+        )
+        stamped = self._stamped(_build(tmp_path))
+
+        assert ("sub/conftest.py::db", "conftest.py::db") in stamped
