@@ -343,6 +343,48 @@ class TestRefusals:
             "conftest.py::client",
         ) in _bound(_build(tmp_path))
 
+    def test_python_classes_in_an_unrelated_section_is_ignored(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pytest.ini").write_text(
+            "[unrelated]\npython_classes = Check*\n"
+            "\n[pytest]\n"
+        )
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef client():\n    return 1\n"
+        )
+        (tmp_path / "test_api.py").write_text(
+            "class TestAPI:\n"
+            "    def test_get(self, client):\n"
+            "        assert client\n"
+        )
+
+        assert (
+            "test_api.py::TestAPI::test_get",
+            "conftest.py::client",
+        ) in _bound(_build(tmp_path))
+
+    def test_python_classes_toml_list_is_parsed(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.pytest.ini_options]\n'
+            'python_classes = ["Check*", "Verify*"]\n'
+        )
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef client():\n    return 1\n"
+        )
+        (tmp_path / "test_api.py").write_text(
+            "class CheckAPI:\n"
+            "    def test_get(self, client):\n"
+            "        assert client\n"
+        )
+
+        assert (
+            "test_api.py::CheckAPI::test_get",
+            "conftest.py::client",
+        ) in _bound(_build(tmp_path))
+
     def test_name_is_read_as_a_top_level_keyword_only(self, tmp_path: Path) -> None:
         # A `name=` nested in a params list is not the fixture's name.
         (tmp_path / "conftest.py").write_text(

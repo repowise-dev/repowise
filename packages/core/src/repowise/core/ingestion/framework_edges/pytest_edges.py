@@ -32,7 +32,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ...pytest_roots import DEFAULT_PYTHON_FUNCTIONS
+from ...pytest_roots import DEFAULT_PYTHON_FUNCTIONS, _words, pytest_options
 from ..resolvers import ResolverContext
 from ..source_text import decode_source, source_text
 from ..type_names import strip_type_arguments
@@ -110,27 +110,32 @@ _TEST_FILE_RE = re.compile(r"(?:^|/)(?:test_[^/]*|[^/]*_test)\.py$")
 # rather than assumed: celery configures `test_*`, and assuming the default
 # refused 346 of its 359 bindings.
 _DEFAULT_TEST_CLASS_GLOBS = ("Test*",)
-_PYTHON_CLASSES_RE = re.compile(
-    r"^\s*python_classes\s*=\s*(.+?)\s*$", re.MULTILINE
-)
+
 
 
 def _test_class_globs(repo_path: Path | None) -> tuple[str, ...]:
     """The ``python_classes`` globs this project collects test classes by."""
     if repo_path is None:
         return _DEFAULT_TEST_CLASS_GLOBS
-    for name in ("pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg"):
+
+    for name in ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg"):
         try:
-            text = (repo_path / name).read_text(encoding="utf-8", errors="ignore")
+            text = (repo_path / name).read_text(
+                encoding="utf-8", errors="ignore"
+            )
         except OSError:
             continue
-        match = _PYTHON_CLASSES_RE.search(text)
-        if not match:
+
+        options = pytest_options(name, text)
+        if options is None:
             continue
-        globs = tuple(match.group(1).strip().strip("\"'").split())
+
+        globs = _words(options.get("python_classes"))
         if globs:
             return globs
+
     return _DEFAULT_TEST_CLASS_GLOBS
+
 
 
 def _call_arguments(text: str) -> list[str]:
