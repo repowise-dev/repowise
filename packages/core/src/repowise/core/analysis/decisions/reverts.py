@@ -14,8 +14,9 @@ commit whose message fits a stronger rule is never retried with a weaker one:
   history has subject ``S``, both compared with a trailing ``(#N)`` or
   ``(gh-N)`` stripped.
 - **pr**: the subject is ``revert:``/``revert(scope):`` and the message
-  references ``#N`` or ``/pull/N``, with exactly one commit that is that pull
-  request (subject ending ``(#N)`` or ``Merge pull request #N``).
+  references ``#N`` or a change the forge writes (``/pull/N``, ``!N`` on
+  GitLab, an MR or PR link), with exactly one commit that is that change (its
+  merge or squash message names it, read by :func:`repowise.core.forges.change_number`).
 
 Every match also needs the target to be an ancestor of the revert, and the two
 must change at least one file in common. A revert that calls itself partial is
@@ -53,6 +54,7 @@ from typing import Any
 import structlog
 
 from repowise.core.analysis.git_cli import _git
+from repowise.core.forges import ForgeKind, change_number, change_refs, detect_forge
 
 logger = structlog.get_logger(__name__)
 
@@ -74,9 +76,10 @@ _SUPERSEDED_BY_WIDTH = 32
 _BODY_RE = re.compile(r"This reverts commit ([0-9a-f]{40})\b")
 _SUBJECT_RE = re.compile(r'^Revert "(.+)"$')
 _CONVENTIONAL_RE = re.compile(r"^revert(?:\([^)]*\))?!?:", re.IGNORECASE)
-_PR_REF_RE = re.compile(r"(?:#|/pull/)(\d+)\b")
+#: A bare ``#N``: an issue, or a pull request on forges that number both alike.
+_HASH_REF_RE = re.compile(r"#(\d{1,9})\b")
+#: Subject normalisation only: the same change re-landed under another PR.
 _PR_SUFFIX_RE = re.compile(r"\s*\((?:#|gh-)(\d+)\)\s*$", re.IGNORECASE)
-_MERGE_PR_RE = re.compile(r"^Merge pull request #(\d+)\b")
 _PARTIAL_RE = re.compile(r"\bpart(?:ial(?:ly)?|ly)\b", re.IGNORECASE)
 _RELAND_WORD_RE = re.compile(r"\s*\(?\b(?:re-?land(?:ed)?|re-?appl(?:y|ied))\b\)?:?", re.IGNORECASE)
 _TICKET_PREFIX_RE = re.compile(
@@ -166,11 +169,6 @@ def _changes(repo_path: Path | str, shas: set[str]) -> dict[str, dict[str, str]]
     return out
 
 
-def _pr_number(subject: str) -> str | None:
-    m = _PR_SUFFIX_RE.search(subject) or _MERGE_PR_RE.match(subject)
-    return m.group(1) if m else None
-
-
 def _read_candidates(repo_path: Path | str, head: str) -> list[tuple[str, str, str]]:
     """(sha, subject, body) of every commit whose message could fit a rule."""
     out = _git_out(
@@ -211,9 +209,12 @@ class _History:
     by_reland_key: dict[str, list[str]] = field(default_factory=dict)
     by_closed_issue: dict[str, list[str]] = field(default_factory=dict)
     by_issue_key: dict[str, list[str]] = field(default_factory=dict)
+    forge: ForgeKind = ForgeKind.GENERIC
 
     @classmethod
-    def read(cls, repo_path: Path | str, head: str) -> _History | None:
+    def read(
+        cls, repo_path: Path | str, head: str, forge: ForgeKind = ForgeKind.GENERIC
+    ) -> _History | None:
         out = _git_out(
             repo_path,
             "log",
@@ -223,7 +224,7 @@ class _History:
         )
         if out is None:
             return None
-        hist = cls()
+        hist = cls(forge=forge)
         for raw in out.split(_RECORD):
             fields = raw.strip("\n").split(_FIELD, 3)
             if len(fields) == 4 and fields[0]:
@@ -241,9 +242,9 @@ class _History:
             _append(self.by_closed_issue, issue, sha)
         for key in _issue_keys(subject):
             _append(self.by_issue_key, key, sha)
-        pr = _pr_number(subject)
-        if pr:
-            _append(self.by_pr, pr, sha)
+        pr = change_number(subject, body, self.forge)
+        if pr is not None:
+            _append(self.by_pr, str(pr), sha)
 
     def is_ancestor(self, older: str, newer: str) -> bool:
         # Walk *newer*'s parents, never past *older*'s place in the order: an
@@ -274,7 +275,8 @@ class _History:
             others = [s for s in self.by_subject.get(_strip_pr_suffix(m.group(1)), []) if s != sha]
             return [RevertLink(sha, others[0], "subject")] if len(others) == 1 else []
         if _CONVENTIONAL_RE.match(subject):
-            refs = set(_PR_REF_RE.findall(message))
+            refs = set(_HASH_REF_RE.findall(message))
+            refs.update(str(n) for n in change_refs(subject, body, self.forge))
             targets = {s for n in refs for s in self.by_pr.get(n, []) if s != sha}
             return [RevertLink(sha, targets.pop(), "pr")] if len(targets) == 1 else []
         return []
@@ -322,7 +324,7 @@ class _Relands:
         # them.
         subject = self.hist.subject_of[link.target]
         later = set(self.hist.by_reland_key.get(_reland_key(subject), []))
-        for issue in _PR_REF_RE.findall(subject):
+        for issue in _HASH_REF_RE.findall(subject):
             later.update(self.hist.by_closed_issue.get(issue, []))
         if self.in_force_at_head(link.target) or any(self.after(link, s) for s in later):
             return True
@@ -335,7 +337,7 @@ def find_revert_links(repo_path: Path | str, head: str = "HEAD") -> list[RevertL
     # Only messages that can fit a rule; the full history is read only if one
     # of them does.
     candidates = _read_candidates(repo_path, head)
-    hist = _History.read(repo_path, head) if candidates else None
+    hist = _History.read(repo_path, head, detect_forge(repo_path)) if candidates else None
     if hist is None:
         return []
     proposed = [link for c in candidates for link in hist.match(*c)]

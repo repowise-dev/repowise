@@ -317,3 +317,40 @@ def test_an_abbreviated_sha_resolves_only_when_unique():
     assert _resolve("abc1234", shas) is None
     assert _resolve("abc1234f", shas) == shas[1]
     assert _resolve("not-a-sha", shas) is None
+
+
+@pytest.mark.parametrize(
+    ("remote", "linked"),
+    [("https://gitlab.com/g/p.git", True), ("https://github.com/o/r.git", False)],
+)
+def test_a_revert_names_a_gitlab_merge_request_by_its_shorthand(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remote: str, linked: bool
+) -> None:
+    """The MR is the merge commit whose trailer names it; ``!N`` is read on GitLab only."""
+    for var in ("GITHUB_ACTIONS", "GITLAB_CI", "TF_BUILD", "BITBUCKET_BUILD_NUMBER"):
+        monkeypatch.delenv(var, raising=False)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "T")
+    _git(repo, "config", "commit.gpgsign", "false")
+    _git(repo, "remote", "add", "origin", remote)
+    _commit(repo, "Initial commit", "pool.txt")
+    _git(repo, "checkout", "-q", "-b", "feat")
+    _commit(repo, "Use a connection pool", "pool.txt")
+    _git(repo, "checkout", "-q", "main")
+    _git(
+        repo,
+        "merge",
+        "--no-ff",
+        "-q",
+        "-m",
+        "Merge branch 'feat' into 'main'\n\nUse a connection pool\n\nSee merge request g/p!42",
+        "feat",
+    )
+    merge = _git(repo, "rev-parse", "HEAD")
+    _commit(repo, "revert: drop the pool from !42, it leaks", "pool.txt")
+
+    links = find_revert_links(repo)
+    assert [(link.target, link.rule) for link in links] == ([(merge, "pr")] if linked else [])

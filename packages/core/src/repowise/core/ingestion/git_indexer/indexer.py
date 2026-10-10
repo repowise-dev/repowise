@@ -20,6 +20,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.forges import detect_forge
+
 from ._constants import (
     _DEEP_WALK_COMMIT_LIMIT,
     _DEEP_WALK_MIN_FALLBACK,
@@ -187,6 +189,8 @@ class GitIndexer:
         # naming files the repo excludes, and those rows outlive every prune.
         self.record_episodes = record_episodes
         self.max_workers = max_workers
+        # Read once: which forge's merge messages name a commit's PR or MR.
+        self.forge = detect_forge(self.repo_path)
 
         import pathspec
 
@@ -333,6 +337,7 @@ class GitIndexer:
                     thread_repo,
                     file_path,
                     repo_path=self.repo_path,
+                    forge=self.forge,
                     commit_limit=self.commit_limit,
                     follow_renames=self.follow_renames,
                     include_blame=include_blame,
@@ -689,6 +694,7 @@ class GitIndexer:
                     thread_repo,
                     file_path,
                     repo_path=self.repo_path,
+                    forge=self.forge,
                     commit_limit=self.commit_limit,
                     follow_renames=self.follow_renames,
                     include_blame=include_blame,
@@ -873,6 +879,7 @@ class GitIndexer:
                 repo,
                 fp,
                 repo_path=self.repo_path,
+                forge=self.forge,
                 commit_limit=self.commit_limit,
                 follow_renames=self.follow_renames,
                 include_blame=False,
@@ -1362,6 +1369,7 @@ class GitIndexer:
             repo,
             file_path,
             repo_path=self.repo_path,
+            forge=self.forge,
             commit_limit=self.commit_limit,
             follow_renames=self.follow_renames,
             include_blame=self.tier.includes_blame,

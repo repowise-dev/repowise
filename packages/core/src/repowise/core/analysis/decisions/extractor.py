@@ -32,6 +32,7 @@ from repowise.core.analysis.decisions.policy import (
     resolve_policy,
 )
 from repowise.core.analysis.decisions.scope import resolve_module_nodes
+from repowise.core.forges import detect_forge, get_forge
 
 from .adr import _ADR_STATUS_MAP, bullets, find_adr_files, read_front_matter, split_headings
 from .commit_mining import (
@@ -566,13 +567,14 @@ class DecisionExtractor:
             return []
 
         ranked = list(candidates.values())[:_MAX_PR_BODIES]
+        forge = get_forge(detect_forge(self._repo_path))
 
         async def _process_batch(batch: list[dict]) -> list[ExtractedDecision]:
             bodies_block = ""
             source_by_sha: dict[str, str] = {}
             for c in batch:
                 # The file list is what lets the model answer "affected_files".
-                bodies_block += pr_commit_block(c, files_by_sha.get(c["sha"], []))
+                bodies_block += pr_commit_block(c, files_by_sha.get(c["sha"], []), forge)
                 source_by_sha[c["sha"]] = f"{c['subject']}\n{c['body']}"
             prompt = PR_BODY_MINING_PROMPT.format(bodies_block=bodies_block)
             # Not caught: _run_batches counts a failed batch, so an outage is
