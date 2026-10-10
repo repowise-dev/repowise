@@ -56,9 +56,9 @@ async def reset_workspace_stale_jobs(app_state) -> int:
 def workspace_primary_db_url() -> str | None:
     """The primary workspace member's ``wiki.db`` URL, when there is one on disk."""
     try:
-        from repowise.core.workspace.config import WorkspaceConfig, find_workspace_root
+        from repowise.core.workspace.config import WorkspaceConfig, workspace_root_for_path
 
-        _ws_root = find_workspace_root()
+        _ws_root = workspace_root_for_path()
         if _ws_root is not None:
             _ws_cfg = WorkspaceConfig.load(_ws_root)
             _primary = _ws_cfg.get_primary()
@@ -240,9 +240,9 @@ async def attach_workspace(
     single-repo mode rather than failing startup.
     """
     try:
-        from repowise.core.workspace.config import WorkspaceConfig, find_workspace_root
+        from repowise.core.workspace.config import WorkspaceConfig, workspace_root_for_path
 
-        ws_root = find_workspace_root()
+        ws_root = workspace_root_for_path()
         if ws_root is None:
             return
         ws_config = WorkspaceConfig.load(ws_root)

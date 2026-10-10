@@ -479,9 +479,9 @@ def _detect_workspace(repo_path: str | None):
     try:
         from pathlib import Path as _Path
 
-        from repowise.core.workspace import WorkspaceConfig, find_workspace_root
+        from repowise.core.workspace import WorkspaceConfig, workspace_root_for_path
 
-        ws_root = find_workspace_root(_Path(repo_path))
+        ws_root = workspace_root_for_path(_Path(repo_path))
         if ws_root is None:
             return None, None, None
 
@@ -493,7 +493,6 @@ def _detect_workspace(repo_path: str | None):
         resolved = _Path(repo_path).resolve()
         repo_alias = None
         best_match_depth = -1
-        best_match_abs = None
         for entry in ws_config.repos:
             entry_abs = (ws_root / entry.path).resolve()
             try:
@@ -505,19 +504,11 @@ def _detect_workspace(repo_path: str | None):
             if match_depth > best_match_depth:
                 repo_alias = entry.alias
                 best_match_depth = match_depth
-                best_match_abs = entry_abs
 
         if repo_alias is None:
             # Path is inside workspace but doesn't match a repo — use default
             primary = ws_config.get_primary()
             repo_alias = primary.alias if primary else ws_config.repos[0].alias
-        elif resolved != best_match_abs and (resolved / ".repowise" / "state.json").exists():
-            # resolved is its own indexed repo, nested inside a matched
-            # member/primary's directory but not itself a registered member.
-            # Containment made it match the enclosing entry above; that's
-            # wrong for an indexed, non-member repo — drop to single-repo
-            # mode instead of silently serving the enclosing repo.
-            return None, None, None
 
         return ws_root, ws_config, repo_alias
     except Exception:

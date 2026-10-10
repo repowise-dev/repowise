@@ -80,6 +80,27 @@ def test_serve_adopts_the_local_store_when_nothing_is_set(
     assert tmp_path.name in os.environ["REPOWISE_DB_URL"]
 
 
+def test_serve_adopts_the_local_store_under_a_workspace_it_is_not_part_of(
+    stub_serve: None, monkeypatch, tmp_path
+) -> None:
+    """An indexed repo is served even when a parent directory is a workspace
+    that does not list it; that workspace's primary must not take its place."""
+    (tmp_path / ".repowise-workspace.yaml").write_text(
+        "version: 1\ndefault_repo: brag\nrepos:\n- path: brag\n  alias: brag\n"
+    )
+    repo = tmp_path / "microdot"
+    (repo / ".repowise").mkdir(parents=True)
+    (repo / ".repowise" / "state.json").write_text("{}")
+    monkeypatch.chdir(repo)
+    os.environ.pop("REPOWISE_DB_URL", None)
+
+    result = CliRunner().invoke(serve_cmd.serve_command, ["--no-ui"])
+
+    assert result.exit_code == 0, result.output
+    expected = (repo.resolve() / ".repowise" / "wiki.db").as_posix()
+    assert os.environ["REPOWISE_DB_URL"] == f"sqlite+aiosqlite:///{expected}"
+
+
 def test_serve_does_not_pin_a_shared_db_at_a_workspace_root(
     stub_serve: None, monkeypatch, tmp_path
 ) -> None:
