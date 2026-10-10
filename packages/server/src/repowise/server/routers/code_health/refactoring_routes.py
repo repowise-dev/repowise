@@ -6,19 +6,20 @@ not structured refactoring plans.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.effort import EFFORT_WEIGHT, effort_bucket
-from repowise.core.analysis.health.impact_effort import build_impact_effort, fix_first_marks
-from repowise.core.analysis.health.models import primary_finding, split_by_origin
+from repowise.core.analysis.health.impact_effort import (
+    WORK_QUEUE_SORTS,
+    build_impact_effort,
+    fix_first_marks,
+    work_queue_targets,
+)
 from repowise.core.analysis.health.scope import parse_scope
 from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
-from repowise.core.analysis.health.suggestions import suggestion_for as _suggestion_for
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.server.deps import get_db_session
@@ -29,24 +30,6 @@ from .counts import CountsQuery, project
 from .file_filters import FAILING_DESCRIPTION, hotspot_paths, metric_filter
 from .scope import ScopeQuery, narrow
 from .statuses import STATUS_FILTER_DESCRIPTION, parse_status_filter
-
-_SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
-
-_SORT_KEYS = {
-    "impact_per_effort": lambda t: (-t["impact_per_effort"], -t["total_impact"]),
-    "total_impact": lambda t: -t["total_impact"],
-    # ``score`` clamps at 1.0, so on a real repo dozens of targets tie at the
-    # top and sorting on it alone returns them in dict-insertion order.
-    # ``total_impact`` is the same pre-clamp deduction magnitude the crud layer
-    # ranks metrics by — but summed over the findings that survived this
-    # request's finding-level filters (biomarker, severity, min_severity,
-    # dimension, status), so under a filter this ranks by the filtered depth
-    # rather than the file's full depth. That is what a filtered queue should
-    # do; it just means the order is not expected to match /health/files once
-    # a filter is on.
-    "score": lambda t: (t["score"], -t["total_impact"], t["file_path"]),
-    "finding_count": lambda t: -t["finding_count"],
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,81 +120,6 @@ async def _load_queue_rows(
     return {m.file_path: m for m in metrics if keep_metric(m)}, findings
 
 
-def _finding_filter(q: QueueFilters) -> Callable[[Any], bool]:
-    """One marker, then exact severities or else a severity floor."""
-    # An all-empty list (","; " ") means the caller selected nothing, not that
-    # nothing matches — falling through to ``min_severity`` keeps a stray
-    # serialization from silently emptying the queue behind a 200.
-    picked = {v.strip().lower() for v in (q.severity or "").split(",") if v.strip()}
-    floor = _SEVERITY_ORDER.get(q.min_severity, 0) if q.min_severity else None
-
-    def keep(f: Any) -> bool:
-        if q.biomarker and f.biomarker_type != q.biomarker:
-            return False
-        if picked:
-            return (f.severity or "").lower() in picked
-        if floor is not None:
-            return _SEVERITY_ORDER.get(f.severity, 0) >= floor
-        return True
-
-    return keep
-
-
-def _group_by_file(findings: list[Any], keep: Callable[[Any], bool]) -> dict[str, list[Any]]:
-    by_file: dict[str, list[Any]] = {}
-    for f in findings:
-        if keep(f):
-            by_file.setdefault(f.file_path, []).append(f)
-    return by_file
-
-
-def _is_history_only(fs: list[Any], q: QueueFilters, history: str) -> bool:
-    # Naming a marker reaches it whatever its origin, as with the zero-impact
-    # dimensions in ``_load_queue_rows``.
-    return history == "exclude" and q.biomarker is None and not split_by_origin(fs)[0]
-
-
-def _lead_finding(fs: list[Any]) -> Any:
-    primary = primary_finding(fs)
-    if primary is not None:
-        return primary
-    # Every finding here is advisory, so no cause accuses this file and the
-    # general queue never reaches this: advisory is excluded from it. A caller
-    # who filtered to an advisory marker did reach it, and the marker they
-    # asked for is the honest lead for the row.
-    return max(fs, key=lambda x: (_SEVERITY_ORDER.get(x.severity, 0), -(x.line_start or 0)))
-
-
-def _target_row(file_path: str, fs: list[Any], m: Any, bucket: str) -> dict:
-    primary = _lead_finding(fs)
-    # Impact, and therefore the ranking, counts only findings still open:
-    # ``score`` on this row was computed from open findings, and a file
-    # whose findings were all dismissed is not work to rank near the top.
-    open_fs = [x for x in fs if (getattr(x, "status", None) or "open") == "open"]
-    total_impact = round(sum(x.health_impact for x in open_fs), 3)
-    return {
-        "file_path": file_path,
-        "score": round(m.score, 2),
-        "nloc": m.nloc,
-        "module": m.module or None,
-        "is_test": bool(getattr(m, "is_test", False)),
-        "primary_biomarker": primary.biomarker_type,
-        "primary_severity": primary.severity,
-        "primary_reason": primary.reason,
-        "primary_function": primary.function_name,
-        "primary_line_start": primary.line_start,
-        "primary_line_end": primary.line_end,
-        "primary_suggestion": _suggestion_for(primary.biomarker_type),
-        "primary_finding_id": primary.id,
-        "total_impact": total_impact,
-        "finding_count": len(fs),
-        "open_finding_count": len(open_fs),
-        "biomarkers": sorted({x.biomarker_type for x in fs}),
-        "effort_bucket": bucket,
-        "impact_per_effort": round(total_impact / EFFORT_WEIGHT[bucket], 3),
-    }
-
-
 async def _queue_targets(
     session: AsyncSession, repo_id: str, q: QueueFilters, *, history: str
 ) -> tuple[list[dict], int]:
@@ -221,28 +129,15 @@ async def _queue_targets(
         raise HTTPException(status_code=404, detail="Repository not found")
 
     metric_by_path, findings = await _load_queue_rows(session, repo_id, q)
-    by_file = _group_by_file(findings, _finding_filter(q))
-    max_effort_rank = EFFORT_WEIGHT.get(q.max_effort or "", 99)
-
-    targets: list[dict] = []
-    history_only = 0
-    for file_path, fs in by_file.items():
-        m = metric_by_path.get(file_path)
-        # Absent means either filtered out above, or a file this reading
-        # cannot score: under ``code_shape``, a row with no recorded split.
-        # Ranking that on a stand-in 10.0 would put an unmeasured file at the
-        # top of a list ordered by how bad things are. The same holds for a
-        # file in a language health has no dialect for, stored with no score.
-        if m is None or m.score is None:
-            continue
-        if _is_history_only(fs, q, history):
-            history_only += 1
-            continue
-        bucket = effort_bucket(m.nloc)
-        if EFFORT_WEIGHT[bucket] > max_effort_rank:
-            continue
-        targets.append(_target_row(file_path, fs, m, bucket))
-    return targets, history_only
+    return work_queue_targets(
+        metric_by_path,
+        findings,
+        biomarker=q.biomarker,
+        severity=q.severity,
+        min_severity=q.min_severity,
+        max_effort=q.max_effort,
+        history=history,
+    )
 
 
 _HISTORY_QUERY = Query(
@@ -281,7 +176,7 @@ async def health_work_queue(
     ``GET /health/findings?file_path=``.
     """
     targets, history_only = await _queue_targets(session, repo_id, filters, history=history)
-    targets.sort(key=_SORT_KEYS[sort])
+    targets.sort(key=WORK_QUEUE_SORTS[sort])
     # Both counts, because the view lists files but triages findings: "50 of
     # 812 files" alone leaves the size of the work unsaid.
     return {

@@ -19,6 +19,7 @@ from repowise.core.analysis.decisions.lifecycle import (
 from repowise.core.persistence import crud, decision_graph
 from repowise.core.persistence.models import DecisionEvidence
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.routers._local_git import local_repo_path
 from repowise.server.schemas import (
     DecisionCodeEdge,
     DecisionCountsResponse,
@@ -349,18 +350,6 @@ async def get_decision_graph(
 # ---------------------------------------------------------------------------
 
 
-async def _local_repo_path(session: AsyncSession, repo_id: str) -> Path:
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None or not repo.local_path:
-        raise HTTPException(status_code=404, detail=f"repository not found: {repo_id}")
-    repo_path = Path(repo.local_path)
-    if not repo_path.exists():
-        raise HTTPException(
-            status_code=404, detail="repository checkout not accessible on this server"
-        )
-    return repo_path
-
-
 def _settings_payload(repo_path: Path, resolution) -> DecisionSettings:
     from repowise.core.analysis.decisions.policy_store import policy_etag
 
@@ -459,7 +448,7 @@ async def get_decision_settings(
     session: AsyncSession = Depends(get_db_session),
 ) -> DecisionSettings:
     """The resolved decision capture policy and source registry."""
-    repo_path = await _local_repo_path(session, repo_id)
+    repo_path = await local_repo_path(session, repo_id)
     return _settings_payload(repo_path, _load_policy_or_400(repo_path))
 
 
@@ -479,7 +468,7 @@ async def update_decision_settings(
     """
     from repowise.core.analysis.decisions.policy_store import PolicyConflictError, write_policy
 
-    repo_path = await _local_repo_path(session, repo_id)
+    repo_path = await local_repo_path(session, repo_id)
     policy = _apply_settings_update(_load_policy_or_400(repo_path).policy, body)
     try:
         resolution = write_policy(repo_path, policy, expected_etag=body.etag)

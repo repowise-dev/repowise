@@ -1,9 +1,10 @@
-"""A repository's local checkout, for routes that run git against it."""
+"""A repository's local checkout, for routes that run git or read its ``.repowise``."""
 
 from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 
 from fastapi import Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,19 @@ async def resolve_local_repo(
     if repo is None or not repo.local_path or not os.path.isdir(repo.local_path):
         raise HTTPException(status_code=404, detail="Repository not found")
     return repo
+
+
+async def local_repo_path(session: AsyncSession, repo_id: str) -> Path:
+    """The repo's on-disk checkout, or a 404: a local-``serve`` capability."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None or not repo.local_path:
+        raise HTTPException(status_code=404, detail=f"repository not found: {repo_id}")
+    repo_path = Path(repo.local_path)
+    if not repo_path.exists():
+        raise HTTPException(
+            status_code=404, detail="repository checkout not accessible on this server"
+        )
+    return repo_path
 
 
 def revision_exists(repo_path: str, rev: str) -> bool:
