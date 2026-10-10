@@ -429,11 +429,14 @@ def is_runnable_test(
         roots = None
 
     p = PurePosixPath(path)
-    if p.suffix.lower() not in _TEST_CODE_SUFFIXES:
+    suffix = p.suffix.lower()
+    if suffix not in _TEST_CODE_SUFFIXES:
         return False
-    if roots is None and js_roots is None:
-        return is_test_path(p.name)
-    return is_test_path(path, roots=roots, js_roots=js_roots)
+    if p.name == "__init__.py":
+        return False
+    if suffix in JS_SUFFIXES and js_roots is not None:
+        return is_test_path(path, js_roots=js_roots)
+    return is_test_path(p.name) and (roots is None or is_test_path(path, roots=roots))
 
 
 @functools.lru_cache(maxsize=8)
@@ -596,7 +599,7 @@ def _why(
         vias = {f: via for f, via in ev.inferred.get(path, ())}
         covered = {f for _, f in ev.covered.get(path, ())}
         for _, test_file in tests:
-            if test_file and test_file not in out:
+            if test_file and PurePosixPath(test_file).name != "__init__.py" and test_file not in out:
                 via = "coverage" if test_file in covered else vias.get(test_file, basis)
                 out[test_file] = f"{path} changed ({_VIA_WHY.get(via, via)})"
     return out
@@ -1209,7 +1212,7 @@ def _runnable(selected: list[_TestRef]) -> tuple[tuple[str, ...], tuple[str, ...
     whole: set[str] = set()
     ids: dict[str, None] = {}
     for test, test_file in selected:
-        if test_file is None:
+        if test_file is None or PurePosixPath(test_file).name == "__init__.py":
             continue
         files[test_file] = None
         node = _node_id(test, test_file)

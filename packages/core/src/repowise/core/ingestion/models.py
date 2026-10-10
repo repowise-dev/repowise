@@ -164,6 +164,8 @@ class FileInfo:
     # Reached from outside the import graph (a runner or loader starts it), so
     # dead-code analysis never flags it. Read through ``is_reachability_root``.
     is_reachability_root: bool = False
+    cached_bytes: bytes | None = None
+    cached_content: str | None = None
 
 
 @dataclass
