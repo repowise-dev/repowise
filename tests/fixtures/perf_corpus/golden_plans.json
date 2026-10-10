@@ -23,13 +23,13 @@
         "rank_factors": {
           "affected_call_sites": 4,
           "boundary_kind": 4,
-          "entry_reachability": 3,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 6,
           "provenance": 3
         },
-        "rank_score": 23,
+        "rank_score": 21,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": true
       },
@@ -108,6 +108,184 @@
     },
     {
       "blast_radius": {
+        "call_sites": 2,
+        "file_count": 1,
+        "files": [
+          "src/app/reindex.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "nested_loop_with_io",
+        "biomarker_types": [
+          "io_in_loop",
+          "nested_loop_with_io"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 2,
+        "provenance": "call-site",
+        "rank_factors": {
+          "affected_call_sites": 3,
+          "boundary_kind": 4,
+          "execution_context": 3,
+          "execution_role": 1,
+          "loop_magnitude": 0,
+          "multiplier_shape": 6,
+          "provenance": 3
+        },
+        "rank_score": 20,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/reindex.py",
+      "impact_delta": 0.0,
+      "line_end": 212,
+      "line_start": 210,
+      "plan": {
+        "affected_locations": [
+          {
+            "call": "_write",
+            "file_path": "src/app/reindex.py",
+            "function_name": "one",
+            "line_end": 212,
+            "line_start": 210
+          },
+          {
+            "call": "_write",
+            "file_path": "src/app/reindex.py",
+            "function_name": "many",
+            "line_end": 217,
+            "line_start": 215
+          }
+        ],
+        "affected_locations_total": 2,
+        "api": null,
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/reindex.py::_write",
+        "judgment_steps": 3,
+        "mechanical_steps": 0,
+        "opportunity_id": "perf3_a123c4c38fdb1cabaa6a",
+        "paths": [
+          [
+            "src/app/reindex.py::one",
+            "src/app/reindex.py::_write",
+            "src/app/db.py::upsert"
+          ],
+          [
+            "src/app/reindex.py::many",
+            "src/app/reindex.py::_write",
+            "src/app/db.py::upsert"
+          ]
+        ],
+        "paths_total": 2,
+        "safety": "advisory",
+        "steps": [
+          {
+            "action": "Add a form of _write that takes every key at once",
+            "applicability": "judgment",
+            "file_path": "src/app/reindex.py",
+            "line": null,
+            "order": 1,
+            "symbol": "src/app/reindex.py::_write"
+          },
+          {
+            "action": "Collect the keys before the loop and replace the per-key _write call with one batched call",
+            "applicability": "judgment",
+            "file_path": "src/app/reindex.py",
+            "line": 210,
+            "order": 2,
+            "symbol": "one"
+          },
+          {
+            "action": "Collect the keys before the loop and replace the per-key _write call with one batched call",
+            "applicability": "judgment",
+            "file_path": "src/app/reindex.py",
+            "line": 215,
+            "order": 3,
+            "symbol": "many"
+          }
+        ],
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "nested_loop_with_io",
+      "target_symbol": "src/app/reindex.py::_write"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/owners.py"
+        ]
+      },
+      "confidence": "high",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "direct",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "execution_context": 3,
+          "execution_role": 1,
+          "loop_magnitude": 2,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 19,
+        "rationale": "Every call filters on the loop's own key, so .in_(\"repo_id\", keys) covers the same rows, and nothing else in the loop can observe the difference.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/owners.py",
+      "impact_delta": 0.0,
+      "line_end": 22,
+      "line_start": 20,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/owners.py",
+            "function_name": "load_owners",
+            "line_end": 22,
+            "line_start": 20
+          }
+        ],
+        "affected_locations_total": 1,
+        "api": ".in_(\"repo_id\", keys)",
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/owners.py::load_owners",
+        "judgment_steps": 0,
+        "mechanical_steps": 1,
+        "opportunity_id": "perf3_83d258547498bed60226",
+        "paths": [],
+        "paths_total": 1,
+        "safety": "proven",
+        "steps": [
+          {
+            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key call",
+            "applicability": "mechanical",
+            "file_path": "src/app/owners.py",
+            "line": 20,
+            "order": 1,
+            "symbol": "load_owners"
+          }
+        ],
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "src/app/owners.py::load_owners"
+    },
+    {
+      "blast_radius": {
         "call_sites": 3,
         "file_count": 1,
         "files": [
@@ -128,13 +306,13 @@
         "rank_factors": {
           "affected_call_sites": 4,
           "boundary_kind": 4,
-          "entry_reachability": 3,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 21,
+        "rank_score": 19,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": true
       },
@@ -243,13 +421,13 @@
         "rank_factors": {
           "affected_call_sites": 3,
           "boundary_kind": 4,
-          "entry_reachability": 3,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 20,
+        "rank_score": 18,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": true
       },
@@ -349,13 +527,13 @@
         "rank_factors": {
           "affected_call_sites": 3,
           "boundary_kind": 4,
-          "entry_reachability": 3,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 20,
+        "rank_score": 18,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": true
       },
@@ -438,184 +616,6 @@
         "call_sites": 2,
         "file_count": 1,
         "files": [
-          "src/app/reindex.py"
-        ]
-      },
-      "confidence": "medium",
-      "evidence": {
-        "affected_files_total": 1,
-        "biomarker_type": "nested_loop_with_io",
-        "biomarker_types": [
-          "io_in_loop",
-          "nested_loop_with_io"
-        ],
-        "boundary_kind": "db",
-        "execution_context": "production",
-        "observations_total": 2,
-        "provenance": "call-site",
-        "rank_factors": {
-          "affected_call_sites": 3,
-          "boundary_kind": 4,
-          "entry_reachability": 0,
-          "execution_context": 3,
-          "loop_magnitude": 0,
-          "multiplier_shape": 6,
-          "provenance": 3
-        },
-        "rank_score": 19,
-        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
-        "reliable_entry_reachability": null
-      },
-      "file_path": "src/app/reindex.py",
-      "impact_delta": 0.0,
-      "line_end": 212,
-      "line_start": 210,
-      "plan": {
-        "affected_locations": [
-          {
-            "call": "_write",
-            "file_path": "src/app/reindex.py",
-            "function_name": "one",
-            "line_end": 212,
-            "line_start": 210
-          },
-          {
-            "call": "_write",
-            "file_path": "src/app/reindex.py",
-            "function_name": "many",
-            "line_end": 217,
-            "line_start": 215
-          }
-        ],
-        "affected_locations_total": 2,
-        "api": null,
-        "evidence_truncated": false,
-        "intervention_symbol": "src/app/reindex.py::_write",
-        "judgment_steps": 3,
-        "mechanical_steps": 0,
-        "opportunity_id": "perf3_a123c4c38fdb1cabaa6a",
-        "paths": [
-          [
-            "src/app/reindex.py::one",
-            "src/app/reindex.py::_write",
-            "src/app/db.py::upsert"
-          ],
-          [
-            "src/app/reindex.py::many",
-            "src/app/reindex.py::_write",
-            "src/app/db.py::upsert"
-          ]
-        ],
-        "paths_total": 2,
-        "safety": "advisory",
-        "steps": [
-          {
-            "action": "Add a form of _write that takes every key at once",
-            "applicability": "judgment",
-            "file_path": "src/app/reindex.py",
-            "line": null,
-            "order": 1,
-            "symbol": "src/app/reindex.py::_write"
-          },
-          {
-            "action": "Collect the keys before the loop and replace the per-key _write call with one batched call",
-            "applicability": "judgment",
-            "file_path": "src/app/reindex.py",
-            "line": 210,
-            "order": 2,
-            "symbol": "one"
-          },
-          {
-            "action": "Collect the keys before the loop and replace the per-key _write call with one batched call",
-            "applicability": "judgment",
-            "file_path": "src/app/reindex.py",
-            "line": 215,
-            "order": 3,
-            "symbol": "many"
-          }
-        ],
-        "strategy": "batch_or_prefetch_io"
-      },
-      "refactoring_type": "performance_fix",
-      "source_biomarker": "nested_loop_with_io",
-      "target_symbol": "src/app/reindex.py::_write"
-    },
-    {
-      "blast_radius": {
-        "call_sites": 1,
-        "file_count": 1,
-        "files": [
-          "src/app/owners.py"
-        ]
-      },
-      "confidence": "high",
-      "evidence": {
-        "affected_files_total": 1,
-        "biomarker_type": "io_in_loop",
-        "biomarker_types": [
-          "io_in_loop"
-        ],
-        "boundary_kind": "db",
-        "execution_context": "production",
-        "observations_total": 1,
-        "provenance": "direct",
-        "rank_factors": {
-          "affected_call_sites": 2,
-          "boundary_kind": 4,
-          "entry_reachability": 0,
-          "execution_context": 3,
-          "loop_magnitude": 2,
-          "multiplier_shape": 4,
-          "provenance": 3
-        },
-        "rank_score": 18,
-        "rationale": "Every call filters on the loop's own key, so .in_(\"repo_id\", keys) covers the same rows, and nothing else in the loop can observe the difference.",
-        "reliable_entry_reachability": null
-      },
-      "file_path": "src/app/owners.py",
-      "impact_delta": 0.0,
-      "line_end": 22,
-      "line_start": 20,
-      "plan": {
-        "affected_locations": [
-          {
-            "file_path": "src/app/owners.py",
-            "function_name": "load_owners",
-            "line_end": 22,
-            "line_start": 20
-          }
-        ],
-        "affected_locations_total": 1,
-        "api": ".in_(\"repo_id\", keys)",
-        "evidence_truncated": false,
-        "intervention_symbol": "src/app/owners.py::load_owners",
-        "judgment_steps": 0,
-        "mechanical_steps": 1,
-        "opportunity_id": "perf3_83d258547498bed60226",
-        "paths": [],
-        "paths_total": 1,
-        "safety": "proven",
-        "steps": [
-          {
-            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key call",
-            "applicability": "mechanical",
-            "file_path": "src/app/owners.py",
-            "line": 20,
-            "order": 1,
-            "symbol": "load_owners"
-          }
-        ],
-        "strategy": "batch_or_prefetch_io"
-      },
-      "refactoring_type": "performance_fix",
-      "source_biomarker": "io_in_loop",
-      "target_symbol": "src/app/owners.py::load_owners"
-    },
-    {
-      "blast_radius": {
-        "call_sites": 2,
-        "file_count": 1,
-        "files": [
           "src/app/sync.py"
         ]
       },
@@ -633,13 +633,13 @@
         "rank_factors": {
           "affected_call_sites": 3,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 17,
+        "rank_score": 18,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -739,13 +739,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 5,
           "provenance": 3
         },
-        "rank_score": 17,
+        "rank_score": 18,
         "rationale": "I/O under the lock is proven, but shared-state ordering must be validated before moving it.",
         "reliable_entry_reachability": null
       },
@@ -816,13 +816,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "Iterations are independent and each await already runs under self._sem.",
         "reliable_entry_reachability": null
       },
@@ -887,13 +887,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "Every call filters on the loop's own key, so .in_(\"repo_id\", keys) is the bulk form; the per-key call limits, orders or shares the loop with other I/O.",
         "reliable_entry_reachability": null
       },
@@ -958,13 +958,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "Iteration independence is proven; the concurrency the fan-out would create is not bounded by anything this group can see.",
         "reliable_entry_reachability": null
       },
@@ -1029,13 +1029,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1114,13 +1114,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1197,13 +1197,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "The relationship is declared lazy and the query that produced the rows does not load it; whether every iteration reaches the access, and whether another layer loads it first, is not proven.",
         "reliable_entry_reachability": null
       },
@@ -1259,13 +1259,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "The relationship is declared lazy and the query that produced the rows does not load it; whether every iteration reaches the access, and whether another layer loads it first, is not proven.",
         "reliable_entry_reachability": null
       },
@@ -1321,13 +1321,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": false
       },
@@ -1406,13 +1406,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": false
       },
@@ -1491,13 +1491,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1562,13 +1562,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": false
       },
@@ -1647,13 +1647,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 2,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 15,
+        "rank_score": 16,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1732,13 +1732,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 2
         },
-        "rank_score": 15,
+        "rank_score": 16,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1817,13 +1817,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 4,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 0
         },
-        "rank_score": 13,
+        "rank_score": 14,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1902,13 +1902,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 0,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 3,
           "provenance": 3
         },
-        "rank_score": 11,
+        "rank_score": 12,
         "rationale": "The collection is proven list-backed; element hashability and ordering/identity use still require validation.",
         "reliable_entry_reachability": null
       },
@@ -1973,13 +1973,13 @@
         "rank_factors": {
           "affected_call_sites": 2,
           "boundary_kind": 0,
-          "entry_reachability": 0,
           "execution_context": 3,
+          "execution_role": 1,
           "loop_magnitude": 0,
           "multiplier_shape": 3,
           "provenance": 3
         },
-        "rank_score": 11,
+        "rank_score": 12,
         "rationale": "Repeated string accumulation is proven; intermediate accumulator observations still require validation.",
         "reliable_entry_reachability": null
       },

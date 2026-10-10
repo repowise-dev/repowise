@@ -97,6 +97,7 @@ class PerformanceHealthService:
             confidence=query.confidence,
             actionabilities=query.actionabilities,
             proofs=query.proofs,
+            roles=query.roles,
             file_paths=query.file_paths,
             sort=query.sort,
             limit=query.limit,

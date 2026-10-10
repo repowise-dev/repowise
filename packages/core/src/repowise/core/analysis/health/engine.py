@@ -41,6 +41,7 @@ from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from ...installed_components import is_installed_component
 from ...test_paths import paired_test_names
 from ..dead_code.file_reachability import file_dependency_neighbors
+from ..execution_roles import ExecutionRoles
 from ..graph_view import HasEdge, ImportEdgeView
 from ..test_reachability import files_reached_by_tests, files_with_paired_tests
 from .asserts.lexicon import AssertVocabulary
@@ -1373,27 +1374,36 @@ class HealthAnalyzer:
             return
 
     def _mark_perf_entry_reachability(self, findings: list[HealthFindingData]) -> None:
-        """Stamp reliable entry reachability without walking once per row."""
+        """Stamp entry reachability and execution role without walking once per row.
+
+        The role is keyed on the loop-owning function: the path's first node
+        when the cost crosses functions, else the symbol holding the finding.
+        """
         index = self._execution_graph()
-        if index is None or self.graph is None:
+        perf = [finding for finding in findings if finding.dimension == "performance"]
+        if index is None or self.graph is None or not perf:
             return
-        entry_files: set[str] = set()
         try:
-            for node_id, data in self.graph.nodes(data=True):
-                if data.get("node_type") == "file" and data.get("is_entry_point"):
-                    entry_files.add(node_id)
-        except Exception:
+            entry_files = {
+                node_id
+                for node_id, data in self.graph.nodes(data=True)
+                if data.get("node_type") == "file" and data.get("is_entry_point")
+            }
+            roles = ExecutionRoles.build(self.graph, index)
+        except Exception as exc:
+            log.debug("health_execution_roles_failed", error=str(exc))
             return
         seeds = {symbol for path in entry_files for symbol in index.declares.get(path, ())}
-        if not seeds:
-            return
-        reachable = index.forward_reachable(seeds)
-        for finding in findings:
-            if finding.dimension != "performance":
-                continue
+        reachable = index.forward_reachable(seeds) if seeds else None
+        for finding in perf:
             path = finding.details.get("path")
             if isinstance(path, list) and path:
-                finding.details["reliable_entry_reachability"] = path[0] in reachable
+                owner = path[0]
+                if reachable is not None:
+                    finding.details["reliable_entry_reachability"] = owner in reachable
+            else:
+                owner = index.resolve_function(finding.file_path, finding.line_start or 0)
+            finding.details["execution_role"] = roles.role_of(owner, finding.file_path)
 
     def _function_blame_rows(self, walked: list[tuple[Any, FileComplexity]]) -> list[dict]:
         """Build the per-function blame rollup from the walked files + the

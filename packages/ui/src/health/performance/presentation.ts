@@ -65,6 +65,7 @@ export const FACET_LABEL: Record<PerformanceFacetKey, string> = {
   actionability: "Actionability",
   plan_state: "Plan",
   proof: "Cost",
+  role: "Runs in",
 };
 
 const PROOF_LABEL: Record<PerformanceCostProof, string> = {
@@ -191,6 +192,7 @@ export function facetValueLabel(facet: PerformanceFacetKey, value: string): stri
   if (facet === "actionability")
     return ACTIONABILITY_LABEL[value as PerformanceActionabilityState] ?? humanizeToken(value);
   if (facet === "proof") return PROOF_LABEL[value as PerformanceCostProof] ?? humanizeToken(value);
+  if (facet === "role") return humanizeToken(value);
   return PLAN_STATE_LABEL[value] ?? humanizeToken(value);
 }
 
@@ -263,6 +265,13 @@ export function affectedSummary(opportunity: PerformanceOpportunity): string {
   return `${sitePart} across ${filePart}`;
 }
 
+const ROLE_PHRASE: Record<string, string> = {
+  request: "runs on every request",
+  event_consumer: "runs on every message",
+  scheduled_job: "runs on a schedule",
+  unknown: "no evidence of what runs it",
+};
+
 const MULTIPLIER_PHRASE: Record<string, string> = {
   io_in_loop: "runs once per loop iteration",
   serial_await_in_loop: "awaited one at a time",
@@ -291,6 +300,8 @@ export function whyRankedPhrase(factor: PerformanceWhyRanked): string {
       return `${contextLabel(String(value) as PerformanceExecutionContext).toLowerCase()} code`;
     case "entry_reachability":
       return "reachable from an entry point";
+    case "execution_role":
+      return ROLE_PHRASE[String(value)] ?? humanizeToken(String(value));
     case "loop_magnitude":
       return value === "grows_with_data" ? "grows with the data" : humanizeToken(String(value));
     case "provenance":

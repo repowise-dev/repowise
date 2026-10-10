@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from math import log2
 from typing import Any
 
+from ...execution_roles import COLD_ROLES
 from ..rank_common import top_factors, weakest
 from ..worth import lead_reason
 
@@ -109,6 +110,16 @@ MAGNITUDE_POINTS = {"grows_with_data": 2, "n/a": 1, "bounded": 0, "unknown": 0}
 """A loop over a query result is paid again as the data grows; a retry loop or a
 constant-width slice is not. Unknown earns nothing, so a guess never outranks a fact."""
 PROVENANCE_POINTS = {"call-site": 3, "direct": 3, "reliable-edge": 2, "name-fallback": 0}
+ROLE_POINTS = {
+    "request": 3,
+    "event_consumer": 2,
+    "scheduled_job": 1,
+    "unknown": 1,
+    **dict.fromkeys(COLD_ROLES, 0),
+}
+"""What runs the loop: once per request outranks once per message, a scheduled
+job, and a run nobody's seeds reached; startup, CLI, tooling and tests earn
+nothing, since their loops run once per process."""
 
 AMPLIFICATION = {
     "nested_loop_with_io": "quadratic",
@@ -229,7 +240,7 @@ def rank_factors(
     marker: str,
     boundary: str | None,
     context: str,
-    reachable: bool | None,
+    role: str,
     site_count: int,
     provenance: str,
     magnitude: str,
@@ -243,7 +254,7 @@ def rank_factors(
         "multiplier_shape": MULTIPLIER_POINTS.get(marker, 1),
         "boundary_kind": BOUNDARY_POINTS.get(boundary or "", 0),
         "execution_context": CONTEXT_POINTS.get(context, 1),
-        "entry_reachability": 3 if reachable is True else 0,
+        "execution_role": ROLE_POINTS.get(role, 1),
         "affected_call_sites": min(8, int(log2(site_count + 1) * 2)),
         "provenance": PROVENANCE_POINTS.get(provenance, 0),
         "loop_magnitude": MAGNITUDE_POINTS[magnitude],
@@ -288,6 +299,7 @@ __all__ = [
     "MULTIPLIER_POINTS",
     "NON_LEADING_MARKERS",
     "PROVENANCE_POINTS",
+    "ROLE_POINTS",
     "UNKNOWN_MULTIPLIER_POINTS",
     "amplification",
     "band",

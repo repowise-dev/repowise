@@ -71,6 +71,14 @@ async def list_performance_opportunities(
             "to grow, kept out of the default queue and counted in its summary."
         ),
     ),
+    role: str | None = Query(
+        None,
+        description=(
+            "Execution role: request, event_consumer, scheduled_job, startup, cli, "
+            "tooling, test, unknown or all. Defaults to every role but startup, cli, "
+            "tooling and test, whose loops run once per process."
+        ),
+    ),
     view: str = Query("detail"),
     sort: str = Query("rank"),
     file_paths: str | None = Query(
@@ -95,6 +103,7 @@ async def list_performance_opportunities(
         confidence=confidence,
         actionability=actionability,
         proof=proof,
+        role=role,
         view=view,
         sort=sort,
         file_paths=_paths(file_paths),

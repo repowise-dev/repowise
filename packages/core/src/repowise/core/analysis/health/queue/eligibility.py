@@ -19,11 +19,13 @@ from typing import Any, Literal, Protocol, get_args
 
 from repowise.core.code_origin import path_origin
 
+from ...execution_roles import COLD_ROLES, EXECUTION_ROLES
 from ..perf.actionability import EXPECTED_REASONS
 from ..perf.causal import code_context
 from ..rows import detail_map, field
 from ..worth import (
     SIZE_MARKERS,
+    CostProof,
     LowPriority,
     cost_proof,
     dispatch_shaped,
@@ -54,6 +56,8 @@ Reason = Literal[
     "low_value_kind",
     "kind_unaudited",
     "unmeasured_cost",
+    "cold_role",
+    "background_unproven",
 ]
 """Why a unit is out of a default queue. Each surface counts the subset its
 ladders can produce (``fix_first.model.FIX_EXCLUSIONS``,
@@ -379,9 +383,15 @@ DEFAULT_QUEUE_EXCLUSIONS = (
     "expected",
     "no_strategy",
     "unmeasured_cost",
+    "cold_role",
+    "background_unproven",
 )
 """Every reason the performance default queue leaves a cause out, in the order
 it is checked."""
+
+QUEUE_ROLES = frozenset(EXECUTION_ROLES) - COLD_ROLES
+"""Execution roles the performance queue holds; a scheduled job also needs
+proven growth. ``unknown`` is no evidence either way, so it stays."""
 
 #: Causes whose cost is real only in shipped code over a loop that grows: a
 #: string built in a bounded loop, or in a script, costs nothing a user sees.
@@ -411,16 +421,37 @@ def perf_strategy_verdict(
     return _verdict(reason if reason in EXPECTED_REASONS else "expected")
 
 
+def _role_reason(item: Any) -> Reason | None:
+    """Why the role running *item*'s loop keeps it out, or ``None``.
+
+    A loop only startup, a CLI, tooling or tests run is paid once per process.
+    A scheduled job's loop matters only once it is shown to grow with the data.
+    """
+    facets = perf_facets(item)
+    role = field(item, "execution_role") or facets.get("execution_role") or "unknown"
+    if role in COLD_ROLES:
+        return "cold_role"
+    if role == "scheduled_job" and facets.get("loop_magnitude") != "grows_with_data":
+        return "background_unproven"
+    return None
+
+
+def queue_proof(item: Any) -> CostProof:
+    """The stored proof the queue filters on: a background job without proven
+    growth is as unproven as an unmeasured loop, and listed beside it."""
+    return "unproven" if _role_reason(item) == "background_unproven" else cost_proof(item)
+
+
 def perf_queue_verdict(item: Any) -> Verdict:
     """Whether the performance default queue holds *item*.
 
-    One reason per cause, context first and proof last, so the counts of every
+    One reason per cause, context first and role last, so the counts of every
     reason and the queue add up to the whole.
     """
     verdict = perf_strategy_verdict(item)
     if verdict.eligible and cost_proof(item) not in DEFAULT_QUEUE_PROOFS:
         return Verdict("unmeasured_cost")
-    return verdict
+    return verdict if not verdict.eligible else _verdict(_role_reason(item))
 
 
 def perf_queue_counts(items: Iterable[Any]) -> dict[str, Any]:
@@ -491,6 +522,7 @@ __all__ = [
     "LOW_VALUE_KINDS",
     "MIN_WORTH",
     "ORIGIN_EXCLUSION",
+    "QUEUE_ROLES",
     "REASONS",
     "SCOPE_EXCLUSIONS",
     "SMALL_CCN",
@@ -510,6 +542,7 @@ __all__ = [
     "perf_queue_counts",
     "perf_queue_verdict",
     "perf_strategy_verdict",
+    "queue_proof",
     "refactor_verdict",
     "small",
     "unit_verdict",

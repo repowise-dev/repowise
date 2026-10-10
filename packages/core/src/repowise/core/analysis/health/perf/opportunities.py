@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from ...execution_roles import hottest_role
 from .actionability import (
     ActionabilityState,
     FixSafety,
@@ -68,10 +69,10 @@ from .siblings import link_siblings
 class PerformanceOpportunity:
     """One cause, its evidence, and what can be done about it.
 
-    Seven facets are reported separately and must not be read as one another.
+    Its facets are reported separately and must not be read as one another.
     Two of them keep the names callers already join on: ``confidence`` is
-    evidence confidence, and ``fix.safety`` is fix safety. The remaining five
-    live in ``facets``, so no number or label is published twice.
+    evidence confidence, and ``fix.safety`` is fix safety. The rest live in
+    ``facets``, so no number or label is published twice.
     """
 
     opportunity_id: str
@@ -168,6 +169,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
     provenance = weakest_provenance({facts.provenance for facts in members})
     evidence_confidence = provenance_confidence(provenance)
     reachable = _reachability({facts.reliable_entry_reachability for facts in members})
+    role = hottest_role(facts.execution_role for facts in members)
     sinks = tuple(sorted({facts.terminal_sink for facts in members if facts.terminal_sink}))
     assessment = assess_fix(
         marker,
@@ -186,7 +188,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
         marker=marker,
         boundary=boundary,
         context=context,
-        reachable=reachable,
+        role=role,
         site_count=len(sites),
         provenance=provenance,
         magnitude=magnitude,
@@ -198,6 +200,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
         "leverage": leverage(len(sites)),
         "change_risk": change_risk(len(files)),
         "loop_magnitude": magnitude,
+        "execution_role": role,
     }
     return PerformanceOpportunity(
         opportunity_id=stable_id(key),
@@ -234,7 +237,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
                 "multiplier_shape": marker,
                 "boundary_kind": boundary,
                 "execution_context": context,
-                "entry_reachability": reachable,
+                "execution_role": role,
                 "affected_call_sites": len(sites),
                 "provenance": provenance,
                 "loop_magnitude": magnitude,

@@ -26,6 +26,7 @@ describe("performance filter state", () => {
       confidence: "high" as const,
       actionability: "plan_ready" as const,
       proof: "unproven" as const,
+      role: "cli" as const,
       sort: "leverage" as const,
       offset: 40,
     };
@@ -39,6 +40,15 @@ describe("performance filter state", () => {
     expect(toQuery(unproven, { limit: 20 }).proof).toBe("unproven");
     expect(narrowingCount(unproven)).toBe(1);
     expect(clearNarrowing(unproven).proof).toBeNull();
+  });
+
+  it("asks for a cold role only when chosen", () => {
+    // Absent means the server's default: every role but startup, CLI, tooling and test.
+    expect(toQuery(INITIAL_FILTERS, { limit: 20 }).role).toBeUndefined();
+    const cli = withFilter(INITIAL_FILTERS, "role", "cli");
+    expect(toQuery(cli, { limit: 20 }).role).toBe("cli");
+    expect(narrowingCount(cli)).toBe(1);
+    expect(clearNarrowing(cli).role).toBeNull();
   });
 
   it("round trips the expected actionability state", () => {

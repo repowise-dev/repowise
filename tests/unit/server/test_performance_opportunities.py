@@ -343,6 +343,8 @@ async def test_the_default_queue_reports_what_it_leaves_out(app, client: AsyncCl
             "expected": 1,
             "no_strategy": 1,
             "unmeasured_cost": 1,
+            "cold_role": 0,
+            "background_unproven": 0,
         },
     }
     proof = {entry["value"]: entry["total"] for entry in default["facets"]["proof"]}
@@ -405,6 +407,7 @@ async def test_detail_carries_the_facets_and_evidence_for_one_cause(
         "leverage",
         "change_risk",
         "loop_magnitude",
+        "execution_role",
     }
     assert body["evidence_total"] == 2
     assert body["evidence_emitted"] == 1
@@ -533,3 +536,33 @@ async def test_the_bulk_call_a_plan_names_is_served(app, client: AsyncClient) ->
     ).json()
     assert body["actionability_state"] == "plan_ready"
     assert body["fix"]["api"] == '.in_("repo_id", keys)'
+
+
+async def test_cold_and_unproven_background_roles_sit_one_filter_away(
+    app, client: AsyncClient
+) -> None:
+    """Startup and CLI loops leave the default queue; a scheduled job needs growth."""
+    served = _finding("src/c.py", 40, ["src/c.py::run", "src/db.py::fetch"])
+    served.details["execution_role"] = "request"
+    cli = _finding("src/e.py", 60, ["src/e.py::run", "src/db.py::fetch"])
+    cli.details["execution_role"] = "cli"
+    job = _finding(
+        "src/f.py", 70, ["src/f.py::run", "src/db.py::fetch"], magnitude="bounded"
+    )
+    job.details["execution_role"] = "scheduled_job"
+    repo_id, _ = await _seed(app, client, [served, cli, job])
+
+    default = await _page(client, repo_id)
+    assert [item["intervention_symbol"] for item in default["items"]] == ["src/c.py::run"]
+    excluded = default["summary"]["default_queue"]["excluded"]
+    assert (excluded["cold_role"], excluded["background_unproven"]) == (1, 1)
+    roles = {entry["value"]: entry["total"] for entry in default["facets"]["role"]}
+    assert roles == {"request": 1, "cli": 1, "scheduled_job": 1}
+    assert default["items"][0]["facets"]["execution_role"] == "request"
+
+    asked = await _page(client, repo_id, role="cli")
+    assert [item["intervention_symbol"] for item in asked["items"]] == ["src/e.py::run"]
+    unproven = await _page(client, repo_id, proof="unproven")
+    assert [item["intervention_symbol"] for item in unproven["items"]] == ["src/f.py::run"]
+    everything = await _page(client, repo_id, role="all")
+    assert everything["total"] == 2

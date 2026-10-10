@@ -146,6 +146,12 @@ def test_performance_cost_proofs_match_python() -> None:
     assert _union_members("PerformanceCostProof", "health.ts") == set(COST_PROOFS)
 
 
+def test_performance_execution_roles_match_python() -> None:
+    from repowise.core.analysis.execution_roles import EXECUTION_ROLES
+
+    assert _union_members("PerformanceExecutionRole", "health.ts") == set(EXECUTION_ROLES)
+
+
 def test_agent_prompt_flavors_match_python() -> None:
     from repowise.core.agent_prompts import FLAVORS
 

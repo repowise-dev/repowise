@@ -1959,6 +1959,11 @@ class PerformanceOpportunity(Base):
     cost_proof: Mapped[str] = mapped_column(
         String(16), nullable=False, default="proven", server_default="proven"
     )
+    # ``execution_roles.ExecutionRole`` of the hottest member's loop owner, so
+    # the queue can leave out startup, CLI, tooling and test loops in SQL.
+    execution_role: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unknown", server_default="unknown"
+    )
     fix_strategy: Mapped[str | None] = mapped_column(String(64), nullable=True)
     fix_safety: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # The file holding the symbol worth editing, so target scoping is a column.

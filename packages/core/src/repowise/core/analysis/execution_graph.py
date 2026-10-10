@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from collections import deque
-from collections.abc import Callable, Hashable, Iterable, Mapping
+from collections.abc import Callable, Container, Hashable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
@@ -375,8 +375,18 @@ class ExecutionGraphIndex:
         walk(self.reverse, forward_reached, reverse_depth)
         return affected
 
-    def forward_reachable(self, seeds: Iterable[str], *, max_depth: int | None = None) -> set[str]:
-        """Reliable execution nodes reachable from all *seeds* in one BFS."""
+    def forward_reachable(
+        self,
+        seeds: Iterable[str],
+        *,
+        max_depth: int | None = None,
+        stop_at: Container[str] = frozenset(),
+    ) -> set[str]:
+        """Reliable execution nodes reachable from all *seeds* in one BFS.
+
+        A node in *stop_at* is never entered, so nothing past it is reached
+        through it.
+        """
         reached = set(seeds)
         queue: deque[tuple[str, int]] = deque((seed, 0) for seed in sorted(reached))
         while queue:
@@ -384,7 +394,7 @@ class ExecutionGraphIndex:
             if max_depth is not None and depth >= max_depth:
                 continue
             for target in self.forward.get(node, ()):
-                if target not in reached:
+                if target not in reached and target not in stop_at:
                     reached.add(target)
                     queue.append((target, depth + 1))
         return reached

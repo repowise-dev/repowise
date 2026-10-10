@@ -353,6 +353,20 @@ export interface HealthFinding {
 }
 
 export type PerformanceExecutionContext = "production" | "tooling" | "test" | "unknown";
+
+/**
+ * What runs a cause's loop (`execution_roles.EXECUTION_ROLES`). `unknown` means
+ * no request, job, startup or CLI seed reaches it, not that nothing does.
+ */
+export type PerformanceExecutionRole =
+  | "request"
+  | "event_consumer"
+  | "scheduled_job"
+  | "startup"
+  | "cli"
+  | "tooling"
+  | "test"
+  | "unknown";
 export type PerformanceOpportunityConfidence = "high" | "medium" | "low";
 
 export interface PerformanceOpportunityFix {
@@ -405,6 +419,8 @@ export interface PerformanceOpportunityFacets {
   change_risk: string;
   /** Absent on rows stored before the fact existed. */
   loop_magnitude?: PerformanceLoopMagnitude;
+  /** Absent on rows stored before the fact existed. */
+  execution_role?: PerformanceExecutionRole;
 }
 
 /**
@@ -570,7 +586,8 @@ export type PerformanceFacetKey =
   | "confidence"
   | "actionability"
   | "plan_state"
-  | "proof";
+  | "proof"
+  | "role";
 
 /**
  * Whether anything measured that a cause's cost grows with the data
@@ -602,6 +619,8 @@ export type PerformanceOpportunityQuery = {
   actionability?: PerformanceActionabilityState;
   /** Absent means `proven`; `unproven` lists the causes the default queue leaves out. */
   proof?: PerformanceCostProof;
+  /** Absent means every role but startup, cli, tooling and test; `all` lists every role. */
+  role?: PerformanceExecutionRole | "all";
   /** `summary` drops the explanatory fields and keeps identity and counts. */
   view?: "detail" | "summary";
   sort?: "rank" | "leverage" | "observations";
@@ -624,7 +643,9 @@ export type PerformanceQueueExclusion =
   | "cold_path"
   | "expected"
   | "no_strategy"
-  | "unmeasured_cost";
+  | "unmeasured_cost"
+  | "cold_role"
+  | "background_unproven";
 
 export interface PerformanceDefaultQueue {
   total: number;
