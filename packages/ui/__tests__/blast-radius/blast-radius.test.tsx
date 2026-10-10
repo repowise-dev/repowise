@@ -248,7 +248,7 @@ describe("BlastRadiusResults", () => {
       overall_risk_score: 1.5,
     };
     render(<BlastRadiusResults result={empty} />);
-    expect(screen.getByText("No downstream impact found")).toBeTruthy();
+    expect(screen.getByText("No downstream impact")).toBeTruthy();
     expect(screen.getByText("Localized structural impact")).toBeTruthy();
   });
 

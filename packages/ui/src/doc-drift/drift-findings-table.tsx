@@ -18,7 +18,6 @@
  * table per section because the shared table has no group-header rows.
  */
 
-import { FileText } from "lucide-react";
 import { Badge } from "../ui/badge";
 import {
   docDriftConfidenceTier,
@@ -42,6 +41,8 @@ export interface DriftFindingsTableProps {
   onPrompt: (finding: DocDriftFinding) => void;
   /** Which row the open panel is describing. */
   selectedId?: string | null | undefined;
+  /** Reset the confidence floor and reference filters. */
+  onClearFilters?: () => void;
 }
 
 /**
@@ -66,6 +67,7 @@ export function DriftFindingsTable({
   onSelect,
   onPrompt,
   selectedId,
+  onClearFilters,
 }: DriftFindingsTableProps) {
   const columns: ResponsiveColumn<DocDriftFinding>[] = [
     {
@@ -83,7 +85,7 @@ export function DriftFindingsTable({
           >
             line {f.line_number}
             {f.is_new ? (
-              <Badge variant="accent" className="ml-1.5 h-4 px-1 text-[10px]">
+              <Badge variant="accent" className="ml-1.5 h-4 px-1 text-caption">
                 new
               </Badge>
             ) : null}
@@ -161,9 +163,10 @@ export function DriftFindingsTable({
   if (findings.length === 0) {
     return (
       <EmptyState
-        icon={<FileText className="h-6 w-6" />}
-        title="No findings in this slice"
+        tone="filtered"
+        title="No findings match these filters"
         description="Widen the confidence floor or clear the reference filter to see the rest."
+        {...(onClearFilters ? { action: { label: "Clear filters", onClick: onClearFilters } } : {})}
       />
     );
   }

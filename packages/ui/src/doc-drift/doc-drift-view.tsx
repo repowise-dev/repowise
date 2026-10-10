@@ -25,7 +25,6 @@
 
 import { useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { FileCheck2 } from "lucide-react";
 import {
   DOC_DRIFT_CONFIDENCE,
   docDriftKindLabel,
@@ -211,7 +210,7 @@ export function DocDriftView({
       {summary.findings_total === 0 && !filtered ? (
         <div className="flex flex-col items-center gap-2">
           <EmptyState
-            icon={<FileCheck2 className="h-6 w-6" />}
+            tone="positive"
             title="No documentation drift found"
             description="Every reference this detector could resolve still resolves. It re-checks on each update, so this is worth a second look after a rename or a move."
           />
@@ -263,6 +262,11 @@ export function DocDriftView({
             onSelect={setSelected}
             onPrompt={(finding) => setPromptFindings([finding])}
             selectedId={selected?.id ?? null}
+            onClearFilters={() => {
+              setMinConfidence(DOC_DRIFT_CONFIDENCE.MEDIUM);
+              setKind("");
+              setDocument("");
+            }}
           />
         </OverviewSection>
       )}
