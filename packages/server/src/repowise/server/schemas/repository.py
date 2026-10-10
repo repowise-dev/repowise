@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +11,46 @@ from pydantic import BaseModel, field_validator
 
 from repowise.core.docs_mode import DocsMode
 from repowise.core.index_scope import load_index_scope
+
+_URL_SCHEME_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*)://")
+_HOST_PORT_RE = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[^:@/\[\]]*)(:\d*)?")
+_SSH_SCHEMES = frozenset({"ssh", "git+ssh", "ssh+git"})
+
+
+def strip_credentials(url: str | None) -> str | None:
+    """Drop secrets from a remote before it leaves the server.
+
+    A token can sit in the userinfo (``https://user:glpat-x@host/...``,
+    ``git+https://ghp_x@host/...``) or the query (``?private_token=``). Every
+    scheme loses its query, fragment and userinfo, except that ssh keeps a bare
+    username: ``ssh://git@host/...`` and scp-style ``git@host:path`` name an
+    account, not a secret, and the UI's avatar parser expects ``git@``.
+    """
+    if not url:
+        return url
+    url = url.strip()
+    scheme_match = _URL_SCHEME_RE.match(url)
+    if not scheme_match:
+        # scp-style `user[:password]@host:path`; a remote has no other `@` form.
+        userinfo, at, rest = url.partition("@")
+        if at and ":" in userinfo and not any(c in userinfo for c in "/\\"):
+            return f"{userinfo.split(':', 1)[0]}@{rest}"
+        return url
+    scheme = scheme_match.group(1)
+    rest = re.split(r"[?#]", url[scheme_match.end() :], maxsplit=1)[0]
+    userinfo, hostpart = "", rest
+    if "@" in rest:
+        # The authority normally ends at the first `/`, but an unencoded `/` in
+        # a password moves it. When the text before the first `/` is not a
+        # host[:port], the userinfo runs to the `@` after it.
+        head = rest.split("/", 1)[0]
+        if "@" in head:
+            userinfo, _, host = head.rpartition("@")
+            hostpart = host + rest[len(head) :]
+        elif not _HOST_PORT_RE.fullmatch(head):
+            userinfo, _, hostpart = rest.partition("@")
+    user = userinfo.split(":", 1)[0] if scheme.lower() in _SSH_SCHEMES else ""
+    return f"{scheme}://{user + '@' if user else ''}{hostpart}"
 
 
 class RepoCreate(BaseModel):

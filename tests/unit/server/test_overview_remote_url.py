@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repowise.server.routers.overview import _remote_url
 
 _ORIGIN = "https://github.com/repowise-dev/repowise.git"
@@ -79,3 +81,38 @@ def test_returns_none_when_no_remote_is_configured(tmp_path: Path) -> None:
 
 def test_returns_none_without_a_local_path() -> None:
     assert _remote_url("", None) is None
+
+
+@pytest.mark.parametrize(
+    ("remote", "expected"),
+    [
+        ("https://user:glpat-secret@gitlab.com/g/sub/p.git", "https://gitlab.com/g/sub/p.git"),
+        ("https://ghp_secret@github.com/o/r.git", "https://github.com/o/r.git"),
+        (
+            "https://user%40corp.com:pat@dev.azure.com/org/proj/_git/repo",
+            "https://dev.azure.com/org/proj/_git/repo",
+        ),
+        ("http://u:p@git.corp:8080/g/p", "http://git.corp:8080/g/p"),
+        ("ssh://git:secret@git.corp:2222/g/p.git", "ssh://git@git.corp:2222/g/p.git"),
+        ("ssh://git@github.com/o/r.git", "ssh://git@github.com/o/r.git"),
+        ("git@github.com:o/r.git", "git@github.com:o/r.git"),
+        ("https://github.com/o/r", "https://github.com/o/r"),
+        ("HTTPS://tok@github.com/o/r", "HTTPS://github.com/o/r"),
+        ("  https://ghp_tok@github.com/o/r  ", "https://github.com/o/r"),
+        ("git+https://ghp_tok@github.com/o/r", "git+https://github.com/o/r"),
+        ("ftp://tok@host/x", "ftp://host/x"),
+        ("https://user:pa/ss@host/p.git", "https://host/p.git"),
+        ("https://gitlab.com/g/p.git?private_token=abc#frag", "https://gitlab.com/g/p.git"),
+        ("https://gitlab.com/g/@weird/p", "https://gitlab.com/g/@weird/p"),
+        ("ssh://ghp_tok@host/x", "ssh://ghp_tok@host/x"),
+        ("user:pw@host:g/p.git", "user@host:g/p.git"),
+        ("https://[::1]:8443/g/p", "https://[::1]:8443/g/p"),
+        ("file:///srv/git/p.git", "file:///srv/git/p.git"),
+    ],
+)
+def test_credentials_never_reach_the_ui(tmp_path: Path, remote: str, expected: str) -> None:
+    """The remote is sent to the browser, so a token in userinfo must not survive."""
+    assert _remote_url(remote, None) == expected
+    _write_config(tmp_path / ".git", f'[remote "origin"]\n\turl = {remote}\n')
+    assert _remote_url("", str(tmp_path)) == expected
+

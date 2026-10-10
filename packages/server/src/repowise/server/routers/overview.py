@@ -35,6 +35,7 @@ from repowise.core.persistence.models import (
 from repowise.core.stats_highlights import file_mix
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers.git import _hotspot_from_row
+from repowise.server.schemas.repository import strip_credentials
 from repowise.server.services.attention import build_attention
 from repowise.server.services.knowledge_map import (
     compute_knowledge_silos,
@@ -82,7 +83,7 @@ async def _index_storage_bytes(repowise_dir: Path) -> int:
 
 
 def _remote_url(stored_url: str | None, local_path: str | None) -> str | None:
-    """Best-effort git remote for a repo.
+    """Best-effort git remote for a repo, with any credentials removed.
 
     ``repositories.url`` is client-supplied and empty for most CLI-registered
     repos, so fall back to reading ``origin`` out of ``.git/config``. Parsed
@@ -91,8 +92,13 @@ def _remote_url(stored_url: str | None, local_path: str | None) -> str | None:
     file we can read.
 
     Used only to resolve a repo avatar, so every failure path returns ``None``
-    and the UI falls back to initials.
+    and the UI falls back to initials. The value is sent to the browser, so it
+    passes through ``strip_credentials`` first.
     """
+    return strip_credentials(_read_remote_url(stored_url, local_path))
+
+
+def _read_remote_url(stored_url: str | None, local_path: str | None) -> str | None:
     if stored_url:
         return stored_url
     if not local_path:
