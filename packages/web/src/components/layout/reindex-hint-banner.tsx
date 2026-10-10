@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AlertTriangle, X } from "lucide-react";
+import { X } from "lucide-react";
+import { Callout } from "@repowise-dev/ui/shared/callout";
 import useSWR from "swr";
 import { getMetaVersion } from "@/lib/api/meta";
 import { useTranslations } from "next-intl";
@@ -52,15 +53,22 @@ export function ReindexHintBanner({ repoId }: ReindexHintBannerProps) {
   };
 
   return (
-    <div
-      role="status"
-      className="flex items-start gap-3 border-b border-[var(--color-border-default)] bg-[var(--color-accent-muted)] px-4 py-2 text-sm"
-    >
-      <AlertTriangle
-        className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-accent-primary)]"
-        aria-hidden="true"
-      />
-      <div className="flex-1 text-[var(--color-text-primary)]">
+    <div className="px-3 pt-2 sm:px-[var(--page-pad)]">
+      <Callout
+        tone="warning"
+        label={t("reindexHint.label")}
+        className="py-1.5"
+        action={
+          <button
+            type="button"
+            onClick={dismiss}
+            aria-label={tc("dismiss")}
+            className="rounded p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        }
+      >
         {t("reindexHint.body")}
         {command && (
           <>
@@ -70,15 +78,7 @@ export function ReindexHintBanner({ repoId }: ReindexHintBannerProps) {
             </code>
           </>
         )}
-      </div>
-      <button
-        type="button"
-        onClick={dismiss}
-        aria-label={tc("dismiss")}
-        className="rounded p-1 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
-      >
-        <X className="h-4 w-4" />
-      </button>
+      </Callout>
     </div>
   );
 }

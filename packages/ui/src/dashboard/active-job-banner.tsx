@@ -45,9 +45,9 @@ export function ActiveJobBanner({ job, detailsHref }: ActiveJobBannerProps) {
   const phaseLabel = PHASE_LABELS[job.current_level ?? 0] ?? "Processing";
 
   return (
-    <div className="px-4 py-2 border-b border-[var(--color-border-default)] bg-[var(--color-bg-inset)]">
-      <div className="flex items-center gap-3">
-        {isRunning && <Spinner size="sm" className="text-[var(--color-accent-primary)]" />}
+    <div className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 sm:px-[var(--page-pad)]">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        {isRunning && <Spinner size="sm" className="text-[var(--color-text-tertiary)]" />}
         {isDone && <CheckCircle className="h-3.5 w-3.5 text-[var(--color-success)] shrink-0" />}
         {isFailed && <XCircle className="h-3.5 w-3.5 text-[var(--color-error)] shrink-0" />}
 
@@ -58,7 +58,7 @@ export function ActiveJobBanner({ job, detailsHref }: ActiveJobBannerProps) {
         </span>
 
         {isRunning && (
-          <div className="flex-1 max-w-[200px]">
+          <div className="w-24 sm:w-48">
             <Progress value={progress} className="h-1.5" />
           </div>
         )}
