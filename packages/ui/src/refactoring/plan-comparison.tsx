@@ -25,9 +25,9 @@ export function PlanComparison({ plan, fileHref }: PlanComparisonProps) {
   return (
     <div className="relative grid gap-3 md:grid-cols-2">
       {/* before */}
-      <div className="rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/40 p-4">
+      <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/40 p-4">
         <div className="mb-3">
-          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+          <span className="font-mono text-caption uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
             Today
           </span>
         </div>
@@ -58,9 +58,9 @@ export function PlanComparison({ plan, fileHref }: PlanComparisonProps) {
       </div>
 
       {/* after */}
-      <div className="rounded-2xl border border-[var(--color-border-default)] p-4">
+      <div className="rounded-lg border border-[var(--color-border-default)] p-4">
         <div className="mb-3">
-          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-secondary)]">
+          <span className="font-mono text-caption uppercase tracking-[0.12em] text-[var(--color-text-secondary)]">
             After
           </span>
         </div>

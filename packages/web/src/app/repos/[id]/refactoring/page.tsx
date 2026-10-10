@@ -19,6 +19,8 @@ import { useRouter } from "next/navigation";
 import { parseAsString, parseAsStringLiteral, useQueryState } from "nuqs";
 import { useTranslations } from "next-intl";
 import { Wrench, RotateCw } from "lucide-react";
+import { ApiError } from "@repowise-dev/ui/shared/api-error";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 
@@ -294,13 +296,21 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
           tabIndex={0}
         >
         {error ? (
-          <div className="rounded-2xl border border-[var(--color-error)]/30 bg-[var(--color-error)]/5 p-6 text-sm text-[var(--color-text-secondary)]">
-            {t("loadFailed")}
-          </div>
+          <ApiError
+            title={t("loadFailedTitle")}
+            message={t("loadFailed")}
+            retryLabel={tCommon("retry")}
+            onRetry={() => void mutate()}
+          />
         ) : data?.summary?.status === "unavailable" ? (
-          <div className="rounded-2xl border border-[var(--color-border-default)] p-6 text-sm text-[var(--color-text-secondary)]">
-            {data.summary.detail}
-          </div>
+          <EmptyState
+            title={t("unavailableTitle")}
+            description={t("unavailableDescription")}
+          >
+            {data.summary.detail ? (
+              <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">{data.summary.detail}</p>
+            ) : null}
+          </EmptyState>
         ) : isLoading ? (
           // Matches the real layout's shapes: a lede block, a ribbon, a field.
           <SkeletonRegion className="space-y-8" label={t("loading")}>

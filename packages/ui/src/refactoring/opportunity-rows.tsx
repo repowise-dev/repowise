@@ -96,7 +96,7 @@ export function OpportunityRows({
           the values they label. */}
       <div
         aria-hidden
-        className={`${GRID} hidden border-b border-[var(--color-border-default)] pb-2 pt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] lg:grid`}
+        className={`${GRID} hidden border-b border-[var(--color-border-default)] pb-2 pt-1 font-mono text-caption uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] lg:grid`}
       >
         <span>Type</span>
         <span>File</span>
@@ -183,7 +183,7 @@ function OpportunityRow({
       onMouseEnter={() => onHighlight?.(opportunity.opportunity_id)}
       onMouseLeave={() => onHighlight?.(null)}
       className={`${GRID} items-start border-t border-[var(--color-border-default)] py-3 ${
-        lit ? "bg-[var(--color-accent-muted)]" : "hover:bg-[var(--color-bg-elevated)]"
+        lit ? "bg-[var(--color-bg-selected)]" : "hover:bg-[var(--color-bg-elevated)]"
       }`}
     >
       <div className="order-2 text-xs text-[var(--color-text-secondary)] lg:order-none lg:pt-px">
@@ -198,37 +198,37 @@ function OpportunityRow({
         onBlur={() => onHighlight?.(null)}
         className="group order-1 col-span-2 min-w-0 text-left lg:order-none lg:col-span-1"
       >
-        <span className="block break-words font-mono text-[13.5px] font-medium text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]">
+        <span className="block break-words font-mono text-sm font-medium text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]">
           {name}
         </span>
         {/* Full path, no ellipsis: a truncated title reports a layout decision
             to the reader as missing content. */}
-        <span className="mt-0.5 block break-all font-mono text-[11.5px] text-[var(--color-text-tertiary)]">
+        <span className="mt-0.5 block break-all font-mono text-2xs text-[var(--color-text-tertiary)]">
           {opportunity.file_path}
         </span>
-        <span className="mt-1 block text-[12px] text-[var(--color-text-secondary)]">
+        <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
           {opportunityLede(opportunity)}
         </span>
       </button>
 
-      <div className="order-3 text-[12.5px] text-[var(--color-text-secondary)] lg:order-none lg:pt-px">
+      <div className="order-3 text-xs text-[var(--color-text-secondary)] lg:order-none lg:pt-px">
         {stepSummary(opportunity)}
         <br />
-        <span className="text-[11.5px] text-[var(--color-text-tertiary)]">
+        <span className="text-2xs text-[var(--color-text-tertiary)]">
           {effort} effort
           {opportunity.affected_files_total > 1
             ? `, ${formatNumber(opportunity.affected_files_total)} files`
             : ""}
         </span>
         {opportunity.confidence !== "high" ? (
-          <span className="ml-2 inline-flex items-center gap-1.5 text-[11.5px] text-[var(--color-caution)]">
+          <span className="ml-2 inline-flex items-center gap-1.5 text-2xs text-[var(--color-caution)]">
             <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-current" />
             {opportunity.confidence} confidence
           </span>
         ) : null}
       </div>
 
-      <div className="order-4 space-y-1 text-[12.5px] tabular-nums lg:order-none lg:pt-px">
+      <div className="order-4 space-y-1 text-xs tabular-nums lg:order-none lg:pt-px">
         {gain > 0 ? (
           <span className="block font-medium text-[var(--color-success)]">
             +{gain.toFixed(1)} health
@@ -242,8 +242,8 @@ function OpportunityRow({
           title={addressesPrimaryLabel(opportunity.addresses_primary_problem)}
           className={
             opportunity.addresses_primary_problem === true
-              ? "block text-[11.5px] text-[var(--color-text-secondary)]"
-              : "block text-[11.5px] text-[var(--color-text-tertiary)]"
+              ? "block text-2xs text-[var(--color-text-secondary)]"
+              : "block text-2xs text-[var(--color-text-tertiary)]"
           }
         >
           {addressesPrimaryShort(opportunity.addresses_primary_problem)}
@@ -254,7 +254,7 @@ function OpportunityRow({
           only once a row left `open`, so the list had no column a reader could
           scan down to see what they had already dealt with - and the row's
           height changed when they marked one. */}
-      <div className="order-5 text-[12.5px] lg:order-none lg:pt-px">
+      <div className="order-5 text-xs lg:order-none lg:pt-px">
         <span
           className={
             status === "open"
@@ -270,7 +270,7 @@ function OpportunityRow({
         <span
           role="status"
           className={
-            failed ? "mt-0.5 block text-[11.5px] text-[var(--color-error)]" : "sr-only"
+            failed ? "mt-0.5 block text-2xs text-[var(--color-error)]" : "sr-only"
           }
         >
           {failed ? "Could not save" : ""}
@@ -369,7 +369,7 @@ function RowOverflow({
                 close();
                 onAiPrompt(opportunity);
               }}
-              className="block w-full px-3 py-2 text-left text-[13px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+              className="block w-full px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
             >
               Copy prompt for an agent
             </button>
@@ -378,7 +378,7 @@ function RowOverflow({
             <a
               href={href}
               role="menuitem"
-              className="block px-3 py-2 text-[13px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+              className="block px-3 py-2 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
             >
               Open file
             </a>
@@ -389,7 +389,7 @@ function RowOverflow({
               aria-label="Triage this opportunity"
               className="mt-1 border-t border-[var(--color-border-default)] pt-1"
             >
-              <p className="px-3 pb-1 pt-1 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">
+              <p className="px-3 pb-1 pt-1 text-2xs uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">
                 Triage
               </p>
               {TRIAGE_STATUSES.map((option) => {
@@ -405,7 +405,7 @@ function RowOverflow({
                       close();
                       onStatusChange(option.value);
                     }}
-                    className={`block w-full px-3 py-2 text-left text-[13px] ${
+                    className={`block w-full px-3 py-2 text-left text-sm ${
                       current
                         ? "font-medium text-[var(--color-accent-primary)]"
                         : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"

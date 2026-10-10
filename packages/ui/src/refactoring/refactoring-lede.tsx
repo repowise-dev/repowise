@@ -58,6 +58,26 @@ export function RefactoringLede({
 
   const total = summary.opportunities_total;
   const files = summary.files_total;
+  if (total === 0) {
+    return (
+      <PageLede
+        label="Open opportunities"
+        value="0"
+        unit={
+          indexedFileCount ? `across ${formatNumber(indexedFileCount)} indexed files` : undefined
+        }
+        layout="beside"
+        action={action}
+      >
+        <p>
+          <span className="font-medium text-[var(--color-text-primary)]">
+            Nothing is worth splitting, cutting or extracting right now.
+          </span>{" "}
+          New opportunities appear here as files grow or cycles form.
+        </p>
+      </PageLede>
+    );
+  }
   const steps = summary.steps_total;
   const mechanical = summary.mechanical_steps_total;
   const judgment = summary.judgment_steps_total;

@@ -114,3 +114,36 @@ describe("RefactoringBoard without a host scope", () => {
     expect(screen.queryByText(/more in the full inventory/)).toBeNull();
   });
 });
+
+describe("RefactoringBoard empty states", () => {
+  const clear = { ...state, scope: "all" as const, appliedScope: "all" as const, hidden: null, total: 0 };
+
+  it("reads as an all-clear when the analysis ran and found nothing", () => {
+    render(
+      <RefactoringBoard
+        opportunities={[]}
+        showLede={false}
+        summary={{ status: "available", opportunities_total: 0 } as never}
+        serverState={clear}
+        onServerStateChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("No refactoring targets")).toBeTruthy();
+  });
+
+  it("offers Clear filters when a search hides everything", () => {
+    const onChange = vi.fn();
+    render(
+      <RefactoringBoard
+        opportunities={[]}
+        showLede={false}
+        summary={{ status: "available", opportunities_total: 5 } as never}
+        serverState={{ ...clear, query: "zzz" }}
+        onServerStateChange={onChange}
+      />,
+    );
+    expect(screen.getByText("No opportunities match these filters")).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "Clear filters" })[0]!);
+    expect(onChange).toHaveBeenCalled();
+  });
+});

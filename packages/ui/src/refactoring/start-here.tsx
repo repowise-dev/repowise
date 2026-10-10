@@ -135,22 +135,22 @@ export function StartHere({
               onFocus={() => setHighlighted(item.opportunity_id)}
               onBlur={() => setHighlighted(null)}
               className={`group grid w-full grid-cols-[28px_minmax(0,1fr)] items-start gap-4 border-t border-[var(--color-border-default)] px-3 py-4 text-left transition-colors first:border-t-0 md:grid-cols-[28px_minmax(0,1fr)_170px] md:items-center ${
-                lit ? "bg-[var(--color-accent-muted)]" : "hover:bg-[var(--color-bg-elevated)]"
+                lit ? "bg-[var(--color-bg-selected)]" : "hover:bg-[var(--color-bg-elevated)]"
               }`}
             >
               <span className="pt-0.5 font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">
                 {String(i + 1).padStart(2, "0")}
               </span>
               <span className="min-w-0">
-                <span className="block text-[15px] font-semibold text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]">
+                <span className="block text-sm font-semibold text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]">
                   {meta.label} · {item.file_path.split("/").pop()}
                 </span>
                 {/* Full path, no ellipsis: a truncated title reports a layout
                     decision to the reader as missing content. */}
-                <span className="mt-0.5 block break-all font-mono text-[11px] text-[var(--color-text-tertiary)]">
+                <span className="mt-0.5 block break-all font-mono text-2xs text-[var(--color-text-tertiary)]">
                   {item.file_path}
                 </span>
-                <span className="mt-1.5 block max-w-[70ch] text-[13px] text-[var(--color-text-secondary)]">
+                <span className="mt-1.5 block max-w-[70ch] text-sm text-[var(--color-text-secondary)]">
                   {stepSummary(item)} ·{" "}
                   {addressesPrimaryShort(item.addresses_primary_problem).toLowerCase()}
                 </span>

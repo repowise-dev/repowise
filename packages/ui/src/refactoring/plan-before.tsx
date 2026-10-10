@@ -89,7 +89,7 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
             {plan.target_symbol || baseName(plan.file_path)}
           </code>
           {lcom4 > 0 ? (
-            <span className="shrink-0 rounded-full bg-[var(--color-error)]/10 px-2 py-0.5 text-caption font-semibold tabular-nums text-[var(--color-error)]">
+            <span className="shrink-0 text-caption font-semibold tabular-nums text-[var(--color-text-secondary)]">
               LCOM4 {lcom4}
             </span>
           ) : null}
@@ -207,7 +207,7 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
             {baseName(plan.file_path)}
           </code>
           {nloc > 0 ? (
-            <span className="shrink-0 rounded-full bg-[var(--color-error)]/10 px-2 py-0.5 text-caption font-semibold tabular-nums text-[var(--color-error)]">
+            <span className="shrink-0 text-caption font-semibold tabular-nums text-[var(--color-text-secondary)]">
               {nloc} NLOC
             </span>
           ) : null}
