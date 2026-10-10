@@ -9,8 +9,8 @@ before the column fill in on the next index or update.
 Local SQLite stores get the column from ``init_db``'s additive reconciler; this
 migration covers managed Postgres.
 
-Revision ID: 0096
-Revises: 0095
+Revision ID: 0097
+Revises: 0096
 Create Date: 2026-10-10
 """
 
@@ -22,8 +22,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers
-revision: str = "0096"
-down_revision: str | None = "0095"
+revision: str = "0097"
+down_revision: str | None = "0096"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
