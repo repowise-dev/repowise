@@ -40,6 +40,8 @@ The whole-file passes share one descent of the tree (``file_scan``):
 
 from __future__ import annotations
 
+from typing import Any
+
 import structlog
 
 from ..asserts.lexicon import assert_dialect as _assert_dialect
@@ -166,6 +168,7 @@ def walk_file(
     run_perf = perf_pass_runs(language, lmap)
     scan = scan_file(tree.root_node, language, lmap, source, io_names=run_perf)
     flags = module_false_constants(tree.root_node, source, language)
+    facts_of = _facts_reader(language, lmap)
     for fn_node in _collect_function_nodes(tree.root_node, lmap):
         body = fn_node.child_by_field_name("body") or fn_node
         deepest: list[int] = []
@@ -209,6 +212,7 @@ def walk_file(
             deprecated=is_deprecated(fn_node, body, name, lmap, source),
             gated_off=body is not fn_node and is_gated_off(body, flags),
             deepest_block=(deepest[0], deepest[1]) if deepest else None,
+            facts=facts_of(fn_node),
         )
         functions.append(fc)
         fc_by_node_id[fn_node.id] = fc
@@ -230,6 +234,26 @@ def walk_file(
         has_inline_tests=_detect_inline_tests(source, language),
         rust_test_line_ranges=scan.rust_test_line_ranges,
     )
+
+
+def _facts_reader(language: str, lmap: Any) -> Any:
+    """``fn_node -> FunctionFacts | None`` for *language*, on the tree already parsed.
+
+    Deferred import: the dataflow package imports this one.
+    """
+    from ..dataflow import function_facts, get_defuse_dialect
+
+    dialect = get_defuse_dialect(language)
+
+    def read(fn_node: Any) -> Any:
+        try:
+            receiver = dialect.receiver(fn_node, lmap) if dialect is not None else None
+            return function_facts(fn_node, lmap, receiver)
+        except Exception as exc:
+            log.debug("function_facts_failed", error=str(exc))
+            return None
+
+    return read
 
 
 def walk_file_complexity(

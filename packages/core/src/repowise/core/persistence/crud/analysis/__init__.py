@@ -13,6 +13,7 @@ from . import (  # noqa: F401
     coverage_map,
     dead_code,
     doc_drift,
+    function_facts,
     health,
     performance,
     refactoring,
@@ -64,6 +65,7 @@ from .doc_drift import (
     serialize_doc_drift_row,
     summarize_confidence_rows,
 )
+from .function_facts import get_function_facts, write_function_facts
 from .health import (
     FILE_TREND_SNAPSHOT_WINDOW,
     HEALTH_SNAPSHOT_RETENTION,
@@ -159,6 +161,7 @@ __all__ = [
     "get_doc_drift_findings",
     "get_doc_drift_references",
     "get_file_language_map",
+    "get_function_facts",
     "get_health_finding_by_public_id",
     "get_health_findings",
     "get_health_metrics",
@@ -223,4 +226,5 @@ __all__ = [
     "upsert_health_findings",
     "upsert_health_metrics",
     "upsert_refactoring_suggestions",
+    "write_function_facts",
 ]

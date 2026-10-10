@@ -1060,6 +1060,7 @@ class HealthAnalyzer:
             kpis=kpis,
             function_blame_rows=self._function_blame_rows(walked),
             execution_roles=execution_roles,
+            function_facts=self._function_fact_rows(walked),
             repo_function_mod_p80=full_repo_fn_mod_p80,
             refactoring_suggestions=suggestions,
             performance_plan_policy=PerformancePlanPolicy(
@@ -1265,6 +1266,7 @@ class HealthAnalyzer:
             kpis=kpis,
             function_blame_rows=self._function_blame_rows(walked),
             execution_roles=execution_roles,
+            function_facts=self._function_fact_rows(walked),
             repo_function_mod_p80=full_repo_fn_mod_p80,
             refactoring_suggestions=suggestions,
             performance_plan_policy=PerformancePlanPolicy(
@@ -1410,6 +1412,37 @@ class HealthAnalyzer:
                 finding.details["role_owner"] = owner
                 finding.details["execution_role"] = roles.role_of(owner, finding.file_path)
         return roles
+
+    def _function_fact_rows(self, walked: list[tuple[Any, FileComplexity]]) -> list[dict]:
+        """One row per walked function the graph names, for the ``function_facts`` store.
+
+        A function the graph holds no symbol for has no id to key on, and is left out.
+        """
+        index = self._execution_graph()
+        if index is None:
+            return []
+        rows: list[dict] = []
+        for pf, fcx in walked:
+            path = pf.file_info.path
+            for fc in fcx.functions:
+                symbol = index.resolve_function(path, fc.start_line, func_end=fc.end_line)
+                if symbol is None:
+                    continue
+                facts = fc.facts
+                rows.append(
+                    {
+                        "symbol_id": symbol,
+                        "file_path": path,
+                        "start_line": fc.start_line,
+                        "end_line": fc.end_line,
+                        "awaits": facts.awaits if facts else None,
+                        "is_generator": facts.is_generator if facts else None,
+                        "uses_receiver": facts.uses_receiver if facts else None,
+                        "receiver_assigns": facts.receiver_assigns if facts else None,
+                        "early_exits": facts.early_exits if facts else None,
+                    }
+                )
+        return rows
 
     def _function_blame_rows(self, walked: list[tuple[Any, FileComplexity]]) -> list[dict]:
         """Build the per-function blame rollup from the walked files + the

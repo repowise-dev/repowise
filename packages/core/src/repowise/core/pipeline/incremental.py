@@ -1283,6 +1283,7 @@ async def persist_partial_health(
         upsert_health_findings,
         upsert_health_metrics,
         upsert_refactoring_suggestions,
+        write_function_facts,
     )
     from repowise.core.pipeline.persist import _analyzed_commit
 
@@ -1351,6 +1352,14 @@ async def persist_partial_health(
         # opportunity folds a file's plans, and a file this run did not touch
         # can still lose one when a cross-file plan elsewhere resolves.
         await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
+        # Facts for the files this run walked; roles for every stored row.
+        await write_function_facts(
+            session,
+            repo_id,
+            getattr(report, "function_facts", None) or [],
+            file_paths={*changed_paths, *performance_paths},
+            roles=getattr(report, "execution_roles", None),
+        )
     # Per-function blame rollup for the changed files (keeps git_function_blame
     # current between full indexes; FULL git tier only — empty otherwise).
     fn_blame_rows = getattr(report, "function_blame_rows", None)

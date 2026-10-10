@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..asserts.oracle_reach import OracleReach
+    from ..dataflow.slice import FunctionFacts
     from ..perf.loop_facts import LoopFacts
 
 
@@ -128,6 +129,9 @@ class FunctionComplexity:
     # ``max_nesting``, when the function nests at all: the concrete place to
     # start flattening it. ``cyclomatic._walk_function_body``.
     deepest_block: tuple[int, int] | None = None
+    # Whole-function facts (awaits, yields, receiver, early exits), stored per
+    # function symbol by the health writer. ``dataflow.slice.function_facts``.
+    facts: FunctionFacts | None = None
 
     def __post_init__(self) -> None:
         if self.complex_conditions is None:

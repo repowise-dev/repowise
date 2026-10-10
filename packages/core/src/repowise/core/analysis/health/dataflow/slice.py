@@ -109,6 +109,8 @@ class _Scan(NamedTuple):
     awaits: tuple[frozenset[str], frozenset[str]]
     lambdas: frozenset[str] = frozenset()
     receiver: Receiver | None = None
+    yields: frozenset[str] = frozenset()
+    exits: frozenset[str] = frozenset()
 
 
 class _Metrics(NamedTuple):
@@ -119,6 +121,8 @@ class _Metrics(NamedTuple):
     awaits: bool
     receiver_use: bool = False
     receiver_assigns: frozenset[str] = frozenset()
+    yields: int = 0
+    exits: int = 0
 
 
 class _Prefix(NamedTuple):
@@ -253,12 +257,75 @@ def find_extractions(
     return _sorted(out)
 
 
+@dataclass(frozen=True)
+class FunctionFacts:
+    """What a whole function does, read in the walk that measures it.
+
+    ``awaits``: it suspends outside any nested scope. ``is_generator``: it
+    yields. ``uses_receiver`` / ``receiver_assigns`` as on :class:`Extraction`,
+    for the whole body; ``receiver_assigns`` is None where an implicit receiver
+    (Java, C++) can write fields by bare name, which only def/use can tell.
+    ``early_exits``: returns and raises before the body's last statement.
+    """
+
+    awaits: bool
+    is_generator: bool
+    uses_receiver: bool | None
+    receiver_assigns: tuple[str, ...] | None
+    early_exits: int
+
+
+def function_facts(fn_node: Node, lmap: LanguageNodeMap, receiver: Receiver | None) -> FunctionFacts:
+    """:class:`FunctionFacts` for *fn_node*, from one walk of its body."""
+    body = fn_node.child_by_field_name("body") or fn_node
+    stmts = body.named_children
+    m = _span_metrics(stmts, _scan_for(lmap, receiver, fn_node))
+    tail = stmts[-1] if stmts else None
+    ends_in_exit = tail is not None and (
+        tail.type in lmap.return_kinds | lmap.raise_kinds
+        or any(c.type in lmap.return_kinds | lmap.raise_kinds for c in tail.named_children[:1])
+    )
+    uses, assigns = _whole_receiver_facts(receiver, m)
+    return FunctionFacts(
+        awaits=m.awaits,
+        is_generator=m.yields > 0,
+        uses_receiver=uses,
+        receiver_assigns=assigns,
+        early_exits=max(0, m.exits - ends_in_exit),
+    )
+
+
+def _whole_receiver_facts(
+    receiver: Receiver | None, m: _Metrics
+) -> tuple[bool | None, tuple[str, ...] | None]:
+    if receiver is None:
+        return None, None
+    if not receiver.names:
+        return False, ()
+    fields = None if _UNREAD_TARGET in m.receiver_assigns else tuple(sorted(m.receiver_assigns))
+    if receiver.implicit:
+        return (True if m.receiver_use else None), None
+    return m.receiver_use, fields
+
+
 def _scan_for(lmap: LanguageNodeMap, receiver: Receiver | None, fn_node: Node) -> _Scan:
     """The walk's kinds for *fn_node*. The receiver is looked for only when
     its name (or ``super``) appears in the function's text at all: most
     functions never mention it, and then no node needs the check."""
     if receiver is not None and not (receiver.names and mentions_receiver(fn_node, receiver.names)):
         receiver = None
+    base = _BASE_SCANS.get(id(lmap))
+    if base is None:
+        base = _BASE_SCANS[id(lmap)] = _base_scan(lmap)
+    return base if receiver is None else base._replace(receiver=receiver)
+
+
+# The kind unions per language map, built once: the walker asks for every
+# function of every file. Maps are module-level constants, so ``id`` is stable.
+_BASE_SCANS: dict[int, _Scan] = {}
+
+
+def _base_scan(lmap: LanguageNodeMap) -> _Scan:
     return _Scan(
         decisions=lmap.branch_kinds
         | lmap.loop_kinds
@@ -274,7 +341,8 @@ def _scan_for(lmap: LanguageNodeMap, receiver: Receiver | None, fn_node: Node) -
         exit_macros=_exit_macros(lmap),
         awaits=_awaits(lmap),
         lambdas=lmap.lambda_kinds,
-        receiver=receiver,
+        yields=lmap.yield_kinds,
+        exits=lmap.return_kinds | lmap.raise_kinds,
     )
 
 
@@ -1118,7 +1186,7 @@ def _span_metrics(span: list[Node], scan: _Scan) -> _Metrics:
     function."""
     await_kinds, await_scope_kinds = scan.awaits
     receiver = scan.receiver
-    decisions = 0
+    decisions = yields = exits = 0
     has_jump = has_await = uses = False
     assigns: set[str] = set()
     for root in span:
@@ -1133,9 +1201,11 @@ def _span_metrics(span: list[Node], scan: _Scan) -> _Metrics:
                 has_jump = has_jump or _is_jump(node, scan.jumps, scan.exit_macros)
                 has_await = has_await or (counts_await and t in await_kinds)
                 decisions += t in scan.decisions
+                yields += t in scan.yields
+                exits += t in scan.exits
                 counts_await = counts_await and t not in await_scope_kinds
             _push_children(node, stack, counts_await, nested, scan)
-    return _Metrics(decisions, has_jump, has_await, uses, frozenset(assigns))
+    return _Metrics(decisions, has_jump, has_await, uses, frozenset(assigns), yields, exits)
 
 
 def _push_children(

@@ -2067,6 +2067,42 @@ class PerformanceSummary(Base):
     )
 
 
+class FunctionFact(Base):
+    """One function symbol: what runs it and what its body does.
+
+    Written by the health writers: facts for the files a run walked, the
+    execution role for every row each run, since a role moves with seeds and
+    calls in other files. One row per function, so later per-function
+    measures are new columns here rather than a second table.
+    """
+
+    __tablename__ = "function_facts"
+
+    repository_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    symbol_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    start_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    # ``execution_roles.ExecutionRole``.
+    execution_role: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unknown", server_default="unknown"
+    )
+    # ``dataflow.slice.FunctionFacts``; NULL where the language cannot tell.
+    awaits: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    is_generator: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    uses_receiver: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # JSON list of receiver fields assigned directly, or NULL when unknown.
+    receiver_assigns_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    early_exits: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # By file, for the partial rewrite. No role index until a reader filters on it.
+    __table_args__ = (Index("ix_function_facts_repo_path", "repository_id", "file_path"),)
+
+
 class RefactoringOpportunity(QueueVerdict, Base):
     """One file's composed refactoring work, materialized for serving.
 
