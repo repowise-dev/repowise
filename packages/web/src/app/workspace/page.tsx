@@ -79,7 +79,7 @@ export default async function WorkspaceDashboardPage() {
   if (repos.length === 0) {
     return (
       <PageShell
-        title={workspace?.workspace_name ?? "Workspace"}
+        title={workspace?.workspace_name ?? t("untitled")}
         icon={<Layers className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
         description={t("description")}
       >
@@ -146,7 +146,7 @@ export default async function WorkspaceDashboardPage() {
 
   return (
     <PageShell
-      title={workspace?.workspace_name ?? "Workspace"}
+      title={workspace?.workspace_name ?? t("untitled")}
       icon={<Layers className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
       description={t("description")}
       actions={<SyncButton variant="primary" label={t("syncWorkspace")} />}

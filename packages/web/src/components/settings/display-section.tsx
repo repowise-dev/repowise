@@ -206,14 +206,11 @@ export function DisplaySection() {
             </SettingsRow>
           );
         })}
-        <SettingsRow
-          label="Show repowise.dev tips"
-          hint="An occasional one-line tip about what repowise.dev adds, at most one per page. Never shown once you have signed in with repowise login."
-        >
+        <SettingsRow label={t("display.tipsLabel")} hint={t("display.tipsHint")}>
           <Switch
             checked={tipsShown}
             onCheckedChange={handleTipsChange}
-            aria-label="Show repowise.dev tips"
+            aria-label={t("display.tipsAria")}
           />
         </SettingsRow>
       </SettingsRows>

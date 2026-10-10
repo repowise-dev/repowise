@@ -66,7 +66,7 @@ export function SecurityTab({ repoId }: { repoId: string }) {
           <RotateCw
             className={`h-3.5 w-3.5 mr-1.5 ${rescanning ? "motion-safe:animate-spin" : ""}`}
           />
-          {rescanning ? "Re-scanning…" : "Re-scan"}
+          {rescanning ? t("rescanning") : t("rescan")}
         </Button>
       </div>
 

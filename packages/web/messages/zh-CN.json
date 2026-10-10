@@ -197,7 +197,8 @@
       "resyncStarted": "全量重新同步已开始{name}",
       "deadCodeStarted": "死代码分析已开始",
       "inFlight": "正在显示进行中任务的进度。要启动新任务，请先在面板中取消它。"
-    }
+    },
+    "unknownRepository": "未知仓库"
   },
   "attention": {
     "unindexedOne": "{name} 尚未索引。",
@@ -352,7 +353,9 @@
       "healthDescription": "按群体对比漂移：wiki 页面与其页面向量、决策记录与其决策向量。出现缺口意味着搜索正在用过期的集合作答。",
       "deleteTitle": "删除这个代码仓库",
       "deleteDescription": "删除索引以及由它生成的一切——页面、符号、决策和历史。你的源文件不会被改动。此操作无法撤销。",
-      "footer": "服务器连接、webhook、模型默认值和 MCP 配置都在 <link>全局设置</link> 里。"
+      "footer": "服务器连接、webhook、模型默认值和 MCP 配置都在 <link>全局设置</link> 里。",
+      "publishTitle": "发布到 repowise.dev",
+      "publishDescription": "把这个代码仓库发布到 repowise.dev，从它的 GitHub 远程仓库建立索引。本机上的任何内容都不会上传。"
     },
     "globalSettings": {
       "title": "设置",
@@ -414,7 +417,8 @@
         "contractLinks": "契约链接",
         "contractLinksSub": "已匹配的提供方与消费方",
         "contractLinksNone": "尚无契约数据"
-      }
+      },
+      "untitled": "工作区"
     },
     "docsFreshness": {
       "title": "文档新鲜度",
@@ -481,7 +485,10 @@
       "chatSelectionLabel": "就选中内容提问",
       "chatSelectionHint": "在代码或文档中选中文本时出现的控件。隐藏后该控件会消失；选中文本的行为不受影响。",
       "chatSelectionAria": "显示「就选中内容提问」控件",
-      "chatGatedHint": "{hint} 隐藏「向 Repowise 提问」时不可用。"
+      "chatGatedHint": "{hint} 隐藏「向 Repowise 提问」时不可用。",
+      "tipsLabel": "显示 repowise.dev 提示",
+      "tipsHint": "偶尔出现的一行提示，介绍 repowise.dev 能带来什么，每页最多一条。使用 repowise login 登录后不再显示。",
+      "tipsAria": "显示 repowise.dev 提示"
     },
     "mcp": {
       "title": "编辑器配置",
@@ -763,6 +770,24 @@
     "findingMarked": "发现项已标记为 {status}",
     "findingStatusFailed": "无法更新发现项状态"
   },
+  "hosted": {
+    "publishTitle": "发布到 repowise.dev",
+    "publishDescription": "把这个代码仓库发布到 repowise.dev，从它的 GitHub 远程仓库建立索引。本机上的任何内容都不会上传。",
+    "confirmTitle": "发布到 repowise.dev？",
+    "confirmDescription": "repowise.dev 会从该仓库的 GitHub 远程仓库建立索引。只使用已推送到 GitHub 的内容；本机上的任何内容都不会上传。",
+    "publishing": "发布中…",
+    "publishButton": "发布到 repowise.dev",
+    "publishItFree": "免费发布",
+    "signInFirst": "请先登录：在终端中运行 <code>repowise login</code>。",
+    "limits": "只有已推送到 GitHub 的内容才会发布。在免费账号下，公开仓库免费（最多 2 个）；私有仓库和更多仓库需要 Pro，免费试用 10 天，需绑定银行卡。",
+    "actionCli": "免费发布：<code>repowise publish</code>",
+    "tips": {
+      "mcp": "在 Claude.ai 或 ChatGPT 里使用这个仓库。本地 MCP 只在桌面工具中可用。",
+      "stale": "每次 push 后自动保持最新。",
+      "docs": "想要不需要 API key 的 AI 文档？repowise.dev 自带模型。"
+    },
+    "confirmLabel": "发布"
+  },
   "jobs": {
     "completed": "文档已更新{name}",
     "pagesGenerated": "已生成 {count} 个页面",
@@ -793,7 +818,9 @@
     "allFindings": "全部发现项",
     "findingsCount": "{count} 条发现项",
     "promptTitle": "AI 修复提示词",
-    "promptDescription": "一段可直接粘贴的提示词，引导 AI 智能体确认并修复这条安全发现项。"
+    "promptDescription": "一段可直接粘贴的提示词，引导 AI 智能体确认并修复这条安全发现项。",
+    "rescan": "重新扫描",
+    "rescanning": "重新扫描中…"
   },
   "symbols": {
     "clearFileFilter": "清除文件筛选",

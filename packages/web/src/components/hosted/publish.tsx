@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { ConfirmDialog } from "@repowise-dev/ui/ui/confirm-dialog";
@@ -13,6 +14,7 @@ import { useHostedIdentity } from "@/lib/hooks/use-hosted-identity";
  *  person confirms. The CLI owns the decision and every message; this only
  *  holds the request state and the confirmation. */
 function usePublish(repoId: string) {
+  const t = useTranslations("hosted");
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [result, setResult] = useState<PublishResult | null>(null);
@@ -36,9 +38,9 @@ function usePublish(repoId: string) {
     <ConfirmDialog
       open={confirming}
       onOpenChange={setConfirming}
-      title="Publish to repowise.dev?"
-      description="repowise.dev will index this repo from its GitHub remote. Only what's pushed to GitHub is used; nothing on this machine is uploaded."
-      confirmLabel="Publish"
+      title={t("confirmTitle")}
+      description={t("confirmDescription")}
+      confirmLabel={t("confirmLabel")}
       onConfirm={run}
     />
   );
@@ -77,18 +79,9 @@ function PublishOutcome({ result, error }: { result: PublishResult | null; error
   );
 }
 
-const SIGN_IN_FIRST = (
-  <>
-    Sign in first: run{" "}
-    <code className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs">
-      repowise login
-    </code>{" "}
-    in a terminal.
-  </>
-);
-
 /** The "Publish to repowise.dev" button with its result, for a repo page. */
 export function PublishPanel({ repoId }: { repoId: string }) {
+  const t = useTranslations("hosted");
   const { identity } = useHostedIdentity();
   const { busy, result, error, ask, confirmDialog } = usePublish(repoId);
   // A server without the endpoint answers nothing; no button beats a broken one.
@@ -99,17 +92,24 @@ export function PublishPanel({ repoId }: { repoId: string }) {
       {identity.signed_in ? (
         <div>
           <Button size="sm" onClick={ask} disabled={busy}>
-            {busy ? "Publishing…" : "Publish to repowise.dev"}
+            {busy ? t("publishing") : t("publishButton")}
           </Button>
         </div>
       ) : (
-        <p className="text-sm text-[var(--color-text-secondary)]">{SIGN_IN_FIRST}</p>
+        <p className="text-sm text-[var(--color-text-secondary)]">
+          {t.rich("signInFirst", {
+            code: (chunks) => (
+              <code className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs">
+                {chunks}
+              </code>
+            ),
+          })}
+        </p>
       )}
       <PublishOutcome result={result} error={error} />
       <p className="text-xs text-[var(--color-text-tertiary)]">
         {/* True on every plan: the panel doesn't know which one this account has. */}
-        Only what&apos;s pushed to GitHub is published. On a free account, public repos are
-        free (up to 2); private repos and more repos need Pro, free for 10 days, card required.
+        {t("limits")}
       </p>
       {confirmDialog}
     </div>
@@ -119,6 +119,7 @@ export function PublishPanel({ repoId }: { repoId: string }) {
 /** The panel as a repo overview section. Unlike repo settings, the overview
  *  is not where someone goes to publish, so it follows the tips switches. */
 export function PublishOverviewSection({ repoId }: { repoId: string }) {
+  const t = useTranslations("hosted");
   const { identity } = useHostedIdentity();
   // Off until read after mount, so SSR and the first client render agree.
   const [tipsShown, setTipsShown] = useState(false);
@@ -126,7 +127,7 @@ export function PublishOverviewSection({ repoId }: { repoId: string }) {
   if (!identity?.hints_enabled || !tipsShown) return null;
 
   return (
-    <OverviewSection title="Publish on repowise.dev">
+    <OverviewSection title={t("publishTitle")}>
       <PublishPanel repoId={repoId} />
     </OverviewSection>
   );
@@ -134,6 +135,7 @@ export function PublishOverviewSection({ repoId }: { repoId: string }) {
 
 /** A tip's free next step on a repo page: the same publish, confirmed first. */
 export function PublishItFree({ repoId }: { repoId: string }) {
+  const t = useTranslations("hosted");
   const { busy, result, error, ask, confirmDialog } = usePublish(repoId);
   return (
     <span className="flex flex-col gap-1">
@@ -143,7 +145,7 @@ export function PublishItFree({ repoId }: { repoId: string }) {
         disabled={busy}
         className="self-start font-medium text-[var(--color-accent-primary)] hover:underline disabled:opacity-60"
       >
-        {busy ? "Publishing…" : "Publish it free"}
+        {busy ? t("publishing") : t("publishItFree")}
       </button>
       <PublishOutcome result={result} error={error} />
       {confirmDialog}

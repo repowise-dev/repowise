@@ -197,7 +197,8 @@
       "resyncStarted": "Full resync started{name}",
       "deadCodeStarted": "Dead code analysis started",
       "inFlight": "Showing progress for the in-flight job. Cancel it from the panel to start a new one."
-    }
+    },
+    "unknownRepository": "Unknown repository"
   },
   "attention": {
     "unindexedOne": "{name} has not been indexed yet.",
@@ -352,7 +353,9 @@
       "healthDescription": "Per-population drift: wiki pages against page vectors, and decision records against decision vectors. A gap means search is answering from a stale set.",
       "deleteTitle": "Delete this repository",
       "deleteDescription": "Removes the index and everything generated from it — pages, symbols, decisions and history. Your source files are untouched. This cannot be undone.",
-      "footer": "Server connection, webhooks, model defaults and MCP configuration are in <link>global settings</link>."
+      "footer": "Server connection, webhooks, model defaults and MCP configuration are in <link>global settings</link>.",
+      "publishTitle": "Publish on repowise.dev",
+      "publishDescription": "Put this repository on repowise.dev, indexed from its GitHub remote. Nothing on this machine is uploaded."
     },
     "globalSettings": {
       "title": "Settings",
@@ -414,7 +417,8 @@
         "contractLinks": "Contract links",
         "contractLinksSub": "matched provider to consumer",
         "contractLinksNone": "no contract data yet"
-      }
+      },
+      "untitled": "Workspace"
     },
     "docsFreshness": {
       "title": "Doc freshness",
@@ -481,7 +485,10 @@
       "chatSelectionLabel": "Ask about a selection",
       "chatSelectionHint": "The control that appears when you select text in code or documentation. Hiding it removes that control; selecting text behaves normally.",
       "chatSelectionAria": "Show the Ask about selection control",
-      "chatGatedHint": "{hint} Unavailable while Ask Repowise is hidden."
+      "chatGatedHint": "{hint} Unavailable while Ask Repowise is hidden.",
+      "tipsLabel": "Show repowise.dev tips",
+      "tipsHint": "An occasional one-line tip about what repowise.dev adds, at most one per page. Never shown once you have signed in with repowise login.",
+      "tipsAria": "Show repowise.dev tips"
     },
     "mcp": {
       "title": "Editor config",
@@ -763,6 +770,24 @@
     "findingMarked": "Finding marked {status}",
     "findingStatusFailed": "Couldn't update finding status"
   },
+  "hosted": {
+    "publishTitle": "Publish on repowise.dev",
+    "publishDescription": "Put this repository on repowise.dev, indexed from its GitHub remote. Nothing on this machine is uploaded.",
+    "confirmTitle": "Publish to repowise.dev?",
+    "confirmDescription": "repowise.dev will index this repo from its GitHub remote. Only what's pushed to GitHub is used; nothing on this machine is uploaded.",
+    "publishing": "Publishing…",
+    "publishButton": "Publish to repowise.dev",
+    "publishItFree": "Publish it free",
+    "signInFirst": "Sign in first: run <code>repowise login</code> in a terminal.",
+    "limits": "Only what's pushed to GitHub is published. On a free account, public repos are free (up to 2); private repos and more repos need Pro, free for 10 days, card required.",
+    "actionCli": "Publish it free: <code>repowise publish</code>",
+    "tips": {
+      "mcp": "Use this repo inside Claude.ai or ChatGPT. Local MCP only works in desktop tools.",
+      "stale": "Keep this up to date automatically on every push.",
+      "docs": "Want AI-written docs without an API key? repowise.dev includes the model."
+    },
+    "confirmLabel": "Publish"
+  },
   "jobs": {
     "completed": "Documentation updated{name}",
     "pagesGenerated": "{count} pages generated",
@@ -793,7 +818,9 @@
     "allFindings": "All findings",
     "findingsCount": "{count} findings",
     "promptTitle": "AI fix prompt",
-    "promptDescription": "A ready-to-paste prompt that walks your AI agent through confirming and remediating this security finding."
+    "promptDescription": "A ready-to-paste prompt that walks your AI agent through confirming and remediating this security finding.",
+    "rescan": "Re-scan",
+    "rescanning": "Re-scanning…"
   },
   "symbols": {
     "clearFileFilter": "Clear file filter",

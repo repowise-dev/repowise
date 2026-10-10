@@ -162,7 +162,7 @@ export default async function DashboardPage() {
           }
           description={t("indexingNowDescription")}
         >
-          <JobRows jobs={activeJobs} nameFor={nameFor} />
+          <JobRows jobs={activeJobs} nameFor={nameFor} unknownRepoName={t("unknownRepository")} />
         </OverviewSection>
       )}
 
@@ -182,7 +182,7 @@ export default async function DashboardPage() {
           title={t("recentActivity")}
           description={t("recentActivityDescription")}
         >
-          <JobRows jobs={jobList} nameFor={nameFor} />
+          <JobRows jobs={jobList} nameFor={nameFor} unknownRepoName={t("unknownRepository")} />
         </OverviewSection>
       )}
     </PageShell>
