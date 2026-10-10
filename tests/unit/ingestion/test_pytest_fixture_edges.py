@@ -780,6 +780,16 @@ class TestTestClassGlobs:
         (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options\n")
         assert _test_class_globs(tmp_path) == ("Test*",)
 
+    def test_a_non_string_non_list_toml_value_falls_through(
+        self, tmp_path: Path
+    ) -> None:
+        # python_classes = 42 used to crash ingestion with TypeError; a value
+        # pytest itself could not use is ignored instead of breaking the graph.
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.pytest.ini_options]\npython_classes = 42\n"
+        )
+        assert _test_class_globs(tmp_path) == ("Test*",)
+
     def test_no_config_file_yields_the_default(self, tmp_path: Path) -> None:
         assert _test_class_globs(tmp_path) == ("Test*",)
         assert _test_class_globs(None) == ("Test*",)

@@ -134,6 +134,10 @@ def _test_class_globs(repo_path: Path | None) -> tuple[str, ...]:
         value = options.get("python_classes")
         if isinstance(value, str):
             value = value.strip().strip("\"'")
+        elif not isinstance(value, (list, tuple)):
+            # A TOML scalar that is not a string or list is not a glob setting
+            # pytest would use; fall through instead of crashing on it.
+            value = None
         globs = _words(value)
         if globs:
             return globs
