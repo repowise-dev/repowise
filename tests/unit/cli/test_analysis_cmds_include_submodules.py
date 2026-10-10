@@ -49,7 +49,7 @@ def _init_repo_with_initialized_submodule(tmp_path, *, state: dict | None = None
 
 def _health_metric_paths(tmp_path) -> set[str]:
     result = CliRunner().invoke(
-        health_command, [str(tmp_path), "--format", "json", "--no-workspace"]
+        health_command, [str(tmp_path), "--format", "json", "--no-workspace", "--recompute"]
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output[result.output.index("{") :])

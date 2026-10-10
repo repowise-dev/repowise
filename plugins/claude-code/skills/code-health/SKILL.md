@@ -51,7 +51,7 @@ not just *bigger*.
 6. Untested-hotspot / coverage questions → tell the user coverage markers
    light up once they ingest a report: `repowise coverage add cov.lcov`
    (LCOV / Cobertura / Clover; a coverage.py `.coverage` also builds the
-   per-test map), then re-run `repowise health`.
+   per-test map), then `repowise health --recompute` to fold it into the scores.
 
 ## CLI equivalents
 

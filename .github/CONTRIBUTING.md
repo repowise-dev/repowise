@@ -135,7 +135,7 @@ and it can be split into its own issue so more than one person can work in paral
 Before you start, check the file you are about to edit:
 
 ```bash
-uv run repowise health --file <path>   # score, markers, findings
+uv run repowise health --file <path> --recompute   # score, markers, findings
 uv run repowise risk HEAD              # or ask get_risk from your agent
 ```
 
@@ -165,7 +165,7 @@ current ones. Changes there are welcome, but expect closer review and bring test
    uv run repowise risk main..HEAD        # 0-10 defect score, plus may_break,
                                           # missing_cochanges and missing_tests
    uv run repowise impacted-tests --staged  # the tests your diff actually exercises
-   uv run repowise health --file <path>   # did the file you touched get worse?
+   uv run repowise health --file <path> --recompute   # did the file you touched get worse?
    ```
    None of this is a gate, and none of it calls an LLM. It is the same signal the
    reviewer will be looking at, and running it yourself catches the boring problems

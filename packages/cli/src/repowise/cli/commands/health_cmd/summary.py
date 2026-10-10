@@ -127,7 +127,7 @@ def _render_badge(average_health: object) -> None:
     from repowise.core.analysis.health.grading import BAND_BADGE_COLOR, band_for, format_score
 
     if not isinstance(average_health, (int, float)):
-        console.print("[yellow]No health score yet — run `repowise health` first.[/yellow]")
+        console.print("[yellow]No health score yet — run `repowise init` first.[/yellow]")
         return
     color = BAND_BADGE_COLOR[band_for(float(average_health))]
     msg = f"{format_score(float(average_health))}/10"

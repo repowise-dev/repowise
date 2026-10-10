@@ -59,4 +59,4 @@ repowise coverage check origin/main...HEAD --report coverage/lcov.info --fail-un
   when the report carries per-test contexts — e.g. a coverage.py `.coverage`
   written with `coverage run --contexts=test`, or a per-test lcov. Reports
   without contexts ingest aggregates only; say so plainly.
-- After ingesting, suggest `repowise health` so untested-hotspot markers update.
+- After ingesting, suggest `repowise health --recompute` so untested-hotspot markers update.

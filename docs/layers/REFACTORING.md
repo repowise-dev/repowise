@@ -216,7 +216,7 @@ Most plans answer a health finding, so per-path marker rules in
 | Flag | Effect |
 |------|--------|
 | `--refactoring-targets` | Print the stored refactoring queue in the order MCP and the dashboard serve it. |
-| `--recompute` | With `--refactoring-targets`: analyze the working tree in-process. Slow on large repos. |
+| `--recompute` | Analyze the working tree in-process instead of reading the index. Slow on large repos. |
 | `--generate-code SELECTOR` | Generate code and a diff for one plan. `SELECTOR` is a 1-based rank or a symbol name. Needs an API key. |
 | `--format json` | Machine-readable output. |
 

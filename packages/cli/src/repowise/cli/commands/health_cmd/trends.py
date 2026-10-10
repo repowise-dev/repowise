@@ -52,8 +52,8 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
     rows, summary = run_async(_fetch())
     if not rows:
         console.print(
-            "[yellow]No health snapshots yet. Run `repowise init` or `repowise health` "
-            "to populate history.[/yellow]"
+            "[yellow]No health snapshots yet. Run `repowise init` or `repowise health "
+            "--recompute` to populate history.[/yellow]"
         )
         return
 

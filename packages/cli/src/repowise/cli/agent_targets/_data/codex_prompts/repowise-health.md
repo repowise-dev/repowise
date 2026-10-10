@@ -17,10 +17,13 @@ hotspots, and more). No LLM — works even in index-only mode.
 
 ## Modes
 
-Default (no args) — dashboard KPIs + lowest-scoring files:
+Default (no args) — dashboard KPIs + lowest-scoring files, read from the stored
+analysis (no writes):
 ```
 repowise health
 ```
+After edits, `repowise update` refreshes what it reads; `repowise health --recompute`
+analyzes the working tree in-process instead (slow on a large repo).
 
 Handle `$ARGUMENTS`:
 - A file or directory path → `repowise health <path>` (or `--file <path>` for a single file)
@@ -32,7 +35,7 @@ Handle `$ARGUMENTS`:
   having been found; the default stays `all`)
 - "code shape" / "ignore churn" → `repowise health --counts code_shape` (leaves
   out the git-derived half: churn, co-change, ownership, prior fixes)
-- a coverage file (e.g. `cov.lcov`, `coverage.xml`, `.coverage`) → `repowise coverage add <file>` to ingest it (folds into health markers, and builds the per-test map when the report has contexts), then `repowise health`
+- a coverage file (e.g. `cov.lcov`, `coverage.xml`, `.coverage`) → `repowise coverage add <file>` to ingest it (folds into health markers, and builds the per-test map when the report has contexts), then `repowise health --recompute`
 
 Other flags: `--format json` for machine-readable output, `-v, --verbose` for
 pipeline debug logs, `--repo <alias>` / `--no-workspace` in workspace mode.

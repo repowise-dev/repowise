@@ -15,7 +15,7 @@ bug exists. A low score means "look here first", not "this is broken".
 
 ```bash
 repowise init             # full index; scores every file
-repowise health           # Fix first, KPIs, lowest-scoring files, top findings
+repowise health           # Fix first, KPIs, lowest-scoring files, top findings (stored)
 repowise next             # the short "Do next" list across every layer
 repowise update           # re-scores only the files that changed
 ```
@@ -278,7 +278,7 @@ held the same way (`needs_design`). See [REFACTORING.md](REFACTORING.md).
 
 ## Trends, coverage and badges
 
-Every run stores a snapshot (the last 50 per repository) with repository KPIs and
+Every `init`, `update` and `health --recompute` stores a snapshot (the last 50 per repository) with repository KPIs and
 per-file scores. Alerts read them: **declining** (the score fell 0.5 or more
 against five snapshots back), **predicted decline** (three falls in a row), and
 **history drag** (either of those, where only the git-history half moved, so there
@@ -295,7 +295,7 @@ uncovered.
 ```bash
 pytest --cov --cov-report=lcov:coverage.lcov
 repowise coverage add coverage.lcov
-repowise health
+repowise health --recompute
 ```
 
 `repowise health --badge` prints README Markdown: a static shields.io badge for the
@@ -388,9 +388,9 @@ How the calibration works: [architecture/code-health.md](../architecture/code-he
 | `--module PREFIX` | Report only files under this path prefix |
 | `--scope all\|production` | Population to report on (default `all`) |
 | `--counts everything\|code_shape` | Include or drop the history half of the deduction (default `everything`) |
-| `--format table\|json\|md` | Output format; `json` and `md` do not write to the index |
+| `--format table\|json\|md` | Output format |
 | `--refactoring-targets` | Print the stored refactoring queue |
-| `--recompute` | With `--refactoring-targets`: analyze the working tree in-process |
+| `--recompute` | Analyze the working tree in-process instead of reading the stored analysis; a whole-repo `table` run writes the result to the index |
 | `--generate-code SELECTOR` | Opt-in: generate code and a diff for one suggestion with the configured LLM (needs an API key) |
 | `--trend` | Print the last 10 snapshots |
 | `--badge` | Print README badge Markdown |

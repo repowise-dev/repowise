@@ -3,8 +3,8 @@
 The single entry point for coverage. ``coverage add`` populates per-file
 line/branch coverage (which clears ``untested_hotspot`` for tested files) and,
 when a report carries contexts (a coverage.py ``.coverage`` or a per-test
-lcov), also builds the per-test "test-to-code" map. ``repowise health`` then
-folds in whatever was ingested here - it no longer takes a coverage flag of
+lcov), also builds the per-test "test-to-code" map. ``repowise health
+--recompute`` (or the next ``repowise update``) then folds in whatever was ingested here - it no longer takes a coverage flag of
 its own.
 """
 
@@ -339,7 +339,7 @@ def coverage_add(
                 )
                 return False
             console.print(
-                "Run [cyan]repowise health[/cyan] to fold coverage into the defect "
+                "Run [cyan]repowise health --recompute[/cyan] to fold coverage into the defect "
                 "scores, or [cyan]repowise coverage status[/cyan] to review it."
             )
             return True

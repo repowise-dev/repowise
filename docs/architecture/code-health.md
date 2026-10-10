@@ -251,7 +251,7 @@ The returned report rides on `PipelineResult.health_report`. Then
 trend tracking (rolling 50-row window per repo), and a second
 `{path: total_deduction}` map covering only the files whose score is held at
 the floor. Both maps come from `trends.snapshot_file_maps`, which the other two
-snapshot writers (`repowise health` and `repowise update --full`) also call; a repo
+snapshot writers (`repowise health --recompute` and `repowise update --full`) also call; a repo
 whose writers disagreed would get a history whose depth changed depending on
 which command last wrote it.
 
