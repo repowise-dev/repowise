@@ -102,7 +102,9 @@ class MetaIndexStore(ABC):
     ) -> Page: ...
 
     @abstractmethod
-    async def get_page(self, page_id: str) -> Page | None: ...
+    async def get_page(
+        self, page_id: str, repository_id: str | None = None
+    ) -> Page | None: ...
 
     @abstractmethod
     async def list_pages(
@@ -118,7 +120,11 @@ class MetaIndexStore(ABC):
 
     @abstractmethod
     async def get_page_versions(
-        self, page_id: str, *, limit: int = 50
+        self,
+        page_id: str,
+        *,
+        repository_id: str | None = None,
+        limit: int = 50,
     ) -> list[PageVersion]: ...
 
     @abstractmethod

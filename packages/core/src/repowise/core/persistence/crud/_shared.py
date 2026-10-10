@@ -33,8 +33,12 @@ def _finding_file_path(finding: Any) -> str | None:
     return getattr(finding, "file_path", None)
 
 
-def _parse_dt(ts: str) -> datetime:
+def _parse_dt(ts: str | datetime | None) -> datetime | None:
     """Parse an ISO-8601 UTC string to a timezone-aware datetime."""
+    if ts is None or isinstance(ts, datetime):
+        return ts
+    if not isinstance(ts, str) or not ts.strip():
+        return None
     ts = ts.replace("Z", "+00:00")
     dt = datetime.fromisoformat(ts)
     if dt.tzinfo is None:
