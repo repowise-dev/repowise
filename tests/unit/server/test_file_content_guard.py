@@ -45,6 +45,23 @@ async def test_serves_indexed_file(client: AsyncClient, app, tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_serves_utf8_file_content(client: AsyncClient, app, tmp_path: Path) -> None:
+    repo = await create_test_repo(client, tmp_path)
+    root = Path(repo["local_path"])
+    src = root / "src"
+    src.mkdir()
+    path = src / "emoji.py"
+    path.write_bytes("print('em dash — here')\n".encode("utf-8"))
+    await _index_file(app.state.session_factory, repo["id"], "src/emoji.py")
+
+    resp = await client.get(
+        f"/api/repos/{repo['id']}/file-content", params={"file_path": "src/emoji.py"}
+    )
+    assert resp.status_code == 200
+    assert resp.text == "print('em dash — here')\n"
+
+
+@pytest.mark.asyncio
 async def test_serves_indexed_dot_paths(client: AsyncClient, app, tmp_path: Path) -> None:
     """The traverser walks `.github` and friends, so those files stay readable.
 
