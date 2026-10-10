@@ -34,7 +34,7 @@ def must_defined_in(
     *,
     seed: frozenset[str] = frozenset(),
     edge: Callable[[int, int], bool] | None = None,
-    region_start: Callable[[int], int | None] | None = None,
+    from_try_source: bool = False,
 ) -> dict[int, frozenset[str]]:
     """Per block of *blocks*, the names written on every path from
     *start_id* (which begins with *seed*) to its entry. Only predecessors in
@@ -45,9 +45,11 @@ def must_defined_in(
     join before either arm), so one ordered pass reached joins before their
     arms. A handler is entered by an exception that may have escaped any
     statement of the protected region, including its first, so it inherits
-    what was defined *before* the region, not after it: its predecessor's
-    entry state, plus that block's writes above the region's first line when
-    *region_start* names it for the handler. A block no counted predecessor
+    what was defined *before* the region, not after it: each predecessor's
+    entry state. With *from_try_source*, the region's source block (the
+    handler's lowest-id predecessor: the CFG creates a ``try`` body's blocks
+    after the block it starts from) gives its exit state instead, which is
+    exactly the state before the region. A block no counted predecessor
     reaches claims nothing.
 
     The lattice descends from "everything", so a partial state is larger than
@@ -70,14 +72,6 @@ def must_defined_in(
         )
         for bid in members
     }
-    starts = {bid: region_start(bid) if region_start else None for bid in members}
-    above = {
-        (p, bid): frozenset(d.var for d in def_use.block(p).defs if d.line < starts[bid])
-        for bid in members
-        if starts[bid] is not None
-        for p in preds[bid]
-        if def_use.block(p) is not None
-    }
     defined_in: dict[int, frozenset[str]] = dict.fromkeys(members, frozenset())
     defined_out: dict[int, frozenset[str]] = dict.fromkeys(members, universe)
     defined_out[start_id] = seed | written[start_id]
@@ -91,10 +85,9 @@ def must_defined_in(
                 din = seed
             else:
                 entry_state = cfg.block(bid).kind == "handler"
+                source = min(preds[bid]) if entry_state and from_try_source and preds[bid] else None
                 states = [
-                    defined_in[p] | above.get((p, bid), frozenset())
-                    if entry_state
-                    else defined_out[p]
+                    defined_in[p] if entry_state and p != source else defined_out[p]
                     for p in preds[bid]
                 ]
                 din = frozenset.intersection(*states) if states else frozenset()
@@ -109,60 +102,46 @@ def must_defined_in(
 
 class DefiniteAssignment:
     """:func:`must_defined_in` over a whole function from its entry (seeded
-    with its parameters), asked at many lines."""
+    with its parameters), asked at many lines. Solved on the first question,
+    so a function no candidate asks about costs nothing."""
 
     def __init__(self, analysis: FunctionAnalysis) -> None:
-        cfg, def_use = analysis.cfg, analysis.def_use
-        self._def_use = def_use
+        self._analysis = analysis
+        self._in: dict[int, frozenset[str]] | None = None
+        self._lines: list[int] = []
+        self._blocks: list[int] = []
+
+    def _solve(self) -> dict[int, frozenset[str]]:
+        cfg, def_use = self._analysis.cfg, self._analysis.def_use
         # Only reachable blocks: one no path enters (code after a ``return``)
         # carries nothing and would empty every join it feeds.
         reachable = cfg.reachable_ids()
-        self._in = must_defined_in(
-            cfg,
-            def_use,
-            reachable,
-            cfg.entry_id,
-            seed=frozenset(p.name for p in def_use.params),
-            region_start=_try_starts(analysis),
-        )
         heads = sorted(
             (st.start_line, b.id) for b in cfg.blocks if b.id in reachable for st in b.statements
         )
         self._lines = [line for line, _ in heads]
         self._blocks = [bid for _, bid in heads]
+        return must_defined_in(
+            cfg,
+            def_use,
+            reachable,
+            cfg.entry_id,
+            seed=frozenset(p.name for p in def_use.params),
+            from_try_source=True,
+        )
 
     def before(self, line: int) -> frozenset[str] | None:
         """The names written on every path to the first recorded statement at
         or after *line*; None when no statement follows."""
+        if self._in is None:
+            self._in = self._solve()
         k = bisect_left(self._lines, line)
         if k == len(self._lines):
             return None
         start, bid = self._lines[k], self._blocks[k]
-        bdu = self._def_use.block(bid)
+        bdu = self._analysis.def_use.block(bid)
         earlier = frozenset(d.var for d in (bdu.defs if bdu else ()) if d.line < start)
         return self._in[bid] | earlier
-
-
-def _try_starts(analysis: FunctionAnalysis) -> Callable[[int], int | None]:
-    """For a handler block, the first line of the innermost ``try`` holding it."""
-    tries: list[tuple[int, int]] = []
-    stack = [analysis.fn_node] if analysis.fn_node is not None else []
-    while stack:
-        node = stack.pop()
-        if "try" in node.type:
-            tries.append((node.start_point[0] + 1, node.end_point[0] + 1))
-        stack.extend(node.children)
-    cfg = analysis.cfg
-
-    def start(bid: int) -> int | None:
-        block = cfg.block(bid)
-        if block.kind != "handler" or not block.statements:
-            return None
-        line = block.statements[0].start_line
-        holding = [(hi - lo, lo) for lo, hi in tries if lo < line <= hi]
-        return min(holding)[1] if holding else None
-
-    return start
 
 
 __all__ = ["DefiniteAssignment", "must_defined_in"]

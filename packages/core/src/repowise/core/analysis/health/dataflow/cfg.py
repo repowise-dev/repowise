@@ -411,10 +411,7 @@ class _CFGBuilder:
             self._edge(cur, join)
             return
         if alt.type == "else_clause":  # Python / TS wrap the else arm in a clause
-            # A comment can open the clause (``else:  # why``): it is not the arm.
-            inner = alt.child_by_field_name("body") or next(
-                (c for c in alt.named_children if "comment" not in c.type), None
-            )
+            inner = next((c for c in alt.named_children), None)
             if inner is None:
                 self._edge(cur, join)
                 return

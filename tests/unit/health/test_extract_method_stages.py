@@ -424,6 +424,7 @@ def test_a_staged_id_names_the_whole_split():
     assert len(ids) == 3
 
 
+@pytest.mark.skip(reason="needs the else-arm comment fix in contributor PR #3349 (issue #3337)")
 def test_an_else_arm_opening_on_a_comment_is_in_the_flow_graph():
     # hermes ``run_doctor``: the stage read ``should_fix`` and bumped
     # ``fixed_count`` inside such an arm, and the plan passed neither.

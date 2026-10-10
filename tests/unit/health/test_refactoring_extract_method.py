@@ -952,7 +952,7 @@ def test_a_best_span_below_the_floor_yields_to_the_next_one(monkeypatch):
 
     trivial = Extraction(10, 17, ("a",), (), slice_nloc=8, ccn_removed=1)
     worth = Extraction(20, 27, ("b",), (), slice_nloc=8, ccn_removed=3)
-    monkeypatch.setattr(extract_method, "find_extractions", lambda _a, _l, _r=None: [trivial, worth])
+    monkeypatch.setattr(extract_method, "find_extractions", lambda _a, _l, _r=None, _p=None: [trivial, worth])
     fn = _Shape(12, 40)
     analysis = type(
         "A", (), {"name": "f", "start_line": 1, "end_line": 50, "ccn": 12, "nloc": 40,
@@ -1165,7 +1165,7 @@ def test_a_refused_span_yields_only_to_a_disjoint_one(monkeypatch):
     shrunk = Extraction(2, 55, ("a",), (), slice_nloc=40, ccn_removed=8)  # overlaps it
     disjoint = Extraction(85, 95, ("b",), (), slice_nloc=10, ccn_removed=3)
     monkeypatch.setattr(
-        extract_method, "find_extractions", lambda _a, _l, _r=None: [whole, shrunk, disjoint]
+        extract_method, "find_extractions", lambda _a, _l, _r=None, _p=None: [whole, shrunk, disjoint]
     )
     analysis = type(
         "A", (), {"name": "f", "start_line": 1, "end_line": 100, "ccn": 30, "nloc": 90,
