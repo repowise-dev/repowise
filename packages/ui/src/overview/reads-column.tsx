@@ -1,14 +1,8 @@
 import * as React from "react";
+import { ProportionBar, type ProportionSegment } from "../shared/proportion-bar";
 
-export interface ReadBarSegment {
-  /** Share of the whole, 0–1. */
-  fraction: number;
-  /** CSS colour. Keep to accent tints so the bar stays inside the one-accent
-   *  rule; semantic red/amber/green belong to health, not to proportions. */
-  color: string;
-  /** Tooltip text for this segment. */
-  title: string;
-}
+/** One segment of a row's split; drawn on the shared share bar. */
+export type ReadBarSegment = ProportionSegment;
 
 export interface ReadItem {
   key: string;
@@ -84,19 +78,13 @@ export function ReadsColumn({
           </span>
 
           {item.bar && item.bar.length > 0 && (
-            <span className="mt-2 flex h-1 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
-              {item.bar.map((seg, si) => (
-                <span
-                  key={si}
-                  title={seg.title}
-                  className="h-full"
-                  style={{
-                    width: `${Math.max(0, Math.min(1, seg.fraction)) * 100}%`,
-                    background: seg.color,
-                  }}
-                />
-              ))}
-            </span>
+            <ProportionBar
+              className="mt-2"
+              label={item.label}
+              size="sm"
+              legend={false}
+              segments={item.bar}
+            />
           )}
 
           <span className="mt-1.5 block text-[11px] leading-relaxed text-[var(--color-text-tertiary)] [text-wrap:pretty]">

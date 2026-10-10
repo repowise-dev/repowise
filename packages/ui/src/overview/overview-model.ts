@@ -169,14 +169,16 @@ export function buildReads(summary: OverviewSummaryResponse, routes: OverviewRou
         ? {
             bar: [
               {
-                fraction: prosePages / docPages,
-                color: "var(--color-accent-fill)",
-                title: `${formatNumber(prosePages)} pages with model-written prose`,
+                key: "prose",
+                label: "Pages with model-written prose",
+                value: prosePages,
+                detail: formatNumber(prosePages),
               },
               {
-                fraction: withoutProse / docPages,
-                color: "color-mix(in srgb, var(--color-accent-fill) 30%, var(--color-bg-inset))",
-                title: `${formatNumber(withoutProse)} pages built from the index alone`,
+                key: "index",
+                label: "Pages built from the index alone",
+                value: withoutProse,
+                detail: formatNumber(withoutProse),
               },
             ],
           }

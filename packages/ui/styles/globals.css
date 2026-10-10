@@ -119,21 +119,21 @@
   --color-model-hover: var(--color-plum-600);
   --color-model-muted: color-mix(in srgb, var(--color-accent-secondary) 14%, transparent);
 
-  /* Accent ramp — the one sanctioned way to colour a proportion: ordered
-     shares of a whole (a stacked bar, a histogram, an area chart), stepped
-     from the accent toward the page ground. Sequential, so position in the
-     ramp means magnitude; NOT for unrelated categories, which want either the
-     accent/secondary pair or plain neutrals.
+  /* Share steps — the one palette for a share-of-whole bar (ProportionBar):
+     ink stepped toward the well, largest share first, `tail` for the
+     collapsed rest. No hue, so a proportion never reads as navigation (orange),
+     model work (plum) or a health verdict (green/amber/red). Steps 1-5 clear
+     3:1 against the page and a card in both themes; the tail does not and is
+     always named in the legend.
 
-     Defined per theme rather than as one set of color-mix percentages,
-     because the mix that recedes gracefully into near-black disappears
-     entirely into cream. Light also starts a step down from full #f59520,
-     which is louder than it needs to be on a warm paper ground. */
-  --color-ramp-1: #e08a12;
-  --color-ramp-2: color-mix(in srgb, var(--color-accent-fill) 76%, var(--color-bg-inset));
-  --color-ramp-3: color-mix(in srgb, var(--color-accent-fill) 56%, var(--color-bg-inset));
-  --color-ramp-4: color-mix(in srgb, var(--color-accent-fill) 40%, var(--color-bg-inset));
-  --color-ramp-5: color-mix(in srgb, var(--color-accent-fill) 26%, var(--color-bg-inset));
+     Per theme because the same mix that holds on cream fades out on
+     near-black. */
+  --color-share-1: color-mix(in srgb, var(--color-text-primary) 86%, var(--color-bg-inset));
+  --color-share-2: color-mix(in srgb, var(--color-text-primary) 74%, var(--color-bg-inset));
+  --color-share-3: color-mix(in srgb, var(--color-text-primary) 63%, var(--color-bg-inset));
+  --color-share-4: color-mix(in srgb, var(--color-text-primary) 54%, var(--color-bg-inset));
+  --color-share-5: color-mix(in srgb, var(--color-text-primary) 47%, var(--color-bg-inset));
+  --color-share-tail: color-mix(in srgb, var(--color-text-primary) 20%, var(--color-bg-inset));
   /* Supporting cast beside an accent series. Same idea, no hue. */
   --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 62%, var(--color-bg-inset));
   --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 40%, var(--color-bg-inset));
@@ -501,13 +501,14 @@
      and need no override; see the light block for the family. */
   --color-model-hover: var(--color-plum-200);
 
-  /* Accent ramp — see the light block. Steeper here: mixing toward #0a0a0b
-     loses luminance fast, so the same percentages would bottom out invisible. */
-  --color-ramp-1: #f59520;
-  --color-ramp-2: color-mix(in srgb, var(--color-accent-fill) 64%, var(--color-bg-inset));
-  --color-ramp-3: color-mix(in srgb, var(--color-accent-fill) 42%, var(--color-bg-inset));
-  --color-ramp-4: color-mix(in srgb, var(--color-accent-fill) 27%, var(--color-bg-inset));
-  --color-ramp-5: color-mix(in srgb, var(--color-accent-fill) 16%, var(--color-bg-inset));
+  /* Share steps — see the light block. Light ink on near-black stays visible
+     lower down, so the steps spread wider before the 3:1 floor. */
+  --color-share-1: color-mix(in srgb, var(--color-text-primary) 86%, var(--color-bg-inset));
+  --color-share-2: color-mix(in srgb, var(--color-text-primary) 71%, var(--color-bg-inset));
+  --color-share-3: color-mix(in srgb, var(--color-text-primary) 58%, var(--color-bg-inset));
+  --color-share-4: color-mix(in srgb, var(--color-text-primary) 48%, var(--color-bg-inset));
+  --color-share-5: color-mix(in srgb, var(--color-text-primary) 40%, var(--color-bg-inset));
+  --color-share-tail: color-mix(in srgb, var(--color-text-primary) 18%, var(--color-bg-inset));
   --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 70%, var(--color-bg-inset));
   --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 45%, var(--color-bg-inset));
   --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 26%, var(--color-bg-inset));

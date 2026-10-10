@@ -3,7 +3,7 @@ import { GitBranch } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import { CommitCategorySparkline } from "../git/commit-category-sparkline";
 import { AgentTierBar } from "../git/agent-tier-bar";
-import { OwnershipDonut } from "../git/ownership-donut";
+import { ProportionBar } from "../shared/proportion-bar";
 import { ChangeHistoryCard } from "../git/change-history-card";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { summarizeFixHistory } from "../lib/fix-history";
@@ -171,8 +171,13 @@ export function FileHistoryTab({
                 Author attribution lands with the next index.
               </p>
             ) : (
-              <OwnershipDonut
-                slices={git.top_authors.map((a) => ({ name: a.name, value: a.commit_count }))}
+              <ProportionBar
+                label="Commits by author"
+                segments={git.top_authors.map((a) => ({
+                  key: a.email || a.name,
+                  label: a.name,
+                  value: a.commit_count,
+                }))}
               />
             )}
           </div>

@@ -42,7 +42,7 @@ interface CategoryMeta {
 // Drawn bottom-to-top in STACK_ORDER; "feature" anchors the base so the growth
 // band reads as the foundation the rest of the work sits on.
 //
-// Two hues, then neutrals. This used to paint Feature in --color-success and
+// No hue per category. This used to paint Feature in --color-success and
 // Fix in --color-error, which reads intuitively for about a second and then
 // costs more than it gives: those two tokens carry a health band on every
 // other surface in the app, so a reader arriving from Code Health has been
@@ -52,19 +52,18 @@ interface CategoryMeta {
 // ceiling for everything under it, leaving the review-priority pills in the
 // table competing with the chart instead of leading.
 //
-// Fix keeps the accent because it is the series this chart exists to show;
-// Feature takes the plum secondary, a pairing globals.css already sanctions
-// (--color-savings-distill / --color-savings-mcp are exactly these two). The
-// rest are context, so they recede — which is also the honest encoding, since
-// the categories were never equally interesting.
+// A share over time, so it takes the share steps like every other proportion:
+// no hue. Fix gets the strongest step because it is the series this chart
+// exists to show; the rest step down in rough order of interest, and the
+// unclassified remainder sits on the well.
 const CATEGORY_META: Record<CommitCategory, CategoryMeta> = {
-  feature: { label: "Feature", color: "var(--color-accent-secondary)", blurb: "new capability" },
-  fix: { label: "Fix", color: "var(--color-ramp-1)", blurb: "bug / regression" },
-  refactor: { label: "Refactor", color: "var(--color-ramp-3)", blurb: "reshape / perf" },
-  docs: { label: "Docs", color: "var(--color-neutral-1)", blurb: "documentation" },
-  test: { label: "Test", color: "var(--color-ramp-5)", blurb: "tests / coverage" },
-  deps: { label: "Deps", color: "var(--color-neutral-2)", blurb: "dependency bumps" },
-  chore: { label: "Chore", color: "var(--color-neutral-3)", blurb: "tooling / CI / release" },
+  feature: { label: "Feature", color: "var(--color-share-2)", blurb: "new capability" },
+  fix: { label: "Fix", color: "var(--color-share-1)", blurb: "bug / regression" },
+  refactor: { label: "Refactor", color: "var(--color-share-3)", blurb: "reshape / perf" },
+  docs: { label: "Docs", color: "var(--color-share-4)", blurb: "documentation" },
+  test: { label: "Test", color: "var(--color-share-5)", blurb: "tests / coverage" },
+  deps: { label: "Deps", color: "var(--color-share-tail)", blurb: "dependency bumps" },
+  chore: { label: "Chore", color: "var(--color-share-tail)", blurb: "tooling / CI / release" },
   other: { label: "Other", color: "var(--color-bg-inset)", blurb: "unclassified" },
 };
 

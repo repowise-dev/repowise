@@ -2,6 +2,7 @@ import { Users, Bot, ArrowRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { InfoTip } from "../shared/info-tip";
 import { AGENT_PCT_HINT } from "../stats/stat-callout";
+import { ProportionBar } from "../shared/proportion-bar";
 
 export interface StripOwner {
   name: string;
@@ -28,17 +29,6 @@ interface ContributorsStripProps {
   ownersHref: string;
   commitsHref: string;
 }
-
-/* Categorical hues that read in both themes (community ramp is built for
-   exactly this — distinguishable, brand-anchored). */
-const SEG_COLORS = [
-  "var(--color-community-1)",
-  "var(--color-community-2)",
-  "var(--color-community-3)",
-  "var(--color-community-6)",
-  "var(--color-community-7)",
-];
-const OTHER_COLOR = "var(--color-text-tertiary)";
 
 function firstName(name: string): string {
   return name.split(/\s+/)[0] ?? name;
@@ -87,42 +77,18 @@ export function ContributorsStrip({
         </CardTitle>
       </CardHeader>
       <CardContent className="pt-0 space-y-2.5">
-        {/* Ownership share */}
-        <div className="flex h-2 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
-          {top.map((o, i) => (
-            <div
-              key={o.email ?? o.name}
-              className="h-full"
-              style={{ width: `${o.pct}%`, background: SEG_COLORS[i % SEG_COLORS.length] }}
-              title={`${o.name} — ${Math.round(o.pct)}% of files`}
-            />
-          ))}
-          {otherPct > 1 && (
-            <div className="h-full" style={{ width: `${otherPct}%`, background: OTHER_COLOR }} />
-          )}
-        </div>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          {top.slice(0, 4).map((o, i) => (
-            <span
-              key={o.email ?? o.name}
-              className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] min-w-0"
-            >
-              <span
-                className="h-2 w-2 rounded-full shrink-0"
-                style={{ background: SEG_COLORS[i % SEG_COLORS.length] }}
-              />
-              <span className="truncate max-w-[120px]">{firstName(o.name)}</span>
-              <span className="tabular-nums text-[var(--color-text-tertiary)]">
-                {Math.round(o.pct)}%
-              </span>
-            </span>
-          ))}
-          {owners.length > 4 && (
-            <span className="text-xs text-[var(--color-text-tertiary)]">
-              +{owners.length - 4} more
-            </span>
-          )}
-        </div>
+        <ProportionBar
+          label="Files by contributor"
+          size="sm"
+          segments={[
+            ...top.map((o) => ({
+              key: o.email ?? o.name,
+              label: firstName(o.name),
+              value: o.pct,
+            })),
+            { key: "__rest", label: "Others", value: otherPct > 1 ? otherPct : 0, tail: true },
+          ]}
+        />
         {/* Agent provenance — only when there's something to report */}
         {hasProvenance && (
           <div className="mt-1 border-t border-[var(--color-border-default)] pt-2.5 space-y-2">
@@ -144,37 +110,20 @@ export function ContributorsStrip({
                 <InfoTip content={AGENT_PCT_HINT} label="How agent authorship is measured" />
               </span>
             </div>
-            <div className="flex h-2 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
-              <div
-                className="h-full"
-                style={{ width: `${100 - provenance!.agentPct}%`, background: "var(--color-text-tertiary)" }}
-                title={`Human — ${Math.round(100 - provenance!.agentPct)}%`}
-              />
-              <div
-                className="h-full"
-                style={{ width: `${provenance!.agentPct}%`, background: "var(--color-accent-fill)" }}
-                title={`Agents — ${Math.round(provenance!.agentPct)}%`}
-              />
-            </div>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--color-text-secondary)]">
-              <span className="flex items-center gap-1.5">
-                <span className="h-2 w-2 rounded-full bg-[var(--color-text-tertiary)]" />
-                Human
-                <span className="tabular-nums text-[var(--color-text-tertiary)]">
-                  {Math.round(100 - provenance!.agentPct)}%
-                </span>
-              </span>
-              {provenance!.agentNames.slice(0, 2).map((a) => {
-                const pct = Math.round((a.count / provenance!.totalCommits) * 100);
-                return (
-                  <span key={a.name} className="flex items-center gap-1.5 min-w-0">
-                    <span className="h-2 w-2 rounded-full bg-[var(--color-accent-fill)]" />
-                    <span className="truncate max-w-[120px]">{a.name}</span>
-                    <span className="tabular-nums text-[var(--color-text-tertiary)]">{pct}%</span>
-                  </span>
-                );
-              })}
-            </div>
+            <ProportionBar
+              label="Commits by author"
+              size="sm"
+              segments={[
+                { key: "human", label: "Human", value: 100 - provenance!.agentPct },
+                ...provenance!.agentNames.map((a) => ({
+                  key: a.name,
+                  label: a.name,
+                  value: (a.count / provenance!.totalCommits) * 100,
+                })),
+              ]}
+              maxSegments={3}
+              othersLabel={() => "Other agents"}
+            />
           </div>
         )}
       </CardContent>

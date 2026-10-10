@@ -10,7 +10,7 @@ import { OverviewSection, SectionLink } from "../overview/section";
 import { ReadsColumn, type ReadItem } from "../overview/reads-column";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { EmptyState } from "../shared/empty-state";
-import { rampStep } from "../lib/ramp";
+import { ProportionBar } from "../shared/proportion-bar";
 import { formatCompact, formatRelativeTimeOrNull } from "../lib/format";
 import { OwnerAvatar } from "./owner-avatar";
 
@@ -264,9 +264,8 @@ export function OwnerProfileView({
  * reader to compare bars that are all measuring different denominators. One
  * bar shows the split, and the key carries the share.
  *
- * The ramp, not a hue per directory: these are ordered shares of one whole, so
- * position is the encoding. Five unrelated colours for five directories is the
- * language-donut anti-pattern.
+ * The share steps, not a hue per directory: these are ordered shares of one
+ * whole, so position is the encoding.
  */
 function OwnershipFootprint({
   modules,
@@ -279,7 +278,6 @@ function OwnershipFootprint({
   hrefForModule?: ((modulePath: string) => string) | undefined;
   LinkComponent?: React.ElementType | undefined;
 }) {
-  const A = LinkComponent ?? "a";
   const ordered = [...modules].sort((a, b) => b.file_count - a.file_count);
   const total = ordered.reduce((sum, m) => sum + m.file_count, 0);
 
@@ -300,54 +298,19 @@ function OwnershipFootprint({
           description="Ownership by directory appears after the next git sync."
         />
       ) : (
-        <>
-          <div className="flex h-2 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
-            {ordered.map((m, i) => (
-              <span
-                key={m.module_path}
-                title={`${m.module_path}: ${m.file_count.toLocaleString()} owned files`}
-                className="h-full"
-                style={{
-                  width: `${(m.file_count / total) * 100}%`,
-                  background: rampStep(i),
-                }}
-              />
-            ))}
-          </div>
-          <ul className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-x-6 sm:gap-y-2">
-            {ordered.map((m, i) => {
-              const href = hrefForModule?.(m.module_path);
-              const label = (
-                <>
-                  <span
-                    aria-hidden
-                    className="h-2 w-2 shrink-0 rounded-[2px]"
-                    style={{ background: rampStep(i) }}
-                  />
-                  <span className="font-mono text-xs text-[var(--color-text-primary)] transition-colors group-hover:text-[var(--color-accent-primary)] [overflow-wrap:anywhere]">
-                    {m.module_path}
-                  </span>
-                  <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
-                    {m.file_count.toLocaleString()}{" "}
-                    {m.file_count === 1 ? "file" : "files"} ·{" "}
-                    {Math.round(m.dominant_pct * 100)}% theirs
-                  </span>
-                </>
-              );
-              return (
-                <li key={m.module_path} className="min-w-0">
-                  {href ? (
-                    <A href={href} className="group flex items-center gap-2 no-underline">
-                      {label}
-                    </A>
-                  ) : (
-                    <span className="flex items-center gap-2">{label}</span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </>
+        <ProportionBar
+          label="Owned files by directory"
+          // Every directory keeps its own link; past the fifth they share the tail step.
+          maxSegments={Infinity}
+          segments={ordered.map((m) => ({
+            key: m.module_path,
+            label: m.module_path,
+            value: m.file_count,
+            detail: `${m.file_count.toLocaleString()} ${m.file_count === 1 ? "file" : "files"} · ${Math.round(m.dominant_pct * 100)}% theirs`,
+            ...(hrefForModule ? { href: hrefForModule(m.module_path) } : {}),
+          }))}
+          LinkComponent={LinkComponent}
+        />
       )}
     </OverviewSection>
   );
@@ -584,14 +547,14 @@ function LeadPartner({
 /* -------------------------------------------------------------------------- */
 
 /**
- * Commit mix, down the accent ramp.
+ * Commit mix, as one share bar.
  *
  * The colour map this replaced keyed on `feat`, `docs`, `test`, `chore` and
  * `perf`. The endpoint returns `feature`, `fix`, `refactor` and `dependency`,
  * so four of the five colours were unreachable and the largest category fell
  * through to the default — a palette that had never once rendered as designed.
- * Ordered shares of one whole want the ramp, where position is the magnitude,
- * not a hue per category.
+ * Ordered shares of one whole want the share steps, where position is the
+ * magnitude, not a hue per category.
  *
  * Zero-count categories are dropped rather than rendered as an empty track:
  * the endpoint returns the full key set, so a contributor who has never
@@ -619,24 +582,16 @@ function CommitMix({ categories }: { categories: Record<string, number> }) {
           description="Commit classification runs during indexing and fills this in on the next sync."
         />
       ) : (
-        <dl className="flex max-w-[420px] flex-col gap-3">
-          {entries.map(([category, n], i) => (
-            <div key={category}>
-              <div className="flex items-baseline justify-between gap-3 text-xs">
-                <dt className="capitalize text-[var(--color-text-secondary)]">{category}</dt>
-                <dd className="tabular-nums text-[var(--color-text-tertiary)]">
-                  {n.toLocaleString()} · {pct(n, total)}%
-                </dd>
-              </div>
-              <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
-                <span
-                  className="block h-full"
-                  style={{ width: `${(n / total) * 100}%`, background: rampStep(i) }}
-                />
-              </div>
-            </div>
-          ))}
-        </dl>
+        <ProportionBar
+          className="max-w-[420px]"
+          label="Commits by type"
+          segments={entries.map(([category, n]) => ({
+            key: category,
+            label: category.charAt(0).toUpperCase() + category.slice(1),
+            value: n,
+            detail: `${n.toLocaleString()} · ${pct(n, total)}%`,
+          }))}
+        />
       )}
     </OverviewSection>
   );

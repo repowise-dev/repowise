@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { SavingsCard, type SavingsData } from "../../src/costs/savings-card";
 
 function makeData(overrides: Partial<SavingsData> = {}): SavingsData {
@@ -62,8 +62,9 @@ describe("SavingsCard", () => {
     expect(screen.getAllByText(/Measured/).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText(/Inferred/).length).toBeGreaterThanOrEqual(1);
     // The legend carries the actual split, not just the labels.
-    expect(screen.getByText("65K")).toBeInTheDocument();
-    expect(screen.getByText("39K")).toBeInTheDocument();
+    const legend = within(screen.getByRole("list", { name: "Tokens saved by evidence" }));
+    expect(legend.getByText("65K")).toBeInTheDocument();
+    expect(legend.getByText("39K")).toBeInTheDocument();
   });
 
   it("says how much of the total the dollar figure covers when some is unpriced", () => {

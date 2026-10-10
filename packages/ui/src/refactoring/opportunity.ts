@@ -164,12 +164,12 @@ export function salienceOrder(marks: StructuralMark[]): string[] {
 }
 
 /**
- * Two hues, then neutrals - the pattern the commits area chart already uses.
+ * Two hues, then neutrals.
  *
- * The accent/secondary pair, and deliberately not the sequential
- * `--color-ramp-*` steps: globals.css reserves the ramp for magnitude, so
- * spending it on unrelated categories would claim an order the types do not
- * have, and it would add orange rather than reduce it. Type is carried in full
+ * The accent/secondary pair, and deliberately not the `--color-share-*`
+ * steps: those are for shares of a whole, where position means magnitude, so
+ * spending them on unrelated categories would claim an order the types do not
+ * have. Type is carried in full
  * by the mark's shape, and named in the legend and the hover card, so hue here
  * only ranks attention - which is why the tail can recede into neutrals without
  * anything becoming unreadable.

@@ -138,14 +138,18 @@ LIGHT = {
     "community-4": "#6B7A3D",  "community-5": "#B06A86",  "community-6": "#4A5D7A",
     "community-7": "#A8821F",  "community-8": "#8A7A66",  "community-9": "#7A2F4A",
     "community-10": "#B85A38", "community-11": "#2F6B66", "community-12": "#5E5360",
+    # Share steps (light): --color-text-primary mixed into --color-bg-inset at
+    # 86/74/63/54/47%. The tail (20%) is exempt: it is always named.
+    "share-1": "#413846", "share-2": "#59515C", "share-3": "#6F6871",
+    "share-4": "#827B82", "share-5": "#90898F",
 }
 
 DARK = {
-    "bg-root": "#17131D",
-    "bg-surface": "#211B29",
-    "bg-elevated": "#2A2335",
-    "bg-inset": "#110D17",
-    "bg-canvas": "#110D17",  # --color-bg-canvas → var(--color-bg-inset)
+    "bg-root": "#0E0E0F",
+    "bg-surface": "#141416",
+    "bg-elevated": "#191A1C",
+    "bg-inset": "#0A0A0B",
+    "bg-canvas": "#0A0A0B",  # --color-bg-canvas → var(--color-bg-inset)
     "text-primary": "#EEEAF4",
     "text-secondary": "#A79DB3",
     "text-tertiary": "#786F84",
@@ -179,6 +183,9 @@ DARK = {
     "community-4": "#A9BB6F",  "community-5": "#D795B1",  "community-6": "#8FA3C0",
     "community-7": "#D9B04A",  "community-8": "#B8A68E",  "community-9": "#C4708F",
     "community-10": "#EBA585", "community-11": "#6FB3AB", "community-12": "#A79DB3",
+    # Share steps (dark): 86/71/58/48/40%; tail (18%) exempt.
+    "share-1": "#D2D2D3", "share-2": "#AFAFB0", "share-3": "#919192",
+    "share-4": "#79797A", "share-5": "#676768",
 }
 
 # (fg, bg, floor, label)  — floor is the WCAG ratio the pair must meet.
@@ -216,6 +223,12 @@ CHECKS = [
     *[
         (f"community-{n}", "bg-canvas", 3.0, f"Community {n} hub on canvas")
         for n in range(1, 13)
+    ],
+    # Share-bar segments and legend swatches are non-text UI on page and card.
+    *[
+        (f"share-{n}", bg, 3.0, f"Share step {n} on {where}")
+        for n in range(1, 6)
+        for bg, where in (("bg-root", "page"), ("bg-surface", "card"))
     ],
 ]
 

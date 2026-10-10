@@ -17,12 +17,6 @@ const AUTHOR_COLORS = [
 ];
 const AUTHOR_COLOR_FALLBACK = "bg-gray-500";
 
-const AUTHOR_BAR_COLORS = [
-  "#3b82f6", "#a855f7", "#22c55e", "#eab308",
-  "#ec4899", "#6366f1", "#14b8a6", "#f97316",
-];
-const AUTHOR_BAR_FALLBACK = "#6b7280";
-
 function authorColorIndex(name: string): number {
   let hash = 0;
   for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
@@ -195,11 +189,8 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
                     <div className="h-1 w-full rounded-full bg-[var(--color-bg-elevated)] ml-7">
                       <div
                         className="h-1 rounded-full transition-all"
-                        style={{
-                          width: `${share * 100}%`,
-                          backgroundColor:
-                            AUTHOR_BAR_COLORS[authorColorIndex(author.name)] ?? AUTHOR_BAR_FALLBACK,
-                        }}
+                        // One share step for every row: the length is the reading.
+                        style={{ width: `${share * 100}%`, backgroundColor: "var(--color-share-1)" }}
                       />
                     </div>
                   )}

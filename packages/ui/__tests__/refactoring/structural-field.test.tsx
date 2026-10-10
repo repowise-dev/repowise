@@ -128,8 +128,8 @@ describe("salience", () => {
       "var(--color-neutral-1)",
       "var(--color-neutral-2)",
     ]);
-    // globals.css reserves --color-ramp-* for magnitude; these are categories.
-    expect(fills.some((f) => f.includes("ramp"))).toBe(false);
+    // globals.css reserves --color-share-* for shares of a whole; these are categories.
+    expect(fills.some((f) => f.includes("share"))).toBe(false);
   });
 
   it("breaks a count tie deterministically", () => {
