@@ -13,6 +13,7 @@ from repowise.core.docs_mode import DocsMode
 from repowise.core.index_scope import load_index_scope
 
 _URL_SCHEME_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*)://")
+_QUERY_RE = re.compile(r"[?#]")
 _SSH_SCHEMES = frozenset({"ssh", "git+ssh", "ssh+git"})
 
 
@@ -30,27 +31,35 @@ def strip_credentials(url: str | None) -> str | None:
     url = url.strip()
     scheme_match = _URL_SCHEME_RE.match(url)
     if not scheme_match:
-        # scp-style `user[:password]@host:path`; a remote has no other `@` form.
+        # scp-style `user[:password]@host:path`. Git never sends a password here,
+        # but one typed in (even with a `/`) would still reach the browser. A
+        # local path (`/srv/a:b@c`, `.\x`, `C:\x`) is not a remote, and without a
+        # `host:` after the `@` the `@` is in the path (`host:org/repo@v1.git`).
         userinfo, at, rest = url.partition("@")
-        if at and ":" in userinfo and not any(c in userinfo for c in "/\\"):
+        local = "\\" in userinfo or userinfo[:1] in ("/", ".")
+        if at and ":" in userinfo and ":" in rest and not local:
             return f"{userinfo.split(':', 1)[0]}@{rest}"
         return url
     scheme = scheme_match.group(1)
-    rest = re.split(r"[?#]", url[scheme_match.end() :], maxsplit=1)[0]
+    rest = url[scheme_match.end() :]
     userinfo, hostpart = "", rest
-    if "@" in rest:
-        # The authority normally ends at the first `/`, but an unencoded `/` in
-        # a password moves it, and `user:123/x` even passes for host:port. Such
-        # a password always leaves a `:` before the first `/`, so only then is
-        # a later `@` the end of the userinfo; `host/repo@v1.git` keeps its path.
-        # Ceiling: `host:8443/repo@v1.git` reads as credentials and loses its
-        # host. A port plus a path `@` is rare, and losing a host beats a leak.
-        head = rest.split("/", 1)[0]
-        if "@" in head:
-            userinfo, _, host = head.rpartition("@")
-            hostpart = host + rest[len(head) :]
-        elif ":" in head:
-            userinfo, _, hostpart = rest.partition("@")
+    # Userinfo is found before the query is cut, so a `?` or `#` typed into a
+    # password cannot split it and leave a prefix behind.
+    head = rest.split("/", 1)[0]
+    if "@" in head:
+        userinfo, _, host = head.rpartition("@")
+        hostpart = host + rest[len(head) :]
+    elif ":" in head:
+        # An unencoded `/` in a password moves the authority past the first
+        # `/`, and `user:123/x` even passes for host:port. Such a password
+        # always leaves a `:` before that `/`, so only then is a later `@` the
+        # end of the userinfo; `host/repo@v1.git` keeps its path. Ceiling:
+        # `host:8443/repo@v1.git` loses its host. A port plus a path `@` is
+        # rare, and losing a host beats a leak.
+        before_query = _QUERY_RE.split(rest, maxsplit=1)[0]
+        if "@" in before_query:
+            userinfo, _, hostpart = before_query.partition("@")
+    hostpart = _QUERY_RE.split(hostpart, maxsplit=1)[0]
     user = userinfo.split(":", 1)[0] if scheme.lower() in _SSH_SCHEMES else ""
     return f"{scheme}://{user + '@' if user else ''}{hostpart}"
 
