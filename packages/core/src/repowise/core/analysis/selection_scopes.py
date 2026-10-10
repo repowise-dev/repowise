@@ -22,8 +22,9 @@ names it as a :class:`Scope`:
 A scope also runs the tests reaching each file that names the changed one, so
 a test reading ``package.json`` as data is kept. An ecosystem scope already
 holds its own ecosystem's code under its root, so only the namers outside it
-are traced; more than :data:`MAX_NAMERS` of those (or of an asset's namers)
-run everything, since tracing that many costs what a full run saves. Package
+are traced; more than :data:`MAX_NAMERS` of those that are not tests
+themselves (or of an asset's) run everything, since tracing that many costs
+what a full run saves. Package
 roots are read from the tracked paths the caller already holds, which list
 every manifest (the indexed file list misses some; see
 :mod:`~repowise.core.ingestion.package_roots`). Ceilings: code that globs a
@@ -260,9 +261,15 @@ def _is_asset(path: str) -> bool:
 
 
 def _too_many(namers: tuple[str, ...]) -> str | None:
-    if len(namers) <= MAX_NAMERS:
+    """Why *namers* are too many to trace, or ``None``.
+
+    A namer that is itself a test is selected as it stands, so only the rest,
+    whose tests take a walk to find, count.
+    """
+    walked = [n for n in namers if not is_runnable_test(n)]
+    if len(walked) <= MAX_NAMERS:
         return None
-    return f"{len(namers)} files name it, more than the {MAX_NAMERS} worth tracing"
+    return f"{len(walked)} non-test files name it, more than the {MAX_NAMERS} worth tracing"
 
 
 def _ecosystem_scope(

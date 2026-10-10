@@ -179,9 +179,12 @@ def test_a_file_named_by_too_many_files_runs_everything() -> None:
         sel = _select([path], namers={path: namers})
         assert sel.run_all
         assert sel.reasons[0] == (
-            f"{path} changed: {MAX_NAMERS + 1} files name it, more than the {MAX_NAMERS} "
-            "worth tracing."
+            f"{path} changed: {MAX_NAMERS + 1} non-test files name it, more than the "
+            f"{MAX_NAMERS} worth tracing."
         )
+    # Tests naming it are selected as they stand and do not count.
+    tests = [f"tests/test_m{i}.py" for i in range(MAX_NAMERS + 1)]
+    assert _scopes(["web/package.json"], {"web/package.json": tests})["web/package.json"].run_all is None
 
 
 def test_namers_an_ecosystem_scope_already_runs_do_not_count() -> None:
