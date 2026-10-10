@@ -11,11 +11,11 @@ from __future__ import annotations
 import contextlib
 import json
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import is_governing
@@ -370,6 +370,38 @@ def _size_exclusion_note(repo_root: Any, target: str) -> str | None:
         f"({size_bytes // 1024:,} KB). It has no page and no symbols, and "
         "`repowise update` will not create them. Read the file directly."
     )
+
+
+async def _days_since_last_change(
+    session: AsyncSession,
+    repo_id: str,
+    last_commit_at: datetime | None,
+    as_of_ts: datetime | None = None,
+) -> int | None:
+    """Whole days from a file's last commit to the index's reference date.
+
+    Uses ``as_of_ts`` (the anchor ``fix_annotation`` already uses) when given,
+    else the newest commit in the index, so it agrees with the other ages on
+    the file however old the index is. Rows are stored naive-UTC, so a naive
+    timestamp is read as UTC.
+    """
+    if last_commit_at is None:
+        return None
+    reference = as_of_ts
+    if reference is None:
+        reference = (
+            await session.execute(
+                select(func.max(GitMetadata.last_commit_at)).where(
+                    GitMetadata.repository_id == repo_id
+                )
+            )
+        ).scalar()
+    reference = reference or last_commit_at
+    return max(0, (_as_utc(reference) - _as_utc(last_commit_at)).days)
+
+
+def _as_utc(moment: datetime) -> datetime:
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
 async def _resolve_one_target(
@@ -1116,7 +1148,9 @@ async def _resolve_one_target(
                     meta.last_commit_at.isoformat() if meta.last_commit_at else None
                 )
                 last_change["author"] = meta.primary_owner_name
-                last_change["days_ago"] = meta.age_days
+                last_change["days_ago"] = await _days_since_last_change(
+                    session, repo_id, meta.last_commit_at, as_of_ts
+                )
             else:
                 last_change["date"] = None
                 last_change["author"] = None
