@@ -108,7 +108,8 @@ def fold_facets(
     under *rules*: counting a facet under its own filter would leave every
     alternative at zero, so choosing one value would erase the others from the
     control. A NULL (or, with *null* set, any empty) value counts as *null*;
-    without *null* it is skipped.
+    without *null* it is skipped. A string *null* relabels any falsy value
+    (``""`` and ``0`` too); ``None`` skips NULLs only.
     """
     fields = tuple(column for _, column, _ in facets)
     rows = [dict(zip((*fields, "count"), group, strict=True)) for group in groups]

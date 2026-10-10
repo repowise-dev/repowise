@@ -574,6 +574,8 @@ async def list_refactoring_opportunities(
     offset: int = 0,
 ) -> tuple[list[RefactoringOpportunity], int]:
     """One page and its total: two statements, whatever the row count."""
+    from ....analysis.health.refactoring.serving import sort_keys
+
     predicates = _opportunity_filters(
         repository_id,
         status=status,
@@ -594,8 +596,6 @@ async def list_refactoring_opportunities(
             )
         ).scalar_one()
     )
-    from ....analysis.health.refactoring.serving import sort_keys
-
     query: Select[Any] = (
         select(RefactoringOpportunity)
         .where(*predicates)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from repowise.core.analysis.health.queue_rules import FilterRule, fold_facets
+from repowise.core.analysis.health.refactoring.serving import FACETS
 
 _FACETS = (("kind", "kind", "kinds"), ("size", "size", None))
 _RULES = (FilterRule("kinds", "kind", "in", "set"), FilterRule("size", "size", "eq", "set"))
@@ -30,3 +31,12 @@ def test_each_facet_is_cross_filtered_by_the_other_selections_only() -> None:
     assert folded["kind"] == {"a": 3, "b": 3, "none": 4}
     # The size control is narrowed by the kind selection.
     assert folded["size"] == {"S": 2, "none": 1}
+
+
+def test_without_null_label_an_empty_string_is_its_own_key() -> None:
+    folded = fold_facets([("", "S", "high", 1)], FACETS)
+    assert folded["lead_type"] == {"": 1}
+
+
+def test_no_groups_still_returns_every_facet() -> None:
+    assert fold_facets([], FACETS) == {name: {} for name, _, _ in FACETS}
