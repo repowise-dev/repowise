@@ -143,10 +143,12 @@ def impacted_tests_command(
 
     explain = explain.replace("\\", "/").removeprefix("./") if explain else None
     checkout = _read_checkout(repo_path)
-    result = run_async(_collect(repo_path, change, checkout.roots, config, explain))
+    plan = _plan_scopes(repo_path, change, config, checkout) if config is not None else None
+    routes = plan.routes if plan else []
+    result = run_async(_collect(repo_path, change, checkout.roots, config, explain, routes))
     result["diff"] = change.label
-    if config is not None:
-        result["selection"] = _select(repo_path, change, result, config, checkout)
+    if plan is not None:
+        result["selection"] = _select(repo_path, change, result, config, checkout, plan)
     if explain and fmt != "json":
         _render_explain(result, explain)
         return
@@ -195,18 +197,57 @@ def _read_checkout(repo_path) -> _Checkout:
     return _Checkout(tracked, texts, roots)
 
 
+class _Plan(NamedTuple):
+    """Who names each changed doc or asset, the scope each scoped file runs, and its routes."""
+
+    namers: dict[str, list[str]]
+    scopes: dict
+    routes: list[str]
+
+
+def _plan_scopes(repo_path, change, config, checkout: _Checkout) -> _Plan:
+    """The change's scopes, reading the sources once and only when a file needs its namers."""
+    from repowise.core.analysis.selection_scopes import (
+        keeps_full_run,
+        needs_namers,
+        trigger_scopes,
+    )
+    from repowise.core.analysis.test_selection import file_namers, is_scan_source
+
+    paths = [*change.files, *change.deleted]
+    # A file that runs everything anyway makes every namer search moot.
+    blocked = any(keeps_full_run(p, config) for p in paths)
+    asked = [] if blocked else [p for p in paths if needs_namers(p, config)]
+    namers: dict[str, list[str]] = {}
+    if asked:
+        known = dict(checkout.pytest_texts)  # conftests and pytest configs, read already
+        root = Path(repo_path)
+        texts = (
+            (p, known[p]) if p in known else (p, _text(root / p) or "")
+            for p in checkout.tracked
+            if is_scan_source(p)
+        )
+        namers = file_namers(asked, texts)
+    scopes = trigger_scopes(paths, checkout.tracked, namers, config)
+    routes = sorted({r for scope in scopes.values() for r in scope.routes} - set(paths))
+    return _Plan(namers, scopes, routes)
+
+
 async def _collect(
     repo_path,
     change,
     roots: PytestRoots | None = None,
     config=None,
     explain: str | None = None,
+    scope_routes: list[str] | tuple[str, ...] = (),
 ) -> dict:
     """Resolve the change's files to impacted tests + labelled fallbacks.
 
     With a selection *config*, files changed since the index was built are
-    walked too, so selection can add the tests reaching them. With *explain*,
-    the import route from that test to a changed file is looked up as well.
+    walked too, so selection can add the tests reaching them; so are
+    *scope_routes*, the files a scope runs the tests of (:func:`_plan_scopes`).
+    With *explain*, the import route from that test to a changed file is
+    looked up as well.
     """
     from repowise.core.persistence.crud import (
         get_health_metrics,
@@ -237,6 +278,7 @@ async def _collect(
         # aggregate coverage ingest resolves against).
         repo_keys = {m.file_path for m in await get_health_metrics(session, repo_id)}
         routes = [] if config is None else _gap_routes(repo_path, change, config, repo_keys, out)
+        routes = sorted({*routes, *scope_routes})
         await _resolve_impacted(
             session, repo_id, _query_lines(change, measured), repo_keys, out, roots, routes
         )
@@ -573,14 +615,12 @@ def _with_importers(picks: dict[str, str], parents: dict[str, set[str]]) -> list
     return list(picks.items())
 
 
-def _select(repo_path, change, result: dict, config, checkout: _Checkout):
+def _select(repo_path, change, result: dict, config, checkout: _Checkout, plan: _Plan):
     """The run-all-or-subset decision for ``--format args`` / ``json``."""
     from repowise.core.analysis.test_selection import (
         SelectionInput,
-        doc_readers,
         is_documentation,
         is_runnable_test,
-        is_scan_source,
         plugin_loader,
         select_tests,
     )
@@ -591,8 +631,6 @@ def _select(repo_path, change, result: dict, config, checkout: _Checkout):
     tracked = checkout.tracked
     go_test_dirs = {str(Path(p).parent.as_posix()) for p in tracked if p.endswith("_test.go")}
     placed = result["placed_tests"]
-    docs = [p for p in (*change.files, *change.deleted) if is_documentation(p)]
-    sources = [p for p in tracked if is_scan_source(p)]
     known_tests = sorted(p for p in tracked if is_runnable_test(p, checkout.roots))
     return select_tests(
         SelectionInput(
@@ -611,10 +649,11 @@ def _select(repo_path, change, result: dict, config, checkout: _Checkout):
             missing={f for f in named if not (root / f).is_file()},
             go_test_dirs=go_test_dirs,
             known_tests=known_tests,
-            doc_readers=doc_readers(docs, _texts(root, sources)) if docs else {},
+            doc_readers={p: n[0] for p, n in plan.namers.items() if is_documentation(p)},
             plugin_loader=plugin_loader(checkout.pytest_texts),
             unplaced_tests=[] if placed is None else [t for t in known_tests if t not in placed],
             always_run_tests=result["always_run_tests"],
+            scopes=plan.scopes,
         )
     )
 

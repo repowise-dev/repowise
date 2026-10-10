@@ -124,14 +124,23 @@ def test_json_adds_the_selection_to_the_report(repo) -> None:
     assert data["selected"]["basis"] == {"README.md": "no-tests-needed", "src/a.py": "import-graph"}
 
 
-def test_a_lockfile_change_runs_everything_and_says_why(repo) -> None:
+def test_a_lockfile_change_runs_its_ecosystem_tests_and_says_why(repo) -> None:
     _write(repo, {"uv.lock": "lock\n"})
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "deps")
     result = _run(repo, "main...feat", "--format", "args")
     assert result.exit_code == 0, result.output
+    assert result.stdout == "tests/test_a.py\n"
+    assert "uv.lock changed: it can change any Python test; 1 test file(s)" in _err(result)
+
+
+def test_a_build_file_change_runs_everything_and_says_why(repo) -> None:
+    _write(repo, {"Dockerfile": "FROM python\n"})
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "image")
+    result = _run(repo, "main...feat", "--format", "args")
     assert result.stdout == ":all\n"
-    assert "uv.lock changed: dependencies can change any test." in _err(result)
+    assert "Dockerfile changed: build or test configuration can change any test." in _err(result)
 
 
 def test_a_new_untested_file_runs_everything(repo) -> None:
@@ -269,11 +278,18 @@ def _land_on_main(repo, files: dict[str, str]) -> None:
     _git(repo, "rebase", "-q", "main")
 
 
-def test_a_doc_a_test_reads_runs_everything(repo) -> None:
+def test_a_doc_a_test_reads_selects_that_test(repo) -> None:
     _land_on_main(repo, {"tests/test_readme.py": 'README = "README.md"\n'})
     result = _run(repo, "main...feat", "--format", "args")
+    assert result.stdout == "tests/test_a.py tests/test_readme.py\n"
+    assert "README.md changed: it is named by tests/test_readme.py; 1 test file(s)" in _err(result)
+
+
+def test_a_doc_named_by_code_no_test_reaches_runs_everything(repo) -> None:
+    _land_on_main(repo, {"src/b.py": 'DOC = "README.md"\n'})
+    result = _run(repo, "main...feat", "--format", "args")
     assert result.stdout == ":all\n"
-    assert "README.md is named by tests/test_readme.py, so a test may read it" in _err(result)
+    assert "README.md is named by src/b.py, and no test is known to reach it." in _err(result)
 
 
 def test_tests_the_graph_cannot_see_run_and_production_modules_do_not(repo) -> None:
