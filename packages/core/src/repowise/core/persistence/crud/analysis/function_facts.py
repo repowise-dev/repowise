@@ -11,7 +11,7 @@ import json
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import and_, delete, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....analysis.execution_graph import file_of_symbol
@@ -21,6 +21,9 @@ if TYPE_CHECKING:
     from ....analysis.execution_roles import ExecutionRoles
 
 _CHUNK = 500
+# Key ranges OR-ed into one DELETE: two bound values each, far under SQLite's
+# variable limit, and SQLAlchemy keeps the OR flat, so no expression depth.
+_RANGES_PER_DELETE = 200
 
 
 def _row(repository_id: str, row: Mapping[str, Any]) -> dict[str, Any]:
@@ -37,19 +40,33 @@ def _row(repository_id: str, row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def file_rows(repository_id: str, path: str) -> Any:
-    """A file's rows as a key range: every symbol id there is ``path::...``.
+def key_range(path: str) -> tuple[str, str]:
+    """A file's rows as a half-open key range: every symbol id there is ``path::...``.
 
     Symbol ids carry forward slashes; ``:;`` is the first string after every
     ``path::`` suffix in bytewise order, which the column's ``C`` collation
     gives PostgreSQL too.
     """
     path = path.replace("\\", "/")
-    return (
-        FunctionFact.repository_id == repository_id,
-        FunctionFact.symbol_id >= f"{path}::",
-        FunctionFact.symbol_id < f"{path}:;",
-    )
+    return f"{path}::", f"{path}:;"
+
+
+async def delete_file_rows(session: AsyncSession, repository_id: str, paths: Iterable[str]) -> None:
+    """Delete the rows of *paths*, a chunk of key ranges per statement."""
+    ranges = sorted({key_range(path) for path in paths})
+    for i in range(0, len(ranges), _RANGES_PER_DELETE):
+        chunk = ranges[i : i + _RANGES_PER_DELETE]
+        await session.execute(
+            delete(FunctionFact).where(
+                FunctionFact.repository_id == repository_id,
+                or_(
+                    *(
+                        and_(FunctionFact.symbol_id >= low, FunctionFact.symbol_id < high)
+                        for low, high in chunk
+                    )
+                ),
+            )
+        )
 
 
 async def write_function_facts(
@@ -65,8 +82,7 @@ async def write_function_facts(
     if file_paths is None:
         await session.execute(delete(FunctionFact).where(FunctionFact.repository_id == repository_id))
     else:
-        for path in sorted(set(file_paths)):
-            await session.execute(delete(FunctionFact).where(*file_rows(repository_id, path)))
+        await delete_file_rows(session, repository_id, file_paths)
     # Two walked functions can resolve to one symbol; the first keeps it. Key
     # order fills the clustered pages instead of splitting them half empty.
     by_symbol = {row["symbol_id"]: _row(repository_id, row) for row in reversed(list(rows))}
@@ -110,4 +126,4 @@ async def get_function_facts(
     return out
 
 
-__all__ = ["file_rows", "get_function_facts", "write_function_facts"]
+__all__ = ["delete_file_rows", "get_function_facts", "key_range", "write_function_facts"]

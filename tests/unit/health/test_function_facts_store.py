@@ -195,12 +195,33 @@ class C:
 
 
 def test_a_windows_path_selects_the_same_rows() -> None:
-    from repowise.core.persistence.crud.analysis.function_facts import file_rows
+    from repowise.core.persistence.crud.analysis.function_facts import key_range
 
-    def compiled(path: str) -> list[str]:
-        return [str(c.compile(compile_kwargs={"literal_binds": True})) for c in file_rows("r", path)]
+    assert key_range(r"pkg\a.py") == key_range("pkg/a.py") == ("pkg/a.py::", "pkg/a.py:;")
 
-    assert compiled(r"pkg\a.py") == compiled("pkg/a.py")
+
+async def test_many_files_are_deleted_in_chunked_statements(store) -> None:
+    """More files than one statement holds: every one goes, nothing else does."""
+    from repowise.core.persistence.crud import write_function_facts
+
+    session, repo = store
+    paths = [f"pkg/m{i:04d}.py" for i in range(450)]
+    rows = [_row(f"{path}::f") for path in paths] + [_row("keep/a.py::f"), _row("pkg/m0000.pyi::f")]
+    await write_function_facts(session, repo, rows)
+    statements: list[str] = []
+    real = session.execute
+
+    async def counting(statement, *args, **kwargs):
+        statements.append(str(statement))
+        return await real(statement, *args, **kwargs)
+
+    session.execute = counting
+    try:
+        await write_function_facts(session, repo, [], file_paths=paths)
+    finally:
+        del session.execute
+    assert sum(text.startswith("DELETE") for text in statements) == 3
+    assert set(await _stored(session, repo)) == {"keep/a.py::f", "pkg/m0000.pyi::f"}
 
 
 def test_an_expression_body_is_counted() -> None:

@@ -1121,14 +1121,11 @@ async def prune_deleted_file_rows(
     # partial dead-code analysis has already loaded the module (13.7 ms when
     # it has not, measured cold after the CLI modules are up).
     from repowise.core.analysis.dead_code.analyzer import _is_synthetic_node
-    from repowise.core.persistence.crud.analysis.function_facts import (
-        file_rows as function_fact_rows,
-    )
+    from repowise.core.persistence.crud.analysis.function_facts import delete_file_rows
     from repowise.core.persistence.models import (
         DeadCodeFinding,
         DocDriftFinding,
         DocDriftReference,
-        FunctionFact,
         GitMetadata,
         GraphEdge,
         GraphMetric,
@@ -1223,8 +1220,7 @@ async def prune_deleted_file_rows(
     await _prune_table(SecurityFinding, SecurityFinding.file_path, "security_findings")
     await _prune_table(DeadCodeFinding, DeadCodeFinding.file_path, "dead_code_findings")
     # Keyed on the symbol: a deleted file's rows are one key range of the id.
-    for path in sorted(dead_paths):
-        await session.execute(delete(FunctionFact).where(*function_fact_rows(repo_id, path)))
+    await delete_file_rows(session, repo_id, dead_paths)
     # Keyed on the DOCUMENT. The incremental drift pass scopes its write to the
     # documents it read, so a deleted one is never in scope and its rows would
     # outlive the file without this. ``_FileLiveness`` asks disk and
