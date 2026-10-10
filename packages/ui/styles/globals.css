@@ -236,7 +236,7 @@
      the kg-node "blueprint" tokens so the C4 view that consumes those is
      untouched. LIGHT: white cards on warm paper; DARK overrides below. */
   --color-zoom-card-fill: #ffffff; /* leaf (file) card */
-  --color-zoom-card-fill-2: #fbf4ee; /* container (folder/group/layer) card */
+  --color-zoom-card-fill-2: #f7f4f1; /* container (folder/group/layer) card */
   --color-zoom-card-text: #241b2c;
   --color-zoom-card-border: rgba(88, 67, 108, 0.14); /* hairline */
   --color-zoom-card-border-hover: rgba(88, 67, 108, 0.28);
