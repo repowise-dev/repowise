@@ -326,7 +326,8 @@ class ConftestFacts:
         """What the conftest does with *entries*, the files it imports on a route."""
         if self.error:
             return ConftestUse(run_all=self.error)
-        targets = [module_parts(e) for e in entries]
+        # Sorted: an import binds the first entry it names, so order must not vary.
+        targets = [module_parts(e) for e in sorted(entries)]
         hot: dict[str, tuple[str, ...]] = {}
         matched: set[tuple[str, ...]] = set()
         for node in self.imports:
