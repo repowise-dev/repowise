@@ -17,9 +17,38 @@ from repowise.core.ci.base import CI_BASE_VARS, CI_ENV_VARS
 
 
 def _git(cwd, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
-    ).stdout.strip()
+    try:
+        return subprocess.run(
+            ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+        ).stdout.strip()
+    except subprocess.CalledProcessError:
+        if args and args[0] == "init" and "-b" in args:
+            branch = args[args.index("-b") + 1]
+            rest = [a for a in args if a not in ("-b", branch)]
+            res = subprocess.run(
+                ["git", *rest], cwd=cwd, check=True, capture_output=True, text=True
+            ).stdout.strip()
+            subprocess.run(
+                ["git", "symbolic-ref", "HEAD", f"refs/heads/{branch}"],
+                cwd=cwd,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return res
+        if args and args[0] == "switch":
+            checkout_args = ["checkout"]
+            for a in args[1:]:
+                if a == "-qc":
+                    checkout_args.extend(["-q", "-b"])
+                elif a == "-c":
+                    checkout_args.append("-b")
+                else:
+                    checkout_args.append(a)
+            return subprocess.run(
+                ["git", *checkout_args], cwd=cwd, check=True, capture_output=True, text=True
+            ).stdout.strip()
+        raise
 
 
 def _write(root: Path, files: dict[str, str]) -> None:

@@ -67,6 +67,7 @@ from typing import TYPE_CHECKING, Any
 
 import pathspec
 
+from ..js_test_roots import JsTestRoots
 from ..pytest_roots import PYTEST_CONFIG_NAMES, PytestRoots
 from ..support_paths import DOC_EXTENSIONS
 from ..test_paths import is_test_path, is_test_related_path, is_test_support_path
@@ -412,18 +413,30 @@ def is_test_helper(path: str) -> bool:
     )
 
 
-def is_runnable_test(path: str, roots: PytestRoots | None = None) -> bool:
+def is_runnable_test(
+    path: str,
+    roots: PytestRoots | JsTestRoots | None = None,
+    js_roots: JsTestRoots | None = None,
+) -> bool:
     """A test-shaped file name with an extension a runner collects tests from.
 
-    With *roots*, a Python file pytest's config leaves out of collection
-    (``core/test_paths.py``) is not one: the same rule that stamps ``is_test``.
+    With *roots* or *js_roots*, follows runner collection configuration:
+    a Python file pytest leaves out is not runnable, and a JS/TS file Vitest or
+    Jest collects is runnable.
     """
+    if isinstance(roots, JsTestRoots) and js_roots is None:
+        js_roots = roots
+        roots = None
+
     p = PurePosixPath(path)
-    return (
-        p.suffix.lower() in _TEST_CODE_SUFFIXES
-        and is_test_path(p.name)
-        and (roots is None or is_test_path(path, roots=roots))
-    )
+    suffix = p.suffix.lower()
+    if suffix not in _TEST_CODE_SUFFIXES:
+        return False
+    if p.name == "__init__.py":
+        return False
+    if suffix in JS_SUFFIXES and js_roots is not None:
+        return is_test_path(path, js_roots=js_roots)
+    return is_test_path(p.name) and (roots is None or is_test_path(path, roots=roots))
 
 
 @functools.lru_cache(maxsize=8)
@@ -586,7 +599,7 @@ def _why(
         vias = {f: via for f, via in ev.inferred.get(path, ())}
         covered = {f for _, f in ev.covered.get(path, ())}
         for _, test_file in tests:
-            if test_file and test_file not in out:
+            if test_file and PurePosixPath(test_file).name != "__init__.py" and test_file not in out:
                 via = "coverage" if test_file in covered else vias.get(test_file, basis)
                 out[test_file] = f"{path} changed ({_VIA_WHY.get(via, via)})"
     return out
@@ -1199,7 +1212,7 @@ def _runnable(selected: list[_TestRef]) -> tuple[tuple[str, ...], tuple[str, ...
     whole: set[str] = set()
     ids: dict[str, None] = {}
     for test, test_file in selected:
-        if test_file is None:
+        if test_file is None or PurePosixPath(test_file).name == "__init__.py":
             continue
         files[test_file] = None
         node = _node_id(test, test_file)

@@ -19,7 +19,7 @@ import configparser
 import os
 import re
 import threading
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +31,12 @@ from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatt
 
 from ..code_origin import is_generated_header
 from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
+from ..js_test_roots import (
+    JS_TEST_CONFIG_NAMES,
+    JsTestRoots,
+    js_test_options,
+    js_test_roots,
+)
 from ..pytest_roots import (
     PYTEST_CONFIG_NAMES,
     PytestRoots,
@@ -457,6 +463,16 @@ class FileTraverser:
         """Where pytest collects, from the configs the console-script pass read."""
         return self._console_script_tables().pytest_roots
 
+    def get_cached_text(self, path: str | Path) -> str | None:
+        """The text of *path* if a config read during traversal already loaded it."""
+        abs_key = str(Path(path).resolve())
+        return self._console_script_tables().config_texts.get(abs_key)
+
+    def get_cached_bytes(self, path: str | Path) -> bytes | None:
+        """The bytes of *path* if a config read during traversal already loaded it."""
+        abs_key = str(Path(path).resolve())
+        return self._console_script_tables().config_bytes.get(abs_key)
+
     @property
     def _console_script_names(self) -> frozenset[str]:
         return self._console_script_tables().names
@@ -811,8 +827,12 @@ class FileTraverser:
             _is_console_script_target(rel_str, self._console_script_modules)
             or rel_str in self._distribution_inits
         )
+        tables = self._console_script_tables()
         is_test = is_test_related_path(
-            rel_str, language, self._console_script_tables().pytest_roots
+            rel_str,
+            language,
+            roots=tables.pytest_roots,
+            js_roots=tables.js_test_roots,
         )
         entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
         return FileInfo(
@@ -829,6 +849,8 @@ class FileTraverser:
             is_entry_point=entry and not is_test,
             is_manifest_entry=manifest_entry,
             is_reachability_root=entry,
+            cached_bytes=self.get_cached_bytes(abs_path),
+            cached_content=self.get_cached_text(abs_path),
         )
 
     # ------------------------------------------------------------------
@@ -1148,7 +1170,7 @@ def _is_entry_point(rel_str: str, abs_path: Path, language: str) -> bool:
 
 
 class ConsoleScriptTables(NamedTuple):
-    """What one pass over the repo's Python project configs yields."""
+    """What one pass over the repo's project configs yields."""
 
     names: frozenset[str]
     """Launcher names an installer drops in the environment's script dir."""
@@ -1160,12 +1182,18 @@ class ConsoleScriptTables(NamedTuple):
     """Repo-relative ``__init__.py`` of each distribution's own import package."""
     pytest_roots: PytestRoots = PytestRoots()
     """Where a bare pytest run collects tests, which decides a test-named module."""
+    js_test_roots: JsTestRoots = JsTestRoots()
+    """Where Vitest or Jest collects tests, which decides custom-pattern JS/TS tests."""
+    config_texts: Mapping[str, str] = field(default_factory=dict)
+    """Raw text of project/test config files read during the pass."""
+    config_bytes: Mapping[str, bytes] = field(default_factory=dict)
+    """Raw bytes of project/test config files read during the pass."""
 
 
 def _collect_console_scripts(
     repo_root: Path, *, prune_nested_git: bool = True
 ) -> ConsoleScriptTables:
-    """Console-script names, module targets and distribution names.
+    """Console-script names, module targets, distribution names, and test runner roots.
 
     Reads ``[project.scripts]``, ``[project.gui-scripts]``, and every
     ``[project.entry-points.*]`` group from each ``pyproject.toml`` in the
@@ -1173,7 +1201,9 @@ def _collect_console_scripts(
     before the colon is the module it imports; ``[project].name`` is the
     distribution. Best-effort: unparsable files are skipped. The pytest
     configs (``pytest.ini``, ``tox.ini``, ``setup.cfg`` and the same
-    ``pyproject.toml``) come off this one walk and one read each.
+    ``pyproject.toml``) and Vitest/Jest configs (``vitest.config.*``,
+    ``jest.config.*``, ``package.json``, etc.) come off this one walk and one
+    read each.
     """
     from repowise.core.fs_walk import iter_glob
 
@@ -1183,33 +1213,61 @@ def _collect_console_scripts(
     inits: set[str] = set()
     pytest_configs: list[tuple[str, dict]] = []
     unreadable: list[str] = []
+    js_configs: list[tuple[str, dict]] = []
+    config_texts: dict[str, str] = {}
+    config_bytes: dict[str, bytes] = {}
+    all_config_names = tuple(PYTEST_CONFIG_NAMES | JS_TEST_CONFIG_NAMES)
     try:
         config_files = list(
-            iter_glob(repo_root, tuple(PYTEST_CONFIG_NAMES), prune_nested_git=prune_nested_git)
+            iter_glob(repo_root, all_config_names, prune_nested_git=prune_nested_git)
         )
     except OSError:
         return ConsoleScriptTables(frozenset(), frozenset(), frozenset(), frozenset())
     for config_file in config_files:
-        project, options, parsed = _read_python_config(config_file)
+        name = config_file.name
         rel = config_file.relative_to(repo_root).as_posix()
-        if options is not None:
-            pytest_configs.append((rel, options))
-        if not parsed:
-            unreadable.append(rel)
-        if project is None:
-            continue
-        dist = project.get("name")
-        if isinstance(dist, str) and dist.strip():
-            distributions.add(dist.strip())
-            if (init := _distribution_init(repo_root, config_file.parent, dist)) is not None:
-                inits.add(init)
-        _add_script_targets(project, names, modules)
+        raw: bytes | None = None
+        text: str | None = None
+        try:
+            raw = config_file.read_bytes()
+            text = raw.decode("utf-8", errors="replace")
+            resolved_key = str(config_file.resolve())
+            config_bytes[resolved_key] = raw
+            config_bytes[rel] = raw
+            config_texts[resolved_key] = text
+            config_texts[rel] = text
+        except Exception:
+            pass
+
+        if name in PYTEST_CONFIG_NAMES:
+            project, options, parsed = _parse_python_config(name, text)
+            if options is not None:
+                pytest_configs.append((rel, options))
+            if not parsed:
+                unreadable.append(rel)
+            if project is not None:
+                dist = project.get("name")
+                if isinstance(dist, str) and dist.strip():
+                    distributions.add(dist.strip())
+                    if (init := _distribution_init(repo_root, config_file.parent, dist)) is not None:
+                        inits.add(init)
+                _add_script_targets(project, names, modules)
+        if name in JS_TEST_CONFIG_NAMES and text is not None:
+            try:
+                js_opts = js_test_options(name, text)
+                if js_opts is not None:
+                    js_configs.append((rel, js_opts))
+            except Exception:
+                pass
     return ConsoleScriptTables(
         frozenset(names),
         frozenset(modules),
         frozenset(distributions),
         frozenset(inits),
         pytest_roots(pytest_configs, unreadable),
+        js_test_roots(js_configs),
+        config_texts,
+        config_bytes,
     )
 
 
@@ -1229,22 +1287,28 @@ def _distribution_init(repo_root: Path, base: Path, dist: str) -> str | None:
 
 
 def _read_python_config(config_file: Path) -> tuple[dict | None, dict | None, bool]:
-    """``([project] table, pytest options, parsed)`` of one config.
+    """``([project] table, pytest options, parsed)`` of one config."""
+    try:
+        text = config_file.read_text(encoding="utf-8")
+        return _parse_python_config(config_file.name, text)
+    except Exception:
+        return None, None, False
 
-    The first two are None if absent or unreadable; *parsed* is False when the
-    file could not be read or parsed, so what it collects is unknown.
-    """
+
+def _parse_python_config(name: str, text: str | None) -> tuple[dict | None, dict | None, bool]:
+    """Parse python config text."""
+    if text is None:
+        return None, None, False
     import tomllib
 
     try:
-        text = config_file.read_text(encoding="utf-8")
-        if config_file.name != "pyproject.toml":
-            return None, parse_pytest_options(config_file.name, text), True
+        if name != "pyproject.toml":
+            return None, parse_pytest_options(name, text), True
         data = tomllib.loads(text)
     except Exception:
         return None, None, False
     project = data.get("project")
-    options = pytest_options(config_file.name, toml=data)
+    options = pytest_options(name, toml=data)
     return (project if isinstance(project, dict) else None), options, True
 
 
