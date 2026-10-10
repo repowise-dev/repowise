@@ -115,6 +115,12 @@ def test_fix_first_vocabularies_match_python() -> None:
     assert match and set(re.findall(r'"([A-Z]+)"', match.group(1))) == set(FIX_EFFORTS)
 
 
+def test_performance_queue_exclusions_match_python() -> None:
+    from repowise.core.analysis.health.perf.opportunity_rank import DEFAULT_QUEUE_EXCLUSIONS
+
+    assert _union_members("PerformanceQueueExclusion", "health.ts") == set(DEFAULT_QUEUE_EXCLUSIONS)
+
+
 def test_agent_prompt_flavors_match_python() -> None:
     from repowise.core.agent_prompts import FLAVORS
 

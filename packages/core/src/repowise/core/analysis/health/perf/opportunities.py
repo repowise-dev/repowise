@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from ..worth import dormant
 from .actionability import (
     ActionabilityState,
     FixSafety,
@@ -175,7 +176,11 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
         [facts.details for facts in members],
         cross_function=any(facts.cross_function for facts in members),
     )
-    acted = actionability(assessment, evidence_confidence)
+    acted = actionability(
+        assessment,
+        evidence_confidence,
+        gated_off=all(dormant(facts.details) for facts in members),
+    )
     magnitude = loop_magnitude(marker, [facts.details for facts in members])
     factors = rank_factors(
         marker=marker,

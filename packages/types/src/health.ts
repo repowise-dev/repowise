@@ -597,9 +597,18 @@ export type PerformanceOpportunityQuery = {
   offset?: number;
 };
 
+/** Why the default queue leaves a cause out (`opportunity_rank.DEFAULT_QUEUE_EXCLUSIONS`). */
+export type PerformanceQueueExclusion =
+  | "test"
+  | "tooling"
+  | "unknown"
+  | "gated_off"
+  | "expected"
+  | "no_strategy";
+
 export interface PerformanceDefaultQueue {
   total: number;
-  excluded: Record<"test" | "tooling" | "unknown" | "expected" | "no_strategy", number>;
+  excluded: Record<PerformanceQueueExclusion, number>;
 }
 
 export interface PerformanceOpportunitySummary {

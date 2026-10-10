@@ -77,6 +77,7 @@ _DERIVED_DETAIL_KEYS = frozenset(
         "reliable_entry_reachability",
         "dispatch_share",
         "deprecated",
+        "gated_off",
         "loop_line",
         "deepest_block",
     }

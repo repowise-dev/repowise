@@ -43,6 +43,8 @@ export const EXCLUSION_LABEL: Record<FixExclusion, string> = {
   below_min_worth: "below the worth floor",
   history_only: "history only",
   deprecated: "deprecated",
+  gated_off: "switched off by a constant flag",
+  unreachable: "in dead code (delete it)",
   inherent_dispatch: "one long dispatch on a value",
   small_function: "small functions",
   no_concrete_step: "with no concrete first edit",
@@ -62,6 +64,8 @@ const EXCLUSION_ORDER: FixExclusion[] = [
   "below_min_worth",
   "history_only",
   "deprecated",
+  "gated_off",
+  "unreachable",
   "inherent_dispatch",
   "small_function",
   "no_concrete_step",
@@ -70,16 +74,22 @@ const EXCLUSION_ORDER: FixExclusion[] = [
 
 /**
  * The header line, exact about scope: how many items are shown out of how
- * many are eligible, and what each rule left out. A zero count is omitted
- * because it excluded nothing.
+ * many are eligible, what each rule left out, and how many functions a
+ * constant flag keeps dormant. A zero count is omitted because it excluded
+ * nothing.
  */
 export function fixFirstScopeSentence(queue: FixFirstQueue<unknown>): string {
-  const { shown, eligible, excluded } = queue.totals;
+  const { shown, eligible, excluded, dormant } = queue.totals;
   const head = `${formatNumber(shown)} of ${formatNumber(eligible)} eligible item${
     eligible === 1 ? "" : "s"
   }.`;
   const parts = exclusionPhrase(excluded);
-  return parts ? `${head} Excluded: ${parts}.` : head;
+  const sentence = parts ? `${head} Excluded: ${parts}.` : head;
+  return dormant
+    ? `${sentence} Dormant: ${formatNumber(dormant)} function${
+        dormant === 1 ? "" : "s"
+      } behind a disabled flag.`
+    : sentence;
 }
 
 /**

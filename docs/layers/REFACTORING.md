@@ -90,8 +90,9 @@ the code needs no attention: check the findings in
 
 By default the open, repository-wide list shows only what
 [Fix first](CODE_HEALTH.md#fix-first) would take: opportunities in shipped code
-that recover real health and name a concrete edit. The response counts the rest
-and the reasons they were held back. Ask for the full inventory with `scope=all`
+that recover real health and name a concrete edit, outside dead code and outside
+functions a constant flag switches off. The response counts the rest and the
+reasons they were held back. Ask for the full inventory with `scope=all`
 (MCP: `refactoring_scope="all"`; dashboard: **Full inventory**). A call that names
 a file, or a triaged status, gets the full inventory automatically.
 

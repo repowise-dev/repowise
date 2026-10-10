@@ -322,7 +322,14 @@ async def test_the_default_queue_reports_what_it_leaves_out(app, client: AsyncCl
     assert [item["intervention_symbol"] for item in default["items"]] == ["src/shared.py::load"]
     assert default["summary"]["default_queue"] == {
         "total": 1,
-        "excluded": {"test": 1, "tooling": 0, "unknown": 0, "expected": 1, "no_strategy": 1},
+        "excluded": {
+            "test": 1,
+            "tooling": 0,
+            "unknown": 0,
+            "gated_off": 0,
+            "expected": 1,
+            "no_strategy": 1,
+        },
     }
     asked = await _page(client, repo_id, actionability="investigate")
     assert [item["intervention_symbol"] for item in asked["items"]] == ["src/clients.py::each"]

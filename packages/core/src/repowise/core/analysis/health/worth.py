@@ -106,11 +106,19 @@ _ERROR_KINDS: dict[str, LowPriority] = {
 }
 
 
+def dormant(facts: Mapping[str, Any]) -> bool:
+    """Whether a finding's details, or a measured shape, place it in a function
+    a constant-false flag in its own file switches off (``complexity/gating.py``).
+    Its work never runs while the flag is off, so it is no work to schedule."""
+    return bool(facts.get("gated_off"))
+
+
 def measure(findings: Iterable[Any]) -> dict[str, int]:
     """A function's largest measured CCN, size and nesting across its findings.
 
     ``severe`` is set when any of them is critical or a brain method,
     ``deprecated`` when any sits in a function marked deprecated,
+    ``gated_off`` when any sits in a :func:`dormant` function,
     ``dispatch_pct`` is the largest stored dispatch share in percent,
     ``start`` / ``end`` span the function as its size findings place it, and
     ``deep_start`` / ``deep_end`` are its deepest nested block's lines.
@@ -122,6 +130,8 @@ def measure(findings: Iterable[Any]) -> dict[str, int]:
         details = detail_map(f)
         if details.get("deprecated"):
             shape["deprecated"] = 1
+        if dormant(details):
+            shape["gated_off"] = 1
         deepest = details.get("deepest_block")
         if isinstance(deepest, dict) and deepest.get("start") and "deep_start" not in shape:
             shape["deep_start"] = int(deepest["start"])
@@ -299,6 +309,7 @@ __all__ = [
     "WORTH_MAGNITUDE",
     "LowPriority",
     "dispatch_shaped",
+    "dormant",
     "finding_priorities",
     "low_priority",
     "magnitude",

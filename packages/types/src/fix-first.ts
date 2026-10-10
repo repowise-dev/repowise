@@ -37,6 +37,8 @@ export type FixExclusion =
   | "vendored"
   | "docs_example"
   | "deprecated"
+  | "gated_off"
+  | "unreachable"
   | "inherent_dispatch"
   | "small_function"
   | "no_concrete_step"
@@ -117,6 +119,8 @@ export interface FixFirstTotals {
   eligible: number;
   shown: number;
   excluded: Record<FixExclusion, number>;
+  /** Distinct functions with work kept out as `gated_off`: dormant, not gone. */
+  dormant: number;
 }
 
 export interface FixFirstQueue<Item = FixItem> {

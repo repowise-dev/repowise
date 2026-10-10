@@ -616,11 +616,14 @@ export const FIX_FIRST_QUEUE: FixFirstQueue = {
       "vendored": 0,
       "docs_example": 0,
       "deprecated": 0,
+      "gated_off": 0,
+      "unreachable": 0,
       "inherent_dispatch": 0,
       "small_function": 0,
       "no_concrete_step": 0,
       "low_value_kind": 0
-    }
+    },
+    "dormant": 0
   },
   "by_improves": {
     "defect": 266,

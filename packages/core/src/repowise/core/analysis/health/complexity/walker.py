@@ -31,6 +31,7 @@ The whole-file passes share one descent of the tree (``file_scan``):
 - ``test_case``:      whether a walked function is a test case
 - ``dispatch``:       how much of the CCN is one dispatch on one value
 - ``deprecation``:    whether a function is marked deprecated
+- ``gating``:         whether a constant-false flag switches a function off
 - ``mock_walk``:      per-function mock-setup counting (test-quality)
 - ``error_handling``: error-handling anti-patterns
 - ``perf_walk``:      the performance-risk pass
@@ -55,6 +56,7 @@ from .cyclomatic import _walk_function_body
 from .deprecation import is_deprecated
 from .dispatch import dispatch_points, dispatch_share
 from .file_scan import scan_file
+from .gating import is_gated_off, module_false_constants
 from .languages import get_language_map
 from .mock_walk import _count_mock_setup, file_may_contain_mocks
 
@@ -163,6 +165,7 @@ def walk_file(
     asserts = _assert_dialect(language, extra_assert_names)
     run_perf = perf_pass_runs(language, lmap)
     scan = scan_file(tree.root_node, language, lmap, source, io_names=run_perf)
+    flags = module_false_constants(tree.root_node, source, language)
     for fn_node in _collect_function_nodes(tree.root_node, lmap):
         body = fn_node.child_by_field_name("body") or fn_node
         deepest: list[int] = []
@@ -204,6 +207,7 @@ def walk_file(
             dispatch_share=dispatch_share(dispatch.points, ccn),
             dispatch_arm=dispatch.arm,
             deprecated=is_deprecated(fn_node, body, name, lmap, source),
+            gated_off=body is not fn_node and is_gated_off(body, flags),
             deepest_block=(deepest[0], deepest[1]) if deepest else None,
         )
         functions.append(fc)

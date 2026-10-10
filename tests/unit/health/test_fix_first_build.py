@@ -51,11 +51,14 @@ def test_each_exclusion_is_counted_by_reason() -> None:
         "vendored": 0,
         "docs_example": 0,
         "deprecated": 0,
+        "gated_off": 0,
+        "unreachable": 0,
         "inherent_dispatch": 0,
         "small_function": 0,
         "no_concrete_step": 0,
         "low_value_kind": 0,
     }
+    assert queue.totals.dormant == 0
     assert queue.totals.eligible == 3
     assert queue.totals.candidates == 3 + 7
     assert queue.by_improves == {"defect": 2, "maintainability": 0, "performance": 1}

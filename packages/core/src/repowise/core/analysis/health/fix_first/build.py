@@ -20,7 +20,8 @@ Row shapes (field names are the SQL columns):
     ``line_start``, ``line_end``, ``reason``, ``health_impact``, ``public_id``,
     ``dimension``, ``status`` (absent = open), and ``details`` /
     ``details_json`` (``ccn``, ``nloc``, ``max_nesting``) for the numbers a
-    sentence quotes, and ``deprecated`` for a function on its way out.
+    sentence quotes, ``deprecated`` for a function on its way out and
+    ``gated_off`` for one a constant-false flag switches off.
 ``refactoring``
     The ``refactoring_opportunities`` columns, ``details`` (or
     ``details_json``) carrying ``steps``, ``validation_profiles``,
@@ -39,6 +40,11 @@ Row shapes (field names are the SQL columns):
     ``target_symbol`` can give a finding with no plan of its own its first
     concrete step. Every Extract Helper plan's occurrences say where verified
     duplicates sit.
+``dead_code``
+    ``dead_code_findings`` rows: ``kind``, ``file_path``, ``symbol_name``,
+    ``start_line``, ``end_line``, ``confidence``, ``safe_to_delete``,
+    ``status``. A unit an open row of :data:`DEAD_CONFIDENCE` or more (or one
+    safe to delete) covers is ``unreachable``: the fix is to delete it.
 """
 
 from __future__ import annotations
@@ -66,6 +72,7 @@ from repowise.core.analysis.health.worth import (
     SIZE_MARKERS,
     WORTH_MAGNITUDE,
     dispatch_shaped,
+    dormant,
     low_priority,
     magnitude,
     measure,
@@ -103,6 +110,8 @@ from .model import (
 )
 
 Rows = Iterable[Any]
+#: A dead-code finding's ``(symbol, start line, end line)``; no symbol for a whole file.
+DeadSpan = tuple[str | None, int | None, int | None]
 
 #: A refactoring whose credited gain is under this is not worth an item. The
 #: refactoring model credits only the share of a finding a plan removes and
@@ -138,6 +147,9 @@ DEFAULT_LIMIT = 10
 #: drops more than 4 rejected.
 SMALL_NLOC = 30
 SMALL_CCN = 15
+#: A dead-code finding this sure (or marked safe to delete) makes its target
+#: ``unreachable``: no plan beats deleting it.
+DEAD_CONFIDENCE = 0.8
 #: Class-level findings: a fix names member groups, which only a plan holds.
 CLASS_MARKERS = frozenset({"low_cohesion", "god_class"})
 #: Kinds the baseline raters found not worth doing: a refactoring led by one
@@ -313,11 +325,13 @@ class _Files:
         cuts: tuple[float, float] | None,
         clones: Mapping[str, list[tuple[int, int]]] | None = None,
         extractions: Mapping[tuple[str, str], list[Any]] | None = None,
+        dead: Mapping[str, list[DeadSpan]] | None = None,
     ) -> None:
         self.by_path = {field(m, "file_path"): m for m in metrics}
         self.functions = functions
         self.clones = clones or {}
         self.extractions = extractions or {}
+        self.dead = dead or {}
         if cuts is None:
             production = [m for m in self.by_path.values() if not field(m, "is_test")]
             cuts = (
@@ -421,17 +435,39 @@ class _Files:
             )
         return None
 
-    def unit_exclusion(self, path: str, symbol: str | None, complexity: bool) -> str | None:
+    def unreachable(self, path: str, symbol: str | None, line: int | None) -> bool:
+        """Whether a sure dead-code finding covers ``symbol`` (at ``line``) in
+        ``path``: the whole file, the symbol's lines, or, with no lines on one
+        side, the symbol's name."""
+        tail = (symbol or "").rsplit(".", 1)[-1]
+        for name, start, end in self.dead.get(path, ()):
+            if name is None:
+                return True
+            if line and start and end:
+                if start <= line <= end:
+                    return True
+            elif tail and name.rsplit(".", 1)[-1] == tail:
+                return True
+        return False
+
+    def unit_exclusion(
+        self, path: str, symbol: str | None, complexity: bool, line: int | None = None
+    ) -> str | None:
         """Why a unit on ``symbol`` is not a candidate, or ``None``.
 
-        A deprecated function is on its way out. A complexity unit on a
+        Unreachable code is deleted, not fixed. A deprecated function is on its
+        way out, and a dormant one does not run. A complexity unit on a
         function that is mostly one dispatch on one value is usually fine as
         it is, unless a duplicate also sits in it; one on a small function is
         not worth an item.
         """
+        if self.unreachable(path, symbol, line):
+            return "unreachable"
         shape = self.shape(path, symbol)
         if shape.get("deprecated"):
             return "deprecated"
+        if dormant(shape):
+            return "gated_off"
         if not complexity:
             return None
         if dispatch_shaped(shape) and not self.cloned(path, shape):
@@ -1218,6 +1254,7 @@ def _refactor_exclusion(
         path,
         lead.get("target_symbol"),
         complexity=lead.get("refactoring_type") == "extract_method",
+        line=lead.get("line_start"),
     )
     if reason is None and not _concrete(lead, plans.get(lead.get("plan_id"))):
         return "no_concrete_step"
@@ -1234,10 +1271,24 @@ def _finding_exclusion(finding: Any, files: _Files) -> str | None:
         field(finding, "file_path"),
         field(finding, "function_name"),
         complexity=field(finding, "biomarker_type") in SIZE_MARKERS,
+        line=field(finding, "line_start"),
     )
     if reason is None and files.first_step(finding) is None:
         return "no_concrete_step"
     return reason
+
+
+def _dead_spans(rows: Rows) -> dict[str, list[DeadSpan]]:
+    """Sure, open dead-code findings by file: ``(symbol, start, end)``, the
+    symbol ``None`` for an unreachable file."""
+    out: dict[str, list[DeadSpan]] = defaultdict(list)
+    for row in rows:
+        sure = _num(field(row, "confidence")) >= DEAD_CONFIDENCE or field(row, "safe_to_delete")
+        whole = field(row, "kind") == "unreachable_file"
+        name = None if whole else field(row, "symbol_name")
+        if _open(row) and sure and (whole or name):
+            out[field(row, "file_path")].append((name, field(row, "start_line"), field(row, "end_line")))
+    return dict(out)
 
 
 def _clone_spans(plans: Iterable[Any]) -> dict[str, list[tuple[int, int]]]:
@@ -1324,6 +1375,7 @@ def build_fix_first(
     refactoring: Rows = (),
     performance: Rows = (),
     plans: Rows = (),
+    dead_code: Rows = (),
     limit: int | None = DEFAULT_LIMIT,
     scope: str = "production",
     basis: Mapping[str, str | None] | None = None,
@@ -1345,7 +1397,8 @@ def build_fix_first(
     names a function but stored no line. ``validate(path, function, start, end)``
     is the validation profile (``basis``, ``via``, ``total``, ``tests``,
     ``commands``) of a finding with no plan, read lazily for the items shown;
-    without it such an item's Verify stays unknown.
+    without it such an item's Verify stays unknown. ``dead_code`` rows make
+    the units they cover ``unreachable``.
     """
     metrics = list(metrics)
     findings = list(findings)
@@ -1371,7 +1424,14 @@ def build_fix_first(
         hot_cuts,
         _clone_spans(plans),
         _extractions(plans),
+        _dead_spans(dead_code),
     )
+    dormant_functions: set[tuple[str, str | None]] = set()
+
+    def exclude(reason: str, path: str, symbol: str | None) -> None:
+        excluded[reason] += 1
+        if reason == "gated_off":
+            dormant_functions.add((path, text.short_symbol(symbol)))
 
     def scope_reason(path: str, context: str | None = None) -> str | None:
         """Why ``path`` is out of scope, counted; ``None`` when it is in."""
@@ -1400,7 +1460,7 @@ def build_fix_first(
         if reason is None:
             reason = _refactor_exclusion(gain, steps, plan_rows, files, path)
             if reason is not None:
-                excluded[reason] += 1
+                exclude(reason, path, steps[0].get("target_symbol") if steps else None)
         refactoring_reasons[field(row, "opportunity_id")] = reason
         if reason is not None:
             continue
@@ -1420,7 +1480,7 @@ def build_fix_first(
     # actionability, one predicate for every surface); Fix first adds its path
     # rules and needs a stored plan to quote.
     perf_contexts = DEFAULT_QUEUE_CONTEXTS | {"test"} if keep_tests else DEFAULT_QUEUE_CONTEXTS
-    for (path, _symbol), rows in groups.items():
+    for (path, symbol), rows in groups.items():
         if out_of_scope(path, "production"):
             continue
         rows.sort(key=lambda r: (field(r, "rank_position") or 0, field(r, "opportunity_id")))
@@ -1428,11 +1488,14 @@ def build_fix_first(
         queued = [r for r, reason in zip(rows, reasons, strict=True) if reason is None]
         ready = [r for r in queued if _has_plan(r)]
         if not ready:
-            excluded["no_plan" if queued else reasons[0] or "no_plan"] += 1
+            exclude("no_plan" if queued else reasons[0] or "no_plan", path, symbol)
             continue
         worth = [r for r in ready if _perf_worth(r)]
         if not worth:
             excluded["below_min_worth"] += 1
+            continue
+        if files.unreachable(path, text.short_symbol(symbol), None):
+            excluded["unreachable"] += 1
             continue
         units.append(_perf_unit(worth, files, symbol_lines))
 
@@ -1452,7 +1515,8 @@ def build_fix_first(
         reasons = {id(f): _finding_exclusion(f, files) for f in shape}
         eligible = primary_finding([f for f in shape if reasons[id(f)] is None])
         if eligible is None:
-            excluded[reasons[id(lead)] or next(r for r in reasons.values() if r)] += 1
+            culprit = lead if reasons[id(lead)] else next(f for f in shape if reasons[id(f)])
+            exclude(reasons[id(culprit)], path, field(culprit, "function_name"))
             continue
         units.append(_finding_unit(eligible, files, files.first_step(eligible), validate))
 
@@ -1470,6 +1534,7 @@ def build_fix_first(
             eligible=len(units),
             shown=len(shown),
             excluded=excluded,
+            dormant=len(dormant_functions),
         ),
         by_improves={k: by_improves.get(k, 0) for k in FIX_IMPROVES},
         basis=dict(basis) if basis is not None else _basis(metrics),
@@ -1479,6 +1544,7 @@ def build_fix_first(
 
 __all__ = [
     "CLASS_MARKERS",
+    "DEAD_CONFIDENCE",
     "DEFAULT_LIMIT",
     "DISPATCH_SHARE",
     "GAIN_CUTS",

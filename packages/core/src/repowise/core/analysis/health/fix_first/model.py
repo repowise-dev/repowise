@@ -36,8 +36,10 @@ FIX_LEVELS: tuple[str, ...] = get_args(FixLevel)
 FixFactBasis = Literal["measured", "inferred", "unknown"]
 FIX_FACT_BASES: tuple[str, ...] = get_args(FixFactBasis)
 
-# ``unknown``, ``expected`` and ``no_strategy`` are the performance default
-# queue's own reasons (``opportunity_rank.DEFAULT_QUEUE_EXCLUSIONS``).
+# ``unknown``, ``gated_off``, ``expected`` and ``no_strategy`` are the
+# performance default queue's own reasons (``opportunity_rank.DEFAULT_QUEUE_EXCLUSIONS``);
+# ``gated_off`` also keeps out any other unit in a function a constant-false
+# flag switches off. ``unreachable``: an open dead-code finding covers the target.
 FixExclusion = Literal[
     "test",
     "tooling",
@@ -51,6 +53,8 @@ FixExclusion = Literal[
     "vendored",
     "docs_example",
     "deprecated",
+    "gated_off",
+    "unreachable",
     "inherent_dispatch",
     "small_function",
     "no_concrete_step",
@@ -216,6 +220,8 @@ class FixTotals:
     eligible: int = 0
     shown: int = 0
     excluded: dict[str, int] = field(default_factory=_exclusions)
+    #: Distinct functions with work kept out as ``gated_off``: dormant, not gone.
+    dormant: int = 0
 
 
 @dataclass(frozen=True, slots=True)

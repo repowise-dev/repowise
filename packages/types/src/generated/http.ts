@@ -1662,6 +1662,7 @@ export interface FixTotals {
   eligible?: number;
   shown?: number;
   excluded?: Record<string, number>;
+  dormant?: number;
 }
 
 export interface FixVerify {

@@ -190,7 +190,14 @@ edit, the expected gain, the effort and the tests to run afterwards.
 What stays out, and is counted as excluded with a reason: test files, tooling,
 generated and vendored code, docs and examples, files whose only findings come
 from git history, changes that would recover under half a point, items with no
-concrete first edit, and kinds that reviewers found not worth doing.
+concrete first edit, kinds that reviewers found not worth doing, code a sure
+dead-code finding covers (the fix is to delete it), and functions a constant flag
+switches off. A function counts as switched off when its body opens with
+`if not FLAG: return ...` (or is one `if FLAG:` block) and `FLAG` is a
+module-level `False`, `0` or `None` (`const FLAG = false` in TypeScript or
+JavaScript) that nothing in the same file assigns again. Those functions are
+counted as **dormant** next to the excluded totals rather than dropped silently.
+A flag imported from another file is not followed.
 
 Items rank by value first (health recovered, or how far the code sits past size
 and complexity bars), then by tier: `now` (worth doing, safe to start), `next`
@@ -237,7 +244,8 @@ Findings group into **opportunities**, one per place you would edit (the functio
 holding the loop, or a helper every caller goes through). Each opportunity carries
 one state: `plan_ready` (a proven fix strategy), `advisory` (a strategy with
 unproven prerequisites), `investigate` (no supported strategy) or `expected` (the
-repetition is real and nothing should change, such as deleting N files). The
+repetition is real and nothing should change, such as deleting N files, or the
+function that holds it is switched off by a constant flag, reason `gated_off`). The
 default queue holds production `plan_ready` and `advisory` opportunities, ranked by
 cost first; state only breaks ties. Everything left out is counted by reason.
 

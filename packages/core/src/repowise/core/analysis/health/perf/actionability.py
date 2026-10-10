@@ -21,7 +21,9 @@ from typing import Any, Literal
 
 FixSafety = Literal["proven", "advisory"]
 OpportunityConfidence = Literal["high", "medium", "low"]
-# ``expected``: the repetition is real and there is nothing to change.
+# ``expected``: the repetition is real and there is nothing to change, either
+# by its nature or, with reason ``gated_off``, because a constant-false flag
+# switches the function that owns it off.
 ActionabilityState = Literal["plan_ready", "advisory", "investigate", "expected"]
 
 # Refusals that are facts about the code, not missing proofs: nothing to investigate.
@@ -281,15 +283,19 @@ def assess_fix(
 
 
 def actionability(
-    assessment: FixAssessment, evidence_confidence: OpportunityConfidence
+    assessment: FixAssessment, evidence_confidence: OpportunityConfidence, *, gated_off: bool = False
 ) -> Actionability:
     """What to do with this group next, and why not more.
 
     Deliberately not a restatement of fix safety. A proven strategy resting on
     a call path we could not resolve reliably is still only advisory, and the
     demotion names the fact that would promote it. A group with no strategy is
-    kept as investigation evidence rather than dropped.
+    kept as investigation evidence rather than dropped. A group whose code a
+    constant-false flag switches off (*gated_off*) has nothing to change while
+    the flag is off.
     """
+    if gated_off:
+        return Actionability("expected", "gated_off", "low", (), None)
     fix = assessment.fix
     if fix is None:
         state: ActionabilityState = (

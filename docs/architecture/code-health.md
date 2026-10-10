@@ -664,6 +664,8 @@ reason:
 | `below_min_worth` | A refactoring recovering under `MIN_WORTH` (0.5) or with no steps; a loop-built string that is bounded or not in production |
 | `history_only` | Only git-history findings |
 | `deprecated` | Deprecated functions |
+| `gated_off` | Functions a same-file constant-false flag switches off (`complexity/gating.py`): the body opens with `if not FLAG: return` or is one `if FLAG:` block. For performance this is the opportunity state `expected` with reason `gated_off`, and the default queue counts it under `gated_off`. `totals.dormant` counts the distinct functions |
+| `unreachable` | Targets an open dead-code finding with confidence 0.8 or more, or marked safe to delete, covers: the whole file, the symbol's lines, or its name |
 | `inherent_dispatch` | One dispatch holds 60% or more of the decision points (labels: 8 of 9 such rows rejected), unless a duplicate also sits in it |
 | `small_function` | Under 30 code lines and CCN 15 (on 67 labelled rows this cut drops 13 rejected and 4 accepted) |
 | `no_concrete_step` | No first edit with a file and line or a named group |

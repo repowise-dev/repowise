@@ -329,7 +329,7 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 | `items` | Up to five: `id`, `tier`, `kind`, `title`, `target`, `why`, `gain`, `effort`, `confidence`, `next_call` |
 | `tier` | `now` (worth doing, safe to start), `next` (worth doing, needs judgment), `later` |
 | `kind` | `refactor` (one file's composed refactoring), `perf_fix` (one intervention with its sinks), `finding` (a code-shape finding with no plan) |
-| `totals` | `candidates`, `eligible`, `shown`, and `excluded` counted by reason |
+| `totals` | `candidates`, `eligible`, `shown`, `excluded` counted by reason (`gated_off`: a constant flag in the same file switches the function off; `unreachable`: sure dead code, delete it), and `dormant`: distinct functions kept out as `gated_off` |
 | `by_improves`, `basis`, `model_version`, `detail_call` | Rollup, basis, and the call that opens the lead in full |
 
 Items are ordered by value first, then tier. History markers (churn, ownership, co-change, prior fixes) never create or lead an item; they ride on an item under `context`, and history-only files count under `totals.excluded.history_only`. `fix_first` always describes production code, whatever `scope` says; `limit` caps the items, never which leads.

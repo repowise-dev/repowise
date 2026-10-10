@@ -389,24 +389,30 @@ log = structlog.get_logger(__name__)
 HEALTH_ANALYZER_VERSION = 39
 
 
-def _mark_deprecated(
+#: Function facts a finding inside the function carries in its details.
+_FUNCTION_FACTS = ("deprecated", "gated_off")
+
+
+def _mark_function_facts(
     findings: list[HealthFindingData], functions: list[FunctionComplexity]
 ) -> None:
-    """Stamp ``deprecated: true`` on each function-level finding inside a
-    deprecated function. Absent, not false, everywhere else, so the details of
-    every other finding are byte-for-byte what they were."""
-    spans = [(fc.name, fc.start_line, fc.end_line) for fc in functions if fc.deprecated]
-    if not spans:
-        return
+    """Stamp ``deprecated: true`` / ``gated_off: true`` on each function-level
+    finding inside a function with that fact. Absent, not false, everywhere
+    else, so the details of every other finding are byte-for-byte what they
+    were."""
+    spans = [
+        (fact, fc.name, fc.start_line, fc.end_line)
+        for fc in functions
+        for fact in _FUNCTION_FACTS
+        if getattr(fc, fact, False)
+    ]
     for finding in findings:
         if finding.function_name is None:
             continue
         line = finding.line_start
-        if any(
-            name == finding.function_name and (line is None or start <= line <= end)
-            for name, start, end in spans
-        ):
-            finding.details["deprecated"] = True
+        for fact, name, start, end in spans:
+            if name == finding.function_name and (line is None or start <= line <= end):
+                finding.details[fact] = True
 
 
 #: Function-size findings whose fix starts at the deepest nested block.
@@ -1637,7 +1643,7 @@ class HealthAnalyzer:
         findings = attach_impacts(biomarker_results, deductions)
         for f in findings:
             f.file_path = file_path
-        _mark_deprecated(findings, fc_list)
+        _mark_function_facts(findings, fc_list)
         _stamp_symbol_lines(findings, fcx)
         _mark_deepest_block(findings, fc_list)
 

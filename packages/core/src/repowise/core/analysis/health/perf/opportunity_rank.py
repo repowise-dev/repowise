@@ -19,7 +19,7 @@ from __future__ import annotations
 from math import log2
 from typing import Any
 
-from ..rows import field
+from ..rows import detail_map, field
 
 BOUNDARY_POINTS = {"subprocess": 5, "network": 4, "db": 4, "lock": 3, "filesystem": 2}
 """What one crossing of each boundary costs, as an order of magnitude.
@@ -141,7 +141,7 @@ are true and stay one filter away, but none of them is work to schedule. Each is
 counted by :func:`default_queue_exclusion` so leaving it out is never silent.
 """
 
-DEFAULT_QUEUE_EXCLUSIONS = ("test", "tooling", "unknown", "expected", "no_strategy")
+DEFAULT_QUEUE_EXCLUSIONS = ("test", "tooling", "unknown", "gated_off", "expected", "no_strategy")
 """Every reason the default queue leaves a cause out, in the order it is checked."""
 
 _LEVERAGE_BANDS = ((1, "isolated"), (3, "local"), (9, "shared"))
@@ -292,7 +292,10 @@ def default_queue_exclusion(
     state = field(item, "actionability_state")
     if state in DEFAULT_QUEUE_STATES:
         return None
-    return "expected" if state == "expected" else "no_strategy"
+    if state != "expected":
+        return "no_strategy"
+    reason = field(item, "actionability_reason") or detail_map(item).get("actionability_reason")
+    return "gated_off" if reason == "gated_off" else "expected"
 
 
 def default_queue_counts(items: list[Any]) -> dict[str, Any]:

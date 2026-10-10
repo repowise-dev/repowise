@@ -31,7 +31,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.fix_first import DEFAULT_LIMIT, FixFirstQueue, build_fix_first
-from repowise.core.analysis.health.fix_first.build import MIN_WORTH, hot_cut, hot_cut_offset
+from repowise.core.analysis.health.fix_first.build import (
+    DEAD_CONFIDENCE,
+    MIN_WORTH,
+    hot_cut,
+    hot_cut_offset,
+)
 from repowise.core.analysis.health.perf.opportunity_rank import DEFAULT_QUEUE_STATES
 from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 from repowise.core.analysis.health.refactoring.models import (
@@ -46,6 +51,7 @@ from repowise.core.analysis.health.rows import detail_map
 from repowise.core.analysis.health.scoring import history_biomarkers
 
 from ...models import (
+    DeadCodeFinding,
     GitMetadata,
     GraphMetric,
     GraphNode,
@@ -269,11 +275,15 @@ async def _refactoring(session: AsyncSession, repo_id: str) -> list[Any]:
 
 async def _performance(session: AsyncSession, repo_id: str) -> list[Any]:
     p = PerformanceOpportunity
-    # Details are decoded only for a cause the builder can make an item of.
-    ready = and_(
-        p.actionability_state.in_(DEFAULT_QUEUE_STATES),
-        p.plan_state == "available",
-        p.fix_strategy.is_not(None),
+    # Details are decoded only for a cause the builder can make an item of,
+    # and for an ``expected`` one, whose reason says whether it is dormant.
+    ready = or_(
+        and_(
+            p.actionability_state.in_(DEFAULT_QUEUE_STATES),
+            p.plan_state == "available",
+            p.fix_strategy.is_not(None),
+        ),
+        p.actionability_state == "expected",
     )
     return _plain(
         await session.execute(
@@ -298,6 +308,34 @@ async def _performance(session: AsyncSession, repo_id: str) -> list[Any]:
             )
             .where(p.repository_id == repo_id, p.status == "open")
             .order_by(p.rank_position)
+        )
+    )
+
+
+def _sure_dead_code(repo_id: str) -> Any:
+    d = DeadCodeFinding
+    return and_(
+        d.repository_id == repo_id,
+        d.status == "open",
+        or_(d.confidence >= DEAD_CONFIDENCE, d.safe_to_delete.is_(True)),
+    )
+
+
+async def _dead_code(session: AsyncSession, repo_id: str) -> list[Any]:
+    """Open dead-code findings sure enough to make what they cover ``unreachable``."""
+    d = DeadCodeFinding
+    return _plain(
+        await session.execute(
+            select(
+                d.kind,
+                d.file_path,
+                d.symbol_name,
+                d.start_line,
+                d.end_line,
+                d.confidence,
+                d.safe_to_delete,
+                d.status,
+            ).where(_sure_dead_code(repo_id))
         )
     )
 
@@ -456,6 +494,16 @@ async def _stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
                 )
             ).one()
         )
+    # Dead-code rows carry no ``updated_at``; a triage change moves the count.
+    stamps.extend(
+        (
+            await session.execute(
+                select(func.max(DeadCodeFinding.analyzed_at), func.count()).where(
+                    _sure_dead_code(repo_id)
+                )
+            )
+        ).one()
+    )
     return tuple(stamps)
 
 
@@ -536,9 +584,8 @@ async def _build(
     # Ceiling: a plan whose details carry no steps is not an item, so its
     # file is read in full like any other.
     planned = {r.file_path for r in refactoring if r.details and r.details.get("steps")}
-    full = heavy | {p.file_path for p in performance if p.details} | (
-        {r.file_path for r in refactoring if r.details} - planned
-    )
+    fixable = {p.file_path for p in performance if p.details and p.actionability_state != "expected"}
+    full = heavy | fixable | ({r.file_path for r in refactoring if r.details} - planned)
     functions = {s["target_symbol"] for s in steps if s.get("target_symbol")}
     findings = await _findings(session, repository_id, full, planned, functions)
     paths = full | planned | {r.file_path for r in history_only}
@@ -548,6 +595,7 @@ async def _build(
         refactoring=refactoring,
         performance=performance,
         plans=await _plans(session, repository_id, steps, full),
+        dead_code=await _dead_code(session, repository_id),
         limit=limit,
         scope=scope,
         item_id=item_id,

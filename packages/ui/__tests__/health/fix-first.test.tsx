@@ -50,6 +50,20 @@ describe("Fix first header", () => {
     );
   });
 
+  it("counts dormant functions apart from what they excluded", () => {
+    const queue: FixFirstQueue = {
+      ...FIX_FIRST_QUEUE,
+      totals: {
+        ...FIX_FIRST_QUEUE.totals,
+        excluded: { ...FIX_FIRST_QUEUE.totals.excluded, gated_off: 3, unreachable: 2 },
+        dormant: 1,
+      },
+    };
+    const sentence = fixFirstScopeSentence(queue);
+    expect(sentence).toContain("3 switched off by a constant flag, 2 in dead code (delete it)");
+    expect(sentence).toMatch(/Dormant: 1 function behind a disabled flag\.$/);
+  });
+
   it("omits a rule that excluded nothing", () => {
     const queue: FixFirstQueue = {
       ...FIX_FIRST_QUEUE,
