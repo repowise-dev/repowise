@@ -18,7 +18,7 @@ from sqlalchemy import select
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import Page
 from repowise.core.persistence.search import strip_leading_headings
-from repowise.server.mcp_server._page_paths import hit_file_path
+from repowise.server.mcp_server._page_paths import PAGELESS_FILE, hit_file_path
 from repowise.server.mcp_server._query_terms import content_terms
 from repowise.server.mcp_server._retrieval_rank import rerank_by_context_coverage
 from repowise.server.mcp_server.tool_answer.config import (
@@ -271,9 +271,10 @@ async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
     Returns the number of top hits left without page content, so a hit
     reaching synthesis with no body is visible rather than silent.
     """
-    if not hits:
+    # A file with no page has no content to miss; its symbols carry its code.
+    top = [h for h in hits[:_PAGE_EXCERPT_HITS] if h.get("page_type") != PAGELESS_FILE]
+    if not top:
         return 0
-    top = hits[:_PAGE_EXCERPT_HITS]
     page_ids = [h["page_id"] for h in top if h.get("page_id")]
     if not page_ids:
         _log.warning(

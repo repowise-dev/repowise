@@ -22,12 +22,12 @@ from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.core.test_paths import is_test_path, is_test_related_path
 from repowise.server.mcp_server._answer_pipeline import (
+    _FILENAME_LEG_RRF_K,
     _RRF_K,
     _RRF_SCORE_SCALE,
-    _SYMBOL_LEG_MAX_PAGES,
     _SYMBOL_LEG_RRF_K,
+    _safe_filename_search,
     _safe_symbol_search,
-    _SymbolLegResult,
 )
 from repowise.server.mcp_server._budget import (
     OmissionCollector,
@@ -50,13 +50,14 @@ from repowise.server.mcp_server._line_hits import attach_line_hits
 from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import (
+    FILE_ROW_TYPES,
     PAGELESS_FILE,
     add_row_paths,
     file_candidates,
     file_path_of,
     hit_file_path,
+    pageless_path,
 )
-from repowise.server.mcp_server._prose_symbols import filename_backed_pages
 from repowise.server.mcp_server._query_shape import (
     _DECISION_DOWNWEIGHT,
     _MIN_RELEVANCE_SCORE,
@@ -272,10 +273,6 @@ def _is_test_query(query: str) -> bool:
     return bool(_TEST_QUERY_RE.search(query))
 
 
-# Rows that are one whole file, with or without a page behind them.
-_FILE_ROW_TYPES = ("file_page", PAGELESS_FILE)
-
-
 def _is_test_page(item: dict) -> bool:
     """True when a hit is a whole-file row for a test file.
 
@@ -284,7 +281,7 @@ def _is_test_page(item: dict) -> bool:
     rank. The ``kind`` filter counts both (see :func:`_classify_hit_kind`) —
     asking for tests and asking to rank tests lower are different questions.
     """
-    return item.get("page_type") in _FILE_ROW_TYPES and is_test_path(item.get("target_path") or "")
+    return item.get("page_type") in FILE_ROW_TYPES and is_test_path(item.get("target_path") or "")
 
 
 def _downweight_test_pages(output: list[dict], query: str) -> None:
@@ -489,7 +486,7 @@ def _classify_hit_kind(target_path: str, page_type: str) -> str:
     tp = (target_path or "").lower()
     if page_type in ("module_page", "symbol_spotlight") or tp.endswith(".md"):
         return "doc"
-    if not tp or page_type not in _FILE_ROW_TYPES:
+    if not tp or page_type not in FILE_ROW_TYPES:
         return "doc"
     if any(tok in tp for tok in _CONFIG_PATH_TOKENS):
         return "config"
@@ -702,26 +699,6 @@ async def _safe_vector(ctx, query: str, limit: int) -> list:
     return []
 
 
-_FILENAME_LEG_RRF_K = _SYMBOL_LEG_RRF_K
-
-
-async def _safe_filename_search(ctx, query: str) -> list[tuple[_SymbolLegResult, bool]]:
-    """Files whose file name the query spells, each with whether it spells all of
-    the name. Bounded and failure-swallowing."""
-    with contextlib.suppress(Exception):
-        pages = await asyncio.wait_for(
-            filename_backed_pages(ctx, query, max_files=_SYMBOL_LEG_MAX_PAGES), timeout=5.0
-        )
-        return [
-            (
-                _SymbolLegResult(p["page_id"], p["title"], p["summary"][:200], p["page_type"], []),
-                p["full_cover"],
-            )
-            for p in pages
-        ]
-    return []
-
-
 def _symbol_leg_target(fused: dict[str, dict], page_id: str) -> str:
     """The fused page a symbol-leg file page credits: the best page of its file.
 
@@ -751,7 +728,7 @@ def _fused_entry(r) -> dict:
     }
     if r.page_type == PAGELESS_FILE:
         # No page row to load it from later.
-        entry["target_path"] = r.page_id.partition(":")[2]
+        entry["target_path"] = pageless_path(r.page_id)
     return entry
 
 
