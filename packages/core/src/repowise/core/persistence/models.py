@@ -1864,6 +1864,7 @@ class RefactoringSuggestion(Base):
     # every live plan so a plan list is an ``ORDER BY``, not a hydration. NULL
     # on a row the last finalize did not rank: readers fall back to ranking live.
     rank_position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # A column only so the ``blast`` sort can be an ORDER BY.
     blast_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rank_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

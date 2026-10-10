@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from repowise.server.routers import refactoring
+from repowise.core.analysis.health.refactoring.recommendations import plan_types
+from repowise.core.analysis.health.refactoring_summary import summarize_plans
+from repowise.server.routers.refactoring import RefactoringSummary
 
 
 def _rec(kind: str, path: str, effort: str, impact: float) -> SimpleNamespace:
@@ -31,8 +33,12 @@ _RECS = [
 ]
 
 
+def _summary(recs: list[SimpleNamespace]) -> RefactoringSummary:
+    return RefactoringSummary(**summarize_plans(item.suggestion for item in recs))
+
+
 def test_summary_counts_and_threshold_edges() -> None:
-    assert refactoring._summary(_RECS).model_dump() == {
+    assert _summary(_RECS).model_dump() == {
         "total": 8,
         "by_type": [
             {"type": "extract_method", "count": 2},
@@ -55,7 +61,7 @@ def test_summary_counts_and_threshold_edges() -> None:
 
 
 def test_summary_of_nothing() -> None:
-    assert refactoring._summary([]).model_dump() == {
+    assert _summary([]).model_dump() == {
         "total": 0,
         "by_type": [],
         "files_total": 0,
@@ -71,7 +77,7 @@ def test_summary_of_nothing() -> None:
 
 def test_structural_lens() -> None:
     # break_cycle is advisory: evidence on an opportunity, never a structural lead.
-    assert set(refactoring._STRUCTURAL_TYPES) == {
+    assert set(plan_types("structural")) == {
         "split_file",
         "extract_class",
         "move_method",

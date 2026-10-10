@@ -62,8 +62,8 @@ performance layer owns those). Plans whose source finding the finding registry
 withholds are left out of steps and evidence but stay addressable by id.
 
 Plan rank and validation are worked out once per index, so plan lists and single
-plans open in a fraction of a second however many plans a repository has. An index
-written by an older version keeps working, at the old speed, until its next update.
+plans are served from SQL however many plans a repository has. An index written by
+an older version keeps working, at the old speed, until its next update.
 
 Serving (filters, views, scope, paging) lives in `serving.py`; the server reads it
 through `services/refactoring_health.py`, which MCP `get_health` and the REST routes

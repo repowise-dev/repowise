@@ -11,10 +11,11 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select, update
 
+from repowise.core.analysis.health.refactoring import llm, recommendations
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.refactoring import _refactoring_row_kwargs
 from repowise.core.persistence.models import RefactoringSuggestion
-from repowise.server.routers import refactoring as router
+from repowise.server.services import refactoring_health as service
 
 from .test_refactoring import _seed
 
@@ -124,8 +125,11 @@ def _no_live_ranking(monkeypatch: pytest.MonkeyPatch) -> None:
     def refuse(*_args, **_kwargs):
         raise AssertionError("a ranked store must not be ranked per request")
 
-    monkeypatch.setattr(router, "hydrate_recommendations", refuse)
-    monkeypatch.setattr(router, "detail_recommendations", refuse)
+    monkeypatch.setattr(service, "hydrate_recommendations", refuse)
+    monkeypatch.setattr(service, "detail_recommendations", refuse)
+    # The one-plan rebuild from seeks is the fallback too.
+    monkeypatch.setattr(recommendations, "build_recommendations", refuse)
+    monkeypatch.setattr(service.RefactoringHealthService, "_rank_inputs", refuse)
 
 
 async def test_stored_rank_answers_every_query_as_live_ranking_did(
@@ -163,13 +167,13 @@ async def test_a_plan_finalize_did_not_rank_sends_the_list_live(
     await _unrank(app, repo_id, public_id=reopened)
 
     calls: list[int] = []
-    hydrate = router.hydrate_recommendations
+    hydrate = service.hydrate_recommendations
 
     async def counting(*args, **kwargs):
         calls.append(1)
         return await hydrate(*args, **kwargs)
 
-    monkeypatch.setattr(router, "hydrate_recommendations", counting)
+    monkeypatch.setattr(service, "hydrate_recommendations", counting)
     assert await _answers(client, repo_id) == expected
     assert calls
 
@@ -183,6 +187,102 @@ async def test_one_plan_reads_its_stored_rank(
     for plan in listed:
         detail = (await client.get(f"/api/repos/{repo_id}/refactoring/{plan['id']}")).json()
         assert detail == plan
+
+    # Code generation reads its plan the same way.
+    seen: list[dict] = []
+
+    class _Generated:
+        def __init__(self, suggestion) -> None:
+            self.suggestion = suggestion
+
+        def to_dict(self) -> dict:
+            return {
+                "refactoring_type": self.suggestion.refactoring_type,
+                "file_path": self.suggestion.file_path,
+                "target_symbol": self.suggestion.target_symbol,
+                "content": "",
+                "diff": "",
+                "provider": "stub",
+                "model": "stub",
+                "cached": False,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "validation": self.suggestion.validation,
+            }
+
+    async def enrich(suggestion, **_kwargs):
+        seen.append(suggestion.validation)
+        return _Generated(suggestion)
+
+    monkeypatch.setattr(llm, "llm_enrichment_enabled", lambda _config: True)
+    monkeypatch.setattr(llm, "build_enrichment_provider", lambda *_a, **_k: object())
+    monkeypatch.setattr(llm, "enrich_suggestion", enrich)
+    response = await client.post(f"/api/repos/{repo_id}/refactoring/{listed[0]['id']}/generate-code")
+    assert response.status_code == 200, response.text
+    assert seen == [listed[0]["validation"]]
+
+
+async def test_resolving_a_ranked_plan_drops_it_and_keeps_the_rest_in_order(
+    client: AsyncClient, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_id = await _seed_ranked(client, app)
+    before = (await client.get(f"/api/repos/{repo_id}/refactoring/targets/page")).json()["items"]
+    gone = before[1]["id"]
+    patched = await client.patch(
+        f"/api/repos/{repo_id}/refactoring/{gone}/status", json={"status": "resolved"}
+    )
+    assert patched.status_code == 200
+    _no_live_ranking(monkeypatch)
+    after = (await client.get(f"/api/repos/{repo_id}/refactoring/targets/page")).json()
+    assert [item["id"] for item in after["items"]] == [
+        item["id"] for item in before if item["id"] != gone
+    ]
+    assert after["total"] == len(before) - 1
+
+
+async def test_search_matches_what_the_live_match_accepts(
+    client: AsyncClient, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Words the SQL prefilter cannot judge (JSON-escaped, or beyond ASCII case
+    folding) still find their plans, and LIKE wildcards are literal."""
+    repo_id = await _seed(client, app)
+    async with app.state.session_factory() as session:
+        for symbol, strategy in (
+            ("parse_a_b", "keep 100% of rows"),
+            ("parse_axb", "keep 1000 rows"),
+            ("Über_load", "inline the Übergabe step"),
+        ):
+            session.add(
+                RefactoringSuggestion(
+                    **_refactoring_row_kwargs(
+                        {**_EXTRA[0], "target_symbol": symbol, "plan": {"strategy": strategy}},
+                        repo_id,
+                    )
+                )
+            )
+        await session.flush()
+        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await session.commit()
+
+    async def found(word: str) -> list[str]:
+        body = (
+            await client.get(
+                f"/api/repos/{repo_id}/refactoring/targets/page", params={"search": word}
+            )
+        ).json()
+        return sorted(item["target_symbol"] for item in body["items"])
+
+    with monkeypatch.context() as patch:
+        _no_live_ranking(patch)
+        stored = {word: await found(word) for word in ("a_b", "100%", "übergabe", "über_load")}
+    assert stored == {
+        "a_b": ["parse_a_b"],
+        "100%": ["parse_a_b"],
+        "übergabe": ["Über_load"],
+        "über_load": ["Über_load"],
+    }
+    await _unrank(app, repo_id)
+    assert {word: await found(word) for word in stored} == stored
 
 
 async def test_finalize_ranks_only_live_plans(client: AsyncClient, app) -> None:

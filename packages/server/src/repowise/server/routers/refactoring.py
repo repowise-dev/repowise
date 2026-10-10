@@ -19,22 +19,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.effort import EFFORT_ORDER
-from repowise.core.analysis.health.refactoring.recommendations import (
-    apply_view,
-    blast_size,
-    detail_recommendations,
-    hydrate_recommendations,
-    matches_search,
-    stored_recommendation,
-)
 from repowise.core.analysis.health.refactoring.serving import (
     CANONICAL_ORDERS,
     CANONICAL_VIEWS,
     DEFAULT_VIEW,
     parse_query,
 )
-from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES, summarize_plans
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES
 from repowise.server.deps import get_db_session, verify_api_key
@@ -45,7 +35,7 @@ from repowise.server.schemas import (
     RefactoringPlanStatusResponse,
     RefactoringRollupResponse,
 )
-from repowise.server.services.refactoring_health import RefactoringHealthService
+from repowise.server.services.refactoring_health import PlanListQuery, RefactoringHealthService
 
 _STEPS_PER_ROW = 3
 """Steps carried on a queue row; the detail call pages the rest."""
@@ -146,60 +136,8 @@ def _to_response(data: dict[str, Any]) -> RefactoringPlanResponse:
     return RefactoringPlanResponse(**data)
 
 
-def _stored_plans(rows: list[Any]) -> list[RefactoringPlanResponse]:
-    """Plans as the finalizer ranked and validated them; nothing is recomputed."""
-    return [_to_response(stored_recommendation(row).as_dict()) for row in rows]
-
-
-_STRUCTURAL_TYPES = STRUCTURAL_TYPES
-_EFFORT_ORDER = {bucket: rank for rank, bucket in enumerate(EFFORT_ORDER)}
-
-
-def _summary(recommendations: list[Any]) -> RefactoringSummary:
-    return RefactoringSummary(**summarize_plans(item.suggestion for item in recommendations))
-
-
-def _csv_values(value: str | None) -> set[str]:
-    return {part.strip() for part in (value or "").split(",") if part.strip()}
-
-
-# The live path below ranks every open plan per request. It serves only a store
-# whose open plans the finalizer has not all ranked (indexed before ranks were
-# stored, or a plan reopened by hand since), until its next index; the stored
-# path is ``crud.ranked_refactoring_suggestions``. Remove it once no such store
-# is served.
-
-
-def _sort_recommendations(recommendations: list[Any], sort: str) -> list[Any]:
-    canonical_position = {item.id: index for index, item in enumerate(recommendations)}
-    if sort == "canonical":
-        return recommendations
-    if sort == "health":
-        return sorted(
-            recommendations,
-            key=lambda item: (-item.suggestion.impact_delta, canonical_position[item.id]),
-        )
-    if sort == "effort":
-        return sorted(
-            recommendations,
-            key=lambda item: (
-                _EFFORT_ORDER.get(item.suggestion.effort_bucket, 2),
-                canonical_position[item.id],
-            ),
-        )
-    if sort == "blast":
-        return sorted(
-            recommendations,
-            key=lambda item: (-blast_size(item.suggestion), canonical_position[item.id]),
-        )
-    return sorted(
-        recommendations,
-        key=lambda item: (
-            item.suggestion.file_path,
-            item.suggestion.target_symbol,
-            item.id,
-        ),
-    )
+def _csv_values(value: str | None) -> frozenset[str]:
+    return frozenset(part.strip() for part in (value or "").split(",") if part.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -230,48 +168,15 @@ async def get_refactoring_targets(
     honor *min_confidence* — so the summary and the plan list stay consistent
     under a confidence filter.
     """
-    stored = await crud.ranked_refactoring_suggestions(
-        session,
-        repo_id,
-        min_confidence=min_confidence,
-        refactoring_types=[refactoring_type] if refactoring_type else None,
-        file_path=file_path,
-        view=view,
-    )
-    if stored is not None:
-        chips = await crud.summarize_open_plans(session, repo_id, min_confidence=min_confidence)
-        return RefactoringTargetsResponse(
-            summary=RefactoringSummary(total=chips["total"], by_type=chips["by_type"]),
-            plans=_stored_plans(stored[0]),
+    body = await _service(session, repo_id).ranked_plans(
+        PlanListQuery(
+            refactoring_type=refactoring_type,
+            min_confidence=min_confidence,
+            file_path=file_path,
+            view=view,
         )
-    # Summary is computed over the unfiltered-by-type set so the chips can show
-    # every type's count even while one type is selected.
-    all_rows = await crud.get_refactoring_suggestions(
-        session, repo_id, min_confidence=min_confidence
     )
-    by_type: dict[str, int] = {}
-    for row in all_rows:
-        by_type[row.refactoring_type] = by_type.get(row.refactoring_type, 0) + 1
-    summary = RefactoringSummary(
-        total=len(all_rows),
-        by_type=[
-            RefactoringTypeCount(type=t, count=c)
-            for t, c in sorted(by_type.items(), key=lambda kv: (-kv[1], kv[0]))
-        ],
-    )
-
-    rows = (
-        all_rows
-        if refactoring_type is None
-        else [r for r in all_rows if r.refactoring_type == refactoring_type]
-    )
-    if file_path is not None:
-        rows = [r for r in rows if r.file_path == file_path]
-    recommendations = await hydrate_recommendations(session, repo_id, rows, view=view)
-    return RefactoringTargetsResponse(
-        summary=summary,
-        plans=[_to_response(recommendation.as_dict()) for recommendation in recommendations],
-    )
+    return RefactoringTargetsResponse(**body)
 
 
 @router.get("/{repo_id}/refactoring/targets/page", response_model=RefactoringPlanPageResponse)
@@ -294,127 +199,21 @@ async def get_refactoring_plan_page(
     Reads the rank, factors and validation the finalizer stored: filters,
     order and paging are SQL, so the cost follows the page, not the plan count.
     """
-    normalized_search = (search or "").strip().lower()
-    stored = await crud.ranked_refactoring_suggestions(
-        session,
-        repo_id,
-        min_confidence=min_confidence,
-        refactoring_types=(
-            _STRUCTURAL_TYPES
-            if refactoring_type == "structural"
-            else [refactoring_type]
-            if refactoring_type
-            else None
-        ),
-        file_path=file_path,
-        confidences=_csv_values(confidence),
-        efforts=_csv_values(effort),
-        search=normalized_search,
-        sort=sort,
-        view=view,
-        limit=limit,
-        offset=offset,
-    )
-    if stored is None:
-        return await _live_plan_page(
-            session,
-            repo_id,
+    body = await _service(session, repo_id).ranked_plan_page(
+        PlanListQuery(
             refactoring_type=refactoring_type,
             min_confidence=min_confidence,
-            confidence=confidence,
-            effort=effort,
+            confidences=_csv_values(confidence),
+            efforts=_csv_values(effort),
             file_path=file_path,
-            search=normalized_search,
+            search=(search or "").strip().lower(),
             sort=sort,
             view=view,
             limit=limit,
             offset=offset,
         )
-    rows, total = stored
-    leads = await crud.ranked_refactoring_suggestions(
-        session,
-        repo_id,
-        min_confidence=min_confidence,
-        refactoring_types=_STRUCTURAL_TYPES,
-        limit=12,
     )
-    next_offset = offset + len(rows) if offset + len(rows) < total else None
-    return RefactoringPlanPageResponse(
-        items=_stored_plans(rows),
-        total=total,
-        has_more=next_offset is not None,
-        next_offset=next_offset,
-        summary=RefactoringSummary(
-            **await crud.summarize_open_plans(session, repo_id, min_confidence=min_confidence)
-        ),
-        structural_leads=_stored_plans(leads[0] if leads else []),
-    )
-
-
-async def _live_plan_page(
-    session: AsyncSession,
-    repo_id: str,
-    *,
-    refactoring_type: str | None,
-    min_confidence: str | None,
-    confidence: str | None,
-    effort: str | None,
-    file_path: str | None,
-    search: str,
-    sort: str,
-    view: Literal["canonical", "file_spread"],
-    limit: int,
-    offset: int,
-) -> RefactoringPlanPageResponse:
-    """The page ranked per request. Ranking is one batched pass over the
-    repository plans; the symbol-level evidence that orders each plan's tests
-    is read only for the rows this response returns."""
-    rows = await crud.get_refactoring_suggestions(session, repo_id, min_confidence=min_confidence)
-    canonical = await hydrate_recommendations(
-        session, repo_id, rows, view="canonical", rank_only=True
-    )
-    summary = _summary(canonical)
-    structural_leads = [
-        item for item in canonical if item.suggestion.refactoring_type in _STRUCTURAL_TYPES
-    ][:12]
-
-    ordered = apply_view(canonical, view)
-    if refactoring_type == "structural":
-        ordered = [
-            item for item in ordered if item.suggestion.refactoring_type in _STRUCTURAL_TYPES
-        ]
-    elif refactoring_type:
-        ordered = [item for item in ordered if item.suggestion.refactoring_type == refactoring_type]
-    if file_path is not None:
-        ordered = [item for item in ordered if item.suggestion.file_path == file_path]
-    confidences = _csv_values(confidence)
-    if confidences:
-        ordered = [item for item in ordered if item.suggestion.confidence in confidences]
-    efforts = _csv_values(effort)
-    if efforts:
-        ordered = [item for item in ordered if item.suggestion.effort_bucket in efforts]
-    if search:
-        ordered = [item for item in ordered if matches_search(item.suggestion, search)]
-    ordered = _sort_recommendations(ordered, sort)
-
-    total = len(ordered)
-    page = ordered[offset : offset + limit]
-    next_offset = offset + len(page) if offset + len(page) < total else None
-    shown = list({id(item): item for item in [*page, *structural_leads]}.values())
-    detailed = {
-        id(item.suggestion): item
-        for item in await detail_recommendations(session, repo_id, shown)
-    }
-    page = [detailed[id(item.suggestion)] for item in page]
-    structural_leads = [detailed[id(item.suggestion)] for item in structural_leads]
-    return RefactoringPlanPageResponse(
-        items=[_to_response(item.as_dict()) for item in page],
-        total=total,
-        has_more=next_offset is not None,
-        next_offset=next_offset,
-        summary=summary,
-        structural_leads=[_to_response(item.as_dict()) for item in structural_leads],
-    )
+    return RefactoringPlanPageResponse(**body)
 
 
 # ---------------------------------------------------------------------------
