@@ -2336,8 +2336,9 @@ class CoverageIngest(Base):
 class ActionState(Base):
     """A person's answer to one next action: dismissed, snoozed, or done.
 
-    Actions themselves are computed on read (``analysis.actions``), so this is
-    the only stored half. ``action_id`` is stable across re-index because it is
+    Actions themselves are derived from the other stores (``analysis.actions``,
+    cached in :class:`ReadSnapshot`), so this is the only half a person writes.
+    ``action_id`` is stable across re-index because it is
     derived from the rule and its target. ``fingerprint`` is the one the action
     carried when the person acted; a dismissal holds only while it still
     matches, so an action whose facts changed materially comes back.
@@ -2359,6 +2360,32 @@ class ActionState(Base):
 
     __table_args__ = (
         UniqueConstraint("repository_id", "action_id", name="uq_action_states"),
+    )
+
+
+class ReadSnapshot(Base):
+    """A read view built at index or update time, served while its key holds.
+
+    ``kind`` names the view (the Fix first queue, the next-actions view).
+    ``key`` is what the view was built from: the code version that built it,
+    the analyzed commit and the newest write to each store it reads. A reader
+    recomputes the key and serves ``payload_json`` only on a match, so a
+    triage or an upgrade between updates falls back to building live rather
+    than serving a stale view. Derived data: losing a row costs one build.
+    """
+
+    __tablename__ = "read_snapshots"
+
+    repository_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    kind: Mapped[str] = mapped_column(String(32), primary_key=True)
+    key: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
     )
 
 

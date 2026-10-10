@@ -6,6 +6,11 @@ built before a detector shipped, or an older schema, costs that store's rules
 
 The reads here only narrow; the row-to-fact rule is the pure builder in
 ``repowise.core.analysis.actions.build``.
+
+Index and update store the rules' output as a read snapshot
+(:func:`write_actions_snapshot`), keyed by the newest commit and the newest
+write to every store the facts come from; a read that finds the key unchanged
+ranks the stored actions and skips the facts and the rules.
 """
 
 from __future__ import annotations
@@ -22,8 +27,9 @@ from repowise.core.analysis.actions import (
     Action,
     ActionStateRecord,
     RepoFacts,
-    compose_actions,
     find_action,
+    rank_actions,
+    rule_actions,
 )
 from repowise.core.analysis.actions.build import (
     ABSENT,
@@ -55,6 +61,8 @@ from ...models import (
     CoverageFile,
     CoverageIngest,
     DeadCodeFinding,
+    DecisionAcceptance,
+    DecisionRecord,
     DocDriftFinding,
     FixEvent,
     GitCommit,
@@ -66,7 +74,9 @@ from ...models import (
     HealthFinding,
     SecurityFinding,
 )
-from .fix_first import load_fix_first
+from .fix_first import load_fix_first, write_fix_first_snapshot
+from .fix_first import stores as fix_first_stores
+from .read_snapshots import StorePart, read_snapshot, refresh_snapshot, snapshot_key, store_stamp
 
 logger = logging.getLogger(__name__)
 
@@ -475,18 +485,91 @@ async def set_action_state(
         row.state, row.fingerprint, row.until = state, fingerprint, until
 
 
+#: The stored rules' output's ``read_snapshots.kind``.
+SNAPSHOT_KIND = "actions"
+
+
+def _stores(repo_id: str) -> list[StorePart]:
+    """Every store :func:`load_repo_facts` reads, as :func:`store_stamp` parts.
+
+    The person's answers are not among them: they are applied on every read.
+    Commit files and renamed paths move with the commit rows; acceptances are
+    append-only, so their count moves.
+    """
+    timed = (
+        (GitCommit.updated_at, GitCommit.repository_id),
+        (GitMetadata.updated_at, GitMetadata.repository_id),
+        (GraphMetric.created_at, GraphMetric.repository_id),
+        (FixEvent.updated_at, FixEvent.repository_id),
+        (GitCommitHealthFinding.updated_at, GitCommitHealthFinding.repository_id),
+        (SecurityFinding.detected_at, SecurityFinding.repository_id),
+        (DocDriftFinding.detected_at, DocDriftFinding.repository_id),
+        (DeadCodeFinding.analyzed_at, DeadCodeFinding.repository_id),
+        (DecisionRecord.updated_at, DecisionRecord.repository_id),
+        (None, DecisionAcceptance.repository_id),
+        (CoverageFile.ingested_at, CoverageFile.repository_id),
+        (CoverageIngest.ingested_at, CoverageIngest.repository_id),
+    )
+    return [*fix_first_stores(repo_id), *((col, owner == repo_id) for col, owner in timed)]
+
+
+async def _snapshot_key(session: AsyncSession, repo_id: str) -> str:
+    _, head_sha = await _anchor(session, repo_id)
+    return snapshot_key(head_sha, *await store_stamp(session, _stores(repo_id)))
+
+
+async def _ruled(session: AsyncSession, repo_id: str) -> dict[str, Any]:
+    """The rules' output from the facts as stored now, and what could not be read."""
+    facts = await load_repo_facts(session, repo_id)
+    return {**rule_actions(facts), "unavailable": dict(facts.unavailable)}
+
+
+async def write_actions_snapshot(session: AsyncSession, repo_id: str) -> bool:
+    """Store the rules' output for the next reader; ``False`` when the stored
+    one was already built from these stores."""
+    key = await _snapshot_key(session, repo_id)
+    return await refresh_snapshot(
+        session, repo_id, SNAPSHOT_KIND, key, lambda: _ruled(session, repo_id)
+    )
+
+
+async def write_read_snapshots(session: AsyncSession, repo_id: str) -> None:
+    """Store the Fix first queue, then the actions view that quotes its head.
+
+    For a writer whose stores are final for this run. Best-effort, each in its
+    own savepoint: a view that fails to build is built live on read instead.
+    """
+    for kind, write in (
+        ("fix_first", write_fix_first_snapshot),
+        (SNAPSHOT_KIND, write_actions_snapshot),
+    ):
+        try:
+            async with session.begin_nested():
+                await write(session, repo_id)
+        except Exception as exc:  # a reader builds live instead
+            logger.warning("read snapshot %s not written: %s", kind, exc)
+
+
 async def load_actions_view(
     session: AsyncSession, repo_id: str, *, now: datetime | None = None
 ) -> dict[str, Any]:
-    """The one entry point: facts, the person's answers, and the ranked view."""
-    facts = await load_repo_facts(session, repo_id)
+    """The one entry point: the rules' output, the person's answers, and the ranked view.
+
+    The rules' output is the stored snapshot when it was built from the stores
+    as they are now, else built from the facts here. Never writes.
+    """
+    ruled = await read_snapshot(
+        session, repo_id, SNAPSHOT_KIND, lambda: _snapshot_key(session, repo_id)
+    )
+    if ruled is None:
+        ruled = await _ruled(session, repo_id)
     try:
         async with session.begin_nested():
             states = await get_action_states(session, repo_id)
     except Exception:
         states = {}
-    view = compose_actions(facts, states, now=now or datetime.now(UTC))
-    view["unavailable"] = dict(facts.unavailable)
+    view = rank_actions(ruled, states, now=now or datetime.now(UTC))
+    view["unavailable"] = dict(ruled["unavailable"])
     return view
 
 

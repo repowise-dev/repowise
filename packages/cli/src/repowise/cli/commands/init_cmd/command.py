@@ -1976,6 +1976,11 @@ def init_command(
             save_key=save_key,
         )
 
+    # Every store is final: store the views ``repowise next`` and the
+    # dashboard read, before the editor files quote Fix first from them.
+    from repowise.cli.commands.update_cmd.persistence import refresh_read_snapshots
+
+    refresh_read_snapshots(repo_path)
     files_written = write_editor_project_files(
         console,
         repo_path,

@@ -653,6 +653,11 @@ async def _persist_index_result(run: _JobRun, result: Any, incremental_pages: li
 
             await rebuild_page_tree(session, repo_id)
 
+        # Every store is final: the views the overview and dashboard read.
+        from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
+
+        await write_read_snapshots(session, repo_id)
+
         # Vector deletes before the SQL commit: a separate store, so no lock
         # conflict, and the idempotent delete keeps the durable commit last.
         if swept_page_ids and run.vector_store is not None:

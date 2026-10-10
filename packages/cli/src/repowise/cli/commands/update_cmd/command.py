@@ -189,8 +189,13 @@ def _refresh_editor_stamp(
     Runs on every update outcome — including the "already up to date" and
     "no changed files" fast paths, matching the workspace flow — so the
     "Last indexed" stamp always reflects the latest successful sync check
-    instead of freezing at the last content-changing run.
+    instead of freezing at the last content-changing run. The read snapshots
+    are refreshed first, on the same outcomes: every store is final here, and
+    the editor files then read Fix first from the snapshot.
     """
+    from .persistence import refresh_read_snapshots
+
+    refresh_read_snapshots(repo_path)
     try:
         from repowise.cli.editor_integrations.defaults import get_default_project_file_overrides
         from repowise.cli.editor_setup import EditorSetupOptions, refresh_editor_project_files

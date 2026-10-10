@@ -663,8 +663,12 @@ Full method and data:
 
 Fix first is built once in `analysis/health/fix_first/build.py` from stored rows
 and rendered unchanged by `get_health`, `repowise health`, the dashboard and the
-generated CLAUDE.md. Every excluded unit is counted in `totals.excluded` under one
-reason:
+generated CLAUDE.md. Index and update store the production queue, tests resolved,
+and the Do next rules' output in `read_snapshots`, keyed by the repowise version,
+the analyzed commit and the newest write and row count of every store each reads;
+a reader serves the row while the key matches and builds live otherwise (a triage,
+a coverage ingest or an upgrade between updates), and never writes it. Every
+excluded unit is counted in `totals.excluded` under one reason:
 
 | Reason | What it leaves out |
 |---|---|

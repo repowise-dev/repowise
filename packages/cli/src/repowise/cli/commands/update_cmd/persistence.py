@@ -280,6 +280,27 @@ def heal_commit_offsets(repo_path: Any) -> None:
         run_async(_run())
 
 
+def refresh_read_snapshots(repo_path: Any) -> None:
+    """Store the Fix first queue and the next-actions view for the next reader.
+
+    The last write of an index or update, once every store is final, so
+    ``repowise next``, the overview and the dashboard read one row instead of
+    rebuilding in each new process. A stored view whose key still matches is
+    left as it is, so the "already up to date" path costs one aggregate per
+    store. Best-effort: without a snapshot a reader builds live, as before.
+    """
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
+
+    async def _run() -> None:
+        async with repo_index_session(Path(repo_path)) as opened:
+            if opened is not None:
+                await write_read_snapshots(*opened)
+
+    with contextlib.suppress(Exception):
+        run_async(_run())
+
+
 # A repair window that has grown past this many commits stopped being a repair
 # and became a re-index: the diff it forces every update to walk is no longer
 # change-sized. Bounding it is what stops a step that fails on every run from

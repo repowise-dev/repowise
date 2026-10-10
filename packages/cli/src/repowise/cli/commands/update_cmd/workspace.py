@@ -579,10 +579,13 @@ def _refresh_workspace_editor_project_files(
     is ``None`` each integration falls back to config. It must NOT gate the
     whole refresh: doing so froze the CLAUDE.md stamp for every workspace user
     who never passed ``--agents-md`` (the default), making the index look stale
-    long after it was current. Mirrors the single-repo update path.
+    long after it was current. Mirrors the single-repo update path, read
+    snapshots included.
     """
     from repowise.cli.editor_integrations.defaults import get_default_project_file_overrides
     from repowise.cli.editor_setup import EditorSetupOptions, refresh_editor_project_files
+
+    from .persistence import refresh_read_snapshots
 
     options: EditorSetupOptions | None = None
     if agents_md is not None:
@@ -595,6 +598,7 @@ def _refresh_workspace_editor_project_files(
         repo_path = (ws_root / entry.path).resolve()
         if not (repo_path / ".repowise").is_dir():
             continue
+        refresh_read_snapshots(repo_path)
         try:
             refresh_editor_project_files(console, repo_path, options=options)
         except Exception as exc:

@@ -16,21 +16,28 @@ time, as refactoring and performance already are, and rank them in SQL.
 
 The built queue is cached in process, keyed by the repository and the
 newest write to each store it reads, so repeated calls between updates cost
-one aggregate read.
+one aggregate read. Index and update also store the production queue as a
+read snapshot under the same stamp (:func:`write_fix_first_snapshot`), so the
+first call of a new process reads one row instead of building.
 """
 
 from __future__ import annotations
 
 from collections import OrderedDict, namedtuple
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Any
 
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.finding_registry import excluded_types
-from repowise.core.analysis.health.fix_first import DEFAULT_LIMIT, FixFirstQueue, build_fix_first
+from repowise.core.analysis.health.fix_first import (
+    DEFAULT_LIMIT,
+    FIX_FIRST_MODEL_VERSION,
+    FixFirstQueue,
+    build_fix_first,
+)
 from repowise.core.analysis.health.fix_first.build import (
     DEAD_CONFIDENCE,
     MIN_WORTH,
@@ -62,6 +69,14 @@ from ...models import (
     RefactoringSuggestion,
 )
 from ...sql import json_text
+from .read_snapshots import (
+    StorePart,
+    decode,
+    read_snapshot,
+    refresh_snapshot,
+    snapshot_key,
+    store_stamp,
+)
 
 #: Files read for plan-less finding items, by open code-shape deduction.
 #: Ceiling: a file past this rank never becomes a finding item. The queue
@@ -486,35 +501,58 @@ CACHE_SIZE = 32
 _cache: OrderedDict[tuple[Any, ...], FixFirstQueue] = OrderedDict()
 
 
-async def _stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
-    """The newest write and the row count of every store the queue reads.
+def stores(repo_id: str) -> list[StorePart]:
+    """Every store the queue reads, as :func:`store_stamp` parts.
 
-    A rewrite, a triage change (``updated_at`` moves) or a deletion (the
-    count moves) changes it; git and graph rows are rewritten with the
-    health rows that read them.
+    Git and graph rows are rewritten with the health rows that read them.
+    Dead-code rows carry no ``updated_at``; a triage change moves the count.
     """
-    stamps: list[Any] = []
-    for model in (HealthFileMetric, HealthFinding, RefactoringOpportunity, PerformanceOpportunity):
-        stamps.extend(
-            (
-                await session.execute(
-                    select(func.max(model.updated_at), func.count()).where(
-                        model.repository_id == repo_id
-                    )
-                )
-            ).one()
-        )
-    # Dead-code rows carry no ``updated_at``; a triage change moves the count.
-    stamps.extend(
-        (
-            await session.execute(
-                select(func.max(DeadCodeFinding.analyzed_at), func.count()).where(
-                    _sure_dead_code(repo_id)
-                )
-            )
-        ).one()
+    parts: list[StorePart] = [
+        (model.updated_at, model.repository_id == repo_id)
+        for model in (HealthFileMetric, HealthFinding, RefactoringOpportunity, PerformanceOpportunity)
+    ]
+    parts.append((DeadCodeFinding.analyzed_at, _sure_dead_code(repo_id)))
+    return parts
+
+
+async def _stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
+    return await store_stamp(session, stores(repo_id))
+
+
+#: The stored production queue's ``read_snapshots.kind``.
+SNAPSHOT_KIND = "fix_first"
+
+
+async def _snapshot_key(session: AsyncSession, repo_id: str, stamp: tuple[Any, ...]) -> str:
+    basis = await _basis(session, repo_id)
+    return snapshot_key(FIX_FIRST_MODEL_VERSION, basis["analyzed_commit"], *stamp)
+
+
+async def write_fix_first_snapshot(session: AsyncSession, repository_id: str) -> bool:
+    """Store the whole production queue, tests resolved, for the next reader.
+
+    The writer of the stores calls this once they are final. Returns whether
+    it wrote (an unchanged key writes nothing).
+    """
+    key = await _snapshot_key(session, repository_id, await _stamp(session, repository_id))
+
+    async def build() -> dict[str, Any]:
+        full = await _build(session, repository_id, limit=None, scope="production", item_id=None)
+        return asdict(full)
+
+    return await refresh_snapshot(session, repository_id, SNAPSHOT_KIND, key, build)
+
+
+async def _stored(
+    session: AsyncSession, repo_id: str, scope: str, stamp: tuple[Any, ...]
+) -> FixFirstQueue | None:
+    """The stored production queue when it was built from these stores."""
+    if scope != "production":
+        return None
+    payload = await read_snapshot(
+        session, repo_id, SNAPSHOT_KIND, lambda: _snapshot_key(session, repo_id, stamp)
     )
-    return tuple(stamps)
+    return decode(FixFirstQueue, payload) if payload is not None else None
 
 
 def clear_fix_first_cache() -> None:
@@ -538,7 +576,8 @@ async def load_fix_first(
 
     The full queue is built once per store write and every ``limit`` and id
     is a slice of it: the reads are the same whatever is kept, and writing
-    every item costs little next to them.
+    every item costs little next to them. The production queue comes from the
+    stored snapshot when one was written from these same stores.
     """
     base = (
         str(session.bind.url) if session.bind is not None else None,
@@ -553,7 +592,7 @@ async def load_fix_first(
     # A verified queue answers an unverified ask too; never the reverse.
     full = _cached((*base, True, None, None)) or _cached((*base, verify, None, None))
     if full is None:
-        full = await _build(
+        full = await _stored(session, repository_id, scope, base[-1]) or await _build(
             session, repository_id, limit=None, scope=scope, item_id=None, verify=verify
         )
         _remember((*base, verify, None, None), full)
@@ -628,4 +667,13 @@ async def _build(
     )
 
 
-__all__ = ["CACHE_SIZE", "FINDING_FILES", "clear_fix_first_cache", "load_fix_first", "queue_view"]
+__all__ = [
+    "CACHE_SIZE",
+    "FINDING_FILES",
+    "SNAPSHOT_KIND",
+    "clear_fix_first_cache",
+    "load_fix_first",
+    "queue_view",
+    "stores",
+    "write_fix_first_snapshot",
+]

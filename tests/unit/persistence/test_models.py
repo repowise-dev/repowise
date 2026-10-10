@@ -334,6 +334,7 @@ def test_base_includes_all_models():
         "coverage_files",
         "coverage_ingests",
         "action_states",
+        "read_snapshots",
         "test_coverage",
         "pipeline_jobs",
         "graph_metrics",

@@ -224,7 +224,9 @@ repowise next --json             # the whole stored view
 
 Rows are grouped as **Now**, **Worth planning** and **Improve what Repowise can
 see** (steps such as adding a coverage report that make other answers sharper).
-Run `repowise update` to refresh the list after you change code.
+Run `repowise update` to refresh the list after you change code. Index and update
+store the list with the stores it was built from; a triage or coverage ingest
+since then is read live, and dismissing or snoozing a row applies at once.
 
 A fragile file asks for tests only when it has no measured coverage and no test
 reaches it in the code graph. When tests do reach it, the row asks you to

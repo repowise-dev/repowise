@@ -83,6 +83,10 @@ async def index_repo_full(
                 )
                 or []
             )
+            # Every store is final: the views the overview and dashboard read.
+            from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
+
+            await write_read_snapshots(session, repo.id)
 
         from repowise.core.pipeline.cleanup_debt import (
             clear_cleanup_debt,
