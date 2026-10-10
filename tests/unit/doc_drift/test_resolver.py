@@ -219,6 +219,21 @@ def test_each_whitespace_character_becomes_its_own_dash():
     assert resolve(idx, _anchor_ref("sql-dbt")).verdict is DriftVerdict.MISSING
 
 
+def test_repeated_heading_second_anchor_resolves():
+    """GitHub gives the second ``## Usage`` the anchor ``#usage-1``."""
+    idx = _anchor_index("## Usage\n\nSome text.\n\n## Usage\n")
+    assert resolve(idx, _anchor_ref("usage")).verdict is DriftVerdict.RESOLVED
+    assert resolve(idx, _anchor_ref("usage-1")).verdict is DriftVerdict.RESOLVED
+
+
+def test_nonexistent_suffixed_anchor_is_still_missing():
+    """Two ``## Usage`` headings, no third: ``#usage-2`` stays missing."""
+    idx = _anchor_index("## Usage\n\n## Usage\n")
+    res = resolve(idx, _anchor_ref("usage-2"))
+    assert res.verdict is DriftVerdict.MISSING
+    assert res.origin == "anchor_no_heading"
+
+
 def test_anchor_into_a_missing_document_is_uncheckable_not_missing():
     """The LINK row already reports the missing file; saying it twice would
     double-count one defect."""
