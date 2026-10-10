@@ -257,16 +257,22 @@ export interface ExtractParameterObject {
   construct_before: number | null;
 }
 
-/** A staged plan's helpers (`plan.stages`); empty for a single-span plan. */
+/** A positive whole line number: not a numeric string, a boolean or a float. */
+function isLine(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v > 0;
+}
+
+/** A staged plan's helpers (`plan.stages`) with valid line bounds; empty for
+ *  a single-span plan. */
 export function extractMethodStages(plan: RefactoringPlan): ExtractStage[] {
   const raw = ((plan.plan ?? {}) as Record<string, unknown>).stages;
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((entry): ExtractStage[] => {
     const s = (entry ?? {}) as Record<string, unknown>;
     const span = (s.span ?? {}) as Record<string, unknown>;
-    const start = Number(span.start ?? 0);
-    const end = Number(span.end ?? 0);
-    if (!start || !end) return [];
+    const start = span.start;
+    const end = span.end;
+    if (!isLine(start) || !isLine(end)) return [];
     const sym = (s.new_symbol ?? {}) as Record<string, unknown>;
     const site = callSite(s.call_site);
     return [
