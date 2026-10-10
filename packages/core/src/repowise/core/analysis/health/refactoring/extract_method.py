@@ -107,7 +107,7 @@ from .registry import RefactoringDetector, register
 
 if TYPE_CHECKING:
     from ..complexity.languages import LanguageNodeMap
-    from ..dataflow import Extraction, FunctionAnalysis
+    from ..dataflow import Definition, Extraction, FunctionAnalysis
     from ..dataflow.dialects.base import BaseDefUseDialect, Receiver
     from ..models import Severity
 
@@ -357,7 +357,7 @@ def _render_fields(
         render.Slot(p, types.get(p), p in after) for p in extraction.params if p != own
     )
     returns = tuple(render.Slot(r, types.get(r)) for r in extraction.returns)
-    declared, before, rebound = _out_binding(analysis, extraction)
+    declared, before, rebound = _out_binding(analysis, extraction, get_language_map(language or ""))
     fn_node = analysis.fn_node
     texts = render.render(
         render.HelperShape(
@@ -432,18 +432,46 @@ def _read_after(analysis: FunctionAnalysis, extraction: Extraction) -> set[str]:
 
 
 def _out_binding(
-    analysis: FunctionAnalysis, extraction: Extraction
+    analysis: FunctionAnalysis, extraction: Extraction, lmap: LanguageNodeMap | None
 ) -> tuple[bool, bool, bool]:
     """Whether the span's output is declared in it (the call must declare it:
-    an in-span declaration, or no write before the span), whether it was
-    written before the span, and whether it is written again after it."""
+    a declaration among the span's own statements, or no write before the
+    span), whether it was written before the span, and whether it is written
+    again after it."""
     if not extraction.returns:
         return False, False, False
     out, s, e = extraction.returns[0], extraction.start_line, extraction.end_line
     writes = [d for d in analysis.def_use.definitions if d.var == out]
     before = any(d.line < s for d in writes)
-    declared = any(s <= d.line <= e and d.declares for d in writes) or not before
+    declared = (
+        any(
+            s <= d.line <= e and d.declares and _top_level_declaration(analysis, d, s, e, lmap)
+            for d in writes
+        )
+        or not before
+    )
     return declared, before, any(d.line > e for d in writes)
+
+
+def _top_level_declaration(
+    analysis: FunctionAnalysis, d: Definition, s: int, e: int, lmap: LanguageNodeMap | None
+) -> bool:
+    """Whether declaration *d* is one of the span's own statements. One in a
+    block nested in the span (or a loop header binder) binds only there, so
+    the outer name the call writes is not declared by it. True when the tree
+    or the language map is missing (the old answer)."""
+    fn_node = analysis.fn_node
+    if fn_node is None or lmap is None:
+        return True
+    row = d.line - 1
+    node = fn_node.descendant_for_point_range((row, d.column), (row, d.column + len(d.var.encode())))
+    while node is not None and node.parent is not None and node.parent.type not in lmap.block_kinds:
+        node = node.parent
+    if node is None or node.parent is None or node.type not in lmap.local_decl_kinds:
+        return False
+    # The span's statements are siblings in one block: it starts at s, ends at e.
+    rows = [(k.start_point[0] + 1, k.end_point[0] + 1) for k in node.parent.named_children]
+    return any(lo == s for lo, _ in rows) and any(hi == e for _, hi in rows)
 
 
 def _receiver_hazard(

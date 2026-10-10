@@ -407,11 +407,18 @@ def _var_lines(def_use: FunctionDefUse) -> tuple[dict[str, list[int]], dict[str,
     Parameter definitions are included (seeded at the signature line), so a
     parameter naturally counts as "defined before" any body span. Reads inside
     nested closures (``def_use.captured.reads``) count as uses at their own line.
+    An import is not a def here: a helper re-imports a name rather than take
+    or return it, and :func:`_declaration_escapes` refuses a span holding an
+    import that later code still reads.
     """
     def_lines: dict[str, list[int]] = defaultdict(list)
     use_lines: dict[str, list[int]] = defaultdict(list)
+    imported: set[str] = set()
     for d in def_use.definitions:
-        def_lines[d.var].append(d.line)
+        if d.imports:
+            imported.add(d.var)
+        else:
+            def_lines[d.var].append(d.line)
     for bdu in def_use.blocks.values():
         for u in bdu.uses:
             # A may-def's paired use is bookkeeping, not a read: counted, a
@@ -421,7 +428,7 @@ def _var_lines(def_use: FunctionDefUse) -> tuple[dict[str, list[int]], dict[str,
     # A closure's read counts where the closure is written: lifting the code
     # around it moves the read with it. Only names this function binds matter.
     for u in def_use.captured.reads:
-        if u.name in def_lines:
+        if u.name in def_lines or u.name in imported:
             use_lines[u.name].append(u.line)
     for lines in def_lines.values():
         lines.sort()
@@ -697,12 +704,13 @@ def _declaration_lines(
     def_use: FunctionDefUse, *, binding: bool = False
 ) -> dict[str, frozenset[int]]:
     """Per variable, the lines that declare it (a ``let`` / ``var`` / ``:=`` /
-    typed local, as the dialect marks with ``declared_at``). With *binding*,
-    the lines that create a new binding instead (``declares``: multi-line
-    declarators and loop binders included, a TS/JS ``var`` not)."""
+    typed local, as the dialect marks with ``declared_at``, or an import).
+    With *binding*, the lines that create a new binding instead
+    (``declares``: multi-line declarators and loop binders included, a TS/JS
+    ``var`` not)."""
     lines: dict[str, set[int]] = defaultdict(set)
     for d in def_use.definitions:
-        if (d.declares if binding else d.declared_at is not None):
+        if (d.declares if binding else d.declared_at is not None or d.imports):
             lines[d.var].add(d.line)
     return {var: frozenset(found) for var, found in lines.items()}
 

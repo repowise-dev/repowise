@@ -74,6 +74,9 @@ class Occurrence:
     #: header binder (:meth:`BaseDefUseDialect._loop_scoped`). Never a
     #: hoisting TS/JS ``var``.
     declares: bool = False
+    #: A name an import statement binds (Python ``import a.b`` binds ``a``).
+    #: A lifted span re-imports it rather than pass or return it.
+    imports: bool = False
 
 
 @dataclass(frozen=True)

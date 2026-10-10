@@ -1209,3 +1209,25 @@ def test_an_import_path_naming_a_parameter_is_not_a_read():
         return e
     """
     assert _span_in_out(src, 4, 5) == (("a",), ("e",))
+
+
+def test_a_span_holding_an_import_read_after_it_is_refused():
+    # The import would leave with the helper; an imported name is never made
+    # an input or output (the helper re-imports it).
+    src = """
+    def f(a, c):
+        from pkg.mod import Thing
+        if c:
+            a += 1
+        t = Thing(a)
+        return t
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        from repowise.core.analysis.health.dataflow import slice as slicer
+
+        mp.setattr(slicer, "_MAX_BODY_SHARE", float("inf"))
+        mp.setattr(slicer, "_MIN_SLICE_NLOC", 1)
+        spans = find_extractions(_first(src), get_language_map("python"))
+    found = {(x.start_line, x.end_line): (x.params, x.returns) for x in spans}
+    assert (3, 5) not in found
+    assert found[(4, 6)] == (("a", "c"), ("t",))

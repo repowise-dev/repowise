@@ -193,6 +193,30 @@ def test_first_iterable_reads_the_enclosing_name():
     assert "v" in uses
 
 
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "[w for v in xs for w in v]",  # a later iterable reads an earlier target
+        "[1 for v in xs if v]",  # a filter reads a target
+        "[[w + v for w in ys] for v in xs]",  # a nested comprehension reads an outer one
+        "[(lambda: v) for v in xs]",  # a closure reads a target
+    ],
+)
+def test_comprehension_reads_of_its_own_targets_stay_inside(expr):
+    _cfg, def_use, _r = _analyze(
+        f"""
+        def f(xs, ys):
+            v = w = 0
+            out = {expr}
+            return out, v, w
+        """
+    )
+    in_line = [u.name for b in def_use.blocks.values() for u in b.uses if u.line == 4]
+    captured = [u.name for u in def_use.captured.reads]
+    assert not {"v", "w"} & {*in_line, *captured}
+    assert "xs" in in_line
+
+
 def test_import_module_path_is_not_a_read():
     _defs, uses = _def_use_names(
         """
@@ -203,6 +227,20 @@ def test_import_module_path_is_not_a_read():
         """
     )
     assert not {"repowise", "server", "mcp", "os", "path"} & uses
+
+
+def test_an_import_writes_the_names_it_binds():
+    _cfg, def_use, _r = _analyze(
+        """
+        def f():
+            import a.b, c.d as e
+            from m.n import (x, y as z)
+            from k import *
+            return a, e, x, z
+        """
+    )
+    imported = {d.var for d in def_use.definitions if d.imports}
+    assert imported == {"a", "e", "x", "z"}
 
 
 def test_parameters_are_defs():

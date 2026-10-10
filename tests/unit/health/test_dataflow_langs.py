@@ -2089,3 +2089,80 @@ def test_go_name_declared_afresh_after_the_span_does_not_refuse_it():
     lmap = get_language_map("go")
     fn = _first("go", src)
     assert any(e.start_line <= 7 and e.end_line >= 12 for e in find_extractions(fn, lmap))
+
+
+# == Rust ``let`` binds a new name ================================================
+
+
+def _rust_in_out(src: str, s: int, e: int):
+    from repowise.core.analysis.health.dataflow import slice as slicing
+
+    def_use = _first("rust", src).def_use
+    def_lines, use_lines = slicing._var_lines(def_use)
+    return slicing._infer_in_out(
+        def_lines, use_lines, s, e, slicing._declared_before_read(def_use)
+    )
+
+
+def test_rust_let_reading_the_name_it_shadows_keeps_it_an_input():
+    src = """
+    fn f(a: i32) -> i32 {
+        let x = a * 2;
+        println!("{}", x);
+        let x = x + 1;
+        let y = x * 3;
+        y
+    }
+    """
+    assert _rust_in_out(src, 5, 6) == (("x",), ("y",))
+
+
+def test_rust_let_else_binder_is_the_spans_own():
+    src = """
+    fn f(o: Option<i32>, k: i32) -> i32 {
+        let base = k + 1;
+        let Some(v) = o else { return 0; };
+        let w = v + base;
+        w
+    }
+    """
+    assert _rust_in_out(src, 4, 5) == (("base", "o"), ("w",))
+
+
+def test_rust_nested_let_after_the_span_does_not_make_an_output():
+    src = """
+    fn f(a: i32, c: bool) -> i32 {
+        let mut x = a;
+        if c { x += 1; } else { x -= 1; }
+        if a > 2 { x *= 2; }
+        {
+            let x = 5;
+            println!("{}", x);
+        }
+        0
+    }
+    """
+    assert _rust_in_out(src, 3, 5) == (("a", "c"), ())
+
+
+def test_rust_span_splitting_a_closure_from_its_let_local_is_refused():
+    fn = _first(
+        "rust",
+        """
+        fn f(a: i32, c: bool) -> i32 {
+            let mut n = 0;
+            let mut inc = || n += 1;
+            if c { inc(); } else { inc(); }
+            if a > 1 { inc(); }
+            n
+        }
+        """,
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        from repowise.core.analysis.health.dataflow import slice as slicing
+
+        mp.setattr(slicing, "_MAX_BODY_SHARE", float("inf"))
+        mp.setattr(slicing, "_MIN_SLICE_NLOC", 1)
+        spans = find_extractions(fn, get_language_map("rust"))
+    # The closure writes ``n``, so no span may hold it without ``n``'s reads.
+    assert [(x.start_line, x.end_line) for x in spans] == [(5, 6)]

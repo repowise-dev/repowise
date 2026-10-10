@@ -47,6 +47,8 @@ class Definition:
     declared_at: int | None = None
     #: The write declares the name (``Occurrence.declares``).
     declares: bool = False
+    #: An import binds the name (``Occurrence.imports``).
+    imports: bool = False
 
 
 @dataclass
@@ -107,6 +109,7 @@ def compute_def_use(
             column=occ.column,
             declared_at=occ.declared_at,
             declares=occ.declares,
+            imports=occ.imports,
         )
         counter += 1
         bdu.defs.append(definition)
