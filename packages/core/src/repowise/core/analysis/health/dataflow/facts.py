@@ -251,6 +251,9 @@ class FileDataflow:
             analysis = self._analysis_for(idx, fn_node)
             if analysis is not None:
                 out.append(analysis)
+        # ``_functions()`` visits siblings last to first; restore source order.
+        # The sort is stable, so same-line functions keep collection order.
+        out.sort(key=lambda a: a.start_line)
         return out
 
     def analyses_covering(self, lines: Iterable[int]) -> list[FunctionAnalysis]:
