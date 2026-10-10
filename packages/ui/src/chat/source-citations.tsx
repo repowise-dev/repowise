@@ -58,8 +58,11 @@ export function extractSources(
         // wherever those two rebuild it. Derive rather than skip: the previous
         // `const pageId = r.page_id` dropped the whole row — and its citation —
         // for any result without one. Same fallback the get_context branch uses.
+        // The tool also drops `target_path` where it equals `path`, so fall back
+        // to `path`, the same way the server builds the id it compares against.
         const pageType = r.page_type as string | undefined;
-        const targetPath = r.target_path as string | undefined;
+        const targetPath =
+          (r.target_path as string | undefined) || (r.path as string | undefined);
         const pageId =
           (r.page_id as string | undefined) ??
           (pageType && targetPath ? `${pageType}:${targetPath}` : "");
@@ -70,7 +73,7 @@ export function extractSources(
           pageId,
           title: (r.title as string) ?? pageId,
           pageType: (r.page_type as string) ?? "file_page",
-          targetPath: (r.target_path as string) ?? "",
+          targetPath: targetPath ?? "",
           confidence: r.confidence_score as number | undefined,
           toolName: tc.name,
         });

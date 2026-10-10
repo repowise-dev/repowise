@@ -30,41 +30,89 @@ def _extract_require_bindings(
     name_node = stmt_node.child_by_field_name("name")
     if name_node is None:
         return [], []
+    return _module_pattern_bindings(name_node, src)
 
+
+def _bound_at(
+    local_node: Node, exported: str | None, src: str, *, module_alias: bool = False
+) -> NamedBinding:
+    """A binding that records where its local name sits (1-based line, byte column)."""
+    return NamedBinding(
+        local_name=node_text(local_node, src),
+        exported_name=exported,
+        source_file=None,
+        is_module_alias=module_alias,
+        line=local_node.start_point[0] + 1,
+        column=local_node.start_point[1],
+    )
+
+
+def _module_pattern_bindings(name_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
+    """Bindings for the pattern a module is bound to: ``m`` or ``{ a, b: c }``.
+
+    Each binding carries the position of its local name, so the call resolver
+    can tell this binding apart from a parameter or local that shadows it.
+    """
     names: list[str] = []
     bindings: list[NamedBinding] = []
 
     if name_node.type == "identifier":
-        local = node_text(name_node, src)
-        names.append(local)
-        bindings.append(
-            NamedBinding(
-                local_name=local,
-                exported_name=None,
-                source_file=None,
-                is_module_alias=True,
-            )
-        )
+        names.append(node_text(name_node, src))
+        bindings.append(_bound_at(name_node, None, src, module_alias=True))
     elif name_node.type == "object_pattern":
         for el in name_node.children:
             if el.type == "shorthand_property_identifier_pattern":
                 local = node_text(el, src)
                 names.append(local)
-                bindings.append(
-                    NamedBinding(local_name=local, exported_name=local, source_file=None)
-                )
+                bindings.append(_bound_at(el, local, src))
             elif el.type == "pair_pattern":
                 key = el.child_by_field_name("key")
                 val = el.child_by_field_name("value")
                 if key is not None and val is not None:
                     exported = node_text(key, src)
-                    local = node_text(val, src)
                     names.append(exported)
-                    bindings.append(
-                        NamedBinding(local_name=local, exported_name=exported, source_file=None)
-                    )
+                    bindings.append(_bound_at(val, exported, src))
 
     return names, bindings
+
+
+def dynamic_import_bindings(call_node: Node, src: str) -> list[NamedBinding]:
+    """Bindings for what an ``import('./m')`` call's module is bound to.
+
+    ``const { f } = await import('./m')`` binds through its declarator, and
+    ``import('./m').then(({ f }) => …)`` through the callback's first
+    parameter; either may be a namespace identifier instead. Any other use
+    binds nothing nameable.
+    """
+    node = call_node
+    while node.parent is not None and node.parent.type in _VALUE_WRAPPER_NODE_TYPES:
+        node = node.parent
+    parent = node.parent
+    if parent is None:
+        return []
+
+    pattern: Node | None = None
+    if parent.type == "variable_declarator" and parent.child_by_field_name("value") == node:
+        pattern = parent.child_by_field_name("name")
+    elif (
+        parent.type == "member_expression"
+        and parent.child_by_field_name("object") == node
+        and node_text(parent.child_by_field_name("property"), src) == "then"
+        and parent.parent is not None
+        and parent.parent.type == "call_expression"
+    ):
+        args = parent.parent.child_by_field_name("arguments")
+        callback = args.named_children[0] if args is not None and args.named_children else None
+        if callback is not None and callback.type in _CALLABLE_VALUE_NODE_TYPES:
+            pattern = callback.child_by_field_name("parameter")
+            params = callback.child_by_field_name("parameters")
+            if pattern is None and params is not None and params.named_children:
+                first = params.named_children[0]
+                # TypeScript wraps each parameter, JavaScript does not.
+                pattern = first.child_by_field_name("pattern") or first
+    if pattern is None:
+        return []
+    return _module_pattern_bindings(pattern, src)[1]
 
 
 def extract_ts_js_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
@@ -366,3 +414,47 @@ def cjs_statement_is_reexport(stmt_node: Node, src: str) -> bool:
     head = node_text(ctx, src).split("require", 1)[0]
     stripped = head.lstrip()
     return "module.exports" in head or stripped.startswith("exports.")
+
+
+def is_type_only_ts_js_import(stmt_node: Node, src: str) -> bool:
+    """True if a TypeScript import or re-export is purely type-level.
+
+    Handles:
+    - Statement-level: ``import type { X } from '...'``, ``export type { X } from '...'``
+    - Clause-level / Specifier-level: ``import { type A, type B } from '...'``
+    Mixed statements with value imports (``import { type A, B } from '...'``) return False.
+    """
+    if any(
+        child.type == "type"
+        or (child.type in ("identifier", "ERROR") and node_text(child, src) == "type")
+        for child in stmt_node.children
+    ):
+        return True
+
+    specifiers: list[Node] = []
+    has_non_specifier_import = False
+
+    for child in stmt_node.children:
+        if child.type == "import_clause":
+            for sub in child.children:
+                if sub.type in ("identifier", "namespace_import"):
+                    has_non_specifier_import = True
+                elif sub.type == "named_imports":
+                    for spec in sub.children:
+                        if spec.type == "import_specifier":
+                            specifiers.append(spec)
+        elif child.type == "export_clause":
+            for spec in child.children:
+                if spec.type == "export_specifier":
+                    specifiers.append(spec)
+        elif child.type == "namespace_export":
+            has_non_specifier_import = True
+
+    if has_non_specifier_import or not specifiers:
+        return False
+
+    return all(
+        any(c.type == "type" or node_text(c, src) == "type" for c in spec.children)
+        for spec in specifiers
+    )
+

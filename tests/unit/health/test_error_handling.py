@@ -70,6 +70,30 @@ _FIXTURES = [
     ),
     (
         "java",
+        b"class A { void m(){ try { go(); fail(\"x\"); } catch (Exception e) {} } }\n",
+        {},
+        "Java try ending in fail() -> expected exception idiom, not swallowed",
+    ),
+    (
+        "java",
+        b"class A { void m(){ try { go(); Assert.fail(\"x\"); } catch (Exception e) { // expected\n } } }\n",
+        {},
+        "Java try ending in Assert.fail() -> clean",
+    ),
+    (
+        "java",
+        b"class A { void m(){ try (var r = open()) { go(); Assertions.fail(\"x\"); } catch (Exception e) {} } }\n",
+        {},
+        "Java try-with-resources ending in Assertions.fail() -> clean",
+    ),
+    (
+        "java",
+        b"class A { void m(){ try { fail(\"x\"); go(); } catch (Exception e) {} } }\n",
+        {"swallowed_catch": 1},
+        "Java fail() not last in try -> swallowed",
+    ),
+    (
+        "java",
         b"class A { void m(){ try { go(); } catch (Exception e) { log(e); } } }\n",
         {},
         "handled Java catch",
@@ -314,3 +338,71 @@ def test_idiomatic_hit_is_labelled_and_not_scored():
     assert plain.details == {"kind": "unsafe_unwrap"}
     assert plain.deduction is None
     assert plain.reason == "unwrap/expect turns a recoverable error into a crash"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected", "note"),
+    [
+        (
+            b"try:\n    x()\nexcept Exception:  # noqa: BLE001\n    pass\n",
+            {"swallowed_catch": 1},
+            "BLE001 suppresses broad_except; swallowed_catch remains",
+        ),
+        (
+            b"try:\n    x()\nexcept Exception:  # noqa: BLE001, E722\n    pass\n",
+            {"swallowed_catch": 1},
+            "multi-code noqa suppresses broad_except",
+        ),
+        (
+            b"try:\n    x()\nexcept:  # noqa: E722\n    pass\n",
+            {"swallowed_catch": 1},
+            "E722 suppresses bare_except",
+        ),
+        (
+            b"try:\n    x()\nexcept:  # noqa: BLE001\n    pass\n",
+            {"swallowed_catch": 1},
+            "BLE001 suppresses bare_except",
+        ),
+        (
+            b"try:\n    x()\nexcept Exception:  # noqa\n    pass\n",
+            {},
+            "blanket noqa suppresses broad_except and swallowed_catch",
+        ),
+        (
+            b"try:\n    x()\nexcept:  # noqa\n    pass\n",
+            {},
+            "blanket noqa suppresses bare_except and swallowed_catch",
+        ),
+        (
+            b"try:\n    x()\nexcept ValueError:  # noqa: S110\n    pass\n",
+            {},
+            "S110 suppresses swallowed_catch",
+        ),
+        (
+            b"try:\n    x()\nexcept Exception:  # noqa: BLE001, S110\n    pass\n",
+            {},
+            "BLE001 + S110 suppresses both broad_except and swallowed_catch",
+        ),
+        (
+            b"try:\n    x()\nexcept Exception:  # noqa: F401\n    pass\n",
+            {"swallowed_catch": 1, "broad_except": 1},
+            "unrelated noqa code does not suppress broad_except",
+        ),
+        (
+            b"try:\n    x()\nexcept:  # noqa: F401\n    pass\n",
+            {"swallowed_catch": 1, "bare_except": 1},
+            "unrelated noqa code does not suppress bare_except",
+        ),
+        (
+            b"try:\n    x()\nexcept Exception:\n    # noqa: BLE001\n    pass\n",
+            {"swallowed_catch": 1, "broad_except": 1},
+            "noqa on the next line inside block does not suppress header",
+        ),
+    ],
+)
+def test_python_noqa_suppression(source: bytes, expected: dict, note: str):
+    hits = _hits("python", source)
+    by_kind: dict[str, int] = {}
+    for h in hits:
+        by_kind[h.kind] = by_kind.get(h.kind, 0) + 1
+    assert by_kind == expected, f"{note}: expected {expected}, got {by_kind}"

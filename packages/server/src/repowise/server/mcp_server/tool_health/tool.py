@@ -8,6 +8,7 @@ accounting and projection passes (``paging`` / ``projection``).
 
 from __future__ import annotations
 
+import asyncio
 from time import perf_counter
 from typing import Any
 
@@ -232,7 +233,11 @@ async def get_health(
         # The rest stays inside the session: the analysis meta queries it, and a
         # query on a closed session checks out a connection nothing returns.
         if data.pop.scoped:
-            result, mode_totals = build_targeted(data, req, pager, ctx.path)
+            # A missing target is explained from git history (a sync subprocess
+            # per miss), so keep it off the event loop.
+            result, mode_totals = await asyncio.to_thread(
+                build_targeted, data, req, pager, ctx.path
+            )
         else:
             result, mode_totals = build_dashboard(data, req, pager)
         add_optional_blocks(result, data, req, pager, str(ctx.path))

@@ -251,7 +251,7 @@ async def test_impacted_tests_pass_a_changed_lines_error_through(factory, tmp_pa
     assert block["status"] == "unknown"
     assert block["summary"] == "Could not read changed lines from git."
     assert block["tests_to_run"] == []
-    assert block["map_present"] is False
+    assert "map_present" not in block
 
 
 @pytest.mark.asyncio

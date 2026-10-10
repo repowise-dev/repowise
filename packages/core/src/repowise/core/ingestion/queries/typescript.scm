@@ -292,6 +292,39 @@
 ) @call.site
 
 ; ---------------------------------------------------------------------------
+; Value references: a function or class handed over by name, not called
+; ---------------------------------------------------------------------------
+; register(fn), [fn], { handler: fn }, { fn }, return fn, x = fn, export default fn.
+; Each becomes a ``references`` edge once the name resolves to a function or
+; class; one alternation per spelling keeps it to two query patterns.
+[
+  (arguments (identifier) @reference.name)
+  (array (identifier) @reference.name)
+  (pair value: (identifier) @reference.name)
+  (shorthand_property_identifier) @reference.name
+  (return_statement (identifier) @reference.name)
+  (variable_declarator value: (identifier) @reference.name)
+  (assignment_expression right: (identifier) @reference.name)
+  (export_statement value: (identifier) @reference.name)
+]
+
+; The same positions holding mod.fn or this.handle
+[
+  (arguments (member_expression
+    object: [(identifier) (this)] @reference.receiver
+    property: (property_identifier) @reference.name))
+  (array (member_expression
+    object: [(identifier) (this)] @reference.receiver
+    property: (property_identifier) @reference.name))
+  (pair value: (member_expression
+    object: [(identifier) (this)] @reference.receiver
+    property: (property_identifier) @reference.name))
+  (assignment_expression right: (member_expression
+    object: [(identifier) (this)] @reference.receiver
+    property: (property_identifier) @reference.name))
+]
+
+; ---------------------------------------------------------------------------
 ; Type references (non-import positions)
 ;
 ; Mirrors the C# / Go pattern: a single ``@param.type`` capture name fans

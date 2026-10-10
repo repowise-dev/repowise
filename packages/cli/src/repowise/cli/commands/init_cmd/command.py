@@ -79,6 +79,7 @@ from repowise.cli.ui import (
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
+from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles, resolve_style
@@ -1934,6 +1935,9 @@ def init_command(
         # their stamp. Without it `health_analyzer_changed` reads absent-as-
         # unchanged and the version trigger never fires for them.
         base_state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+        # Same reasoning for the security scanner (#3072): this run just
+        # scanned every file, so start tracking its version here too.
+        base_state["security_scanner_version"] = SECURITY_SCANNER_VERSION
         # This run just scored every file, so the periodic re-score cadence
         # starts now. Without the stamp the gate reads "never re-scored" and the
         # very next update re-scores the whole repo init had only just scored.

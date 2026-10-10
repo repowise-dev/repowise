@@ -64,6 +64,7 @@ from repowise.server.mcp_server._budget import (
     OmissionCollector,
     cap_collection,
 )
+from repowise.server.mcp_server._edit_sites import attach_call_text, first_call_line
 from repowise.server.mcp_server._graph_files import keep_projected_edge, node_to_file
 from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
@@ -72,6 +73,7 @@ from repowise.server.mcp_server._helpers import (
     is_missing_table,
 )
 from repowise.server.mcp_server._index_state import index_state_key
+from repowise.server.mcp_server._wrapper_callers import forwarding_wrapper_callers
 from repowise.server.schemas.intelligence import SYMBOL_RELATION_GROUP_OF
 
 #: Where a resolved target path waits between its card being built and the
@@ -191,8 +193,12 @@ async def _resolve_call_graph(
     want_callees: bool = False,
     exclude_spec: Any = None,
     collector: OmissionCollector | None = None,
+    repo_root: Any = None,
 ) -> None:
-    """Resolve callers/callees for a symbol and attach to result_data."""
+    """Resolve callers/callees for a symbol and attach to result_data.
+
+    Served call rows carry ``call_line`` and, read from *repo_root*, its ``text``.
+    """
     repo_id = repository.id
     # 99.56% of symbols have <=50 callers (p99=31); the rare hub gets an
     # explicit `*_truncated` + `*_total` signal below rather than a silent cut.
@@ -333,7 +339,11 @@ async def _resolve_call_graph(
                 continue
             is_call = edge_type == "calls"
             if e.target_node_id == node.node_id:
-                inbound.append(_entry(e, e.source_node_id, with_edge_type=is_call))
+                row = _entry(e, e.source_node_id, with_edge_type=is_call)
+                # ``line`` is where the caller is defined; this is where it calls.
+                if is_call and (call_line := first_call_line(e.call_lines_json)):
+                    row["call_line"] = call_line
+                inbound.append(row)
             if e.source_node_id == node.node_id:
                 outbound.append(_entry(e, e.target_node_id, with_edge_type=is_call))
 
@@ -369,6 +379,24 @@ async def _resolve_call_graph(
                         "repowise omission reference; grep remains useful when graph "
                         "coverage itself may be incomplete."
                     )
+                elif direction == "in":
+                    # Appended after the direct rows and only under the cap, so
+                    # the callers_* counts keep meaning direct callers.
+                    hop = await forwarding_wrapper_callers(
+                        session,
+                        repo_id,
+                        node,
+                        [r["symbol_id"] for r in visible],
+                        known_nodes=node_map,
+                    )
+                    hop = filter_dicts_by_key(hop, "file", exclude_spec)
+                    if hop:
+                        result_data[key] = visible + hop
+                if direction == "in":
+                    await attach_call_text(repo_root, result_data[key], node.node_id)
+                    # Unserved rows are never checked against the live file.
+                    for row in rows[len(visible) :]:
+                        row.pop("call_line", None)
                 continue
 
             if not total:

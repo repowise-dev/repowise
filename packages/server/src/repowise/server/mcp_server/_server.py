@@ -648,13 +648,19 @@ async def _lifespan(server: FastMCP):
             db_path = get_repo_db_path(_state._repo_path)
             repowise_dir = db_path.parent
             store_location = str(repowise_dir)
-            if not repowise_dir.exists():
-                _log.warning(
-                    "No .repowise directory at %s — run 'repowise init' first",
+            if not repowise_dir.is_dir():
+                # Creating the store directory here made whatever directory an
+                # MCP host spawned the server from look initialised: it left a
+                # stray .repowise/ behind, silenced the CLI's "run 'repowise
+                # init'" warning for every later start, and seeded an empty
+                # wiki.db. Fail the way an unopenable store does instead (#3163).
+                await _abort_startup(_release_task, _warm_task)
+                raise _store_unavailable(
+                    store_location,
                     _state._repo_path,
+                    FileNotFoundError(f"no {repowise_dir.name} directory"),
                 )
-                repowise_dir.mkdir(parents=True, exist_ok=True)
-            elif not db_path.exists():
+            if not db_path.exists():
                 _log.warning(
                     "No wiki.db in %s — run 'repowise init' to generate the wiki",
                     repowise_dir,

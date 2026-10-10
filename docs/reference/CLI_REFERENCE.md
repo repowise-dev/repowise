@@ -2014,11 +2014,11 @@ repowise generate-claude-md --verbose      # show pipeline debug logs
 ### `repowise agents`
 
 Manage the agent integrations repowise can wire up on this machine: Claude
-Code, Codex, Cursor, OpenCode, Hermes, and anything reachable through
-`print-config`. `init` already wires the primary ones as part of a first run;
-this group is for what comes after it: adding an agent installed later,
-removing one, refreshing config after an upgrade, or printing a snippet for a
-host repowise does not write files for at all.
+Code, Codex, VS Code, Cursor, OpenCode, Hermes, GitHub Copilot CLI, Kiro, and
+anything reachable through `print-config`. `init` already wires the primary
+ones as part of a first run; this group is for what comes after it: adding an
+agent installed later, removing one, refreshing config after an upgrade, or
+printing a snippet for a host repowise does not write files for at all.
 
 With no subcommand, lists every known agent for the current repo: support
 tier, whether it looks installed, and every place it is currently wired to

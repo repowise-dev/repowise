@@ -247,6 +247,11 @@ class NamedBinding:
     is_module_alias: bool = False  # True for "import x" / "import * as ns"
     is_global: bool = False  # C# `global using` — applies to every file in the project
     is_static_import: bool = False  # C# `using static` / Java static import — pulls members
+    # Position of the local name (1-based line, byte column), set where a
+    # binding can sit inside a function body (``require``, ``import()``), so
+    # it is not read as a shadowing local.
+    line: int | None = None
+    column: int | None = None
 
 
 @dataclass
@@ -262,6 +267,7 @@ class Import:
     is_reexport: bool = False  # True for `pub use` (Rust) or re-export patterns
     # Rust ``mod child;``: declares the child module, uses nothing from it.
     is_module_declaration: bool = False
+    type_only: bool = False  # True when the statement is purely type-level (e.g. TypeScript import type)
 
     @property
     def local_names(self) -> list[str]:

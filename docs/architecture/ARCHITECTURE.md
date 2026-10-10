@@ -322,26 +322,25 @@ It can be rebuilt from scratch by re-parsing the source files.
 
 ## 4. Provider Abstraction Layer
 
-Every LLM call in the entire system goes through `LLMProvider`. No provider SDK
-is ever imported from business logic packages.
+Every LLM call in the entire system goes through `BaseProvider`
+(`packages/core/src/repowise/core/providers/llm/base.py`). No provider SDK is
+ever imported from business logic packages.
+
+Each provider is described once, by a `ProviderSpec` in
+`providers/llm/specs.py`: its key and endpoint env vars, models, rate limit,
+whether it needs a key, and whether it drives a local agent CLI. The registry
+tables, the server's `/api/providers` catalog, the init picker and the web UI
+are all derived from those records.
 
 ```
-                    ┌─────────────────┐
-                    │   LLMProvider   │  (abstract base class)
-                    │                 │
-                    │  generate()     │
-                    │  generate_stream│
-                    │  embed()        │
-                    │  generate_batch │  (optional, default = sequential)
-                    │  estimate_cost  │  (optional, returns None if unknown)
-                    └────────┬────────┘
-                             │
-          ┌──────────────────┼──────────────────┬──────────────────┐
-          ▼                  ▼                  ▼                  ▼
-  AnthropicProvider   OpenAIProvider     OllamaProvider    LiteLLMProvider
-  (claude-*)          (gpt-*, any        (any local model,  (100+ providers,
-  batch API + prompt   OpenAI-compat      fully offline,     optional dep)
-  caching support)     endpoint)          no API key)
+                         BaseProvider
+                              |
+      +-----------------------+------------------------+
+      |                       |                        |
+ SDK providers         OpenAICompatibleProvider   AgentCliProvider
+ (anthropic, gemini,   (deepseek, kimi, edenai)   (claude_cli, codex_cli,
+  openai, openrouter,                              opencode: the user's
+  ollama, litellm)                                 logged-in agent CLI)
 ```
 
 ### 4.1 Rate Limiter
@@ -353,8 +352,8 @@ Before every API call, the limiter acquires from both buckets. On a 429 response
 it calls `on_rate_limit_error()` which applies exponential backoff and temporarily
 reduces the refill rate. This is transparent to all callers.
 
-Default limits are configured per provider in `.repowise/config.yaml` and can be
-adjusted for users with higher API tiers.
+Default limits come from each provider's `ProviderSpec.rate_limit`. Agent CLI
+providers get no limiter; their own concurrency semaphore bounds them.
 
 ### 4.2 Prompt Caching
 
@@ -369,8 +368,7 @@ on large repos is typically 60–90%.
 
 ### 4.3 Adding a Provider
 
-Implement `LLMProvider`, add an entry to `LANGUAGE_CONFIGS` in `providers/registry.py`,
-and add a section to `.repowise/config.yaml`. See [Section 17](#17-adding-a-new-llm-provider).
+See [Section 17](#17-adding-a-new-llm-provider).
 
 ---
 
@@ -1280,7 +1278,7 @@ JobSystem
        │              └──────────────┬─────────────────────┘
        │                             │
        │                             ▼
-       │                       LLMProvider.generate()
+       │                       BaseProvider.generate()
        │                             │
        │                             ▼
        │                      WikiPage stored:
@@ -1341,7 +1339,7 @@ ChangeDetector.get_affected_pages(cascade_budget=30)
     │
     ▼
 For each page in `regenerate`:
-    ContextAssembler → LLMProvider → update SQL + VectorStore + Graph
+    ContextAssembler → BaseProvider → update SQL + VectorStore + Graph
     │
     ▼
 For each page in `rename_patch`:
@@ -1598,38 +1596,16 @@ Two things worth knowing before you start:
 
 ## 17. Adding a New LLM Provider
 
-1. **Create `packages/core/providers/<name>.py`**
+1. Create `packages/core/src/repowise/core/providers/llm/<name>.py` with a
+   `BaseProvider` subclass (or `OpenAICompatibleProvider` for an
+   OpenAI-compatible API).
+2. Add one `ProviderSpec` to `_SPECS` in `providers/llm/specs.py`. Nothing else
+   lists providers.
+3. Add tests in `tests/unit/test_providers/`.
 
-   Subclass `LLMProvider` and implement:
-   - `generate(request: GenerationRequest) -> GenerationResponse`
-   - `generate_stream(request: GenerationRequest) -> AsyncIterator[str]`
-   - `embed(request: EmbedRequest) -> EmbedResponse`
-   - `name` property
-
-   Optionally override:
-   - `supports_batch` → `True` if the provider has a batch API
-   - `generate_batch(requests) -> list[GenerationResponse]`
-   - `estimate_cost(input_tokens, output_tokens) -> float`
-
-2. **Register in `providers/registry.py`**
-
-   ```python
-   case "myprovider": return MyProvider(config)
-   ```
-
-3. **Add config section to `.repowise/config.yaml` docs**
-
-   ```yaml
-   myprovider:
-     api_key: ${MYPROVIDER_API_KEY}
-     base_url: https://api.myprovider.com/v1
-   ```
-
-4. **Add default rate limits** to `PROVIDER_DEFAULT_LIMITS` in `rate_limiter.py`
-
-5. **Add a `MockProvider` fixture** for tests if the provider has unique response formats
-
-6. **Update `CONTRIBUTING.md`** with the new provider's environment variables
+The recipe, including the frozen picker test, is in
+[CONTRIBUTING.md](../../.github/CONTRIBUTING.md). A backend that drives an agent's
+CLI follows [agent-platform.md](agent-platform.md).
 
 ---
 

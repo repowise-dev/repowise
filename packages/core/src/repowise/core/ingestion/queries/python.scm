@@ -103,3 +103,42 @@
 
 ; Constructor call via class name: MyClass(args)
 ; (captured by the simple function call pattern above — class names are identifiers)
+
+; ---------------------------------------------------------------------------
+; Value references: a function or class handed over by name, not called
+; ---------------------------------------------------------------------------
+; register(fn), callback=fn, map(fn, xs), [fn], (fn,), {"k": fn}, return fn,
+; x = fn. Each becomes a ``references`` edge once the name resolves to a
+; function or class; one alternation per spelling keeps it to two patterns.
+[
+  (argument_list (identifier) @reference.name)
+  (keyword_argument value: (identifier) @reference.name)
+  (list (identifier) @reference.name)
+  (tuple (identifier) @reference.name)
+  (set (identifier) @reference.name)
+  (pair value: (identifier) @reference.name)
+  (return_statement (identifier) @reference.name)
+  (assignment right: (identifier) @reference.name)
+]
+
+; The same positions holding mod.fn or self.handle
+[
+  (argument_list (attribute
+    object: (identifier) @reference.receiver
+    attribute: (identifier) @reference.name))
+  (keyword_argument value: (attribute
+    object: (identifier) @reference.receiver
+    attribute: (identifier) @reference.name))
+  (list (attribute
+    object: (identifier) @reference.receiver
+    attribute: (identifier) @reference.name))
+  (tuple (attribute
+    object: (identifier) @reference.receiver
+    attribute: (identifier) @reference.name))
+  (pair value: (attribute
+    object: (identifier) @reference.receiver
+    attribute: (identifier) @reference.name))
+  (assignment right: (attribute
+    object: (identifier) @reference.receiver
+    attribute: (identifier) @reference.name))
+]

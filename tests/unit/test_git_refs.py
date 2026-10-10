@@ -14,6 +14,7 @@ from repowise.core.git_refs import (
     commit_file_sets,
     current_branch,
     default_base,
+    find_path_removal,
     list_branches,
     remote_name,
     resolve,
@@ -194,6 +195,72 @@ class TestCommitFileSets:
 
     def test_a_non_repository_yields_nothing(self, tmp_path: Path) -> None:
         assert commit_file_sets(str(tmp_path / "nowhere_at_all"), "main..feat") == []
+
+
+class TestFindPathRemoval:
+    def test_a_pure_rename_names_its_new_path(self, tmp_path: Path) -> None:
+        root = tmp_path / "renamed"
+        root.mkdir()
+        _run(root, "init", "-b", "main")
+        _commit(root, "old_name.py", "def f():\n    return 1\n" * 5, "add old_name")
+        _run(root, "mv", "old_name.py", "new_name.py")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "rename")
+
+        removal = find_path_removal(str(root), "old_name.py")
+
+        assert removal is not None
+        assert removal.moved_to == ["new_name.py"]
+
+    def test_a_split_into_a_same_named_directory_lists_its_files(self, tmp_path: Path) -> None:
+        """The #1929 shape: ``shell.py`` becomes the package ``shell/``."""
+        root = tmp_path / "split"
+        root.mkdir()
+        _run(root, "init", "-b", "main")
+        _commit(root, "shell.py", "def run():\n    pass\n", "add shell")
+        _run(root, "rm", "shell.py")
+        (root / "shell").mkdir()
+        # Content unlike the original on both sides: close enough to it and
+        # git's similarity index calls it a rename instead of a split, and the
+        # rename branch above wins before this one is ever reached.
+        (root / "shell" / "__init__.py").write_text("PACKAGE_VERSION = 1\n", encoding="utf-8")
+        (root / "shell" / "commands.py").write_text(
+            "class Commands:\n    def dispatch(self, *args):\n        raise NotImplementedError\n",
+            encoding="utf-8",
+        )
+        _run(root, "add", "-A")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "split into shell/")
+
+        removal = find_path_removal(str(root), "shell.py")
+
+        assert removal is not None
+        assert removal.moved_to == ["shell/__init__.py", "shell/commands.py"]
+
+    def test_an_unexplained_deletion_names_the_commit_with_nothing_moved(
+        self, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "deleted"
+        root.mkdir()
+        _run(root, "init", "-b", "main")
+        _commit(root, "gone.py", "x = 1\n", "add gone")
+        _run(root, "rm", "gone.py")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "delete gone")
+
+        removal = find_path_removal(str(root), "gone.py")
+
+        assert removal is not None
+        assert removal.moved_to == []
+
+    def test_a_path_never_committed_yields_none(self, repo: Path) -> None:
+        assert find_path_removal(str(repo), "never_existed.py") is None
+
+    def test_a_path_still_on_disk_yields_none(self, repo: Path) -> None:
+        assert find_path_removal(str(repo), "base.txt") is None
+
+    def test_a_non_repository_yields_none(self, tmp_path: Path) -> None:
+        assert find_path_removal(str(tmp_path / "nowhere_at_all"), "gone.py") is None
+
+    def test_a_path_escaping_the_repo_is_rejected(self, repo: Path) -> None:
+        assert find_path_removal(str(repo), "../outside.py") is None
 
 
 @pytest.mark.parametrize(

@@ -1234,6 +1234,11 @@ def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
         codex = CodexAdapter()
         if codex.detect():
             surfaces.append(("codex", codex))
+        from repowise.cli.agent_adapters.cursor import CursorAdapter
+
+        cursor = CursorAdapter()
+        if cursor.detect():
+            surfaces.append(("cursor", cursor))
         # Registered and live are different questions: an entry whose matcher
         # predates a tool rename is registered and fires on some or none of
         # the agent's shell tools. Say which, rather than calling all three

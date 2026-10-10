@@ -2483,6 +2483,19 @@ def run_update(
             "fingerprint was retained so the next update retries."
         )
 
+    # A scanner version bump means every unchanged file's stored findings may
+    # be stale (#3072): the normal persist above only rescanned the changed
+    # files. Does its own full parse, since unlike health there is no stored
+    # structural fact to replay from the DB for a security finding.
+    from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+
+    from .persistence import run_full_security_rescan, security_scanner_changed
+
+    if security_scanner_changed(state):
+        with timed(timings, "security_rescan"):
+            if run_full_security_rescan(repo_path, exclude_patterns):
+                state["security_scanner_version"] = SECURITY_SCANNER_VERSION
+
     # ---- Editor project files (best-effort) ----
     with timed(timings, "editor_files"):
         _refresh_editor_stamp(repo_path, agents_md, degraded)

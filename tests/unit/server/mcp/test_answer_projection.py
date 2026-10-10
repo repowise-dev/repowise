@@ -733,3 +733,60 @@ def test_evidence_projection_only_gains_candidate_files():
 
     assert after.pop("candidate_files") == _POOL[:5]
     assert after == before
+
+
+def test_degraded_low_confidence_retains_trimmed_fallback_targets():
+    paths = [f"pkg/f{i}.py" for i in range(1, 6)]
+    raw = {
+        "answer": "...",
+        "citations": ["pkg/f1.py"],
+        "confidence": "low",
+        "retrieval_quality": "high",
+        "degraded": "synthesis-failed",
+        "fallback_targets": paths,
+        "retrieval": [{"path": p, "excerpt": "x" + p} for p in paths],
+        "code_rationale": [
+            {"path": "pkg/f1.py", "lines": [4, 5], "comment": "TCC rationale text"}
+        ],
+        "note": "model used its entire budget",
+        "_meta": {"degraded": "synthesis-failed"},
+    }
+    out = project_answer_payload(raw, question="where is LCOM4 computed")
+
+    assert [r["path"] for r in out["retrieval"]] == ["pkg/f1.py", "pkg/f2.py", "pkg/f3.py"]
+    assert out["fallback_targets"] == ["pkg/f4.py", "pkg/f5.py"]
+    assert out["fallback_targets_total"] == 5
+    assert out["fallback_targets_emitted"] == 2
+    assert out["retrieval_total"] == 5
+    assert out["retrieval_emitted"] == 3
+
+
+def test_high_confidence_drops_fallback_targets_with_overflow():
+    paths = [f"pkg/f{i}.py" for i in range(1, 6)]
+    raw = {
+        "answer": "Computed in pkg/f1.py.",
+        "citations": ["pkg/f1.py"],
+        "confidence": "high",
+        "retrieval_quality": "high",
+        "fallback_targets": paths,
+        "retrieval": [{"path": p, "excerpt": "x" + p} for p in paths],
+    }
+    out = project_answer_payload(raw, question="where is LCOM4 computed")
+    assert "fallback_targets" not in out
+    assert "retrieval" not in out
+
+
+def test_degraded_empty_retrieval_retains_full_fallback_targets():
+    paths = [f"pkg/f{i}.py" for i in range(1, 6)]
+    raw = {
+        "answer": "",
+        "citations": [],
+        "confidence": "low",
+        "degraded": "synthesis-failed",
+        "fallback_targets": paths,
+        "retrieval": [],
+        "note": "no local evidence matched",
+    }
+    out = project_answer_payload(raw, question="where is LCOM4 computed")
+    assert out["fallback_targets"] == paths
+    assert "retrieval" not in out

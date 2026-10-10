@@ -1290,6 +1290,7 @@ async def _resolve_one_target(
             want_callees=want_callees,
             exclude_spec=exclude_spec,
             collector=collector,
+            repo_root=repo_root or getattr(repository, "local_path", None),
         )
 
     # --- Reference edit set: every live site naming the symbol ---
@@ -1310,7 +1311,9 @@ async def _resolve_one_target(
             )
         root = repo_root or getattr(repository, "local_path", None)
         if ref_node is not None and root:
-            result_data["references"] = await reference_edit_set(session, repo_id, root, ref_node)
+            result_data["references"] = await reference_edit_set(
+                session, repo_id, root, ref_node, collector
+            )
         else:
             result_data["references_note"] = "references require a symbol target in the graph"
 

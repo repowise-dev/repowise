@@ -91,6 +91,7 @@ def _serialize(builder: GraphBuilder) -> tuple[list[dict], list[dict]]:
                 "hint_source": data.get("hint_source"),
                 "resolution_origin": data.get("resolution_origin"),
                 "call_lines": data.get("call_lines", []),
+                "type_only": bool(data.get("type_only", False)),
             }
         )
     return nodes, edges
@@ -227,3 +228,21 @@ def test_parse_only_symbol_attrs_come_back_from_the_reparse():
     node = hydrated.graph().nodes[sym.id]
     assert node["modifiers"] == ("override",)
     assert node["decorators"] == ["@override"]
+
+
+def test_type_only_edges_survive_rehydration_and_suppress_cycles():
+    builder = GraphBuilder()
+    builder.add_file(_parsed("a.py", [_imp("b")]))
+    builder.add_file(_parsed("b.py", [_imp("a")]))
+    builder.build()
+    builder.graph()["a.py"]["b.py"]["type_only"] = True
+    builder.graph()["b.py"]["a.py"]["type_only"] = True
+
+    nodes, edges = _serialize(builder)
+    assert any(e.get("type_only") for e in edges)
+
+    hydrated = GraphBuilder.from_persisted(nodes, edges, builder.file_metrics_snapshot())
+    assert hydrated.graph()["a.py"]["b.py"]["type_only"] is True
+    assert hydrated.graph()["b.py"]["a.py"]["type_only"] is True
+    assert hydrated.cycle_subgraph().number_of_edges() == 0
+

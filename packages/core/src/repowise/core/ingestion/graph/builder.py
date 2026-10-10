@@ -477,10 +477,15 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                         self._graph[path][target]["imported_names"] = merged
                         if not imp.is_module_declaration:
                             withdraw_declaration_hint(self._graph[path][target])
+                        self._graph[path][target]["type_only"] = (
+                            bool(self._graph[path][target].get("type_only", False))
+                            and imp.type_only
+                        )
                     else:
                         edge_attrs: dict[str, Any] = {
                             "edge_type": "imports",
                             "imported_names": list(imp.imported_names),
+                            "type_only": imp.type_only,
                         }
                         # ``external:`` targets are excluded before the
                         # directory test, not after: an external node id has no

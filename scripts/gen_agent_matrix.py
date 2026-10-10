@@ -74,9 +74,9 @@ TIER_BLURBS: dict[str, tuple[str, str]] = {
     "good": (
         "Good",
         "MCP tools plus a managed instructions file or skills, so the agent is "
-        "told when to reach for them. **No hook-level interception and no "
-        "transcript mining.** The agent can ask repowise questions; repowise "
-        "cannot see or annotate what the agent does in between.",
+        "told when to reach for them. **No transcript mining, and hooks only "
+        "where the matrix says so.** The agent can ask repowise questions; "
+        "repowise sees little or nothing of what it does in between.",
     ),
     "basic": (
         "Basic",
@@ -292,6 +292,7 @@ def render() -> str:
     counts = tool_counts()
     ids = ", ".join(f"`{row['id']}`" for row in rows)
     good = [row["display_name"] for row in rows if row["tier"] == "good"]
+    hooked = [row["display_name"] for row in rows if row["tier"] == "good" and row["hook_adapter"]]
     basic = [row["display_name"] for row in rows if row["tier"] == "basic"]
 
     parts = [
@@ -339,6 +340,15 @@ def render() -> str:
             "a result afterwards. Nor is there transcript mining, so nothing learns",
             "from the session after it ends.",
             "",
+        ]
+        if hooked:
+            parts += [
+                f"The one exception is hooks: {_join_names(hooked)} "
+                f"{'runs' if len(hooked) == 1 else 'run'} the distill command-rewrite hook,",
+                "so noisy commands are rewritten there. Transcript mining is still absent.",
+                "",
+            ]
+        parts += [
             "That is a real integration and it is most of the value. It is not the",
             "same product Full-tier agents get, and breadth that overclaims depth is",
             "worse than narrower breadth.",
@@ -365,7 +375,7 @@ def render() -> str:
         "repowise agents print-config claude-code   # prints, writes nothing",
         "```",
         "",
-        "Ask for the target id whose host is closest to yours rather than editing a",
+        "Ask for the target id whose host is closest to yours instead of editing a",
         "snippet by hand. The shapes genuinely differ, and not only in their wrapper:",
         "hosts disagree about the top-level key, about whether each entry carries a",
         "`type` field, about whether the invocation is one array or a command plus a",
@@ -399,42 +409,28 @@ def render() -> str:
         "",
         "## Adding an agent",
         "",
-        "**Adding an agent takes one identity record, one descriptor file and one",
-        "registry line.**",
+        "The step-by-step recipes, including indexing backends and hook and",
+        "transcript adapters, are in",
+        "[docs/architecture/agent-platform.md](../architecture/agent-platform.md).",
+        "In short, an integration target is:",
         "",
-        "1. Add an `AgentIdentity` to",
-        "   [`identity.py`](../../packages/core/src/repowise/core/agents/identity.py):",
-        "   its slug, display name, `executable` and, if its CLI can index,",
-        "   `indexing_provider`.",
-        "2. Write `packages/cli/src/repowise/cli/agent_targets/targets/<id>.py`",
+        "1. An `AgentIdentity` in",
+        "   [`identity.py`](../../packages/core/src/repowise/core/agents/identity.py).",
+        "2. A descriptor module in `packages/cli/src/repowise/cli/agent_targets/targets/`",
         "   exporting a `TARGET` that satisfies the `AgentTarget` protocol in",
         "   [`types.py`](../../packages/cli/src/repowise/cli/agent_targets/types.py).",
-        "   `vscode.py` is the smallest working example, at one install method and",
-        "   one config file.",
-        "3. Add one line to `_TARGET_MODULES` in",
+        "3. One line in `_TARGET_MODULES` in",
         "   [`registry.py`](../../packages/cli/src/repowise/cli/agent_targets/registry.py).",
-        "   Order there is the order agents appear in prompts, in `--target=all` and",
-        "   in listings, so keep it stable.",
-        "4. Run `python scripts/gen_agent_matrix.py` to add the row here.",
+        "4. A README badge under the tier `derive_tier` gives it, checked by",
+        "   `tests/unit/cli/test_agent_matrix.py`.",
+        "5. `python scripts/gen_agent_matrix.py` to add the row here.",
         "",
-        "An indexing backend adds three more pieces: a `ProviderSpec` in",
+        "An indexing backend is its own module in",
+        "`packages/core/src/repowise/core/providers/llm/` subclassing `AgentCliProvider`,",
+        "a `ProviderSpec` in",
         "[`specs.py`](../../packages/core/src/repowise/core/providers/llm/specs.py),",
-        "an `AgentCliProvider` subclass in",
-        "[`agent_cli.py`](../../packages/core/src/repowise/core/providers/llm/agent_cli.py),",
         "and one `Backend` entry in",
-        "`tests/unit/test_providers/test_agent_cli_contract.py`, which runs the shared",
-        "provider contract against it.",
-        "",
-        "There is no further file for anything derived. The tier, this matrix and the",
-        "`repowise agents` listing all read the descriptor, and the contract tests in",
-        "`tests/unit/cli/test_agent_targets.py` are parameterized over the registry,",
-        "so a new target inherits them.",
-        "",
-        "The README badge rows are the exception: a brand colour and a logo per agent",
-        "are not derivable, and the README is not generated, so a new agent needs a",
-        "badge added by hand and the count above them updated. That is checked rather",
-        "than trusted. `tests/unit/cli/test_agent_matrix.py` fails when the badge rows",
-        "and the registry disagree, and names what to add.",
+        "`tests/unit/test_providers/test_agent_cli_contract.py`.",
         "",
         "Declare only what the agent genuinely has. `derive_tier` reads the adapter",
         "names, so a descriptor that names a hook adapter it has not implemented",

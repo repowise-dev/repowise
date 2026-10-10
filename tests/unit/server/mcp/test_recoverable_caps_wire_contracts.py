@@ -280,8 +280,9 @@ async def test_context_used_by_and_relations_recover_in_one_bounded_query_shape(
     assert "Type000" not in relation_recovered
     # The first call also pays the one aggregate behind the empty-callers basis
     # and the one layer read behind the scope hint. Both are cached per repo per
-    # index commit, so the second call pays neither.
-    assert relation_statements <= 22 and used_by_statements <= 20
+    # index commit, so the second call pays neither. The seeded caller is a
+    # two-line forwarder, so the wrapper hop adds its fixed three reads.
+    assert relation_statements <= 25 and used_by_statements <= 20
 
 
 @pytest.mark.asyncio

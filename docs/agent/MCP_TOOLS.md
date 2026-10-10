@@ -178,6 +178,7 @@ A file's compact symbol list holds its top 15 symbols: types (classes, interface
 - more than 200 sites, a stale call line, an unreadable file, or an uncommitted edit outside the scanned files
 - a rename on import, export or destructure, a default export, or a CommonJS export
 - a dynamic use the graph recorded; access built from strings is otherwise not seen
+- more than 3 plain `reference` sites in one file: the rest are counted in `sites_omitted_by_file`, recoverable from `_meta.omitted`
 
 ```
 get_context(targets=["src/auth/middleware.ts", "src/api/routes.ts"], include=["callers"])
@@ -195,7 +196,7 @@ Returns verified, line-numbered source for one symbol, a live line range, or an 
 | `reference` | object | none | A `continuation_reference` or `fetch_reference` this tool emitted; pass it unchanged |
 | `context_lines` | int | `0` | Extra lines before and after, 0 to 50 |
 | `depth` | int | `1` | 2 or 3 also returns the bodies it calls, transitively |
-| `query` | string | none | Omission refs only: keep stored lines matching this regex or substring |
+| `query` | string | none | Omission refs only: keep stored lines matching this regex or substring. With no `symbol_id` or `id`, it is read as `symbol_id` |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
 **Key return fields:** `source` (up to about 600 lines, each prefixed with its line number), start and end lines, `kind`, `truncated` with a continuation to pass back, `ambiguous` and `candidates` when several symbols match, `callee_bodies` (with `depth` above 1), `not_rendered` (bodies past the budget, each with a range read to fetch it), fallback lines from a live grep on a miss. A class or other container too large to serve whole returns `outlined: true`, its header in `source` and `members` (each member's `symbol_id`, signature and lines, with `members_total` when the list is capped) in place of the body, and no `_meta.complete`.
@@ -222,9 +223,9 @@ Hybrid search that routes by the shape of the query: identifiers search the symb
 
 **Key return fields:** `results` (every row that names a file carries it in `path`, and a row naming no file has no `path`; symbol hits carry `symbol_id`, line bounds and `signature`, plus `symbols` (`name:line` of up to five other matches in that file, then `+N more`) when several matched; concept hits carry `relevance_score`, `snippet` and `sources`; `file` on symbol and file hits is a deprecated alias of `path`, removed in the next minor release, and a page keeps `target_path` only where it differs from `path`), `candidates` (up to `limit` distinct openable file paths, best first). If your next move is a Read, read `candidates`: some `results` are pages that are not files.
 
-**Page rows** also carry `symbols`: up to three `name:line` entries (`Owner.member` for members) in that file whose names match the query's words.
+**Page rows** also carry `symbols`: up to three `name:line` entries (`Owner.member` for members) in that file whose names match the query's words. The first three page rows whose file has a matching line also carry `matched_lines`: a sample of up to three `{line, text}` source lines read from the live file that share the most query words, code lines before comments and imports. Unlike `lines`, it is never every match.
 
-An identifier or literal query also returns `lines` (`{path, line, kind, text}`, definitions first, at most 50): the `get_context` `references` of one to three exact symbols, else a live scan for the token (kind `definition` or `match`). `complete` is true only when they are every match (see `references` above); otherwise `reasons` says why.
+An identifier or literal query also returns `lines` (`{path, line, kind, text}`, definitions first, at most 50): the `get_context` `references` of one to three exact symbols, else a live scan for the token (kind `definition` or `match`). `complete` is true only when they are every match (see `references` above); otherwise `reasons` says why. Past 3 plain `reference` lines in one file, and past 50 lines, rows are counted in `lines_omitted_by_file` and recoverable from `_meta.omitted`; test files sort after production files. A query of several words caps `lines` at 15 (definitions, then calls, then imports) and lists the 5 files with the most omitted rows, with `lines_omitted_by_file_total` counting all of them.
 
 ```
 search_codebase(query="GitIndexer index_repo")
@@ -239,10 +240,10 @@ What history says about touching a file: hotspot score, bug-fix record, owners, 
 |-----------|------|---------|---------|
 | `targets` | list[string] | `changed_files` | File paths to assess |
 | `changed_files` | list[string] | none | Files in a change; switches on PR mode |
-| `include` | list[string] | none | `graph` (typed dependents, consumers, cross-repo links), `churn`, `tests` (typed `test_recommendations` in PR mode), `blast` (`pr_blast_radius` in PR mode), `scales` (units and calibration, identical per call) |
+| `include` | list[string] | none | `graph` (typed dependents, consumers, cross-repo links), `churn`, `owners` (owner percentages, bus factor, contributor count), `tests` (typed `test_recommendations` in PR mode), `blast` (`pr_blast_radius` in PR mode), `scales` (units and calibration, identical per call) |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
-**Key return fields:** per file: `hotspot_score` (0 to 1), `health_score` (0 to 10), `dependents_count`, `co_change_partners`, owners, test gaps, `security_signals`. In PR mode, `directive` with `may_break`, `missing_cochanges`, `tests_to_run`, `tests_to_run_basis` (`measured`, `inferred` or `none`), `tests_to_update` (test files to edit, each with a `name_pair`, `imports` or `co_change` reason), `coverage`, `recommended_reviewers`, `next_calls`, and `reach` (`localized`, `moderate` or `broad`; `null` when no structural score was computed). `include=["blast"]` adds `pr_blast_radius`; the raw 0 to 10 `structural_impact_score` and its scale appear there only with `include=["blast", "scales"]`. `missing_tests` appears only when coverage can back it. A target naming no indexed file returns `resolved: false` with a reason, never zeroed counts.
+**Key return fields:** per file: `hotspot_score` (0 to 1), `health_score` (0 to 10), `dependents_count`, `co_change_partners` (`file_path`, `support`, `conf_ab`, `has_import_link`), `primary_owner` (detailed owner metrics are opt-in under `include=["owners"]`), test gaps, `security_signals`. In PR mode, `directive` with `may_break`, `missing_cochanges`, `tests_to_run`, `tests_to_run_basis` (`measured`, `inferred` or `none`), `tests_to_update` (test files to edit, each with a `name_pair`, `imports` or `co_change` reason), `coverage`, `recommended_reviewers`, `next_calls`, and `reach` (`localized`, `moderate` or `broad`; `null` when no structural score was computed). `include=["blast"]` adds `pr_blast_radius`; the raw 0 to 10 `structural_impact_score` and its scale appear there only with `include=["blast", "scales"]`. `missing_tests` appears only when coverage can back it. A target naming no indexed file returns `resolved: false` with a reason, never zeroed counts.
 
 Dependent counts are a floor over the indexed graph, and structural reach is not proof of runtime breakage. `reach` bands an uncalibrated heuristic that never sees the diff; it is not a probability.
 

@@ -322,8 +322,10 @@ async def test_default_export_is_incomplete(session, repo_id, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_commonjs_destructure_rename_is_incomplete(session, repo_id, tmp_path):
-    """Both the one-line and the multi-line ``{ pick: other } = require(...)``."""
+async def test_commonjs_destructure_rename_outside_an_import_line_is_incomplete(
+    session, repo_id, tmp_path
+):
+    """A one-line ``{ pick: other } = require(...)`` is an import; a multi-line one is not seen as one."""
     node = await _seed_js(
         session,
         repo_id,
@@ -342,7 +344,7 @@ async def test_commonjs_destructure_rename_is_incomplete(session, repo_id, tmp_p
     assert ("web/multi.js", 4, "reference") in sites
     assert out["complete"] is False
     renamed = next(r for r in out["reasons"] if r.startswith("renamed on import or export"))
-    assert "web/one.js" in renamed and "web/multi.js" in renamed
+    assert "web/one.js" not in renamed and "web/multi.js" in renamed
 
 
 @pytest.mark.asyncio
@@ -367,6 +369,189 @@ async def test_rename_in_a_file_outside_the_re_export_chain_is_incomplete(
     assert any("web/c.ts" in r for r in out["reasons"])
 
 
+_PICK = "export function pick(x: number) { return x }\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rel", "text", "alias_line"),
+    [
+        ("web/b.ts", "import { pick as choose } from './a'\n\nexport const f = () => choose(1)\n", 3),
+        (
+            "web/b.ts",
+            "import {\n  other,\n  pick as choose,\n} from './a'\nfunction f() {\n  return choose(1)\n}\n",
+            6,
+        ),
+        ("web/b.js", "const { pick: choose } = require('./a')\nchoose(1)\n", 2),
+        ("web/b.ts", "import { pick as choose } from './a'\nconst k = new choose()\n", 2),
+        ("web/b.tsx", "import { pick as choose } from './a'\nconst e = <choose a={1}></choose>\n", 2),
+        ("web/b.ts", "import { pick as choose } from './a'\nchoose.mockReset()\n", 2),
+        ("web/b.ts", "import { pick as choose } from './a'\nconst n = choose?.length\n", 2),
+    ],
+)
+async def test_import_alias_used_only_locally_is_complete(
+    session, repo_id, tmp_path, rel, text, alias_line
+):
+    node = await _seed_js(session, repo_id, tmp_path, {"web/a.ts": _PICK, rel: text})
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert (rel, alias_line, "reference") in _sites(out)
+    assert out["complete"] is True, out.get("reasons")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "import { pick as choose } from './a'\nexport { choose }\n",
+        "import { pick as choose } from './a'\nexport {\n  choose as chooser,\n}\n",
+        "import { pick as choose } from './a'\nexport default choose\n",
+        "import { pick as choose } from './a'\nexport const chooser = choose;\n",
+        "export { pick as choose } from './a'\n",
+        "const { pick: choose } = require('./a')\nmodule.exports = {\n  choose,\n}\n",
+        "const { pick: choose } = require('./a')\nexports.chooser = choose\n",
+        "import { pick as choose } from './a'\nexport = choose;\n",
+        "import { pick as choose } from './a'\nexport const api = { choose }\n",
+        "import { pick as choose } from './a'\nexport const api = {\n  choose,\n}\n",
+        "import { pick as choose } from './a'\nexport const w = wrap(choose)\n",
+        "import { pick as choose } from './a'\nexport const a = choose as T\n",
+        "import { pick as choose } from './a'\nexport const a = choose, c = 1\n",
+        "import { pick as choose } from './a'\nconst c = choose\nexport { c }\n",
+        "import { pick as choose } from './a'\nconst c = choose\nexport default c\n",
+        "const { pick: choose } = require('./a')\no.x = choose\nmodule.exports = o\n",
+        "import { pick as choose } from './a'\nexport class K extends choose {}\n",
+        "import { pick as choose } from './a'\nexport function g() { return choose }\n",
+    ],
+)
+async def test_import_alias_handed_on_is_incomplete(session, repo_id, tmp_path, text):
+    node = await _seed_js(session, repo_id, tmp_path, {"web/a.ts": _PICK, "web/b.js": text})
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "renamed on import or export: web/b.js" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_aliases_in_two_files_are_both_scanned(session, repo_id, tmp_path):
+    node = await _seed_js(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "web/a.ts": _PICK,
+            "web/b.ts": "import { pick as choose } from './a'\nchoose(1)\n",
+            "web/c.ts": "import { pick as select } from './a'\nconst v = select(2)\n",
+        },
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert ("web/b.ts", 2, "reference") in _sites(out)
+    assert ("web/c.ts", 2, "reference") in _sites(out)
+    assert out["complete"] is True, out.get("reasons")
+
+
+@pytest.mark.asyncio
+async def test_alias_matches_on_a_word_boundary_only(session, repo_id, tmp_path):
+    node = await _seed_js(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "web/a.ts": _PICK,
+            "web/b.ts": (
+                "import { pick as choose } from './a'\n"
+                "const chooser = 1\n"
+                "obj.choose_it = $choose\n"
+                "choose(chooser)\n"
+            ),
+        },
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    b_lines = [n for p, n, _k in _sites(out) if p == "web/b.ts"]
+    assert b_lines == [1, 4]
+    assert out["complete"] is True, out.get("reasons")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("importer_names", "complete"),
+    [(None, True), ('["value"]', True), ('["pick_backend"]', False), ("[]", False)],
+)
+async def test_python_module_alias_is_local_unless_another_module_imports_it(
+    session, repo_id, tmp_path, importer_names, complete
+):
+    extra = [("app/local.py", _DEF, "imports", {"imported_names_json": '["backend_of"]'})]
+    if importer_names is not None:
+        extra.append(
+            ("app/far.py", "app/local.py", "imports", {"imported_names_json": importer_names})
+        )
+    node = await _seed(session, repo_id, tmp_path, extra=extra)
+    (tmp_path / "app" / "local.py").write_text(
+        "from pkg.catalog import backend_of as pick_backend\n\nvalue = pick_backend(1)\n",
+        encoding="utf-8",
+    )
+
+    (tmp_path / "app" / "far.py").write_text(
+        "from app.local import pick_backend, value\n", encoding="utf-8"
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert ("app/local.py", 1, "import") in _sites(out)
+    assert ("app/local.py", 3, "reference") in _sites(out)
+    assert out["complete"] is complete, out.get("reasons")
+    if not complete:
+        assert "renamed on import or export: app/local.py" in out["reasons"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "complete"),
+    [
+        ("__all__ = [\n    'pick_backend',\n]\n", False),
+        ("chooser = pick_backend\n", False),
+        ("register(pick_backend)\n", False),
+        ("value = pick_backend(1)\nname = pick_backend.__name__\n", True),
+    ],
+)
+async def test_python_alias_value_use_leaves_the_file(session, repo_id, tmp_path, body, complete):
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("app/api.py", _DEF, "imports", {"imported_names_json": '["backend_of"]'})],
+    )
+    (tmp_path / "app" / "api.py").write_text(
+        "from pkg.catalog import backend_of as pick_backend\n\n" + body, encoding="utf-8"
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is complete, out.get("reasons")
+    if not complete:
+        assert "renamed on import or export: app/api.py" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_local_alias_references_share_the_per_file_cap(session, repo_id, tmp_path):
+    spec = "import { pick as choose } from './a'\n" + "choose.mockReturnValue(1)\n" * 10
+    node = await _seed_js(
+        session, repo_id, tmp_path, {"web/a.ts": _PICK, "web/a.test.ts": spec}
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
+
+    assert out["sites_omitted_by_file"] == {
+        "web/a.test.ts": 10 - _edit_sites.MAX_REFERENCES_PER_FILE
+    }
+    assert not any(r.startswith("renamed") for r in out["reasons"])
+
+
 @pytest.mark.asyncio
 async def test_get_context_serves_references_for_a_symbol(setup_mcp, session, tmp_path):
     from repowise.server.mcp_server import get_context
@@ -378,3 +563,136 @@ async def test_get_context_serves_references_for_a_symbol(setup_mcp, session, tm
 
     assert t["references"]["complete"] is True
     assert (_USER, 9, "call") in _sites(t["references"])
+
+
+def _collector(tmp_path):
+    from repowise.server.mcp_server._budget import OmissionCollector
+
+    return OmissionCollector("get_context", store_path=tmp_path / "omissions.db")
+
+
+@pytest.mark.asyncio
+async def test_small_list_is_unchanged_by_the_per_file_cap(session, repo_id, tmp_path):
+    node = await _seed(session, repo_id, tmp_path)
+
+    bare = await reference_edit_set(session, repo_id, tmp_path, node)
+    capped = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
+
+    assert json.dumps(capped) == json.dumps(bare)
+
+
+@pytest.mark.asyncio
+async def test_mock_heavy_python_test_collapses_and_sorts_after_callers(
+    session, repo_id, tmp_path
+):
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("tests/test_catalog.py", _DEF, "imports", {"imported_names_json": '["backend_of"]'})],
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_catalog.py").write_text(
+        "from pkg.catalog import backend_of\n"
+        + "".join(f"mock.patch('pkg.catalog.backend_of', side_effect={i})\n" for i in range(20)),
+        encoding="utf-8",
+    )
+    collector = _collector(tmp_path)
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node, collector)
+
+    test_rows = [s for s in _sites(out) if s[0] == "tests/test_catalog.py"]
+    assert test_rows == [
+        ("tests/test_catalog.py", 1, "import"),
+        ("tests/test_catalog.py", 2, "reference"),
+        ("tests/test_catalog.py", 3, "reference"),
+        ("tests/test_catalog.py", 4, "reference"),
+    ]
+    assert _sites(out)[-len(test_rows) :] == test_rows  # production files first
+    assert (_USER, 9, "call") in _sites(out)
+    assert out["sites_omitted"] == 17
+    assert out["sites_omitted_by_file"] == {"tests/test_catalog.py": 17}
+    assert out["sites_reduced_reason"] == "per_file_reference_cap"
+    assert out["complete"] is False
+    assert any("sites_omitted_by_file" in r for r in out["reasons"])
+    response: dict = {}
+    collector.attach(response)
+    assert response["_meta"]["omitted"]["refs"]
+
+
+@pytest.mark.asyncio
+async def test_mock_heavy_typescript_test_keeps_the_real_caller(session, repo_id, tmp_path):
+    spec = "import { pick } from './a'\n" + "vi.mocked(pick).mockReturnValue(1)\n" * 30
+    node = await _seed_js(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "web/a.ts": "export function pick(x: number): number { return x }\n",
+            "web/a.test.ts": spec,
+            "web/b.ts": "import { pick } from './a'\nexport const run = () => [pick]\n",
+        },
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
+
+    paths = [p for p, _n, _k in _sites(out)]
+    assert paths.index("web/b.ts") < paths.index("web/a.test.ts")
+    assert ("web/b.ts", 2, "reference") in _sites(out)
+    assert paths.count("web/a.test.ts") == 1 + _edit_sites.MAX_REFERENCES_PER_FILE
+    assert out["sites_omitted_by_file"] == {"web/a.test.ts": 30 - _edit_sites.MAX_REFERENCES_PER_FILE}
+    assert out["complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_call_sites_are_never_collapsed(session, repo_id, tmp_path):
+    extra = []
+    for i in range(8):
+        rel = f"svc/user{i}.py"
+        (tmp_path / "svc").mkdir(exist_ok=True)
+        (tmp_path / rel).write_text(
+            "from pkg.catalog import backend_of\n" + "backend_of(1)\n" * 6, encoding="utf-8"
+        )
+        extra.append((rel, _DEF, "imports", {"imported_names_json": '["backend_of"]'}))
+        extra.append(
+            (f"{rel}::run", _SYM, "calls", {"call_lines_json": json.dumps(list(range(2, 8)))})
+        )
+    node = await _seed(session, repo_id, tmp_path, extra=extra)
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
+
+    calls = [s for s in _sites(out) if s[2] == "call" and s[0].startswith("svc/user")]
+    assert len(calls) == 8 * 6
+    assert out["complete"] is True
+    assert "sites_omitted_by_file" not in out
+
+
+@pytest.mark.asyncio
+async def test_get_context_collapses_a_flood_into_recoverable_counts(setup_mcp, session, tmp_path):
+    from repowise.server.mcp_server import get_context
+
+    await _seed(session, setup_mcp, tmp_path)
+    await session.commit()
+    with (tmp_path / _USER).open("a", encoding="utf-8") as fh:
+        fh.write("spies = [\n" + "    backend_of,\n" * 40 + "]\n")
+
+    resp = await get_context([_SYM], include=["references"])
+    refs = resp["targets"][_SYM]["references"]
+
+    assert refs["sites_omitted_by_file"] == {_USER: 40 + 1 - _edit_sites.MAX_REFERENCES_PER_FILE}
+    assert (_USER, 9, "call") in _sites(refs)
+    assert refs["complete"] is False
+    assert resp["_meta"]["omitted"]["refs"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "export const g = choose.bind(null);",
+        "export const f = choose.call;",
+        "module.exports.x = choose.y;",
+    ],
+)
+def test_alias_member_access_on_an_export_line_is_incomplete(line: str) -> None:
+    lines = ['import { pick as choose } from "./d";', line]
+    assert _edit_sites._aliases_leave("u.ts", lines, {"choose"}, {1})

@@ -445,6 +445,21 @@ class PythonPerfDialect(BasePerfDialect):
     # iterates ``items``.
     _ITER_WRAPPERS: frozenset[str] = frozenset({"enumerate", "sorted", "reversed", "list", "set"})
 
+    def defers_body(self, fn: Node) -> bool:
+        """A function containing its own ``yield`` is a generator: calling it
+        runs none of the body, so a read there happens per item, not per call."""
+        if fn.type != "function_definition":
+            return False
+        stack = list(fn.children)
+        while stack:
+            node = stack.pop()
+            if node.type in ("function_definition", "lambda", "class_definition"):
+                continue
+            if node.type == "yield":
+                return True
+            stack.extend(node.children)
+        return False
+
     def loop_iterable_name(self, node: Node) -> str | None:
         if node.type != "for_statement":
             return None

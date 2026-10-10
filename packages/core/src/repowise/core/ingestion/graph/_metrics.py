@@ -131,13 +131,22 @@ class MetricsMixin:
             return sub
 
     def cycle_subgraph(self) -> nx.DiGraph:
-        """Return :meth:`file_subgraph` minus cohesion edges, for cycle detection.
+        """Return :meth:`file_subgraph` minus cohesion, type-only and ``dynamic_uses`` edges,
+        for cycle detection.
 
         A cohesion edge records that two files are one compilation unit — Go
         package siblings, JVM same-package classes, C# partial fragments, a C++
         header/implementation pair — not that one depends on the other. See
         :mod:`repowise.core.ingestion.cohesion`. Left in, they turn every
         cohesive package into a fabricated import cycle.
+
+        A ``dynamic_uses`` edge is a hint match, not a resolved dependency — the
+        .NET extractor among others links every file declaring a type of a given
+        short name, so two unrelated same-named classes in different projects
+        form a false two-file cycle (#2886). Excluded here and in
+        ``refactoring.graph_signals._is_cycle_edge``, which must agree: this
+        method feeds the wiki SCC pages and the repo-overview cycle list, that
+        one feeds ``break_cycle`` plans.
 
         Kept separate from :meth:`file_subgraph` deliberately: PageRank,
         betweenness and the degree kernels must keep seeing cohesion edges,
@@ -150,7 +159,12 @@ class MetricsMixin:
         only ever read. Callers must treat the result as read-only.
         """
         return self._file_edge_view(
-            "_cycle_subgraph_cache", lambda base, u, v, d: is_cohesion_edge(d)
+            "_cycle_subgraph_cache",
+            lambda base, u, v, d: (
+                is_cohesion_edge(d)
+                or d.get("type_only") is True
+                or d.get("edge_type") == "dynamic_uses"
+            ),
         )
 
     def centrality_subgraph(self) -> nx.DiGraph:
