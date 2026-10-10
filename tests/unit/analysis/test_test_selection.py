@@ -17,10 +17,12 @@ from repowise.core.analysis.test_selection import (
     doc_readers,
     format_args,
     is_runnable_test,
+    left_out,
     plan_gap,
     plugin_loader,
     resolve_runner,
     runner_args,
+    runner_notes,
     select_tests,
     with_rewired,
 )
@@ -827,3 +829,38 @@ def test_a_test_named_module_pytest_does_not_collect_is_not_runnable() -> None:
     assert is_runnable_test("src/pkg/tests/test_b.py", roots)
     # With no config the name decides, as it does for pytest.
     assert is_runnable_test("src/pkg/test_paths.py")
+
+
+def test_a_runner_gets_only_its_own_always_run_tests_and_hears_of_the_rest() -> None:
+    config = TestSelectionConfig(
+        always_run=("tests/test_smoke.py", "apps/android/FooTest.kt", "e2e/")
+    )
+    tiers = _tiers(inferred=[_inferred("src/b.py", "tests/test_b.py", "call-graph")])
+    sel = _select(["src/b.py"], tiers, config=config, unplaced_tests=["ui/a.test.ts"])
+    assert runner_args(sel, "pytest") == ["tests/test_b.py", "tests/test_smoke.py", "e2e/"]
+    assert runner_args(sel, "jest") == ["ui/a.test.ts", "e2e/"]
+    assert runner_args(sel, "files") == [
+        "tests/test_b.py",
+        "ui/a.test.ts",
+        "tests/test_smoke.py",
+        "apps/android/FooTest.kt",
+        "e2e/",
+    ]
+    assert left_out(sel, "pytest") == {"files": ["apps/android/FooTest.kt"], "jest": ["ui/a.test.ts"]}
+    assert runner_notes(sel, "pytest") == [
+        "Selected tests for other runners are not in these pytest arguments (1 for files, "
+        "1 for jest; e.g. ui/a.test.ts); run them in a job per runner."
+    ]
+    # Tests the indexer found walking the tree are split the same way.
+    walked = _select(
+        ["src/b.py"], tiers, known_tests=["tests/test_b.py", "app/LintTest.kt"],
+        always_run_tests={"app/LintTest.kt": "it lists and reads files under a source directory"},
+    )
+    assert left_out(walked, "pytest") == {"files": ["app/LintTest.kt"]}
+    assert runner_args(walked, "pytest") == ["tests/test_b.py"]
+    # Case-blind: an upper-case extension is still the runner's own.
+    upper = _select(["src/b.py"], tiers, unplaced_tests=["ui/B.TEST.TS", "tests/TEST_C.PY"])
+    assert runner_args(upper, "jest") == ["ui/B.TEST.TS"]
+    assert runner_args(upper, "pytest") == ["tests/test_b.py", "tests/TEST_C.PY"]
+    assert runner_notes(sel, "files") == []
+    assert runner_notes(_select(["uv.lock"], config=config), "pytest") == []

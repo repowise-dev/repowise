@@ -1059,8 +1059,17 @@ def _node_id(test_id: str, test_file: str) -> str:
     return f"{test_file}::{test_id.split('::', 1)[1]}"
 
 
+# The test files each runner takes; ``files`` takes every one.
+_RUNNER_SUFFIXES = {"pytest": _PYTHON, "go": (".go",), "jest": _JS}
+
+
+def _takes(runner: str, test: str) -> bool:
+    """Whether *test* (a file or node id) is in *runner*'s language; case-blind."""
+    return test.split("::", 1)[0].lower().endswith(_RUNNER_SUFFIXES[runner])
+
+
 def _all_python(files: tuple[str, ...], packages: tuple[str, ...]) -> bool:
-    return bool(files) and all(f.endswith(_PYTHON) for f in files)
+    return bool(files) and all(_takes("pytest", f) for f in files)
 
 
 def _all_go(files: tuple[str, ...], packages: tuple[str, ...]) -> bool:
@@ -1069,7 +1078,7 @@ def _all_go(files: tuple[str, ...], packages: tuple[str, ...]) -> bool:
 
 
 def _all_js(files: tuple[str, ...], packages: tuple[str, ...]) -> bool:
-    return bool(files) and all(f.endswith(_JS) for f in files)
+    return bool(files) and all(_takes("jest", f) for f in files)
 
 
 # ``auto`` picks the first runner every selected test file belongs to.
@@ -1085,7 +1094,7 @@ def resolve_runner(selection: Selection, runner: str) -> str:
 
 
 def _pytest_args(selection: Selection) -> list[str]:
-    return [t for t in selection.tests if t.split("::", 1)[0].endswith(_PYTHON)]
+    return [t for t in selection.tests if _takes("pytest", t)]
 
 
 def _go_args(selection: Selection) -> list[str]:
@@ -1095,7 +1104,7 @@ def _go_args(selection: Selection) -> list[str]:
 
 
 def _jest_args(selection: Selection) -> list[str]:
-    return [f for f in selection.test_files if f.endswith(_JS)]
+    return [f for f in selection.test_files if _takes("jest", f)]
 
 
 def _file_args(selection: Selection) -> list[str]:
@@ -1109,13 +1118,55 @@ def runner_args(selection: Selection, runner: str) -> list[str]:
     """Arguments for *runner* (already resolved); ``[RUN_ALL]`` for a full run.
 
     Each runner gets only the tests it can run, so a job per language can share
-    one selection. ``tests.always_run`` entries are appended as written. jest
-    and vitest get file paths, meant for ``--runTestsByPath``.
+    one selection; :func:`runner_notes` names the rest. ``tests.always_run``
+    entries are appended as written, but one in another runner's language is
+    left to that runner. jest and vitest get file paths, meant for
+    ``--runTestsByPath``.
     """
     if selection.run_all:
         return [RUN_ALL]
     args = _RUNNER_ARGS.get(runner, _file_args)(selection)
-    return list(dict.fromkeys([*args, *selection.always_run]))
+    always = [t for t in selection.always_run if _runs(t, runner)]
+    return list(dict.fromkeys([*args, *always]))
+
+
+def _runs(test: str, runner: str) -> bool:
+    """Whether *runner* can run *test*; a directory or glob it cannot tell is kept."""
+    if runner not in _RUNNER_SUFFIXES or not is_code_file(test.split("::", 1)[0]):
+        return True
+    return _takes(runner, test)
+
+
+def left_out(selection: Selection, runner: str) -> dict[str, list[str]]:
+    """Selected tests *runner*'s arguments leave out, keyed by the runner that takes them.
+
+    A test no named runner takes (Kotlin, Swift) is keyed ``files``. Empty on a
+    full run, where every runner runs everything of its own.
+    """
+    if selection.run_all:
+        return {}
+    out: dict[str, list[str]] = {}
+    for test in dict.fromkeys((*selection.test_files, *selection.always_run)):
+        if not _runs(test, runner):
+            owner = next((r for r in _RUNNER_SUFFIXES if _takes(r, test)), "files")
+            out.setdefault(owner, []).append(test)
+    return out
+
+
+def runner_notes(selection: Selection, runner: str) -> list[str]:
+    """One line naming what :func:`left_out` found, so nothing is dropped silently.
+
+    A pipeline running one runner needs a job per runner for these.
+    """
+    left = left_out(selection, runner)
+    if not left:
+        return []
+    counts = ", ".join(f"{len(tests)} for {owner}" for owner, tests in sorted(left.items()))
+    first = next(iter(left.values()))[0]
+    return [
+        f"Selected tests for other runners are not in these {runner} arguments ({counts}; "
+        f"e.g. {first}); run them in a job per runner."
+    ]
 
 
 def format_args(args: Iterable[str]) -> str:
