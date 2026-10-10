@@ -1,6 +1,5 @@
 import * as React from "react";
 import { PageLede } from "../shared/page-lede";
-import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { Skeleton, SkeletonRegion } from "../ui/skeleton";
 import type { SecurityFinding } from "@repowise-dev/types";
 
@@ -89,11 +88,6 @@ export interface SecurityPostureLabels {
   /** Receives a relative time, e.g. "3 days ago". */
   scanned: (when: string) => string;
   scanTimeUnknown: string;
-  all: string;
-  elsewhere: string;
-  elsewhereHint: string;
-  high: string;
-  highSub: (sourceHigh: number) => string;
 }
 
 const n = (v: number) => v.toLocaleString();
@@ -120,11 +114,6 @@ export const DEFAULT_SECURITY_POSTURE_LABELS: SecurityPostureLabels = {
   },
   scanned: (when) => `Scanned ${when}.`,
   scanTimeUnknown: "Scan time not recorded.",
-  all: "All findings",
-  elsewhere: "Tests and docs",
-  elsewhereHint: "Matches under test, spec, fixture, mock, example or docs paths, and in Markdown files.",
-  high: "High",
-  highSub: (v) => `${n(v)} in shipped source`,
 };
 
 export interface SecurityPostureProps {
@@ -138,7 +127,7 @@ export interface SecurityPostureProps {
 
 /**
  * The security page's lede: the figure to act on (matches in shipped source),
- * the sentence that scopes it, a hairline ribbon, and when the scan ran.
+ * the sentence that scopes it, and when the scan ran.
  * Never coloured: a pattern match is a lead to confirm, not a live path to
  * harm.
  */
@@ -146,28 +135,23 @@ export function SecurityPosture({ findings, scannedAgo, capped = false, labels }
   const l = { ...DEFAULT_SECURITY_POSTURE_LABELS, ...labels };
   const c = React.useMemo(() => countSecurityFindings(findings), [findings]);
 
-  const stats: RibbonStat[] = [
-    { label: l.all, value: `${n(c.total)}${capped ? "+" : ""}` },
-    { label: l.elsewhere, value: n(c.elsewhere), hint: l.elsewhereHint },
-    { label: l.high, value: n(c.high), sub: l.highSub(c.sourceHigh) },
-  ];
-
   return (
-    <div className="space-y-6">
-      <PageLede
-        label={l.figure}
-        labelHint={l.figureHint}
-        value={n(c.source)}
-        unit={l.unit(c.total, capped)}
-        layout="beside"
-      >
-        <p>{l.sentence(c)}</p>
-        <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+    <PageLede
+      label={l.figure}
+      labelHint={l.figureHint}
+      value={n(c.source)}
+      unit={l.unit(c.total, capped)}
+      layout="beside"
+    >
+      {/* One paragraph so the scan line stays under the sentence when the
+          lede flows into columns. */}
+      <p>
+        {l.sentence(c)}
+        <span className="mt-2 block text-xs text-[var(--color-text-tertiary)]">
           {scannedAgo ? l.scanned(scannedAgo) : l.scanTimeUnknown}
-        </p>
-      </PageLede>
-      <StatRibbon stats={stats} />
-    </div>
+        </span>
+      </p>
+    </PageLede>
   );
 }
 
@@ -186,7 +170,6 @@ export function SecurityPostureSkeleton({ label = "Loading security findings" }:
           <Skeleton className="h-3 w-32" />
         </div>
       </div>
-      <Skeleton className="h-[72px] w-full rounded-none" />
       <div className="space-y-3 border-t border-[var(--color-border-default)] pt-6 sm:pt-8">
         <Skeleton className="h-5 w-32" />
         <div className="flex flex-wrap gap-2">

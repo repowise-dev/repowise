@@ -1,5 +1,6 @@
 "use client";
 
+import * as React from "react";
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { Input } from "../ui/input";
@@ -18,6 +19,26 @@ import type { SecurityFinding } from "@repowise-dev/types";
 // local interface had already drifted behind the endpoint, which is how the
 // line number went unrendered.
 export type { SecurityFinding };
+
+// Break only at path separators; `anywhere` is the last resort for a single
+// segment wider than the box.
+function BreakablePath({ path }: { path: string }) {
+  const parts = path.split("/");
+  return (
+    <>
+      {parts.map((part, i) => (
+        <React.Fragment key={i}>
+          {part}
+          {i < parts.length - 1 && (
+            <>
+              /<wbr />
+            </>
+          )}
+        </React.Fragment>
+      ))}
+    </>
+  );
+}
 
 // The scanner's `med` is the shared scale's `medium`. No level maps to
 // critical: a pattern match is a lead to confirm, not a proven path to harm.
@@ -60,10 +81,10 @@ function FindingLocation({ finding }: { finding: SecurityFinding }) {
   if (line == null) {
     return (
       <span
-        className="block min-w-[14rem] break-all font-mono text-xs text-[var(--color-text-primary)]"
+        className="block min-w-[14rem] [overflow-wrap:anywhere] font-mono text-xs text-[var(--color-text-primary)]"
         title={`${finding.file_path}: the flagged code is no longer at the recorded line`}
       >
-        {finding.file_path}
+        <BreakablePath path={finding.file_path} />
         <span className="ml-1.5 not-italic text-2xs text-[var(--color-text-tertiary)]">
           (line moved)
         </span>
@@ -74,14 +95,15 @@ function FindingLocation({ finding }: { finding: SecurityFinding }) {
 
   return (
     <span
-      className="block min-w-[14rem] break-all font-mono text-xs text-[var(--color-text-primary)]"
+      className="block min-w-[14rem] [overflow-wrap:anywhere] font-mono text-xs text-[var(--color-text-primary)]"
       title={
         verified
           ? `${finding.file_path}:${line}`
           : `${finding.file_path}:${line}: could not be confirmed against the current file`
       }
     >
-      {finding.file_path}
+      <BreakablePath path={finding.file_path} />
+      <wbr />
       <span
         className={
           verified ? "text-[var(--color-text-secondary)]" : "text-[var(--color-text-tertiary)]"

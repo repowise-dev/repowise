@@ -103,7 +103,8 @@ describe("SecurityFindingsTable", () => {
   it("wraps the path instead of truncating it", () => {
     render(<SecurityFindingsTable findings={FINDINGS} />);
     const path = screen.getByText("src/app/server.py");
-    expect(path.className).toContain("break-all");
+    expect(path.className).not.toContain("break-all");
+    expect(path.querySelectorAll("wbr").length).toBeGreaterThan(1);
     expect(path.className).not.toContain("truncate");
   });
 

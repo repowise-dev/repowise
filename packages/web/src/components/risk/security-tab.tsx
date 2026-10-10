@@ -99,11 +99,6 @@ export function SecurityTab({ repoId }: { repoId: string }) {
               .join(" "),
       scanned: (when) => t("posture.scanned", { when }),
       scanTimeUnknown: t("posture.scanTimeUnknown"),
-      all: t("allFindings"),
-      elsewhere: t("posture.elsewhere"),
-      elsewhereHint: t("posture.elsewhereHint"),
-      high: t("posture.high"),
-      highSub: (count) => t("posture.highSub", { count }),
     }),
     [t],
   );
