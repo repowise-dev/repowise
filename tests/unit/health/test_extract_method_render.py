@@ -24,7 +24,10 @@ from repowise.core.analysis.health.dataflow import (
 )
 from repowise.core.analysis.health.refactoring import extract_method as em
 from repowise.core.analysis.health.refactoring.extract_method import ExtractMethodDetector
-from repowise.core.analysis.health.refactoring.models import RefactoringContext
+from repowise.core.analysis.health.refactoring.models import (
+    RefactoringContext,
+    RefactoringSuggestion,
+)
 from repowise.core.analysis.health.refactoring.render import (
     PARAM_MODES,
     HelperShape,
@@ -256,3 +259,53 @@ def test_param_modes_match_the_wire_type():
     match = re.search(r"export type ExtractParamMode =(.*?);", src, re.DOTALL)
     assert match
     assert set(re.findall(r'"([a-z_]+)"', match.group(1))) == set(PARAM_MODES)
+
+
+def test_list_rows_leave_the_texts_to_plan_detail():
+    """A list serves every plan, so its rows stay as they were before the
+    texts existed; one plan's detail carries them."""
+    import dataclasses
+    import json
+
+    from repowise.core.analysis.health.refactoring.recommendations import build_recommendations
+
+    plan = _py_plan()
+    suggestion = RefactoringSuggestion(
+        refactoring_type="extract_method",
+        file_path="m.py",
+        target_symbol="run",
+        line_start=3,
+        line_end=30,
+        plan=plan,
+        evidence={"slice_nloc": 9, "ccn_removed": 3},
+        impact_delta=1.0,
+        effort_bucket="S",
+        blast_radius={"scope": "local"},
+        confidence="high",
+    )
+    before = dict(plan)
+    before.pop("call_site")
+    before["new_symbol"] = {
+        k: v
+        for k, v in plan["new_symbol"].items()
+        if k not in ("params", "returns", "signature_text")
+    }
+    (with_texts,) = build_recommendations([suggestion])
+    (without,) = build_recommendations([dataclasses.replace(suggestion, plan=before)])
+    assert json.dumps(with_texts.as_dict()) == json.dumps(without.as_dict())
+    detail = with_texts.detail_dict()["plan"]
+    assert detail["call_site"] == plan["call_site"]
+    assert detail["new_symbol"]["signature_text"] == plan["new_symbol"]["signature_text"]
+    # The stored plan itself is untouched by the list projection.
+    assert "call_site" in suggestion.plan
+
+
+def test_cli_json_plan_rows_leave_the_texts_out():
+    from repowise.cli.commands.health_cmd.refactoring_targets import _list_row
+
+    plan = _py_plan()
+    row = _list_row({"id": "p", "plan": plan})
+    assert "call_site" not in row["plan"]
+    assert "signature_text" not in row["plan"]["new_symbol"]
+    assert row["plan"]["new_symbol"]["kind"] == plan["new_symbol"]["kind"]
+    assert _list_row({"id": "q", "plan": None}) == {"id": "q", "plan": None}

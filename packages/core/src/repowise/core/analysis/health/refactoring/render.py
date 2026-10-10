@@ -293,6 +293,25 @@ _RENDERERS = {
 }
 
 
+#: What the renderer adds to a stored plan, served on plan detail only.
+_DETAIL_SYMBOL_KEYS = ("params", "returns", "signature_text")
+
+
+def list_plan(plan: dict) -> dict:
+    """*plan* without the rendered texts and typed slots, for a list row: a
+    list serves every plan, and an agent reads the texts on one plan's
+    detail."""
+    symbol = plan.get("new_symbol")
+    if "call_site" not in plan and not (
+        isinstance(symbol, dict) and any(k in symbol for k in _DETAIL_SYMBOL_KEYS)
+    ):
+        return plan
+    out = {k: v for k, v in plan.items() if k != "call_site"}
+    if isinstance(symbol, dict):
+        out["new_symbol"] = {k: v for k, v in symbol.items() if k not in _DETAIL_SYMBOL_KEYS}
+    return out
+
+
 def brief(name: str | None, params: list[str], returns: list[str], *, is_async: bool) -> str:
     """The helper in one language-neutral phrase for a step sentence:
     ``async _load(path) -> config, awaited at the call site``. A long
@@ -312,6 +331,7 @@ __all__ = [
     "Slot",
     "brief",
     "helper_name",
+    "list_plan",
     "render",
     "symbol_params",
 ]

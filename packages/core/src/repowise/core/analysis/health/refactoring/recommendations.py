@@ -42,6 +42,7 @@ from repowise.core.test_paths import is_test_support_path, names_test_for, paire
 
 from .annotations import PlanAnnotations, partner_rows
 from .models import RefactoringSuggestion
+from .render import list_plan
 
 RecommendationView = Literal["canonical", "file_spread"]
 ValidationBasis = Literal["measured", "inferred", "mixed", "unknown"]
@@ -1034,7 +1035,8 @@ class Recommendation:
             "target_symbol": suggestion.target_symbol,
             "line_start": suggestion.line_start,
             "line_end": suggestion.line_end,
-            "plan": suggestion.plan or {},
+            # Rendered texts stay on detail (:meth:`detail_dict`).
+            "plan": list_plan(suggestion.plan or {}),
             "evidence": suggestion.evidence or {},
             "impact_delta": round(float(suggestion.impact_delta or 0.0), 3),
             "effort_bucket": suggestion.effort_bucket,
@@ -1053,10 +1055,12 @@ class Recommendation:
         }
 
     def detail_dict(self) -> dict[str, Any]:
-        """:meth:`as_dict` for one plan read alone: a step whose checks differ
-        from the plan's carries its ``verify``, and the plan carries its
-        ``governed_by``, ``risks`` and co-change partners."""
+        """:meth:`as_dict` for one plan read alone: the whole stored plan,
+        rendered texts included, a step whose checks differ from the plan's
+        carrying its ``verify``, and the plan's ``governed_by``, ``risks`` and
+        co-change partners."""
         payload = self.as_dict()
+        payload["plan"] = self.suggestion.plan or {}
         steps = payload["plan"].get("steps")
         if isinstance(steps, list) and self.validation.step_verify:
             payload["plan"] = {

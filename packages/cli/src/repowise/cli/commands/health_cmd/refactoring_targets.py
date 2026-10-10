@@ -66,7 +66,7 @@ def _render_refactoring_targets(
 
         ranked_plans = serialize_recommendations(build_recommendations(suggestions))[:limit]
     else:
-        ranked_plans = [_suggestion_to_dict(s) for s in suggestions][:limit]
+        ranked_plans = [_list_row(_suggestion_to_dict(s)) for s in suggestions][:limit]
 
     # The composed unit. One opportunity per file, ranked, with its plans as
     # ordered steps - the same vocabulary the board, the drawer and the agent
@@ -196,10 +196,19 @@ def _render_stored_refactoring_targets(
             "opportunities_hidden": stored["hidden"],
             "targets": targets,
             "refactoring_opportunities": rows,
-            "refactoring_plans": plans,
+            "refactoring_plans": [_list_row(plan) for plan in plans],
         },
     )
     return True
+
+
+def _list_row(plan: dict) -> dict:
+    """A plan as a list row: the rendered Extract Method texts stay on plan
+    detail, as on every other list."""
+    from repowise.core.analysis.health.refactoring.render import list_plan
+
+    body = plan.get("plan")
+    return {**plan, "plan": list_plan(body)} if isinstance(body, dict) else plan
 
 
 def _rankable(findings: list, metrics: list) -> list:
