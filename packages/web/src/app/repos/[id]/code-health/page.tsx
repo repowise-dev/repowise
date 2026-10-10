@@ -497,7 +497,7 @@ export default function CodeHealthPage() {
   return (
     <PageShell
       title={t("title")}
-      icon={<HeartPulse className="h-5 w-5 text-[var(--color-success)]" />}
+      icon={<HeartPulse />}
       // No description: the lede below opens with what the score is built from,
       // and a header that says it first only says it twice.
       //

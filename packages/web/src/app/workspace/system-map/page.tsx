@@ -194,7 +194,7 @@ export default function SystemMapPage() {
   return (
     <PageShell
       title={t("title")}
-      icon={<Waypoints className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
+      icon={<Waypoints />}
       description={t("description")}
       maxWidth="wide"
     >

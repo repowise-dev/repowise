@@ -29,7 +29,7 @@ export default async function StatsPage({ params }: Props) {
   return (
     <PageShell
       title={t("title")}
-      icon={<BarChart3 className="h-5 w-5" />}
+      icon={<BarChart3 />}
       description={t("description")}
       maxWidth="wide"
     >

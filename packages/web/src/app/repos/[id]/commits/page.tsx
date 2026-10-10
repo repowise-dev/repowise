@@ -73,7 +73,7 @@ export default async function CommitsPage({
   if (!firstPage || total === 0) {
     return (
       <PageShell
-        icon={<GitCommitHorizontal className="h-5 w-5 text-[var(--color-accent-primary)]" />}
+        icon={<GitCommitHorizontal />}
         title={t("title")}
         description={t("emptyDescription")}
       >
@@ -86,7 +86,7 @@ export default async function CommitsPage({
 
   return (
     <PageShell
-      icon={<GitCommitHorizontal className="h-5 w-5 text-[var(--color-accent-primary)]" />}
+      icon={<GitCommitHorizontal />}
       title={t("title")}
       description={t("description")}
     >

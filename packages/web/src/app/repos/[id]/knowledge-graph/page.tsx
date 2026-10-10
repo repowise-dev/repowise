@@ -95,7 +95,7 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
   return (
     <PageShell
       title={t("title")}
-      icon={<ScanSearch className="h-5 w-5 text-[var(--color-accent-primary)]" />}
+      icon={<ScanSearch />}
       description={t("description")}
       // The export has its own endpoint and does not need the zoom map, but a
       // map that failed to load is the cheapest signal that this repo has

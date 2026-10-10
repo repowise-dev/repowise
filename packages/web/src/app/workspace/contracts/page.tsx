@@ -157,7 +157,7 @@ export default async function ContractsPage({ searchParams }: Props) {
   return (
     <PageShell
       title={t("title")}
-      icon={<Link2 className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
+      icon={<Link2 />}
       description={t("description")}
     >
       <PageLede

@@ -1,30 +1,22 @@
 import Link from "next/link";
-import { Home, ChevronLeft } from "lucide-react";
+import { ChevronLeft, Home } from "lucide-react";
 import { getTranslations } from "next-intl/server";
+import { RouteNotFound } from "@repowise-dev/ui/shared/route-states";
 
 export default async function RepoNotFound() {
   const t = await getTranslations("errors");
 
   return (
-    <div className="flex min-h-[60vh] flex-col items-center justify-center gap-4 px-6 text-center">
-      <div className="rounded-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] p-4">
-        <Home className="h-8 w-8 text-[var(--color-text-tertiary)]" />
-      </div>
-      <div className="space-y-1">
-        <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
-          {t("repoNotFoundTitle")}
-        </h1>
-        <p className="max-w-md text-sm text-[var(--color-text-secondary)]">
-          {t("repoNotFoundBody")}
-        </p>
-      </div>
-      <Link
-        href="/"
-        className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] transition-colors"
-      >
-        <ChevronLeft className="h-4 w-4" />
-        {t("backToDashboard")}
-      </Link>
-    </div>
+    <RouteNotFound
+      title={t("repoNotFoundTitle")}
+      description={t("repoNotFoundBody")}
+      icon={<Home />}
+      back={
+        <Link href="/">
+          <ChevronLeft className="h-4 w-4" aria-hidden />
+          {t("backToDashboard")}
+        </Link>
+      }
+    />
   );
 }

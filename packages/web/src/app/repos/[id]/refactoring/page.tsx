@@ -263,7 +263,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   return (
     <PageShell
       title={t("title")}
-      icon={<Wrench className="h-5 w-5 text-[var(--color-accent-primary)]" />}
+      icon={<Wrench />}
       description={t("description")}
       actions={
         <button

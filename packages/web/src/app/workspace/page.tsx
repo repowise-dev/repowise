@@ -80,7 +80,7 @@ export default async function WorkspaceDashboardPage() {
     return (
       <PageShell
         title={workspace?.workspace_name ?? "Workspace"}
-        icon={<Layers className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
+        icon={<Layers />}
         description={t("description")}
       >
         <EmptyState
@@ -147,7 +147,7 @@ export default async function WorkspaceDashboardPage() {
   return (
     <PageShell
       title={workspace?.workspace_name ?? "Workspace"}
-      icon={<Layers className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
+      icon={<Layers />}
       description={t("description")}
       actions={<SyncButton variant="primary" label={t("syncWorkspace")} />}
     >

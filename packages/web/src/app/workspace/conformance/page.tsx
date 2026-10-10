@@ -103,7 +103,7 @@ export default async function ConformancePage() {
   return (
     <PageShell
       title={t("title")}
-      icon={<ShieldCheck className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
+      icon={<ShieldCheck />}
       description={t("description")}
     >
       <PageLede

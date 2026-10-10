@@ -20,7 +20,7 @@ export default async function FilesIndexPage({
   return (
     <PageShell
       maxWidth="wide"
-      icon={<Files className="h-5 w-5 text-[var(--color-accent-primary)]" />}
+      icon={<Files />}
       title={t("title")}
       description={t("description")}
     >

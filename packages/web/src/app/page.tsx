@@ -72,7 +72,7 @@ export default async function DashboardPage() {
     return (
       <PageShell
         title={t("title")}
-        icon={<LayoutGrid className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
+        icon={<LayoutGrid />}
         description={t("description")}
       >
         <EmptyReposState />
@@ -132,7 +132,7 @@ export default async function DashboardPage() {
   return (
     <PageShell
       title={t("title")}
-      icon={<LayoutGrid className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
+      icon={<LayoutGrid />}
       description={t("description")}
     >
       <PageLede

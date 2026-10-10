@@ -56,7 +56,7 @@ export default async function CoChangesPage({ searchParams }: Props) {
     for (const r of ws.value.repos) if (r.repo_id) repoIds[r.alias] = r.repo_id;
   }
 
-  const icon = <GitMerge className="h-5 w-5 text-[var(--color-text-tertiary)]" />;
+  const icon = <GitMerge />;
   const description = t("description");
 
   if (coChanges.length === 0) {

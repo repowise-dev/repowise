@@ -26,6 +26,13 @@ export { Toaster, toast, type ToasterProps } from "./toast";
 export * from "./breadcrumb";
 export * from "./empty-state";
 export { Callout, type CalloutProps, type CalloutTone } from "./callout";
+export {
+  RouteError,
+  RouteNotFound,
+  type RouteErrorProps,
+  type RouteNotFoundProps,
+  type RouteLinkElement,
+} from "./route-states";
 export * from "./ci-hint";
 export {
   DismissibleNotice,
@@ -56,7 +63,13 @@ export {
   type StatGridSkeletonProps,
   type ChartSkeletonProps,
 } from "./loading-skeletons";
-export { PageShell, type PageShellProps } from "./page-shell";
+export {
+  PageShell,
+  PageFrame,
+  type PageShellProps,
+  type PageFrameProps,
+  type PageMaxWidth,
+} from "./page-shell";
 export { ReleaseNotice, type ReleaseNoticeProps } from "./release-notice";
 export { ViewTabs, type ViewTab, type ViewTabsProps } from "./view-tabs";
 export { MetricCard, type MetricCardProps } from "./metric-card";

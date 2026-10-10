@@ -76,7 +76,7 @@ export default function OwnersDirectoryPage() {
 
   return (
     <PageShell
-      icon={<Users className="h-5 w-5 text-[var(--color-accent-primary)]" />}
+      icon={<Users />}
       title={t("title")}
       description={t("description")}
     >
