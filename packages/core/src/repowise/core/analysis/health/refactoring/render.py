@@ -473,8 +473,9 @@ def render_context(
 
 #: What the renderer adds to a stored plan, served on plan detail only.
 _DETAIL_SYMBOL_KEYS = ("params", "returns", "signature_text", "return_text", "notes")
-#: A staged plan's stages, parameter object and residual sit on detail too.
-_DETAIL_PLAN_KEYS = ("call_site", "stages", "parameter_object", "orchestrator")
+#: Plan keys on detail only: Extract Method's call and staged plan (stages,
+#: parameter object, residual), Extract Helper's calls to an existing function.
+_DETAIL_PLAN_KEYS = ("call_site", "stages", "parameter_object", "orchestrator", "reuse")
 
 
 def list_plan(plan: dict) -> dict:

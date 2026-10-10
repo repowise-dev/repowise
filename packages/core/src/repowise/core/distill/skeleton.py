@@ -42,6 +42,7 @@ __all__ = [
     "DEFAULT_TOKEN_BUDGET",
     "SkeletonResult",
     "SkeletonSymbol",
+    "body_span",
     "build_skeleton",
 ]
 
@@ -325,10 +326,18 @@ def _elide_callable_bodies(
         if sym.kind not in _CALLABLE_KINDS or start <= covered_until:
             continue
         covered_until = end
-        body_start = _signature_end(lines, start, end) + 1
-        body_end = end - 1 if end >= body_start and _CLOSER_RE.fullmatch(lines[end]) else end
+        body_start, body_end = body_span(lines, start, end)
         for i in range(body_start, body_end + 1):
             keep[i] = False
+
+
+def body_span(lines: list[str], start: int, end: int) -> tuple[int, int]:
+    """First and last 0-indexed line of the body of the callable on lines
+    *start*..*end*: below its signature, above a closing-brace line. Empty
+    (first > last) for a one-line callable."""
+    body_start = _signature_end(lines, start, end) + 1
+    body_end = end - 1 if end >= body_start and _CLOSER_RE.fullmatch(lines[end]) else end
+    return body_start, body_end
 
 
 def _docstring_lines(lines: list[str], start: int, end: int) -> list[int]:

@@ -171,7 +171,8 @@ export type RecipeAction =
   | "cut_import"
   | "keep"
   | "reexport"
-  | "edit";
+  | "edit"
+  | "delete";
 
 /** What must hold before the edit: tests that pass, a characterization test to
  *  add, a plan risk, risks never checked (`unchecked`), or a plan type not yet
@@ -211,6 +212,9 @@ export interface RecipeStep {
   to_file?: string | null;
   /** Extract Helper: the directory the shared helper belongs in. */
   directory?: string | null;
+  /** Extract Helper: the existing function this step calls (or whose copy it
+   *  deletes) instead of a new helper. */
+  reuse?: { existing_symbol: string; file: string; reason: string };
   applicability?: "mechanical" | "judgment";
   /** This step's own checks, where they differ from the plan's. */
   verify?: { commands: string[]; tests: string[]; coverage: string };
