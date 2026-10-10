@@ -7,6 +7,7 @@ Class LCOM4 self-check, and the config gate.
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 
 from repowise.core.analysis.health.refactoring.llm import (
@@ -171,6 +172,32 @@ def test_user_prompt_carries_plan_and_source(tmp_path: Path) -> None:
     assert "Move methods `get` and fields `x` out of `GodClass`" in prompt
     assert "## Hard constraints" in prompt
     assert "class GodClass" in prompt
+    # The reach a class split must keep working, and no instruction to run tests.
+    assert "## Blast radius" in prompt and "dependents count: 0" in prompt
+    assert "Run these" not in prompt
+
+
+def test_user_prompt_reads_the_stored_detail_when_given(tmp_path: Path) -> None:
+    sug = _extract_class_suggestion()
+    detail = {
+        **asdict(sug),
+        "id": "refac4_x",
+        "governed_by": [],
+        "risks": [{"kind": "public_api", "text": "2 files depend on this file.", "ref": None}],
+    }
+    prompt = _build_user_prompt(sug, [], detail)
+    assert "2 files depend on this file." in prompt
+    assert "were not checked" not in prompt
+    assert "were not checked" in _build_user_prompt(sug, [])
+
+
+def test_the_cache_key_carries_the_prompt_version(monkeypatch) -> None:
+    from repowise.core.analysis.health.refactoring.llm import enrich
+
+    sug = _extract_class_suggestion()
+    before = enrich._cache_key(sug, [], "m")
+    monkeypatch.setattr(enrich, "_PROMPT_VERSION", enrich._PROMPT_VERSION + 1)
+    assert enrich._cache_key(sug, [], "m") != before
 
 
 # ---------------------------------------------------------------------------

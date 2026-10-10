@@ -32,8 +32,15 @@ RecipeAction = Literal[
     "edit",
 ]
 RECIPE_ACTIONS: tuple[str, ...] = get_args(RecipeAction)
-#: What a precondition is: a test run or a test to add first, else a plan risk.
-PRECONDITION_KINDS: tuple[str, ...] = ("tests", "characterization", *get_args(RiskKind))
+#: What a precondition is: a test run or a test to add first, a plan risk, a plan
+#: whose risks were never checked, or a plan type whose output is not yet audited.
+PRECONDITION_KINDS: tuple[str, ...] = (
+    "tests",
+    "characterization",
+    *get_args(RiskKind),
+    "unchecked",
+    "kind_unaudited",
+)
 
 #: The heading each plan type's prompt carries.
 TYPE_LABEL: dict[str, str] = {
@@ -46,7 +53,14 @@ TYPE_LABEL: dict[str, str] = {
     "split_file": "Split File",
 }
 
-_KEEP_BEHAVIOUR = "change behaviour: what the code returns, raises or writes stays the same"
+_KEEP_BEHAVIOUR = {
+    "constraint": "change behaviour",
+    "reason": "what the code returns, raises or writes stays the same",
+}
+#: Types whose steps are one way to do it, not the edit to make.
+_ADVISORY = frozenset({"break_cycle"})
+#: Types whose plans have not been through an accuracy audit yet.
+_UNAUDITED = frozenset({"move_method", "extract_class"})
 
 _STRATEGY_SUMMARY: dict[str, str] = {
     "batch_or_prefetch_io": "Batch the repeated per-item calls",
@@ -93,6 +107,10 @@ def _step(
     action: RecipeAction, file: str | None, span: dict[str, int] | None, text: str, **extra: Any
 ) -> Step:
     return {"action": action, "file": file, "span": span, "text": text, **extra}
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _short(symbol: str | None) -> str:
@@ -216,7 +234,8 @@ def _extract_class(d: Mapping[str, Any], plan: Mapping[str, Any]) -> list[Step]:
             "edit",
             d.get("file_path"),
             span,
-            f"Keep `{host}` as a thin facade that delegates, or update its callers.",
+            f"Keep `{host}` as a thin facade that delegates to the new classes, so callers "
+            "outside it keep working.",
         )
     )
     return steps
@@ -291,30 +310,40 @@ def _split_file(d: Mapping[str, Any], plan: Mapping[str, Any]) -> list[Step]:
     return steps
 
 
+def _merged_verify(kept: Mapping[str, Any] | None, more: Mapping[str, Any] | None) -> Any:
+    """Two checks for one edit as one: the union of their commands and tests."""
+    if not kept or not more:
+        return kept or more
+    out = dict(kept)
+    for key in ("commands", "tests"):
+        out[key] = list(dict.fromkeys([*_strs(kept.get(key)), *_strs(more.get(key))]))
+    return out
+
+
 def _performance_fix(d: Mapping[str, Any], plan: Mapping[str, Any]) -> list[Step]:
-    out: list[Step] = []
-    seen: set[tuple[Any, ...]] = set()
+    out: dict[tuple[Any, ...], Step] = {}
     for raw in _list(plan.get("steps")):
         step = _dict(raw)
         symbol = _short(step.get("symbol"))
         text = str(step.get("action") or "Apply the fix")
-        where = f" in `{symbol}`" if symbol and symbol not in text else ""
+        verify = step["verify"] if isinstance(step.get("verify"), dict) else None
         key = (text, symbol, step.get("file_path"), step.get("line"))
-        # A site the evidence lists twice is still one edit.
-        if key in seen:
+        # A site the evidence lists twice is still one edit, checked by both checks.
+        if key in out:
+            merged = _merged_verify(out[key].get("verify"), verify)
+            if merged:
+                out[key]["verify"] = merged
             continue
-        seen.add(key)
-        out.append(
-            _step(
-                "edit",
-                step.get("file_path"),
-                _span(step.get("line")),
-                f"{text}{where}.",
-                applicability=step.get("applicability"),
-                **({"verify": step["verify"]} if isinstance(step.get("verify"), dict) else {}),
-            )
+        where = f" in `{symbol}`" if symbol and symbol not in text else ""
+        out[key] = _step(
+            "edit",
+            step.get("file_path"),
+            _span(step.get("line")),
+            f"{text}{where}.",
+            applicability=step.get("applicability"),
+            **({"verify": verify} if verify else {}),
         )
-    return out
+    return list(out.values())
 
 
 _STEPS: dict[str, Callable[[Mapping[str, Any], Mapping[str, Any]], list[Step]]] = {
@@ -367,10 +396,17 @@ def _summary(d: Mapping[str, Any], steps: list[Step]) -> str:
 def _preconditions(d: Mapping[str, Any]) -> list[dict[str, Any]]:
     validation = _dict(d.get("validation"))
     out: list[dict[str, Any]] = []
-    if _strs(validation.get("tests")):
+    if _strs(validation.get("tests")) or _count(validation.get("total")):
         out.append({"kind": "tests", "text": "The guarding tests pass before the edit."})
     if validation.get("prerequisite"):
         out.append({"kind": "characterization", "text": str(validation["prerequisite"])})
+    if d.get("refactoring_type") in _UNAUDITED:
+        text = "This plan type is not yet audited for accuracy; confirm it fits before applying."
+        out.append({"kind": "kind_unaudited", "text": text})
+    if "risks" not in d and "governed_by" not in d:
+        # Absent is "never checked" (an older row), not "nothing found".
+        text = "Risks and governing decisions were not checked for this plan."
+        out.append({"kind": "unchecked", "text": text})
     risks = [_dict(r) for r in _list(d.get("risks"))]
     out.extend(
         {"kind": r["kind"], "text": r["text"], **({"ref": r["ref"]} if r.get("ref") else {})}
@@ -442,37 +478,51 @@ def _postconditions(d: Mapping[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-_DOES_NOT: dict[str, str] = {
-    "extract_helper": "merge sites that differ; a difference between them becomes a parameter",
-    "extract_class": "rename or remove anything callers outside the class use",
-    "move_method": "leave a call site pointing at the old class",
-    "break_cycle": "merge the files in the cycle",
-    "split_file": "put one symbol in two files",
-    "performance_fix": "change the results or errors the batched or reordered calls produce",
+#: Per type, what the edit must not do and, when it is not obvious, why.
+_DOES_NOT: dict[str, tuple[str, str | None]] = {
+    "extract_helper": ("merge sites that differ", "a difference between them becomes a parameter"),
+    "extract_class": ("rename or remove anything callers outside the class use", None),
+    "move_method": ("leave a call site pointing at the old class", None),
+    "break_cycle": ("merge the files in the cycle", None),
+    "split_file": ("put one symbol in two files", None),
+    "performance_fix": (
+        "change the results or errors the batched or reordered calls produce",
+        None,
+    ),
 }
 
 
-def _does_not(d: Mapping[str, Any], steps: list[Step]) -> list[str]:
-    out = [_KEEP_BEHAVIOUR]
+def _does_not(d: Mapping[str, Any], steps: list[Step]) -> list[dict[str, str | None]]:
+    """What the edit must not do, each a phrase read after "Do not", with its reason."""
+    out: list[dict[str, str | None]] = [dict(_KEEP_BEHAVIOUR)]
     kind = str(d.get("refactoring_type") or "")
     span = steps[0].get("span")
     if kind == "extract_method" and span:
         lines = f"{span['start']}-{span['end']}"
-        out.append(f"touch anything outside lines {lines} and the call that replaces them")
+        out.append(
+            {"constraint": f"touch anything outside lines {lines} and the call that replaces them",
+             "reason": None}
+        )
     elif kind in _DOES_NOT:
-        out.append(_DOES_NOT[kind])
+        constraint, reason = _DOES_NOT[kind]
+        out.append({"constraint": constraint, "reason": reason})
     if any(s.get("applicability") == "judgment" for s in steps):
-        out.append("apply a judgment step without reading the code it names first")
+        out.append(
+            {"constraint": "apply a judgment step without reading the code it names first",
+             "reason": None}
+        )
     return out
 
 
 def build_recipe(detail: Mapping[str, Any]) -> dict[str, Any]:
-    """*detail* as ``{id, kind, summary, target, preconditions, steps,
+    """*detail* as ``{id, kind, advisory, summary, target, preconditions, steps,
     postconditions, does_not}``. Pure: reads only the dict it is given."""
     steps = recipe_steps(detail)
     return {
         "id": detail.get("id"),
         "kind": detail.get("refactoring_type"),
+        # The steps are one way to do it, for a person to judge, not an edit to apply.
+        "advisory": detail.get("refactoring_type") in _ADVISORY,
         "summary": _summary(detail, steps),
         "target": {
             "file": detail.get("file_path"),

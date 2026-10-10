@@ -29,12 +29,14 @@ import hashlib
 import json
 import re
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from repowise.core.agent_prompts.refactoring import render_plan_spec
 from repowise.core.providers.llm.base import BaseProvider, CacheHint
 
 log = structlog.get_logger(__name__)
@@ -240,6 +242,10 @@ def _gather_spans(suggestion: Any, repo_path: Path) -> list[SourceSpan]:
 # Prompt assembly
 # ---------------------------------------------------------------------------
 
+#: Bumped when the prompt's wording changes, so a draft cached under the old
+#: wording is not served for the new one.
+_PROMPT_VERSION = 2
+
 _SYSTEM_PROMPT = """\
 You are a senior software engineer performing a single, well-scoped refactoring.
 
@@ -264,11 +270,15 @@ language.
 """
 
 
-def _build_user_prompt(suggestion: Any, spans: list[SourceSpan]) -> str:
-    """The plan as every surface words it (its recipe), then the source it names."""
-    from repowise.core.agent_prompts.refactoring import render_plan_spec
+def _build_user_prompt(
+    suggestion: Any, spans: list[SourceSpan], detail: Mapping[str, Any] | None = None
+) -> str:
+    """The plan as every surface words it (its recipe), then the source it names.
 
-    parts = [render_plan_spec(asdict(suggestion)), "\n## Source spans\n"]
+    *detail* is the stored plan detail (risks, decisions, per-step checks) when
+    the caller has it; a live suggestion stands in for it otherwise.
+    """
+    parts = [render_plan_spec(detail or asdict(suggestion)), "\n## Source spans\n"]
     if not spans:
         parts.append("_(no source spans were resolvable from the working tree)_")
     for span in spans:
@@ -329,6 +339,7 @@ def _language_for(file_path: str) -> str | None:
 def _cache_key(suggestion: Any, spans: list[SourceSpan], model: str) -> str:
     payload = json.dumps(
         {
+            "prompt_version": _PROMPT_VERSION,
             "type": suggestion.refactoring_type,
             "target": suggestion.target_symbol,
             "file": suggestion.file_path,
@@ -589,6 +600,7 @@ async def enrich_suggestion(
     provider: BaseProvider,
     repo_path: Path,
     cache_dir: Path | None = None,
+    detail: Mapping[str, Any] | None = None,
     use_cache: bool = True,
     validate: bool = True,
     max_tokens: int = 8000,
@@ -598,6 +610,7 @@ async def enrich_suggestion(
     On-demand only. Gathers the plan's source spans off *repo_path*, prompts
     *provider*, parses the diff, runs the Extract Class self-check, and caches
     the result by a content hash so an unchanged plan never regenerates.
+    *detail* is the stored plan detail, when the caller read one.
     """
     spans = _gather_spans(suggestion, repo_path)
     model = getattr(provider, "model_name", "") or ""
@@ -612,7 +625,7 @@ async def enrich_suggestion(
             return cached
 
     system = _SYSTEM_PROMPT
-    user = _build_user_prompt(suggestion, spans)
+    user = _build_user_prompt(suggestion, spans, detail)
     response = await provider.generate(
         system,
         user,

@@ -11,9 +11,17 @@
         "line_start": 40,
         "line_end": 120,
         "plan": {
-          "span": {"start": 61, "end": 78},
-          "params": ["path", "strict"],
-          "returns": ["config"],
+          "span": {
+            "start": 61,
+            "end": 78
+          },
+          "params": [
+            "path",
+            "strict"
+          ],
+          "returns": [
+            "config"
+          ],
           "suggested_name": "_read_config",
           "needs_async": true,
           "async_host": true,
@@ -22,36 +30,87 @@
             "async": true,
             "receiver": "self",
             "uses_receiver": true,
-            "params": [{"name": "path", "type": "Path", "mode": "in"}, {"name": "strict", "type": null, "mode": "in"}],
-            "returns": [{"name": "config", "type": "<type>"}],
+            "params": [
+              {
+                "name": "path",
+                "type": "Path",
+                "mode": "in"
+              },
+              {
+                "name": "strict",
+                "type": null,
+                "mode": "in"
+              }
+            ],
+            "returns": [
+              {
+                "name": "config",
+                "type": "<type>"
+              }
+            ],
             "signature_text": "async def _read_config(self, path: Path, strict) -> <type>:",
-            "notes": ["The return type is not named in the code."]
+            "notes": [
+              "The return type is not named in the code."
+            ]
           },
-          "call_site": {"replace_span": {"start": 61, "end": 78}, "new_text": "config = await self._read_config(path, strict)"}
+          "call_site": {
+            "replace_span": {
+              "start": 61,
+              "end": 78
+            },
+            "new_text": "config = await self._read_config(path, strict)"
+          }
         },
-        "evidence": {"slice_nloc": 18, "ccn_removed": 6},
+        "evidence": {
+          "slice_nloc": 18,
+          "ccn_removed": 6
+        },
         "impact_delta": 1.25,
         "effort_bucket": "S",
-        "blast_radius": {"scope": "local"},
+        "blast_radius": {
+          "scope": "local"
+        },
         "confidence": "high",
         "source_biomarker": "complex_method",
         "validation": {
           "basis": "measured",
           "via": "coverage",
           "total": 3,
-          "tests": ["tests/test_loader.py", "tests/test_cli.py"],
+          "tests": [
+            "tests/test_loader.py",
+            "tests/test_cli.py"
+          ],
           "truncated": true,
-          "affected_files": ["src/loader.py"],
-          "affected_symbols": ["Loader.load"],
-          "commands": ["pytest tests/test_cli.py tests/test_loader.py"],
+          "affected_files": [
+            "src/loader.py"
+          ],
+          "affected_symbols": [
+            "Loader.load"
+          ],
+          "commands": [
+            "pytest tests/test_cli.py tests/test_loader.py"
+          ],
           "targets": [],
-          "reasons": {"tests/test_loader.py": "covers lines 61-78"},
+          "reasons": {
+            "tests/test_loader.py": "covers lines 61-78"
+          },
           "prerequisite": null
         },
-        "governed_by": ["dec_1", "dec_2"],
+        "governed_by": [
+          "dec_1",
+          "dec_2"
+        ],
         "risks": [
-          {"kind": "decision", "text": "Decision \"Loaders stay sync-free\" governs this file; check it allows this change first.", "ref": "dec_1"},
-          {"kind": "active_edit", "text": "Changed in 3 commits by ana in the 14 days before the last index; check nobody is mid-change.", "ref": "abc1234"}
+          {
+            "kind": "decision",
+            "text": "Decision \"Loaders stay sync-free\" governs this file; check it allows this change first.",
+            "ref": "dec_1"
+          },
+          {
+            "kind": "active_edit",
+            "text": "Changed in 3 commits by ana in the 14 days before the last index; check nobody is mid-change.",
+            "ref": "abc1234"
+          }
         ]
       }
     },
@@ -69,15 +128,53 @@
           "strategy": "batch_or_prefetch_io",
           "safety": "advisory",
           "steps": [
-            {"order": 1, "action": "Add a form of fetch_row that takes every key at once", "symbol": "src/db.py::fetch_row", "file_path": "src/db.py", "line": null, "applicability": "judgment"},
-            {"order": 2, "action": "Collect the keys before the loop and replace the per-key fetch_row call with one batched call", "symbol": "load_rows", "file_path": "src/rows.py", "line": 12, "applicability": "judgment", "verify": {"commands": ["pytest tests/test_rows.py"], "tests": ["tests/test_rows.py"], "coverage": "inferred"}},
-            {"order": 3, "action": "Collect the keys before the loop and replace the per-key fetch_row call with one batched call", "symbol": "load_rows", "file_path": "src/rows.py", "line": 12, "applicability": "judgment"}
+            {
+              "order": 1,
+              "action": "Add a form of fetch_row that takes every key at once",
+              "symbol": "src/db.py::fetch_row",
+              "file_path": "src/db.py",
+              "line": null,
+              "applicability": "judgment"
+            },
+            {
+              "order": 2,
+              "action": "Collect the keys before the loop and replace the per-key fetch_row call with one batched call",
+              "symbol": "load_rows",
+              "file_path": "src/rows.py",
+              "line": 12,
+              "applicability": "judgment",
+              "verify": {
+                "commands": [
+                  "pytest tests/test_rows.py"
+                ],
+                "tests": [
+                  "tests/test_rows.py"
+                ],
+                "coverage": "inferred"
+              }
+            },
+            {
+              "order": 3,
+              "action": "Collect the keys before the loop and replace the per-key fetch_row call with one batched call",
+              "symbol": "load_rows",
+              "file_path": "src/rows.py",
+              "line": 12,
+              "applicability": "judgment"
+            }
           ]
         },
-        "evidence": {"boundary_kind": "db"},
+        "evidence": {
+          "boundary_kind": "db"
+        },
         "impact_delta": 0.0,
         "effort_bucket": "M",
-        "blast_radius": {"files": ["src/rows.py"], "file_count": 1, "call_sites": 2},
+        "blast_radius": {
+          "files": [
+            "src/rows.py"
+          ],
+          "file_count": 1,
+          "call_sites": 2
+        },
         "confidence": "medium",
         "source_biomarker": "io_in_loop",
         "validation": {
@@ -86,13 +183,17 @@
           "total": 0,
           "tests": [],
           "truncated": false,
-          "affected_files": ["src/rows.py"],
+          "affected_files": [
+            "src/rows.py"
+          ],
           "affected_symbols": [],
           "commands": [],
           "targets": [],
           "reasons": {},
           "prerequisite": "No test reaches this; add a characterization test for `load_rows` before the edit."
-        }
+        },
+        "governed_by": [],
+        "risks": []
       }
     },
     {
@@ -107,18 +208,142 @@
         "line_end": null,
         "plan": {
           "groups": [
-            {"name": "parsing", "symbols": ["parse_a", "parse_b"], "suggested_file": "pkg/parsing.py"},
-            {"name": null, "symbols": ["render"], "suggested_file": null}
+            {
+              "name": "parsing",
+              "symbols": [
+                "parse_a",
+                "parse_b"
+              ],
+              "suggested_file": "pkg/parsing.py"
+            },
+            {
+              "name": null,
+              "symbols": [
+                "render"
+              ],
+              "suggested_file": null
+            }
           ],
-          "residual": {"symbols": ["Config"]},
+          "residual": {
+            "symbols": [
+              "Config"
+            ]
+          },
           "shim_required": true
         },
-        "evidence": {"file_nloc": 900, "group_count": 2},
+        "evidence": {
+          "file_nloc": 900,
+          "group_count": 2
+        },
         "impact_delta": 0.0,
         "effort_bucket": "L",
-        "blast_radius": {"dependent_count": 4},
+        "blast_radius": {
+          "dependent_count": 4
+        },
         "confidence": "medium",
         "source_biomarker": ""
+      }
+    },
+    {
+      "name": "break_cycle_advisory",
+      "repo_name": null,
+      "detail": {
+        "id": "refac4_gggggggggggggggggggg",
+        "refactoring_type": "break_cycle",
+        "file_path": "pkg/a.py",
+        "target_symbol": "cycle[2]: a.py->b.py",
+        "line_start": null,
+        "line_end": null,
+        "plan": {
+          "cycle": [
+            "pkg/a.py",
+            "pkg/b.py"
+          ],
+          "cut_edges": [
+            {
+              "from": "pkg/a.py",
+              "to": "pkg/b.py"
+            }
+          ]
+        },
+        "evidence": {
+          "cycle_size": 2,
+          "edge_count": 2,
+          "cut_count": 1
+        },
+        "impact_delta": 0.0,
+        "effort_bucket": "M",
+        "blast_radius": {
+          "files": [
+            "pkg/a.py",
+            "pkg/b.py"
+          ],
+          "file_count": 2
+        },
+        "confidence": "high",
+        "source_biomarker": "",
+        "governed_by": [],
+        "risks": []
+      }
+    },
+    {
+      "name": "move_method_unaudited",
+      "repo_name": null,
+      "detail": {
+        "id": "refac4_hhhhhhhhhhhhhhhhhhhh",
+        "refactoring_type": "move_method",
+        "file_path": "src/order.py",
+        "target_symbol": "Order.total_tax",
+        "line_start": 20,
+        "line_end": 34,
+        "plan": {
+          "method": "total_tax",
+          "from_class": "Order",
+          "to_class": "TaxTable",
+          "to_file": "src/tax.py"
+        },
+        "evidence": {
+          "foreign_calls": 4,
+          "own_calls": 0
+        },
+        "impact_delta": 0.4,
+        "effort_bucket": "S",
+        "blast_radius": {
+          "callers": 3,
+          "files": [
+            "src/order.py",
+            "src/tax.py"
+          ],
+          "co_change_partners": [
+            {
+              "file_path": "src/tax.py",
+              "commits": 5
+            }
+          ]
+        },
+        "confidence": "high",
+        "source_biomarker": "feature_envy",
+        "validation": {
+          "basis": "inferred",
+          "via": "call-graph",
+          "total": 4,
+          "tests": [],
+          "truncated": true,
+          "affected_files": [],
+          "affected_symbols": [],
+          "commands": [],
+          "targets": [],
+          "reasons": {},
+          "prerequisite": null
+        },
+        "governed_by": [],
+        "risks": [
+          {
+            "kind": "public_api",
+            "text": "`Order.total_tax` has 3 callers; each has to reach it through `TaxTable` after the move.",
+            "ref": null
+          }
+        ]
       }
     }
   ],
@@ -141,8 +366,40 @@
         "recoverable_health": 2.5,
         "ordering_note": "A step carrying `relocated_by` names a symbol an earlier step moves.",
         "steps": [
-          {"plan_id": "refac4_aaaaaaaaaaaaaaaaaaaa", "refactoring_type": "extract_method", "target_symbol": "Loader.load", "file_path": "src/loader.py", "line_start": 40, "line_end": 120, "relocated_by": null, "applicability": {"classification": "mechanical", "reasons": ["dataflow_proved_local_extraction"], "unknowns": []}, "validation_profile_id": "vp1"},
-          {"plan_id": "refac4_eeeeeeeeeeeeeeeeeeee", "refactoring_type": "move_method", "target_symbol": "Loader.parse", "file_path": "src/loader.py", "line_start": 130, "line_end": null, "relocated_by": "refac4_aaaaaaaaaaaaaaaaaaaa", "applicability": {"classification": "judgment", "reasons": [], "unknowns": ["call_sites_resolved"]}, "validation_profile_id": "vp2"}
+          {
+            "plan_id": "refac4_aaaaaaaaaaaaaaaaaaaa",
+            "refactoring_type": "extract_method",
+            "target_symbol": "Loader.load",
+            "file_path": "src/loader.py",
+            "line_start": 40,
+            "line_end": 120,
+            "relocated_by": null,
+            "applicability": {
+              "classification": "mechanical",
+              "reasons": [
+                "dataflow_proved_local_extraction"
+              ],
+              "unknowns": []
+            },
+            "validation_profile_id": "vp1"
+          },
+          {
+            "plan_id": "refac4_eeeeeeeeeeeeeeeeeeee",
+            "refactoring_type": "move_method",
+            "target_symbol": "Loader.parse",
+            "file_path": "src/loader.py",
+            "line_start": 130,
+            "line_end": null,
+            "relocated_by": "refac4_aaaaaaaaaaaaaaaaaaaa",
+            "applicability": {
+              "classification": "judgment",
+              "reasons": [],
+              "unknowns": [
+                "call_sites_resolved"
+              ]
+            },
+            "validation_profile_id": "vp2"
+          }
         ],
         "plans": [
           {
@@ -152,9 +409,23 @@
             "target_symbol": "Loader.load",
             "line_start": 40,
             "line_end": 120,
-            "plan": {"span": {"start": 61, "end": 78}, "params": ["path"], "returns": [], "suggested_name": null},
-            "evidence": {"ccn_removed": 6},
-            "blast_radius": {"scope": "local"},
+            "plan": {
+              "span": {
+                "start": 61,
+                "end": 78
+              },
+              "params": [
+                "path"
+              ],
+              "returns": [],
+              "suggested_name": null
+            },
+            "evidence": {
+              "ccn_removed": 6
+            },
+            "blast_radius": {
+              "scope": "local"
+            },
             "impact_delta": 1.25,
             "effort_bucket": "S",
             "confidence": "high",
@@ -163,14 +434,52 @@
           }
         ],
         "evidence": [
-          {"plan_id": "refac4_ffffffffffffffffffff", "refactoring_type": "extract_helper", "target_symbol": "loader.py:10-20", "source_biomarker": "clone", "summary": {"duplicated_lines": 11, "occurrence_count": 2, "token_count": null}}
+          {
+            "plan_id": "refac4_ffffffffffffffffffff",
+            "refactoring_type": "extract_helper",
+            "target_symbol": "loader.py:10-20",
+            "source_biomarker": "clone",
+            "summary": {
+              "duplicated_lines": 11,
+              "occurrence_count": 2,
+              "token_count": null
+            }
+          }
         ],
         "evidence_emitted": 1,
         "evidence_total": 3,
         "evidence_truncated": true,
         "validation_profiles": [
-          {"id": "vp1", "basis": "measured", "via": "coverage", "total": 1, "tests": ["tests/test_loader.py"], "truncated": false, "affected_files": [], "affected_symbols": [], "commands": ["pytest tests/test_loader.py"], "targets": [], "reasons": {}},
-          {"id": "vp2", "basis": "unknown", "via": null, "total": 0, "tests": [], "truncated": false, "affected_files": [], "affected_symbols": [], "commands": [], "targets": [], "reasons": {}}
+          {
+            "id": "vp1",
+            "basis": "measured",
+            "via": "coverage",
+            "total": 1,
+            "tests": [
+              "tests/test_loader.py"
+            ],
+            "truncated": false,
+            "affected_files": [],
+            "affected_symbols": [],
+            "commands": [
+              "pytest tests/test_loader.py"
+            ],
+            "targets": [],
+            "reasons": {}
+          },
+          {
+            "id": "vp2",
+            "basis": "unknown",
+            "via": null,
+            "total": 0,
+            "tests": [],
+            "truncated": false,
+            "affected_files": [],
+            "affected_symbols": [],
+            "commands": [],
+            "targets": [],
+            "reasons": {}
+          }
         ]
       }
     }

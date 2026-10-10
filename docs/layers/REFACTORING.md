@@ -72,7 +72,9 @@ pass, a characterization test to add, a decision to read), the edits in order,
 the checks and expected improvement after, and what the edit must not do. The
 dashboard's copy-prompt, `repowise health --plan`, plan detail with
 `include=recipe` and code generation all read that same recipe, so an agent sees
-one set of steps wherever it starts.
+one set of steps wherever it starts. The recipe and the prompt name the plan by
+the public id `get_health(plan_id=...)` takes; REST plan detail's own `id` field
+stays the storage id it has always served.
 
 ## Reading the results
 

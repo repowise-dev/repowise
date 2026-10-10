@@ -9,12 +9,6 @@
 // `?` mirrors the schema's `required` list, which states what a request may
 // omit. A response field with a server-side default is still always sent.
 
-/**
- * A way to see more: the MCP call an agent makes, the CLI line a person runs.
- *
- * ``tool`` and ``arguments`` are the structured call; ``mcp`` is that call
- * rendered by :func:`render_call`. Build one with :meth:`call`.
- */
 export interface ActionCommand {
   purpose: string;
   mcp?: string | null;
@@ -2692,7 +2686,6 @@ export interface PublishResponse {
   repo?: string | null;
 }
 
-/** One unit's counts at the five levels, and the reasons for what is out. */
 export interface QueueCounts {
   inventory?: number;
   in_scope?: number;

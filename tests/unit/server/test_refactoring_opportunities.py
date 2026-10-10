@@ -1394,3 +1394,19 @@ async def test_the_plan_and_opportunity_prompts_are_rendered_by_the_server(clien
 
     missing = await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/refop_nope/prompt")
     assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_the_opportunity_prompt_route_is_not_read_as_a_plan_id(client, app):
+    """``/refactoring/{suggestion_id}/prompt`` must not swallow the opportunity
+    prompt path, nor ``opportunities/{id}`` the plan prompt."""
+    repo_id = await _seed(client, app, files=1)
+    body = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    owner = body["items"][0]["opportunity_id"]
+
+    resp = await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/{owner}/prompt")
+    assert resp.status_code == 200
+    assert "composed the ordered refactoring steps" in resp.json()["text"]
+    # "opportunities" alone is the opportunity detail route, never a plan id.
+    shadow = await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/prompt")
+    assert shadow.json().get("detail") == "Unknown opportunity id"

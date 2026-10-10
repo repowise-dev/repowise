@@ -23,6 +23,10 @@ _CASES = json.loads(
 _PLANS = {case["name"]: case["detail"] for case in _CASES["plans"]}
 
 
+def _kinds(recipe: dict) -> list[str]:
+    return [p["kind"] for p in recipe["preconditions"]]
+
+
 def test_extract_method_carries_the_texts_to_copy() -> None:
     recipe = build_recipe(_PLANS["extract_method_typed"])
     (step,) = recipe["steps"]
@@ -32,7 +36,11 @@ def test_extract_method_carries_the_texts_to_copy() -> None:
     assert step["call_site"]["new_text"] == "config = await self._read_config(path, strict)"
     # A placeholder in the texts is named, so the agent fills it.
     assert any("<type>" in note for note in step["new_symbol"]["notes"])
-    assert recipe["does_not"][1].startswith("touch anything outside lines 61-78")
+    assert recipe["does_not"][1]["constraint"].startswith("touch anything outside lines 61-78")
+    assert recipe["does_not"][0] == {
+        "constraint": "change behaviour",
+        "reason": "what the code returns, raises or writes stays the same",
+    }
 
 
 def test_preconditions_list_tests_risks_and_each_governing_decision_once() -> None:
@@ -56,12 +64,43 @@ def test_a_site_listed_twice_is_one_step_and_keeps_its_own_verify() -> None:
     assert all(s["applicability"] == "judgment" for s in steps)
 
 
+def test_a_site_listed_twice_with_differing_checks_keeps_both_checks() -> None:
+    site = {"order": 1, "action": "Batch it", "symbol": "f", "file_path": "a.py", "line": 3}
+    check = {"commands": ["pytest t1.py"], "tests": ["t1.py"], "coverage": "inferred"}
+    other = {"commands": ["pytest t2.py"], "tests": ["t2.py"], "coverage": "inferred"}
+    plan = {"steps": [{**site, "verify": check}, {**site, "verify": other}]}
+    (step,) = build_recipe({"refactoring_type": "performance_fix", "plan": plan})["steps"]
+    assert step["verify"]["commands"] == ["pytest t1.py", "pytest t2.py"]
+    assert step["verify"]["tests"] == ["t1.py", "t2.py"]
+
+
 def test_a_label_target_is_not_reported_as_a_symbol() -> None:
     recipe = build_recipe(_PLANS["split_file_older_row"])
     assert recipe["target"] == {"file": "pkg/big.py", "symbol": None, "span": None}
     assert [s["action"] for s in recipe["steps"]] == ["move", "move", "keep", "reexport"]
     # An older row with no validation still ends on a check.
     assert recipe["postconditions"][0]["kind"] == "verify"
+
+
+def test_break_cycle_is_advisory_and_unaudited_types_say_so() -> None:
+    cycle = build_recipe(_PLANS["break_cycle_advisory"])
+    assert cycle["advisory"] is True
+    assert build_recipe(_PLANS["extract_method_typed"])["advisory"] is False
+    move = build_recipe(_PLANS["move_method_unaudited"])
+    assert "kind_unaudited" in _kinds(move)
+    assert "kind_unaudited" not in _kinds(cycle)
+
+
+def test_never_checked_annotations_say_so_and_checked_empty_does_not() -> None:
+    assert "unchecked" in _kinds(build_recipe(_PLANS["split_file_older_row"]))
+    # Checked, nothing found: both keys present and empty.
+    assert "unchecked" not in _kinds(build_recipe(_PLANS["performance_fix_steps"]))
+
+
+def test_tests_counted_but_not_listed_still_run_before_the_edit() -> None:
+    recipe = build_recipe(_PLANS["move_method_unaudited"])
+    assert _kinds(recipe)[0] == "tests"
+    assert recipe["postconditions"][0]["text"].startswith("The 4 guarding tests")
 
 
 def test_every_plan_type_yields_steps_in_the_shared_vocabulary() -> None:

@@ -146,14 +146,17 @@ export type RecipeAction =
   | "edit";
 
 /** What must hold before the edit: tests that pass, a characterization test to
- *  add, or a plan risk. Mirrors ``refactoring.recipe.PRECONDITION_KINDS``. */
+ *  add, a plan risk, risks never checked (`unchecked`), or a plan type not yet
+ *  audited (`kind_unaudited`). Mirrors ``refactoring.recipe.PRECONDITION_KINDS``. */
 export type RecipePreconditionKind =
   | "tests"
   | "characterization"
   | "decision"
   | "public_api"
   | "active_edit"
-  | "dead_code";
+  | "dead_code"
+  | "unchecked"
+  | "kind_unaudited";
 
 export interface RecipeStep {
   n: number;
@@ -190,6 +193,8 @@ export interface RecipeStep {
 export interface RefactoringRecipe {
   id: string | null;
   kind: RefactoringType | string;
+  /** The steps are one way to do it, for a person to judge (Break Cycle). */
+  advisory: boolean;
   summary: string;
   target: { file: string; symbol: string | null; span: { start: number; end: number } | null };
   preconditions: Array<{ kind: RecipePreconditionKind; text: string; ref?: string }>;
@@ -206,8 +211,8 @@ export interface RefactoringRecipe {
       }
     | { kind: "metric"; text: string }
   >;
-  /** Phrases that read after "Do not". */
-  does_not: string[];
+  /** `constraint` reads after "Do not"; `reason` says why, when it is not obvious. */
+  does_not: Array<{ constraint: string; reason: string | null }>;
 }
 
 export interface RefactoringTypeCount {

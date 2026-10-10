@@ -70,7 +70,9 @@ def _step_entry(step: Mapping[str, Any], marker: str, pad: str) -> str:
     return "\n".join([head, *(f"{pad}   - {line}" for line in _step_lines(step))])
 
 
-def _verify_lines(check: Mapping[str, Any]) -> list[str]:
+def _verify_lines(check: Mapping[str, Any], *, runnable: bool = True) -> list[str]:
+    """The guarding tests, most direct first; with *runnable*, an instruction to
+    run them and the command (a reader that cannot run anything gets neither)."""
     tests = check.get("tests") or []
     if not tests:
         return [check["text"]]
@@ -78,18 +80,17 @@ def _verify_lines(check: Mapping[str, Any]) -> list[str]:
     rows = [f"- `{t}`" + (f" ({reasons[t]})" if reasons.get(t) else "") for t in tests]
     total = check.get("tests_total") or len(tests)
     shown = [f"{len(tests)} of {total} guarding tests shown."] if total > len(tests) else []
-    commands = check.get("commands") or []
+    commands = (check.get("commands") or []) if runnable else []
     run = ["", "Run:", "", "```", *commands, "```"] if commands else []
-    return [
-        "Run these before and after the change, the most direct first:",
-        "",
-        *rows,
-        *shown,
-        *run,
-    ]
+    lead = (
+        "Run these before and after the change, the most direct first:"
+        if runnable
+        else "The tests that guard this change, the most direct first:"
+    )
+    return [lead, "", *rows, *shown, *run]
 
 
-def _verify_section(recipe: Mapping[str, Any]) -> str:
+def _verify_section(recipe: Mapping[str, Any], *, runnable: bool = True) -> str:
     post = recipe["postconditions"]
     check = next(p for p in post if p["kind"] == "verify")
     expect = [p["text"] for p in post if p["kind"] == "metric"]
@@ -97,7 +98,7 @@ def _verify_section(recipe: Mapping[str, Any]) -> str:
         [
             "## Verify",
             "",
-            "\n".join(_verify_lines(check)),
+            "\n".join(_verify_lines(check, runnable=runnable)),
             "\n" + bullet_list(f"Expect: {text}" for text in expect) if expect else "",
             "",
         ]
@@ -112,12 +113,61 @@ def _before_section(recipe: Mapping[str, Any]) -> str:
 
 
 def _does_not(recipe: Mapping[str, Any]) -> list[str]:
-    return [f"**Do not {item.split(':')[0]}.**{_tail(item)}" for item in recipe["does_not"]]
+    out = []
+    for item in recipe["does_not"]:
+        reason = item.get("reason")
+        tail = f" {reason[0].upper()}{reason[1:]}." if reason else ""
+        out.append(f"**Do not {item['constraint']}.**{tail}")
+    return out
 
 
-def _tail(item: str) -> str:
-    _, sep, rest = item.partition(": ")
-    return f" {rest[0].upper()}{rest[1:]}." if sep else ""
+#: The heading an advisory plan's steps sit under, unnumbered.
+_ADVISORY_HEADING = {"break_cycle": "Advisory: one way to cut the cycle"}
+
+
+def _advisory_heading(recipe: Mapping[str, Any]) -> str:
+    return _ADVISORY_HEADING.get(recipe["kind"] or "", "Advisory: one way to do it")
+
+
+def _steps_section(recipe: Mapping[str, Any]) -> list[str]:
+    if recipe["advisory"]:
+        body = "\n".join(_step_entry(s, "-", "") for s in recipe["steps"])
+        return [f"## {_advisory_heading(recipe)}", "", body, ""]
+    body = "\n".join(_step_entry(s, f"{s['n']}.", "") for s in recipe["steps"])
+    return ["## Steps, in order", "", body, ""]
+
+
+#: Blast-radius values a code-generation prompt carries: the reach a move or a
+#: class split has to keep working. Lists are cut, so one plan cannot flood it.
+_BLAST_LIST_CAP = 8
+
+
+def _blast_value(value: Any) -> str | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float, str)):
+        return str(value)
+    if isinstance(value, list) and value:
+        items = [
+            f"{v['file_path']} ({v.get('commits')})" if isinstance(v, dict) and "file_path" in v
+            else str(v)
+            for v in value[:_BLAST_LIST_CAP]
+        ]
+        more = len(value) - len(items)
+        return ", ".join(items) + (f", +{more} more" if more > 0 else "")
+    return None
+
+
+def _blast_section(detail: Mapping[str, Any]) -> str:
+    blast = detail.get("blast_radius") or {}
+    rows = [
+        f"{key.replace('_', ' ')}: {text}"
+        for key, value in sorted(blast.items())
+        if (text := _blast_value(value)) is not None
+    ]
+    if not rows:
+        return ""
+    return join_sections(["## Blast radius", "", bullet_list(rows), ""])
 
 
 def _look_closer(flavor: str, call: str) -> str:
@@ -126,7 +176,9 @@ def _look_closer(flavor: str, call: str) -> str:
     return join_sections(["## Look closer (Repowise MCP)", "", f"`{call}`", ""])
 
 
-def _plan_sections(recipe: Mapping[str, Any], repo_name: str | None) -> list[str]:
+def _plan_sections(
+    recipe: Mapping[str, Any], repo_name: str | None, *, runnable: bool = True
+) -> list[str]:
     """The plan itself, from its heading to Verify: what every reader of it gets."""
     target = recipe["target"]
     symbol = f" (`{target['symbol'].rsplit('::', 1)[-1]}`)" if target["symbol"] else ""
@@ -141,11 +193,8 @@ def _plan_sections(recipe: Mapping[str, Any], repo_name: str | None) -> list[str
         bullet_list(facts),
         "",
         _before_section(recipe),
-        "## Steps, in order",
-        "",
-        "\n".join(_step_entry(s, f"{s['n']}.", "") for s in recipe["steps"]),
-        "",
-        _verify_section(recipe),
+        *_steps_section(recipe),
+        _verify_section(recipe, runnable=runnable),
     ]
 
 
@@ -166,11 +215,18 @@ def render_plan(
 
 
 def render_plan_spec(detail: Mapping[str, Any]) -> str:
-    """The plan with no harness wording: its steps, checks and what it must
-    not do, for a caller that frames the request itself (code generation)."""
+    """The plan with no harness wording: its steps, checks, reach and what it
+    must not do, for a caller that frames the request itself (code generation,
+    which cannot run the tests, so they are listed, not prescribed)."""
     recipe = build_recipe(detail)
     return join_sections(
-        [*_plan_sections(recipe, None), "## Hard constraints", "", bullet_list(_does_not(recipe))]
+        [
+            *_plan_sections(recipe, None, runnable=False),
+            _blast_section(detail),
+            "## Hard constraints",
+            "",
+            bullet_list(_does_not(recipe)),
+        ]
     )
 
 
@@ -242,7 +298,10 @@ def _opportunity_step(step: Mapping[str, Any], n: int, plan: Mapping[str, Any] |
             f"   - This step's plan was not in this payload; ask for it by id: `{step['plan_id']}`."
         )
     else:
-        lines.extend(_step_entry(s, "-", "   ") for s in build_recipe(plan)["steps"])
+        recipe = build_recipe(plan)
+        if recipe["advisory"]:
+            lines.append(f"   - {_advisory_heading(recipe)}:")
+        lines.extend(_step_entry(s, "-", "   ") for s in recipe["steps"])
     return "\n".join(lines)
 
 

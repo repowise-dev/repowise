@@ -42,9 +42,10 @@ from repowise.server.services.refactoring_health import PlanListQuery, Refactori
 
 _STEPS_PER_ROW = 3
 """Steps carried on a queue row; the detail call pages the rest."""
-# What an opportunity prompt inlines: the pages the web drawer reads.
+
 _PROMPT_STEPS = 50
 _PROMPT_EVIDENCE = 20
+"""What an opportunity prompt inlines: the pages the web drawer reads."""
 
 router = APIRouter(
     prefix="/api/repos",
@@ -436,12 +437,13 @@ async def get_refactoring_opportunity_prompt(
     session: AsyncSession = Depends(get_db_session),
 ) -> AgentPromptResponse:
     """One opportunity, its ordered steps and their plans, as an agent prompt."""
+    repo = await _repository(session, repo_id)
     detail = await _service(session, repo_id).detail(
         opportunity_id, step_limit=_PROMPT_STEPS, evidence_limit=_PROMPT_EVIDENCE
     )
     if not detail.get("found"):
         raise HTTPException(status_code=404, detail="Unknown opportunity id")
-    text = render_opportunity(detail, flavor, await _repo_name(session, repo_id))
+    text = render_opportunity(detail, flavor, repo.name)
     return AgentPromptResponse(flavor=flavor, text=text)
 
 
@@ -569,9 +571,12 @@ async def _plan_detail(
     return recommendation.detail_dict(), row.public_id or row.id
 
 
-async def _repo_name(session: AsyncSession, repo_id: str) -> str | None:
+async def _repository(session: AsyncSession, repo_id: str) -> Any:
+    """The repository a prompt route names in its heading; 404 when unknown."""
     repo = await crud.get_repository(session, repo_id)
-    return repo.name if repo is not None else None
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    return repo
 
 
 @router.get(
@@ -585,8 +590,9 @@ async def get_refactoring_plan_prompt(
     session: AsyncSession = Depends(get_db_session),
 ) -> AgentPromptResponse:
     """One plan as the prompt an agent starts from, worded for its harness."""
+    repo = await _repository(session, repo_id)
     detail, public_id = await _plan_detail(session, repo_id, suggestion_id)
-    text = render_plan({**detail, "id": public_id}, flavor, await _repo_name(session, repo_id))
+    text = render_plan({**detail, "id": public_id}, flavor, repo.name)
     return AgentPromptResponse(flavor=flavor, text=text)
 
 
@@ -704,6 +710,7 @@ async def generate_refactoring_code(
         raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
     recommendation = await _service(session, repo_id).plan_recommendation(row)
     sug = recommendation.suggestion
+    detail = {**recommendation.detail_dict(), "id": row.public_id or row.id}
 
     body = body or GenerateCodeRequest()
     try:
@@ -716,5 +723,5 @@ async def generate_refactoring_code(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    result = await enrich_suggestion(sug, provider=provider, repo_path=repo_path)
+    result = await enrich_suggestion(sug, provider=provider, repo_path=repo_path, detail=detail)
     return GenerateCodeResponse(**result.to_dict())
