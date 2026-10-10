@@ -22,7 +22,10 @@ import { AlertTriangle, Info } from "lucide-react";
 import type { HealthCounts, HealthTrendResponse } from "@repowise-dev/types/health";
 import { formatScore } from "@repowise-dev/types/health";
 
-import { Skeleton } from "../ui/skeleton";
+import { Skeleton, SkeletonRegion } from "../ui/skeleton";
+import { ApiError } from "../shared/api-error";
+import { EmptyState } from "../shared/empty-state";
+import { toFriendlyMessage } from "../lib/errors";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 
 import { TrendChart } from "./trend-chart";
@@ -66,20 +69,41 @@ export function TrendView({
   data,
   isLoading,
   error,
+  onRetry,
   counts,
 }: {
   data: HealthTrendResponse | undefined;
   isLoading: boolean;
   error: unknown;
+  onRetry?: (() => void) | undefined;
   /** What the page's figures count, so this section cannot claim the other reading. */
   counts?: HealthCounts;
 }) {
-  if (isLoading) return <Skeleton className="h-64 w-full rounded-lg" />;
-  if (error || !data) {
+  if (isLoading) {
     return (
-      <p className="text-sm text-[var(--color-text-secondary)]">
-        Couldn&apos;t load trend data. Try refreshing.
-      </p>
+      <SkeletonRegion className="flex flex-col gap-6" label="Loading trend">
+        <Skeleton className="h-[72px] w-full" />
+        <Skeleton className="h-[220px] w-full" />
+      </SkeletonRegion>
+    );
+  }
+  if (error) {
+    return (
+      <ApiError
+        size="compact"
+        title="Couldn't load trend data"
+        message={toFriendlyMessage(error)}
+        {...(onRetry ? { onRetry } : {})}
+      />
+    );
+  }
+  if (!data) {
+    return (
+      <EmptyState
+        size="compact"
+        title="No trend recorded yet"
+        description="Each index update records a snapshot, and the trend appears from the second one."
+      />
     );
   }
 
@@ -168,8 +192,8 @@ export function TrendView({
 
       {singleSnapshot ? (
         <p className="max-w-[62ch] text-sm text-[var(--color-text-secondary)]">
-          One snapshot so far. The trend lines appear once a second one lands. Sync the
-          repo, or wait for the next automatic index, and this fills in.
+          One snapshot so far. The trend lines appear once a second one lands, after the next
+          index update.
         </p>
       ) : (
         <TrendChart history={[...data.history].reverse()} />

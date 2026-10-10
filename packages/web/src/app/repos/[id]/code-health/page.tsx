@@ -319,6 +319,7 @@ export default function CodeHealthPage() {
     data: trend,
     isLoading: trendLoading,
     error: trendError,
+    mutate: mutateTrend,
   } = useSWR<HealthTrendResponse>(
     `code-health-trend:${repoId}${scopeKey}`,
     () => getHealthTrend(repoId, 20, scope),
@@ -601,6 +602,7 @@ export default function CodeHealthPage() {
                   data={trend}
                   isLoading={trendLoading}
                   error={trendError}
+                  onRetry={() => void mutateTrend()}
                   counts={counts}
                 />
               </OverviewSection>

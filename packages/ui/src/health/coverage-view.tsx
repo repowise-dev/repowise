@@ -32,6 +32,8 @@ import type {
 
 import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
+import { ApiError } from "../shared/api-error";
+import { toFriendlyMessage } from "../lib/errors";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { ResultsFooter } from "../shared/results-footer";
 import { OverviewSection } from "../overview/section";
@@ -67,7 +69,7 @@ import type { CodeHealthAdapter } from "./code-health-adapter";
 export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
   const [promptRow, setPromptRow] = useState<CoverageFilePromptInput | null>(null);
 
-  const { data, isLoading, error } = useSWR<HealthCoverageResponse>(
+  const { data, isLoading, error, mutate } = useSWR<HealthCoverageResponse>(
     `code-health-coverage:${adapter.cacheKey}`,
     () => adapter.getCoverage({ limit: 5000 }),
     { revalidateOnFocus: false },
@@ -92,9 +94,10 @@ export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
       {isLoading ? (
         <CoverageSkeleton />
       ) : error ? (
-        <EmptyState
+        <ApiError
           title="Couldn't load coverage data"
-          description="The coverage endpoint returned an error. Try refreshing, or re-run the health pass."
+          message={toFriendlyMessage(error)}
+          onRetry={() => void mutate()}
         />
       ) : data?.basis === "inferred" && data.inferred ? (
         // No report was ever ingested, and the graph can answer anyway. This
@@ -453,8 +456,16 @@ function CoverageBody({
             bare
             empty={
               <EmptyState
+                tone="filtered"
                 title="No files match"
                 description="Adjust the path filter to see coverage rows."
+                action={{
+                  label: "Clear filters",
+                  onClick: () => {
+                    setSearch("");
+                    setVisible(PAGE);
+                  },
+                }}
               />
             }
           />
@@ -553,6 +564,7 @@ function CoverageGap({
           bare
           empty={
             <EmptyState
+              tone="positive"
               title="Every file is reached"
               description="The graph found a test that reaches every file the coverage report didn't name."
             />

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { EmptyState } from "../shared/empty-state";
 import { InfoTip } from "../shared/info-tip";
 import {
   biomarkerLabel,
@@ -96,9 +97,10 @@ export function BiomarkerList({
 
   if (filtered.length === 0) {
     return (
-      <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-6 text-sm text-[var(--color-text-secondary)]">
-        No marker findings match the current filters.
-      </div>
+      <EmptyState
+        {...(findings.length > 0 ? { tone: "filtered" as const } : {})}
+        title={findings.length > 0 ? "No marker findings match these filters" : "No marker findings"}
+      />
     );
   }
 

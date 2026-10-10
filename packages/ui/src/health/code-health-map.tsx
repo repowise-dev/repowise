@@ -20,6 +20,7 @@ import type {
   MouseEvent as ReactMouseEvent,
 } from "react";
 
+import { EmptyState } from "../shared/empty-state";
 import { useCommunityFamilies } from "../shared/use-theme-tokens";
 import { HEALTH_UNSUPPORTED_NOTICE, OVERLAY_ORDER, OVERLAY_SPECS, noFileScored } from "./map/lens";
 import { packGalaxies, rand } from "./map/layout";
@@ -338,10 +339,14 @@ export function CodeHealthMap({
     return (
       <div
         ref={containerRef}
-        className="flex w-full items-center justify-center rounded-xl border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-root)] text-sm text-[var(--color-text-tertiary)]"
+        className="flex w-full items-center justify-center"
         style={{ minHeight }}
       >
-        No files to map yet. Index this repo to populate health.
+        <EmptyState
+          size="compact"
+          title="No files to map yet"
+          description="Index this repo to populate health."
+        />
       </div>
     );
   }

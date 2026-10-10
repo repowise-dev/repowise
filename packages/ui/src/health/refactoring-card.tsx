@@ -388,7 +388,7 @@ function StatusButton({
       onClick={onClick}
       className={`text-[10px] rounded px-1.5 py-0.5 border transition-colors ${
         isActive
-          ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)] border-[var(--color-accent-primary)]/50"
+          ? "bg-[var(--color-bg-selected)] text-[var(--color-text-primary)] border-[var(--color-border-hover)]"
           : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-hover)]"
       }`}
     >

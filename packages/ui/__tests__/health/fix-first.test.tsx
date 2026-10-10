@@ -172,26 +172,27 @@ describe("Fix first items", () => {
     expect(screen.getAllByRole("button", { name: "Acknowledged" }).length).toBe(1);
   });
 
-  it("says why nothing is listed when the queue is empty", () => {
-    renderList({
-      queue: { ...FIX_FIRST_QUEUE, items: [], lead: null, totals: { ...FIX_FIRST_QUEUE.totals, shown: 0 } },
+  it("separates excluded-by-rule, no analysis and all clear when the queue is empty", () => {
+    const empty = { ...FIX_FIRST_QUEUE, items: [], lead: null };
+    const { unmount } = renderList({
+      queue: { ...empty, totals: { ...empty.totals, shown: 0 } },
     });
-    expect(screen.getByText(/Nothing eligible to fix first/)).toBeTruthy();
-  });
-});
+    expect(screen.getByText("Everything was left out by a rule")).toBeTruthy();
+    unmount();
 
-describe("Fix first agent prompt", () => {
-  it("is offered only when the host can load it", () => {
-    renderList();
-    expect(screen.queryByRole("button", { name: "Copy prompt for an agent" })).toBeNull();
-  });
+    const noExclusions = Object.fromEntries(
+      Object.keys(empty.totals.excluded).map((k) => [k, 0]),
+    ) as typeof empty.totals.excluded;
+    const none = { ...empty, totals: { ...empty.totals, shown: 0, excluded: noExclusions } };
+    const second = renderList({
+      queue: { ...none, basis: { analyzed_commit: null, health_analyzed_at: null } },
+    });
+    expect(screen.getByText("Health has not been analyzed yet")).toBeTruthy();
+    second.unmount();
 
-  it("shows the prompt the host loads for the item", async () => {
-    const loadPrompt = vi.fn().mockResolvedValue("Prompt from core");
-    renderList({ loadPrompt });
-    openRow(REFACTOR);
-    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for an agent" }));
-    expect(await screen.findByText("Prompt from core")).toBeTruthy();
-    expect(loadPrompt).toHaveBeenCalledWith(REFACTOR, expect.any(String));
+    renderList({
+      queue: { ...none, basis: { analyzed_commit: "abc", health_analyzed_at: "2026-10-01" } },
+    });
+    expect(screen.getByText("Nothing to fix first")).toBeTruthy();
   });
 });

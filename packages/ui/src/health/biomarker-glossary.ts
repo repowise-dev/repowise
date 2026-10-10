@@ -492,7 +492,7 @@ export const DIMENSION_LABEL: Record<BiomarkerDimension, string> = {
 
 /** Tailwind chip classes per pillar, matching the surrounding chip palette. */
 export const DIMENSION_CHIP: Record<BiomarkerDimension, string> = {
-  defect: "bg-[var(--color-accent-primary)]/10 text-[var(--color-accent-primary)]",
+  defect: "bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)]",
   maintainability: "bg-[var(--color-accent-secondary)]/10 text-[var(--color-accent-secondary)]",
   performance: "bg-[var(--color-info)]/10 text-[var(--color-info)]",
   // Deliberately the most muted chip in the palette: an advisory finding costs

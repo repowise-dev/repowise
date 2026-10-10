@@ -31,7 +31,7 @@ export function QueueSkeleton() {
 export function QueueError({ onRetry }: { onRetry?: (() => void) | undefined }) {
   return (
     <EmptyState
-      icon={<Gauge className="h-6 w-6" />}
+      tone="error"
       title="Could not load performance opportunities"
       description="The repository may need indexing, or the server may be temporarily unavailable. Nothing here says the code is fast."
       {...(onRetry ? { action: { label: "Try again", onClick: onRetry } } : {})}
@@ -43,7 +43,7 @@ export function QueueError({ onRetry }: { onRetry?: (() => void) | undefined }) 
 export function UnavailableQueue({ summary }: { summary: PerformanceOpportunitySummary }) {
   return (
     <EmptyState
-      icon={<Gauge className="h-6 w-6" />}
+      icon={<Gauge />}
       title="This index has not been analyzed for performance"
       description={
         summary.detail ??
@@ -57,36 +57,22 @@ export function UnavailableQueue({ summary }: { summary: PerformanceOpportunityS
 /** Analyzed, and nothing supported surfaced. Say exactly that. */
 export function EmptyQueue() {
   return (
-    <div className="border-t border-[var(--color-border-default)] px-1 py-12 text-center">
-      <h3 className="text-[15px] font-semibold text-[var(--color-text-primary)]">
-        No supported pattern surfaced
-      </h3>
-      <p className="mx-auto mt-2 max-w-[60ch] text-sm text-[var(--color-text-tertiary)]">
-        The detectors are high precision and low recall, so an empty queue means nothing they
-        recognize was found. It does not measure latency and does not claim the code is fast.
-      </p>
-    </div>
+    <EmptyState
+      tone="positive"
+      title="No supported pattern surfaced"
+      description="The detectors are high precision and low recall, so an empty queue means nothing they recognize was found. It does not measure latency and does not claim the code is fast."
+    />
   );
 }
 
 export function FilteredEmpty({ onClear }: { onClear: () => void }) {
   return (
-    <div className="border-t border-[var(--color-border-default)] px-1 py-12 text-center">
-      <h3 className="text-[15px] font-semibold text-[var(--color-text-primary)]">
-        No opportunities match these filters
-      </h3>
-      <p className="mx-auto mt-2 max-w-[60ch] text-sm text-[var(--color-text-tertiary)]">
-        The counts beside each filter already account for the other active filters. This
-        combination may come from a restored view state that no longer matches the index.
-      </p>
-      <button
-        type="button"
-        onClick={onClear}
-        className="mt-4 rounded text-sm font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-      >
-        Clear filters
-      </button>
-    </div>
+    <EmptyState
+      tone="filtered"
+      title="No opportunities match these filters"
+      description="The counts beside each filter already account for the other active filters. This combination may come from a restored view state that no longer matches the index."
+      action={{ label: "Clear filters", onClick: onClear }}
+    />
   );
 }
 

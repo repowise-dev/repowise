@@ -13,13 +13,14 @@ import type { FixFirstQueue, FixItem, FixScope } from "@repowise-dev/types/fix-f
 import { Skeleton, SkeletonRegion } from "../../ui/skeleton";
 import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
 import { ApiError } from "../../shared/api-error";
+import { EmptyState } from "../../shared/empty-state";
 import { toFriendlyMessage } from "../../lib/errors";
 import { OverviewSection } from "../../overview/section";
 import { formatNumber } from "../../lib/format";
 import { AiPromptModal, fileChatContext } from "../ai-prompt-modal";
 import type { AiPromptFlavor } from "../ai-prompt-builder";
 import { FixFirstItem, type FixTriageStatus } from "./fix-first-item";
-import { exclusionEntries, fixFirstScopeSentence, fixLocation } from "./scope";
+import { exclusionEntries, exclusionPhrase, fixFirstScopeSentence, fixLocation } from "./scope";
 
 export interface FixFirstListProps {
   queue: FixFirstQueue | undefined;
@@ -137,10 +138,7 @@ export function FixFirstList({
           <Skeleton className="h-20 w-full" />
         </SkeletonRegion>
       ) : queue && queue.items.length === 0 ? (
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          Nothing eligible to fix first. Every candidate was excluded by a rule, or the index has
-          no health analysis yet.
-        </p>
+        <FixFirstEmpty queue={queue} />
       ) : queue ? (
         <ol className="flex flex-col divide-y divide-[var(--color-border-default)]">
           {queue.items.map((item) => (
@@ -172,5 +170,35 @@ export function FixFirstList({
         description="The change, why it ranks first, the steps in order, and how to verify it."
       />
     </OverviewSection>
+  );
+}
+
+/** Nothing queued: all clear, left out by a rule, or never analyzed. Each says something different. */
+function FixFirstEmpty({ queue }: { queue: FixFirstQueue }) {
+  const excluded = exclusionPhrase(queue.totals.excluded);
+  if (excluded) {
+    return (
+      <EmptyState
+        size="compact"
+        title="Everything was left out by a rule"
+        description={`Nothing is queued because the rules above set aside ${excluded}.`}
+      />
+    );
+  }
+  if (!queue.basis.health_analyzed_at) {
+    return (
+      <EmptyState
+        size="compact"
+        title="Health has not been analyzed yet"
+        description="Run an index update and the ranked list appears here."
+      />
+    );
+  }
+  return (
+    <EmptyState
+      tone="positive"
+      title="Nothing to fix first"
+      description="Health was analyzed and no function or finding is worth fixing ahead of the rest."
+    />
   );
 }

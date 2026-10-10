@@ -54,7 +54,7 @@ export function FilterChip({
       className={cn(
         "text-xs rounded-md px-2 py-1 border transition-colors",
         active
-          ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)] border-[var(--color-accent-primary)]/50"
+          ? "bg-[var(--color-bg-selected)] text-[var(--color-text-primary)] border-[var(--color-border-hover)]"
           : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-hover)]",
       )}
     >

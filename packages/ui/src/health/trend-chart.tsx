@@ -1,5 +1,6 @@
 "use client";
 
+import { EmptyState } from "../shared/empty-state";
 import { formatDate } from "../lib/format";
 
 export interface TrendSeriesPoint {
@@ -53,10 +54,11 @@ function runs<T>(items: T[], has: (item: T) => boolean): number[][] {
 export function TrendChart({ history, height = 220 }: TrendChartProps) {
   if (!history || history.length === 0) {
     return (
-      <p className="max-w-[62ch] text-sm text-[var(--color-text-secondary)]">
-        No snapshots yet. Each index or sync records one; the trend appears from the
-        second snapshot on.
-      </p>
+      <EmptyState
+        size="compact"
+        title="No snapshots yet"
+        description="Each index update records one, and the trend appears from the second."
+      />
     );
   }
 

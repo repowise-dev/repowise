@@ -1,6 +1,7 @@
 "use client";
 
 import { TrendingDown } from "lucide-react";
+import { EmptyState } from "../shared/empty-state";
 import type { FileHealthTrend } from "@repowise-dev/types/health";
 import { formatDate } from "../lib/format";
 import { deltaColor, formatDelta, scoreTextColor } from "./tokens";
@@ -43,10 +44,11 @@ export function FileTrendChart({ trend, height = 140, bare = false }: FileTrendC
 
   const body =
     points.length < 2 ? (
-      <div className="rounded-md border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4 text-center text-xs text-[var(--color-text-tertiary)]">
-        No score history yet. Trends appear once this file has been scored in at
-        least two <code>repowise</code> runs.
-      </div>
+      <EmptyState
+        size="compact"
+        title="No score history yet"
+        description="Trends appear once this file has been scored in at least two index runs."
+      />
     ) : (
       <>
         <Chart points={points} height={height} />
