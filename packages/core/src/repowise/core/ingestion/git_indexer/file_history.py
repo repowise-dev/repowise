@@ -35,7 +35,7 @@ from .function_blame import (
     build_blame_index,
     ownership_from_blame,
 )
-from .identity import canonicalize_author_email
+from .identity import canonicalize_author_email, is_noreply
 from .records import (
     _LOG_FORMAT,
     _RECORD_SEP,
@@ -430,9 +430,6 @@ def _add_windows(
     meta["avg_commit_size"] = total_churn / c90 if c90 > 0 else 0.0
 
 
-_NOREPLY_DOMAIN = "@users.noreply.github.com"
-
-
 @dataclass
 class _Authors:
     """Per-author commit counts, one stable email each, and first/last commit times."""
@@ -463,13 +460,11 @@ class _Authors:
         return authors
 
     def _prefer_email(self, name: str, email: str) -> None:
-        # One email per name: fold GitHub noreply variants and prefer a real
-        # address, so owner_profile (keyed on email) does not split a person.
+        # One email per name: fold noreply variants and prefer a real address,
+        # so owner_profile (keyed on email) does not split a person.
         canon = canonicalize_author_email(email) or email
         existing = self.emails.get(name)
-        if existing is None or (
-            existing.endswith(_NOREPLY_DOMAIN) and not canon.endswith(_NOREPLY_DOMAIN)
-        ):
+        if existing is None or (is_noreply(existing) and not is_noreply(canon)):
             self.emails[name] = canon
 
     def entry(self, name: str, count: int) -> dict[str, Any]:

@@ -71,6 +71,8 @@ from pathlib import Path
 
 import structlog
 
+from repowise.core import forges
+
 logger = structlog.get_logger(__name__)
 
 __all__ = [
@@ -85,9 +87,12 @@ __all__ = [
 
 # ------------------------------------------------------------------ registry --
 
-# Bot login (lowercase, without the ``[bot]`` suffix) → agent name, for
-# ``<login>[bot]@users.noreply.github.com`` author/committer e-mails (GitHub's
-# canonical bot identity, also re-injected on squash merges).
+# GitHub bot login (lowercase, without the ``[bot]`` suffix) → agent name, for
+# the GitHub noreply address of ``<login>[bot]`` (its canonical bot identity,
+# also re-injected on squash merges). ``[bot]`` is optional: squash merges by
+# the Copilot coding agent use ``<id>+Copilot@users.noreply.github.com``. Safe
+# because each login is a unique, vendor-owned GitHub account no human can
+# register; the same login on another forge is nobody's.
 _BOT_LOGINS: dict[str, str] = {
     "copilot-swe-agent": "copilot",
     "copilot": "copilot",
@@ -126,7 +131,6 @@ _AGENT_ALIASES: list[tuple[str, str]] = [
 # Exact service e-mails → (agent, tier) for commit identity fields.
 _SERVICE_EMAILS: dict[str, tuple[str, int]] = {
     "cursoragent@cursor.com": ("cursor", 1),
-    "devin-ai-integration[bot]@users.noreply.github.com": ("devin", 1),
     # Primarily Claude's co-author identity; as AUTHOR it is tier 1 like every
     # other service e-mail here.
     "noreply@anthropic.com": ("claude", 1),
@@ -172,7 +176,6 @@ _COAUTHOR_PATTERNS: list[tuple[str, str]] = [
         r"^co-authored-by:\s*claude(?:\s+(?:opus|sonnet|haiku)[^<]*)?\s*<[^>]*@anthropic\.com>",
         "claude",
     ),
-    (r"^co-authored-by:\s*copilot\s*<\d+\+copilot@users\.noreply\.github\.com>", "copilot"),
     (
         r"^co-authored-by:\s*cursor(?:\s*agent)?\s*<(?:cursoragent@cursor\.com|[^>]*cursor[^>]*)>",
         "cursor",
@@ -559,16 +562,6 @@ class AgentProvenanceClassifier:
         extra_coauthor_patterns: list[tuple[str, str]] | None = None,
     ) -> None:
         self._service_emails = {**_SERVICE_EMAILS, **(extra_service_emails or {})}
-        # ``[bot]`` is optional: GitHub squash-merges authored by the Copilot
-        # coding agent use ``<id>+Copilot@users.noreply.github.com`` (no
-        # suffix). Safe because each login is a unique, vendor-owned GitHub
-        # account — no human can register them.
-        self._bot_email_re = re.compile(
-            r"^(?:\d+\+)?("
-            + "|".join(re.escape(b) for b in _BOT_LOGINS)
-            + r")(?:\[bot\])?@users\.noreply\.github\.com$",
-            re.IGNORECASE,
-        )
         self._footers = [
             (re.compile(p, re.IGNORECASE | re.MULTILINE), agent)
             for p, agent in [*_FOOTER_PATTERNS, *(extra_footer_patterns or [])]
@@ -585,9 +578,11 @@ class AgentProvenanceClassifier:
         hit = self._service_emails.get(e)
         if hit:
             return hit
-        m = self._bot_email_re.match(e)
-        if m:
-            return (_BOT_LOGINS[m.group(1).lower()], 1)
+        noreply = forges.noreply_login(e)
+        if noreply and noreply[0] is forges.ForgeKind.GITHUB:
+            agent = _BOT_LOGINS.get(noreply[1].removesuffix("[bot]"))
+            if agent:
+                return (agent, 1)
         local, _, domain = e.partition("@")
         vendor = _VENDOR_DOMAIN_LOCALS.get(domain)
         if vendor and vendor[0].fullmatch(local):
