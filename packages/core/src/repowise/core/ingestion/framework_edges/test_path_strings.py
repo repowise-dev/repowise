@@ -51,12 +51,17 @@ def _is_helper(target: str) -> bool:
     return name not in _DIR_SCOPED and not is_test_path(name)
 
 
+def path_literals(text: bytes) -> list[bytes]:
+    """The code-file paths *text* spells as string literals, in order."""
+    return [m.group(1) for m in _PATH_LITERAL_RE.finditer(text)]
+
+
 def path_string_targets(path: str, text: bytes, path_set: set[str]) -> list[str]:
     """Indexed code files *text*, the source of *path*, names relative to its directory."""
     base = posixpath.dirname(path)
     found: dict[str, None] = {}
-    for match in _PATH_LITERAL_RE.finditer(text):
-        spec = match.group(1).decode("ascii", errors="ignore")
+    for literal in path_literals(text):
+        spec = literal.decode("ascii", errors="ignore")
         target = posixpath.normpath(posixpath.join(base, spec))
         if target in path_set and _is_helper(target) and target != path:
             found[target] = None

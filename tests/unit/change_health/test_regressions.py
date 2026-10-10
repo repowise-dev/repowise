@@ -15,11 +15,11 @@ from repowise.core.analysis.change_health.service import (
     DeltaRequest,
     _suggestion,
 )
-from repowise.core.analysis.change_health.sources import GitRevisionSource
+from repowise.core.analysis.change_health.sources import GitRevisionSource, read_blobs
 from repowise.core.analysis.health import HealthFindingData, Severity
 from repowise.core.analysis.health.scoring import score_file
 
-from .conftest import python_complex
+from .conftest import git, python_complex
 
 
 def finding(marker="long_method", *, line, severity=Severity.MEDIUM, symbol=None, impact=1.0):
@@ -108,6 +108,25 @@ def test_a_path_with_a_space_missing_at_a_revision_does_not_derail_the_batch(mak
     assert "after.py" not in blobs
     # The reader stayed in sync and still found the file that does exist.
     assert blobs["keep.py"] == b"x = 1\n"
+
+
+def test_a_submodule_entry_does_not_derail_the_batch(make_repo):
+    """A gitlink reads as no file, and the specs after it still read.
+
+    Git answers ``<sha> submodule`` with no body when the submodule's commit is
+    not in this repository, and the commit object itself when it is.
+    """
+    repo = make_repo()
+    head = repo.commit("seed", {"after.py": "z = 3\n"})
+    absent = "1234567890" * 4
+    for path, sha in (("vendor/lib", absent), ("vendor/own", head)):
+        git(repo.path, "update-index", "--add", "--cacheinfo", f"160000,{sha},{path}")
+    git(repo.path, "commit", "-q", "-m", "add submodules")
+
+    specs = [("HEAD", "vendor/lib"), ("HEAD", "vendor/own"), ("HEAD", "after.py")]
+    blobs = read_blobs(str(repo.path), specs)
+
+    assert blobs == {("HEAD", "after.py"): b"z = 3\n"}
 
 
 def test_a_change_touching_a_path_with_a_space_still_compares(make_repo):

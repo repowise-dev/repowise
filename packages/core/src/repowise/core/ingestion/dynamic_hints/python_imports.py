@@ -237,6 +237,29 @@ def python_dynamic_refs(rel: str, blob: bytes, resolver: ModuleStringResolver) -
     return refs
 
 
+def string_inputs(rel: str, blob: bytes) -> tuple:
+    """What :func:`python_dynamic_refs` reads from *blob*, for comparing two versions.
+
+    The markers that gate it, every string it may resolve (anywhere, and in
+    code only), and each templated load with whether it sits in code. Two
+    versions alike here get the same refs from the same modules. Ceiling: a
+    ``module:attr`` reference also depends on the target defining *attr*,
+    which only the target's text says.
+    """
+    gates = tuple(m for m in _DYNAMIC_IMPORT_MARKERS if m in blob)
+    strings = _resolvable(blob)
+    triples = [m.start() for m in _TRIPLE_QUOTE_RE.finditer(blob)]
+    templates = sorted(
+        {(m.group(0), _maybe_not_code(blob, triples, m.start())) for m in _TEMPLATE_LOAD_RE.finditer(blob)}
+    )
+    live = _resolvable(live_text(rel, blob)) if strings else []
+    return gates, strings, live, templates
+
+
+def _resolvable(text: bytes) -> list[bytes]:
+    return sorted({m.group(0) for r in (_DOTTED_STRING_RE, _ATTR_STRING_RE) for m in r.finditer(text)})
+
+
 class PythonDynamicHints(DynamicHintExtractor):
     name = "python_dynamic_import"
 

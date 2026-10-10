@@ -5,8 +5,9 @@ not move since. In Python and JavaScript / TypeScript a file reaches another
 only through an import the parser reads (``import``, ``from``, ``require``,
 ``import()``, a re-export) or through a string a loader resolves (a dotted
 module name in a plugin table, a mocked or spawned path). Two versions with the
-same imports and the same module- or path-shaped string literals therefore
-have the same edges, whatever else changed in them.
+same imports and the same strings every string-reading edge producer reads
+(each producer's own extractor, so a shape one resolves is never missed)
+therefore have the same edges, whatever else changed in them.
 
 Cheapest check first: the strings are a regex away, and when no line that
 differs can be part of an import statement (one naming an import keyword, or
@@ -29,6 +30,9 @@ from collections import Counter
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
+from ..ingestion.dynamic_hints import django as django_hints
+from ..ingestion.dynamic_hints.python_imports import string_inputs
+from ..ingestion.framework_edges.test_path_strings import path_literals
 from ..ingestion.models import EXTENSION_TO_LANGUAGE, FileInfo
 
 # Data and prose: they import nothing, so they cannot carry a route.
@@ -74,7 +78,7 @@ def edges_may_differ(path: str, before: bytes | None, after: bytes | None) -> bo
     language = _language(path)
     if language not in _IMPORT_WORD:
         return _WHITESPACE.sub(b" ", before).strip() != _WHITESPACE.sub(b" ", after).strip()
-    if _names(before) != _names(after):
+    if _names(path, language, before) != _names(path, language, after):
         return True
     if not _touches_imports(language, before, after):
         return False
@@ -82,10 +86,14 @@ def edges_may_differ(path: str, before: bytes | None, after: bytes | None) -> bo
     return old is None or old != _imports(path, language, after)
 
 
-def _names(source: bytes) -> list[bytes]:
-    """The module- or path-shaped string literals of one version."""
+def _names(path: str, language: str, source: bytes) -> tuple:
+    """The strings of one version that a loader or an edge producer may resolve."""
     found = {m.group(2) for m in _NAME_LITERAL.finditer(source)}
-    return sorted(n for n in found if b"." in n or b"/" in n)
+    names = sorted(n for n in found if b"." in n or b"/" in n)
+    paths = sorted(set(path_literals(source)))
+    if language != "python":
+        return names, paths
+    return names, paths, string_inputs(path, source), django_hints.edge_strings(path, source)
 
 
 def _touches_imports(language: str, before: bytes, after: bytes) -> bool:

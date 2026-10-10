@@ -170,6 +170,47 @@ def _extract_string_value(node: ast.expr) -> str | None:
     return None
 
 
+_SETTINGS_NAMES = ("INSTALLED_APPS", "ROOT_URLCONF", "MIDDLEWARE")
+_INCLUDE_RE = re.compile(r"""include\(\s*['\"]([\w\.]+)['\"]""")
+
+
+def settings_entries(tree: ast.Module) -> list[tuple[str, list[str]]]:
+    """``(setting, strings)`` per assignment of a setting that names code, in order."""
+    found: list[tuple[str, list[str]]] = []
+    for node in ast.walk(tree):
+        # ``INSTALLED_APPS += [...]`` extends the setting in place.
+        if not isinstance(node, (ast.Assign, ast.AugAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            if not (isinstance(target, ast.Name) and target.id in _SETTINGS_NAMES):
+                continue
+            if target.id == "ROOT_URLCONF":
+                module = _extract_string_value(node.value)
+                found.append((target.id, [module] if module else []))
+            else:
+                found.append((target.id, _extract_string_list(node.value)))
+    return found
+
+
+def edge_strings(path: str, blob: bytes) -> list | None:
+    """What this extractor reads from *blob*, for comparing two versions of *path*.
+
+    The code-naming settings of a settings file (as :meth:`_scan_settings`
+    finds them), the ``include()`` targets of a ``urls.py``; ``None`` for a
+    settings file that does not parse, which gets no edges.
+    """
+    p = PurePosixPath(path)
+    if p.name == "urls.py":
+        return sorted({m.group(1) for m in _INCLUDE_RE.finditer(blob.decode("utf-8", "ignore"))})
+    if p.name != "settings.py" and not (p.parent.name == "settings" and p.suffix == ".py"):
+        return []
+    try:
+        return settings_entries(ast.parse(blob.decode("utf-8", "ignore")))
+    except Exception:  # as in _scan_settings, which skips any file that will not parse
+        return None
+
+
 class DjangoDynamicHints(DynamicHintExtractor):
     name = "django_settings"
 
@@ -209,48 +250,25 @@ class DjangoDynamicHints(DynamicHintExtractor):
             except ValueError:
                 continue
 
-            for node in ast.walk(tree):
-                # ``INSTALLED_APPS += [...]`` extends the setting in place.
-                if not isinstance(node, (ast.Assign, ast.AugAssign)):
+            for name, values in settings_entries(tree):
+                if name == "INSTALLED_APPS":
+                    for app in values:
+                        edges.extend(
+                            self._installed_app_edges(rel_settings, app, repo_root, app_modules)
+                        )
                     continue
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                for target in targets:
-                    if not (isinstance(target, ast.Name)):
-                        continue
-                    name = target.id
-
-                    if name == "INSTALLED_APPS":
-                        for app in _extract_string_list(node.value):
-                            edges.extend(
-                                self._installed_app_edges(rel_settings, app, repo_root, app_modules)
+                # ROOT_URLCONF and MIDDLEWARE name modules.
+                for module in values:
+                    resolved = _module_to_path(module, repo_root)
+                    if resolved:
+                        edges.append(
+                            DynamicEdge(
+                                source=rel_settings,
+                                target=resolved,
+                                edge_type="dynamic_imports",
+                                hint_source=self.name,
                             )
-
-                    elif name == "ROOT_URLCONF":
-                        module = _extract_string_value(node.value)
-                        if module:
-                            resolved = _module_to_path(module, repo_root)
-                            if resolved:
-                                edges.append(
-                                    DynamicEdge(
-                                        source=rel_settings,
-                                        target=resolved,
-                                        edge_type="dynamic_imports",
-                                        hint_source=self.name,
-                                    )
-                                )
-
-                    elif name == "MIDDLEWARE":
-                        for middleware in _extract_string_list(node.value):
-                            resolved = _module_to_path(middleware, repo_root)
-                            if resolved:
-                                edges.append(
-                                    DynamicEdge(
-                                        source=rel_settings,
-                                        target=resolved,
-                                        edge_type="dynamic_imports",
-                                        hint_source=self.name,
-                                    )
-                                )
+                        )
 
         return edges
 
@@ -303,7 +321,6 @@ class DjangoDynamicHints(DynamicHintExtractor):
 
     def _scan_urls(self, repo_root: Path) -> list[DynamicEdge]:
         edges: list[DynamicEdge] = []
-        include_re = re.compile(r"""include\(\s*['\"]([\w\.]+)['\"]""")
 
         for urls_file in self._rglob(repo_root, "urls.py"):
             try:
@@ -312,7 +329,7 @@ class DjangoDynamicHints(DynamicHintExtractor):
             except Exception:
                 continue
 
-            for match in include_re.finditer(source):
+            for match in _INCLUDE_RE.finditer(source):
                 module = match.group(1)
                 resolved = _module_to_path(module, repo_root)
                 if resolved:

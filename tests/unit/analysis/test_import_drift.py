@@ -50,6 +50,62 @@ def test_an_import_or_a_module_name_moves_the_edges(path, before, after) -> None
     assert edges_may_differ(path, before, after) is True
 
 
+_SETTINGS = b'INSTALLED_APPS = [\n    "django.contrib.admin",\n    "polls",\n]\n'
+
+
+@pytest.mark.parametrize(
+    ("path", "before", "after"),
+    [
+        # A lazy registry's module:attr string.
+        (
+            "pkg/cli/__init__.py",
+            b'CMDS = {"run": "pkg.cli.run:main"}\n',
+            b'CMDS = {"run": "pkg.cli.other:main"}\n',
+        ),
+        # The same string moving out of a comment into code.
+        (
+            "pkg/cli/__init__.py",
+            b'CMDS = {\n    # "run": "pkg.cli.run:main",\n}\n',
+            b'CMDS = {\n    "run": "pkg.cli.run:main",\n}\n',
+        ),
+        # A dotted string starts to count once the file loads modules by name.
+        (
+            "pkg/loader.py",
+            b'NAME = "pkg.plugins.a"\n',
+            b'NAME = "pkg.plugins.a"\nload = lazy_subcommands\n',
+        ),
+        # A templated load.
+        (
+            "pkg/loader.py",
+            b'importlib.import_module(f"pkg.plugins.{name}")\n',
+            b'importlib.import_module(f"pkg.handlers.{name}")\n',
+        ),
+        # A test naming a helper it runs by a path relative to itself.
+        (
+            "tests/test_server.py",
+            b'H = Path(__file__).parent / "1_server.py"\n',
+            b'H = Path(__file__).parent / "2_server.py"\n',
+        ),
+        ("tests/cli.test.ts", b'spawn("~/run.ts");\n', b'spawn("~/serve.ts");\n'),
+        # Django settings and URLconfs name apps and modules by bare name.
+        ("mysite/settings.py", _SETTINGS, _SETTINGS.replace(b'"polls"', b'"blog"')),
+        ("mysite/settings/base.py", _SETTINGS, _SETTINGS.replace(b'    "polls",\n', b"")),
+        (
+            "mysite/urls.py",
+            b'urlpatterns = [path("", include("polls"))]\n',
+            b'urlpatterns = [path("", include("blog"))]\n',
+        ),
+    ],
+)
+def test_a_string_an_edge_producer_resolves_moves_the_edges(path, before, after) -> None:
+    assert edges_may_differ(path, before, after) is True
+
+
+def test_a_bare_name_outside_django_wiring_is_not_compared() -> None:
+    before = b'MODES = ["polls"]\n'
+    assert edges_may_differ("mysite/views.py", before, before.replace(b"polls", b"blog")) is False
+
+
 def test_a_file_on_one_side_only_moves_no_route() -> None:
     assert edges_may_differ("m.py", None, _PY) is False
     assert edges_may_differ("m.py", _PY, None) is False
