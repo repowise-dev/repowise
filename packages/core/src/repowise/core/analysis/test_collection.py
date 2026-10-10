@@ -9,6 +9,13 @@ The inputs are plain data a server can build from what it holds: a
 :class:`Checkout` (tracked paths, pytest's conftests and configs, a text
 reader) and a change set. Git is read only for the files changed since the
 index was built.
+
+Ceiling: two reads still go through the repository path, the commit
+``state.json`` records (:func:`_indexed_commit`) and the git diff between the
+indexed commit and the change's base (:func:`_gap_routes`). A server without a
+checkout passes *indexed_commit* and gets "cannot tell what changed since the
+index was built" for the gap, which runs everything; taking the state commit
+and the gap as inputs is the upgrade.
 """
 
 from __future__ import annotations
@@ -340,7 +347,7 @@ async def resolve_impacted(
         (``via="call-graph"``), and every test that imports it, directly or
         through other modules or other tests (``via="import-graph"``). Both are
         recorded edges, and they find suites whose tests are named for
-        behaviour rather than for the file. The filename pattern answers only
+        behaviour, not for the file. The filename pattern answers only
         when the graph is silent (``via="filename-pattern"``). All are
         file-level and all over-claim; none may be read as coverage.
     ``unknown``
@@ -418,7 +425,7 @@ async def _graph_candidates(
     (:mod:`repowise.core.analysis.conftest_routes`), read from *pytest_texts*;
     the notes say what was decided.
 
-    One walk per tier for every target rather than one per file: the seed set
+    One walk per tier for every target, not one per file: the seed set
     is what makes it cheap. Uncapped, since a trimmed list would drop tests a
     change needs. The import walk treats a test file as a leaf, so the tests
     importing a candidate (a shared base class, a helper module under
@@ -557,8 +564,6 @@ def select(change, result: dict, config, checkout: Checkout, plan: Plan) -> Sele
             scopes=plan.scopes,
         )
     )
-
-
 
 
 async def select_for_change(
