@@ -13,7 +13,6 @@ from repowise.core.docs_mode import DocsMode
 from repowise.core.index_scope import load_index_scope
 
 _URL_SCHEME_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*)://")
-_HOST_PORT_RE = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[^:@/\[\]]*)(:\d*)?")
 _SSH_SCHEMES = frozenset({"ssh", "git+ssh", "ssh+git"})
 
 
@@ -41,13 +40,14 @@ def strip_credentials(url: str | None) -> str | None:
     userinfo, hostpart = "", rest
     if "@" in rest:
         # The authority normally ends at the first `/`, but an unencoded `/` in
-        # a password moves it. When the text before the first `/` is not a
-        # host[:port], the userinfo runs to the `@` after it.
+        # a password moves it, and `user:123/x` even passes for host:port. No
+        # forge allows `@` in an owner, group or repo name, so an `@` after a
+        # `/` ends the userinfo. An empty head is `file:///`, which has none.
         head = rest.split("/", 1)[0]
         if "@" in head:
             userinfo, _, host = head.rpartition("@")
             hostpart = host + rest[len(head) :]
-        elif not _HOST_PORT_RE.fullmatch(head):
+        elif head:
             userinfo, _, hostpart = rest.partition("@")
     user = userinfo.split(":", 1)[0] if scheme.lower() in _SSH_SCHEMES else ""
     return f"{scheme}://{user + '@' if user else ''}{hostpart}"
