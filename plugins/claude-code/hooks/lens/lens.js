@@ -1444,7 +1444,6 @@ function riskFacts(r) {
     ...fact("targets", targets.length),
     ...fact("dependents", sumOver(targets, (t) => num(t["dependents_count"]))),
     ...fact("coChange", sumOver(targets, (t) => num(t["co_change_partners_total"]) ?? count2(t["co_change_partners"]))),
-    ...fact("contributors", sumOver(targets, (t) => num(t["contributor_count"]))),
     ...fact("hotspots", flagged(targets, "is_hotspot") || null)
   ];
 }

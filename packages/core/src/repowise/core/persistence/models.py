@@ -404,6 +404,12 @@ class GraphEdge(Base):
     call_lines_json: Mapped[str] = mapped_column(
         Text, nullable=False, default="[]", server_default="[]"
     )
+    # True when an import edge is purely type-level (e.g. TypeScript `import type`).
+    # Cycle detection skips these edges so mutual type imports are not flagged.
+    # Persisted so graphs rehydrated on incremental updates or rescores preserve it.
+    type_only: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )

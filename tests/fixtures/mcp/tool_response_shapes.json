@@ -1612,22 +1612,12 @@
     },
     "targets": {
       "packages/core/src/repowise/core/ingestion/call_resolver.py": {
-        "bus_factor": null,
         "co_change_partners": [
           {
-            "direction": null,
-            "evidence_kind": null,
+            "conf_ab": null,
             "file_path": null,
             "has_import_link": null,
-            "has_structural_link": null,
-            "last_co_change": null,
-            "provenance": null,
-            "relationship_type": null,
-            "structural_relationship_types": [
-              null
-            ],
-            "support": null,
-            "weight": null
+            "support": null
           }
         ],
         "co_change_partners_emitted": null,
@@ -1636,7 +1626,6 @@
         "co_change_partners_total": null,
         "co_change_partners_truncated": null,
         "commit_count_capped": null,
-        "contributor_count": null,
         "defect_profile": {
           "bug_magnet": null,
           "fix_count": null,
@@ -1654,10 +1643,7 @@
         "hotspot_score": null,
         "is_hotspot": null,
         "line_coverage_pct": null,
-        "owner_pct": null,
         "primary_owner": null,
-        "recent_owner": null,
-        "recent_owner_pct": null,
         "risk_summary": null,
         "security_signals": [],
         "target": null,

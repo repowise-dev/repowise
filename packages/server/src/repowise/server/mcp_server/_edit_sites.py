@@ -15,7 +15,7 @@ import json
 import re
 from collections import Counter
 from itertools import islice
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -202,6 +202,69 @@ async def attach_call_text(
             rows[i]["text"] = text
         else:
             rows[i].pop("call_line", None)
+
+
+#: A runtime load: ``import(...)``, ``importlib.import_module(...)``, ``__import__(...)``.
+_DYNAMIC_LOAD = re.compile(r"(?<![\w$.])(?:import|__import__)\s*\(|\bimport_module\s*\(")
+#: Stems too common to name one file: the quoted path must also carry the parent.
+_GENERIC_STEMS = frozenset(
+    {"index", "utils", "util", "types", "main", "helpers", "constants", "config", "mod",
+     "__init__"}
+)
+
+
+def _module_spec(module_path: str) -> re.Pattern[str]:
+    """A quoted module path ending in *module_path*'s stem, or its parent and stem when generic."""
+    path = PurePosixPath(module_path)
+    tail = re.escape(path.stem)
+    if path.stem in _GENERIC_STEMS and path.parent.name:
+        tail = rf"{re.escape(path.parent.name)}[/.]{tail}"
+    return re.compile(rf"""["'`](?:[^"'`\n]*[/.])?{tail}(?:\.[A-Za-z]+)?["'`]""")
+
+
+def _import_sites(
+    root: Path, files: list[str], module_path: str
+) -> dict[str, tuple[int, str, bool]]:
+    """``file -> (line, text, dynamic)`` for the quoted path naming *module_path*.
+
+    A line that imports, exports or loads it wins over an earlier plain mention.
+    """
+    spec = _module_spec(module_path)
+    out: dict[str, tuple[int, str, bool]] = {}
+    for rel in files:
+        lines = _read_lines(root, rel) or []
+        mention: int | None = None
+        statements: set[int] | None = None
+        for n, text in enumerate(lines, 1):
+            if not spec.search(text):
+                continue
+            if statements is None:
+                statements = _import_lines(lines)
+            # ``import(`` may sit alone on the line above a wrapped path.
+            wrapped = n > 1 and lines[n - 2].rstrip().endswith("import(")
+            if wrapped or n in statements or _DYNAMIC_LOAD.search(text):
+                mention = n
+                break
+            mention = mention or n
+        if mention is not None:
+            text = lines[mention - 1]
+            dynamic = bool(_DYNAMIC_LOAD.search(text)) or (
+                mention > 1 and lines[mention - 2].rstrip().endswith("import(")
+            )
+            out[rel] = (mention, text.strip()[:MAX_TEXT_CHARS], dynamic)
+    return out
+
+
+async def import_sites(
+    repo_root: str | Path | None, files: list[str], module_path: str
+) -> dict[str, tuple[int, str, bool]]:
+    """Where each of *files* names *module_path* by a quoted path, and whether it loads it at runtime.
+
+    Unquoted imports (a dotted Python ``from`` line) are not found; those files are absent.
+    """
+    if not repo_root or not files:
+        return {}
+    return await asyncio.to_thread(_import_sites, Path(repo_root).resolve(), files, module_path)
 
 
 def _scan(

@@ -45,8 +45,21 @@ _CYCLE_EDGE_TYPES = FILE_DEPENDENCY_EDGE_TYPES
 
 
 def _is_cycle_edge(data: Any) -> bool:
-    """True if *data* is a file-level edge that can legitimately close a cycle."""
-    return data.get("edge_type") in _CYCLE_EDGE_TYPES and not is_cohesion_edge(data)
+    """True if *data* is a file-level edge that can legitimately close a cycle.
+
+    ``dynamic_uses`` is excluded on top of the allowlist: the hint extractors
+    that emit it (.NET among others) link every file declaring a type of a
+    given short name, so two unrelated classes that happen to share a name
+    across projects form a false two-file cycle (#2886). ``framework``,
+    ``dynamic_imports`` and ``dynamic_url_route`` are not excluded — they were
+    not the edge type the measured false positives came from.
+    """
+    return (
+        data.get("edge_type") in _CYCLE_EDGE_TYPES
+        and data.get("edge_type") != "dynamic_uses"
+        and not is_cohesion_edge(data)
+        and not data.get("type_only")
+    )
 
 
 def build_file_scc_index(graph: Any) -> dict[str, tuple[str, ...]]:

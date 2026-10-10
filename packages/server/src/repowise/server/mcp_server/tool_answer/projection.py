@@ -295,11 +295,17 @@ def _lead_with_graph_callers(payload: dict[str, Any]) -> None:
     """Open an answer no model wrote with the callers the graph found.
 
     Synthesised prose already had them as evidence; the keyless and union
-    replies are assembled text, so the graph's answer has to be stated.
+    replies are assembled text, so the graph's answer has to be stated. The
+    lead file's users follow the answer that names that file.
     """
     sentence = payload.pop("_graph_callers_answer", None)
-    if sentence and (payload.get("degraded") or payload.get("grounding") == "exact_symbol"):
+    users = payload.pop("_graph_neighbors_answer", None)
+    if not (payload.get("degraded") or payload.get("grounding") == "exact_symbol"):
+        return
+    if sentence:
         payload["answer"] = f"{sentence} {payload.get('answer') or ''}".rstrip()
+    if users:
+        payload["answer"] = f"{payload.get('answer') or ''} {users}".lstrip()
 
 
 def _keep(payload: dict[str, Any], key: str, limit: int | None) -> None:

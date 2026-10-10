@@ -267,6 +267,7 @@ class Import:
     is_reexport: bool = False  # True for `pub use` (Rust) or re-export patterns
     # Rust ``mod child;``: declares the child module, uses nothing from it.
     is_module_declaration: bool = False
+    type_only: bool = False  # True when the statement is purely type-level (e.g. TypeScript import type)
 
     @property
     def local_names(self) -> list[str]:

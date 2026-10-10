@@ -11,11 +11,13 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 from .analysis.change_risk.features import _git, split_revspec
 
 __all__ = [
     "BranchRef",
+    "PathRemoval",
     "ahead_behind",
     "ahead_behind_many",
     "change_base",
@@ -24,6 +26,7 @@ __all__ = [
     "current_branch",
     "default_base",
     "files_by_ref",
+    "find_path_removal",
     "is_shallow",
     "list_branches",
     "refs_containing",
@@ -291,3 +294,47 @@ def ahead_behind(repo_path: str, base: str, head: str) -> tuple[int, int]:
     except ValueError:
         return (0, 0)
     return (ahead, behind)
+
+
+@dataclass(frozen=True)
+class PathRemoval:
+    """The most recent commit that removed a path, and where it likely went."""
+
+    commit: str
+    #: The rename target, or the files a same-named directory split into.
+    #: Empty when the deletion is not explainable either way.
+    moved_to: list[str]
+
+
+def find_path_removal(repo_path: str, path: str) -> PathRemoval | None:
+    """Where *path* went, from the newest commit that removed it. ``None`` if git never had it.
+
+    Only the newest deleting commit is inspected — an older rename chain is a
+    rarer shape than "renamed once, then left alone", and a caller asking
+    "where did this go" wants a redirect, not a full history walk.
+
+    A pathspec cannot find a rename directly: git prunes the diff to it before
+    rename detection runs, so ``-- old.py`` would see only a deletion. The
+    commit is instead read whole with ``-M``, then filtered to the line whose
+    old side is *path*. When that finds nothing, the commit is checked for a
+    split into a same-named directory (``shell.py`` -> ``shell/``, `#1929's`
+    shape): every file the commit added under ``<path without extension>/``.
+    """
+    if not path or path.startswith("/") or ".." in PurePosixPath(path).parts:
+        return None
+    sha = _read(repo_path, ["log", "-1", "--diff-filter=D", "--format=%H", "--", path])
+    if not sha:
+        return None
+
+    renames = _read(repo_path, ["show", "-M", "--diff-filter=R", "--name-status", "--format=", sha])
+    for line in renames.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0].startswith("R") and parts[1] == path:
+            return PathRemoval(commit=sha, moved_to=[parts[2]])
+
+    stem_dir = f"{PurePosixPath(path).with_suffix('').as_posix()}/"
+    added = _read(repo_path, ["show", "--diff-filter=A", "--name-only", "--format=", sha])
+    split_into = sorted(
+        {line.strip() for line in added.splitlines() if line.strip().startswith(stem_dir)}
+    )
+    return PathRemoval(commit=sha, moved_to=split_into)

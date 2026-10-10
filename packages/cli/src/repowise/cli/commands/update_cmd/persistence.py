@@ -28,6 +28,7 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 from repowise.core.pipeline import PhaseTimings, timed
 
 from .incremental import _build_repo_graph
@@ -500,11 +501,20 @@ def _persist_index_only_update(
             "fingerprint was retained so the next update retries."
         )
 
+    # Same drift check for the security scanner (#3072): a version bump means
+    # every unchanged file's stored findings may be stale, since the normal
+    # persist above only rescanned the changed files.
+    security_scanner_version = state.get("security_scanner_version")
+    if security_scanner_changed(state):
+        with timed(timings, "security_rescan"):
+            if run_full_security_rescan(repo_path, exclude_patterns or []):
+                security_scanner_version = SECURITY_SCANNER_VERSION
     new_state = {
         **state,
         "last_sync_commit": head,
         "last_full_rescore_at": last_full_rescore_at,
         "health_analyzer_version": health_analyzer_version,
+        "security_scanner_version": security_scanner_version,
         "config_fingerprint": config_fingerprint(repo_path),
         "config_dependency_fingerprints": (
             dependency_fingerprints
@@ -1699,6 +1709,17 @@ def health_analyzer_changed(state: dict) -> bool:
     return stored is not None and stored != HEALTH_ANALYZER_VERSION
 
 
+def security_scanner_changed(state: dict) -> bool:
+    """Whether the stored security findings were written by a different scanner.
+
+    Mirrors :func:`health_analyzer_changed`: a legacy state file with no stamp
+    is not a change, it picks the stamp up on its first full security rescan
+    (#3072).
+    """
+    stored = state.get("security_scanner_version")
+    return stored is not None and stored != SECURITY_SCANNER_VERSION
+
+
 def full_rescore_due(state: dict, head_ts: float | None) -> bool:
     """Whether a full health re-score is due this update.
 
@@ -1745,3 +1766,58 @@ def run_decay_health_rescore(
     except Exception as exc:
         console.print(f"[yellow]Idle-file health re-score skipped: {exc}[/yellow]")
         return False
+
+
+def run_full_security_rescan(repo_path: Any, exclude_patterns: list[str]) -> bool:
+    """Rescan every tracked working-tree file against the current scanner (#3072).
+
+    Unlike the health decay rescore, there is no stored structural fact to
+    replay from the DB: a security finding comes from the raw source text, so
+    this does its own full parse (``collect_sources=True``) rather than reusing
+    the update's changed-files-only ``parsed_files``. Best-effort: returns True
+    on success so the caller can stamp ``security_scanner_version``; a failure
+    is logged and leaves the stamp so the next update retries.
+    """
+    try:
+        run_async(_security_rescan_from_full_parse(repo_path, exclude_patterns))
+        return True
+    except Exception as exc:
+        console.print(f"[yellow]Full security rescan skipped: {exc}[/yellow]")
+        return False
+
+
+async def _security_rescan_from_full_parse(repo_path: Any, exclude_patterns: list[str]) -> None:
+    """Full-replace security rescan over every tracked working-tree file.
+
+    Symbol-name findings (``SYMBOL_NAME_KINDS``) need the parsed symbols, so
+    this does its own full repo parse with ``collect_sources=True`` rather
+    than the changed-files-only ``parsed_files`` the rest of ``update`` works
+    from, the same way ``init`` has the full source available for its first
+    scan. ``replace_findings`` only ever deletes/replaces working-tree rows
+    (``commit_sha`` empty); history rows from ``scan --history`` are untouched.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.analysis.security_scan import SecurityScanner, scan_source_map
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+
+    parsed_files, source_map, _graph_builder, _repo_structure, _file_count = _build_repo_graph(
+        repo_path, exclude_patterns, collect_sources=True
+    )
+
+    url = get_db_url_for_repo(repo_path)
+    engine = create_engine(url)
+    try:
+        await init_db(engine)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            findings_by_file, scanned_paths = scan_source_map(parsed_files, source_map)
+            await SecurityScanner(session, repo.id).replace_findings(findings_by_file, scanned_paths)
+    finally:
+        await engine.dispose()

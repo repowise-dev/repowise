@@ -70,7 +70,8 @@ from repowise.server.mcp_server._helpers import (
     embed_timeout_s,
     vector_search_timeout_s,
 )
-from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
+from repowise.server.mcp_server._page_paths import FILE_ROW_TYPES, PAGELESS_FILE, pageless_path
+from repowise.server.mcp_server._prose_symbols import filename_backed_pages, symbol_backed_pages
 
 _log = logging.getLogger("repowise.mcp.answer")
 
@@ -224,6 +225,11 @@ _SYMBOL_LEG_MAX_PAGES = 8
 # but it cannot outvote them.
 _SYMBOL_LEG_RRF_K = 180
 
+# The filename leg is a name match too, weighted like the symbol leg. A name the
+# question spells in full (``full_cover``, see ``_prose_symbols``) is fused at the
+# page legs' k.
+_FILENAME_LEG_RRF_K = _SYMBOL_LEG_RRF_K
+
 
 # ---------------------------------------------------------------------------
 # The question's embedding, computed once per call
@@ -332,7 +338,7 @@ async def vector_search(
 
 
 async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
-    """Run FTS, vector and symbol retrieval in parallel and merge via RRF.
+    """Run FTS, vector, symbol and filename retrieval in parallel and merge via RRF.
 
     Returns a list of dicts shaped ``{page_id, title, score, snippet,
     page_type, _sources: set[str]}``. ``_sources`` names which retrievers
@@ -343,14 +349,20 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
     Both retrievers are best-effort with timeouts so one slow path can never
     block the call. An empty result from one mode just means the other mode
     fully drives ranking, which matches the pre-hybrid behaviour.
+
+    The symbol and filename legs also name indexed files that have no page, as
+    ``page_type: "file"`` hits, the same rows ``search_codebase`` serves.
     """
     # Reset before the legs run so the record describes this question and not
     # a previous one that happened to share the task context.
     begin_leg_record()
     fts_task = _safe_fts_search(ctx, question)
     vec_task = _safe_vector_search(ctx, question)
-    sym_task = _safe_symbol_search(ctx, question)
-    fts_results, vec_results, sym_results = await asyncio.gather(fts_task, vec_task, sym_task)
+    sym_task = _safe_symbol_search(ctx, question, pageless=True)
+    name_task = _safe_filename_search(ctx, question)
+    fts_results, vec_results, sym_results, name_results = await asyncio.gather(
+        fts_task, vec_task, sym_task, name_task
+    )
 
     # RRF merge. Each hit's contribution from a source is 1/(rank + k);
     # hits appearing in both sources sum their contributions naturally.
@@ -370,12 +382,23 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
         entry["score"] = entry.get("score", 0.0) + 1.0 / (rank + _RRF_K)
         entry["_sources"].add("vector")
         entry["_vec_rank"] = rank
-    for rank, h in enumerate(sym_results):
+    for rank, h in leg_ranks(sym_results):
         entry = fused.setdefault(h.page_id, _hit_dict_from_result(h))
         entry["score"] = entry.get("score", 0.0) + 1.0 / (rank + _SYMBOL_LEG_RRF_K)
         entry["_sources"].add("symbol")
         entry["_sym_rank"] = rank
         entry["_symbol_names"] = h.symbol_names
+    # Adds files the other legs missed and never reorders a page they found.
+    # Search fuses the same rows into its own entry shape, crediting a symbol
+    # page of the file; here every leg is keyed by page id, as above.
+    for rank, (h, full) in leg_ranks(name_results):
+        if h.page_id in fused and h.page_type != PAGELESS_FILE:
+            continue
+        entry = fused.setdefault(h.page_id, _hit_dict_from_result(h))
+        entry["score"] = entry.get("score", 0.0) + 1.0 / (
+            rank + (_RRF_K if full else _FILENAME_LEG_RRF_K)
+        )
+        entry["_sources"].add("filename")
 
     # Scale to BM25-range so downstream confidence/dominance gates (tuned
     # against the prior single-mode BM25 retrieval) keep behaving sanely.
@@ -393,12 +416,17 @@ def stamp_hybrid_rank(hits: list[dict]) -> None:
     """Record each hit's 0-based file rank in the fused order, before any rerank.
 
     This is the order ``search_codebase`` serves; confidence reads it to tell
-    when the reranked lead left it. Symbol pages share their file's rank.
+    when the reranked lead left it. Symbol pages share their file's rank. Files
+    are ranked among pages: a file with no page shares the rank of the page
+    below it, so it never pushes a page down.
     """
     files: dict[str, int] = {}
     for h in hits:
         path = (h.get("target_path") or "").split("::", 1)[0]
-        h["_hybrid_rank"] = files.setdefault(path, len(files))
+        if h.get("page_type") == PAGELESS_FILE:
+            h["_hybrid_rank"] = len(files)
+        else:
+            h["_hybrid_rank"] = files.setdefault(path, len(files))
 
 
 async def _safe_fts_search(ctx: Any, question: str) -> list[Any]:
@@ -576,6 +604,47 @@ async def _safe_symbol_search(
     ]
 
 
+async def _safe_filename_search(ctx: Any, question: str) -> list[tuple[_SymbolLegResult, bool]]:
+    """Files whose file name the question spells, each with whether it spells all
+    of the name. [] on any failure, like the other legs."""
+    try:
+        pages = await asyncio.wait_for(
+            filename_backed_pages(ctx, question, max_files=_SYMBOL_LEG_MAX_PAGES), timeout=5.0
+        )
+    except TimeoutError:
+        _record_leg("filename", "timeout")
+        return []
+    except Exception:
+        _record_leg("filename", "error")
+        _log.debug("filename leg failed; page retrieval stands", exc_info=True)
+        return []
+    _record_leg("filename", "ok")
+    return [
+        (
+            _SymbolLegResult(p["page_id"], p["title"], p["summary"][:200], p["page_type"], []),
+            p["full_cover"],
+        )
+        for p in pages
+    ]
+
+
+def leg_ranks(results: list[Any]) -> list[tuple[int, Any]]:
+    """Each result of a leg with its rank among that leg's pages.
+
+    A file with no page takes the rank of the page below it, so it never costs
+    a page its place in the leg: the pages fuse exactly as they would without it.
+    Items may be results or ``(result, extra)`` pairs.
+    """
+    ranked: list[tuple[int, Any]] = []
+    pages = 0
+    for item in results:
+        result = item[0] if isinstance(item, tuple) else item
+        ranked.append((pages, item))
+        if result.page_type != PAGELESS_FILE:
+            pages += 1
+    return ranked
+
+
 def _hit_dict_from_result(result: Any) -> dict:
     """Convert a retriever result object to the pipeline's dict shape."""
     return {
@@ -624,7 +693,7 @@ def demote_noise_hits(hits: list[dict], question: str, *, is_why: bool) -> list[
     def _is_noise(h: dict) -> bool:
         pt = h.get("page_type")
         return (pt == "decision_record" and not is_why) or (
-            pt == "file_page" and not test_focused and is_test_path(h.get("target_path") or "")
+            pt in FILE_ROW_TYPES and not test_focused and is_test_path(h.get("target_path") or "")
         )
 
     real = [h for h in hits if not _is_noise(h)]
@@ -671,6 +740,10 @@ async def hydrate_hits(hits: list[dict], ctx: Any, *, scope: str | None = None) 
     pageless = 0
     for h in hits:
         meta = meta_by_id.get(h["page_id"])
+        if meta is None and h.get("page_type") == PAGELESS_FILE:
+            # An indexed file with no page: its path is in its id, and it has
+            # no summary to give, so it serves its matched code instead.
+            meta = {"target_path": pageless_path(h["page_id"]), "page_type": PAGELESS_FILE}
         if meta is None:
             # A retrieved id with no page behind it: a decision vector, or a
             # vector left over from a page the stores have since disagreed
@@ -735,7 +808,10 @@ async def apply_pagerank_bias(hits: list[dict], ctx: Any) -> None:
 
     if not pr_by_path:
         return
-    max_pr = max(pr_by_path.values(), default=0.0)
+    # Normalised over the pages, so a file with no page cannot change their bias.
+    paged = {h.get("target_path") for h in hits if h.get("page_type") != PAGELESS_FILE}
+    max_pr = max((pr for path, pr in pr_by_path.items() if path in paged), default=0.0)
+    max_pr = max_pr or max(pr_by_path.values(), default=0.0)
     if max_pr <= 0:
         return
 
@@ -743,7 +819,7 @@ async def apply_pagerank_bias(hits: list[dict], ctx: Any) -> None:
         pr = pr_by_path.get(h.get("target_path"), 0.0)
         # Normalised in [0, 1] then scaled to a multiplicative bias in
         # [1.0, 1 + _PAGERANK_BIAS_MAX].
-        bias = 1.0 + _PAGERANK_BIAS_MAX * (pr / max_pr)
+        bias = 1.0 + _PAGERANK_BIAS_MAX * min(pr / max_pr, 1.0)
         h["_pagerank"] = pr
         h["_pagerank_bias"] = round(bias, 3)
         h["score"] = h.get("score", 0.0) * bias
@@ -835,7 +911,9 @@ async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dic
     """
     if not hits:
         return hits
-    seed_paths = [h.get("target_path") for h in hits[:_GRAPH_EXPAND_TOP_N] if h.get("target_path")]
+    # Seeded from pages only, so a file with no page cannot change what pages add.
+    seeds = [h for h in hits if h.get("page_type") != PAGELESS_FILE][:_GRAPH_EXPAND_TOP_N]
+    seed_paths = [h.get("target_path") for h in seeds if h.get("target_path")]
     if not seed_paths:
         return hits
     existing = {h.get("target_path") for h in hits}
@@ -904,7 +982,7 @@ async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dic
     # the strongest parent each child connects to (taking the max parent
     # score is conservative — favors well-connected neighbors).
     strongest_parent = max(
-        hits[:_GRAPH_EXPAND_TOP_N], key=lambda hit: hit.get("score", 0.0), default={}
+        seeds, key=lambda hit: hit.get("score", 0.0), default={}
     )
     parent_score = strongest_parent.get("score", 0.0)
     confidence_factor = strongest_parent.get("_confidence_score_factor")

@@ -354,18 +354,49 @@ def test_python_fixture_counts():
 
 
 @pytest.mark.parametrize(
-    "use_block,expected",
-    [
-        (b"use {std::fs, reqwest::Client};\n", "filesystem"),
-        (b"use {reqwest::Client, std::fs};\n", "network"),
-    ],
+    "use_block",
+    [b"use {std::fs, reqwest::Client};\n", b"use {reqwest::Client, std::fs};\n"],
 )
-def test_a_use_block_naming_two_io_modules_takes_the_first(use_block, expected):
-    # Picking from an unordered set made the kind follow PYTHONHASHSEED. Under
-    # any seed the old pick agreed for both orders, so one case failed.
+def test_a_use_block_naming_two_io_modules_keeps_each_members_own_kind(use_block):
+    # #2894: a grouped use statement no longer lets the first classifying
+    # module win the whole group. Each member keeps its own kind, in either
+    # source order.
     fc = walk_file("t.rs", "rust", use_block + b"fn f() {}\n")
-    assert fc.io_boundary_names
-    assert set(fc.io_boundary_names.values()) == {expected}
+    assert fc.io_boundary_names["fs"] == "filesystem"
+    assert fc.io_boundary_names["Client"] == "network"
+
+
+def test_a_use_block_naming_two_different_filesystem_and_collection_members():
+    # The in-group name a module resolves through (``fs``) never binds a
+    # sibling member's unrelated name (``collections``/``HashMap``).
+    fc = walk_file(
+        "t.rs", "rust", b"use std::{fs::File, collections::HashMap};\nfn f() {}\n"
+    )
+    assert fc.io_boundary_names["fs"] == "filesystem"
+    assert fc.io_boundary_names["File"] == "filesystem"
+    assert "collections" not in fc.io_boundary_names
+    assert "HashMap" not in fc.io_boundary_names
+
+
+def test_a_nested_use_group_classifies_each_leaf_on_its_own():
+    fc = walk_file(
+        "t.rs", "rust", b"use tokio::{fs, net::TcpStream};\nfn f() {}\n"
+    )
+    assert fc.io_boundary_names["fs"] == "filesystem"
+
+
+def test_a_use_alias_binds_only_the_local_alias_name():
+    fc = walk_file("t.rs", "rust", b"use reqwest::Client as C;\nfn f() {}\n")
+    assert fc.io_boundary_names == {"C": "network"}
+
+
+def test_io_in_loop_fires_regardless_of_grouped_use_order():
+    # The issue's own repro: a db execute sink must be found whichever order
+    # the grouped use's two modules are written in.
+    for use_block in (b"use {std::fs, sqlx::PgPool};\n", b"use {sqlx::PgPool, std::fs};\n"):
+        src = use_block + b"fn f(c: &PgPool, xs: &[i32]) { for i in xs { c.execute(i); } }\n"
+        fc = walk_file("t.rs", "rust", src)
+        assert ("io_in_loop", "db") in {(h.kind, h.detail) for h in fc.perf_hits}
 
 
 class _FakeImportNode:

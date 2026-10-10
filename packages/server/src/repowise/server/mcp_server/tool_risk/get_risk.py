@@ -79,6 +79,14 @@ _TARGET_CARD_INCLUDES: dict[str, tuple[str, ...]] = {
         "relationship_analysis",
     ),
     "churn": ("change_magnitude", "risk_type", "change_pattern"),
+    "owners": (
+        "owner_pct",
+        "owner_line_pct",
+        "recent_owner",
+        "recent_owner_pct",
+        "bus_factor",
+        "contributor_count",
+    ),
 }
 _BLAST_INCLUDES: dict[str, tuple[str, ...]] = {"graph": ("direct_risks",)}
 #: Per-field units and calibration. Identical on every call, so it is opt-in.
@@ -402,7 +410,7 @@ async def get_risk(
         targets: file paths to assess; defaults to changed_files.
         repo: usually omitted.
         changed_files: PR-changed files for blast-radius mode.
-        include: opt-in blocks - "graph", "churn", "tests" (typed test
+        include: opt-in blocks - "graph", "churn", "owners", "tests" (typed test
             rows), "blast", "scales" (units and calibration).
     """
     if repo == "all":

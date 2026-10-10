@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.persistence.models import WikiSymbol
-from repowise.server.mcp_server._page_paths import hit_file_path
+from repowise.server.mcp_server._page_paths import FILE_ROW_TYPES, hit_file_path
 from repowise.server.mcp_server._query_terms import content_terms, split_humps
 from repowise.server.mcp_server._verify import verify_and_heal
 from repowise.server.mcp_server.tool_answer.config import (
@@ -228,7 +228,7 @@ async def _hydrate_symbols_for_hits(
     question_ids: set[str] | None = None,
     question: str = "",
 ) -> None:
-    """Mutate `hits` in place: attach `symbols` list to top-N file_page hits.
+    """Mutate `hits` in place: attach `symbols` list to top-N whole-file hits.
 
     Symbols the question names by identifier move to the top of their file's
     list and get a ``source_excerpt``, so synthesis sees the body it is asked
@@ -289,13 +289,13 @@ async def _hydrate_symbols_for_hits(
 
 
 def _enrich_paths(hits: list[dict]) -> list[str]:
-    """The top ``_ENRICH_TOP_N_HITS`` file_page paths, in retrieval-rank order."""
+    """The top ``_ENRICH_TOP_N_HITS`` whole-file paths, paged or not, in rank order."""
     # `hits` is already sorted by descending score upstream.
     enrich_paths: list[str] = []
     for h in hits:
         if len(enrich_paths) >= _ENRICH_TOP_N_HITS:
             break
-        if h.get("target_path") and h.get("page_type") == "file_page":
+        if h.get("target_path") and h.get("page_type") in FILE_ROW_TYPES:
             enrich_paths.append(h["target_path"])
     return enrich_paths
 

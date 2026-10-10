@@ -362,6 +362,14 @@ def _is_block_loop_body_scope(
     return False
 
 
+def _in_deferred_body(node: Node, dialect: BasePerfDialect, scope_kinds: frozenset[str]) -> bool:
+    """Whether *node* sits in a body that runs when its result is iterated."""
+    cur = node.parent
+    while cur is not None and cur.type not in scope_kinds:
+        cur = cur.parent
+    return cur is not None and dialect.defers_body(cur)
+
+
 def perf_pass_runs(language: str, lmap: LanguageNodeMap) -> bool:
     """Whether ``_collect_perf_hits`` does anything for *language*."""
     return bool(lmap.call_kinds) and language in PERF_DIALECTS
@@ -416,6 +424,7 @@ def _collect_perf_hits(
     loop_kinds = lmap.loop_kinds
     fn_kinds = lmap.function_kinds
     lambda_kinds = lmap.lambda_kinds
+    scope_kinds = fn_kinds | lambda_kinds
     async_fn_kinds = lmap.async_function_kinds
     bare_call_wrapper_kinds = lmap.bare_call_wrapper_kinds
     # Block-iteration loops (Ruby ``items.each do … end``): only pay for the
@@ -667,6 +676,7 @@ def _collect_perf_hits(
                         and misc[1] is None
                         and kind in _HOT_PATH_SINK_KINDS
                         and method not in dialect.hot_path_excluded_methods
+                        and not _in_deferred_body(call_node, dialect, scope_kinds)
                     ):
                         # An inherently-blocking (non-awaited subprocess / fs /
                         # sync-network) sink outside any loop. Noisy everywhere,

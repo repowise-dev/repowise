@@ -123,10 +123,12 @@ def _classify_import(node: _NodeLike) -> tuple[str | None, list[str]]:
     finding when it is later *called as an execution sink*, which a non-I/O
     symbol never is.
 
-    When a statement names several I/O modules (a Rust ``use { ... }`` block),
-    the first one in source order wins, and within one token its most specific
-    (longest) variant. The order is fixed so the result never depends on set
-    iteration, which varies with ``PYTHONHASHSEED``.
+    Within one token, the most specific (longest) variant wins; candidates are
+    tried in a fixed order so the result never depends on set iteration, which
+    varies with ``PYTHONHASHSEED``. Rust ``use`` declarations do not reach this
+    function at all — :func:`_classify_rust_leaf` classifies each flattened
+    leaf of the use tree on its own, so a grouped ``use { ... }`` cannot bind
+    one member's kind onto another (#2894).
     """
     text = _decode(node)
     # TS / JS module sources are quoted string literals, tried first; then
@@ -148,6 +150,116 @@ def _classify_import(node: _NodeLike) -> tuple[str | None, list[str]]:
         t for t in re.split(r"[^A-Za-z0-9_]+", text) if t.isidentifier() and t not in _IMPORT_KW
     ]
     return kind, bound
+
+
+def _rust_use_argument(node: _NodeLike) -> _NodeLike | None:
+    """The use tree of a ``use_declaration`` (the part after ``use``)."""
+    arg = node.child_by_field_name("argument") if hasattr(node, "child_by_field_name") else None
+    if arg is not None:
+        return arg
+    for child in node.children:
+        if child.type not in ("use", ";", "pub", "visibility_modifier"):
+            return child
+    return None
+
+
+def _rust_leaf_bound_names(path: str) -> list[str]:
+    """Every identifier segment of one leaf's own path, for over-binding.
+
+    Mirrors :func:`_classify_import`'s bound-name extraction (every
+    identifier-looking token of the classified unit's own text binds), but
+    scoped to one leaf's path instead of a whole statement's text — so
+    ``std::fs::File`` binds both ``fs`` and ``File``, and a sibling leaf in
+    the same group (``collections::HashMap``) binds neither.
+    """
+    return [
+        t for t in re.split(r"[^A-Za-z0-9_]+", path) if t.isidentifier() and t not in _IMPORT_KW
+    ]
+
+
+def _rust_use_leaves(
+    node: _NodeLike, prefix: str = "", depth: int = 0
+) -> list[tuple[str, list[str]]]:
+    """Flatten a Rust use tree into one ``(full_path, bound_names)`` per leaf.
+
+    A brace group (``use a::{b::c, d}``) names members from different
+    sub-paths; walking to each leaf keeps every member's own path distinct
+    instead of classifying the whole group as one unresolvable string (#2894).
+    Loosely mirrors ``ingestion.extractors.bindings.rust.expand_rust_use_tree``
+    (one leaf per import, same tree shapes), but stays duck-typed on
+    ``node.text`` instead of threading a source string through, and binds
+    every segment of a leaf's own path rather than only its final one, since
+    an over-bound non-callable name is harmless here (see module docstring)
+    and a ``use std::{fs::File, ...}``-shaped leaf should still classify
+    ``fs`` itself.
+    """
+    if depth > 10:
+        return []
+    get = node.child_by_field_name if hasattr(node, "child_by_field_name") else lambda _f: None
+    if node.type == "scoped_use_list":
+        path_node = get("path")
+        list_node = get("list")
+        new_prefix = f"{prefix}::{_decode(path_node)}" if path_node is not None else prefix
+        if list_node is None:
+            return []
+        return _rust_use_leaves(list_node, new_prefix, depth + 1)
+    if node.type == "use_list":
+        out: list[tuple[str, list[str]]] = []
+        for child in node.children:
+            if child.type in ("{", "}", ","):
+                continue
+            out.extend(_rust_use_leaves(child, prefix, depth + 1))
+        return out
+    if node.type == "use_wildcard":
+        return [(f"{prefix}::*" if prefix else "*", [])]
+    if node.type == "use_as_clause":
+        path_node = get("path")
+        alias_node = get("alias")
+        if path_node is None or alias_node is None:
+            return []
+        alias = _decode(alias_node)
+        text = _decode(path_node)
+        path = prefix if text == "self" and prefix else (f"{prefix}::{text}" if prefix else text)
+        # An alias replaces the imported name entirely: only ``C`` is a real
+        # identifier after ``use reqwest::Client as C;``, never ``Client``.
+        return [(path, [alias] if alias.isidentifier() else [])]
+    text = _decode(node)
+    # ``{self}`` names the enclosing path itself: ``a::{self}`` binds ``a``.
+    path = prefix if text == "self" and prefix else (f"{prefix}::{text}" if prefix else text)
+    return [(path, _rust_leaf_bound_names(path))]
+
+
+def _classify_rust_leaf(path: str) -> str | None:
+    """``io_kind`` for one flattened Rust use-tree leaf path, or ``None``.
+
+    Reuses :func:`_candidate_variants`' segment/prefix expansion and local-root
+    exclusion (``crate::`` / ``self::`` / ``super::`` never classify), applied
+    to one leaf's own path instead of a whole statement's regex-tokenized text.
+    """
+    for cand in sorted(_candidate_variants(path), key=lambda c: (-len(c), c)):
+        kind = classify_io_kind(cand)
+        if kind:
+            return kind
+    return None
+
+
+def _bind_rust_use_names(node: _NodeLike, names: dict[str, str]) -> None:
+    """Bind the I/O names one Rust ``use_declaration`` brings in.
+
+    A Rust ``use`` statement is flattened to one leaf per imported member
+    and each leaf classified on its own, so a grouped import
+    (``use std::{fs::File, collections::HashMap};``) cannot let one
+    member's kind leak onto another (#2894). A single-path ``use`` flattens
+    to one leaf too, so behaviour there is unchanged.
+    """
+    arg = _rust_use_argument(node)
+    if arg is None:
+        return
+    for path, bound in _rust_use_leaves(arg):
+        kind = _classify_rust_leaf(path)
+        if kind is not None:
+            for name in bound:
+                names.setdefault(name, kind)
 
 
 def collect_io_names(tree_root: _NodeLike, language: str) -> dict[str, str]:
@@ -217,6 +329,8 @@ def _io_visit(
             if kind is not None:
                 for name in bound:
                     names.setdefault(name, kind)
+    elif node_type == "use_declaration" and language == "rust":
+        _bind_rust_use_names(node, names)
     elif "import" in node_type or node_type in ("using_directive", "use_declaration"):
         # Classify only the *leaf* import node. A Go grouped
         # ``import ( "database/sql"; "regexp" )`` is an ``import_declaration``

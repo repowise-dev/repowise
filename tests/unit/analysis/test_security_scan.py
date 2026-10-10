@@ -903,11 +903,22 @@ class TestEverySnippetIsMasked:
     def test_a_repeated_value_masks_in_linear_time(self) -> None:
         import time
 
-        line = " ".join(f'password = "{self.PW}";' for _ in range(5000))
-        started = time.perf_counter()
-        (hit,) = scan_source("a.py", line + "\n")
-        assert time.perf_counter() - started < 1.0
-        _assert_no_raw(hit["snippet"], self.PW)
+        sources = [
+            " ".join(f'password = "{self.PW}";' for _ in range(count)) + "\n"
+            for count in (2500, 10000)
+        ]
+        timings: list[list[float]] = [[], []]
+        # Alternate sizes and take the best of three runs to reduce scheduling noise.
+        for _ in range(3):
+            for source, samples in zip(sources, timings, strict=True):
+                started = time.perf_counter()
+                (hit,) = scan_source("a.py", source)
+                samples.append(time.perf_counter() - started)
+                _assert_no_raw(hit["snippet"], self.PW)
+
+        small, large = (min(samples) for samples in timings)
+        # A 4x input should take about 4x as long, not the 16x of quadratic work.
+        assert large < 8 * small, f"4x input took {large / small:.2f}x as long"
 
     def test_long_github_pat_straddling_the_cut_is_masked(self) -> None:
         pat = "github_pat_" + "".join(chr(ord("A") + (i * 7) % 26) for i in range(82))
@@ -1072,6 +1083,34 @@ class TestSecretPrecision:
     )
     def test_dummy_values_are_not_secrets(self, source: str) -> None:
         assert self._kinds(source, "src/client.tsx") == set()
+
+    @pytest.mark.parametrize(
+        ("path", "source"),
+        [
+            ("src/Conn.kt", 'const val DISCOVERY_TOKEN = "discoveryToken"\n'),
+            ("src/Conn.kt", 'const val KEY_STORE_PASSWORD = "keystorePassword"\n'),
+            ("src/tokens.ts", "export const LANGUAGE_SERVER_WS_ADDRESS_TOKEN = 'LANGUAGE_SERVER_WS_ADDRESS_TOKEN';\n"),
+            ("src/AuthScheme.kt", 'const val MASKED_PASSWORD = "**************"\n'),
+            ("src/Auth.kt", 'val bearerToken = "Bearer ${auth.token.tokenValue}"\n'),
+            ("src/auth.ts", 'const token = "Basic ${btoa(user)}";\n'),
+            ("README.md", '--spring.datasource.password="DB PASSWORD"\n'),
+            ("README.md", 'DB_PASSWORD="YOUR DB PASSWORD"\n'),
+        ],
+    )
+    def test_additional_placeholders_are_not_secrets(self, path: str, source: str) -> None:
+        assert self._kinds(source, path) == set()
+
+    @pytest.mark.parametrize(
+        ("source", "kind"),
+        [
+            ('TOKEN = "xQzRmWpLkVnBtYcH"\n', "hardcoded_secret"),
+            ('TOKEN = "Bearer eyJhbGciOiJIUzI1NiJ9abc"\n', "hardcoded_secret"),
+            ('const val API_TOKEN = "productionAccessKey"\n', "hardcoded_secret"),
+            ('password="Tr0ub4dor 3xyz"\n', "hardcoded_password"),
+        ],
+    )
+    def test_credential_like_values_still_fire(self, source: str, kind: str) -> None:
+        assert self._kinds(source) == {kind}
 
     @pytest.mark.parametrize(
         "source",

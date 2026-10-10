@@ -7,10 +7,15 @@ test data, mirroring the conftest pattern from the REST API tests.
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
 from repowise.core.persistence.models import HealthFinding
+
+
+def _git(repo, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=str(repo), check=True, capture_output=True)
 
 
 @pytest.mark.asyncio
@@ -1570,6 +1575,26 @@ async def test_only_projection_keeps_unresolved(setup_mcp, health_data):
     result = await get_health(targets=["does/not/exist.py"], only=["metrics"])
     assert result["metrics"] == []
     assert result["unresolved"] == [{"target": "does/not/exist.py", "reason": "no_such_path"}]
+
+
+@pytest.mark.asyncio
+async def test_no_such_path_redirects_to_a_renamed_file(setup_mcp, health_data, tmp_path):
+    """A stale doc's old path should not be a dead end when git knows where it went (#2633)."""
+    from repowise.server.mcp_server import get_health
+
+    _git(tmp_path, "init", "-b", "main")
+    (tmp_path / "old_name.py").write_text("def f():\n    return 1\n" * 5, encoding="utf-8")
+    _git(tmp_path, "add", "old_name.py")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "add old_name")
+    _git(tmp_path, "mv", "old_name.py", "new_name.py")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "rename")
+
+    result = await get_health(targets=["old_name.py"])
+    unresolved = result["unresolved"][0]
+
+    assert unresolved["reason"] == "no_such_path"
+    assert unresolved["moved_to"] == ["new_name.py"]
+    assert unresolved["removed_by_commit"]
 
 
 @pytest.mark.asyncio

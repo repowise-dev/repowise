@@ -20,6 +20,14 @@ from __future__ import annotations
 # is the file, and there is no page behind its id to read.
 PAGELESS_FILE = "file"
 
+# Rows that are one whole file, with or without a page behind them.
+FILE_ROW_TYPES = ("file_page", PAGELESS_FILE)
+
+
+def pageless_path(page_id: str) -> str:
+    """The file a pageless row's id (``file:<path>``) names."""
+    return page_id.partition(":")[2]
+
 # Page types whose ``target_path`` is a real repository-relative file path.
 #
 # ``symbol_spotlight`` is included because its target_path is ``file.py::Sym``:
