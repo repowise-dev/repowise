@@ -744,7 +744,15 @@ def test_share_follows_what_the_biomarker_measures():
     assert recovered_share("large_method", fn, span) == 0.25
     assert recovered_share("brain_method", fn, span) == 0.5
     # Capped: a span cannot recover more than the whole finding.
-    assert recovered_share("large_method", _Shape(3, 10), _Span(2, 20)) == 1.0
+    assert recovered_share("large_method", _Shape(2, 10), _Span(2, 20)) == 1.0
+
+
+def test_no_biomarker_credits_more_than_the_decision_point_share():
+    # A long flat span (137 code lines, 2 decision points out of 40) moves
+    # straight-line code: the size share must not stand in for the split.
+    fn, span = _Shape(40, 200), _Span(2, 137)
+    assert recovered_share("large_method", fn, span) == pytest.approx(2 / 40)
+    assert recovered_share("brain_method", fn, span) == pytest.approx(2 / 40)
 
 
 def test_two_decision_points_out_of_a_tiny_size_finding_claim_little():
@@ -754,12 +762,13 @@ def test_two_decision_points_out_of_a_tiny_size_finding_claim_little():
     assert share == pytest.approx(16 / 292)
 
 
-def test_floor_drops_a_one_point_span_unless_it_is_a_large_size_lift():
+def test_floor_drops_a_one_point_span_whatever_its_size():
     fn = _Shape(12, 80)
     assert not _worth_extracting(fn, _Span(1, 8), {"complex_method"})
     assert _worth_extracting(fn, _Span(2, 5), {"complex_method"})
-    assert not _worth_extracting(fn, _Span(1, 11), {"large_method"})
-    assert _worth_extracting(fn, _Span(1, 12), {"large_method"})
+    # A 137-line span lifting one decision point out of a large method
+    # (registerChannelsCli) is no longer a size lift worth a plan.
+    assert not _worth_extracting(_Shape(30, 180), _Span(1, 137), {"large_method"})
 
 
 def test_a_helper_inheriting_the_finding_undiminished_is_not_worth_it():
@@ -906,7 +915,7 @@ def test_a_best_span_below_the_floor_yields_to_the_next_one(monkeypatch):
     from repowise.core.analysis.health.refactoring import extract_method
 
     trivial = Extraction(10, 17, ("a",), (), slice_nloc=8, ccn_removed=1)
-    worth = Extraction(20, 25, ("b",), (), slice_nloc=6, ccn_removed=3)
+    worth = Extraction(20, 27, ("b",), (), slice_nloc=8, ccn_removed=3)
     monkeypatch.setattr(extract_method, "find_extractions", lambda _a, _l: [trivial, worth])
     fn = _Shape(12, 40)
     analysis = type(
@@ -922,7 +931,7 @@ def test_a_best_span_below_the_floor_yields_to_the_next_one(monkeypatch):
         function_analyses=[analysis],
     )
     (s,) = ExtractMethodDetector().detect(ctx)
-    assert s.plan["span"] == {"start": 20, "end": 25}
+    assert s.plan["span"] == {"start": 20, "end": 27}
     assert s.impact_delta == round(1.2 * 3 / 12, 3)
 
 
@@ -996,3 +1005,105 @@ def test_a_span_leaving_real_work_behind_is_still_offered():
     (best, *_) = find_extractions(fn, lmap)
     assert "average" in best.returns
     assert best.end_line < fn.end_line
+
+
+# -- offer gates (span share, size, docstring start) ---------------------------------
+
+
+def _fn_lines(start: int, end: int):
+    return type("A", (), {"start_line": start, "end_line": end, "fn_node": None})()
+
+
+def _offer(fn_span: tuple[int, int], span: tuple[int, int], nloc: int, ccn: int = 9) -> bool:
+    from repowise.core.analysis.health.dataflow import Extraction
+    from repowise.core.analysis.health.refactoring.extract_method import _offerable
+
+    return _offerable(_fn_lines(*fn_span), Extraction(*span, (), (), nloc, ccn))
+
+
+@pytest.mark.parametrize(
+    ("fn_span", "span", "nloc"),
+    [
+        ((31, 313), (108, 311), 183),  # parseLineDirectives, share 0.72
+        ((1601, 1827), (1665, 1826), 151),  # cmd_migrate, share 0.71
+        ((18, 63), (29, 57), 23),  # buildConformanceOverlay, share 0.63
+    ],
+)
+def test_a_span_over_three_fifths_of_the_function_is_not_offered(fn_span, span, nloc):
+    assert not _offer(fn_span, span, nloc)
+
+
+def test_a_six_line_span_is_not_offered():
+    # bulk_update: 6 code lines out of a 132-line function.
+    assert not _offer((1304, 1435), (1349, 1354), 6, ccn=3)
+    assert _offer((1304, 1435), (1349, 1356), 8, ccn=3)
+
+
+@pytest.mark.parametrize(
+    ("fn_span", "span", "nloc"),
+    [
+        ((171, 210), (186, 209), 24),  # extract_include_dirs, share exactly 0.600
+        ((1699, 2208), (1769, 1786), 12),  # compute_order_by_sql
+        ((273, 367), (326, 366), 37),  # _start_multiplex
+        ((170, 216), (183, 204), 21),  # parallel provider search
+        ((20, 78), (38, 59), 22),  # qwen-oauth prepare_messages
+    ],
+)
+def test_calibration_shapes_are_still_offered(fn_span, span, nloc):
+    assert _offer(fn_span, span, nloc)
+
+
+# uninstall_gui: the slicer's best span ties with the one a line lower and wins
+# on the earlier start, so it opens on the docstring.
+_DOCSTRING_FIRST = """
+def uninstall(home, packaged, keep):
+    \"\"\"Remove the built artifacts and the packaged app.
+
+    Never touches user data. Returns the paths removed.
+    \"\"\"
+    removed = []
+    for path in home:
+        if path.exists() and path.is_dir():
+            removed.append(path)
+    for path in packaged:
+        if path.exists() or path.is_symlink():
+            removed.append(path)
+    print(len(removed))
+    if not removed:
+        print("nothing to remove")
+        return []
+    if keep:
+        print("kept user data")
+        return removed
+    print("removed user data")
+    print("done")
+    print("bye")
+    return removed
+"""
+
+
+def test_a_span_opening_on_the_docstring_is_not_offered():
+    fn = _first(_DOCSTRING_FIRST)
+    (best, *_) = find_extractions(fn, get_language_map("python"))
+    assert best.start_line == fn.start_line + 1  # the docstring line
+    findings = [_Finding("complex_method", "uninstall", fn.start_line, 1.5)]
+    assert ExtractMethodDetector().detect(_ctx(_DOCSTRING_FIRST, findings)) == []
+
+
+def test_a_leading_comment_is_not_a_docstring():
+    from repowise.core.analysis.health.refactoring.extract_method import _starts_on_docstring
+
+    node = _parse(
+        "typescript",
+        """
+        function f(a: number[]) {
+          /** Totals the positive values. */
+          let total = 0;
+          return total;
+        }
+        """,
+    )
+    assert not _starts_on_docstring(node, node.start_point[0] + 2)
+    assert not _starts_on_docstring(node, node.start_point[0] + 3)
+    strict = _parse("typescript", 'function g() {\n  "use strict";\n  let x = 1;\n  return x;\n}\n')
+    assert _starts_on_docstring(strict, strict.start_point[0] + 2)

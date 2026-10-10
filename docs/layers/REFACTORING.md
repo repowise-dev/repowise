@@ -160,6 +160,11 @@ Most plans answer a health finding, so per-path marker rules in
 - Extract Method skips spans too small to matter and spans that would carry the
   original finding into the helper. A component whose branching is mostly in its
   markup gets no extraction.
+- An Extract Method span must remove at least two decision points, hold at least
+  8 code lines, cover at most 60% of the function's lines, and not start on the
+  docstring. A function whose best span misses one of these gets no plan rather
+  than a slightly smaller copy of the same span. Its estimated gain never counts
+  more than the share of decision points the span removes.
 - Move Method never targets a class the method only instantiates, or an ancestor of
   its own class.
 - Split File works on any language with call resolution and suggests a split only
