@@ -68,13 +68,13 @@ function extractMethodSteps(plan: RefactoringPlan): string {
   const params = em.params.length ? em.params.join(", ") : "(none)";
   const returns = em.returns.length ? em.returns.join(", ") : "(nothing)";
   const name = em.suggested_name ?? HELPER_NAME_PLACEHOLDER;
-  const rendered =
-    em.signature_text && em.call_site
-      ? [
-          `- **New helper:** \`${em.signature_text}\``,
-          `- **Replace lines ${em.span.start}–${em.span.end} with:** \`${em.call_site.new_text}\``,
-        ]
-      : [];
+  const rendered = [
+    ...(em.signature_text ? [`- **New helper:** \`${em.signature_text}\``] : []),
+    ...(em.call_site
+      ? [`- **Replace lines ${em.span.start}–${em.span.end} with:** \`${em.call_site.new_text}\``]
+      : []),
+    ...em.notes.map((note) => `- **Note:** ${note}`),
+  ];
   return [
     `Extract lines ${em.span.start}–${em.span.end} of \`${plan.target_symbol}\` into \`${name}\`${
       em.suggested_name ? "" : " (name it for what the lines do)"

@@ -10,27 +10,32 @@ Repowise never applies an edit, so they are spec, not a patch.
 load(path string) Config {``); ``call_site.new_text`` is the one statement
 that replaces the span (``config = await self._load(path)``,
 ``const config = this.loadConfig(path);``). Neither is indented: the
-statement takes the replaced lines' indentation.
+statement takes the replaced lines' indentation. ``notes`` say what the texts
+cannot (a Rust value that may move, a coroutine's return type).
 
 Per language: the private convention (Python's leading underscore, TS
 ``private``, Java ``private``, a C++ ``static`` free function; Go's lower-case
 first letter and Rust's missing ``pub`` already hold), the async form
 (``async`` + ``await``, Rust ``.await``, C++ ``co_await``), the receiver a
-method keeps, and how the call declares an output first declared in the span
-(``const`` / ``let``, Go ``:=``, Rust ``let`` / ``let mut``, Java / C++ the
-declared type, ``var`` / ``auto`` without one). A type the parse does not
+method keeps (a C++ ``const`` member stays ``const``), and how the call
+declares an output first declared in the span (``const`` / ``let``, Go
+``:=`` unless the name was written before, Rust ``let`` / ``let mut``, Java /
+C++ the declared type, ``var`` / ``auto`` without one). A Rust value the host
+still reads after the call is borrowed, not moved. A type the parse does not
 name is left out where the language allows it (Python, TS / JS) and written
-``<type>`` where it does not (Go, Java, Rust, C++); a missing name is
+``<type>`` where it does not (Go, Java, Rust, C / C++); a missing name is
 ``<name>``. Both are placeholders the agent must replace.
 
-Ceiling: one output at most, as the slicer never offers more
-(``dataflow.slice._MAX_RETURNS``); C7's staged plans bring tuple returns.
+Ceilings: one output at most, as the slicer never offers more
+(``dataflow.slice._MAX_RETURNS``); C7's staged plans bring tuple returns. A
+C++ method defined out of line (``A::f``) has an unknown receiver, so it gets
+no texts and the header is never qualified.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, get_args
+from typing import Literal, NamedTuple, get_args
 
 ParamMode = Literal["in", "inout"]
 #: ``inout``: the helper takes the value and hands its new value back.
@@ -55,14 +60,26 @@ _FAMILY: dict[str, str] = {
 }
 #: Languages whose signatures need every type written.
 _TYPED = frozenset({"go", "java", "rust", "cpp"})
+#: Rust types that copy rather than move when passed by value.
+_RUST_COPY = frozenset(
+    {
+        *(f"{s}{n}" for s in "iu" for n in ("8", "16", "32", "64", "128", "size")),
+        "f32",
+        "f64",
+        "bool",
+        "char",
+    }
+)
 
 
 @dataclass(frozen=True)
 class Slot:
-    """One parameter or output: its name and declared type (None: unknown)."""
+    """One parameter or output: its name, declared type (None: unknown), and
+    whether the host reads it after the span (a Rust move would end that)."""
 
     name: str
     type: str | None = None
+    read_after: bool = False
 
 
 @dataclass(frozen=True)
@@ -70,9 +87,12 @@ class HelperShape:
     """What the renderer needs to know about one helper.
 
     ``receiver`` is the name a method reaches its instance by (``self``,
-    ``cls``, ``this``, a Go receiver) and ``receiver_decl`` the text a Go or
-    Rust method repeats (``(s *S)``, ``&mut self``). ``out_declared``: the
-    output is first declared in the span, so the call declares it;
+    ``cls``, ``this``, a Go receiver) and ``receiver_decl`` the text a method
+    repeats (Go ``(s *S)``, Rust ``&mut self``, C++ trailing ``const``).
+    ``async_host`` False: the host is not declared async, so nothing there can
+    await the helper. ``out_declared``: the output is first declared in the
+    span, so the call declares it; ``out_written_before``: it was written
+    before the span (Go's ``:=`` would then declare nothing new);
     ``out_rebound``: it is assigned again after the span.
     """
 
@@ -84,11 +104,19 @@ class HelperShape:
     returns: tuple[Slot, ...] = ()
     receiver: str | None = None
     receiver_decl: str | None = None
+    async_host: bool = True
     out_declared: bool = False
+    out_written_before: bool = False
     out_rebound: bool = False
 
 
-def helper_name(language: str | None, name: str | None) -> str | None:
+class Rendered(NamedTuple):
+    signature: str
+    call: str | None
+    notes: tuple[str, ...]
+
+
+def private_name(language: str | None, name: str | None) -> str | None:
     """*name* in the language's private form: Python's leading underscore.
     Other languages mark privacy on the header, or already have it in the
     name's case (Go)."""
@@ -107,16 +135,38 @@ def symbol_params(params: tuple[Slot, ...], returns: tuple[Slot, ...]) -> list[d
     ]
 
 
-def render(shape: HelperShape) -> tuple[str, str] | None:
-    """``(signature_text, call_text)``, or None when the helper's form is not
-    known: a language without a renderer, or ``kind`` None, where the span may
-    reach its object by a name a function would not have, so a function
-    header would be a confident wrong spec."""
+def render(shape: HelperShape) -> Rendered | None:
+    """The header, the call (None when the host cannot await the helper) and
+    notes, or None when the helper's form is not known: a language without a
+    renderer, or ``kind`` None, where the span may reach its object by a name
+    a function would not have, so a function header would be a confident
+    wrong spec."""
     family = _FAMILY.get(shape.language)
     if family is None or shape.kind not in ("method", "function"):
         return None
     sig, call = _RENDERERS[family]
-    return sig(shape), call(shape)
+    notes = list(_notes(shape, family))
+    if shape.is_async and not shape.async_host:
+        notes.append(
+            "The function holding these lines is not async, so the call cannot await "
+            "the helper where it stands."
+        )
+        return Rendered(sig(shape), None, tuple(notes))
+    return Rendered(sig(shape), call(shape), tuple(notes))
+
+
+def _notes(s: HelperShape, family: str) -> list[str]:
+    out = []
+    if family == "rust":
+        unknown = [p.name for p in _rust_unsure(s)]
+        if unknown:
+            out.append(
+                f"Pass {', '.join(unknown)} by reference (&) unless the type is Copy: "
+                "the caller still reads it after the call."
+            )
+    if family == "cpp" and s.is_async:
+        out.append("Give the helper the coroutine return type the caller co_awaits.")
+    return out
 
 
 # -- shared pieces -----------------------------------------------------------
@@ -204,18 +254,23 @@ def _go_call(s: HelperShape) -> str:
     out = _out(s)
     if out is None:
         return expr
-    return f"{out.name} {':=' if s.out_declared else '='} {expr}"
+    # ``x, err :=`` in the span may only redeclare ``x``; alone it must assign.
+    return f"{out.name} {'=' if s.out_written_before else ':='} {expr}"
 
 
-# -- Java --------------------------------------------------------------------
+# -- Java / C / C++ ------------------------------------------------------------
+
+
+def _type_first(s: HelperShape, family: str) -> str:
+    """``T a, U b``: Java and C / C++ write the type before the name."""
+    return ", ".join(f"{_type(p, family)} {p.name}" for p in s.params)
 
 
 def _java_sig(s: HelperShape) -> str:
-    params = ", ".join(f"{_type(p, 'java')} {p.name}" for p in s.params)
     out = _out(s)
     ret = _type(out, "java") if out else "void"
     static = "" if _method(s) else "static "
-    return f"private {static}{ret} {_name(s)}({params}) {{"
+    return f"private {static}{ret} {_name(s)}({_type_first(s, 'java')}) {{"
 
 
 def _java_call(s: HelperShape) -> str:
@@ -233,7 +288,46 @@ def _declared_call(s: HelperShape, expr: str, inferred: str) -> str:
     return f"{out.name} = {expr};"
 
 
+def _cpp_sig(s: HelperShape) -> str:
+    out = _out(s)
+    if s.is_async:
+        ret = TYPE_PLACEHOLDER  # the coroutine's own type (a note says so)
+    elif out:
+        # A helper returns its value, never a reference to its own local.
+        ret = (out.type or TYPE_PLACEHOLDER).rstrip("&").rstrip()
+    else:
+        ret = "void"
+    static = "" if _method(s) else "static "
+    const = " const" if _method(s) and s.receiver_decl == "const" else ""
+    return f"{static}{ret} {_name(s)}({_type_first(s, 'cpp')}){const} {{"
+
+
+def _cpp_call(s: HelperShape) -> str:
+    expr = f"{'co_await ' if s.is_async else ''}{_name(s)}({_args(s)})"
+    # ``auto`` declares nothing before C23.
+    return _declared_call(s, expr, TYPE_PLACEHOLDER if s.language == "c" else "auto")
+
+
 # -- Rust --------------------------------------------------------------------
+
+
+def _rust_borrowed(s: HelperShape, p: Slot) -> bool:
+    """A known non-Copy value the host still reads after the call: passing it
+    by value would move it into the helper."""
+    outs = {r.name for r in s.returns}
+    return bool(
+        p.read_after
+        and p.type
+        and p.name not in outs
+        and not p.type.startswith("&")
+        and p.type not in _RUST_COPY
+    )
+
+
+def _rust_unsure(s: HelperShape) -> list[Slot]:
+    """Values read after the call whose type is unknown: they may move."""
+    outs = {r.name for r in s.returns}
+    return [p for p in s.params if p.read_after and not p.type and p.name not in outs]
 
 
 def _rust_self(s: HelperShape) -> str:
@@ -247,7 +341,10 @@ def _rust_self(s: HelperShape) -> str:
 
 
 def _rust_sig(s: HelperShape) -> str:
-    params = [f"{p.name}: {_type(p, 'rust')}" for p in s.params]
+    params = [
+        f"{p.name}: &{p.type}" if _rust_borrowed(s, p) else f"{p.name}: {_type(p, 'rust')}"
+        for p in s.params
+    ]
     if _method(s):
         params.insert(0, _rust_self(s))
     out = _out(s)
@@ -257,29 +354,14 @@ def _rust_sig(s: HelperShape) -> str:
 
 def _rust_call(s: HelperShape) -> str:
     target = "self." if _method(s) else ""
-    expr = f"{target}{_name(s)}({_args(s)}){'.await' if s.is_async else ''}"
+    args = ", ".join(f"&{p.name}" if _rust_borrowed(s, p) else p.name for p in s.params)
+    expr = f"{target}{_name(s)}({args}){'.await' if s.is_async else ''}"
     out = _out(s)
     if out is None:
         return expr + ";"
     if s.out_declared:
         return f"let {'mut ' if s.out_rebound else ''}{out.name} = {expr};"
     return f"{out.name} = {expr};"
-
-
-# -- C / C++ -----------------------------------------------------------------
-
-
-def _cpp_sig(s: HelperShape) -> str:
-    params = ", ".join(f"{_type(p, 'cpp')} {p.name}" for p in s.params)
-    out = _out(s)
-    ret = _type(out, "cpp") if out else "void"
-    static = "" if _method(s) else "static "
-    return f"{static}{ret} {_name(s)}({params}) {{"
-
-
-def _cpp_call(s: HelperShape) -> str:
-    expr = f"{'co_await ' if s.is_async else ''}{_name(s)}({_args(s)})"
-    return _declared_call(s, expr, "auto")
 
 
 _RENDERERS = {
@@ -294,7 +376,7 @@ _RENDERERS = {
 
 
 #: What the renderer adds to a stored plan, served on plan detail only.
-_DETAIL_SYMBOL_KEYS = ("params", "returns", "signature_text")
+_DETAIL_SYMBOL_KEYS = ("params", "returns", "signature_text", "notes")
 
 
 def list_plan(plan: dict) -> dict:
@@ -328,10 +410,11 @@ __all__ = [
     "TYPE_PLACEHOLDER",
     "HelperShape",
     "ParamMode",
+    "Rendered",
     "Slot",
     "brief",
-    "helper_name",
     "list_plan",
+    "private_name",
     "render",
     "symbol_params",
 ]

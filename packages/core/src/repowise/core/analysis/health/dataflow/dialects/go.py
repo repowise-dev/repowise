@@ -19,7 +19,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import NO_RECEIVER, BaseDefUseDialect, Occurrence, Receiver, StatementDefUse
+from .base import (
+    NO_RECEIVER,
+    BaseDefUseDialect,
+    Occurrence,
+    Receiver,
+    StatementDefUse,
+    node_text,
+)
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -84,7 +91,7 @@ class GoDefUseDialect(BaseDefUseDialect):
     def receiver_decl(self, fn_node: Node) -> str | None:
         """The method's receiver list, ``(s *S)``, which a helper method repeats."""
         plist = fn_node.child_by_field_name("receiver")
-        return (plist.text or b"").decode("utf-8", "replace") if plist is not None else None
+        return node_text(plist) if plist is not None else None
 
     def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """The method receiver's own name; a value receiver (``s T``, not

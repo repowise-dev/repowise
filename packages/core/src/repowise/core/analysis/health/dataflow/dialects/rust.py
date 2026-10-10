@@ -39,6 +39,7 @@ from .base import (
     Receiver,
     StatementDefUse,
     echoes,
+    node_text,
 )
 
 if TYPE_CHECKING:
@@ -157,7 +158,7 @@ class RustDefUseDialect(BaseDefUseDialect):
         found = next(
             (c for c in params.named_children if c.type == "self_parameter"), None
         ) if params is not None else None
-        return (found.text or b"").decode("utf-8", "replace") if found is not None else None
+        return node_text(found) if found is not None else None
 
     def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """``self`` when the signature takes it (``self_parameter``)."""

@@ -182,6 +182,9 @@ export interface ExtractMethodPlan {
    *  `<name>` / `<type>` are placeholders to fill. */
   signature_text: string | null;
   call_site: ExtractCallSite | null;
+  /** What the texts cannot say (a value that may move, a call the host
+   *  cannot await). */
+  notes: string[];
 }
 
 const RECEIVER_HAZARDS = ["receiver_unbound", "receiver_copy_written"] as const;
@@ -209,6 +212,7 @@ export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
     typed_returns: Array.isArray(sym.returns) ? (sym.returns as ExtractSlot[]) : [],
     signature_text: typeof sym.signature_text === "string" ? sym.signature_text : null,
     call_site: callSite(p.call_site),
+    notes: Array.isArray(sym.notes) ? (sym.notes as string[]) : [],
   };
 }
 
@@ -219,8 +223,15 @@ function callSite(raw: unknown): ExtractCallSite | null {
     : null;
 }
 
-/** The placeholder a plan with no anchored name uses in its texts. */
+/** The placeholders a plan's texts use for a name or type the code does not
+ *  give. Mirror ``refactoring.render.NAME_PLACEHOLDER`` / ``TYPE_PLACEHOLDER``. */
 export const HELPER_NAME_PLACEHOLDER = "<name>";
+export const HELPER_TYPE_PLACEHOLDER = "<type>";
+
+/** A typed slot as `name: type`, or the bare name when the type is unknown. */
+export function slotLabel(slot: ExtractSlot): string {
+  return slot.type ? `${slot.name}: ${slot.type}` : slot.name;
+}
 
 /** The helper an extraction proposes, as one line: `async name(a, b) -> c`.
  *  For a plan stored before the server rendered `signature_text`. */

@@ -505,7 +505,7 @@ class BaseDefUseDialect:
         typ = node.child_by_field_name("type")
         if typ is None or typ.start_byte <= name.start_byte < typ.end_byte:
             return None
-        text = " ".join(_text(typ).lstrip(":").split())
+        text = " ".join(node_text(typ).lstrip(":").split())
         if not text or text in _INFERRED_TYPES:
             return None
         return self._type_prefix(node, typ) + text + suffix
@@ -551,7 +551,7 @@ class BaseDefUseDialect:
 _INFERRED_TYPES = frozenset({"var", "auto", "_"})
 
 
-def _text(node: Node) -> str:
+def node_text(node: Node) -> str:
     return (node.text or b"").decode("utf-8", "replace")
 
 

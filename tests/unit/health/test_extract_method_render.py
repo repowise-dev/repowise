@@ -32,7 +32,7 @@ from repowise.core.analysis.health.refactoring.render import (
     PARAM_MODES,
     HelperShape,
     Slot,
-    helper_name,
+    private_name,
     render,
     symbol_params,
 )
@@ -120,10 +120,10 @@ def test_a_span_that_does_not_await_is_not_awaited():
 
 
 def test_python_names_take_the_private_form():
-    assert helper_name("python", "compute_total") == "_compute_total"
-    assert helper_name("python", "_already") == "_already"
-    assert helper_name("go", "computeTotal") == "computeTotal"
-    assert helper_name("python", None) is None
+    assert private_name("python", "compute_total") == "_compute_total"
+    assert private_name("python", "_already") == "_already"
+    assert private_name("go", "computeTotal") == "computeTotal"
+    assert private_name("python", None) is None
 
 
 def _shape(language: str, **kw) -> HelperShape:
@@ -157,6 +157,13 @@ def _shape(language: str, **kw) -> HelperShape:
             "total := s.loadTotals(items, limit)",
         ),
         (
+            # ``x, err :=`` in the span redeclared ``total``; alone it assigns.
+            _shape("go", receiver="s", receiver_decl="(s *S)", out_declared=True,
+                   out_written_before=True),
+            "func (s *S) loadTotals(items T1, limit <type>) <type> {",
+            "total = s.loadTotals(items, limit)",
+        ),
+        (
             _shape("java", kind="function", out_declared=True),
             "private static <type> loadTotals(T1 items, <type> limit) {",
             "var total = loadTotals(items, limit);",
@@ -172,6 +179,16 @@ def _shape(language: str, **kw) -> HelperShape:
             "int total = loadTotals(items, limit);",
         ),
         (
+            _shape("cpp", receiver_decl="const", returns=(Slot("total", "const Row&"),)),
+            "const Row loadTotals(T1 items, <type> limit) const {",
+            "total = loadTotals(items, limit);",
+        ),
+        (
+            _shape("c", kind="function", out_declared=True),
+            "static <type> loadTotals(T1 items, <type> limit) {",
+            "<type> total = loadTotals(items, limit);",
+        ),
+        (
             _shape("cpp", kind="function", name=None, returns=()),
             "static void <name>(T1 items, <type> limit) {",
             "<name>(items, limit);",
@@ -184,7 +201,65 @@ def _shape(language: str, **kw) -> HelperShape:
     ],
 )
 def test_each_language_writes_its_own_header_and_call(shape, sig, call):
-    assert render(shape) == (sig, call)
+    assert render(shape)[:2] == (sig, call)
+
+
+def test_rust_borrows_a_value_the_host_reads_after_the_call():
+    shape = _shape(
+        "rust",
+        kind="function",
+        params=(
+            Slot("rows", "Vec<Row>", read_after=True),
+            Slot("n", "usize", read_after=True),
+            Slot("cfg", None, read_after=True),
+            Slot("tmp", "String"),
+        ),
+        returns=(),
+    )
+    sig, call, notes = render(shape)
+    assert sig == "fn loadTotals(rows: &Vec<Row>, n: usize, cfg: <type>, tmp: String) {"
+    assert call == "loadTotals(&rows, n, cfg, tmp);"
+    assert notes == (
+        "Pass cfg by reference (&) unless the type is Copy: the caller still reads it "
+        "after the call.",
+    )
+
+
+def test_an_awaiting_span_in_a_host_that_is_not_async_gets_no_call():
+    out = render(_shape("python", is_async=True, async_host=False, receiver="self"))
+    assert out.signature.startswith("async def loadTotals(self")
+    assert out.call is None
+    assert "not async" in out.notes[0]
+
+
+def test_a_cpp_coroutine_helper_leaves_its_return_type_to_fill():
+    out = render(_shape("cpp", is_async=True, returns=(Slot("total", "int"),), out_declared=True))
+    assert out.signature == "<type> loadTotals(T1 items, <type> limit) {"
+    assert out.call == "int total = co_await loadTotals(items, limit);"
+    assert out.notes == ("Give the helper the coroutine return type the caller co_awaits.",)
+
+
+def test_cpp_const_member_function_is_named_by_its_dialect():
+    src = "class A { int f(int a) const { int x = a; return x; } };"
+    (fn,) = _functions("cpp", "cpp", src)
+    assert get_defuse_dialect("cpp").receiver_decl(fn.fn_node) == "const"
+    src = "class A { int f(int a) { int x = a; return x; } };"
+    (fn,) = _functions("cpp", "cpp", src)
+    assert get_defuse_dialect("cpp").receiver_decl(fn.fn_node) is None
+
+
+def test_types_are_found_for_a_non_ascii_name():
+    """Tree points count bytes, so the lookup spans the name's bytes."""
+    src = """
+    def f(rows):
+        zähler: int = 0
+        for r in rows:
+            zähler += 1
+        return zähler
+    """
+    (fn,) = _functions("python", "py", src)
+    span = Extraction(4, 5, ("rows", "zähler"), ("zähler",), slice_nloc=2, ccn_removed=1)
+    assert em._declared_types(fn, span, get_defuse_dialect("python")) == {"zähler": "int"}
 
 
 def test_an_unknown_helper_form_writes_no_text():
@@ -309,3 +384,17 @@ def test_cli_json_plan_rows_leave_the_texts_out():
     assert "signature_text" not in row["plan"]["new_symbol"]
     assert row["plan"]["new_symbol"]["kind"] == plan["new_symbol"]["kind"]
     assert _list_row({"id": "q", "plan": None}) == {"id": "q", "plan": None}
+
+
+def test_read_after_names_the_inputs_the_host_still_uses():
+    src = """
+    def f(rows, cfg):
+        total = 0
+        for r in rows:
+            total += r
+        print(cfg, total)
+        return total
+    """
+    (fn,) = _functions("python", "py", src)
+    span = Extraction(4, 5, ("cfg", "rows", "total"), ("total",), slice_nloc=2, ccn_removed=1)
+    assert em._read_after(fn, span) == {"cfg", "total"}

@@ -38,7 +38,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import NO_RECEIVER, BaseDefUseDialect, Occurrence, Receiver, StatementDefUse
+from .base import (
+    NO_RECEIVER,
+    BaseDefUseDialect,
+    Occurrence,
+    Receiver,
+    StatementDefUse,
+    node_text,
+)
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -134,16 +141,27 @@ class CppDefUseDialect(BaseDefUseDialect):
                 out.append(self._occ(name_node))
         return tuple(out)
 
+    def receiver_decl(self, fn_node: Node) -> str | None:
+        """``const`` when the member function is (``int f() const``): a helper
+        method it calls must be ``const`` too."""
+        node = fn_node.child_by_field_name("declarator")
+        while node is not None and node.type != "function_declarator":
+            node = node.child_by_field_name("declarator")
+        if node is None:
+            return None
+        quals = {node_text(c) for c in node.children if c.type == "type_qualifier"}
+        return "const" if "const" in quals else None
+
     def _declarator_token(self, node: Node) -> str:
         """``*`` for a pointer declarator, ``&`` / ``&&`` for a reference."""
         if node.type == "init_declarator" or not node.children:
             return ""
-        return (node.children[0].text or b"").decode("utf-8", "replace")
+        return node_text(node.children[0])
 
     def _type_prefix(self, holder: Node, typ: Node) -> str:
         """``const`` / ``volatile`` written before the type."""
         quals = [
-            (c.text or b"").decode("utf-8", "replace")
+            node_text(c)
             for c in holder.named_children
             if c.type == "type_qualifier" and c.end_byte <= typ.start_byte
         ]

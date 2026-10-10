@@ -4,6 +4,7 @@ import {
   generatedVerdict,
   planSynopsis,
   planWins,
+  slotLabel,
   type GeneratedCode,
   type RefactoringPlan,
 } from "../../src/refactoring/types";
@@ -113,6 +114,9 @@ describe("extract_method plan accessors", () => {
     expect(em.signature_text).toBe("def _compute_average(records: list[int]):");
     expect(em.call_site?.new_text).toBe("average = _compute_average(records)");
     expect(em.typed_params[0]).toEqual({ name: "records", type: "list[int]", mode: "in" });
+    expect(em.typed_params.map(slotLabel)).toEqual(["records: list[int]"]);
+    expect(em.typed_returns.map(slotLabel)).toEqual(["average"]);
+    expect(em.notes).toEqual([]);
   });
 
   it("returns a null span when the plan omits it", () => {
