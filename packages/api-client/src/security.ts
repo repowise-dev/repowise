@@ -13,6 +13,15 @@ export interface SecurityFinding {
   commit_at: string | null;
 }
 
+export interface SecuritySummary {
+  /** ISO 8601 UTC; `null`/absent = never ran or unknown (not an all-clear). */
+  scanned_at?: string | null;
+}
+
+export async function getSecuritySummary(repoId: string): Promise<SecuritySummary> {
+  return apiGet<SecuritySummary>(`/api/repos/${repoId}/security/summary`);
+}
+
 export async function listSecurityFindings(
   repoId: string,
   opts: {

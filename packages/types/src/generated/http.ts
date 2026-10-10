@@ -911,6 +911,7 @@ export interface DeadCodeSummaryResponse {
   deletable_lines: number;
   total_lines: number;
   by_kind: Record<string, unknown>;
+  analyzed_at?: string | null;
 }
 
 /** A link from a decision to a governed file or module. */
@@ -3165,6 +3166,10 @@ export interface SecurityFindingResponse {
   commit_sha: string | null;
   commit_at: string | null;
   found_in_history: boolean;
+}
+
+export interface SecuritySummaryResponse {
+  scanned_at?: string | null;
 }
 
 export interface SetActiveProviderRequest {

@@ -31,6 +31,15 @@ export interface SecurityFinding {
   commit_at: string | null;
 }
 
+/** Run metadata for the pattern scan, served beside the findings list. */
+export interface SecuritySummary {
+  /**
+   * ISO 8601 UTC time the scan last ran. `null` or absent (older servers)
+   * means never ran or unknown, which is not an all-clear.
+   */
+  scanned_at?: string | null;
+}
+
 export interface SecurityFindingList {
   total: number;
   findings: SecurityFinding[];

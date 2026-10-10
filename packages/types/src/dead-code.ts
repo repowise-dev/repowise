@@ -118,4 +118,9 @@ export interface DeadCodeSummary {
   deletable_lines: number;
   total_lines: number;
   by_kind: Record<string, number>;
+  /**
+   * ISO 8601 UTC time dead-code analysis last ran. `null` or absent (older
+   * servers) means never ran or unknown, which is not an all-clear.
+   */
+  analyzed_at?: string | null;
 }

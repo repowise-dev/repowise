@@ -161,6 +161,39 @@ async def test_dead_code_summary(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_dead_code_summary_analyzed_at(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    url = f"/api/repos/{repo['id']}/dead-code/summary"
+
+    # Never analyzed: unknown, not fabricated.
+    assert (await client.get(url)).json()["analyzed_at"] is None
+
+    await _insert_dead_code(app.state.session_factory, repo["id"])
+    assert (await client.get(url)).json()["analyzed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_dead_code_summary_analyzed_at_zero_findings(client: AsyncClient, app) -> None:
+    """A completed run that found nothing still reports when it ran."""
+    from datetime import UTC, datetime
+
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import GenerationJob
+
+    repo = await create_test_repo(client)
+    finished = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    async with get_session(app.state.session_factory) as session:
+        session.add(
+            GenerationJob(repository_id=repo["id"], status="completed", finished_at=finished)
+        )
+        await session.commit()
+
+    data = (await client.get(f"/api/repos/{repo['id']}/dead-code/summary")).json()
+    assert data["total_findings"] == 0
+    assert data["analyzed_at"].startswith("2026-01-02T03:04:05")
+
+
+@pytest.mark.asyncio
 async def test_analyze_dead_code(client: AsyncClient, monkeypatch) -> None:
     # Stub the executor: this test covers the endpoint contract, not the pipeline.
     async def _noop_execute(job_id, app_state, session_factory_override=None):

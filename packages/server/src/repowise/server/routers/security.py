@@ -11,7 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.security_scan import source_lines
 from repowise.core.persistence.models import Repository, SecurityFinding
 from repowise.server.deps import get_db_session, verify_api_key
-from repowise.server.schemas import SecurityFindingResponse
+from repowise.server.schemas import SecurityFindingResponse, SecuritySummaryResponse
+from repowise.server.services.analysis_ran_at import security_scanned_at
 from repowise.server.services.security_lines import check_finding_line
 
 router = APIRouter(
@@ -85,6 +86,15 @@ async def list_security_findings(
             )
         )
     return responses
+
+
+@router.get("/{repo_id}/security/summary", response_model=SecuritySummaryResponse)
+async def security_summary(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> SecuritySummaryResponse:
+    """When the pattern scan last ran; ``scanned_at`` is null when unknown."""
+    return SecuritySummaryResponse(scanned_at=await security_scanned_at(session, repo_id))
 
 
 async def _repo_root(session: AsyncSession, repo_id: str) -> Path | None:

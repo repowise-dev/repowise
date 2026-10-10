@@ -47,6 +47,24 @@ async def test_list_security_empty(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_security_summary_scanned_at(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    url = f"/api/repos/{repo['id']}/security/summary"
+    assert (await client.get(url)).json() == {"scanned_at": None}
+
+    await _insert(app.state.session_factory, repo["id"], snippet="x")
+    assert (await client.get(url)).json()["scanned_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_security_summary_ignores_history_rows(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert(app.state.session_factory, repo["id"], commit_sha="a" * 40)
+    resp = await client.get(f"/api/repos/{repo['id']}/security/summary")
+    assert resp.json()["scanned_at"] is None
+
+
+@pytest.mark.asyncio
 async def test_line_number_verified_against_live_file(client: AsyncClient, app) -> None:
     """The stored line still holds, so it is served verified."""
     repo = await create_test_repo(client)

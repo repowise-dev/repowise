@@ -99,6 +99,8 @@ class DeadCodeSummaryResponse(BaseModel):
     deletable_lines: int
     total_lines: int
     by_kind: dict
+    # When dead-code analysis last ran; None = never ran or unknown (not all-clear).
+    analyzed_at: datetime | None = None
 
 
 class SecurityFindingResponse(BaseModel):
@@ -121,6 +123,11 @@ class SecurityFindingResponse(BaseModel):
     commit_sha: str | None
     commit_at: datetime | None
     found_in_history: bool
+
+
+class SecuritySummaryResponse(BaseModel):
+    # When the pattern scan last ran; None = never ran or unknown (not all-clear).
+    scanned_at: datetime | None = None
 
 
 class RepoStatsResponse(BaseModel):

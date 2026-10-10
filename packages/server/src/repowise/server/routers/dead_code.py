@@ -17,6 +17,7 @@ from repowise.server.schemas import (
     DeadCodePatchRequest,
     DeadCodeSummaryResponse,
 )
+from repowise.server.services.analysis_ran_at import dead_code_analyzed_at
 
 router = APIRouter(
     tags=["dead-code"],
@@ -112,7 +113,8 @@ async def dead_code_summary(
 ) -> DeadCodeSummaryResponse:
     """Get aggregate dead code statistics for a repository."""
     summary = await crud.get_dead_code_summary(session, repo_id)
-    return DeadCodeSummaryResponse(**summary)
+    analyzed_at = await dead_code_analyzed_at(session, repo_id)
+    return DeadCodeSummaryResponse(**summary, analyzed_at=analyzed_at)
 
 
 @router.patch("/api/dead-code/{finding_id}", response_model=DeadCodeFindingResponse)

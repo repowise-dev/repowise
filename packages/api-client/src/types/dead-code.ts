@@ -41,4 +41,6 @@ export interface DeadCodeSummaryResponse {
   deletable_lines: number;
   total_lines: number;
   by_kind: Record<string, number>;
+  /** ISO 8601 UTC; `null`/absent = never ran or unknown (not an all-clear). */
+  analyzed_at?: string | null;
 }

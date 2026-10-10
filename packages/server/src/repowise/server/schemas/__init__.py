@@ -81,6 +81,7 @@ if TYPE_CHECKING:
         DeadCodeSummaryResponse,
         RepoStatsResponse,
         SecurityFindingResponse,
+        SecuritySummaryResponse,
     )
     from .coupling import (
         CouplingEdgeResponse,
@@ -394,6 +395,7 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "DeadCodeSummaryResponse",
         "RepoStatsResponse",
         "SecurityFindingResponse",
+        "SecuritySummaryResponse",
     ),
     "coupling": ("CouplingEdgeResponse", "CouplingGraphResponse", "CouplingNodeResponse"),
     "decisions": (
@@ -824,6 +826,7 @@ __all__ = [
     "SearchRequest",
     "SearchResultResponse",
     "SecurityFindingResponse",
+    "SecuritySummaryResponse",
     "SetActiveProviderRequest",
     "SetApiKeyRequest",
     "SymbolImportanceComponents",
