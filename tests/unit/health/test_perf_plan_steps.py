@@ -96,3 +96,45 @@ def test_direct_calls_with_no_sink_get_no_unnamed_bulk_form_step() -> None:
     assert all(s["symbol"] == "run" for s in steps)
     assert "session.execute" in steps[0]["action"]
     assert "session.commit" in steps[1]["action"]
+
+
+def test_a_sink_past_the_evidence_cap_still_withholds_the_bulk_form_step() -> None:
+    rows = [
+        _finding("a.py", line, loop_line=5, call_path=("a.py::run", "db.py::query"))
+        for line in range(10, 90, 10)
+    ]
+    rows.append(_finding("a.py", 95, loop_line=5, call_path=("a.py::run", "db.py::other")))
+    opportunities = build_performance_opportunities(rows)
+    assert len(opportunities) == 1 and opportunities[0].evidence_truncated
+    steps = performance_fix_suggestions(opportunities)[0].plan["steps"]
+
+    assert all(s["line"] for s in steps)
+
+
+def test_a_callee_holding_a_string_literal_gives_its_method() -> None:
+    src = (
+        "from sqlalchemy import select\n"
+        "def sync(session, ids):\n"
+        "    for key in ids:\n"
+        "        getattr(session, 'get(')(key).execute(select(key))\n"
+    )
+    calls = {h.loop_facts().get("sink_call") for h in _hits(src) if h.kind == "io_in_loop"}
+    assert calls == {"execute"}
+
+
+def test_java_and_kotlin_name_the_receiver() -> None:
+    java = (
+        "class A { void f(java.sql.Connection conn, java.util.List<String> ids) throws Exception {\n"
+        "  for (String id : ids) { conn.prepareStatement(id).executeQuery(); }\n"
+        "} }\n"
+    )
+    kotlin = (
+        "import java.sql.Connection\n"
+        "fun f(conn: Connection, ids: List<String>) {\n"
+        "  for (id in ids) { conn.prepareStatement(id).executeQuery() }\n"
+        "}\n"
+    )
+    for path, language, src in (("A.java", "java", java), ("A.kt", "kotlin", kotlin)):
+        hits = walk_file(path, language, src.encode()).perf_hits
+        calls = {h.loop_facts().get("sink_call") for h in hits if h.kind == "io_in_loop"}
+        assert calls == {"conn.prepareStatement().executeQuery"}, language

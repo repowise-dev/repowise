@@ -239,6 +239,9 @@ class KotlinPerfDialect(BasePerfDialect):
             return _decode(fn)
         return None
 
+    def callee_text(self, call_node: Node) -> str:
+        return _decode(_callee(call_node)) or ""
+
     def callee_root_name(self, call_node: Node) -> str | None:
         node = _callee(call_node)
         # Walk to the bottom of a ``a.b().c()`` chain — the leftmost receiver is

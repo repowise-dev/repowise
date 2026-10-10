@@ -330,16 +330,20 @@ def _loop_key_feeds(call: Node, loop: Node) -> bool:
 _SINK_CALL_MAX = 60
 
 
-def _sink_call_text(call: Node, method: str) -> str:
+def _sink_call_text(call: Node, method: str, dialect: BasePerfDialect) -> str:
     """The callee as written with its arguments dropped, else its method name.
 
     ``session.get`` stays as is and ``conn.execute(sql).fetchone`` reads
-    ``conn.execute().fetchone``. A callee that opens with a parenthesis or runs
-    long gives the method only, as do grammars with no ``function`` field (Java,
-    Kotlin); naming their receiver needs a per-dialect hook (ceiling).
+    ``conn.execute().fetchone``. A callee that opens with a parenthesis, runs
+    long or holds a string literal (its quotes defeat the paren scan) gives the
+    method only, as does a dialect with no callee text.
     """
-    fn = call.child_by_field_name("function")
-    text = (fn.text or b"").decode("utf-8", "replace") if fn is not None else ""
+    text = dialect.callee_text(call)
+    if len(text) > 4 * _SINK_CALL_MAX or "'" in text or '"' in text or "`" in text:
+        return method
+    if "(" not in text:
+        text = "".join(text.split())
+        return text if text and len(text) <= _SINK_CALL_MAX else method
     kept: list[str] = []
     depth = 0
     for char in text:
@@ -663,7 +667,7 @@ def _collect_perf_hits(
             if kind is not None:
                 if loop_depth >= 1:
                     facts = loop_facts(call_node, sink=True, per_call=True)
-                    call = _sink_call_text(call_node, method)
+                    call = _sink_call_text(call_node, method, dialect)
                     hits.append(
                         PerfHit(
                             "io_in_loop", line, next_func, kind,

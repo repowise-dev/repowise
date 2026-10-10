@@ -155,6 +155,11 @@ class BasePerfDialect:
         txt = (node.text or b"").decode("utf-8", "replace")
         return txt.split(".")[0] if txt else None
 
+    def callee_text(self, call_node: Node) -> str:
+        """The callee as written, arguments included (``session.get``); empty if unknown."""
+        fn = call_node.child_by_field_name("function")
+        return (fn.text or b"").decode("utf-8", "replace") if fn is not None else ""
+
     def callee_method_name(self, call_node: Node) -> str | None:
         """Rightmost member of the callee (``x.execute`` -> 'execute')."""
         fn = call_node.child_by_field_name("function")

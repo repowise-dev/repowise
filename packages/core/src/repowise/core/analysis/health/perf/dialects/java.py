@@ -260,6 +260,15 @@ class JavaPerfDialect(BasePerfDialect):
             return name.text.decode("utf-8", "replace")
         return None
 
+    def callee_text(self, call_node: Node) -> str:
+        # ``method_invocation`` splits the callee into ``object`` and ``name``.
+        name = call_node.child_by_field_name("name")
+        if call_node.type != "method_invocation" or name is None or not name.text:
+            return ""
+        obj = call_node.child_by_field_name("object")
+        method = name.text.decode("utf-8", "replace")
+        return f"{obj.text.decode('utf-8', 'replace')}.{method}" if obj and obj.text else method
+
     def callee_root_name(self, call_node: Node) -> str | None:
         if call_node.type == "object_creation_expression":
             t = call_node.child_by_field_name("type")

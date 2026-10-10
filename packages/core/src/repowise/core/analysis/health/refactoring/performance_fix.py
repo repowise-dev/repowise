@@ -175,16 +175,27 @@ def _site_locations(evidence: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _site_call(item: dict[str, Any]) -> str | None:
-    """The call the site repeats: the detector's text, else a helper path's first hop."""
+    """The call the site repeats: the detector's text, else the helper hop.
+
+    A cross-function path starts at the loop's own function (``path[0]``), so
+    ``path[1]`` is the helper the loop calls at this site.
+    """
     path = item.get("path") or ()
     hop = path[1] if len(path) > 1 and isinstance(path[1], str) else None
     return item.get("sink_call") or (hop.rsplit("::", 1)[-1] if hop else None)
 
 
-def _shared_sink(evidence: Iterable[dict[str, Any]]) -> str | None:
-    """The sink every site reaches, or ``None`` when a site has none or they differ."""
-    sinks = {item["path"][-1] if item.get("path") else None for item in evidence}
-    return sinks.pop() if len(sinks) == 1 else None
+def _shared_sink(opportunity: PerformanceOpportunity) -> str | None:
+    """The sink every site reaches, or ``None`` when a site has none or they differ.
+
+    Evidence is capped; past the cap only the members' resolved sinks are known,
+    so a pathless member beyond it goes unseen (ceiling: carry a has-path count).
+    """
+    sinks = {item["path"][-1] if item.get("path") else None for item in opportunity.evidence}
+    sink = sinks.pop() if len(sinks) == 1 else None
+    if opportunity.evidence_truncated and sink != opportunity.terminal_sink:
+        return None
+    return sink
 
 
 def _suggestion(
@@ -203,7 +214,7 @@ def _suggestion(
         fix.strategy,
         fix.safety,
         intervention if fix.strategy != "batch_or_prefetch_io" or batched_on_helper else None,
-        _shared_sink(opportunity.evidence),
+        _shared_sink(opportunity),
         locations,
         fix.api,
     )

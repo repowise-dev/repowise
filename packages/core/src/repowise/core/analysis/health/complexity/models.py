@@ -321,7 +321,10 @@ class PerfHit:
     sink_call: str = ""
 
     def loop_facts(self) -> dict[str, Any]:
-        """Loop facts for ``details``; absent when unset so old findings are unchanged."""
+        """Loop facts and the call text for ``details``.
+
+        Each key is absent when unset, so old findings are unchanged.
+        """
         facts = self.loop.as_details() if self.loop is not None else {}
         if self.loop_line:
             facts["loop_line"] = self.loop_line
