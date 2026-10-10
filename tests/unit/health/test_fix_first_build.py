@@ -368,3 +368,33 @@ def test_an_item_no_test_reaches_says_to_pin_its_behaviour_first() -> None:
     queue = _build(validate=lambda *_: {"prerequisite": first})
     walk = next(i for i in queue.items if i.target.file_path == "src/plain.py")
     assert (walk.verify.basis, walk.verify.prerequisite) == ("unknown", first)
+
+
+def _staged_plans(count: int = 3, orchestrator: dict | None = None) -> list:
+    plans = copy.deepcopy(PLANS)
+    stage = {k: v for k, v in plans[0]["plan"].items() if k != "stages"}
+    plans[0]["plan"]["stages"] = [copy.deepcopy(stage) for _ in range(count)]
+    plans[0]["plan"]["orchestrator"] = (
+        {"ccn_before": 44, "ccn_after": 9} if orchestrator is None else orchestrator
+    )
+    return plans
+
+
+def test_a_staged_lead_plan_names_its_helpers_and_stage_one() -> None:
+    core = next(i for i in _build(plans=_staged_plans()).items if i.kind == "refactor")
+    assert core.title == "Split run into 3 helpers (+1 more step)"
+    assert core.action.steps[0].text == (
+        "Stage 1 of 3: Extract lines 20-35 of run into sum_rows(rows, limit) -> total "
+        "(the plan splits run into 3 helpers, CCN 44 -> 9)"
+    )
+    # Only the staged plan's step says so; the plan's next step reads as before.
+    assert core.action.steps[1].text == (
+        "Extract lines 40-41 of run into <name>(); name it for what the lines do"
+    )
+
+
+def test_a_staged_plan_without_its_complexity_figures_leaves_them_out() -> None:
+    core = next(
+        i for i in _build(plans=_staged_plans(2, orchestrator={})).items if i.kind == "refactor"
+    )
+    assert core.action.steps[0].text.endswith("(the plan splits run into 2 helpers)")
