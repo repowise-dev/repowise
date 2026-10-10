@@ -24,8 +24,7 @@ _REASONS_LIMIT = 3
 #: Changed files whose deciding evidence is named.
 _BASIS_LIMIT = 10
 #: Past this the agent is told to run the CLI instead of waiting. Ceiling: the
-#: call walk still reads one query per level, so a change of hundreds of files
-#: on a 20k-file repository takes about 20 s; walking calls in memory is next.
+#: call walk is per-level SQL; loading call edges once is the upgrade.
 SELECTION_TIMEOUT_SECONDS = 30.0
 
 #: What a failed selection tells the reader: it vouches for no subset.

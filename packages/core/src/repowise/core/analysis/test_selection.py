@@ -711,7 +711,7 @@ def _scope_tests(scope: Scope, ev: _Evidence) -> list[str]:
         return []
     return [
         t
-        for t in _under({scope.root}, ev.known_tests)
+        for t in ev.tests_under({scope.root})
         if (not scope.suffixes or t.lower().endswith(scope.suffixes)) and t not in ev.deleted
     ]
 
@@ -959,6 +959,15 @@ class _Evidence:
     every_subset: frozenset[str] = frozenset()
     # Explanations that do not force a full run, gathered while deciding.
     notes: list[str] = field(default_factory=list)
+    # Known tests under each directory set, asked once per changed file.
+    _under: dict[frozenset[str], list[str]] = field(default_factory=dict, compare=False)
+
+    def tests_under(self, dirs: Collection[str]) -> list[str]:
+        """Known tests below any of *dirs*, worked out once per directory set."""
+        key = frozenset(dirs)
+        if key not in self._under:
+            self._under[key] = _under(key, self.known_tests)
+        return self._under[key]
 
     @classmethod
     def of(cls, inp: SelectionInput, deleted: set[str]) -> _Evidence:
@@ -1063,7 +1072,8 @@ def _scope_files(path: str, found: list[_TestRef], basis: str) -> tuple[set[str]
 
 def _expand_scopes(tests: list[_TestRef], scopes: set[str], ev: _Evidence) -> list[_TestRef]:
     kept = [(t, f) for t, f in tests if f not in scopes]
-    return kept + [(t, t) for t in _tests_under(scopes, ev.known_tests) if t not in ev.deleted]
+    dirs = {str(PurePosixPath(i).parent) for i in scopes}
+    return kept + [(t, t) for t in ev.tests_under(dirs) if t not in ev.deleted]
 
 
 def _own_helper_reasons(path: str, ev: _Evidence) -> list[str]:
@@ -1148,13 +1158,7 @@ def _tests_under(inits: Collection[str], known_tests: Collection[str]) -> list[s
 
 
 def _under(dirs: Collection[str], files: Collection[str]) -> list[str]:
-    # Asked once per changed file with the same few directories: memoized.
-    return list(_under_memo(frozenset(dirs), tuple(files))) if dirs else []
-
-
-@functools.lru_cache(maxsize=64)
-def _under_memo(dirs: frozenset[str], files: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(f for f in files if any(d == "." or f.startswith(f"{d}/") for d in dirs))
+    return [f for f in files if any(d == "." or f.startswith(f"{d}/") for d in dirs)]
 
 
 def expand_test_scopes(tests: Iterable[str], test_files: Collection[str]) -> list[str]:

@@ -986,7 +986,8 @@ async def load_import_graph(session: AsyncSession, repo_id: str) -> ImportGraph:
     importers: dict[str, list[str]] = {}
     for source, target in rows:
         importers.setdefault(target, []).append(source)
-    return ImportGraph({t: tuple(s) for t, s in importers.items()})
+    # Sorted, so a bounded walk does not depend on the order rows come back in.
+    return ImportGraph({t: tuple(sorted(s)) for t, s in importers.items()})
 
 
 async def _import_reaching(

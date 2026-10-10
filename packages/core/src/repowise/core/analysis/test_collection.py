@@ -47,8 +47,8 @@ class Checkout:
     *read* returns a tracked file's text (``None`` when unreadable) and
     *exists* whether a path is present; :func:`read_checkout` answers both from
     disk, a server may answer them from what it stores. *holding*, when given,
-    answers ``{needle: tracked files whose text holds it}`` without reading
-    each file here (``None`` when it cannot); without it every source is read.
+    answers which tracked files hold any of some names without reading each
+    file here (``None`` when it cannot); without it every source is read.
     """
 
     tracked: list[str]
@@ -56,7 +56,7 @@ class Checkout:
     roots: PytestRoots
     read: Callable[[str], str | None]
     exists: Callable[[str], bool]
-    holding: Callable[[Collection[str]], Mapping[str, Collection[str]] | None] | None = None
+    holding: Callable[[Collection[str]], Collection[str] | None] | None = None
 
 
 def read_checkout(repo_path) -> Checkout:
@@ -86,33 +86,32 @@ def read_checkout(repo_path) -> Checkout:
     )
 
 
-def _git_holding(root: Path, needles: Collection[str]) -> dict[str, set[str]] | None:
-    """``{needle: tracked files whose working-tree bytes hold it}``, one ``git grep`` each.
+# A cold grep of a large checkout takes seconds; past this the full read answers.
+_GREP_TIMEOUT_SECONDS = 30
 
-    The answer the Python scan gives, minus thousands of file opens. ``None``
-    when git cannot answer, or for a non-ASCII needle, whose matches in a
-    non-UTF-8 file only the Python scan reports.
+
+def _git_holding(root: Path, needles: Collection[str]) -> set[str] | None:
+    """Tracked files whose working-tree bytes hold any of *needles*: one ``git grep``.
+
+    The names go in on stdin (``-f -``), so no argument list grows with them.
+    ``None`` when git cannot answer in time, or for a needle that is not plain
+    ASCII on one line, whose matches only the Python read reports. Ceiling: a
+    name split by bytes that are not UTF-8 matches the lenient read only.
     """
-    from concurrent.futures import ThreadPoolExecutor
-
     from .doc_drift.suggest import git_run
 
     needles = sorted(set(needles))
-    if not needles or not all(n.isascii() and "\0" not in n for n in needles):
+    if not needles or not all(n.isascii() and n.isprintable() for n in needles):
         return None
-
-    def grep(needle: str):
-        return git_run(root, "grep", "-l", "-z", "-F", "--no-color", "-e", needle)
-
-    with ThreadPoolExecutor(min(8, len(needles))) as pool:
-        ran = list(pool.map(grep, needles))
-    # Exit 1 is "no file holds it".
-    if any(r is None or r[0] not in (0, 1) for r in ran):
+    patterns = "".join(f"{n}\n" for n in needles).encode("utf-8")
+    ran = git_run(
+        root, "grep", "-l", "-z", "-F", "--no-color", "-f", "-", "--",
+        stdin=patterns, timeout=_GREP_TIMEOUT_SECONDS,
+    )  # fmt: skip
+    # Exit 1 is "no file holds any".
+    if ran is None or ran[0] not in (0, 1):
         return None
-    return {
-        n: {p for p in out.decode("utf-8", errors="replace").split("\0") if p}
-        for n, (_, out) in zip(needles, ran, strict=True)
-    }
+    return {p for p in ran[1].decode("utf-8", errors="replace").split("\0") if p}
 
 
 class SelectionCancelledError(Exception):
@@ -169,37 +168,23 @@ def _scan_texts(
 ) -> Iterator[tuple[str, str]]:
     """``(path, text)`` of every scan source, in tracked order, for :func:`file_namers`.
 
-    With ``checkout.holding`` a code file's text is replaced by the names it
-    holds, NUL-joined, and one holding none is skipped: :func:`file_namers`
-    only asks whether a name occurs in the text, and no name holds a NUL, so
-    the answer is the same without reading the file.
+    With ``checkout.holding`` only the code files holding one of the asked
+    names are read: a file holding none names nothing, so :func:`file_namers`
+    answers the same. Which name each holds is still decided on its text, so
+    one name inside another is attributed exactly as a full read would.
     """
     from .test_selection import is_scan_source
 
     known = dict(checkout.pytest_texts)  # conftests and pytest configs, read already
-    held = _held_names(checkout, asked)
+    names = {PurePosixPath(p).name for p in asked}
+    held = checkout.holding(names) if checkout.holding else None
     for p in checkout.tracked:
         if not is_scan_source(p) or _stop(cancelled):
             continue
         if p in known:
             yield p, known[p]
-        elif held is None:
+        elif held is None or p in held:
             yield p, checkout.read(p) or ""
-        elif p in held:
-            yield p, "\0".join(held[p])
-
-
-def _held_names(checkout: Checkout, asked: Collection[str]) -> dict[str, list[str]] | None:
-    """``{path: the asked file names its text holds}``, or ``None`` without ``holding``."""
-    names = {PurePosixPath(p).name for p in asked}
-    held = checkout.holding(names) if checkout.holding else None
-    if held is None:
-        return None
-    by_path: dict[str, list[str]] = {}
-    for name, holders in held.items():
-        for path in holders:
-            by_path.setdefault(path, []).append(name)
-    return by_path
 
 
 async def collect(

@@ -294,20 +294,21 @@ def test_scope_paths_are_posix() -> None:
     assert all(PurePosixPath(p).as_posix() == p for p in _TRACKED)
 
 
-def test_plan_scopes_names_the_same_files_from_git_grep_as_from_reading_them(tmp_path) -> None:
-    """The checkout's grep only skips reading files that cannot name a changed one."""
+def _namer_checkout(tmp_path):
+    """A git checkout where one changed name sits inside another (``a.md`` in ``data.md``)."""
     import subprocess
-    from dataclasses import replace
 
     from repowise.core.analysis.changed_lines import ChangeSet, FileDiff
-    from repowise.core.analysis.test_collection import plan_scopes, read_checkout
+    from repowise.core.analysis.test_collection import read_checkout
 
     files = {
         "web/package.json": "{}",
         "web/src/app.ts": "import pkg from '../package.json'\n",
         "web/src/app.test.ts": "readFileSync('package.json')\n",
         "tools/build.py": "print('web/package.json', 'README.md')\n",
-        "docs/guide.md": "# guide\n",
+        "tools/data.py": "open('docs/data.md')\n",
+        "docs/a.md": "# a\n",
+        "docs/data.md": "# data\n",
         "src/mod.py": "x = 1\n",
         "pytest.ini": "[pytest]\naddopts = --doctest-glob=*.md\n",
         "README.md": "readme\n",
@@ -317,24 +318,49 @@ def test_plan_scopes_names_the_same_files_from_git_grep_as_from_reading_them(tmp
         (tmp_path / path).write_text(text, encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
-
+    changed = ("web/package.json", "README.md", "docs/a.md", "docs/data.md")
     change = ChangeSet(
-        files={p: FileDiff(path=p) for p in ("web/package.json", "README.md", "docs/guide.md")},
+        files={p: FileDiff(path=p) for p in changed},
         deleted=set(),
         label="t",
         base=None,
         head=None,
     )
-    checkout = read_checkout(tmp_path)
+    return change, read_checkout(tmp_path)
+
+
+def test_plan_scopes_names_the_same_files_from_git_grep_as_from_reading_them(tmp_path) -> None:
+    """The grep only skips reading files that hold no changed name; nested names still count."""
+    from dataclasses import replace
+
+    from repowise.core.analysis.test_collection import plan_scopes
+
+    change, checkout = _namer_checkout(tmp_path)
     assert checkout.holding is not None
     grepped = plan_scopes(change, _NONE, checkout)
-    read = plan_scopes(change, _NONE, replace(checkout, holding=None))
-    assert grepped == read
+    assert grepped == plan_scopes(change, _NONE, replace(checkout, holding=None))
     assert grepped.namers["web/package.json"] == [
         "tools/build.py",
         "web/src/app.test.ts",
         "web/src/app.ts",
     ]
+    # "data.md" holds "a.md", so the file naming docs/data.md names docs/a.md too.
+    assert grepped.namers["docs/a.md"][-1] == "tools/data.py"
+    assert grepped.namers["docs/data.md"][-1] == "tools/data.py"
+
+
+def test_a_grep_that_cannot_answer_falls_back_to_reading_every_file(
+    tmp_path, monkeypatch
+) -> None:
+    from dataclasses import replace
+
+    from repowise.core.analysis import test_collection
+    from repowise.core.analysis.doc_drift import suggest
+
+    change, checkout = _namer_checkout(tmp_path)
+    read = test_collection.plan_scopes(change, _NONE, replace(checkout, holding=None))
+    monkeypatch.setattr(suggest, "git_run", lambda *_a, **_k: None)  # timed out
+    assert test_collection.plan_scopes(change, _NONE, checkout) == read
 
 
 def test_a_blob_read_that_stops_early_does_not_read_as_unmoved(tmp_path) -> None:
