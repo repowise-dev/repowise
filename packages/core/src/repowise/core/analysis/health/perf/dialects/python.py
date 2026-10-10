@@ -193,6 +193,28 @@ _PY_SEM_NAME_RE = re.compile(r"(?i)(sem|semaphore|limiter|limit)$")
 _PY_MODEL_NAME_RE = re.compile(r"^[A-Z]\w*[a-z]\w*$")
 
 
+def _module_int_constant(name: Node) -> bool:
+    """An ALL_CAPS name its own module binds to an integer literal (``MAX = 5``).
+
+    The spelling alone proves nothing (``NUM_USERS`` grows), so a name bound
+    elsewhere or to anything but a literal stays unknown.
+    """
+    text = name.text or b""
+    if name.type != "identifier" or len(text) < 2 or not text.decode().isupper():
+        return False
+    root = name
+    while root.parent is not None:
+        root = root.parent
+    for stmt in root.children:
+        assign = stmt.named_children[0] if stmt.type == "expression_statement" else None
+        if assign is None or assign.type != "assignment":
+            continue
+        left, right = assign.child_by_field_name("left"), assign.child_by_field_name("right")
+        if left is not None and left.text == text and right is not None:
+            return right.type == "integer"
+    return False
+
+
 class PythonPerfDialect(BasePerfDialect):
     language = "python"
     lock_acquire_functions = frozenset({"acquire", "__enter__"})
@@ -940,9 +962,7 @@ class PythonPerfDialect(BasePerfDialect):
             return None
         path = self._dotted_path(stop) if stop.type in ("identifier", "attribute") else None
         last = path.rsplit(".", 1)[-1] if path else ""
-        if (stop.type == "identifier" and last.isupper() and len(last) > 1) or (
-            last and _PY_BOUND_NAME_RE.search(last)
-        ):
+        if _module_int_constant(stop) or (last and _PY_BOUND_NAME_RE.search(last)):
             return "bounded"
         return None
 
@@ -957,11 +977,7 @@ class PythonPerfDialect(BasePerfDialect):
         if stop is None:
             return None
         if start is None:
-            text = (stop.text or b"").decode()
-            constant = stop.type == "integer" or (
-                stop.type == "identifier" and text.isupper() and len(text) > 1
-            )
-            return "bounded" if constant else None
+            return "bounded" if stop.type == "integer" or _module_int_constant(stop) else None
         if stop.type == "binary_operator":
             left, right = stop.child_by_field_name("left"), stop.child_by_field_name("right")
             same_start = left is not None and self._dotted_path(left) == self._dotted_path(start)

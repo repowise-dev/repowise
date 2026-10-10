@@ -94,13 +94,39 @@ def _append_unique(
         adjacency.setdefault(source, []).append(target)
 
 
-def _line_values(attrs: Mapping[str, Any], key: str = "call_lines") -> tuple[int, ...]:
-    raw = attrs.get(key)
+def _line_values(attrs: Mapping[str, Any]) -> tuple[int, ...]:
+    raw = attrs.get("call_lines")
     if raw is None:
-        raw = (attrs.get("call_line"),) if key == "call_lines" else ()
+        raw = (attrs.get("call_line"),)
     elif isinstance(raw, int):
         raw = (raw,)
     return tuple(line for line in raw if isinstance(line, int) and line > 0)
+
+
+def _spawn_lines(attrs: Mapping[str, Any]) -> frozenset[int]:
+    """Call lines that hand the callee to a task scheduler (``create_task(f())``)."""
+    return frozenset(line for line in attrs.get("spawn_lines") or () if isinstance(line, int))
+
+
+def _split_spawned(
+    source: str,
+    target: str,
+    lines: tuple[int, ...],
+    spawned: frozenset[int],
+    callers_with_site_metadata: set[str],
+    spawn_only: dict[str, list[str]],
+) -> tuple[int, ...]:
+    """The call lines that run the callee in its caller.
+
+    A spawned site is still an edge but never resolves as a call: its caller is
+    recorded as having site facts, so the name fallback cannot bind it either.
+    """
+    if not spawned:
+        return lines
+    callers_with_site_metadata.add(source)
+    if spawned.issuperset(lines):
+        _append_unique(spawn_only, source, target)
+    return tuple(line for line in lines if line not in spawned)
 
 
 class ExecutionGraphIndex:
@@ -182,13 +208,15 @@ class ExecutionGraphIndex:
                 attrs = data or {}
                 edge_type = attrs.get("edge_type")
                 lines = _line_values(attrs) if edge_type == "calls" else ()
-                # A spawned call (``create_task(f())``) is still an edge, but no call
-                # site of the caller runs it: it never resolves as one.
-                spawned = set(_line_values(attrs, "spawn_lines")) if lines else set()
-                if spawned:
-                    callers_with_site_metadata.add(source)
-                    if spawned.issuperset(lines):
-                        _append_unique(spawn_only, source, target)
+                if lines:
+                    lines = _split_spawned(
+                        source,
+                        target,
+                        lines,
+                        _spawn_lines(attrs),
+                        callers_with_site_metadata,
+                        spawn_only,
+                    )
                 self._ingest_edge(
                     declaration_map,
                     declaration_seen if deduplicate_graph else None,
@@ -205,7 +233,7 @@ class ExecutionGraphIndex:
                     target,
                     edge_type,
                     attrs.get("resolution_origin"),
-                    tuple(line for line in lines if line not in spawned),
+                    lines,
                 )
 
         for source, targets in (declares or {}).items():

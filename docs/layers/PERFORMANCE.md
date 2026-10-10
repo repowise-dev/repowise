@@ -58,7 +58,7 @@ The default queue holds production opportunities in the `plan_ready` and
 `advisory` states. They are ranked by cost first; state only breaks ties.
 Only opportunities whose cost is measured are in it. A loop whose size nothing measured is `cost_proof = unproven`, never leads, and shows only with the `proof=unproven` filter.
 Each opportunity also says what runs its loop (`execution_role`: request, event consumer, scheduled job, startup, CLI, UI, tooling, test or unknown), and loops run per request rank above the rest. Roles are read for Python and TypeScript/JavaScript; other languages show `unknown`. The `role` filter lists any one role, or `all`.
-Work a request hands to `asyncio.create_task` is a background job, not part of the request. An opportunity takes its role and loop size from the same live call sites, so a call site switched off by a constant flag or already chunked never leads it.
+Work a request hands to `asyncio.create_task` and never waits for is a background job, not part of the request. An opportunity takes its role and loop size from the same live call sites, so a call site switched off by a constant flag or already chunked never leads it.
 
 Everything else is counted by reason, not hidden:
 

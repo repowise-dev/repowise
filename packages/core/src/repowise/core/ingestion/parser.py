@@ -125,6 +125,7 @@ from .parser_helpers import (
 )
 from .python_local_refs import extract_python_local_refs
 from .python_overload import is_python_overload as _is_python_overload
+from .python_tasks import is_fire_and_forget
 from .sfc_source import component_call_sites, prepare_source
 from .special_handlers import SPECIAL_HANDLER_LANGUAGES, parse_special
 from .symbol_identity import disambiguate_colliding_ids, symbol_discriminator
@@ -596,23 +597,6 @@ def _objc_call_target(
     if not has_receiver and _objc_call_is_block_variable(site_node, target_name, src):
         return None
     return target_name
-
-
-#: Python calls that schedule the coroutine they are handed instead of awaiting it.
-_PY_TASK_SCHEDULERS = frozenset({"create_task", "ensure_future", "run_coroutine_threadsafe"})
-
-
-def _is_spawned_call(language: str, site_node: Node, src: str) -> bool:
-    """Whether the call at *site_node* is the coroutine a task scheduler is handed
-    (``asyncio.create_task(job())``, ``tg.create_task(job())``): Python only."""
-    args = site_node.parent
-    outer = args.parent if args is not None and args.type == "argument_list" else None
-    if language != "python" or outer is None or outer.type != "call":
-        return False
-    function = outer.child_by_field_name("function")
-    if function is not None and function.type == "attribute":
-        function = function.child_by_field_name("attribute")
-    return function is not None and _node_text(function, src) in _PY_TASK_SCHEDULERS
 
 
 def _jsx_supplied_props(site_node: Node, src: str) -> frozenset[str] | None:
@@ -2082,7 +2066,11 @@ class ASTParser:
                             else "calls"
                         ),
                         supplied_props=_jsx_supplied_props(site_node, src),
-                        spawned=_is_spawned_call(file_info.language, site_node, src),
+                        # Ceiling: schedulers matched by name, the task followed
+                        # within its own function only (see ``python_tasks``).
+                        spawned=(
+                            file_info.language == "python" and is_fire_and_forget(site_node, src)
+                        ),
                     ),
                 )
             )

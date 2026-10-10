@@ -147,9 +147,29 @@ def _is_data_projection(node: Node) -> bool:
     return node.type == "member_expression" and prop is not None and prop.text == b"data"
 
 
+def _module_number_constant(name: bytes, node: Node) -> bool:
+    """``const NAME = 5`` at the top of *node*'s file, exported or not."""
+    root = node
+    while root.parent is not None:
+        root = root.parent
+    for stmt in root.children:
+        decl = stmt.child_by_field_name("declaration") if stmt.type == "export_statement" else stmt
+        if decl is None or decl.type != "lexical_declaration" or decl.children[0].type != "const":
+            continue
+        for declarator in decl.named_children:
+            if declarator.type != "variable_declarator":
+                continue
+            key = declarator.child_by_field_name("name")
+            if key is not None and key.text == name:
+                value = declarator.child_by_field_name("value")
+                return value is not None and value.type == "number"
+    return False
+
+
 def _slice_is_bounded(call: Node) -> bool:
-    """``.slice(a, N)`` where N is an integer literal or an ALL_CAPS named
-    constant — a constant-width read, not the whole collection."""
+    """``.slice(a, N)`` where N is an integer literal or an ALL_CAPS constant
+    its own file binds to one: a constant-width read, not the whole collection.
+    The spelling alone proves nothing."""
     args = call.child_by_field_name("arguments")
     named = [c for c in args.children if c.is_named] if args is not None else []
     if len(named) != 2:
@@ -158,7 +178,7 @@ def _slice_is_bounded(call: Node) -> bool:
     if end.type == "number":
         return True
     name = identifier_name(end)
-    return name is not None and name.isupper()
+    return bool(name and name.isupper()) and _module_number_constant(end.text or b"", end)
 
 
 def _sole_where_pair(call: Node) -> tuple[Node, Node] | None:
