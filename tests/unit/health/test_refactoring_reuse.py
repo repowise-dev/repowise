@@ -386,3 +386,61 @@ def test_a_copy_exported_by_a_later_statement_is_not_deleted() -> None:
     repo = _ts_twins()
     repo.files["ui/panel.ts"].append("export { pick };")
     assert repo.reuse(_TS_OCCURRENCES, "typescript").refused == "twin_exported"
+
+
+def test_a_decorator_above_a_comment_or_spanning_lines_is_found() -> None:
+    commented = _pair(util_head=["import functools", "@functools.cache", "# memoised"])
+    assert commented.reuse(_OCCURRENCES).refused == "decorated"
+    multi = _pair(util_head=["@register(", "    name='n',", ")"])
+    assert multi.reuse(_OCCURRENCES).refused == "decorated"
+
+
+def test_the_parsers_decorator_list_wins_over_the_text() -> None:
+    repo = _pair()
+    repo.graph.nodes["pkg/util.py::normalize"]["decorators"] = ["@functools.cache"]
+    assert repo.reuse(_OCCURRENCES).refused == "decorated"
+    repo = _pair(util_head=["import json", "", "# @not a decorator, a comment"])
+    repo.graph.nodes["pkg/util.py::normalize"]["decorators"] = []
+    assert repo.reuse(_OCCURRENCES).plan is not None
+
+
+def test_a_closure_sees_its_parents_variables() -> None:
+    body = ["        parts = text.split(json.dumps(sep))", *("    " + t for t in _BODY[1:])]
+    util = ["import json", "", "", *_fn(body=[t[4:] for t in body])]
+    host = [
+        "import json",
+        "",
+        "",
+        "def outer(json):",
+        "    def run(text, sep):",
+        '        print("start")',
+        *body,
+        "    return run",
+    ]
+    repo = (
+        _Repo()
+        .file("pkg/util.py", util)
+        .file("pkg/b.py", host)
+        .symbol("pkg/util.py", "normalize", 4, 11, "def normalize(text, sep)")
+        .symbol("pkg/b.py", "outer", 4, 13, "def outer(json)")
+        .symbol("pkg/b.py", "run", 5, 12, "def run(text, sep)", parent_name="outer")
+        .imports("pkg/b.py", "pkg/util.py")
+    )
+    assert repo.reuse([("pkg/b.py", 7, 12), ("pkg/util.py", 4, 11)]).refused == "free_names"
+    # As a whole copy, the closure is refused outright.
+    del host[5]
+    repo.files["pkg/b.py"] = host
+    repo.graph.nodes["pkg/b.py::outer::run"]["end_line"] = 11
+    assert repo.reuse([("pkg/b.py", 6, 11), ("pkg/util.py", 4, 11)]).refused == "nested"
+
+
+def test_a_host_local_named_like_the_function_is_refused() -> None:
+    repo = _pair(host_params="text, sep, normalize")
+    assert repo.reuse(_OCCURRENCES).refused == "free_names"
+
+
+def test_a_block_comment_binds_nothing() -> None:
+    from repowise.core.analysis.health.refactoring.reuse_names import module_bindings
+
+    lines = ["/*", "import a from './a';", "*/", "import b from './b';"]
+    assert set(module_bindings(lines, "ui/x.ts", "typescript")) == {"b"}

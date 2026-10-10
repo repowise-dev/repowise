@@ -140,7 +140,11 @@ def _top_level_statements(lines: list[str]) -> list[str]:
     out: list[str] = []
     parts: list[str] = []
     depth = 0
+    in_comment = False
     for raw in lines:
+        if in_comment or (depth == 0 and raw.startswith("/*")):
+            in_comment = "*/" not in raw[2 if not in_comment else 0 :]
+            continue
         if depth > 0:
             parts.append(raw.strip())
         elif raw[:1].strip() and not raw.startswith(("#", "//", "/*", "*")):
