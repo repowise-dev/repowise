@@ -240,8 +240,13 @@ def _compile_query(lang: str, grammar_tag: str | None = None) -> tuple[object | 
     # The spec names the query file, so a language can reuse another's
     # queries wholesale (svelte -> typescript.scm). Every other spec declares
     # ``<tag>.scm``, which is what the default preserves.
-    spec = _LANG_REGISTRY.get(lang)
-    scm_name = (spec.scm_file if spec and spec.scm_file else None) or f"{lang}.scm"
+    query_lang = (
+        "typescript"
+        if grammar_tag in ("typescript", "tsx") and lang == "javascript"
+        else lang
+    )
+    spec = _LANG_REGISTRY.get(query_lang)
+    scm_name = (spec.scm_file if spec and spec.scm_file else None) or f"{query_lang}.scm"
     scm_path = QUERIES_DIR / scm_name
     if not scm_path.exists():
         log.debug("No .scm query file found", language=lang, path=str(scm_path))
@@ -251,7 +256,7 @@ def _compile_query(lang: str, grammar_tag: str | None = None) -> tuple[object | 
     # Grammar-variant-specific additions (e.g. JSX node captures that are
     # only valid against the ``tsx`` grammar but not the plain ``typescript``
     # one). Appended to the base SCM only when the variant scm file exists.
-    if grammar_tag and grammar_tag != lang:
+    if grammar_tag and grammar_tag != query_lang:
         extra_scm = QUERIES_DIR / f"{grammar_tag}.scm"
         if extra_scm.exists():
             scm_text = scm_text + "\n" + extra_scm.read_text(encoding="utf-8")
@@ -1397,12 +1402,15 @@ class ASTParser:
 
         parse_errors = _collect_error_nodes(root)
 
-        # Adaptive TSX grammar fallback: if a .ts file contains JSX markup,
-        # tree-sitter-typescript produces ERROR nodes. Re-parse using the TSX
-        # grammar ONLY IF:
+        # Adaptive TSX grammar fallback: if a .ts, .vue, or .js (e.g. Flow-typed)
+        # file contains JSX markup or type annotations/generics that fail under
+        # the initial grammar, tree-sitter produces ERROR nodes. Re-parse using
+        # the TSX grammar ONLY IF:
         #   1. Initial parse yielded error nodes (parse_errors is non-empty)
-        #   2. The file projects to TypeScript and is not already on tsx
-        #   3. Source contains JSX-specific closing tokens (b"/>" or b"</")
+        #   2. Grammar is not already on tsx
+        #   3. For typescript/vue: source contains JSX-specific closing tokens (b"/>" or b"</")
+        #      For javascript: source contains Flow/type tokens or JSX closing tokens
+        #         (e.g. b"@flow", b":", b"<", b"/>", b"</")
         # A .vue render function may be written in JSX
         # (``vnodes.push(<i class={c} />)``), which is the single TS parse
         # failure across a 1,593-file .vue corpus. ``source`` here is the
@@ -1412,9 +1420,20 @@ class ASTParser:
         # FEWER errors than the first parse.
         if (
             parse_errors
-            and lang in ("typescript", "vue")
             and grammar_tag != "tsx"
-            and (b"/>" in source or b"</" in source)
+            and (
+                (lang in ("typescript", "vue") and (b"/>" in source or b"</" in source))
+                or (
+                    lang == "javascript"
+                    and (
+                        b"/>" in source
+                        or b"</" in source
+                        or b"@flow" in source
+                        or b":" in source
+                        or b"<" in source
+                    )
+                )
+            )
         ):
             tsx_language = _get_language("tsx")
             if tsx_language is not None:
@@ -1436,6 +1455,7 @@ class ASTParser:
                     # false-positive would remain.
                     grammar_tag = "tsx"
                     language = tsx_language
+                    config = LANGUAGE_CONFIGS.get("typescript", config)
 
         query = self._get_query(lang, language, grammar_tag)
 
