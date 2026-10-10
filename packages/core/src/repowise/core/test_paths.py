@@ -67,9 +67,10 @@ if TYPE_CHECKING:
 
 # Directory segments that mark every file beneath them as test material,
 # whatever the filename. ``__test__`` is the Jest variant of ``__tests__``;
-# ``integration_test`` is the directory Flutter's integration tests must live in.
+# ``integration_test`` is the directory Flutter's integration tests must live in;
+# ``testsuite`` is the one-word suite directory (``gcc/testsuite/``, ``flask/testsuite/``).
 _TEST_DIR_TOKENS: frozenset[str] = frozenset(
-    {"test", "tests", "__tests__", "__test__", "e2e", "integration_test"}
+    {"test", "tests", "__tests__", "__test__", "e2e", "integration_test", "testsuite"}
 )
 
 # A compound segment (``e2e-tests``, ``pkg_tests``, ``client-e2e``) is a test

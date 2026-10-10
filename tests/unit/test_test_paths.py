@@ -104,6 +104,14 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("contest/x.py", None, ""),
     # e2e suites
     ("e2e/login.ts", None, "test"),
+    # ...and the `.e2e.` infix beside `.test.`/`.spec.`, suites and their helpers
+    ("src/gateway/gateway.e2e.ts", None, "test"),
+    ("src/gateway/test-helpers.e2e.ts", None, "test"),
+    ("apps/desktop/tsconfig.e2e.json", None, ""),
+    ("src/harness/e2e_utils.py", None, ""),
+    # one-word suite directories (gcc, flask before 0.11)
+    ("flask/testsuite/basic.py", None, "test"),
+    ("gcc/testsuite/gcc.dg/pr123.c", None, "test"),
     # production code that merely contains the word: the unanchored
     # `test[s_/]` substring rule classified the first three as tests
     ("src/latest/api.py", None, ""),  # #1103 finding 1
