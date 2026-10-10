@@ -17,6 +17,10 @@ from click.testing import CliRunner
 
 from repowise.cli.commands.update_cmd.reporting import JsonProgressEmitter
 from repowise.cli.main import cli
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
+
+# An index written by this build: its git rows follow the current rules.
+CURRENT_GIT_HISTORY = {GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION}
 
 
 class TestJsonProgressEmitter:
@@ -145,7 +149,7 @@ class TestUpdateProgressJsonCli:
             os.makedirs(os.path.join(td, ".repowise"))
             state_path = os.path.join(td, ".repowise", "state.json")
             with open(state_path, "w") as f:
-                json.dump({"last_sync_commit": "deadbeef"}, f)
+                json.dump({"last_sync_commit": "deadbeef", **CURRENT_GIT_HISTORY}, f)
 
             result = runner.invoke(cli, ["update", td, "--since", "deadbeef", "--progress", "json"])
 

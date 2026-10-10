@@ -75,6 +75,7 @@ def _persist_initial_index_state(
     and style the run used, so later CLI ``update`` runs and server jobs
     resolve the same configuration.
     """
+    from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
     from repowise.core.repo_config import config_fingerprint
 
     # config.yaml is written first: the fingerprint below covers it.
@@ -95,6 +96,8 @@ def _persist_initial_index_state(
         state["docs_skip_reason"] = docs_skip_reason
     state["run_mode"] = "standard"
     state["git_tier"] = "full"
+    # The full index just walked git under the current history rules.
+    state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
     state["include_submodules"] = False
     state["total_pages"] = total_pages
     if llm_client is not None:

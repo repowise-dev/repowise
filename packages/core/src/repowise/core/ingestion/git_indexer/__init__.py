@@ -19,7 +19,13 @@ This package was split out of a single 1k-line module; the public import path
 
 from __future__ import annotations
 
-from ._constants import HOTSPOT_HALFLIFE_DAYS, is_fix_commit
+from ._constants import (
+    GIT_HISTORY_VERSION,
+    GIT_HISTORY_VERSION_KEY,
+    HOTSPOT_HALFLIFE_DAYS,
+    git_history_stale,
+    is_fix_commit,
+)
 from .agent_provenance import (
     AgentProvenance,
     AgentProvenanceClassifier,
@@ -62,6 +68,8 @@ from .tiers import GitIndexTier
 
 __all__ = [
     "BACKFILL_PHASE",
+    "GIT_HISTORY_VERSION",
+    "GIT_HISTORY_VERSION_KEY",
     "HOTSPOT_HALFLIFE_DAYS",
     "SHAPE_KINDS",
     # Re-exported for ``git_commit_index`` which builds the shared commit index.
@@ -95,6 +103,7 @@ __all__ = [
     "count_active_contributors",
     "detect_original_path",
     "get_blame_ownership",
+    "git_history_stale",
     "index_file",
     "is_fix_commit",
     "is_significant_commit",

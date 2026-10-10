@@ -17,7 +17,11 @@ from click.testing import CliRunner
 
 from repowise.cli.helpers import load_state, save_state
 from repowise.cli.main import cli
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
+
+# An index written by this build: its git rows follow the current rules.
+CURRENT_GIT_HISTORY = {GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION}
 
 DOCS_POINTER_KEY = "last_docs_commit"
 SYNC_POINTER_KEY = "last_sync_commit"
@@ -81,7 +85,9 @@ def test_workspace_update_backfills_docs_pointer(tmp_path: Path) -> None:
     # Simulate a state.json written before last_docs_commit existed. docs are
     # disabled so `update --workspace` resolves to the index-only path — the
     # path this pointer-backfill guard is about.
-    save_state(repo, {SYNC_POINTER_KEY: c0, "docs_enabled": False})
+    save_state(
+        repo, {SYNC_POINTER_KEY: c0, "docs_enabled": False, **CURRENT_GIT_HISTORY}
+    )
     assert DOCS_POINTER_KEY not in load_state(repo)
 
     c1 = _commit_change(repo, "c.py", "def gamma():\n    return 3\n", "add c.py")
@@ -111,7 +117,9 @@ def test_stale_prose_is_reachable_after_workspace_update(tmp_path: Path) -> None
     c0 = _git(repo, "rev-parse", "HEAD")
     # docs disabled -> `update --workspace` stays index-only and only walks the
     # sync pointer, which is the scenario that used to strand the docs pointer.
-    save_state(repo, {SYNC_POINTER_KEY: c0, "docs_enabled": False})
+    save_state(
+        repo, {SYNC_POINTER_KEY: c0, "docs_enabled": False, **CURRENT_GIT_HISTORY}
+    )
 
     c1 = _commit_change(repo, "c.py", "def gamma():\n    return 3\n", "add c.py")
     old_cwd = os.getcwd()
@@ -153,7 +161,10 @@ def test_workspace_update_regenerates_docs_for_docs_enabled_repo(tmp_path: Path)
 
     _index_full(repo)
     c0 = _git(repo, "rev-parse", "HEAD")
-    save_state(repo, {SYNC_POINTER_KEY: c0, DOCS_POINTER_KEY: c0, "docs_enabled": True})
+    save_state(
+        repo,
+        {SYNC_POINTER_KEY: c0, DOCS_POINTER_KEY: c0, "docs_enabled": True, **CURRENT_GIT_HISTORY},
+    )
 
     c1 = _commit_change(repo, "c.py", "def gamma():\n    return 3\n", "add c.py")
 
@@ -186,7 +197,10 @@ def test_workspace_docs_update_reports_deferral_not_regeneration(tmp_path: Path)
 
     _index_full(repo)
     c0 = _git(repo, "rev-parse", "HEAD")
-    save_state(repo, {SYNC_POINTER_KEY: c0, DOCS_POINTER_KEY: c0, "docs_enabled": True})
+    save_state(
+        repo,
+        {SYNC_POINTER_KEY: c0, DOCS_POINTER_KEY: c0, "docs_enabled": True, **CURRENT_GIT_HISTORY},
+    )
 
     c1 = _commit_change(repo, "c.py", "def gamma():\n    return 3\n", "add c.py")
 
@@ -224,7 +238,7 @@ def test_docs_early_exit_advances_docs_pointer(tmp_path: Path) -> None:
     c0 = _git(repo, "rev-parse", "HEAD")
 
     # Legacy state: no docs pointer recorded yet.
-    save_state(repo, {SYNC_POINTER_KEY: c0, "docs_enabled": True})
+    save_state(repo, {SYNC_POINTER_KEY: c0, "docs_enabled": True, **CURRENT_GIT_HISTORY})
 
     _git(repo, "commit", "--allow-empty", "-m", "empty")
     c1 = _git(repo, "rev-parse", "HEAD")
@@ -251,7 +265,10 @@ def test_index_only_early_exit_advances_sync_pointer(tmp_path: Path) -> None:
     c0 = _git(repo, "rev-parse", "HEAD")
 
     # docs disabled -> a plain `update` resolves to index-only mode.
-    save_state(repo, {SYNC_POINTER_KEY: c0, DOCS_POINTER_KEY: c0, "docs_enabled": False})
+    save_state(
+        repo,
+        {SYNC_POINTER_KEY: c0, DOCS_POINTER_KEY: c0, "docs_enabled": False, **CURRENT_GIT_HISTORY},
+    )
 
     _git(repo, "commit", "--allow-empty", "-m", "empty")
     c1 = _git(repo, "rev-parse", "HEAD")

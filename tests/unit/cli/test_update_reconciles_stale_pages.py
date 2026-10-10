@@ -15,6 +15,11 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
+
+# An index written by this build: its git rows follow the current rules.
+CURRENT_GIT_HISTORY = {GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION}
+
 
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
@@ -103,7 +108,12 @@ def _state_at(repo: Path, head: str) -> None:
 
     save_state(
         repo,
-        {"last_sync_commit": head, "last_docs_commit": head, "docs_mode": "deterministic"},
+        {
+            "last_sync_commit": head,
+            "last_docs_commit": head,
+            "docs_mode": "deterministic",
+            **CURRENT_GIT_HISTORY,
+        },
     )
 
 

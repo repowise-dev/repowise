@@ -15,6 +15,10 @@ from click.testing import CliRunner
 
 from repowise.cli.commands.status_cmd import status_command
 from repowise.cli.commands.update_cmd import update_command
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
+
+# An index written by this build: its git rows follow the current rules.
+CURRENT_GIT_HISTORY = {GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION}
 
 
 def _build_workspace(root: Path) -> None:
@@ -24,7 +28,7 @@ def _build_workspace(root: Path) -> None:
     (frontend / ".git").mkdir(parents=True)
     (backend / ".repowise").mkdir()
     (backend / ".repowise" / "state.json").write_text(
-        json.dumps({"last_sync_commit": "abc123", "docs_enabled": True}),
+        json.dumps({"last_sync_commit": "abc123", "docs_enabled": True, **CURRENT_GIT_HISTORY}),
     )
     (root / ".repowise-workspace.yaml").write_text(
         "version: 1\n"

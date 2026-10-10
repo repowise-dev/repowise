@@ -19,12 +19,16 @@ from pathlib import Path
 
 import pytest
 
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.workspace.update import (
     commit_exists,
     get_head_commit,
     read_repo_state,
     update_single_repo_index,
 )
+
+# An index written by this build: its git rows follow the current rules.
+CURRENT_GIT_HISTORY = {GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -53,7 +57,7 @@ def _mark_indexed(repo: Path, commit: str, **extra_state) -> None:
     state_dir = repo / ".repowise"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "state.json").write_text(
-        json.dumps({"last_sync_commit": commit, **extra_state}), encoding="utf-8"
+        json.dumps({"last_sync_commit": commit, **CURRENT_GIT_HISTORY, **extra_state}), encoding="utf-8"
     )
     (state_dir / "wiki.db").touch()
 
