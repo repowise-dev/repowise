@@ -240,24 +240,26 @@ def python_dynamic_refs(rel: str, blob: bytes, resolver: ModuleStringResolver) -
 def string_inputs(rel: str, blob: bytes) -> tuple:
     """What :func:`python_dynamic_refs` reads from *blob*, for comparing two versions.
 
-    The markers that gate it, every string it may resolve (anywhere, and in
-    code only), and each templated load with whether it sits in code. Two
+    The markers that gate it, and every string or templated load it may
+    resolve with whether it may sit in a comment or docstring; where one may,
+    the strings in code too, read the way the extractor reads them. Two
     versions alike here get the same refs from the same modules. Ceiling: a
     ``module:attr`` reference also depends on the target defining *attr*,
     which only the target's text says.
     """
     gates = tuple(m for m in _DYNAMIC_IMPORT_MARKERS if m in blob)
-    strings = _resolvable(blob)
     triples = [m.start() for m in _TRIPLE_QUOTE_RE.finditer(blob)]
-    templates = sorted(
-        {(m.group(0), _maybe_not_code(blob, triples, m.start())) for m in _TEMPLATE_LOAD_RE.finditer(blob)}
-    )
-    live = _resolvable(live_text(rel, blob)) if strings else []
-    return gates, strings, live, templates
-
-
-def _resolvable(text: bytes) -> list[bytes]:
-    return sorted({m.group(0) for r in (_DOTTED_STRING_RE, _ATTR_STRING_RE) for m in r.finditer(text)})
+    found = {
+        (m.group(0), _maybe_not_code(blob, triples, m.start()))
+        for r in (_DOTTED_STRING_RE, _ATTR_STRING_RE, _TEMPLATE_LOAD_RE)
+        for m in r.finditer(blob)
+    }
+    # Tokenizing costs far more than the scan, so only where the extractor tokenizes.
+    live: set[bytes] = set()
+    if any(maybe_not_code for _, maybe_not_code in found):
+        code = live_text(rel, blob)
+        live = {m.group(0) for r in (_DOTTED_STRING_RE, _ATTR_STRING_RE) for m in r.finditer(code)}
+    return gates, sorted(found), sorted(live)
 
 
 class PythonDynamicHints(DynamicHintExtractor):
