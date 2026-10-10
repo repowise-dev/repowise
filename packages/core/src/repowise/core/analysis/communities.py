@@ -22,7 +22,7 @@ import networkx as nx
 import structlog
 
 from repowise.core.analysis.kg_curation import GENERIC_ORG_SEGMENTS, dominant_segments
-from repowise.core.ids import is_external
+from repowise.core.ids import ExternalId, is_external, parse
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
 from repowise.core.support_paths import is_example_path
 from repowise.core.test_paths import is_test_related_path
@@ -515,6 +515,19 @@ def _assign_tests_to_communities(
 # ---------------------------------------------------------------------------
 
 
+def _is_third_party_node(raw: str) -> bool:
+    """True только для узлов ``external:`` — не для ``framework:``.
+
+    ``is_external`` намеренно покрывает оба вида (``external:`` и ``framework:``,
+    см. ``repowise.core.ids``), но здесь нужен именно третий-сторонний код:
+    framework-узлы остаются в партиции — они не должны НАЗЫВАТЬ сообщество, однако
+    связывают файлы через framework-зависимости (см. комментарий в
+    ``detect_file_communities``). Отсев их заодно с внешними менял бы раскладку
+    сообществ за рамками #2538.
+    """
+    return isinstance(parse(raw), ExternalId)
+
+
 def detect_file_communities(
     graph: nx.DiGraph,
     repo_name: str | None = None,
@@ -530,12 +543,14 @@ def detect_file_communities(
         - communities_info: {community_id: CommunityInfo}
         - algorithm_used: "leiden" or "louvain"
     """
-    # Extract file nodes (exclude external nodes — they're structural noise)
+    # Extract file nodes, excluding external nodes: they are stored as files
+    # but are not repository files, so they must not join the partition or
+    # count as members (#2538).
     # Sorted: node order seeds the undirected graph's insertion order, and
     # Louvain/Leiden partitions depend on iteration order even when seeded.
     file_nodes = sorted(
         n for n, d in graph.nodes(data=True)
-        if d.get("node_type", "file") == "file"
+        if d.get("node_type", "file") == "file" and not _is_third_party_node(n)
     )
 
     if not file_nodes:
@@ -643,12 +658,9 @@ def detect_file_communities(
     # out of the partition so they would not shape a community, and they must
     # not name it either. The non-core catch-all is labelled from what it has.
     #
-    # External and framework nodes are stored as files, so they reach the
-    # partition, but they must not name a community either. They have no
-    # directory, so a big community with no dominant segment fell through to
-    # the filename-stem strategy, where eight `external:rich.*` imports share
-    # the stem `external:rich` and won: this repo's largest community was
-    # labelled after a third-party library that every view hides.
+    # External nodes are excluded from the partition entirely (#2538), so they
+    # cannot reach label_members; the is_external filter below is kept as a
+    # guard for any external node that still arrives through an assignment.
     label_members: dict[int, list[str]] = {}
     for cid, members in community_members.items():
         sorted_members = sorted(members)
