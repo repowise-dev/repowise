@@ -105,6 +105,34 @@ def test_a_tilde_run_does_not_close_a_backtick_fence():
     assert [r.target for r in extract(text, "docs/a.md")] == ["src/real.py"]
 
 
+@pytest.mark.parametrize(
+    ("opener", "content", "closer"),
+    [
+        ("```", "```python", "```"),
+        ("~~~", "~~~python", "~~~"),
+        ("````markdown", "```", "````"),
+        ("~~~~markdown", "~~~", "~~~~"),
+        ("```", "``` trailing text", "````  \t"),
+    ],
+)
+def test_only_a_long_enough_bare_fence_closes_the_block(opener, content, closer):
+    text = (
+        f"{opener}\n{content}\n## Example heading\n`src/invented.py`\n"
+        f"{closer}\n## Real heading\nSee `src/real.py`.\n"
+    )
+    assert list(prose_lines(text)) == [
+        (6, "## Real heading"),
+        (7, "See `src/real.py`."),
+        (8, ""),
+    ]
+    assert [(r.line, r.target) for r in extract(text, "docs/a.md")] == [
+        (7, "src/real.py")
+    ]
+    idx = _index(docs={"docs/a.md": text})
+    ref = _one("[Real](#real-heading)", DriftKind.ANCHOR)
+    assert resolve(idx, ref).verdict is DriftVerdict.RESOLVED
+
+
 def test_line_numbers_count_newlines_only():
     """``splitlines()`` also breaks on U+2028 and friends, which arrive by
     copy-paste; git does not count them, and ``line_number`` is the key."""
