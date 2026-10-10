@@ -2483,6 +2483,7 @@ def run_update(
                 reconcile_full_generation=generation_config_changed,
                 require_config_rebuild_success=config_rebuild_required,
                 require_decision_persist_success=git_config_changed,
+                history_window_changed=git_config_changed,
                 timings=timings,
             )
     except Exception as exc:
