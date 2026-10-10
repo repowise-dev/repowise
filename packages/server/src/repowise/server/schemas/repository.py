@@ -54,7 +54,7 @@ class RepoResponse(BaseModel):
     settings: dict
     created_at: datetime
     updated_at: datetime
-    # Workspace context â€” populated when the server is running in
+    # Workspace context — populated when the server is running in
     # workspace mode. ``status`` indicates whether the repo has been
     # indexed yet; the web UI uses it to render "needs index" CTA cards
     # instead of silently dropping unindexed workspace repos from the
@@ -129,7 +129,7 @@ class RepoSummaryRow(BaseModel):
     name: str
     local_path: str
     updated_at: datetime | None = None
-    #: "indexed" | "needs_index" | "missing_dir" â€” same vocabulary as
+    #: "indexed" | "needs_index" | "missing_dir" — same vocabulary as
     #: ``RepoResponse.workspace_status``, which the sidebar already renders.
     status: str = "indexed"
 
@@ -150,7 +150,7 @@ class RepoSummaryRow(BaseModel):
     tracked_file_count: int = 0
     hotspot_count: int = 0
 
-    #: Latest health snapshot. ``None`` when the repo has never been analysed â€”
+    #: Latest health snapshot. ``None`` when the repo has never been analysed —
     #: distinct from a score of 0, which would mean "analysed, and terrible".
     average_health: float | None = None
     hotspot_health: float | None = None
