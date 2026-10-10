@@ -1821,6 +1821,8 @@ class HealthFinding(QueueVerdict, Base):
             "dimension",
             "opportunity_id",
         ),
+        # Counting and the unjudged check group by the stored verdict.
+        Index("ix_health_findings_repo_status_queue", "repository_id", "status", "queue_eligible"),
     )
 
 
@@ -2158,6 +2160,8 @@ class RefactoringOpportunity(QueueVerdict, Base):
             "status",
             "file_path",
         ),
+        # The ``fix_first`` scope's page, in queue order; its reason counts
+        # read the same (repository, status) prefix.
         Index(
             "ix_refactoring_opportunities_repo_status_eligible",
             "repository_id",

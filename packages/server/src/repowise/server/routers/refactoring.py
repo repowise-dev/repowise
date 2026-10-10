@@ -370,6 +370,8 @@ async def get_refactoring_opportunities(
         "scope": page.scope,
         "counts": page.counts,
     }
+    # ``hidden`` restates ``counts.excluded`` for the board; remove once the
+    # web reads ``counts`` (UI adoption).
     if page.hidden is not None:
         body["hidden"] = page.hidden
     if ignored:

@@ -397,7 +397,7 @@ def health_command(
 
     # Lead with what to fix; a narrowed run is an inspection, not the worklist.
     if not file_filter and not module_filter:
-        _render_fix_first(_load_fix_first(repo_path), FIX_FIRST_ROWS)
+        _render_fix_first(_load_fix_first(repo_path, limit=FIX_FIRST_ROWS))
 
     kpis = report.kpis
     avg = kpis.get("average_health")

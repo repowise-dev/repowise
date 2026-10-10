@@ -38,6 +38,11 @@ _INDEXES = (
         "refactoring_opportunities",
         ["repository_id", "status", "queue_eligible", "queue_position"],
     ),
+    (
+        "ix_health_findings_repo_status_queue",
+        "health_findings",
+        ["repository_id", "status", "queue_eligible"],
+    ),
 )
 
 
@@ -54,6 +59,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     for name, table, _columns in _INDEXES:
         op.drop_index(name, table_name=table)
+    # Batch mode rebuilds the table on SQLite, which cannot drop a column in place.
     for table in _TABLES:
-        for column in ("queue_tier", "queue_value", "queue_reason", "queue_eligible"):
-            op.drop_column(table, column)
+        with op.batch_alter_table(table) as batch:
+            for column in ("queue_tier", "queue_value", "queue_reason", "queue_eligible"):
+                batch.drop_column(column)

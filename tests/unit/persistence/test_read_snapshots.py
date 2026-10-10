@@ -71,7 +71,7 @@ async def test_persist_writes_both_snapshots_once(async_session) -> None:
     rid = await _seed(async_session)
     await write_read_snapshots(async_session, rid)
     kinds = (await async_session.execute(select(ReadSnapshot.kind))).scalars().all()
-    assert sorted(kinds) == ["actions", "fix_first"]
+    assert sorted(kinds) == ["actions", "fix_first", "fix_first_counts"]
     # Nothing moved since, so a second pass writes nothing.
     assert not await fix_first_loader.write_fix_first_snapshot(async_session, rid)
     assert not await actions_loader.write_actions_snapshot(async_session, rid)
@@ -150,7 +150,7 @@ async def test_a_write_to_an_input_drops_the_snapshots(async_session, change) ->
     rid = await _seed(async_session)
     await write_read_snapshots(async_session, rid)
     await async_session.commit()
-    assert await _snapshot_rows(async_session) == 2
+    assert await _snapshot_rows(async_session) == 3
 
     await change(async_session, rid)
     await async_session.commit()
@@ -180,7 +180,7 @@ async def test_writes_elsewhere_keep_the_snapshots(async_session) -> None:
     async with async_session.begin_nested():
         await async_session.execute(select(HealthFinding.id))  # a read in a savepoint
     await async_session.commit()
-    assert await _snapshot_rows(async_session) == 2
+    assert await _snapshot_rows(async_session) == 3
 
 
 async def test_writes_before_the_snapshot_in_one_session_keep_it(async_session) -> None:
@@ -188,7 +188,7 @@ async def test_writes_before_the_snapshot_in_one_session_keep_it(async_session) 
     await _new_secret(async_session, rid)
     await write_read_snapshots(async_session, rid)
     await async_session.commit()
-    assert await _snapshot_rows(async_session) == 2
+    assert await _snapshot_rows(async_session) == 3
 
 
 async def _stored_payload(session, kind: str) -> dict:
@@ -282,7 +282,7 @@ async def test_a_rewrite_in_the_writing_session_replaces_a_current_row(async_ses
     await _triage(async_session, rid)  # an input write, not yet committed
     await write_read_snapshots(async_session, rid)
     await async_session.commit()
-    assert await _snapshot_rows(async_session) == 2
+    assert await _snapshot_rows(async_session) == 3
     view, queue = await _live(async_session, rid)
     clear_fix_first_cache()
     stored = await load_fix_first(async_session, rid, limit=None)
@@ -327,7 +327,7 @@ async def test_one_sessions_write_does_not_mark_another(async_session, session_f
             await reader.execute(select(HealthFinding.id))
             await reader.commit()
         await other.rollback()
-    assert await _snapshot_rows(async_session) == 2
+    assert await _snapshot_rows(async_session) == 3
 
 
 async def test_a_corrupt_payload_is_a_miss(async_session) -> None:

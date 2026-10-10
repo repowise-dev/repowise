@@ -44,7 +44,7 @@ from repowise.core.persistence.crud import (
     list_performance_opportunities,
     performance_facet_counts,
 )
-from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
+from repowise.core.persistence.crud.analysis.queue_counts import any_unjudged, unit_counts
 
 from ..mcp_server._references import refactoring_plan_id
 
@@ -92,17 +92,14 @@ class PerformanceHealthService:
         filter control needs. It stays a single indexed aggregate over a table
         that already holds one row per cause rather than one per observation.
         """
+        judged = not (
+            query.default_queue
+            and await any_unjudged(self._session, self._repository_id, "causes")
+        )
         rows, total = await list_performance_opportunities(
             self._session,
             self._repository_id,
-            contexts=query.contexts,
-            boundary=query.boundary,
-            confidence=query.confidence,
-            actionabilities=query.actionabilities,
-            proofs=query.proofs,
-            roles=query.roles,
-            queue_eligible=query.queue_eligible,
-            file_paths=query.file_paths,
+            **query.store_filters(judged=judged),
             sort=query.sort,
             limit=query.limit,
             offset=query.offset,

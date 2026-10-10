@@ -24,6 +24,7 @@ from typing import Any, Literal
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.queue.counts import NOT_JUDGED
 from repowise.core.analysis.health.queue_rules import keep, sort_key
 from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 from repowise.core.analysis.health.refactoring.recommendations import (
@@ -52,7 +53,8 @@ from repowise.core.analysis.health.refactoring.serving import (
 )
 from repowise.core.analysis.health.refactoring_summary import summarize_plans
 from repowise.core.analysis.health.rows import detail_map, json_field
-from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
+from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+from repowise.core.persistence.crud.analysis.queue_counts import any_unjudged, unit_counts
 from repowise.core.persistence.crud.analysis.refactoring import (
     get_refactoring_suggestions,
     ranked_refactoring_suggestions,
@@ -68,6 +70,13 @@ from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
     refactoring_step_counts,
 )
 from repowise.core.persistence.models import RefactoringOpportunity, RefactoringSuggestion
+
+
+def _hidden(left_out: dict[str, int]) -> dict[str, Any]:
+    return {
+        "total": sum(left_out.values()),
+        "by_reason": dict(sorted(left_out.items(), key=lambda i: (-i[1], i[0]))),
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,12 +320,28 @@ class RefactoringHealthService:
         row at index time. ``all`` keeps every row."""
         if query.scope != "fix_first":
             return filters, None
+        if await any_unjudged(self._session, self._repository_id, "plans"):
+            return await self._live_fix_first_scope(filters)
         by_reason = await refactoring_reason_counts(self._session, self._repository_id, **filters)
         left_out = {reason: n for reason, n in by_reason.items() if reason is not None}
-        return {**filters, "queue_eligible": True}, {
-            "total": sum(left_out.values()),
-            "by_reason": dict(sorted(left_out.items(), key=lambda i: (-i[1], i[0]))),
-        }
+        return {**filters, "queue_eligible": True}, _hidden(left_out)
+
+    async def _live_fix_first_scope(
+        self, filters: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The ``fix_first`` scope on a store whose plans are not all judged:
+        the ids the live Fix first queue takes, the rest counted as not judged.
+
+        Ceiling: the ids go back as an ``IN`` list; the next index judges every
+        row and the stored verdict replaces this.
+        """
+        queue = await load_fix_first(self._session, self._repository_id, limit=None, verify=False)
+        ids = sorted({i.source.opportunity_id for i in queue.items if i.kind == "refactor"})
+        scoped = {**filters, "opportunity_ids": ids}
+        repo = self._repository_id
+        matched = sum((await refactoring_reason_counts(self._session, repo, **filters)).values())
+        kept = sum((await refactoring_reason_counts(self._session, repo, **scoped)).values())
+        return scoped, _hidden({NOT_JUDGED: matched - kept} if matched > kept else {})
 
     async def _counts(self, query: RefactoringQuery, shown: int) -> dict[str, Any]:
         """The plans' counts in the query's files: where the page sits in the queue."""

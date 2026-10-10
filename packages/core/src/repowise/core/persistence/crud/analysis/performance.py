@@ -104,8 +104,8 @@ def _row_kwargs(
     plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from ....analysis.health.perf.serving import intervention_file
-    from ....analysis.health.queue.eligibility import queue_proof
     from ....analysis.health.queue.counts import perf_judgement
+    from ....analysis.health.queue.eligibility import queue_proof
 
     fix = opportunity.fix
     row = {

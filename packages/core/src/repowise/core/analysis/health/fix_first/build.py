@@ -59,7 +59,7 @@ from typing import Any
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.complexity.dispatch import DISPATCH_SHARE
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
-from repowise.core.analysis.health.queue.counts import Judgement
+from repowise.core.analysis.health.queue.counts import COVERED_BY_PLAN, NOT_FILE_LEAD, Judgement
 from repowise.core.analysis.health.queue.eligibility import (
     DEAD_CONFIDENCE,
     DEFAULT_QUEUE_CONTEXTS,
@@ -596,9 +596,7 @@ def _refactor_unit(
 ) -> _Unit:
     path = field(row, "file_path")
     lead = steps[0]
-    # Steps of a kind not yet audited stay in the full plan, never in the item.
-    kept = [s for s in steps if not _unaudited(s)]
-    held_back, steps = len(steps) - len(kept), kept
+    steps, held_back = _audited_steps(steps)
     lead_type = lead.get("refactoring_type") or field(row, "lead_refactoring_type") or ""
     sym = text.short_symbol(lead.get("target_symbol")) or text.basename(path)
     marker = field(row, "lead_biomarker") or (
@@ -741,8 +739,11 @@ def _refactor_unit(
     )
 
 
-def _unaudited(step: Mapping[str, Any]) -> bool:
-    return step.get("refactoring_type") in UNAUDITED_KINDS
+def _audited_steps(steps: list[Mapping[str, Any]]) -> tuple[list[Mapping[str, Any]], int]:
+    """The steps an item may carry, and how many it held back: steps of a
+    kind not yet audited stay in the full plan, never in the item."""
+    kept = [s for s in steps if s.get("refactoring_type") not in UNAUDITED_KINDS]
+    return kept, len(steps) - len(kept)
 
 
 def _refactor_measure(
@@ -1159,31 +1160,58 @@ def judge_findings(
     plans: Rows = (),
     dead_code: Rows = (),
     hot_cuts: tuple[float, float] | None = None,
+    planned_files: Iterable[str] = (),
 ) -> dict[Any, Judgement]:
     """Each open code-health finding's place in the queue, keyed by its ``id``.
 
-    The rule Fix first applies to a file's findings, one finding at a time:
-    the file's scope, then history-only markers, then :func:`finding_verdict`;
-    an eligible finding is valued and tiered as its item would be. Pass every
-    open finding of the files judged, so a function's shape is whole.
+    The rule Fix first applies to a file's findings: a file whose plan became
+    an item is that plan's (``covered_by_plan``); then the file's scope, then
+    history-only markers, then :func:`finding_verdict`; of a file's eligible
+    findings only the one that leads its item stays eligible (``not_file_lead``),
+    valued and tiered as that item. ``planned_files`` are the files of the
+    eligible refactoring plans. Pass every open finding of the files judged, so
+    a function's shape is whole.
     """
     metrics = list(metrics)
     split, files = _prepare(metrics, findings, list(plans), dead_code, hot_cuts)
+    planned = set(planned_files)
+    out: dict[Any, Judgement] = {}
+    for path, (shape, history) in split.items():
+        if path in planned:
+            out.update(dict.fromkeys((field(f, "id") for f in (*shape, *history)), _COVERED))
+            continue
+        scope = path_verdict(path, files.is_test(path), None, files.origin(path))
+        history_verdict = scope if not scope.eligible else Verdict("history_only")
+        for f in history:
+            out[field(f, "id")] = Judgement.of(history_verdict)
+        out.update(_judge_file_shape(shape, scope, files))
+    return out
+
+
+_COVERED = Judgement(COVERED_BY_PLAN)
+_NOT_LEAD = Judgement(NOT_FILE_LEAD)
+
+
+def _judge_file_shape(shape: list[Any], scope: Verdict, files: _Files) -> dict[Any, Judgement]:
+    """One file's code-shape findings: only the lead of the eligible ones is eligible."""
+    if not scope.eligible:
+        return {field(f, "id"): Judgement.of(scope) for f in shape}
 
     def first_step(finding: Any) -> bool:
         return files.first_step(finding) is not None
 
+    verdicts = {id(f): finding_verdict(f, files, first_step) for f in shape}
+    lead = primary_finding([f for f in shape if verdicts[id(f)].eligible])
     out: dict[Any, Judgement] = {}
-    for path, (shape, history) in split.items():
-        scope = path_verdict(path, files.is_test(path), None, files.origin(path))
-        for f in history:
-            out[field(f, "id")] = Judgement.of(scope if not scope.eligible else Verdict("history_only"))
-        for f in shape:
-            verdict = scope if not scope.eligible else finding_verdict(f, files, first_step)
-            rank = _finding_rank(f, files) if verdict.eligible else None
-            out[field(f, "id")] = Judgement.of(
-                verdict, rank and rank.value, rank and rank.tier
-            )
+    for f in shape:
+        verdict = verdicts[id(f)]
+        if not verdict.eligible:
+            out[field(f, "id")] = Judgement.of(verdict)
+        elif f is not lead:
+            out[field(f, "id")] = _NOT_LEAD
+        else:
+            rank = _finding_rank(f, files)
+            out[field(f, "id")] = Judgement(None, rank.value, rank.tier)
     return out
 
 

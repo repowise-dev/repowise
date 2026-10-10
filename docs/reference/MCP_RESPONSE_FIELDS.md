@@ -334,7 +334,7 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 | `totals` | `candidates`, `eligible`, `shown`, `excluded` counted by reason (`gated_off`: a constant flag in the same file switches the function off; `unreachable`: sure dead code, delete it), and `dormant`: distinct functions kept out as `gated_off` |
 | `by_improves`, `basis`, `model_version`, `detail_call` | Rollup, basis, and the call that opens the lead in full |
 
-The same count object, with the same keys and reasons, comes back for findings (`top_findings_counts`), performance causes (`performance_opportunities_counts`) and refactoring plans (`refactoring_plans_counts`) when the list is named in `only`, so a number means the same thing on every list and in the CLI and dashboard.
+Findings, performance causes and refactoring plans carry the same count object when their list is named in `only`: `top_findings_counts`, `performance_opportunities_counts`, `refactoring_plans_counts`. The CLI and dashboard report the same numbers.
 
 Items are ordered by value first, then tier. History markers (churn, ownership, co-change, prior fixes) never create or lead an item; they ride on an item under `context`, and history-only files count under `totals.excluded.history_only`. `fix_first` always describes production code, whatever `scope` says; `limit` caps the items, never which leads.
 

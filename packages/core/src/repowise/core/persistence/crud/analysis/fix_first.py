@@ -45,7 +45,7 @@ from repowise.core.analysis.health.fix_first.build import (
     hot_cut_offset,
     judge_findings,
 )
-from repowise.core.analysis.health.queue.counts import Judgement
+from repowise.core.analysis.health.queue.counts import NOT_IN_QUEUE, Judgement
 from repowise.core.analysis.health.queue.eligibility import DEFAULT_QUEUE_STATES, MIN_WORTH
 from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 from repowise.core.analysis.health.refactoring.models import (
@@ -526,6 +526,9 @@ async def _stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
 #: The stored production queue's ``read_snapshots.kind``.
 SNAPSHOT_KIND = "fix_first"
 _KEY = snapshot_key(SNAPSHOT_KIND, FIX_FIRST_MODEL_VERSION)
+#: Its count vocabulary, stored beside it.
+COUNTS_KIND = "fix_first_counts"
+_COUNTS_KEY = snapshot_key(COUNTS_KIND, FIX_FIRST_MODEL_VERSION)
 
 
 async def write_fix_first_snapshot(session: AsyncSession, repository_id: str) -> bool:
@@ -538,15 +541,24 @@ async def write_fix_first_snapshot(session: AsyncSession, repository_id: str) ->
     writes nothing, unless a unit on it was never judged).
     """
 
+    built: dict[str, Any] = {}
+
     async def build() -> dict[str, Any]:
         judged: dict[str, Judgement] = {}
         full = await _build(
             session, repository_id, limit=None, scope="production", item_id=None, judged=judged
         )
         await _store_judgements(session, repository_id, judged)
+        built["counts"] = full.counts(0).as_dict()
         return asdict(full)
 
-    return await refresh_snapshot(
+    async def counts() -> dict[str, Any]:
+        if "counts" not in built:
+            full = await load_fix_first(session, repository_id, limit=None)
+            built["counts"] = full.counts(0).as_dict()
+        return built["counts"]
+
+    wrote = await refresh_snapshot(
         session,
         repository_id,
         SNAPSHOT_KIND,
@@ -554,6 +566,15 @@ async def write_fix_first_snapshot(session: AsyncSession, repository_id: str) ->
         build,
         force=await _unjudged(session, repository_id),
     )
+    # The items' counts apart, so counting never decodes or builds the queue.
+    await refresh_snapshot(session, repository_id, COUNTS_KIND, _COUNTS_KEY, counts, force=wrote)
+    return wrote
+
+
+async def stored_item_counts(session: AsyncSession, repository_id: str) -> dict[str, Any] | None:
+    """The stored production queue's counts (``shown`` 0); ``None`` when not stored."""
+    payload = await read_snapshot(session, repository_id, COUNTS_KIND, _COUNTS_KEY)
+    return payload if isinstance(payload, dict) else None
 
 
 def open_opportunities(repo_id: str) -> Any:
@@ -565,35 +586,44 @@ def open_opportunities(repo_id: str) -> Any:
     )
 
 
+async def unjudged(session: AsyncSession, model: Any, population: Any) -> bool:
+    """Whether a row of ``population`` has no stored judgement: a store
+    written before the columns, or one whose judging write did not run."""
+    found = await session.execute(
+        select(model.id).where(population, model.queue_eligible.is_(None)).limit(1)
+    )
+    return found.first() is not None
+
+
 async def _unjudged(session: AsyncSession, repo_id: str) -> bool:
-    """Whether an open unit the queue judges has no judgement stored (a
-    store written before the columns)."""
-    for model, open_units in (
-        (RefactoringOpportunity, open_opportunities(repo_id)),
-        (HealthFinding, queue_findings(repo_id)),
-    ):
-        found = await session.execute(
-            select(model.id).where(open_units, model.queue_eligible.is_(None)).limit(1)
-        )
-        if found.first() is not None:
-            return True
-    return False
+    return await unjudged(
+        session, RefactoringOpportunity, open_opportunities(repo_id)
+    ) or await unjudged(session, HealthFinding, queue_findings(repo_id))
 
 
 async def _store_judgements(
     session: AsyncSession, repo_id: str, refactoring: dict[str, Judgement]
 ) -> None:
     """Write each open refactoring opportunity's and finding's judgement,
-    only where it changed: an update run rewrites what moved."""
+    only where it changed: an update run rewrites what moved.
+
+    Ceiling: findings are judged over every file, so metrics, findings and
+    Extract Method plans are read again here rather than reused from the
+    queue build, which reads only its candidate files. Upgrade path: one read
+    of the whole population shared by both, once the queue build drops its
+    ``FINDING_FILES`` ceiling.
+    """
     o = RefactoringOpportunity
     stored = (
         await session.execute(
-            select(o.id, o.opportunity_id, *_queue_columns(o)).where(open_opportunities(repo_id))
+            select(o.id, o.opportunity_id, o.file_path, *_queue_columns(o)).where(
+                open_opportunities(repo_id)
+            )
         )
     ).all()
-    await _write_changed(
-        session, o, ((r, refactoring.get(r.opportunity_id)) for r in stored)
-    )
+    await _write_changed(session, o, ((r, refactoring.get(r.opportunity_id)) for r in stored))
+    eligible = {i for i, j in refactoring.items() if j.reason is None}
+    planned = {r.file_path for r in stored if r.opportunity_id in eligible}
     findings = await _judged_findings(session, repo_id)
     paths = {f.file_path for f in findings}
     judged = judge_findings(
@@ -602,8 +632,12 @@ async def _store_judgements(
         plans=await _plans(session, repo_id, [], None) if paths else [],
         dead_code=await _dead_code(session, repo_id),
         hot_cuts=await _hot_cuts(session, repo_id),
+        planned_files=planned,
     )
     await _write_changed(session, HealthFinding, ((f, judged.get(f.id)) for f in findings))
+
+
+_NOT_IN_QUEUE = Judgement(NOT_IN_QUEUE)
 
 
 def _queue_columns(model: Any) -> tuple[Any, ...]:
@@ -615,9 +649,8 @@ async def _write_changed(
 ) -> None:
     changed = []
     for row, judgement in rows:
-        if judgement is None:
-            continue  # not read by the builder this run: left as it was
-        values = judgement.columns()
+        # Not read by the builder this run: judged out, so it settles.
+        values = (judgement or _NOT_IN_QUEUE).columns()
         if any(getattr(row, name) != value for name, value in values.items()):
             changed.append({"id": row.id, **values})
     if changed:
@@ -775,10 +808,12 @@ async def _build(
 
 __all__ = [
     "CACHE_SIZE",
+    "COUNTS_KIND",
     "FINDING_FILES",
     "SNAPSHOT_KIND",
     "clear_fix_first_cache",
     "load_fix_first",
     "queue_view",
+    "stored_item_counts",
     "write_fix_first_snapshot",
 ]

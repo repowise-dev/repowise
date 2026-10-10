@@ -363,6 +363,49 @@ async def test_every_surface_reports_the_same_counts(client, app):
 
 
 @pytest.mark.asyncio
+async def test_an_unjudged_store_lists_what_fix_first_takes_live(client, app):
+    """A store whose rows carry no verdict yet (an older store, or a judging
+    write that did not run) still lists Fix first's plans, counted not judged."""
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import RefactoringOpportunity
+
+    repo_id = await _seed_mixed(client, app)
+    async with app.state.session_factory() as session:
+        await session.execute(
+            update(RefactoringOpportunity).values(queue_eligible=None, queue_reason=None)
+        )
+        await session.commit()
+    clear_fix_first_cache()
+    body = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    assert sorted(i["file_path"] for i in body["items"]) == ["pkg/a.py", "pkg/b.py"]
+    assert body["hidden"] == {"total": 2, "by_reason": {"not_judged": 2}}
+    assert body["counts"]["excluded"] == {"not_judged": 4}
+
+
+@pytest.mark.asyncio
+async def test_a_stale_verdict_is_judged_again_by_the_next_write(client, app):
+    from sqlalchemy import select, update
+
+    from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
+    from repowise.core.persistence.models import RefactoringOpportunity
+
+    repo_id = await _seed_mixed(client, app)
+    o = RefactoringOpportunity
+    async with app.state.session_factory() as session:
+        # An update moved a.py's plan under the worth floor.
+        await session.execute(
+            update(o).where(o.file_path == "pkg/a.py").values(recoverable_health=0.1)
+        )
+        await write_read_snapshots(session, repo_id)
+        await session.commit()
+        row = (await session.execute(select(o).where(o.file_path == "pkg/a.py"))).scalar_one()
+    assert (row.queue_eligible, row.queue_reason) == (False, "below_min_worth")
+    body = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    assert [i["file_path"] for i in body["items"]] == ["pkg/b.py"]
+
+
+@pytest.mark.asyncio
 async def test_a_file_or_a_triaged_status_reads_the_inventory(client, app):
     repo_id = await _seed_mixed(client, app)
     url = f"/api/repos/{repo_id}/refactoring/opportunities"

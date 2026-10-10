@@ -302,3 +302,18 @@ async def test_facet_counts_agree_with_the_store(store, args) -> None:
     assert expected == _reference_facets(grouped, query)
     for rows in _both_shapes(repository_id):
         assert facet_counts(rows, query) == expected
+
+
+async def test_an_unjudged_store_reads_the_default_queue_rule_live(store) -> None:
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import PerformanceOpportunity
+    from repowise.server.services.performance_health import PerformanceHealthService
+
+    session, repository_id = store
+    service = PerformanceHealthService(session, repository_id, "repo")
+    judged = [i["opportunity_id"] for i in (await service.page(parse_query()[0])).items]
+    await session.execute(update(PerformanceOpportunity).values(queue_eligible=None))
+    await session.commit()
+    live = [i["opportunity_id"] for i in (await service.page(parse_query()[0])).items]
+    assert live == judged == ["perf_0"]

@@ -7,6 +7,7 @@ import copy
 from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.fix_first.build import judge_findings
 from repowise.core.analysis.health.queue.counts import (
+    COVERED_BY_PLAN,
     NOT_JUDGED,
     counts_of,
     perf_judgement,
@@ -37,7 +38,8 @@ def test_the_levels_add_up_and_scope_reasons_leave_in_scope() -> None:
         "shown": 2,
         "excluded": {"test": 4, "below_min_worth": 1, "not_judged": 1},
     }
-    assert counts_of(5, 2, {"test": 4, "below_min_worth": 1, "not_judged": 1, "tooling": 0}, 2) == counts
+    excluded = {"test": 4, "below_min_worth": 1, "not_judged": 1, "tooling": 0}
+    assert counts_of(5, 2, excluded, 2) == counts
 
 
 def test_every_open_finding_is_judged_as_fix_first_judges_its_file() -> None:
@@ -52,6 +54,20 @@ def test_every_open_finding_is_judged_as_fix_first_judges_its_file() -> None:
     queue = build_fix_first(metrics=METRICS, findings=FINDINGS, limit=None)
     item = next(i for i in queue.items if i.target.file_path == "src/plain.py")
     assert judged["finding_n1"].reason is None and judged["finding_n1"].tier == item.tier
+    # A file whose plan is an item: the plan speaks for its findings.
+    covered = judge_findings(
+        metrics=METRICS, findings=findings, plans=PLANS, planned_files={"src/core.py"}
+    )
+    assert covered["finding_c1"].reason == COVERED_BY_PLAN == covered["finding_h1"].reason
+
+
+def test_only_a_files_lead_finding_is_eligible() -> None:
+    second = {**FINDINGS[2], "public_id": "finding_n2", "function_name": "walk2",
+              "health_impact": 0.2, "line_start": 50, "line_end": 80}
+    findings = [{**f, "id": f["public_id"]} for f in (*FINDINGS, second)]
+    judged = judge_findings(metrics=METRICS, findings=findings, plans=PLANS)
+    assert judged["finding_n1"].reason is None
+    assert judged["finding_n2"].reason == "not_file_lead"
 
 
 def test_a_cause_is_judged_by_the_default_queue_rule() -> None:
@@ -60,6 +76,19 @@ def test_a_cause_is_judged_by_the_default_queue_rule() -> None:
         judgement = perf_judgement(row, facets, row["details"]["plan"])
         assert judgement.reason == perf_queue_verdict(row).reason
         assert (judgement.tier is None) == (judgement.reason is not None)
+
+
+def test_a_causes_verdict_follows_its_execution_role() -> None:
+    """Finalize judges each cause from its row as written, role included, so
+    a restamped role is judged again on the same write."""
+    from repowise.core.analysis.health.queue.eligibility import QUEUE_ROLES
+
+    row = PERFORMANCE[0]
+    hot = sorted(QUEUE_ROLES - {"scheduled_job"})[0]
+    for role, reason in ((hot, None), ("cli", "cold_role")):
+        facets = {**row["details"]["facets"], "execution_role": role}
+        judged = {**row, "execution_role": role, "details": {**row["details"], "facets": facets}}
+        assert perf_judgement(judged, facets, row["details"]["plan"]).reason == reason
 
 
 def test_unaudited_steps_stay_in_the_plan_not_the_item() -> None:
@@ -75,6 +104,14 @@ def test_unaudited_steps_stay_in_the_plan_not_the_item() -> None:
         limit=None, judged=judged,
     )
     item = next(i for i in queue.items if i.kind == "refactor")
+    plain: dict = {}
+    before = build_fix_first(
+        metrics=METRICS, findings=FINDINGS, refactoring=REFACTORING[:1], plans=PLANS,
+        limit=None, judged=plain,
+    )
+    # The opportunity, its id and its verdict are unchanged by the held-back steps.
+    assert item.id == next(i for i in before.items if i.kind == "refactor").id
+    assert judged["refop2_core"] == plain["refop2_core"]
     assert judged["refop2_core"].reason is None
     assert item.action.steps_total == 2
     assert {s.order for s in item.action.steps} == {1, 2}

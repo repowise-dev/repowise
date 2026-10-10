@@ -123,7 +123,7 @@ def test_the_report_leads_with_fix_first() -> None:
     )
     console = Console(file=io.StringIO(), width=400, force_terminal=False)
     with patch("repowise.cli.commands.health_cmd.summary.console", console):
-        _render_fix_first(queue)
+        _render_fix_first((queue, queue.counts(len(queue.items))))
         _render_fix_first(None)
     out = console.file.getvalue()
     assert out.startswith("\nFix first (3 of 3 eligible")

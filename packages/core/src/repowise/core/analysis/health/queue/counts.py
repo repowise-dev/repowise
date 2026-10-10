@@ -20,6 +20,15 @@ from .value import perf_confidence, perf_ready, perf_value, tier
 
 #: Counted for a row stored before units were judged; the next index judges it.
 NOT_JUDGED = "not_judged"
+#: A finding in a file whose refactoring plan is the item: the plan speaks for it.
+COVERED_BY_PLAN = "covered_by_plan"
+#: An eligible finding that another finding in its file leads: one item per file.
+NOT_FILE_LEAD = "not_file_lead"
+#: A row the queue builder did not read this run (for example an opportunity
+#: of an older model): judged out so it never reads as unjudged.
+NOT_IN_QUEUE = "not_in_queue"
+#: Reasons a stored judgement can carry beyond ``eligibility.REASONS``.
+STORED_REASONS: tuple[str, ...] = (NOT_JUDGED, COVERED_BY_PLAN, NOT_FILE_LEAD, NOT_IN_QUEUE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,7 +118,11 @@ def counts_of(eligible: int, due: int, excluded: Mapping[str, int], shown: int) 
 
 
 __all__ = [
+    "COVERED_BY_PLAN",
+    "NOT_FILE_LEAD",
+    "NOT_IN_QUEUE",
     "NOT_JUDGED",
+    "STORED_REASONS",
     "Judgement",
     "QueueCounts",
     "counts_of",

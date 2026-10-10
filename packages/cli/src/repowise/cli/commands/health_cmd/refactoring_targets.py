@@ -197,6 +197,7 @@ def _render_stored_refactoring_targets(
             "source": "index",
             "analyzed_commit": analyzed_commit,
             "opportunities_total": stored["total"],
+            # Restated by ``counts.excluded``; kept for scripts, remove next major.
             "opportunities_hidden": stored["hidden"],
             "counts": stored["counts"],
             "targets": targets,

@@ -4,7 +4,11 @@
  * causes, refactoring plans and Fix first items alike.
  */
 
-/** Why a unit is out of a default queue (`queue.eligibility.Reason`), or `not_judged` for a row stored before units were judged. */
+/**
+ * Why a unit is out of a default queue (`queue.eligibility.Reason`), plus the
+ * stored-judgement reasons (`queue.counts.STORED_REASONS`): `not_judged` (stored
+ * before units were judged), `covered_by_plan`, `not_file_lead`, `not_in_queue`.
+ */
 export type QueueReason =
   | "test"
   | "tooling"
@@ -27,7 +31,12 @@ export type QueueReason =
   | "low_value_kind"
   | "kind_unaudited"
   | "unmeasured_cost"
-  | "not_judged";
+  | "cold_role"
+  | "background_unproven"
+  | "not_judged"
+  | "covered_by_plan"
+  | "not_file_lead"
+  | "not_in_queue";
 
 /** One noun per unit: findings (observations), causes (performance), plans (refactoring), items (Fix first). */
 export type QueueUnit = "findings" | "causes" | "plans" | "items";

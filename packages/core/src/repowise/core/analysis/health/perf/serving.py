@@ -248,6 +248,22 @@ class PerformanceQuery:
     def queue_eligible(self) -> bool | None:
         return True if self.default_queue else None
 
+    def store_filters(self, *, judged: bool = True) -> dict[str, Any]:
+        """The store's filter arguments. On a store whose causes are not all
+        judged (``judged=False``), the default queue reads its rule live:
+        the default states and proof instead of the stored verdict."""
+        live = self.default_queue and not judged
+        return {
+            "contexts": self.contexts,
+            "boundary": self.boundary,
+            "confidence": self.confidence,
+            "actionabilities": DEFAULT_ACTIONABILITIES if live else self.actionabilities,
+            "proofs": DEFAULT_QUEUE_PROOFS if live else self.proofs,
+            "roles": QUEUE_ROLES if live else self.roles,
+            "queue_eligible": None if live else self.queue_eligible,
+            "file_paths": self.file_paths,
+        }
+
     @property
     def actionabilities(self) -> frozenset[str] | None:
         """One explicit state; else, under another context, the default

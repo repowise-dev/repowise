@@ -202,10 +202,10 @@ def test_queue_count_vocabulary_matches_python() -> None:
     """The count object every queue unit carries, and the reasons it counts."""
     from dataclasses import fields
 
-    from repowise.core.analysis.health.queue.counts import NOT_JUDGED, QueueCounts
+    from repowise.core.analysis.health.queue.counts import STORED_REASONS, QueueCounts
     from repowise.core.analysis.health.queue.eligibility import REASONS
     from repowise.core.persistence.crud.analysis.queue_counts import UNITS
 
-    assert _union_members("QueueReason", "queue.ts") == {*REASONS, NOT_JUDGED}
+    assert _union_members("QueueReason", "queue.ts") == {*REASONS, *STORED_REASONS}
     assert _union_members("QueueUnit", "queue.ts") == set(UNITS)
     assert _interface_fields("QueueCounts", "queue.ts") == {f.name for f in fields(QueueCounts)}
