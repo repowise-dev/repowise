@@ -262,6 +262,32 @@ def _summary_payload(
     }
 
 
+async def _rank_live_plans(session: AsyncSession, repository_id: str) -> list[Any]:
+    """Rank and validate every live plan the lists can show, and store it.
+
+    Performance plans are not composed here, but they share the plan lists, so
+    their positions come from the same pass. Plans the finding registry
+    withholds are left out: no list shows them, and the file-level test walk
+    is batch-sensitive, so ranking them alongside would change the tests the
+    shown plans list.
+    """
+    from ....analysis.health.refactoring.recommendations import hydrate_recommendations
+    from .refactoring import shown_plan_predicate, store_plan_ranks
+
+    rows = (
+        await session.execute(
+            select(RefactoringSuggestion).where(
+                RefactoringSuggestion.repository_id == repository_id,
+                RefactoringSuggestion.status.in_(tuple(_LIVE_PLAN_STATUSES)),
+                shown_plan_predicate(),
+            )
+        )
+    ).scalars()
+    ranked = await hydrate_recommendations(session, repository_id, list(rows))
+    await store_plan_ranks(session, repository_id, ranked)
+    return ranked
+
+
 async def finalize_refactoring_opportunities(
     session: AsyncSession,
     repository_id: str,
@@ -283,7 +309,6 @@ async def finalize_refactoring_opportunities(
         compose_opportunities,
         opportunity_status,
     )
-    from ....analysis.health.refactoring.recommendations import hydrate_recommendations
     from ....analysis.health.refactoring_summary import needs_design
 
     plan_rows = list(
@@ -331,22 +356,22 @@ async def finalize_refactoring_opportunities(
         findings=findings,
     )
 
-    # Validation is resolved once, here, for exactly the plans that became
-    # steps. It used to be rebuilt on every request for every open plan, which
-    # is the single largest cost the serving path used to carry.
+    # Rank and validation are resolved once, here, for every live plan. They
+    # used to be rebuilt on every request for every open plan, which is the
+    # single largest cost the serving path used to carry.
+    ranked = await _rank_live_plans(session, repository_id)
     step_plan_ids = {step.plan_id for item in opportunities for step in item.steps}
     step_rows = [row for row in live_plans if row.public_id in step_plan_ids]
     validations: dict[str, dict[str, Any]] = {}
     file_figures: dict[str, dict[str, int]] = {}
     if step_rows:
         # Keyed by the storage id ``rehydrate_suggestion`` carries through, never
-        # by position: ``hydrate_recommendations`` returns its results in rank
-        # order, so zipping them against the input pairs most steps with another
-        # plan's validation profile.
+        # by position: the ranked list is in rank order, so zipping it against
+        # the rows pairs most steps with another plan's validation profile.
         public_by_storage = {row.id: row.public_id for row in step_rows}
-        for recommendation in await hydrate_recommendations(
-            session, repository_id, step_rows
-        ):
+        for recommendation in ranked:
+            if recommendation.id not in public_by_storage:
+                continue
             public_id = public_by_storage.get(
                 getattr(recommendation.suggestion, "id", None)
             )

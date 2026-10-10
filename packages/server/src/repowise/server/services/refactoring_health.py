@@ -334,35 +334,16 @@ class RefactoringHealthService:
     async def plan_detail(self, plan_id: str) -> dict[str, Any]:
         """Resolve one plan id without hydrating the repository.
 
-        Every read is a seek. The row comes from the storage-or-public id index,
-        its rank inputs from the one metric row and the one file's centrality,
-        and its validation from the profile the finalizer already resolved. The
-        payload is built by the same ``build_recommendations`` every surface
-        uses, so it is field-identical to the hydrated form; what is gone is the
-        two full-table reads and the test-reachability walk that made resolving
-        one id cost the repository.
+        Every read is a seek: the row from the storage-or-public id index, and
+        its rank and validation as :meth:`plan_recommendation` finds them.
         """
-        from repowise.core.analysis.health.refactoring.recommendations import (
-            build_recommendations,
-            rehydrate_suggestion,
-        )
         from repowise.core.persistence.crud import get_refactoring_suggestion
 
         row = await get_refactoring_suggestion(self._session, self._repository_id, plan_id)
         if row is None:
             return {"resolved": False, "plan_id": plan_id, "reason": "unknown_plan_id"}
         owner = await self._owning_opportunity(row.public_id, row.file_path)
-        metric_by_path, centrality = await self._rank_inputs(row.file_path)
-        built = build_recommendations(
-            [rehydrate_suggestion(row)],
-            metric_by_path=metric_by_path,
-            centrality=centrality,
-            validations={
-                0: stored_validation(owner, row.public_id)
-                or await self._performance_validation(row)
-            },
-        )
-        payload = built[0].as_dict() if built else plan_payload(row)
+        payload = (await self.plan_recommendation(row, owner=owner)).as_dict()
         payload["id"] = row.public_id or row.id
         payload["status"] = row.status
         result: dict[str, Any] = {"resolved": True, "plan_id": plan_id, "plan": payload}
@@ -376,6 +357,38 @@ class RefactoringHealthService:
                 "arguments": {"opportunity_id": owner.opportunity_id},
             }
         return result
+
+    async def plan_recommendation(self, row: Any, *, owner: Any = None) -> Any:
+        """One stored plan as a ranked recommendation, without the repository.
+
+        The finalizer persists each live plan's rank and validation, so this is
+        normally a read of the row itself. A row it did not rank (an index
+        written before that, or a plan reopened by hand since) is rebuilt from
+        seeks: the one metric row, the one file's centrality and the validation
+        profile its opportunity stored, through the same
+        ``build_recommendations`` every surface uses.
+        """
+        from repowise.core.analysis.health.refactoring.recommendations import (
+            build_recommendations,
+            rehydrate_suggestion,
+            stored_recommendation,
+        )
+
+        stored = stored_recommendation(row)
+        if stored is not None:
+            return stored
+        if owner is None:
+            owner = await self._owning_opportunity(row.public_id, row.file_path)
+        metric_by_path, centrality = await self._rank_inputs(row.file_path)
+        return build_recommendations(
+            [rehydrate_suggestion(row)],
+            metric_by_path=metric_by_path,
+            centrality=centrality,
+            validations={
+                0: stored_validation(owner, row.public_id)
+                or await self._performance_validation(row)
+            },
+        )[0]
 
     async def _performance_validation(self, row: Any) -> Any:
         """A performance plan's profile, stored on its opportunity at finalize.

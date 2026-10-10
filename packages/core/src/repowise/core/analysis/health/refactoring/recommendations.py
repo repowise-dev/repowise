@@ -924,6 +924,63 @@ class Recommendation:
             "validation": self.validation.as_dict(),
         }
 
+    def rank_facts(self) -> dict[str, Any]:
+        """What ranking added to the stored plan, persisted once at finalize."""
+        return {
+            "benefit": self.benefit,
+            "leverage": self.leverage,
+            "cost": self.cost,
+            "risk": self.risk,
+            "rank_score": self.rank_score,
+            "dependents": self.dependents,
+            "file_nloc": self.file_nloc,
+            "file_weighted_deficit": self.file_weighted_deficit,
+            # Enriched with the caller rollup, which the stored column lacks.
+            "blast_radius": self.suggestion.blast_radius or {},
+            "validation": self.validation.as_dict(),
+        }
+
+
+def stored_recommendation(row: Any) -> Recommendation | None:
+    """The recommendation finalize persisted on *row*, or ``None`` when it has none."""
+    from .serving import validation_from_profile
+
+    facts = _loads_dict(_attr(row, "rank_json", None))
+    if not facts:
+        return None
+    suggestion = rehydrate_suggestion(row)
+    suggestion.blast_radius = dict(facts.get("blast_radius") or {})
+    validation = validation_from_profile(facts.get("validation") or {})
+    suggestion.validation = validation.as_dict()
+    return Recommendation(
+        suggestion=suggestion,
+        benefit=facts["benefit"],
+        leverage=facts["leverage"],
+        cost=facts["cost"],
+        risk=facts["risk"],
+        rank_score=facts["rank_score"],
+        dependents=facts["dependents"],
+        file_nloc=facts["file_nloc"],
+        file_weighted_deficit=facts["file_weighted_deficit"],
+        validation=validation,
+    )
+
+
+def matches_search(suggestion: RefactoringSuggestion, query: str) -> bool:
+    """Whether lower-cased *query* occurs in the plan's searchable text."""
+    plan = suggestion.plan or {}
+    haystack = " ".join(
+        (
+            suggestion.file_path,
+            suggestion.target_symbol,
+            suggestion.refactoring_type,
+            suggestion.source_biomarker,
+            str(plan.get("strategy") or ""),
+            str(plan.get("intervention_symbol") or ""),
+        )
+    ).lower()
+    return query in haystack
+
 
 def _priority_components(
     suggestion: RefactoringSuggestion,
@@ -1339,9 +1396,11 @@ __all__ = [
     "enrich_blast_radius",
     "hub_files",
     "hydrate_recommendations",
+    "matches_search",
     "priority_score",
     "rehydrate_suggestion",
     "serialize_recommendations",
+    "stored_recommendation",
     "surface_confidence_risk",
     "target_symbol_ids",
 ]

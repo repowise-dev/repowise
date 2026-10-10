@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from repowise.core.analysis.health.refactoring.recommendations import hydrate_recommendations
 from repowise.core.persistence.crud import get_refactoring_suggestion
 from repowise.core.persistence.database import get_session
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -22,6 +21,7 @@ from repowise.server.mcp_server._helpers import (
     _unsupported_repo_all,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.services.refactoring_health import RefactoringHealthService
 
 
 @mcp.tool(
@@ -86,7 +86,9 @@ async def generate_refactoring_code(suggestion_id: str, repo: str | None = None)
                 "detail": f"No refactoring plan with id {suggestion_id!r} in this repo.",
                 "_meta": _build_meta(repository=repository),
             }
-        recommendation = (await hydrate_recommendations(session, repository.id, [row]))[0]
+        recommendation = await RefactoringHealthService(
+            session, repository.id, ctx.alias or repository.name
+        ).plan_recommendation(row)
         sug = recommendation.suggestion
         meta = _build_meta(repository=repository)
 

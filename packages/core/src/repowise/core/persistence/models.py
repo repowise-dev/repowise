@@ -1859,6 +1859,13 @@ class RefactoringSuggestion(Base):
     status_changed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The plan's place in the canonical rank, its rank factors and validation
+    # profile (``rank_json``) and its change surface, written at finalize for
+    # every live plan so a plan list is an ``ORDER BY``, not a hydration. NULL
+    # on a row the last finalize did not rank: readers fall back to ranking live.
+    rank_position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    blast_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rank_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -1867,6 +1874,12 @@ class RefactoringSuggestion(Base):
     )
 
     __table_args__ = (
+        Index(
+            "ix_refactoring_suggestions_repo_status_rank",
+            "repository_id",
+            "status",
+            "rank_position",
+        ),
         Index(
             "ix_refactoring_suggestions_repo_type_opportunity",
             "repository_id",
