@@ -332,6 +332,7 @@ def test_base_includes_all_models():
         "performance_opportunities",
         "performance_summaries",
         "function_facts",
+        "refactoring_payoffs",
         "coverage_files",
         "coverage_ingests",
         "action_states",

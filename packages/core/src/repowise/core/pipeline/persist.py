@@ -1909,6 +1909,7 @@ async def save_full_health_report(
     recorded", which is honest, while a wrong sha would not be.
     """
     from repowise.core.persistence.crud import (
+        PayoffContext,
         finalize_performance_opportunities,
         finalize_refactoring_opportunities,
         save_health_findings,
@@ -1916,6 +1917,7 @@ async def save_full_health_report(
         save_refactoring_suggestions,
         write_function_facts,
     )
+    from repowise.core.persistence.crud._shared import _finding_file_path
 
     hr = health_report
     metrics = list(getattr(hr, "metrics", None) or [])
@@ -1949,6 +1951,13 @@ async def save_full_health_report(
                 for suggestion in (getattr(hr, "refactoring_suggestions", None) or [])
                 if getattr(suggestion, "refactoring_type", None) != "performance_fix"
             ],
+            # Before the facts below replace the stored ones: those are the
+            # measures a resolved plan was detected against.
+            payoff=PayoffContext(
+                fact_rows=getattr(hr, "function_facts", None),
+                live_paths=frozenset(_finding_file_path(metric) for metric in metrics),
+                commit=analyzed_commit,
+            ),
         )
         # Group the stored performance findings into the materialized causal
         # read model, then reconcile lifecycle and plans.
