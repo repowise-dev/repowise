@@ -64,6 +64,9 @@ _FAMILY: dict[str, str] = {
 #: Languages whose signatures need every type written.
 _TYPED = frozenset({"go", "java", "rust", "cpp"})
 #: Rust types that copy rather than move when passed by value.
+#: Outputs one call of a staged plan's helper can bind, per language with a
+#: staged renderer: a Python tuple, one TS / JS value.
+_STAGED_OUTPUTS: dict[str, int] = {"python": 3, "ts": 1, "js": 1}
 _RUST_COPY = frozenset(
     {
         *(f"{s}{n}" for s in "iu" for n in ("8", "16", "32", "64", "128", "size")),
@@ -96,7 +99,8 @@ class HelperShape:
     await the helper. ``out_declared``: the output is first declared in the
     span, so the call declares it; ``out_written_before``: it was written
     before the span (Go's ``:=`` would then declare nothing new);
-    ``out_rebound``: it is assigned again after the span.
+    ``out_rebound``: it is assigned again after the span. ``typed_host``: the
+    host declares its return type, so a helper with no output says so too.
     """
 
     language: str
@@ -111,6 +115,7 @@ class HelperShape:
     out_declared: bool = False
     out_written_before: bool = False
     out_rebound: bool = False
+    typed_host: bool = False
 
 
 class Rendered(NamedTuple):
@@ -126,6 +131,12 @@ def private_name(language: str | None, name: str | None) -> str | None:
     if name and _FAMILY.get(language or "") == "python" and not name.startswith("_"):
         return "_" + name
     return name
+
+
+def staged_outputs(language: str | None) -> int | None:
+    """How many outputs a staged plan's helper may return in *language*, None
+    where no staged plan is rendered."""
+    return _STAGED_OUTPUTS.get(_FAMILY.get(language or "", ""))
 
 
 def symbol_params(params: tuple[Slot, ...], returns: tuple[Slot, ...]) -> list[dict]:
@@ -187,7 +198,8 @@ def _args(shape: HelperShape) -> str:
     return ", ".join(p.name for p in shape.params)
 
 
-def _out(shape: HelperShape) -> Slot | None:
+def _single_out(shape: HelperShape) -> Slot | None:
+    """The one output every renderer but Python's binds (see the ceilings)."""
     return shape.returns[0] if shape.returns else None
 
 
@@ -203,7 +215,7 @@ def _py_sig(s: HelperShape) -> str:
     if _method(s) and s.receiver:
         params.insert(0, s.receiver)
     types = [r.type for r in s.returns]
-    ret = ""
+    ret = " -> None" if not types and s.typed_host else ""
     if types and all(types):
         ret = f" -> {types[0]}" if len(types) == 1 else f" -> tuple[{', '.join(map(str, types))}]"
     head = f"{'async ' if s.is_async else ''}def {_name(s)}({', '.join(params)}){ret}:"
@@ -221,7 +233,7 @@ def _py_call(s: HelperShape) -> str:
 
 def _ts_sig(s: HelperShape, typed: bool) -> str:
     params = ", ".join(f"{p.name}: {p.type}" if p.type else p.name for p in s.params)
-    out = _out(s)
+    out = _single_out(s)
     ret = ""
     if out and out.type:
         ret = f": Promise<{out.type}>" if s.is_async else f": {out.type}"
@@ -234,7 +246,7 @@ def _ts_sig(s: HelperShape, typed: bool) -> str:
 def _ts_call(s: HelperShape) -> str:
     target = "this." if _method(s) else ""
     expr = f"{'await ' if s.is_async else ''}{target}{_name(s)}({_args(s)})"
-    out = _out(s)
+    out = _single_out(s)
     if out is None:
         return expr + ";"
     keyword = ("let " if s.out_rebound else "const ") if s.out_declared else ""
@@ -246,7 +258,7 @@ def _ts_call(s: HelperShape) -> str:
 
 def _go_sig(s: HelperShape) -> str:
     params = ", ".join(f"{p.name} {_type(p, 'go')}" for p in s.params)
-    out = _out(s)
+    out = _single_out(s)
     ret = f" {_type(out, 'go')}" if out else ""
     recv = f"{s.receiver_decl} " if _method(s) and s.receiver_decl else ""
     return f"func {recv}{_name(s)}({params}){ret} {{"
@@ -255,7 +267,7 @@ def _go_sig(s: HelperShape) -> str:
 def _go_call(s: HelperShape) -> str:
     target = f"{s.receiver}." if _method(s) and s.receiver else ""
     expr = f"{target}{_name(s)}({_args(s)})"
-    out = _out(s)
+    out = _single_out(s)
     if out is None:
         return expr
     # ``x, err :=`` in the span may only redeclare ``x``; alone it must assign.
@@ -271,7 +283,7 @@ def _type_first(s: HelperShape, family: str) -> str:
 
 
 def _java_sig(s: HelperShape) -> str:
-    out = _out(s)
+    out = _single_out(s)
     ret = _type(out, "java") if out else "void"
     static = "" if _method(s) else "static "
     return f"private {static}{ret} {_name(s)}({_type_first(s, 'java')}) {{"
@@ -284,7 +296,7 @@ def _java_call(s: HelperShape) -> str:
 def _declared_call(s: HelperShape, expr: str, inferred: str) -> str:
     """``T x = expr;`` for an output the span declared (*inferred* when its
     type is unknown), ``x = expr;`` for one declared before it."""
-    out = _out(s)
+    out = _single_out(s)
     if out is None:
         return expr + ";"
     if s.out_declared:
@@ -293,7 +305,7 @@ def _declared_call(s: HelperShape, expr: str, inferred: str) -> str:
 
 
 def _cpp_sig(s: HelperShape) -> str:
-    out = _out(s)
+    out = _single_out(s)
     if s.is_async:
         ret = TYPE_PLACEHOLDER  # the coroutine's own type (a note says so)
     elif out:
@@ -351,7 +363,7 @@ def _rust_sig(s: HelperShape) -> str:
     ]
     if _method(s):
         params.insert(0, _rust_self(s))
-    out = _out(s)
+    out = _single_out(s)
     ret = f" -> {_type(out, 'rust')}" if out else ""
     return f"{'async ' if s.is_async else ''}fn {_name(s)}({', '.join(params)}){ret} {{"
 
@@ -360,7 +372,7 @@ def _rust_call(s: HelperShape) -> str:
     target = "self." if _method(s) else ""
     args = ", ".join(f"&{p.name}" if _rust_borrowed(s, p) else p.name for p in s.params)
     expr = f"{target}{_name(s)}({args}){'.await' if s.is_async else ''}"
-    out = _out(s)
+    out = _single_out(s)
     if out is None:
         return expr + ";"
     if s.out_declared:
@@ -468,5 +480,6 @@ __all__ = [
     "private_name",
     "render",
     "render_context",
+    "staged_outputs",
     "symbol_params",
 ]

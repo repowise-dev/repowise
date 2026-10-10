@@ -153,9 +153,6 @@ _MIN_OFFER_NLOC = 8
 # is safe but moves almost nothing.
 _HIGH_MIN_SHARE = 0.1
 
-# Staged plans: the languages with a staged renderer, each with the outputs
-# one call can bind (a Python tuple; a TS / JS call binds one).
-_STAGE_MAX_RETURNS = {"python": 3, "typescript": 1, "tsx": 1, "javascript": 1, "jsx": 1}
 # Above this no single helper of a stage's size brings the function under it.
 _STAGE_MIN_CCN = 2 * STAGE_MAX_CCN + 1
 # Keys a stage carries that the plan's own (stage 1) keys do not.
@@ -363,7 +360,8 @@ def _staged(
     the split lifts at least twice what the best single span does (several
     edits for a point or two more is not the better plan); each stage must
     clear the floor a single span does."""
-    max_returns = _STAGE_MAX_RETURNS.get(language or "")
+    # Only languages with a staged renderer, each with the outputs one call binds.
+    max_returns = render.staged_outputs(language)
     if max_returns is None or analysis.ccn < _STAGE_MIN_CCN:
         return None
     plan = find_stages(analysis, lmap, receiver, max_returns=max_returns)
@@ -386,14 +384,16 @@ def _staged_fields(
     lmap = get_language_map(language or "")
     dialect = get_defuse_dialect(language or "")
     obj = _parameter_object(analysis, staged, dialect, language, names)
+    # Without an object (no free variable name for it) the values stay plain.
+    context = staged.context if obj else ()
     imports = names.imports(analysis.fn_node)
     stages = []
     for x, local_imports in zip(staged.stages, staged.imports, strict=True):
         name = render.private_name(
             language, names.claim(analysis, helper_name(analysis, x, lmap, language, imports))
         )
-        carried = [p for p in x.params if p in staged.context]
-        own = replace(x, params=tuple(p for p in x.params if p not in staged.context))
+        carried = [p for p in x.params if p in context]
+        own = replace(x, params=tuple(p for p in x.params if p not in context))
         lead = (render.Slot(obj["var"], obj["name"]),) if obj and carried else ()
         async_fields = _async_fields(analysis, x, lmap, language)
         symbol = _render_fields(
@@ -462,8 +462,14 @@ def _parameter_object(
     probe = Extraction(first, first, staged.context, (), 0, 0)
     types = _declared_types(analysis, probe, dialect)
     fields = tuple(render.Slot(n, types.get(n)) for n in staged.context)
-    taken = {d.var for d in analysis.def_use.definitions}
-    var = next((v for v in ("ctx", "context", "stage_ctx") if v not in taken), "stage_ctx")
+    # Every name the function writes or reads (a module global ``ctx`` too).
+    def_use = analysis.def_use
+    taken = {d.var for d in def_use.definitions}
+    taken |= {u.name for bdu in def_use.blocks.values() for u in bdu.uses}
+    taken |= {u.name for u in def_use.captured.reads}
+    var = next((v for v in ("ctx", "context", "stage_ctx") if v not in taken), None)
+    if var is None:
+        return None
     name = names.claim(analysis, render.context_name(language, analysis.name))
     name = name or render.NAME_PLACEHOLDER
     texts = render.render_context(language or "", name, var, fields)
@@ -565,6 +571,8 @@ def _render_fields(
             out_declared=declared,
             out_written_before=before,
             out_rebound=rebound,
+            typed_host=fn_node is not None
+            and fn_node.child_by_field_name("return_type") is not None,
         )
     )
     rendered = {

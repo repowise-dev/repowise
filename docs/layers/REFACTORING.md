@@ -243,7 +243,10 @@ Most plans answer a health finding, so per-path marker rules in
   get a staged plan instead: several helpers the function calls in order, each
   small enough to leave the finding behind. Plan detail lists them as steps,
   with a shared parameter object when many values pass between them, and the
-  plan's estimated gain is the whole drop in the function's complexity.
+  plan's estimated gain is the whole drop in the function's complexity. The
+  plan's own span, header and call are its first stage. When a function moves
+  between a single helper and a staged plan, or its stages change, the plan
+  gets a new id.
 - Move Method never targets a class the method only instantiates, or an ancestor of
   its own class.
 - Split File works on any language with call resolution and suggests a split only

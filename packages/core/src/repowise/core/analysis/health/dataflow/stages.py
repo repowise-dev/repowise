@@ -17,12 +17,14 @@ into K contiguous stages, each a helper the function then calls in sequence.
 - **Cuts.** A small dynamic program over the statement boundaries: lift as many
   decision points as possible, then prefer narrow interfaces (fewest names
   crossing a cut), cuts at a banner comment or a ``timed()`` label, and fewer
-  stages. Deterministic: ties keep the earliest cut.
+  stages. Deterministic: ties keep the earliest cut. A timer started in one
+  statement and stopped in another (``timings.start("x")`` ...
+  ``timings.stop("x")``) is never split by a stage edge.
 - **Context.** When more than five values are read by two or more stages and
   never rebound once the first stage starts, they travel on one parameter
-  object instead of as separate parameters.
-- **Composition.** Every read's reaching definitions are checked against the
-  plan: a value defined outside a stage and read inside it must be one of its
+  object instead of as separate parameters. The receiver never does.
+- **Composition.** The definitions each read observes
+  (:func:`reaching.observed_definitions`) are checked against the plan: a value defined outside a stage and read inside it must be one of its
   inputs, and one defined in a stage and read outside it one of its outputs.
   A plan that fails is refused whole.
 
@@ -31,13 +33,14 @@ Function-local imports are not inputs: a helper re-imports a name.
 
 from __future__ import annotations
 
+import re
 from bisect import bisect_right
 from collections import Counter
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..complexity.nloc import is_string_stmt
+from .reaching import observed_definitions
 from .slice import (
     _MIN_SLICE_NLOC,
     Extraction,
@@ -51,6 +54,7 @@ from .slice import (
     _hoisted_bindings,
     _infer_in_out,
     _outs_definitely_assigned,
+    _reads_observing,
     _receiver_facts,
     _scan_for,
     _span_kinds,
@@ -65,8 +69,7 @@ if TYPE_CHECKING:
 
     from ..complexity.languages import LanguageNodeMap
     from .analyze import FunctionAnalysis
-    from .defuse import Definition
-    from .dialects.base import Occurrence, Receiver
+    from .dialects.base import Receiver
     from .slice import _Prefix, _Scan
 
 STAGE_MAX_CCN = 10
@@ -85,6 +88,10 @@ _KEPT_DECISION = 200
 _PER_STAGE = 20
 _PER_NAME = 6
 _UNHINTED_CUT = 8
+
+# A timer's start and stop by label, in any language's call syntax.
+_TIMER_START = re.compile(r"""\.start\(\s*["']([^"'\n]+)["']""")
+_TIMER_STOP = re.compile(r"""\.stop\(\s*["']([^"'\n]+)["']""")
 
 
 @dataclass(frozen=True)
@@ -136,7 +143,7 @@ def find_stages(
     stages = cutter.cut()
     if len(stages) < 2:
         return StagePlan(reason="fewer_than_two_stages")
-    context = _context(stages, cutter.def_lines)
+    context = _context(stages, cutter.def_lines, receiver)
     imports = _composes(analysis, stages, context)
     if imports is None:
         return StagePlan(reason="composition")
@@ -192,35 +199,22 @@ class _Cutter:
         self.hoisted = _hoisted_bindings(self.def_lines, self.use_lines)
         self.decl_lines = _declaration_lines(def_use)
         self.shared = _closure_state(def_use, self.def_lines, self.use_lines)
+        self.reads = _reads_observing(analysis, self.def_lines)
         self.pre: _Prefix = _block_prefix(code, scan, _function_lines(analysis.fn_node), lmap)
         self.hints = [bool(comment) for _st, comment in section_heads(code)]
+        self.timer_pairs = _timer_pairs(code)
 
     def _sum(self, series: list[int], i: int, j: int) -> int:
         return series[j + 1] - series[i]
 
     def cut(self) -> tuple[Extraction, ...]:
-        """The lowest-cost split of the block (module docstring, Cuts)."""
-        n, pre = len(self.code), self.pre
-        cost: list[int] = [0] + [0] * n
+        """The lowest-cost split of the block (module docstring, Cuts). Each
+        run ``i..j`` is weighed once, by the prefix ending at ``j``."""
+        n = len(self.code)
+        cost: list[int] = [0] * (n + 1)
         back: list[tuple[int, Extraction | None]] = [(0, None)] * (n + 1)
         for k in range(1, n + 1):
-            kept = self._sum(pre.decisions, k - 1, k - 1)
-            cost[k] = cost[k - 1] + _KEPT_DECISION * kept + self._sum(pre.code, k - 1, k - 1)
-            back[k] = (k - 1, None)
-            for i in range(k - 1, -1, -1):
-                if (
-                    self._sum(pre.decisions, i, k - 1) + 1 > STAGE_MAX_CCN
-                    or self._sum(pre.code, i, k - 1) > STAGE_MAX_NLOC
-                ):
-                    break
-                stage = self._stage(i, k - 1)
-                if stage is None:
-                    continue
-                width = len(stage.params) + len(stage.returns)
-                c = cost[i] + _PER_STAGE + _PER_NAME * width
-                c += 0 if self.hints[i] or i == 0 else _UNHINTED_CUT
-                if c < cost[k]:
-                    cost[k], back[k] = c, (i, stage)
+            cost[k], back[k] = self._best_ending_at(k, cost)
         stages: list[Extraction] = []
         k = n
         while k > 0:
@@ -229,42 +223,84 @@ class _Cutter:
                 stages.append(stage)
         return tuple(reversed(stages))
 
+    def _best_ending_at(
+        self, k: int, cost: list[int]
+    ) -> tuple[int, tuple[int, Extraction | None]]:
+        """The cheapest split of statements ``0..k-1``: the last one kept in
+        the function, or the last stage ``i..k-1`` after the best split of
+        ``0..i-1``."""
+        pre = self.pre
+        kept = self._sum(pre.decisions, k - 1, k - 1)
+        best = cost[k - 1] + _KEPT_DECISION * kept + self._sum(pre.code, k - 1, k - 1)
+        choice: tuple[int, Extraction | None] = (k - 1, None)
+        for i in range(k - 1, -1, -1):
+            if (
+                self._sum(pre.decisions, i, k - 1) + 1 > STAGE_MAX_CCN
+                or self._sum(pre.code, i, k - 1) > STAGE_MAX_NLOC
+            ):
+                break
+            stage = self._stage(i, k - 1)
+            if stage is None:
+                continue
+            c = cost[i] + _PER_STAGE + _PER_NAME * (len(stage.params) + len(stage.returns))
+            c += 0 if self.hints[i] or i == 0 else _UNHINTED_CUT
+            if c < best:
+                best, choice = c, (i, stage)
+        return best, choice
+
     def _stage(self, i: int, j: int) -> Extraction | None:
         """Statements ``i..j`` as a stage, or None when they cannot be one."""
-        pre = self.pre
-        decisions = self._sum(pre.decisions, i, j)
-        nloc = self._sum(pre.code, i, j)
-        if decisions < _STAGE_MIN_DECISIONS or nloc < _MIN_SLICE_NLOC:
-            return None
-        if self._sum(pre.jumps, i, j) or self._sum(pre.nested, i, j):
+        if not self._shape_allows(i, j):
             return None
         span = self.code[i : j + 1]
         s, e = span[0].start_point[0] + 1, span[-1].end_point[0] + 1
-        params, returns = _infer_in_out(self.def_lines, self.use_lines, s, e, self.declared_first)
+        params, returns = _infer_in_out(
+            self.def_lines, self.use_lines, s, e, self.declared_first, reads=self.reads
+        )
         params = self._with_inouts(span, s, params, returns)
         if params is None or len(returns) > self.max_returns:
             return None
-        if any(s <= first_def <= e and first_use < s for first_def, first_use in self.hoisted):
+        if not self._signature_holds(span, s, e, returns):
             return None
-        if _declaration_escapes(
-            s, e, returns, self.decl_lines, self.def_lines, self.use_lines, self.declared_first
-        ):
-            return None
-        if self.shared is not None and _closure_state_crosses(
-            self.shared, span, s, e, self.block, self.lmap
-        ):
-            return None
+        pre = self.pre
         uses, assigns = _receiver_facts(self.receiver, pre, i, j, 0)
         return Extraction(
             start_line=s,
             end_line=e,
             params=params,
             returns=returns,
-            slice_nloc=nloc,
-            ccn_removed=decisions,
+            slice_nloc=self._sum(pre.code, i, j),
+            ccn_removed=self._sum(pre.decisions, i, j),
             needs_async=self._sum(pre.awaits, i, j) > 0,
             uses_receiver=uses,
             receiver_assigns=assigns,
+        )
+
+    def _shape_allows(self, i: int, j: int) -> bool:
+        """The checks prefix sums answer: size, no return / yield, no named
+        nested function, and no timer started on one side of the cut and
+        stopped on the other."""
+        pre = self.pre
+        if self._sum(pre.decisions, i, j) < _STAGE_MIN_DECISIONS:
+            return False
+        if self._sum(pre.code, i, j) < _MIN_SLICE_NLOC:
+            return False
+        if self._sum(pre.jumps, i, j) or self._sum(pre.nested, i, j):
+            return False
+        return not any((i <= a <= j) != (i <= b <= j) for a, b in self.timer_pairs)
+
+    def _signature_holds(self, span: list[Node], s: int, e: int, returns: tuple[str, ...]) -> bool:
+        """The single-span slicer's own refusals: a hoisted binding, a
+        declaration the code after the stage still needs, a local a closure
+        shares across the stage's edge."""
+        if any(s <= first_def <= e and first_use < s for first_def, first_use in self.hoisted):
+            return False
+        if _declaration_escapes(
+            s, e, returns, self.decl_lines, self.def_lines, self.use_lines, self.declared_first
+        ):
+            return False
+        return self.shared is None or not _closure_state_crosses(
+            self.shared, span, s, e, self.block, self.lmap
         )
 
     def _with_inouts(
@@ -283,16 +319,41 @@ class _Cutter:
         return tuple(sorted((*params, *extra))) if extra else params
 
 
-def _context(stages: tuple[Extraction, ...], def_lines: dict[str, list[int]]) -> tuple[str, ...]:
+def _timer_pairs(code: list[Node]) -> list[tuple[int, int]]:
+    """``(a, b)``: statement ``a`` starts a timer (``timings.start("x")``)
+    that statement ``b`` stops, the first such at or after ``a``."""
+    starts: list[set[str]] = []
+    stops: list[set[str]] = []
+    for st in code:
+        text = (st.text or b"").decode("utf-8", "replace")
+        starts.append(set(_TIMER_START.findall(text)))
+        stops.append(set(_TIMER_STOP.findall(text)))
+    pairs = []
+    for a, labels in enumerate(starts):
+        for label in labels:
+            b = next((b for b in range(a, len(code)) if label in stops[b]), None)
+            if b is not None:
+                pairs.append((a, b))
+    return pairs
+
+
+def _context(
+    stages: tuple[Extraction, ...], def_lines: dict[str, list[int]], receiver: Receiver | None
+) -> tuple[str, ...]:
     """The values for one parameter object: read by two or more stages, never
-    an output, and not written again once the first stage starts."""
+    an output, not written again once the first stage starts, and not the
+    receiver (a method reaches its instance as itself, not off an object)."""
     first = stages[0].start_line
+    own = receiver.names if receiver is not None else frozenset()
     outs = {r for x in stages for r in x.returns}
     counts = Counter(p for x in stages for p in x.params)
     shared = sorted(
         var
         for var, n in counts.items()
-        if n >= 2 and var not in outs and all(ln < first for ln in def_lines.get(var, ()))
+        if n >= 2
+        and var not in outs
+        and var not in own
+        and all(ln < first for ln in def_lines.get(var, ()))
     )
     return tuple(shared) if len(shared) > _CONTEXT_OVER else ()
 
@@ -302,7 +363,7 @@ def _composes(
 ) -> tuple[tuple[str, ...], ...] | None:
     """Per stage, the function-local imports it reads from outside itself,
     or None when some read would no longer see the value it saw (module
-    docstring, Composition), by the reaching definitions of each read."""
+    docstring, Composition), by the definitions each read observes."""
     starts = [x.start_line for x in stages]
     ins = [set(x.params) | set(context) for x in stages]
     outs = [set(x.returns) for x in stages]
@@ -312,64 +373,24 @@ def _composes(
         k = bisect_right(starts, line) - 1
         return k if k >= 0 and line <= stages[k].end_line else None
 
-    reaching, def_use = analysis.reaching, analysis.def_use
-    for block_id, bdu in def_use.blocks.items():
-        entering = reaching.in_sets.get(block_id, frozenset())
-        order = _statement_order(analysis, block_id)
-        for use in bdu.uses:
-            if use.echo:
+    definitions = analysis.reaching.definitions
+    for use, seen in observed_definitions(analysis.def_use, analysis.reaching):
+        if use.echo:
+            continue
+        m = stage_at(use.line)
+        for d in (definitions[i] for i in seen):
+            k = stage_at(d.line)
+            if k == m:
                 continue
-            m = stage_at(use.line)
-            for d in _reaching_defs(use, order, entering, bdu.defs, def_use.definitions):
-                k = stage_at(d.line)
-                if k == m:
-                    continue
-                if d.imports:
-                    if m is not None:
-                        imported[m].add(use.name)
-                    continue
-                if (m is not None and use.name not in ins[m]) or (
-                    k is not None and use.name not in outs[k]
-                ):
-                    return None
+            if d.imports:
+                if m is not None:
+                    imported[m].add(use.name)
+                continue
+            if (m is not None and use.name not in ins[m]) or (
+                k is not None and use.name not in outs[k]
+            ):
+                return None
     return tuple(tuple(sorted(names)) for names in imported)
-
-
-def _statement_order(analysis: FunctionAnalysis, block_id: int) -> Callable[[int], float]:
-    """A line's statement position in the CFG block: the innermost statement
-    holding it, so two lines of one multi-line statement share a position."""
-    try:
-        ranges = [(s.start_line, s.end_line) for s in analysis.cfg.block(block_id).statements]
-    except (KeyError, IndexError):
-        ranges = []
-
-    def position(line: int) -> float:
-        holding = [(hi - lo, n) for n, (lo, hi) in enumerate(ranges) if lo <= line <= hi]
-        if holding:
-            return min(holding)[1]
-        # Not on a statement line: after every statement that starts above it.
-        return sum(lo <= line for lo, _hi in ranges) - 0.5
-
-    return position
-
-
-def _reaching_defs(
-    use: Occurrence,
-    order: Callable[[int], float],
-    entering: frozenset[int],
-    block_defs: list[Definition],
-    definitions: list[Definition],
-) -> list[Definition]:
-    """The definitions of the read's name reaching it inside its block: the
-    block's last write in an earlier statement, else those entering the
-    block. A write in the read's own statement comes after the read
-    (``x += 1``, ``x = f(
- x)``)."""
-    at = order(use.line)
-    local = [d for d in block_defs if d.var == use.name and order(d.line) < at]
-    if local:
-        return [local[-1]]
-    return [definitions[i] for i in sorted(entering) if definitions[i].var == use.name]
 
 
 __all__ = ["STAGE_MAX_CCN", "STAGE_MAX_NLOC", "StagePlan", "find_stages"]

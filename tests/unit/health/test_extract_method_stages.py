@@ -304,3 +304,121 @@ def test_a_stage_is_told_to_import_what_the_function_imports_locally():
         if n.startswith("Import ") and "step_1" in n
     ]
     assert told == ["Import other_step_1, step_1 in the helper: the function imports them inside its body."]
+
+
+def _loop_section(n: int) -> str:
+    """A section whose loop breaks and continues: both stay in the loop."""
+    return f"""
+            # Scan part {n}
+            for row in rows_{n}:
+                if not row:
+                    continue
+                if row == "stop":
+                    break
+                seen_{n}.append(row)
+"""
+
+
+def test_break_and_continue_inside_a_stage_are_allowed():
+    sections = "".join(_loop_section(n) for n in range(8))
+    seen = ", ".join(f"seen_{n}" for n in range(8))
+    rows = ", ".join(f"rows_{n}" for n in range(8))
+    src = f"""
+def scan({rows}, {seen}):
+    total = 0
+{textwrap.indent(textwrap.dedent(sections), " " * 4)}
+    return total
+"""
+    stages = _plans(src)["scan"].plan["stages"]
+    lines = textwrap.dedent(src).splitlines()
+    held = [
+        lines[ln - 1].strip()
+        for s in stages
+        for ln in range(s["span"]["start"], s["span"]["end"] + 1)
+    ]
+    assert "break" in held and "continue" in held
+
+
+def test_the_receiver_never_rides_the_parameter_object():
+    method = textwrap.indent(_persist().replace("async def persist(", "async def persist(self, "), "    ")
+    method = method.replace("session, repo_id, a, b", "self.store, session, repo_id, a, b")
+    src = "class Store:\n" + method
+    plan = _plans(src)["persist"].plan
+    obj = plan["parameter_object"]
+    assert obj is not None and "self" not in {f["name"] for f in obj["fields"]}
+    for stage in plan["stages"]:
+        assert "self" not in stage["context_params"]
+        assert stage["new_symbol"]["kind"] == "method"
+        assert stage["new_symbol"]["signature_text"].startswith("async def ")
+        assert "(self, ctx" in stage["new_symbol"]["signature_text"]
+        assert stage["call_site"]["new_text"].count("self.") == 1
+
+
+def test_a_module_global_named_ctx_is_not_shadowed():
+    src = _persist().replace("    degraded = []\n", "    degraded = [ctx]\n", 1)
+    obj = _plans(src)["persist"].plan["parameter_object"]
+    assert obj["var"] == "context"
+    assert obj["construct_text"].startswith("context = _PersistContext(")
+
+
+def test_an_async_stage_hands_back_a_tuple():
+    src = _persist(extend=(2, 3)).replace(
+        "pages += await step_3(", "more += await step_3("
+    ).replace("    pages: list[str] = []\n", "    pages: list[str] = []\n    more: list[str] = []\n")
+    src = src.replace("return pages, degraded", "return pages, more, degraded")
+    stages = _plans(src)["persist"].plan["stages"]
+    pair = [s for s in stages if len(s["returns"]) == 2]
+    assert pair
+    stage = pair[0]
+    assert stage["new_symbol"]["signature_text"].endswith(
+        "-> tuple[list[str], list[str]]:"
+    )
+    assert stage["call_site"]["new_text"].startswith(
+        f"{', '.join(stage['returns'])} = await "
+    )
+
+
+def test_a_timer_is_never_split_by_a_stage_edge():
+    src = _persist().replace(
+        "            # Persist part 4\n",
+        '            if timings is not None:\n                timings.start("persist.four")\n'
+        "            # Persist part 4\n",
+    ).replace(
+        '                _skip("part 4", exc)\n                if strict:\n                    raise\n',
+        '                _skip("part 4", exc)\n                if strict:\n                    raise\n'
+        '            finally:\n                if timings is not None:\n'
+        '                    timings.stop("persist.four")\n',
+    )
+    assert 'timings.stop("persist.four")' in src
+    lines = textwrap.dedent(src).splitlines()
+    start = next(i for i, ln in enumerate(lines, 1) if 'start("persist.four")' in ln)
+    stop = next(i for i, ln in enumerate(lines, 1) if 'stop("persist.four")' in ln)
+    for s in _plans(src)["persist"].plan["stages"]:
+        inside = [s["span"]["start"] <= ln <= s["span"]["end"] for ln in (start, stop)]
+        assert inside[0] == inside[1]
+
+
+def test_a_typed_host_gets_typed_void_helpers():
+    src = _persist().replace("strict, flag_0", "strict: bool, flag_0", 1)
+    src = src.replace("other_7):", "other_7) -> tuple:", 1)
+    stages = _plans(src)["persist"].plan["stages"]
+    void = [s for s in stages if not s["returns"]]
+    assert void
+    assert all(s["new_symbol"]["signature_text"].endswith(") -> None:") for s in void)
+    untyped = _plans(_persist())["persist"].plan["stages"]
+    assert not any("-> None" in s["new_symbol"]["signature_text"] for s in untyped)
+
+
+def test_a_staged_id_names_the_whole_split():
+    from repowise.core.analysis.health.refactoring.identity import refactoring_public_id
+
+    plan = _plans(_persist())["persist"]
+    single = dict(plan.plan)
+    single.pop("stages")
+    fewer = dict(plan.plan, stages=plan.plan["stages"][:-1])
+    ids = {
+        refactoring_public_id(plan),
+        refactoring_public_id(type(plan)(**{**plan.__dict__, "plan": single})),
+        refactoring_public_id(type(plan)(**{**plan.__dict__, "plan": fewer})),
+    }
+    assert len(ids) == 3
