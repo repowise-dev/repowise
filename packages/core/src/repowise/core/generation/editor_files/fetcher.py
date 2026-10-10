@@ -136,7 +136,8 @@ class EditorFileDataFetcher:
         if not pages:
             return ""
         content = pages[0].content or ""
-        return _extract_sentences(content, max_sentences=4)
+        skip_preamble = _is_structure_only(pages[0])
+        return _extract_sentences(content, max_sentences=4, skip_preamble=skip_preamble)
 
     async def _get_key_modules(self) -> list[KeyModule]:
         """Top modules by PageRank with owner from git metadata."""
@@ -168,7 +169,10 @@ class EditorFileDataFetcher:
 
         modules: list[KeyModule] = []
         for page, _pagerank, symbol_count in rows:
-            purpose = _extract_sentences(page.content or "", max_sentences=1)
+            skip_preamble = _is_structure_only(page)
+            purpose = _extract_sentences(
+                page.content or "", max_sentences=1, skip_preamble=skip_preamble
+            )
             # 80 chars cut every purpose mid-thought ("…is the **test-layer
             # ingestion subsystem** for…"); 140 fits one real clause.
             purpose = _truncate_at_word(purpose, 140).rstrip(".") if purpose else ""
@@ -613,7 +617,28 @@ def _humanize_age(days: int) -> str:
     return f"{months} month{'' if months == 1 else 's'} ago"
 
 
-def _extract_sentences(text: str, max_sentences: int) -> str:
+def _is_all_emphasis(paragraph: str) -> bool:
+    """True when one emphasis span wraps the whole paragraph."""
+    p = paragraph.strip()
+    for marker in ("**", "*", "__", "_"):
+        if len(p) > 2 * len(marker) and p.startswith(marker) and p.endswith(marker):
+            inner = p[len(marker) : -len(marker)]
+            if marker[0] not in inner and not inner[0].isspace():
+                return True
+    return False
+
+
+def _is_structure_only(page: object) -> bool:
+    """True when no model wrote *page*: it was rendered from structure.
+
+    Structure-only pages are stored with ``provider_name='template'``. Their
+    preamble (directory line, ``**Language:** ...`` row, scope sentence) is
+    page furniture, not prose about what the module is for.
+    """
+    return getattr(page, "provider_name", "") == "template"
+
+
+def _extract_sentences(text: str, max_sentences: int, *, skip_preamble: bool = False) -> str:
     """Return up to *max_sentences* prose sentences from the start of *text*.
 
     Strips markdown headers/code fences AND list/table lines so only prose
@@ -621,7 +646,16 @@ def _extract_sentences(text: str, max_sentences: int) -> str:
     them used to jam bullets onto the tail of the last real sentence
     ("...rendered in a web UI. - **Languages**") and leave orphaned
     fragments like "1. **Inputs**" in the rendered CLAUDE.md.
+
+    When *skip_preamble* is True (used for structure-only pages), all content
+    prior to the first ``##`` section header is treated as template furniture
+    and discarded. If the text has no ``##`` headings, it yields an empty string.
     """
+    if skip_preamble:
+        first_section = re.search(r"^##\s", text, flags=re.MULTILINE)
+        if first_section is None:
+            return ""
+        text = text[first_section.start() :]
     # Remove markdown headers and code fences
     text = re.sub(r"^#{1,6}\s+.*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
@@ -634,7 +668,21 @@ def _extract_sentences(text: str, max_sentences: int) -> str:
     text = re.sub(r"^.*:\s*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"`([^`]+)`", r"\1", text)  # strip backticks, keep text
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)  # links → text
-    text = re.sub(r"\n{2,}", "\n", text).strip()
+    # Strips Markdown horizontal rules / divider lines (---, ***, ___)
+    text = re.sub(r"^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$", "", text, flags=re.MULTILINE)
+    # Strip bold metadata rows; requiring '|' between 2+ segments ensures model prose
+    # starting with '**Note:**' is preserved
+    text = re.sub(
+        r"^[ \t]*\*\*[^*\n]+:\*\*[^|\n]*(?:\|[ \t]*\*\*[^*\n]+:\*\*[^|\n]*)+$",
+        "",
+        text,
+        flags=re.MULTILINE,
+    )
+    # Drop paragraphs wrapped entirely in one emphasis span
+    # (the footer note on structure-only pages).
+    text = "\n\n".join(p for p in re.split(r"\n\s*\n", text) if not _is_all_emphasis(p))
+    # Collapse all remaining whitespace and newlines into a single flat line of prose
+    text = re.sub(r"\s+", " ", text).strip()
 
     # Split on sentence boundaries
     sentences = re.split(r"(?<=[.!?])\s+", text)
