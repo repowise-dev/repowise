@@ -1107,3 +1107,40 @@ def test_a_leading_comment_is_not_a_docstring():
     assert not _starts_on_docstring(node, node.start_point[0] + 3)
     strict = _parse("typescript", 'function g() {\n  "use strict";\n  let x = 1;\n  return x;\n}\n')
     assert _starts_on_docstring(strict, strict.start_point[0] + 2)
+
+
+def test_a_comment_before_the_docstring_does_not_hide_it():
+    src = _DOCSTRING_FIRST.replace(
+        "def uninstall(home, packaged, keep):\n",
+        "def uninstall(home, packaged, keep):\n    # kept in sync with the installer\n",
+    )
+    fn = _first(src)
+    (best, *_) = find_extractions(fn, get_language_map("python"))
+    assert best.start_line == fn.start_line + 2  # the docstring, under the comment
+    findings = [_Finding("complex_method", "uninstall", fn.start_line, 1.5)]
+    assert ExtractMethodDetector().detect(_ctx(src, findings)) == []
+
+
+def test_a_refused_span_yields_only_to_a_disjoint_one(monkeypatch):
+    from repowise.core.analysis.health.dataflow import Extraction
+    from repowise.core.analysis.health.refactoring import extract_method
+
+    whole = Extraction(2, 80, ("a",), (), slice_nloc=60, ccn_removed=9)  # share 0.79
+    shrunk = Extraction(2, 55, ("a",), (), slice_nloc=40, ccn_removed=8)  # overlaps it
+    disjoint = Extraction(85, 95, ("b",), (), slice_nloc=10, ccn_removed=3)
+    monkeypatch.setattr(
+        extract_method, "find_extractions", lambda _a, _l: [whole, shrunk, disjoint]
+    )
+    analysis = type(
+        "A", (), {"name": "f", "start_line": 1, "end_line": 100, "ccn": 30, "nloc": 90,
+                  "fn_node": None}
+    )()
+    ctx = RefactoringContext(
+        file_path="m.py",
+        language="python",
+        nloc=100,
+        findings=[_Finding("complex_method", "f", 1, 1.2)],
+        function_analyses=[analysis],
+    )
+    (s,) = ExtractMethodDetector().detect(ctx)
+    assert s.plan["span"] == {"start": 85, "end": 95}

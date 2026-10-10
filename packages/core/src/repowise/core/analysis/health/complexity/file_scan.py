@@ -20,7 +20,7 @@ from ..perf.io_boundaries import _finish_io_names, _io_visit
 from .error_handling import _eh_node_kinds, _eh_rust_attr_is_test, _eh_visit
 from .languages import LanguageNodeMap
 from .models import ErrorHandlingHit
-from .nloc import CodeLineIndex, _is_docstring_stmt, _source_lines
+from .nloc import CodeLineIndex, _source_lines, is_docstring_stmt
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -127,7 +127,7 @@ def scan_file(
             if "comment" in t:
                 ctx |= _IN_COMMENT | _IN_DOCSTRING
                 excluded.append((node.start_byte, node.end_byte))
-            elif t == "expression_statement" and _is_docstring_stmt(node):
+            elif t == "expression_statement" and is_docstring_stmt(node):
                 ctx |= _IN_DOCSTRING
                 excluded.append((node.start_byte, node.end_byte))
         elif not ctx & _IN_COMMENT and "comment" in t:
