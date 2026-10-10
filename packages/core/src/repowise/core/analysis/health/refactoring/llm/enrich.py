@@ -336,10 +336,13 @@ def _language_for(file_path: str) -> str | None:
     return _EXT_LANGUAGE.get(Path(file_path).suffix.lower())
 
 
-def _cache_key(suggestion: Any, spans: list[SourceSpan], model: str) -> str:
+def _cache_key(suggestion: Any, spans: list[SourceSpan], model: str, prompt: str) -> str:
+    """*prompt* is the rendered user prompt: anything that changes it (the stored
+    detail a caller passes, the recipe's wording) misses the cache."""
     payload = json.dumps(
         {
             "prompt_version": _PROMPT_VERSION,
+            "prompt": hashlib.sha256(prompt.encode()).hexdigest(),
             "type": suggestion.refactoring_type,
             "target": suggestion.target_symbol,
             "file": suggestion.file_path,
@@ -618,14 +621,14 @@ async def enrich_suggestion(
     suggestion_id = getattr(suggestion, "id", None)
 
     cdir = cache_dir or _cache_dir(repo_path)
-    key = _cache_key(suggestion, spans, model)
+    user = _build_user_prompt(suggestion, spans, detail)
+    key = _cache_key(suggestion, spans, model, user)
     if use_cache:
         cached = _read_cache(cdir, key)
         if cached is not None:
             return cached
 
     system = _SYSTEM_PROMPT
-    user = _build_user_prompt(suggestion, spans, detail)
     response = await provider.generate(
         system,
         user,

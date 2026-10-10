@@ -82,6 +82,13 @@ def test_a_label_target_is_not_reported_as_a_symbol() -> None:
     assert recipe["postconditions"][0]["kind"] == "verify"
 
 
+def test_steps_without_a_line_are_never_merged() -> None:
+    unplaced = {"order": 1, "action": "Add a bulk form", "symbol": "f", "file_path": "a.py"}
+    plan = {"steps": [{**unplaced, "line": None}, {**unplaced, "order": 2, "line": None}]}
+    steps = build_recipe({"refactoring_type": "performance_fix", "plan": plan})["steps"]
+    assert [s["n"] for s in steps] == [1, 2]
+
+
 def test_break_cycle_is_advisory_and_unaudited_types_say_so() -> None:
     cycle = build_recipe(_PLANS["break_cycle_advisory"])
     assert cycle["advisory"] is True

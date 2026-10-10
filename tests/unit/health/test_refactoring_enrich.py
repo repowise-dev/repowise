@@ -195,9 +195,19 @@ def test_the_cache_key_carries_the_prompt_version(monkeypatch) -> None:
     from repowise.core.analysis.health.refactoring.llm import enrich
 
     sug = _extract_class_suggestion()
-    before = enrich._cache_key(sug, [], "m")
+    before = enrich._cache_key(sug, [], "m", "p")
     monkeypatch.setattr(enrich, "_PROMPT_VERSION", enrich._PROMPT_VERSION + 1)
-    assert enrich._cache_key(sug, [], "m") != before
+    assert enrich._cache_key(sug, [], "m", "p") != before
+
+
+def test_a_draft_cached_without_the_stored_detail_is_not_reused_with_it() -> None:
+    from repowise.core.analysis.health.refactoring.llm import enrich
+
+    sug = _extract_class_suggestion()
+    detail = {**asdict(sug), "id": "refac4_x", "governed_by": [], "risks": []}
+    bare = enrich._cache_key(sug, [], "m", _build_user_prompt(sug, []))
+    with_detail = enrich._cache_key(sug, [], "m", _build_user_prompt(sug, [], detail))
+    assert bare != with_detail
 
 
 # ---------------------------------------------------------------------------

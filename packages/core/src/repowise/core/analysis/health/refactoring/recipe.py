@@ -322,13 +322,15 @@ def _merged_verify(kept: Mapping[str, Any] | None, more: Mapping[str, Any] | Non
 
 def _performance_fix(d: Mapping[str, Any], plan: Mapping[str, Any]) -> list[Step]:
     out: dict[tuple[Any, ...], Step] = {}
-    for raw in _list(plan.get("steps")):
+    for index, raw in enumerate(_list(plan.get("steps"))):
         step = _dict(raw)
         symbol = _short(step.get("symbol"))
         text = str(step.get("action") or "Apply the fix")
         verify = step["verify"] if isinstance(step.get("verify"), dict) else None
-        key = (text, symbol, step.get("file_path"), step.get("line"))
         # A site the evidence lists twice is still one edit, checked by both checks.
+        # Only a placed site is known to repeat; a step without a line stays its own.
+        line = step.get("line")
+        key = (text, symbol, step.get("file_path"), line) if line is not None else (index,)
         if key in out:
             merged = _merged_verify(out[key].get("verify"), verify)
             if merged:
