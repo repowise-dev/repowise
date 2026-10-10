@@ -55,6 +55,22 @@ describe("risk-factor labels", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it("marks only deletion-ready rows when they are the exception", () => {
+    const { rerender, container } = render(
+      <FindingSafety mark="safe" finding={finding({ safe_to_delete: true, confidence: 0.9 })} />,
+    );
+    expect(screen.getByText("Deletion-ready")).toBeInTheDocument();
+    rerender(<FindingSafety mark="safe" finding={finding({})} />);
+    expect(container).toBeEmptyDOMElement();
+    rerender(<FindingSafety mark="safe" finding={finding({ risk_factors: ["config"] })} />);
+    expect(container.textContent).toBe("may load at runtime (configuration)");
+  });
+
+  it("says just Review first when no risk factor is known", () => {
+    const { container } = render(<FindingSafety finding={finding({})} />);
+    expect(container.textContent).toBe("Review first");
+  });
+
   it("labels the risk factors in the dead-code agent prompt", () => {
     const prompt = buildDeadCodeAiPrompt({
       findings: [{ file_path: "public/sw.js", lines: 10, risk_factors: ["asset"] }],

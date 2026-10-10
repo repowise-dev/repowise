@@ -233,6 +233,12 @@ export function FindingsTable({
     setQuery("");
   };
 
+  // Mark whichever safety group is the minority, so the mark stays an exception.
+  const safeMark = useMemo(
+    () => (findings.filter((f) => f.safe_to_delete).length * 2 < findings.length ? "safe" : "review"),
+    [findings],
+  );
+
   // Rows in the active tab that the filters are hiding, for the filtered state.
   const hiddenInTab = useMemo(
     () => (effectiveTab ? findings.filter((f) => f.kind === effectiveTab).length : 0),
@@ -304,6 +310,7 @@ export function FindingsTable({
             finding={f}
             href={fileHref?.(f.file_path)}
             onNavigate={onNavigate}
+            mark={safeMark}
           />
         ),
         mobileRender: (f) => (
@@ -313,6 +320,7 @@ export function FindingsTable({
               finding={f}
               href={fileHref?.(f.file_path)}
               onNavigate={onNavigate}
+              mark={safeMark}
             />
           </span>
         ),
@@ -356,7 +364,7 @@ export function FindingsTable({
             {/* Recent churn is why a finding scores low; saying so makes the
                 confidence number legible instead of arbitrary. */}
             {f.commit_count_90d ? (
-              <span className="block text-2xs text-[var(--color-text-tertiary)]">
+              <span className="block text-xs text-[var(--color-text-tertiary)]">
                 {f.commit_count_90d} commit{f.commit_count_90d === 1 ? "" : "s"}/90d
               </span>
             ) : null}
@@ -408,6 +416,7 @@ export function FindingsTable({
     onGeneratePrompt,
     onPatch,
     current,
+    safeMark,
   ]);
 
   const openFile =

@@ -70,13 +70,15 @@ export interface FindingIdentityProps {
   href?: string | undefined;
   /** Client-side navigation, so a plain click does not trigger a full page load. */
   onNavigate?: ((href: string) => void) | undefined;
+  /** Which safety group is the exception in the current list. */
+  mark?: "safe" | "review" | undefined;
 }
 
 /**
  * File path (linked when the host can route), symbol name, the detector's
- * reason, and the "Review first" marker on rows that are not deletion-ready.
+ * reason, and the safety marker for whichever group is the exception.
  */
-export function FindingIdentity({ finding, href, onNavigate }: FindingIdentityProps) {
+export function FindingIdentity({ finding, href, onNavigate, mark }: FindingIdentityProps) {
   const onLinkClick = (e: MouseEvent<HTMLAnchorElement>) => {
     e.stopPropagation();
     if (!href || !onNavigate) return;
@@ -116,13 +118,13 @@ export function FindingIdentity({ finding, href, onNavigate }: FindingIdentityPr
       )}
       {finding.reason && (
         <span
-          className="mt-0.5 block truncate text-2xs text-[var(--color-text-tertiary)]"
+          className="mt-0.5 block truncate text-xs text-[var(--color-text-tertiary)]"
           title={finding.reason}
         >
           {finding.reason}
         </span>
       )}
-      <FindingSafety finding={finding} />
+      <FindingSafety finding={finding} mark={mark ?? "review"} />
     </div>
   );
 }
@@ -141,26 +143,45 @@ export function FindingConfidence({ finding }: { finding: DeadCodeFinding }) {
 }
 
 /**
- * Marks the exception, not the default: nothing on a deletion-ready row, and
- * a dot plus "Review first" with the reason as visible text on the rest.
+ * Marks the exception, not the default. When deletion-ready rows are the
+ * minority they carry the dot; otherwise the rows needing review do, with
+ * their risk factors when the engine named any.
  */
-export function FindingSafety({ finding }: { finding: DeadCodeFinding }) {
-  if (finding.safe_to_delete) return null;
+export function FindingSafety({
+  finding,
+  mark = "review",
+}: {
+  finding: DeadCodeFinding;
+  /** Which group is the exception in the current list. */
+  mark?: "safe" | "review";
+}) {
   const factors = finding.risk_factors ?? [];
-  const why =
+  const risk =
     factors.length > 0
       ? `may load at runtime (${factors.map(deadCodeRiskFactorLabel).join(", ")})`
-      : "below the deletion-ready confidence";
+      : null;
+  if (mark === "safe") {
+    if (!finding.safe_to_delete) {
+      return risk ? (
+        <span className="mt-0.5 block text-xs text-[var(--color-text-tertiary)]">{risk}</span>
+      ) : null;
+    }
+    return <SafetyMark label="Deletion-ready" />;
+  }
+  if (finding.safe_to_delete) return null;
+  return <SafetyMark label="Review first" detail={risk} />;
+}
+
+function SafetyMark({ label, detail }: { label: string; detail?: string | null }) {
   return (
-    <span className="mt-0.5 flex min-w-0 items-baseline gap-1.5 text-2xs text-[var(--color-text-tertiary)]">
+    <span className="mt-0.5 flex min-w-0 items-baseline gap-1.5 text-xs text-[var(--color-text-tertiary)]">
       <span
         aria-hidden
         className="inline-block h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-full bg-[var(--color-text-tertiary)]"
       />
       <span className="min-w-0">
-        <span className="font-medium text-[var(--color-text-secondary)]">Review first</span>
-        {" · "}
-        {why}
+        <span className="font-medium text-[var(--color-text-secondary)]">{label}</span>
+        {detail ? ` · ${detail}` : null}
       </span>
     </span>
   );

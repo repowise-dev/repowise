@@ -23,7 +23,7 @@ describe("DeadCodeLede", () => {
     render(<DeadCodeLede summary={SUMMARY} />);
     const prose = screen.getByText(/have no reachable caller/);
     expect(prose.textContent).toBe(
-      "142 findings across 91,234 lines have no reachable caller. Only the deletion-ready share is counted above. Analysed 2d ago.",
+      "142 findings across 91,234 lines have no reachable caller. Analysed 2d ago.",
     );
   });
 
@@ -47,7 +47,16 @@ describe("DeadCodeLede", () => {
       />,
     );
     expect(screen.getByText(/no reachable caller/).textContent).toBe(
-      "1 finding across 12 lines has no reachable caller. Only the deletion-ready share is counted above.",
+      "1 finding across 12 lines has no reachable caller.",
     );
+  });
+
+  it("shows flagged lines, not a zero, when nothing is deletion-ready", () => {
+    render(<DeadCodeLede summary={{ ...SUMMARY, total_findings: 47, total_lines: 1669, deletable_lines: 0 }} />);
+    expect(screen.getByText("1,669")).toBeInTheDocument();
+    expect(screen.getByText(/have no reachable caller/).textContent).toBe(
+      "47 findings have no reachable caller. None is deletion-ready yet, so review them before deleting. Analysed 2d ago.",
+    );
+    expect(screen.getByRole("button", { name: "What Flagged means" })).toBeInTheDocument();
   });
 });

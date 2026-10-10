@@ -45,12 +45,13 @@ export function AnalysedAt({ at }: { at: string | null | undefined }) {
 export function DeadCodeLede({ summary, action, children }: DeadCodeLedeProps) {
   const findings = summary.total_findings;
   const strong = "font-semibold text-[var(--color-text-primary)]";
+  const ready = summary.deletable_lines > 0;
 
   return (
     <PageLede
-      label="Reclaimable"
+      label={findings > 0 && !ready ? "Flagged" : "Reclaimable"}
       labelHint={CONFIDENCE_HINT}
-      value={formatNumber(summary.deletable_lines)}
+      value={formatNumber(findings > 0 && !ready ? summary.total_lines : summary.deletable_lines)}
       unit="lines"
       layout="beside"
       {...(action ? { action } : {})}
@@ -59,12 +60,17 @@ export function DeadCodeLede({ summary, action, children }: DeadCodeLedeProps) {
         <p>
           {findings === 0 ? (
             "No open findings remain."
-          ) : (
+          ) : ready ? (
             <>
               <strong className={strong}>{plural(findings, "finding")}</strong> across{" "}
               <strong className={strong}>{plural(summary.total_lines, "line")}</strong>{" "}
-              {findings === 1 ? "has" : "have"} no reachable caller. Only the deletion-ready
-              share is counted above.
+              {findings === 1 ? "has" : "have"} no reachable caller.
+            </>
+          ) : (
+            <>
+              <strong className={strong}>{plural(findings, "finding")}</strong>{" "}
+              {findings === 1 ? "has" : "have"} no reachable caller. None is deletion-ready yet,
+              so review {findings === 1 ? "it" : "them"} before deleting.
             </>
           )}
           <AnalysedAt at={summary.analyzed_at} />
