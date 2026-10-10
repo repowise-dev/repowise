@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BaseDefUseDialect, Occurrence, StatementDefUse
+from .base import BaseDefUseDialect, Occurrence, Receiver, StatementDefUse
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -57,11 +57,13 @@ _SCOPE_BOUNDARIES = frozenset(
         "method_definition",
     }
 )
+_THIS = frozenset({"this"})
 
 
 class TsJsDefUseDialect(BaseDefUseDialect):
     language = "typescript"
     member_access_kinds = frozenset({"member_expression"})
+    receiver_write_kinds = _ASSIGN_KINDS | _AUG_KINDS | _UPDATE_KINDS
     keyword_kinds = frozenset()  # object-property keys are not variable reads.
     # ``shorthand_property_identifier`` is an object-literal read (``{ days }``
     # reads the local ``days``). Its ``_pattern`` twin is the destructuring
@@ -105,6 +107,20 @@ class TsJsDefUseDialect(BaseDefUseDialect):
                 pattern = child if child.type in self.identifier_kinds else None
             self._targets(pattern, out, sink)
         return tuple(out)
+
+    def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
+        """``this``, bound when it is a class instance: a class method, or an
+        arrow function (which takes ``this`` from where it is written) inside
+        one or in a class field. An object-literal method or a plain function
+        gets ``this`` from its caller, so a helper method cannot share it."""
+        node = fn_node
+        while node is not None and node.type not in lmap.class_kinds:
+            if node.type in _SCOPE_BOUNDARIES and node.type != "arrow_function":
+                parent = node.parent
+                bound = node.type == "method_definition" and parent is not None
+                return self._receiver(_THIS, bound=bound and parent.type == "class_body")
+            node = node.parent
+        return self._receiver(_THIS, bound=node is not None)
 
     # -- head (loop clause / if condition) ------------------------------------
 

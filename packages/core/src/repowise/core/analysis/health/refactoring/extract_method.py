@@ -54,6 +54,14 @@ Plan shape (open dict, no migration):
   is awaited. An awaiting plan also carries ``async_host``: False when the
   enclosing function is not declared async, which makes the step a judgment
   call (``preconditions``) rather than a mechanical one.
+- ``plan.new_symbol`` = ``{"kind": "method" | "function" | None, "async":
+  bool, "receiver": str | None, "mutates": [str, ...] | None}`` -- whether
+  the helper must be a method (the span uses ``self`` / ``this`` / the Go
+  receiver, or a Java / C++ field may be read bare), the receiver name a
+  method keeps, and the receiver fields the span assigns. None where the
+  language cannot tell. ``plan.receiver_hazard`` is set only when the
+  receiver cannot be shared as it is (``_receiver_hazard``), which makes the
+  step a judgment call.
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` -- the size and
   complexity (code lines, decision points) the residual method sheds.
 - ``blast_radius`` = ``{"scope": "local"}`` -- extraction is local (a new
@@ -76,7 +84,7 @@ from ..biomarkers.large_method import LargeMethodDetector
 from ..complexity.cyclomatic import _is_boolean_operator, is_markup
 from ..complexity.languages import get_language_map
 from ..complexity.nloc import is_string_stmt
-from ..dataflow import find_extractions
+from ..dataflow import find_extractions, get_defuse_dialect
 from ..effort import effort_bucket
 from ..perf.dialects import PERF_DIALECTS
 from ..scoring import severity_deduction
@@ -87,6 +95,7 @@ from .registry import RefactoringDetector, register
 if TYPE_CHECKING:
     from ..complexity.languages import LanguageNodeMap
     from ..dataflow import Extraction, FunctionAnalysis
+    from ..dataflow.dialects.base import Receiver
     from ..models import Severity
 
 # The function-level structural biomarkers this detector answers. A function is
@@ -134,6 +143,7 @@ class ExtractMethodDetector(RefactoringDetector):
 
         out: list[RefactoringSuggestion] = []
         names = ScopeNames(lmap)
+        dialect = get_defuse_dialect(ctx.language or "")
         # Source order, so the first of two colliding plans keeps the name.
         for analysis in sorted(analyses, key=lambda a: (a.start_line, a.end_line)):
             matched = self._findings_for(analysis, ctx.findings)
@@ -143,7 +153,9 @@ class ExtractMethodDetector(RefactoringDetector):
             if jsx_plumbing_dominates(analysis.fn_node, lmap):
                 continue
             markers = {getattr(f, "biomarker_type", "") for f in matched}
-            best = _choose(analysis, find_extractions(analysis, lmap), markers)
+            fn_node = analysis.fn_node
+            receiver = dialect.receiver(fn_node, lmap) if dialect and fn_node else None
+            best = _choose(analysis, find_extractions(analysis, lmap, receiver), markers)
             if best is None:
                 continue
             impact, share, source = self._impact_for(analysis, best, matched)
@@ -165,6 +177,7 @@ class ExtractMethodDetector(RefactoringDetector):
                             ),
                         ),
                         **_async_fields(analysis, best, lmap, ctx.language),
+                        **_symbol_fields(best, receiver),
                     },
                     evidence={
                         "slice_nloc": best.slice_nloc,
@@ -264,6 +277,51 @@ def _async_fields(
     if not extraction.needs_async:
         return {"needs_async": False}
     return {"needs_async": True, "async_host": host_is_async(analysis.fn_node, lmap, language)}
+
+
+def _symbol_fields(extraction: Extraction, receiver: Receiver | None) -> dict[str, Any]:
+    """``new_symbol``: what the helper is (``kind`` method or function, None
+    when the language cannot tell), ``async``, the ``receiver`` a method
+    reaches its instance by, and the receiver fields it assigns (``mutates``,
+    None when not all are known). ``receiver_hazard`` only when lifting the
+    span changes what the receiver is (see ``_receiver_hazard``)."""
+    uses, writes = extraction.uses_receiver, extraction.receiver_writes
+    hazard = _receiver_hazard(receiver, uses, writes)
+    kind: str | None = None
+    if receiver is not None and hazard != "receiver_unbound":
+        kind = "method" if receiver.implicit or uses else "function"
+    name = min(receiver.names) if kind == "method" and receiver is not None else None
+    fields: dict[str, Any] = {
+        "new_symbol": {
+            "kind": kind,
+            "async": extraction.needs_async,
+            "receiver": name,
+            "mutates": list(writes) if writes is not None else None,
+        }
+    }
+    if hazard:
+        fields["receiver_hazard"] = hazard
+    return fields
+
+
+def _receiver_hazard(
+    receiver: Receiver | None, uses: bool | None, writes: tuple[str, ...] | None
+) -> str | None:
+    """Why a helper cannot share the span's receiver as it is, or None.
+
+    ``receiver_unbound``: the span uses ``this`` where it is not a class
+    instance (a TS/JS plain function or object-literal method), so no helper
+    method can be given the same one. ``receiver_copy_written``: the span
+    assigns a field of a Go value receiver, a copy, so a helper holding its
+    own copy loses the write the rest of the method reads.
+    """
+    if receiver is None or not uses:
+        return None
+    if not receiver.bound:
+        return "receiver_unbound"
+    if receiver.copy and writes:
+        return "receiver_copy_written"
+    return None
 
 
 def host_is_async(fn_node: Any, lmap: LanguageNodeMap, language: str | None) -> bool:

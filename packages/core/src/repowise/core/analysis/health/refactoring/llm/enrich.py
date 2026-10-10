@@ -353,6 +353,9 @@ _TYPE_INSTRUCTIONS: dict[str, str] = {
         "and return the plan's 'returns' value(s), and replace the original lines "
         "with a call to it. When the plan's 'needs_async' is true the span awaits: "
         "declare the helper async and await the call that replaces the lines. "
+        "When the plan's 'new_symbol.kind' is 'method' the span uses its receiver "
+        "('new_symbol.receiver'): make the helper a method of the same object and "
+        "call it through that receiver rather than passing it as an argument. "
         "Preserve behaviour exactly; change nothing outside the "
         "span and the single call site."
     ),

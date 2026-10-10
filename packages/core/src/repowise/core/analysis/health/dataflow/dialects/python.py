@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BaseDefUseDialect, Occurrence, StatementDefUse
+from .base import NO_RECEIVER, BaseDefUseDialect, Occurrence, Receiver, StatementDefUse
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -45,6 +45,7 @@ _SCOPE_BOUNDARIES = frozenset({"lambda", "function_definition", "async_function_
 class PythonDefUseDialect(BaseDefUseDialect):
     language = "python"
     member_access_kinds = frozenset({"attribute"})
+    receiver_write_kinds = _ASSIGN_KINDS | _AUG_KINDS
     keyword_kinds = frozenset({"keyword_argument"})
 
     # A nested ``def`` is visible in the enclosing scope from its statement on.
@@ -80,6 +81,25 @@ class PythonDefUseDialect(BaseDefUseDialect):
             if name_node is not None:
                 out.append(self._occ(name_node))
         return tuple(out)
+
+    def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
+        """A method's first parameter when it is ``self`` / ``cls`` and the
+        function sits in a class body; a nested function reaches ``self`` as a
+        captured name instead, which is already one of its parameters. A
+        ``@staticmethod``'s first parameter is an ordinary argument."""
+        params = self.parameter_defs(fn_node)
+        if not params or params[0].name not in lmap.self_identifiers:
+            return NO_RECEIVER
+        holder = fn_node.parent
+        if holder is not None and holder.type in lmap.decorated_definition_kinds:
+            decorators = (c.text for c in holder.children if c.type in lmap.decorator_kinds)
+            if any(text and text.strip().endswith(b"staticmethod") for text in decorators):
+                return NO_RECEIVER
+            holder = holder.parent
+        owner = holder.parent if holder is not None else None
+        if owner is None or owner.type not in lmap.class_kinds:
+            return NO_RECEIVER
+        return self._receiver(frozenset({params[0].name}))
 
     # -- head (compound construct condition / loop clause) --------------------
 

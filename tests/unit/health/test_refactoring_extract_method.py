@@ -164,6 +164,7 @@ def _find_extractions_reference(analysis, lmap):
         _infer_in_out,
         _loop_carry_free,
         _outs_definitely_assigned,
+        _Scan,
         _sorted,
         _span_metrics,
         _stmts_nloc,
@@ -227,13 +228,15 @@ def _find_extractions_reference(analysis, lmap):
                 ):
                     continue
                 span = stmts[i : j + 1]
-                decisions, has_jump, has_await = _span_metrics(
+                decisions, has_jump, has_await, *_ = _span_metrics(
                     span,
-                    decision_kinds,
-                    jump_kinds,
-                    scope_kinds,
-                    _exit_macros(lmap),
-                    (lmap.await_kinds, lmap.await_scope_kinds),
+                    _Scan(
+                        decision_kinds,
+                        jump_kinds,
+                        scope_kinds,
+                        _exit_macros(lmap),
+                        (lmap.await_kinds, lmap.await_scope_kinds),
+                    ),
                 )
                 if has_jump or decisions < _MIN_CCN_REMOVED:
                     continue
@@ -575,8 +578,22 @@ def test_detector_emits_suggestion_for_flagged_function():
     assert 0 < share < 1
     assert s.impact_delta == round(1.5 * share, 3)
     # Plan shape is the locked schema.
-    assert set(s.plan) == {"span", "params", "returns", "suggested_name", "needs_async"}
+    assert set(s.plan) == {
+        "span",
+        "params",
+        "returns",
+        "suggested_name",
+        "needs_async",
+        "new_symbol",
+    }
     assert s.plan["needs_async"] is False
+    # A module-level function: the helper is a plain function too.
+    assert s.plan["new_symbol"] == {
+        "kind": "function",
+        "async": False,
+        "receiver": None,
+        "mutates": [],
+    }
     assert set(s.plan["span"]) == {"start", "end"}
     assert set(s.evidence) == {"slice_nloc", "ccn_removed"}
     # A categorical claim, not a count: extraction is local, so there is nothing
@@ -923,7 +940,7 @@ def test_a_best_span_below_the_floor_yields_to_the_next_one(monkeypatch):
 
     trivial = Extraction(10, 17, ("a",), (), slice_nloc=8, ccn_removed=1)
     worth = Extraction(20, 27, ("b",), (), slice_nloc=8, ccn_removed=3)
-    monkeypatch.setattr(extract_method, "find_extractions", lambda _a, _l: [trivial, worth])
+    monkeypatch.setattr(extract_method, "find_extractions", lambda _a, _l, _r=None: [trivial, worth])
     fn = _Shape(12, 40)
     analysis = type(
         "A", (), {"name": "f", "start_line": 1, "end_line": 50, "ccn": 12, "nloc": 40,
@@ -1136,7 +1153,7 @@ def test_a_refused_span_yields_only_to_a_disjoint_one(monkeypatch):
     shrunk = Extraction(2, 55, ("a",), (), slice_nloc=40, ccn_removed=8)  # overlaps it
     disjoint = Extraction(85, 95, ("b",), (), slice_nloc=10, ccn_removed=3)
     monkeypatch.setattr(
-        extract_method, "find_extractions", lambda _a, _l: [whole, shrunk, disjoint]
+        extract_method, "find_extractions", lambda _a, _l, _r=None: [whole, shrunk, disjoint]
     )
     analysis = type(
         "A", (), {"name": "f", "start_line": 1, "end_line": 100, "ccn": 30, "nloc": 90,

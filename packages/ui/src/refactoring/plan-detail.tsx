@@ -488,6 +488,13 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
               async, so an async helper cannot be written in its place.
             </p>
           ) : null}
+          {em.receiver_hazard ? (
+            <p className="mt-2 text-2xs text-[var(--color-text-tertiary)]">
+              {em.receiver_hazard === "receiver_unbound"
+                ? "Judgment call: the span uses this outside a class, so no helper method can share it."
+                : "Judgment call: the span writes fields of a value receiver (a copy), so a helper with its own copy would lose those writes."}
+            </p>
+          ) : null}
         </div>
       </div>
     );

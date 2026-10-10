@@ -32,7 +32,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BaseDefUseDialect, Occurrence, StatementDefUse, echoes
+from .base import (
+    NO_RECEIVER,
+    BaseDefUseDialect,
+    Occurrence,
+    Receiver,
+    StatementDefUse,
+    echoes,
+)
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -93,6 +100,7 @@ _SCOPE_BOUNDARIES = frozenset({"closure_expression", "function_item", "async_blo
 class RustDefUseDialect(BaseDefUseDialect):
     language = "rust"
     member_access_kinds = frozenset({"field_expression"})
+    receiver_write_kinds = _ASSIGN_KINDS | _AUG_KINDS
     keyword_kinds = frozenset()  # struct-literal field names are not reads.
     # ``self`` is its own node type in tree-sitter-rust, not an ``identifier``;
     # without it here every ``self.field`` read would drop its receiver (Go and
@@ -141,6 +149,13 @@ class RustDefUseDialect(BaseDefUseDialect):
                 continue
             self._targets(child.child_by_field_name("pattern"), out, sink)
         return tuple(out)
+
+    def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
+        """``self`` when the signature takes it (``self_parameter``)."""
+        params = fn_node.child_by_field_name("parameters")
+        if params is None or not any(c.type == "self_parameter" for c in params.named_children):
+            return NO_RECEIVER
+        return self._receiver(lmap.self_identifiers)
 
     # -- head (loop clause / if condition) ------------------------------------
 

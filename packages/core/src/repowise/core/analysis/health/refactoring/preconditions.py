@@ -40,6 +40,8 @@ JUDGMENT_REASONS = (
     "detector_confidence_below_high",
     "inverts_imports_across_files",
     "needs_design",
+    "receiver_copy_written",
+    "receiver_unbound",
     "reshapes_class_surface",
     "rewrites_dependent_imports",
     "unclassified_refactoring_type",
@@ -131,12 +133,16 @@ def _extract_method_reasons(suggestion: RefactoringSuggestion, facts: dict[str, 
 
     R1's dataflow gate proves the span behaviour-preserving before it is ever
     offered, and the blast radius is categorically local, so the only thing left
-    to check is that the detector itself was sure, and that an awaiting span
-    has an async function to land in.
+    to check is that the detector itself was sure, that an awaiting span
+    has an async function to land in, and that the helper can share the
+    span's receiver (``extract_method._receiver_hazard``).
     """
     plan = suggestion.plan or {}
     if plan.get("needs_async") and plan.get("async_host") is False:
         return ["async_helper_unexpressible"]
+    hazard = plan.get("receiver_hazard")
+    if hazard in JUDGMENT_REASONS:
+        return [hazard]
     if not facts["local_scope"]:
         return ["changes_symbol_home"]
     if suggestion.confidence != "high":

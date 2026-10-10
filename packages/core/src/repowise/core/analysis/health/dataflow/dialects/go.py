@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BaseDefUseDialect, Occurrence, StatementDefUse
+from .base import NO_RECEIVER, BaseDefUseDialect, Occurrence, Receiver, StatementDefUse
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -45,6 +45,7 @@ _SCOPE_BOUNDARIES = frozenset({"func_literal"})
 class GoDefUseDialect(BaseDefUseDialect):
     language = "go"
     member_access_kinds = frozenset({"selector_expression"})
+    receiver_write_kinds = _ASSIGN_KINDS | _INC_DEC_KINDS
     keyword_kinds = frozenset()  # Go has no keyword arguments.
 
     def _is_scope_boundary(self, node: Node) -> bool:
@@ -78,6 +79,18 @@ class GoDefUseDialect(BaseDefUseDialect):
                     if child.type in self.identifier_kinds and child.text != b"_":
                         out.append(self._occ(child))
         return tuple(out)
+
+    def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
+        """The method receiver's own name; a value receiver (``s T``, not
+        ``s *T``) is a copy. An unnamed receiver is unreachable from the body."""
+        plist = fn_node.child_by_field_name("receiver")
+        decl = plist.named_children[0] if plist is not None and plist.named_children else None
+        name = decl.child_by_field_name("name") if decl is not None else None
+        if name is None or not name.text or name.text == b"_":
+            return NO_RECEIVER
+        kind = decl.child_by_field_name("type")
+        copy = kind is not None and kind.type != "pointer_type"
+        return self._receiver(frozenset({name.text.decode("utf-8", "replace")}), copy=copy)
 
     # -- head (loop clause / if condition) ------------------------------------
 

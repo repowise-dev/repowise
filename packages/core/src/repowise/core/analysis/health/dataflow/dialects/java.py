@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BaseDefUseDialect, Occurrence, StatementDefUse
+from .base import NO_RECEIVER, BaseDefUseDialect, Occurrence, Receiver, StatementDefUse
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -54,6 +54,7 @@ _SCOPE_BOUNDARIES = frozenset({"lambda_expression", "class_body"})
 class JavaDefUseDialect(BaseDefUseDialect):
     language = "java"
     member_access_kinds = frozenset({"field_access"})
+    receiver_write_kinds = _ASSIGN_KINDS | _UPDATE_KINDS
     keyword_kinds = frozenset()  # Java has no keyword arguments.
 
     def _is_scope_boundary(self, node: Node) -> bool:
@@ -100,6 +101,14 @@ class JavaDefUseDialect(BaseDefUseDialect):
             if name_node is not None:
                 out.append(self._occ(name_node))
         return tuple(out)
+
+    def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
+        """``this`` for an instance method or constructor, where a bare name
+        can also be a field; a ``static`` method has none."""
+        modifiers = next((c for c in fn_node.named_children if c.type == "modifiers"), None)
+        if modifiers is not None and any(c.type == "static" for c in modifiers.children):
+            return NO_RECEIVER
+        return self._receiver(lmap.self_identifiers, implicit=True)
 
     def _binder_identifier(self, node: Node) -> Node | None:
         named = node.child_by_field_name("name")

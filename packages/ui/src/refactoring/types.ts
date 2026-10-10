@@ -161,10 +161,20 @@ export interface ExtractMethodPlan {
   /** For an awaiting span: false when the enclosing function is not async, so
    *  the step is a judgment call. Null when the plan does not say. */
   async_host: boolean | null;
+  /** The helper is a method sharing the span's receiver, or a plain function.
+   *  Null when the language cannot tell or the plan predates the field. */
+  kind: "method" | "function" | null;
+  /** Receiver fields the span assigns. Null when not all are known. */
+  mutates: string[] | null;
+  /** Why the helper cannot share the receiver as it is (a judgment call). */
+  receiver_hazard: "receiver_unbound" | "receiver_copy_written" | null;
 }
+
+const RECEIVER_HAZARDS = ["receiver_unbound", "receiver_copy_written"] as const;
 
 export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
   const p = (plan.plan ?? {}) as Record<string, unknown>;
+  const sym = (p.new_symbol ?? {}) as Record<string, unknown>;
   const rawSpan = p.span as Record<string, unknown> | undefined;
   const span =
     rawSpan && typeof rawSpan === "object"
@@ -177,6 +187,9 @@ export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
     suggested_name: typeof p.suggested_name === "string" ? p.suggested_name : null,
     needs_async: p.needs_async === true,
     async_host: typeof p.async_host === "boolean" ? p.async_host : null,
+    kind: sym.kind === "method" || sym.kind === "function" ? sym.kind : null,
+    mutates: Array.isArray(sym.mutates) ? (sym.mutates as string[]) : null,
+    receiver_hazard: RECEIVER_HAZARDS.find((h) => h === p.receiver_hazard) ?? null,
   };
 }
 
