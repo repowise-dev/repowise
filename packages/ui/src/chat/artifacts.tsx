@@ -631,11 +631,11 @@ export function SearchResultsRenderer({
       <SectionTitle icon={Search}>{data.query}</SectionTitle>
       {data.results.map((r, i) => (
         <div
-          key={`${r.page_id ?? r.title}:${i}`}
+          key={`${r.page_id ?? r.symbol_id ?? r.path ?? r.title}:${i}`}
           className="rounded-lg border border-[var(--color-border-default)] p-3"
         >
           <div className="text-xs font-medium text-[var(--color-text-primary)]">
-            {r.title}
+            {r.title ?? r.symbol_id ?? r.path}
           </div>
           <div className="text-[10px] text-[var(--color-text-tertiary)] mt-0.5">
             {getPageTypeLabel(r.page_type)}

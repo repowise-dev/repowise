@@ -54,24 +54,30 @@ export function extractSources(
     if (tc.name === "search_codebase") {
       const results = (result.results as Array<Record<string, unknown>>) ?? [];
       for (const r of results) {
-        // `page_id` is `${page_type}:${target_path}`, and the tool now omits it
-        // wherever those two rebuild it. Derive rather than skip: the previous
-        // `const pageId = r.page_id` dropped the whole row — and its citation —
-        // for any result without one. Same fallback the get_context branch uses.
-        // The tool also drops `target_path` where it equals `path`, so fall back
-        // to `path`, the same way the server builds the id it compares against.
+        // `page_id` is `${page_type}:${symbol_id ?? path}`, and the tool omits
+        // it (and a structural `title`) wherever those rebuild it. Derive rather
+        // than skip, or the row and its citation would vanish. A page's
+        // `target_path` is also dropped where it equals `path`, so fall back to
+        // `path`, the same way the server builds the id it compares against.
         const pageType = r.page_type as string | undefined;
+        const symbolId = r.symbol_id as string | undefined;
         const targetPath =
           (r.target_path as string | undefined) || (r.path as string | undefined);
+        const idTarget =
+          pageType === "symbol_spotlight" && symbolId ? symbolId : targetPath;
         const pageId =
           (r.page_id as string | undefined) ??
-          (pageType && targetPath ? `${pageType}:${targetPath}` : "");
+          (pageType && idTarget ? `${pageType}:${idTarget}` : "");
         if (!pageId || seen.has(pageId)) continue;
         seen.add(pageId);
         sources.push({
           id: `${tc.id}:${pageId}`,
           pageId,
-          title: (r.title as string) ?? pageId,
+          title:
+            (r.title as string | undefined) ??
+            symbolId ??
+            targetPath?.split("/").pop() ??
+            pageId,
           pageType: (r.page_type as string) ?? "file_page",
           targetPath: targetPath ?? "",
           confidence: r.confidence_score as number | undefined,

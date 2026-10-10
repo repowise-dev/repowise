@@ -160,6 +160,42 @@ describe("extractSources", () => {
     expect(sources[0]?.targetPath).toBe("src/auth.py");
   });
 
+  it("cites a slimmed file row that has only page_type and path", () => {
+    // No page_id, no target_path and no structural title: the file name stands in.
+    const sources = extractSources(
+      [searchCall([{ page_type: "file_page", path: "src/auth.py" }])],
+      "repo1",
+    );
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.pageId).toBe("file_page:src/auth.py");
+    expect(sources[0]?.title).toBe("auth.py");
+  });
+
+  it("rebuilds a symbol page's id from symbol_id, not its file", () => {
+    const sources = extractSources(
+      [
+        searchCall([
+          {
+            page_type: "symbol_spotlight",
+            symbol_id: "src/auth.py::login",
+            path: "src/auth.py",
+          },
+          { page_type: "file_page", path: "src/auth.py" },
+        ]),
+      ],
+      "repo1",
+    );
+
+    // The symbol page and its file page are two distinct citations.
+    expect(sources.map((s) => s.pageId)).toEqual([
+      "symbol_spotlight:src/auth.py::login",
+      "file_page:src/auth.py",
+    ]);
+    expect(sources[0]?.title).toBe("src/auth.py::login");
+    expect(sources[0]?.targetPath).toBe("src/auth.py");
+  });
+
   it("cites files from get_why health stale_decisions", () => {
     const sources = extractSources(
       [
