@@ -185,7 +185,7 @@ def _find_extractions_reference(analysis, lmap):
     body_nloc = _stmts_nloc(body_container.named_children, lines)
     def_lines, use_lines = _var_lines(analysis.def_use)
     declared_first = _declared_before_read(analysis.def_use)
-    reads = _reads_observing(analysis)
+    reads = _reads_observing(analysis, def_lines)
     decision_kinds = (
         lmap.branch_kinds
         | lmap.loop_kinds
@@ -1187,7 +1187,7 @@ def _span_in_out(src: str, s: int, e: int):
     fn = _first(src)
     def_lines, use_lines = slicer._var_lines(fn.def_use)
     declared_first = slicer._declared_before_read(fn.def_use)
-    reads = slicer._reads_observing(fn)
+    reads = slicer._reads_observing(fn, def_lines)
     return slicer._infer_in_out(def_lines, use_lines, s, e, declared_first, reads=reads)
 
 

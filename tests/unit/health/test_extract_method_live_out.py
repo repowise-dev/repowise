@@ -781,6 +781,25 @@ class M {
 """,
     ),
     (
+        # ``finally`` runs even when ``g`` raises before the body's write.
+        "python",
+        "py",
+        """
+def f(a, b):
+    x = None  # W
+    if a:
+        log(a)
+    log(b)
+    log(a)
+    log(b)
+    try:
+        x = g(a)
+    finally:
+        log(x)  # R
+    return x
+""",
+    ),
+    (
         # The write sits deep in the ``try`` body; the handler reads it.
         "python",
         "py",
@@ -839,6 +858,7 @@ function f(a: number[], b: number): number {
         "py-try",
         "ts-try",
         "java-try",
+        "py-try-finally",
         "py-try-inner",
         "ts-try-inner",
     ],
@@ -872,5 +892,28 @@ def f(a, b, c):
 """
     )
     leaking, returning = _leaks("python", "py", "x", src)
+    assert leaking == []
+    assert returning
+
+
+def test_closure_read_no_statement_covers_keeps_the_line_rule():
+    """A closure read the CFG places nowhere still counts, by the nearest def
+    above it: dropping it could only drop a return."""
+    src = textwrap.dedent(
+        """
+def f(a, b, c):
+    x = 0
+    x = b + 1  # W
+    if b > c:
+        log(b)
+    log(c)
+    log(a)
+    def run():
+        return x  # R
+    return run
+"""
+    )
+    with mock.patch.object(slicer, "_statements_by_line", lambda cfg: {}):
+        leaking, returning = _leaks("python", "py", "x", src)
     assert leaking == []
     assert returning

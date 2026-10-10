@@ -172,7 +172,8 @@ def find_extractions(
 
     def_lines, use_lines = _var_lines(analysis.def_use)
     declared_first = _declared_before_read(analysis.def_use)
-    reads = _reads_observing(analysis)
+    # Built on the first span that clears the cheap gates.
+    reads: dict[str, list[tuple[int, frozenset[int]]]] | None = None
     hoisted = _hoisted_bindings(def_lines, use_lines)
     decl_lines = _declaration_lines(analysis.def_use)
     shared = _closure_state(analysis.def_use, def_lines, use_lines)
@@ -223,6 +224,8 @@ def find_extractions(
                 span = stmts[i : j + 1]
                 s = span[0].start_point[0] + 1
                 e = span[-1].end_point[0] + 1
+                if reads is None:
+                    reads = _reads_observing(analysis, def_lines)
                 params, returns = _infer_in_out(
                     def_lines, use_lines, s, e, declared_first, reads=reads
                 )
@@ -586,13 +589,18 @@ def _declared_before_read(def_use: FunctionDefUse) -> dict[str, frozenset[int]]:
     return {var: frozenset(lines) for var, lines in declared.items()}
 
 
-def _reads_observing(analysis: FunctionAnalysis) -> dict[str, list[tuple[int, frozenset[int]]]]:
+def _reads_observing(
+    analysis: FunctionAnalysis, def_lines: dict[str, list[int]]
+) -> dict[str, list[tuple[int, frozenset[int]]]]:
     """Per variable, each read's line with the def lines it may observe.
 
     Reads take reaching definitions over the CFG, so a later write on a path
     that need not run (an ``else`` arm, a ``try`` body that may raise first)
     does not hide the span's value from the read. A closure's read observes
-    what reaches the statement that creates the closure.
+    what reaches the statement that creates the closure, or, where no recorded
+    statement covers it, the nearest def above it: a read is never dropped,
+    since a dropped read can only drop a return. Only names in *def_lines*
+    count for closures, as in :func:`_var_lines`.
     """
     def_use, reaching = analysis.def_use, analysis.reaching
     defs = reaching.definitions
@@ -600,24 +608,37 @@ def _reads_observing(analysis: FunctionAnalysis) -> dict[str, list[tuple[int, fr
     for use, seen in observed_definitions(def_use, reaching):
         if not use.echo:
             reads[use.name].append((use.line, frozenset(defs[i].line for i in seen)))
+    statements: dict[int, tuple[int, int]] | None = None
     for u in def_use.captured.reads:
-        at = _statement_at(analysis.cfg, u.line)
+        dl = def_lines.get(u.name)
+        if not dl:
+            continue
+        if statements is None:
+            statements = _statements_by_line(analysis.cfg)
+        at = statements.get(u.line)
         if at is not None:
-            seen = definitions_at(def_use, reaching, at[0], u.name, at[1])
-            reads[u.name].append((u.line, frozenset(defs[i].line for i in seen)))
+            observed = frozenset(
+                defs[i].line for i in definitions_at(def_use, reaching, at[0], u.name, at[1])
+            )
+        else:
+            k = bisect_left(dl, u.line)
+            observed = frozenset(dl[k - 1 : k])
+        reads[u.name].append((u.line, observed))
     return reads
 
 
-def _statement_at(cfg: CFG, line: int) -> tuple[int, int] | None:
-    """(block id, start line) of the innermost recorded statement covering *line*."""
-    best: tuple[int, int, int] | None = None
+def _statements_by_line(cfg: CFG) -> dict[int, tuple[int, int]]:
+    """Per line, (block id, start line) of the innermost recorded statement
+    covering it."""
+    best: dict[int, tuple[int, int, int]] = {}
     for block in cfg.blocks:
         for st in block.statements:
-            if st.start_line <= line <= st.end_line:
-                width = st.end_line - st.start_line
-                if best is None or width < best[0]:
-                    best = (width, block.id, st.start_line)
-    return None if best is None else (best[1], best[2])
+            width = st.end_line - st.start_line
+            for line in range(st.start_line, st.end_line + 1):
+                held = best.get(line)
+                if held is None or width < held[0]:
+                    best[line] = (width, block.id, st.start_line)
+    return {line: (bid, start) for line, (_w, bid, start) in best.items()}
 
 
 def _infer_in_out(
@@ -625,7 +646,7 @@ def _infer_in_out(
     use_lines: dict[str, list[int]],
     s: int,
     e: int,
-    declared_first: dict[str, frozenset[int]] | None = None,
+    declared_first: dict[str, frozenset[int]],
     *,
     reads: dict[str, list[tuple[int, frozenset[int]]]],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -637,7 +658,9 @@ def _infer_in_out(
     only where *declared_first* (:func:`_declared_before_read`) says the line
     declares the name first. OUT: a variable written in the span with a read
     after it that may observe one of those writes (*reads*,
-    :func:`_reads_observing`).
+    :func:`_reads_observing`). A read before the span that a write in it
+    reaches around a loop is not an OUT: :func:`_loop_carry_free` refuses
+    those spans.
     """
     params: list[str] = []
     returns: list[str] = []
@@ -649,7 +672,7 @@ def _infer_in_out(
 
         if in_uses and any(ln < s for ln in dl):
             first_use = in_uses[0]
-            declared = first_use in (declared_first or {}).get(var, ())
+            declared = first_use in declared_first.get(var, ())
             if not declared and not any(ln < first_use for ln in in_defs):
                 params.append(var)
 

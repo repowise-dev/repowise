@@ -2106,7 +2106,7 @@ def _rust_in_out(src: str, s: int, e: int):
         s,
         e,
         slicing._declared_before_read(def_use),
-        reads=slicing._reads_observing(fn),
+        reads=slicing._reads_observing(fn, def_lines),
     )
 
 
