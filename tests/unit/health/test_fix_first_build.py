@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from repowise.core.analysis.health.fix_first import FIX_EXCLUSIONS, build_fix_first
 from tests.unit.health.fix_first_rows import (
     FINDINGS,
@@ -408,3 +410,34 @@ def test_a_finding_borrowing_a_staged_span_says_it_is_staged() -> None:
         "Stage 1 of 3: Extract lines 20-35 of run into sum_rows(rows, limit) -> total "
         "(the plan splits run into 3 helpers, CCN 44 -> 9)"
     )
+
+
+@pytest.mark.parametrize(
+    ("stages", "orchestrator"),
+    [
+        ("not a list", {"ccn_before": 44, "ccn_after": 9}),
+        ([None, 3, "x"], {"ccn_before": 44, "ccn_after": 9}),
+        ([{"span": {"start": 20, "end": 35}}], {"ccn_before": 44, "ccn_after": 9}),
+        ([{"span": {"start": 20}}, {"span": None}], {"ccn_before": 44}),
+        ([{"span": {"start": 20, "end": 35}}, {"span": {"start": 36, "end": 40}}], "bad"),
+        ([{"span": {"start": 20, "end": 35}}, {"span": {"start": 36, "end": 40}}], {"ccn_after": 9}),
+    ],
+)
+def test_malformed_stages_never_crash_or_say_one_helper(stages, orchestrator) -> None:
+    plans = copy.deepcopy(PLANS)
+    plans[0]["plan"].update(stages=stages, orchestrator=orchestrator)
+    core = next(i for i in _build(plans=plans).items if i.kind == "refactor")
+    step = core.action.steps[0].text
+    assert "into 1 helpers" not in step and "into 1 helpers" not in core.title
+    if step.startswith("Stage 1 of 2"):
+        assert step.endswith("(the plan splits run into 2 helpers)")
+    else:
+        assert step == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
+
+
+def test_an_unstaged_plan_reads_as_before() -> None:
+    core = next(i for i in _build().items if i.kind == "refactor")
+    assert core.title == (
+        "Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 into sum_rows"
+    )
+    assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"

@@ -637,8 +637,19 @@ def _refactor_step(
 
 
 def _stage_count(body: Mapping[str, Any]) -> int:
-    """How many helpers a staged Extract Method plan splits its function into; 0 unstaged."""
-    return sum(isinstance(stage, dict) for stage in body.get("stages") or ())
+    """How many helpers a staged Extract Method plan splits its function into;
+    0 when unstaged. Counts stages with a span, as the plan detail page does,
+    and fewer than two is no split."""
+    stages = body.get("stages")
+    if not isinstance(stages, (list, tuple)):
+        return 0
+    count = sum(_has_span(stage) for stage in stages)
+    return count if count >= 2 else 0
+
+
+def _has_span(stage: Any) -> bool:
+    span = stage.get("span") if isinstance(stage, dict) else None
+    return isinstance(span, dict) and bool(span.get("start") and span.get("end"))
 
 
 def _stage_one(line_text: str, sym: str, body: Mapping[str, Any]) -> str:
