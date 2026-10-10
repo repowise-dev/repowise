@@ -27,6 +27,11 @@ is a separate, on-request step that does use an LLM
 | **Split File** | The files an oversized module splits into, which symbols go where, and the import edits in each dependent. |
 | **Performance Fix** | One shared change for a performance problem, with the affected call sites and caller-to-sink paths. |
 
+When one copy of a duplicated block is already a whole function the other copies
+could call, the Extract Helper plan says so instead of asking for a new helper:
+each other site gets the call that replaces it, or is marked as a copy to delete
+and import. Plan detail carries the call text; lists stay the same size.
+
 Each detector reports nothing when a signal it needs is missing, so a gap means
 "no suggestion", never a guessed one. Output is deterministic: the same commit
 gives the same plans and the same ids.

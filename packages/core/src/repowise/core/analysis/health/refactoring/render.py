@@ -377,6 +377,9 @@ _RENDERERS = {
 
 #: What the renderer adds to a stored plan, served on plan detail only.
 _DETAIL_SYMBOL_KEYS = ("params", "returns", "signature_text", "notes")
+#: Plan keys carrying rendered call texts (Extract Method's call, Extract
+#: Helper's calls to an existing function), served on plan detail only.
+_DETAIL_PLAN_KEYS = ("call_site", "reuse")
 
 
 def list_plan(plan: dict) -> dict:
@@ -384,11 +387,11 @@ def list_plan(plan: dict) -> dict:
     list serves every plan, and an agent reads the texts on one plan's
     detail."""
     symbol = plan.get("new_symbol")
-    if "call_site" not in plan and not (
+    if not any(k in plan for k in _DETAIL_PLAN_KEYS) and not (
         isinstance(symbol, dict) and any(k in symbol for k in _DETAIL_SYMBOL_KEYS)
     ):
         return plan
-    out = {k: v for k, v in plan.items() if k != "call_site"}
+    out = {k: v for k, v in plan.items() if k not in _DETAIL_PLAN_KEYS}
     if isinstance(symbol, dict):
         out["new_symbol"] = {k: v for k, v in symbol.items() if k not in _DETAIL_SYMBOL_KEYS}
     return out

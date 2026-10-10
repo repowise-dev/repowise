@@ -30,6 +30,7 @@ RecipeAction = Literal[
     "keep",
     "reexport",
     "edit",
+    "delete",
 ]
 RECIPE_ACTIONS: tuple[str, ...] = get_args(RecipeAction)
 #: What a precondition is: a test run or a test to add first, a plan risk, a plan
@@ -187,7 +188,41 @@ def _extract_notes(
     return notes
 
 
+def _reused(d: Mapping[str, Any]) -> str | None:
+    """The existing function an Extract Helper plan calls, when it reuses one."""
+    reuse = _dict(_dict(d.get("plan")).get("reuse"))
+    return (_short(reuse.get("existing_symbol")) or None) if reuse else None
+
+
+def _reuse_steps(reuse: Mapping[str, Any]) -> list[Step]:
+    """One step per site that calls the existing function, or deletes a copy of it."""
+    name = _short(reuse.get("existing_symbol"))
+    home = reuse.get("file")
+    link = {k: reuse.get(k) for k in ("existing_symbol", "file", "reason")}
+    steps = []
+    for site in (_dict(s) for s in _list(reuse.get("sites"))):
+        span = _dict(site.get("span"))
+        where = _span(span.get("start"), span.get("end"))
+        lines = f"lines {where['start']}-{where['end']}" if where else "these lines"
+        if site.get("action") == "delete":
+            text = (
+                f"Delete {lines}, a copy of `{name}`, and import `{name}` from `{home}` in its "
+                "place; re-export it if other files import it from here."
+            )
+            steps.append(_step("delete", site.get("file"), where, text, reuse=link))
+            continue
+        imported = "" if site.get("file") == home else f" (import it from `{home}`)"
+        text = f"Replace {lines} with a call to the existing `{name}`{imported}."
+        call = {"replace_span": where, "new_text": site["new_text"]} if site.get("new_text") else None
+        extra = {"call_site": call} if call and where else {}
+        steps.append(_step("replace_with_call", site.get("file"), where, text, reuse=link, **extra))
+    return steps
+
+
 def _extract_helper(d: Mapping[str, Any], plan: Mapping[str, Any]) -> list[Step]:
+    reuse = _dict(plan.get("reuse"))
+    if reuse:
+        return _reuse_steps(reuse)
     occurrences = [_dict(o) for o in _list(plan.get("occurrences"))]
     site = _dict(plan.get("suggested_site"))
     where = site.get("directory") or site.get("module")
@@ -379,6 +414,8 @@ def _summary(d: Mapping[str, Any], steps: list[Step]) -> str:
         span, name = steps[0]["span"], steps[0]["new_symbol"]["name"]
         host = _short(d.get("target_symbol"))
         return f"Extract lines {span['start']}-{span['end']} of `{host}` into `{name}`."
+    if kind == "extract_helper" and (name := _reused(d)):
+        return f"Call the existing `{name}` at {len(steps)} site{_s(len(steps))} that repeat it."
     if kind == "extract_helper":
         return f"Replace the block duplicated at {len(steps) - 1} sites with one shared helper."
     if kind == "extract_class":
@@ -505,6 +542,8 @@ def _does_not(d: Mapping[str, Any], steps: list[Step]) -> list[dict[str, str | N
             {"constraint": f"touch anything outside lines {lines} and the call that replaces them",
              "reason": None}
         )
+    elif kind == "extract_helper" and (name := _reused(d)):
+        out.append({"constraint": f"change `{name}` to fit a site", "reason": "its callers rely on it"})
     elif kind in _DOES_NOT:
         constraint, reason = _DOES_NOT[kind]
         out.append({"constraint": constraint, "reason": reason})

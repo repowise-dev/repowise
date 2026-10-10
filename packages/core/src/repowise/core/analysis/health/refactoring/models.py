@@ -36,7 +36,10 @@ For Extract Helper:
   carry a graph community label under ``module``, which named a directory the
   occurrences did not live in on every measured row. Plans stored before that
   removal still carry the key; read ``directory``, which was correct on those
-  rows too.
+  rows too. When one site already is a function the others can call, the plan
+  adds ``"reuse": {"existing_symbol", "file", "span", "reason", "sites": [{"file",
+  "span", "action": "replace_with_call" | "delete", "new_text", "replaces"}]}``
+  (``reuse.py``); plan detail serves it, list rows drop it.
 - ``evidence`` = ``{"occurrence_count": int, "duplicated_lines": int,
   "token_count": int, "co_change_count": int, "is_intra_file": bool}`` — the
   size + activity signals that justify extracting a helper.
@@ -103,6 +106,7 @@ For Split File:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -200,6 +204,9 @@ class RefactoringContext:
     # every other detector ignores it. ``None`` when the file was not read (no
     # clones) or the read failed; the detector then omits the snippet.
     source_lines: list[str] | None = None
+    # A clone partner's lines by repo path (None: unreadable), for Extract
+    # Helper's reuse check. ``None``: not provided, no plan reuses a function.
+    read_lines: Callable[[str], list[str] | None] | None = None
 
 
 @dataclass
