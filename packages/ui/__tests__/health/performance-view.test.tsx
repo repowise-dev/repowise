@@ -19,7 +19,6 @@ const openFirstRow = async () => {
   return first!;
 };
 
-
 /** Open a collapsed drawer section by its toggle's name. */
 function expand(panel: HTMLElement, name: string | RegExp) {
   fireEvent.click(within(panel).getByRole("button", { name }));
@@ -675,7 +674,10 @@ describe("PerformanceView drawer plan steps and validation", () => {
     );
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
-    expand(panel, /^Tests/);
+    // No guarding test is the case a reader needs, so the section opens on it.
+    const tests = within(panel).getByRole("button", { name: /^Tests/ });
+    expect(tests.getAttribute("aria-expanded")).toBe("true");
+    expect(tests.textContent).toContain("none guarding");
     expect(within(panel).getByText("Validation gap")).toBeTruthy();
     expect(within(panel).getByText(/Treat this as explicit validation work/)).toBeTruthy();
   });
@@ -910,7 +912,7 @@ describe("PerformanceView drawer, the fix itself", () => {
   it("widens the excerpt up to the loop header and names the sink once", async () => {
     const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
     lines[5] = "    for row in rows:";
-    const readSource = vi.fn(async () => lines.join(String.fromCharCode(10)));
+    const readSource = vi.fn(async () => lines.join("\n"));
     render(<PerformanceView adapter={adapter({ readSource })} />);
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
@@ -924,7 +926,7 @@ describe("PerformanceView drawer, the fix itself", () => {
 
   it("says so when no loop header sits within reach of the call", async () => {
     const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
-    const readSource = vi.fn(async () => lines.join(String.fromCharCode(10)));
+    const readSource = vi.fn(async () => lines.join("\n"));
     render(<PerformanceView adapter={adapter({ readSource })} />);
     await openFirstRow();
     const panel = await screen.findByRole("dialog");

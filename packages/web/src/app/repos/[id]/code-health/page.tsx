@@ -544,7 +544,13 @@ export default function CodeHealthPage() {
     >
       {/* Replaced each release that moves health scores, and keyed with that
           release's version so a reader who dismissed an earlier one sees it. */}
-      <ReleaseNotice id="health-scoring" version="0.55.0" detail={t("coChangeNoticeBody")}>
+      <ReleaseNotice
+        id="health-scoring"
+        version="0.55.0"
+        detail={t("coChangeNoticeBody")}
+        detailLabel={t("coChangeNoticeMore")}
+        hideLabel={t("coChangeNoticeLess")}
+      >
         {t("coChangeNoticeTitle")}
       </ReleaseNotice>
 

@@ -14,20 +14,31 @@ import { PageLede } from "../shared/page-lede";
 import { FilterChip } from "../health/code-health-controls";
 import { formatNumber } from "../lib/format";
 import { STRUCTURAL_TYPES } from "./types";
-import type { RefactoringOpportunityRollup } from "@repowise-dev/types/refactoring";
+import type {
+  RefactoringOpportunityPage,
+  RefactoringOpportunityRollup,
+} from "@repowise-dev/types/refactoring";
+
+/** The page's facet counts, by facet then value. */
+export type RefactoringFacets = RefactoringOpportunityPage["facets"];
 
 export interface RefactoringLedeProps {
   /** The repository rollup. Absent or unavailable and the lede does not render. */
   summary?: RefactoringOpportunityRollup | null | undefined;
   /** The page's facet counts. Absent and the chips do not render. */
-  facets?: Record<string, Record<string, number>> | null | undefined;
+  facets?: RefactoringFacets | null | undefined;
   /** Whether the list is narrowed to small effort, which the Quick wins chip toggles. */
   quickWinsActive?: boolean;
-  onQuickWins?: (() => void) | undefined;
-  /** Jump to the structural set. */
-  onStructural?: (() => void) | undefined;
+  onToggleQuickWins?: (() => void) | undefined;
+  /** Jump to the structural set. A link, not a filter: it changes the tab. */
+  onSeeStructural?: (() => void) | undefined;
   /** Rendered under the prose. */
   action?: ReactNode;
+}
+
+/** Counts summed over the structural lead types. */
+function sumStructural(byType: Record<string, number> | undefined): number {
+  return (STRUCTURAL_TYPES as readonly string[]).reduce((n, type) => n + (byType?.[type] ?? 0), 0);
 }
 
 function plural(n: number, one: string, many: string): string {
@@ -38,8 +49,8 @@ export function RefactoringLede({
   summary,
   facets,
   quickWinsActive = false,
-  onQuickWins,
-  onStructural,
+  onToggleQuickWins,
+  onSeeStructural,
   action,
 }: RefactoringLedeProps) {
   // No analysis is a different state from no work, and the board says which.
@@ -51,20 +62,13 @@ export function RefactoringLede({
   const mechanical = summary.mechanical_steps_total;
   const judgment = summary.judgment_steps_total;
 
-  const byLead = summary.by_lead_type ?? {};
-  const structural = (STRUCTURAL_TYPES as readonly string[]).reduce(
-    (n, type) => n + (byLead[type] ?? 0),
-    0,
-  );
+  const structural = sumStructural(summary.by_lead_type);
   const local = Math.max(0, total - structural);
 
   const quickWins = facets?.effort?.S ?? 0;
-  const structuralShown = (STRUCTURAL_TYPES as readonly string[]).reduce(
-    (n, type) => n + (facets?.lead_type?.[type] ?? 0),
-    0,
-  );
-  const showQuickWins = onQuickWins && (quickWins > 0 || quickWinsActive);
-  const showStructural = onStructural && structuralShown > 0;
+  const structuralShown = sumStructural(facets?.lead_type);
+  const showQuickWins = onToggleQuickWins && (quickWins > 0 || quickWinsActive);
+  const showStructural = onSeeStructural && structuralShown > 0;
 
   return (
     <PageLede
@@ -92,18 +96,27 @@ export function RefactoringLede({
         </p>
       ) : null}
       {showQuickWins || showStructural ? (
-        <div className="flex flex-wrap gap-2 pt-1" role="group" aria-label="Filter the list">
+        <div
+          className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1"
+          role="group"
+          aria-label="Filter the list"
+        >
           {showQuickWins ? (
-            <FilterChip active={quickWinsActive} onClick={onQuickWins}>
+            <FilterChip active={quickWinsActive} onClick={onToggleQuickWins}>
               Quick wins{" "}
               <span className="font-mono tabular-nums">{formatNumber(quickWins)}</span>
             </FilterChip>
           ) : null}
           {showStructural ? (
-            <FilterChip active={false} onClick={onStructural}>
-              Structural{" "}
-              <span className="font-mono tabular-nums">{formatNumber(structuralShown)}</span>
-            </FilterChip>
+            <button
+              type="button"
+              onClick={onSeeStructural}
+              className="rounded text-xs text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            >
+              See the{" "}
+              <span className="font-mono tabular-nums">{formatNumber(structuralShown)}</span>{" "}
+              structural
+            </button>
           ) : null}
         </div>
       ) : null}

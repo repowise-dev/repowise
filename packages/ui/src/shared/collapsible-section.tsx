@@ -25,12 +25,14 @@ export function CollapsibleSection({
   className,
 }: CollapsibleSectionProps) {
   const [open, setOpen] = React.useState(defaultOpen);
+  const bodyId = React.useId();
   return (
     <section className={cn("space-y-3", className)}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
+        aria-controls={bodyId}
         className="flex w-full items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-sm font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
       >
         <span aria-hidden="true" className="text-[var(--color-text-tertiary)]">
@@ -43,7 +45,11 @@ export function CollapsibleSection({
           </span>
         )}
       </button>
-      {open ? <div className="space-y-3">{children}</div> : null}
+      {open ? (
+        <div id={bodyId} className="space-y-3">
+          {children}
+        </div>
+      ) : null}
     </section>
   );
 }

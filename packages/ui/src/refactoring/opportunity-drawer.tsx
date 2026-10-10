@@ -37,7 +37,7 @@ import { CodeBlock } from "./plan-detail";
 import { SourceExcerpt } from "./source-excerpt";
 import { RelatedWork, type RelatedWorkSlotProps } from "../health/related-work";
 import { GenerateCodePanel } from "./generate-code-panel";
-import { extractHelperDetail, extractMethodPlan, extractMethodSignature } from "./types";
+import { extractHelperDetail, extractMethodSignature, stepExcerptRange } from "./types";
 import {
   ORDERING_NOTE,
   STATUS_LABEL,
@@ -205,7 +205,8 @@ function DrawerBody({
   // drawer, triage included, still describes a real opportunity.
   const stepsUnavailable = detail.details_status === "unavailable";
   const anyRelocated = detail.steps.some(isRelocated);
-  const guardingTests = detail.validation_profiles.reduce((n, profile) => n + profile.total, 0);
+  const guarding = guardingTestCount(detail.validation_profiles);
+  const guardingTests = guarding.count;
 
   const [pending, setPending] = React.useState<OpportunityStatus | null>(null);
   const [failed, setFailed] = React.useState(false);
@@ -270,7 +271,7 @@ function DrawerBody({
       <p className="border-b border-[var(--color-border-default)] px-5 py-2 text-[12px] text-[var(--color-text-secondary)]">
         {blastRadiusLine(detail)}{" "}
         {guardingTests > 0
-          ? `${formatNumber(guardingTests)} guarding test${guardingTests === 1 ? "" : "s"} reach it.`
+          ? `${guarding.atLeast ? "At least " : ""}${formatNumber(guardingTests)} guarding test${guardingTests === 1 ? "" : "s"} reach it.`
           : "No guarding tests found."}
       </p>
 
@@ -369,7 +370,8 @@ function DrawerBody({
             says whether tests guard the file, which is what a person decides on. */}
         <CollapsibleSection
           title="Verify"
-          hint={guardingTests > 0 ? `${formatNumber(guardingTests)} tests` : "none found"}
+          hint={guardingTests > 0 ? `${formatNumber(guardingTests)} tests` : "none guarding"}
+          defaultOpen={guardingTests === 0}
         >
           {detail.validation_profiles.length > 0 ? (
             <div className="space-y-4">
@@ -627,11 +629,10 @@ function StepCode({
 }) {
   const [open, setOpen] = React.useState(false);
   const stored = plan ? extractHelperDetail(plan) : null;
-  const extraction = plan?.refactoring_type === "extract_method" ? extractMethodPlan(plan) : null;
+  const range = stepExcerptRange(step, plan);
+  const extraction = range?.extraction ?? null;
   const slice = extraction?.span ?? null;
-  const start = slice?.start ?? step.line_start;
-  const end = slice?.end ?? step.line_end ?? step.line_start;
-  const canRead = Boolean(readSource && start);
+  const canRead = Boolean(readSource && range);
   if (!stored?.snippet && !canRead && !plan) return null;
   return (
     <div className="mt-2">
@@ -658,8 +659,8 @@ function StepCode({
           ) : canRead ? (
             <SourceExcerpt
               path={step.file_path}
-              start={start!}
-              end={end!}
+              start={range!.start}
+              end={range!.end}
               readSource={readSource!}
             />
           ) : null}
@@ -674,6 +675,24 @@ function StepCode({
       ) : null}
     </div>
   );
+}
+
+/**
+ * Distinct guarding tests across an opportunity's validation profiles.
+ *
+ * Profiles are deduplicated by their whole content, so two steps with
+ * different validations get two profiles that can name the same tests:
+ * summing `total` would count those twice. A truncated profile lists only
+ * some of its tests, so the count is then a floor, never less than any one
+ * profile's total.
+ */
+export function guardingTestCount(
+  profiles: ReadonlyArray<{ total: number; tests: string[]; truncated?: boolean | undefined }>,
+): { count: number; atLeast: boolean } {
+  const distinct = new Set(profiles.flatMap((profile) => profile.tests)).size;
+  const largest = profiles.reduce((n, profile) => Math.max(n, profile.total), 0);
+  const atLeast = profiles.length > 1 && profiles.some((p) => p.truncated || p.tests.length < p.total);
+  return { count: Math.max(distinct, largest), atLeast };
 }
 
 /**

@@ -17,6 +17,9 @@ export interface ReleaseNoticeProps {
   children: React.ReactNode;
   /** The explanation, behind a "What changed" toggle on the same line. */
   detail?: React.ReactNode;
+  /** The toggle's words, for hosts that localize. */
+  detailLabel?: string;
+  hideLabel?: string;
   className?: string;
 }
 
@@ -34,7 +37,15 @@ export interface ReleaseNoticeProps {
  * showing rather than throwing, which is the right failure for something whose
  * purpose is to be read once.
  */
-export function ReleaseNotice({ id, version, children, detail, className }: ReleaseNoticeProps) {
+export function ReleaseNotice({
+  id,
+  version,
+  children,
+  detail,
+  detailLabel = "What changed",
+  hideLabel = "Hide",
+  className,
+}: ReleaseNoticeProps) {
   const storageKey = STORAGE_PREFIX + id + (version ? `:v${version}` : "");
   // Start dismissed so it does not flash in before the stored answer is read.
   const [dismissed, setDismissed] = React.useState(true);
@@ -66,8 +77,8 @@ export function ReleaseNotice({ id, version, children, detail, className }: Rele
           <summary className="cursor-pointer list-none rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
             {children}{" "}
             <span className="text-[var(--color-accent-primary)] underline-offset-2 hover:underline">
-              <span className="group-open/release:hidden">What changed</span>
-              <span className="hidden group-open/release:inline">Hide</span>
+              <span className="group-open/release:hidden">{detailLabel}</span>
+              <span className="hidden group-open/release:inline">{hideLabel}</span>
             </span>
           </summary>
           <div className="mt-1.5">{detail}</div>

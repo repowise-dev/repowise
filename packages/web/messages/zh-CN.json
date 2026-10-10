@@ -255,6 +255,8 @@
       "notIndexed": "尚未索引",
       "snapshots": "{count} 个快照",
       "coChangeNoticeTitle": "本次发布中健康分数发生了变化。",
+      "coChangeNoticeMore": "有哪些变化",
+      "coChangeNoticeLess": "收起",
       "coChangeNoticeBody": "共变耦合现在相对你的仓库来度量，并随提交历史衰减，而不是按日历时间衰减，因此大约每十个文件中就有一个会跨越档位。分数与此前发布所取的快照不可比。",
       "tabs": {
         "triage": "总览",

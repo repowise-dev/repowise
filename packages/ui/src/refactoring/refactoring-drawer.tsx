@@ -255,7 +255,7 @@ function DrawerBody({
                 Also affected
               </span>
             }
-            hint={blast.length.toLocaleString()}
+            hint={formatNumber(blast.length)}
           >
             <ul className="space-y-1">
               {blast.map((f) => {
@@ -283,7 +283,14 @@ function DrawerBody({
 
         <CollapsibleSection
           title="Validation"
-          hint={plan.validation ? `${plan.validation.total.toLocaleString()} tests` : undefined}
+          hint={
+            plan.validation
+              ? plan.validation.total > 0
+                ? `${formatNumber(plan.validation.total)} tests`
+                : "none guarding"
+              : undefined
+          }
+          defaultOpen={plan.validation?.total === 0}
         >
           <ValidationSummary
             validation={plan.validation}

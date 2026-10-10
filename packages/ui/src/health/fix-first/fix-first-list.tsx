@@ -3,8 +3,8 @@
 /**
  * Fix first: the ranked list of what to fix in this repository, as core built
  * it. The header states the scope exactly (shown of eligible); what each rule
- * excluded is one click away in a popover; the list is the payload's order. Shared by every host: the
- * host fetches, routes and writes, this renders.
+ * excluded is one click away in a popover; the list is the payload's order.
+ * Shared by every host: the host fetches, routes and writes, this renders.
  */
 
 import { useCallback, useState, type ElementType } from "react";
@@ -15,6 +15,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
 import { ApiError } from "../../shared/api-error";
 import { toFriendlyMessage } from "../../lib/errors";
 import { OverviewSection } from "../../overview/section";
+import { formatNumber } from "../../lib/format";
 import { AiPromptModal, fileChatContext } from "../ai-prompt-modal";
 import type { AiPromptFlavor } from "../ai-prompt-builder";
 import { FixFirstItem, type FixTriageStatus } from "./fix-first-item";
@@ -93,7 +94,7 @@ export function FixFirstList({
     excludedTotal > 0 ? (
       <Popover>
         <PopoverTrigger className="rounded text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
-          <span className="tabular-nums">{excludedTotal.toLocaleString()}</span> excluded
+          <span className="tabular-nums">{formatNumber(excludedTotal)}</span> excluded
         </PopoverTrigger>
         <PopoverContent align="start">
           <p className="mb-1.5 text-[var(--color-text-tertiary)]">Left out of Fix first, by rule:</p>

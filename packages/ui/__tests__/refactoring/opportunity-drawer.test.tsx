@@ -10,11 +10,13 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type {
   OpportunityStep,
+  RecommendationValidation,
   RefactoringOpportunityDetailResolved,
   RefactoringPlan,
 } from "@repowise-dev/types/refactoring";
 
 import { OpportunityDrawer } from "../../src/refactoring/opportunity-drawer";
+import { RefactoringDrawer } from "../../src/refactoring/refactoring-drawer";
 
 function detail(
   overrides: Partial<RefactoringOpportunityDetailResolved> = {},
@@ -132,12 +134,36 @@ describe("OpportunityDrawer reach, verification and code", () => {
     ).toBeTruthy();
   });
 
-  it("always shows Verify, with the explicit message when nothing guards the file", () => {
+  it("opens Verify with the explicit message when nothing guards the file", () => {
     renderDrawer(detail());
     const verify = screen.getByRole("button", { name: /Verify/ });
-    expect(verify.getAttribute("aria-expanded")).toBe("false");
-    fireEvent.click(verify);
+    expect(verify.getAttribute("aria-expanded")).toBe("true");
+    expect(verify.textContent).toContain("none guarding");
     expect(screen.getByText(/Write one that pins the current behaviour/)).toBeTruthy();
+  });
+
+  it("keeps Verify collapsed when tests guard the file, counting each test once", () => {
+    const profile: Omit<RecommendationValidation, "total" | "tests"> = {
+      basis: "measured",
+      via: "call-graph",
+      truncated: false,
+      affected_files: [],
+      affected_symbols: [],
+      commands: [],
+      targets: [],
+    };
+    renderDrawer(
+      detail({
+        validation_profiles: [
+          { ...profile, id: "a", total: 2, tests: ["tests/test_a.py", "tests/test_b.py"] },
+          { ...profile, id: "b", total: 2, tests: ["tests/test_b.py", "tests/test_c.py"] },
+        ],
+      }),
+    );
+    const verify = screen.getByRole("button", { name: /Verify/ });
+    expect(verify.getAttribute("aria-expanded")).toBe("false");
+    expect(verify.textContent).toContain("3 tests");
+    expect(screen.getByText(/3 guarding tests reach it\./)).toBeTruthy();
   });
 
   it("keeps the agent id collapsed until asked for", () => {
@@ -148,7 +174,9 @@ describe("OpportunityDrawer reach, verification and code", () => {
   });
 
   it("reads the step's span from the file for an inline excerpt", async () => {
-    const readSource = vi.fn().mockResolvedValue(["a = 1", "b = 2", "c = 3", "d = 4", "e = 5"].join(String.fromCharCode(10)));
+    const readSource = vi
+      .fn()
+      .mockResolvedValue(["a = 1", "b = 2", "c = 3", "d = 4", "e = 5"].join("\n"));
     render(
       <OpportunityDrawer
         detail={detail({ steps: [STEP], steps_emitted: 1, plans: [PLAN] })}
@@ -167,7 +195,9 @@ describe("OpportunityDrawer reach, verification and code", () => {
   });
 
   it("shows an extraction's slice under the helper's signature, not the whole function", async () => {
-    const readSource = vi.fn().mockResolvedValue(["def f():", "  a = 1", "  b = 2", "  c = 3", "  return c"].join(String.fromCharCode(10)));
+    const readSource = vi
+      .fn()
+      .mockResolvedValue(["def f():", "  a = 1", "  b = 2", "  c = 3", "  return c"].join("\n"));
     const plan = {
       ...PLAN,
       line_start: 1,
@@ -204,5 +234,39 @@ describe("OpportunityDrawer reach, verification and code", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Show the code" }));
     expect(screen.getByRole("button", { name: /Generate code/ })).toBeTruthy();
+  });
+});
+
+describe("RefactoringDrawer validation", () => {
+  const validation = {
+    basis: "unknown",
+    via: null,
+    total: 0,
+    tests: [],
+    truncated: false,
+    affected_files: [],
+    affected_symbols: [],
+    commands: [],
+    targets: [],
+  } as const;
+
+  it("opens Validation when no test guards the plan", () => {
+    render(
+      <RefactoringDrawer
+        plan={{ ...PLAN, validation } as unknown as RefactoringPlan}
+        open
+        onOpenChange={() => {}}
+      />,
+    );
+    const toggle = screen.getByRole("button", { name: /Validation/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.textContent).toContain("none guarding");
+  });
+
+  it("keeps Validation collapsed, with no count, when the plan carries none", () => {
+    render(<RefactoringDrawer plan={PLAN} open onOpenChange={() => {}} />);
+    const toggle = screen.getByRole("button", { name: /Validation/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.textContent).not.toContain("guarding");
   });
 });

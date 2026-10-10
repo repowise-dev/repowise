@@ -15,6 +15,7 @@ import type { RecommendationValidation, RefactoringPlan } from "@repowise-dev/ty
 import { AdaptivePanel } from "../../shared/adaptive-panel";
 import { CollapsibleSection } from "../../shared/collapsible-section";
 import { InfoTip } from "../../shared/info-tip";
+import { formatNumber } from "../../lib/format";
 import { ProvenancePathList } from "../../shared/provenance-path-list";
 import { performancePlanDetail } from "../../refactoring/types";
 import { SourceExcerpt } from "../../refactoring/source-excerpt";
@@ -468,7 +469,12 @@ export function OpportunityDrawer({
             {current.validation ? (
               <CollapsibleSection
                 title="Tests"
-                hint={`${current.validation.total.toLocaleString()} guarding`}
+                hint={
+                  current.validation.total > 0
+                    ? `${formatNumber(current.validation.total)} guarding`
+                    : "none guarding"
+                }
+                defaultOpen={current.validation.total === 0}
               >
                 <ValidationSummary
                   validation={toRecommendationValidation(current.validation)}

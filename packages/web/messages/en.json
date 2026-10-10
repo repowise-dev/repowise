@@ -255,6 +255,8 @@
       "notIndexed": "Not indexed yet",
       "snapshots": "{count, plural, one {# snapshot} other {# snapshots}}",
       "coChangeNoticeTitle": "Health scores changed in this release.",
+      "coChangeNoticeMore": "What changed",
+      "coChangeNoticeLess": "Hide",
       "coChangeNoticeBody": "Co-change coupling is now measured relative to your repository and decays with commit history rather than calendar time, so roughly one file in ten moves a band. Scores are not comparable to snapshots taken before this release.",
       "tabs": {
         "triage": "Overview",

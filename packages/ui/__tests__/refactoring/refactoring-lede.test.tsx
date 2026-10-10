@@ -21,16 +21,18 @@ const summary: RefactoringRollupAvailable = {
   analyzed_commit: null,
 };
 
+const facets = { effort: { S: 41 }, lead_type: { split_file: 7, extract_method: 70 } };
+
 describe("RefactoringLede", () => {
   it("reads as two lines with chips counted from the facets", () => {
-    const onQuickWins = vi.fn();
-    const onStructural = vi.fn();
+    const onToggleQuickWins = vi.fn();
+    const onSeeStructural = vi.fn();
     render(
       <RefactoringLede
         summary={summary}
-        facets={{ effort: { S: 41 }, lead_type: { split_file: 7, extract_method: 70 } }}
-        onQuickWins={onQuickWins}
-        onStructural={onStructural}
+        facets={facets}
+        onToggleQuickWins={onToggleQuickWins}
+        onSeeStructural={onSeeStructural}
       />,
     );
     expect(screen.getByText("118 change a file's shape; 551 are local.")).toBeTruthy();
@@ -40,13 +42,43 @@ describe("RefactoringLede", () => {
     const quick = screen.getByRole("button", { name: "Quick wins 41" });
     expect(quick.getAttribute("aria-pressed")).toBe("false");
     fireEvent.click(quick);
-    expect(onQuickWins).toHaveBeenCalledOnce();
-    fireEvent.click(screen.getByRole("button", { name: "Structural 7" }));
-    expect(onStructural).toHaveBeenCalledOnce();
+    expect(onToggleQuickWins).toHaveBeenCalledOnce();
+
+    // A jump to the structural tab, not a filter that could read as pressed.
+    const structural = screen.getByRole("button", { name: "See the 7 structural" });
+    expect(structural.hasAttribute("aria-pressed")).toBe(false);
+    fireEvent.click(structural);
+    expect(onSeeStructural).toHaveBeenCalledOnce();
+  });
+
+  it("marks Quick wins pressed while the list is narrowed to small effort", () => {
+    render(
+      <RefactoringLede
+        summary={summary}
+        facets={facets}
+        quickWinsActive
+        onToggleQuickWins={() => {}}
+      />,
+    );
+    const quick = screen.getByRole("button", { name: "Quick wins 41" });
+    expect(quick.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("says all of it is local when nothing is structural", () => {
+    render(
+      <RefactoringLede
+        summary={{ ...summary, by_lead_type: { extract_method: 669 } }}
+        facets={{ effort: { S: 41 }, lead_type: { extract_method: 70 } }}
+        onToggleQuickWins={() => {}}
+        onSeeStructural={() => {}}
+      />,
+    );
+    expect(screen.getByText("All of it is local.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /structural/ })).toBeNull();
   });
 
   it("drops the chips without facets", () => {
-    render(<RefactoringLede summary={summary} onQuickWins={() => {}} />);
+    render(<RefactoringLede summary={summary} onToggleQuickWins={() => {}} />);
     expect(screen.queryByRole("group", { name: "Filter the list" })).toBeNull();
   });
 });
