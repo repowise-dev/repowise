@@ -18,7 +18,6 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     build_validation_plan,
     detector_native_benefit,
     hub_files,
-    hydrate_recommendations,
     rehydrate_suggestion,
     steps_with_verify,
     stored_recommendation,
@@ -27,6 +26,9 @@ from repowise.core.analysis.health.refactoring.recommendations import (
 )
 from repowise.core.analysis.test_reachability import ReachDistance, ReachedBy, clear_test_map_cache
 from repowise.core.persistence.crud import save_test_coverage
+from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
+    hydrate_recommendations,
+)
 from repowise.core.persistence.database import init_db
 from tests.unit.persistence.helpers import insert_repo
 

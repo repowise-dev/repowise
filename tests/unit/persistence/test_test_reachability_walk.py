@@ -338,7 +338,7 @@ async def test_a_detailed_page_matches_a_full_hydration(async_session):
     """Paged surfaces rank every plan without symbol evidence and detail only
     the rows they return; those rows must serialize exactly as before."""
     from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
-    from repowise.core.analysis.health.refactoring.recommendations import (
+    from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
         detail_recommendations,
         hydrate_recommendations,
     )
@@ -561,7 +561,7 @@ async def _hub_repo(session, *, tests=(), edges=()):
 
 async def _util_validations(session, repo_id, *, rank_only=False):
     from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
-    from repowise.core.analysis.health.refactoring.recommendations import (
+    from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
         hydrate_recommendations,
     )
 

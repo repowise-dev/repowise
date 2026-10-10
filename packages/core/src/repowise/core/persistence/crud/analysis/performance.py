@@ -359,10 +359,8 @@ async def _plan_facts(
     Serving one plan cannot afford the test-reachability walk, and without this
     it fell back to an empty profile that read as "no tests" for every plan.
     """
-    from ....analysis.health.refactoring.recommendations import (
-        hydrate_recommendations,
-        steps_with_verify,
-    )
+    from ....analysis.health.refactoring.recommendations import steps_with_verify
+    from .refactoring_recommendations import hydrate_recommendations
 
     if not rows:
         return {}

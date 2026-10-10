@@ -53,7 +53,6 @@ from repowise.core.analysis.health.refactoring.models import (
 )
 from repowise.core.analysis.health.refactoring.recommendations import (
     DEFAULT_TEST_LIMIT,
-    _validation_inputs,
     build_validation_plan,
 )
 from repowise.core.analysis.health.rows import detail_map
@@ -72,6 +71,7 @@ from ...models import (
 )
 from ...read_snapshots import decode_or_none, read_snapshot, refresh_snapshot, snapshot_key
 from ...sql import json_text
+from .refactoring_recommendations import validation_inputs
 
 #: Files read for plan-less finding items, by open code-shape deduction.
 #: Ceiling: a file past this rank never becomes a finding item. The queue
@@ -468,7 +468,7 @@ async def _finding_validator(
     if not spans:
         return lambda *_: None
     suggestions = [_span_suggestion(p, f.function_name, s, e) for (p, s, e), f in spans.items()]
-    inputs = await _validation_inputs(
+    inputs = await validation_inputs(
         session, repo_id, suggestions, sorted({s.file_path for s in suggestions})
     )
 

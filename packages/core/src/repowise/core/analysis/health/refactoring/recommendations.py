@@ -2,8 +2,8 @@
 
 Detector suggestions and persisted ORM rows are deliberately small write-side
 facts.  This module is the one read-side owner that turns either shape into the
-recommendation contract consumed by REST, MCP, and CLI.  Every database read is
-batched across the complete plan set; adding plans never adds SQL statements.
+recommendation contract consumed by REST, MCP, and CLI.  The reads that feed it
+run in ``persistence/crud/analysis/refactoring_recommendations.py``.
 """
 
 from __future__ import annotations
@@ -16,26 +16,18 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from repowise.core.analysis.health.effort import EFFORT_ORDER
 from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.perf.ranking import _percentile_threshold
 from repowise.core.analysis.health.queue_rules import FilterRule, SortKeys
 from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
-from repowise.core.analysis.test_collection import narrow_scopes
 from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
     MAX_TESTS_PER_TARGET,
     ReachDistance,
     ReachedBy,
-    cached_test_files,
-    imported_names_by_test,
     rank_tests,
-    reach_into_symbols,
-    tests_matching_by_name,
-    tests_reaching_by_tier,
 )
 from repowise.core.code_origin import ship_rank
 from repowise.core.test_paths import is_test_support_path, names_test_for, paired_test_names
@@ -1315,217 +1307,6 @@ def apply_view(
     return spread
 
 
-async def hydrate_recommendations(
-    session: AsyncSession,
-    repository_id: str,
-    rows: Sequence[Any],
-    *,
-    metric_rows: Sequence[Any] | None = None,
-    view: RecommendationView = "canonical",
-    test_limit: int = DEFAULT_TEST_LIMIT,
-    rank_only: bool = False,
-    step_verify: bool = False,
-) -> list[Recommendation]:
-    """Hydrate, enrich, validate, rank, and serialize-ready all *rows*.
-
-    Query shape is constant in plan/test count: health metrics and graph metrics
-    are bulk reads, measured coverage is one ``IN`` query, and inferred walks
-    use their existing bounded level queries over the complete unanswered set.
-
-    *rank_only* skips the symbol-level evidence that orders each plan's tests:
-    rank and validation basis are unchanged, the test order falls back to name
-    and directory. A paged surface ranks every row this way, then passes the
-    rows it returns through :func:`detail_recommendations`.
-
-    *step_verify* also validates each step of a multi-step plan
-    (:func:`with_step_verify`). Finalize asks, so it is stored once; a live
-    read never rebuilds it and serves the plan-level answer.
-    """
-    from repowise.core.persistence import crud
-
-    if not rows:
-        return []
-    suggestions = [rehydrate_suggestion(row) for row in rows]
-    metrics = (
-        list(metric_rows)
-        if metric_rows is not None
-        else await crud.get_health_metrics(session, repository_id)
-    )
-    graph_metrics = await crud.get_graph_metrics(session, repository_id)
-    centrality = {
-        node_id: float(metric.get("in_degree") or 0.0) for node_id, metric in graph_metrics.items()
-    }
-    plans, inputs = await _validation_plans(
-        session,
-        repository_id,
-        suggestions,
-        test_limit=test_limit,
-        detailed=not rank_only,
-        in_degree=centrality,
-        step_verify=step_verify and not rank_only,
-    )
-    recommendations = build_recommendations(
-        suggestions,
-        metric_by_path={metric.file_path: metric for metric in metrics},
-        centrality=centrality,
-        validations=dict(enumerate(plans)),
-    )
-    if rank_only:
-        recommendations = [dataclasses.replace(item, inputs=inputs) for item in recommendations]
-    return apply_view(recommendations, view)
-
-
-async def detail_recommendations(
-    session: AsyncSession,
-    repository_id: str,
-    recommendations: Sequence[Recommendation],
-    *,
-    test_limit: int = DEFAULT_TEST_LIMIT,
-) -> list[Recommendation]:
-    """*recommendations* with their tests ordered by full evidence, same order.
-
-    Only the validation is rebuilt; rank, benefit and the rest come from the
-    pass that ranked them, so a page detailed here matches a full hydration.
-    """
-    if not recommendations:
-        return []
-    suggestions = [item.suggestion for item in recommendations]
-    shared = {id(item.inputs): item.inputs for item in recommendations}
-    plans, _ = await _validation_plans(
-        session,
-        repository_id,
-        suggestions,
-        test_limit=test_limit,
-        detailed=True,
-        inputs=next(iter(shared.values())) if len(shared) == 1 else None,
-    )
-    out = []
-    for item, plan in zip(recommendations, plans, strict=True):
-        item.suggestion.validation = plan.as_dict()
-        out.append(dataclasses.replace(item, validation=plan))
-    return out
-
-
-async def _validation_plans(
-    session: AsyncSession,
-    repository_id: str,
-    suggestions: Sequence[RefactoringSuggestion],
-    *,
-    test_limit: int,
-    detailed: bool,
-    inputs: ValidationInputs | None = None,
-    in_degree: Mapping[str, float] | None = None,
-    step_verify: bool = False,
-) -> tuple[list[ValidationPlan], ValidationInputs]:
-    """One validation plan per suggestion, every read batched across the set.
-
-    *inputs* from an earlier pass over a superset of these suggestions skips
-    the coverage read and the reachability walk; only the symbol evidence is
-    read again, and only for these suggestions.
-    """
-    target_files = sorted(
-        {path for suggestion in suggestions for path in affected_files(suggestion)}
-    )
-    if inputs is None:
-        inputs = await _validation_inputs(
-            session, repository_id, suggestions, target_files, in_degree=in_degree
-        )
-    evidence = (
-        await _validation_evidence(
-            session, repository_id, suggestions, target_files, inputs.test_files, inputs.evidence
-        )
-        if detailed
-        else inputs.evidence
-    )
-    plans = [
-        build_validation_plan(
-            suggestion,
-            inputs.measured,
-            inputs.inferred,
-            test_limit=test_limit,
-            evidence=evidence,
-            order_tests=detailed,
-        )
-        for suggestion in suggestions
-    ]
-    if step_verify:
-        plans = [
-            with_step_verify(
-                plan,
-                suggestion,
-                inputs.measured,
-                inputs.inferred,
-                test_limit=test_limit,
-                evidence=evidence,
-            )
-            for plan, suggestion in zip(plans, suggestions, strict=True)
-        ]
-    return plans, inputs
-
-
-async def _validation_inputs(
-    session: AsyncSession,
-    repository_id: str,
-    suggestions: Sequence[RefactoringSuggestion],
-    target_files: Sequence[str],
-    *,
-    in_degree: Mapping[str, float] | None = None,
-) -> ValidationInputs:
-    """Measured coverage and the tiered reachability walk for every plan's files.
-
-    *in_degree* is the stored fan-in a caller already read; without it, read here.
-    """
-    from repowise.core.persistence import crud
-    from repowise.core.persistence.crud.analysis.coverage_map import tests_covering_files
-
-    measured = await tests_covering_files(session, repository_id, set(target_files))
-
-    # A measured row only answers a target when it intersects the plan's line
-    # range (if one exists).  Seed inference once with every file that remains
-    # unanswered for at least one plan.
-    unanswered: set[str] = set()
-    for suggestion in suggestions:
-        for file_path, lines in _line_ranges(suggestion).items():
-            if not _measured_labels(measured.get(file_path, []), lines):
-                unanswered.add(file_path)
-    test_files = await cached_test_files(session, repository_id)
-    if in_degree is None:
-        in_degree = {
-            node: float(metric.get("in_degree") or 0.0)
-            for node, metric in (await crud.get_graph_metrics(session, repository_id)).items()
-        }
-    # A test that reaches the file only through a hub tests the hub; it is not
-    # listed, and with nothing else the plan says no test reaches it.
-    hubs = hub_files(in_degree, test_files)
-    inferred = (
-        await tests_reaching_by_tier(
-            session, repository_id, sorted(unanswered), test_files=test_files, avoid=hubs
-        )
-        if unanswered
-        else {}
-    )
-    unreached = sorted(unanswered - inferred.keys())
-    if unreached:
-        inferred.update(tests_matching_by_name(unreached, test_files))
-    walked = {path: reached.all_tests or tuple(reached.tests) for path, reached in inferred.items()}
-    narrowed = await narrow_scopes(session, repository_id, walked, test_files)
-    inferred = {
-        path: _expand_scopes(path, reached, narrowed[path]) for path, reached in inferred.items()
-    }
-    hub_targets = [path for path in target_files if path in hubs]
-    evidence = await _validation_evidence(
-        session,
-        repository_id,
-        [item for item in suggestions if hubs.intersection(affected_files(item))],
-        hub_targets,
-        test_files,
-        ValidationEvidence(hubs=hubs, siblings=_siblings(in_degree)),
-    )
-    return ValidationInputs(
-        measured=measured, inferred=inferred, test_files=test_files, evidence=evidence
-    )
-
-
 def _expand_scopes(path: str, reached: ReachedBy, expanded: list[str]) -> ReachedBy:
     """*reached* with a conftest or test package it stopped at replaced by *expanded*.
 
@@ -1552,50 +1333,6 @@ def _expand_scopes(path: str, reached: ReachedBy, expanded: list[str]) -> Reache
         tests=ranked[:MAX_TESTS_PER_TARGET],
         total=len(ranked),
         all_tests=None,
-    )
-
-
-async def _validation_evidence(
-    session: AsyncSession,
-    repository_id: str,
-    suggestions: Sequence[RefactoringSuggestion],
-    target_files: Sequence[str],
-    test_files: set[str],
-    base: ValidationEvidence,
-) -> ValidationEvidence:
-    """Symbol spans, symbol-level reach and test imports for every plan at once.
-
-    Bounded reads over the whole plan set (the symbol walk is one ``IN`` query
-    per hop), so adding plans adds no statements.
-    """
-    from sqlalchemy import select
-
-    from repowise.core.persistence.models import GraphNode
-
-    if not target_files:
-        return base
-    rows = await session.execute(
-        select(GraphNode.file_path, GraphNode.node_id, GraphNode.start_line, GraphNode.end_line)
-        .where(GraphNode.repository_id == repository_id)
-        .where(GraphNode.node_type == "symbol")
-        .where(GraphNode.file_path.in_(list(target_files)))
-    )
-    spans: dict[str, list[SymbolSpan]] = {}
-    for file_path, node_id, start, end in rows:
-        spans.setdefault(file_path, []).append((node_id, int(start or 0), int(end or 0)))
-    symbol_ids = {
-        symbol
-        for suggestion in suggestions
-        for file_path, lines in _line_ranges(suggestion).items()
-        for symbol in target_symbol_ids(suggestion, file_path, lines, spans.get(file_path, ()))
-    }
-    return dataclasses.replace(
-        base,
-        symbols=spans,
-        symbol_reach=await reach_into_symbols(
-            session, repository_id, symbol_ids, test_files, avoid=base.hubs
-        ),
-        imports=await imported_names_by_test(session, repository_id, target_files, test_files),
     )
 
 
@@ -1626,11 +1363,9 @@ __all__ = [
     "build_recommendations",
     "build_validation_plan",
     "canonical_order",
-    "detail_recommendations",
     "detector_native_benefit",
     "enrich_blast_radius",
     "hub_files",
-    "hydrate_recommendations",
     "matches_search",
     "plan_types",
     "priority_score",

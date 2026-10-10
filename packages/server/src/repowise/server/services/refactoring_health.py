@@ -34,8 +34,6 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     UNKNOWN_EFFORT,
     apply_view,
     blast_size,
-    detail_recommendations,
-    hydrate_recommendations,
     matches_search,
     plan_types,
     stored_recommendation,
@@ -68,6 +66,10 @@ from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
     refactoring_opportunities_by_id,
     refactoring_reason_counts,
     refactoring_step_counts,
+)
+from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
+    detail_recommendations,
+    hydrate_recommendations,
 )
 from repowise.core.persistence.models import RefactoringOpportunity, RefactoringSuggestion
 

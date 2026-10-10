@@ -150,11 +150,13 @@ def _load_recommendations(
     from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
     from repowise.core.analysis.health.refactoring.recommendations import (
         build_recommendations,
-        hydrate_recommendations,
         serialize_recommendations,
     )
     from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
+        hydrate_recommendations,
+    )
 
     async def _do() -> list[dict[str, Any]]:
         url = get_db_url_for_repo(repo_path)

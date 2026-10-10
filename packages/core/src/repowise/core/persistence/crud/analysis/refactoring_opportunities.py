@@ -283,8 +283,8 @@ async def _rank_live_plans(session: AsyncSession, repository_id: str) -> list[An
     import dataclasses
 
     from ....analysis.health.refactoring.annotations import annotate, load_annotation_facts
-    from ....analysis.health.refactoring.recommendations import hydrate_recommendations
     from .refactoring import shown_plan_predicate, store_plan_ranks
+    from .refactoring_recommendations import hydrate_recommendations
 
     rows = (
         await session.execute(
