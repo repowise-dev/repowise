@@ -1,4 +1,4 @@
-﻿"""Repository request/response models."""
+"""Repository request/response models."""
 
 from __future__ import annotations
 
