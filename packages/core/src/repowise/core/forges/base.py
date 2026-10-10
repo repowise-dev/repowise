@@ -62,7 +62,9 @@ class Forge(Protocol):
     def blob_url(self, ref: RemoteRef, rev: str, path: str, line: int | None = None) -> str: ...
     def compare_url(self, ref: RemoteRef, base: str, head: str) -> str: ...
     def format_change_ref(self, number: int) -> str: ...
-    def parse_change_refs(self, subject: str, body: str = "") -> list[int]: ...
+    def parse_change_refs(
+        self, subject: str, body: str = "", *, native: bool = True
+    ) -> list[int]: ...
     def normalize_identity(self, email: str, name: str) -> tuple[str, bool]: ...
 
 
@@ -142,6 +144,36 @@ class CiSystem:
         return any(env_flag(env.get(var)) for var in self.markers)
 
 
+def unique_ints(groups: list[str]) -> list[int]:
+    """First-seen order, no repeats: the order refs appear in the message."""
+    seen: dict[int, None] = {}
+    for g in groups:
+        if g:
+            seen.setdefault(int(g), None)
+    return list(seen)
+
+
+def collect_refs(
+    subject: str,
+    body: str,
+    subject_res: tuple[re.Pattern[str], ...],
+    anywhere_res: tuple[re.Pattern[str], ...],
+) -> list[int]:
+    """Numbers captured by *subject_res* in the subject and *anywhere_res* in both.
+
+    Merge and squash conventions only hold on the subject line; a body can
+    quote other commits' subjects. Each pattern has one capture group of at
+    most nine digits: a huge run of digits is no change number and would hit
+    int()'s digit limit.
+    """
+    found = [m.group(1) for p in subject_res for m in p.finditer(subject or "")]
+    for text in (subject, body):
+        if text:
+            for p in anywhere_res:
+                found.extend(m.group(1) for m in p.finditer(text))
+    return unique_ints(found)
+
+
 @dataclass(frozen=True, slots=True)
 class BaseForge:
     """Shared defaults; a forge module subclasses this and calls ``register``."""
@@ -154,6 +186,16 @@ class BaseForge:
     #: Path segments that start a web route on this forge and never name a
     #: group or repo, so they are cut from a URL on any host.
     route_markers: frozenset[str] = frozenset()
+    #: Forms that say a commit *is* one change (a merge or squash message),
+    #: read on the subject and on the body. A mention of another change, such
+    #: as a link, is not one; those are ``parse_change_refs``.
+    merge_subject_res: tuple[re.Pattern[str], ...] = ()
+    merge_body_res: tuple[re.Pattern[str], ...] = ()
+    #: Merge forms that only mean a change when the repo is on this forge.
+    native_merge_subject_res: tuple[re.Pattern[str], ...] = ()
+    #: On this forge the body's merge trailer outranks a subject suffix (a
+    #: cherry-picked ``(#7)`` merged through MR ``!3`` is MR 3).
+    merge_body_first: bool = False
 
     # -- registry hooks -------------------------------------------------
 
@@ -186,8 +228,11 @@ class BaseForge:
     def format_change_ref(self, number: int) -> str:
         return f"#{number}"
 
-    def parse_change_refs(self, subject: str, body: str = "") -> list[int]:
-        """No convention known: no refs."""
+    def parse_change_refs(self, subject: str, body: str = "", *, native: bool = True) -> list[int]:
+        """Every change the message mentions. ``native=False`` reads it for a
+        repo on another forge, dropping forms that only hold on this one.
+
+        No convention known: no refs."""
         return []
 
     def normalize_identity(self, email: str, name: str) -> tuple[str, bool]:

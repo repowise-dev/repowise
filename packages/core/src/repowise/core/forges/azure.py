@@ -9,6 +9,7 @@ sits before ``_git``.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from urllib.parse import quote
 
@@ -18,6 +19,7 @@ from .base import (
     ForgeKind,
     RemoteParts,
     RemoteRef,
+    collect_refs,
     join_url,
     looks_like_sha,
     quote_path,
@@ -30,6 +32,14 @@ _PUBLIC_ORIGIN = f"https://{PUBLIC_HOST}"
 _SSH_HOSTS = frozenset({"ssh.dev.azure.com", "vs-ssh.visualstudio.com"})
 _LEGACY_SUFFIX = ".visualstudio.com"
 _GIT = "_git"
+
+# Squash and merge completions write ``Merged PR 12: title``; older Server
+# merges write ``Merge pull request 12 from x into main``.
+_SUBJECT_REF_RES = (
+    re.compile(r"^Merged PR (\d{1,9}):"),
+    re.compile(r"^Merge pull request (\d{1,9}) from "),
+)
+_URL_REF_RE = re.compile(r"/pullrequest/(\d{1,9})\b", re.IGNORECASE)
 
 
 def _project_repo(rest: tuple[str, ...]) -> tuple[str, str] | None:
@@ -109,6 +119,9 @@ class Azure(BaseForge):
     def format_change_ref(self, number: int) -> str:
         return f"PR {number}"
 
+    def parse_change_refs(self, subject: str, body: str = "", *, native: bool = True) -> list[int]:
+        return collect_refs(subject, body, _SUBJECT_REF_RES, (_URL_REF_RE,))
+
 
 register(
     Azure(
@@ -137,5 +150,6 @@ register(
                 ("bitbucket", ForgeKind.BITBUCKET),
             ),
         ),
+        merge_subject_res=_SUBJECT_REF_RES,
     )
 )

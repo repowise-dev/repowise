@@ -12,11 +12,13 @@ from __future__ import annotations
 # disjoint, so the order does not matter; generic claims none and is the fallback.
 from . import azure, bitbucket, generic, github, gitlab  # noqa: F401
 from .base import BaseForge, CiSystem, Forge, ForgeKind, RemoteRef
+from .changes import CHANGE_BODY_MARKERS, change_number, change_refs
 from .detect import detect_forge, read_remote_url
 from .registry import HOSTS_ENV_VAR, all_forges, forge_hosts, get_forge, register
 from .remote import canonical_key, parse_remote, strip_credentials
 
 __all__ = [
+    "CHANGE_BODY_MARKERS",
     "HOSTS_ENV_VAR",
     "BaseForge",
     "CiSystem",
@@ -25,6 +27,8 @@ __all__ = [
     "RemoteRef",
     "all_forges",
     "canonical_key",
+    "change_number",
+    "change_refs",
     "detect_forge",
     "forge_hosts",
     "get_forge",

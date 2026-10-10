@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .base import (
@@ -10,6 +11,7 @@ from .base import (
     ForgeKind,
     RemoteParts,
     RemoteRef,
+    collect_refs,
     join_url,
     quote_path,
     quote_segment,
@@ -20,6 +22,28 @@ PUBLIC_HOST = "github.com"
 _PUBLIC_ORIGIN = f"https://{PUBLIC_HOST}"
 # ssh.github.com serves ssh over port 443; both aliases are github.com.
 _HOST_ALIASES = frozenset({PUBLIC_HOST, "www.github.com", "ssh.github.com"})
+
+# Squash merges end the subject with ``(#12)`` (``(gh-12)`` in some projects);
+# merge commits open with ``Merge pull request #12``. A bare ``#12`` is an
+# issue reference as often as a PR, so it is not read as one.
+_SUBJECT_REF_RES = (
+    re.compile(r"\((?:#|gh-)(\d{1,9})\)", re.IGNORECASE),
+    re.compile(r"^Merge pull request #(\d{1,9})\b"),
+)
+_URL_REF_RE = re.compile(r"/pull/(\d{1,9})\b")
+
+# What says a commit *is* one PR: a merge commit's subject, or the squash
+# suffix closing the subject. ``Revert "x (#5)"`` merged no PR 5, so the
+# suffix must end the subject, give or take a full stop or a ``[skip ci]``.
+MERGE_SUBJECT_RES = (
+    _SUBJECT_REF_RES[1],
+    re.compile(r"\((?:#|[Gg][Hh]-)(\d{1,9})\)[\s.]*(?:\[[^\]\n]{0,40}\][\s.]*)?$"),
+)
+
+
+def change_refs(subject: str, body: str = "") -> list[int]:
+    """PR numbers in a GitHub commit message, in order of appearance."""
+    return collect_refs(subject, body, _SUBJECT_REF_RES, (_URL_REF_RE,))
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +75,9 @@ class GitHub(BaseForge):
     def compare_url(self, ref: RemoteRef, base: str, head: str) -> str:
         return f"{ref.web_base}/compare/{quote_path(base)}...{quote_path(head)}"
 
+    def parse_change_refs(self, subject: str, body: str = "", *, native: bool = True) -> list[int]:
+        return change_refs(subject, body)
+
 
 register(
     GitHub(
@@ -64,5 +91,6 @@ register(
             change_number=("GITHUB_REF",),  # refs/pull/N/merge on a pull request
             repo_url=(("GITHUB_SERVER_URL", "GITHUB_REPOSITORY"),),
         ),
+        merge_subject_res=MERGE_SUBJECT_RES,
     )
 )

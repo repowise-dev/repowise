@@ -7,6 +7,7 @@ The two share a name and little else: Cloud is ``workspace/repo`` with
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from urllib.parse import quote
 
@@ -16,6 +17,7 @@ from .base import (
     ForgeKind,
     RemoteParts,
     RemoteRef,
+    collect_refs,
     join_url,
     quote_path,
     quote_segment,
@@ -25,6 +27,19 @@ from .registry import register
 PUBLIC_HOST = "bitbucket.org"
 _PUBLIC_ORIGIN = f"https://{PUBLIC_HOST}"
 _HOST_ALIASES = frozenset({PUBLIC_HOST, "www.bitbucket.org", "altssh.bitbucket.org"})
+
+# Cloud merges write ``Merged in branch (pull request #12)``; Data Center
+# writes ``Merge pull request #12 in PROJ/repo from branch to main``.
+_SUBJECT_REF_RES = (
+    re.compile(r"\(pull request #(\d{1,9})\)"),
+    re.compile(r"^Merge pull request #(\d{1,9}) in "),
+)
+_URL_REF_RE = re.compile(r"/pull-requests/(\d{1,9})\b")
+# Cloud's suffix closes the subject it merged; anywhere else it is quoted.
+_MERGE_SUBJECT_RES = (
+    re.compile(r"\(pull request #(\d{1,9})\)\s*$"),
+    _SUBJECT_REF_RES[1],
+)
 
 
 def _data_center(parts: RemoteParts) -> tuple[tuple[str, ...], str, str] | None:
@@ -100,6 +115,9 @@ class Bitbucket(BaseForge):
         # Cloud joins the two revs with a CR, head first.
         return f"{ref.web_base}/branches/compare/{quote_path(head)}%0D{quote_path(base)}"
 
+    def parse_change_refs(self, subject: str, body: str = "", *, native: bool = True) -> list[int]:
+        return collect_refs(subject, body, _SUBJECT_REF_RES, (_URL_REF_RE,))
+
 
 register(
     Bitbucket(
@@ -113,5 +131,6 @@ register(
             change_number=("BITBUCKET_PR_ID",),
             repo_url=(("BITBUCKET_GIT_HTTP_ORIGIN",),),
         ),
+        merge_subject_res=_MERGE_SUBJECT_RES,
     )
 )

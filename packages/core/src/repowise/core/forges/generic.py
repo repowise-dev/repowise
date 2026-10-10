@@ -1,13 +1,15 @@
 """Any other git host: Gitea, cgit, a bare ssh server, or a forge with no override.
 
 Nothing is known about its web pages, so every URL builder returns ``""`` and
-callers render plain text.
+callers render plain text. Commit messages are read the GitHub way, the
+convention most other hosts and mirrors follow.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from . import github
 from .base import BaseForge, ForgeKind, RemoteParts, RemoteRef, join_url
 from .registry import register
 
@@ -33,5 +35,10 @@ class Generic(BaseForge):
     def compare_url(self, ref: RemoteRef, base: str, head: str) -> str:
         return ""
 
+    def parse_change_refs(self, subject: str, body: str = "", *, native: bool = True) -> list[int]:
+        return github.change_refs(subject, body)
 
-register(Generic(kind=ForgeKind.GENERIC, label="Git"))
+
+register(
+    Generic(kind=ForgeKind.GENERIC, label="Git", merge_subject_res=github.MERGE_SUBJECT_RES)
+)
