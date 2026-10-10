@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -710,6 +711,66 @@ def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
     return not paired_test_names(rel_path).isdisjoint(path_basenames)
 
 
+@dataclass(frozen=True, slots=True)
+class _RunConfig:
+    """The analyzer config one pass reads, with its per-file overrides."""
+
+    vocab: AssertVocabulary
+    disabled: list[str]
+    per_file_disabled: dict[str, set[str]]
+    severity_overrides: dict[str, Severity]
+    per_file_severity_overrides: dict[str, dict[str, Severity]]
+    disabled_refactorings: list[str]
+    refactoring_enabled: bool
+    refactoring_min_confidence: str | None
+
+    @classmethod
+    def read(cls, config: dict | None) -> _RunConfig:
+        cfg = config or {}
+        return cls(
+            vocab=AssertVocabulary.from_analyzer_config(cfg),
+            disabled=list(cfg.get("disabled_biomarkers", ())),
+            per_file_disabled=cfg.get("per_file_disabled", {}) or {},
+            severity_overrides=cfg.get("severity_overrides", {}) or {},
+            per_file_severity_overrides=cfg.get("per_file_severity_overrides", {}) or {},
+            disabled_refactorings=list(cfg.get("disabled_refactorings", ())),
+            refactoring_enabled=bool(cfg.get("refactoring_enabled", True)),
+            refactoring_min_confidence=cfg.get("refactoring_min_confidence"),
+        )
+
+    @property
+    def performance_fix(self) -> bool:
+        return self.refactoring_enabled and "performance_fix" not in self.disabled_refactorings
+
+    def file_disabled(self, path: str) -> list[str]:
+        out = list(self.disabled)
+        for name in self.per_file_disabled.get(path) or ():
+            if name not in out:
+                out.append(name)
+        return out
+
+    def file_severity_overrides(self, path: str) -> dict[str, Severity] | None:
+        out = dict(self.severity_overrides)
+        out.update(self.per_file_severity_overrides.get(path, {}))
+        return out or None
+
+
+@dataclass(frozen=True, slots=True)
+class _RepoInputs:
+    """Repo-wide inputs every file's evaluation reads, built once per pass."""
+
+    paired_tests: set[str]
+    package_roots: set[str]
+    graph_view: HasEdge | None
+    dup_report: DuplicationReport
+    function_mod_p80: int | None
+    dependents_p80: int | None
+    active_contributors: int | None
+    file_scc_index: dict[str, tuple[str, ...]]
+    methods_by_file: dict[str, tuple[str, ...]]
+    dataflow_cache: FileDataflowCache
+
+
 class HealthAnalyzer:
     """Pure-Python health analyzer. No LLM, no network."""
 
@@ -879,194 +940,24 @@ class HealthAnalyzer:
         """
         from repowise.core.pipeline.phase_timing import timed
 
-        cfg = config or {}
-        vocab = AssertVocabulary.from_analyzer_config(cfg)
-        disabled: list[str] = list(cfg.get("disabled_biomarkers", ()))
-        per_file_disabled: dict[str, set[str]] = cfg.get("per_file_disabled", {}) or {}
-        repo_severity_overrides: dict[str, Severity] = cfg.get("severity_overrides", {}) or {}
-        per_file_severity_overrides: dict[str, dict[str, Severity]] = (
-            cfg.get("per_file_severity_overrides", {}) or {}
+        run = _RunConfig.read(config)
+        changed_set = set(changed_files) if changed_files is not None else None
+        dup_report = self._duplication(
+            run,
+            set(duplication_files) if duplication_files is not None else changed_set,
+            timings,
         )
-        changed_set: set[str] | None = set(changed_files) if changed_files is not None else None
-
-        # PageRank is optional — graph_builder.symbol_pagerank exists but
-        # is symbol-level; we use file-level in-degree as the dependents
-        # signal (cheap, deterministic, conservative).
-        analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
-        paired_tests = self._paired_tests(analyzed_paths)
-        package_roots = self._package_boundaries(analyzed_paths)
-        graph_view: HasEdge | None = ImportEdgeView(self.graph) if self.graph is not None else None
-
-        # Duplication runs once, up-front, so each file biomarker can see
-        # its clone list. Cheap when the repo is small; when disabled
-        # explicitly we skip the work entirely. Even for incremental
-        # runs the result stays repo-wide: a changed file's clone partners
-        # may be unchanged files — passing changed_files lets the detector
-        # splice its persisted pair index instead of recomputing it all.
-        if "dry_violation" in disabled:
-            dup_report = DuplicationReport()
-        else:
-            try:
-                with timed(timings, "analysis.health.duplication"):
-                    dup_report = detect_clones(
-                        self.parsed_files,
-                        self.git_meta_map,
-                        cache_dir=self.duplication_cache_dir,
-                        source_reader=self.read_source,
-                        changed_files=(
-                            set(duplication_files)
-                            if duplication_files is not None
-                            else changed_set
-                        ),
-                    )
-                _log_duplication_diagnostics(dup_report)
-            except Exception as exc:
-                log.debug("health_duplication_failed", error=str(exc))
-                dup_report = DuplicationReport()
-
-        disabled_refactorings: list[str] = list(cfg.get("disabled_refactorings", ()))
-        refactoring_enabled: bool = bool(cfg.get("refactoring_enabled", True))
-        refactoring_min_confidence: str | None = cfg.get("refactoring_min_confidence")
-        # Repo-wide SCC index (import cycles), computed once and threaded into
-        # each file's RefactoringContext so Break Cycle never recomputes it.
-        file_scc_index = build_file_scc_index(self.graph)
-        methods_by_file = build_methods_by_file(self.graph)
-        findings: list[HealthFindingData] = []
-        metrics: list[HealthFileMetricData] = []
-        suggestions: list[RefactoringSuggestion] = []
-
-        # Pre-walk every target so we can compute the repo-wide p80 of
-        # per-function modification counts ONCE before any biomarker runs.
-        # The walked list is reused by the per-file biomarker stage below.
-        walked: list[tuple[Any, FileComplexity]] = []
-        timings_walk = timed(timings, "analysis.health.walk")
-        timings_walk.__enter__()
-        if self._walk_cache is not None:
-            self._walk_cache.load()
-        for pf in self.parsed_files:
-            if changed_set is not None and pf.file_info.path not in changed_set:
-                continue
-            if not scores_language(pf.file_info.language):
-                continue
-            try:
-                fcx = self._walk(pf, vocab)
-            except Exception as exc:
-                log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
-                fcx = FileComplexity(functions=[], classes=[])
-            walked.append((pf, fcx))
-            # Walk tick — the phase total counts each file twice (walk +
-            # evaluate); see analyze_async.
-            if on_step:
-                on_step(pf.file_info.path)
-        self._save_walk_cache()
-        timings_walk.__exit__(None, None, None)
-
-        with timed(timings, "analysis.health.repo_stats"):
-            repo_fn_mod_p80 = (
-                repo_function_mod_p80
-                if repo_function_mod_p80 is not None
-                else _compute_repo_function_mod_p80(walked, self.git_meta_map)
-            )
-            full_repo_fn_mod_p80 = _full_repo_p80(
-                repo_fn_mod_p80, changed_files, repo_function_mod_p80
-            )
-            repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
-            repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
-
-        # Cross-file test oracles, same rule: resolve before the marker runs.
-        with timed(timings, "analysis.health.oracle_reach"):
-            self._apply_cross_file_oracles(walked)
-        # One shared dataflow service for the whole pass: the promotion pass
-        # and the Extract Method detector below read the same lazily parsed
-        # per-file object, so no file is parsed twice for dataflow.
-        dataflow_cache = FileDataflowCache(self.read_source)
-        self._augment_perf_hits(walked, dataflow_cache, timings)
-
-        timings_evaluate = timed(timings, "analysis.health.evaluate")
-        timings_evaluate.__enter__()
-        for pf, fcx in walked:
-            # Side-effect: bump Symbol.complexity_estimate when we can
-            # match by enclosing line range. Symbols not matched keep
-            # their default (1).
-            self._populate_symbol_complexity(pf, fcx.functions)
-
-            file_disabled = list(disabled)
-            extra = per_file_disabled.get(pf.file_info.path)
-            if extra:
-                for name in extra:
-                    if name not in file_disabled:
-                        file_disabled.append(name)
-            file_severity_overrides = dict(repo_severity_overrides)
-            file_severity_overrides.update(per_file_severity_overrides.get(pf.file_info.path, {}))
-            file_metric, file_findings, file_suggestions = self._evaluate_file(
-                pf,
-                fcx,
-                paired_tests,
-                package_roots,
-                disabled=file_disabled,
-                dup_report=dup_report,
-                graph_view=graph_view,
-                repo_function_mod_p80=repo_fn_mod_p80,
-                repo_dependents_p80=repo_dependents_p80,
-                repo_active_contributors_90d=repo_active_contributors,
-                severity_overrides=file_severity_overrides or None,
-                disabled_refactorings=disabled_refactorings,
-                refactoring_enabled=refactoring_enabled,
-                refactoring_min_confidence=refactoring_min_confidence,
-                file_scc_index=file_scc_index,
-                methods_by_file=methods_by_file,
-                dataflow_cache=dataflow_cache,
-            )
-            # Every dataflow consumer has read this file by now.
-            dataflow_cache.release(pf.file_info.abs_path)
-            metrics.append(file_metric)
-            findings.extend(file_findings)
-            suggestions.extend(file_suggestions)
-
-            if on_step:
-                on_step(pf.file_info.path)
-        timings_evaluate.__exit__(None, None, None)
-
-        # KPIs are repo-wide; on an incremental run they would be biased
-        # by the changed-files subset. Skip them in that case — the
-        # ``persist`` step recomputes KPIs from the merged DB rows.
-        if changed_set is None:
-            hotspot_paths = {p for p, meta in self.git_meta_map.items() if self._is_hotspot(meta)}
-            kpis = compute_kpis(metrics, hotspot_paths)
-        else:
-            kpis = {}
-
-        timings_finalize = timed(timings, "analysis.health.finalize")
-        timings_finalize.__enter__()
-        execution_roles = self._mark_perf_entry_reachability(findings)
-        link_performance_findings(findings)
-        opportunities = build_performance_opportunities(findings)
-        if refactoring_enabled and "performance_fix" not in disabled_refactorings:
-            suggestions.extend(
-                performance_fix_suggestions(
-                    opportunities,
-                    min_confidence=refactoring_min_confidence,
-                )
-            )
-        suggestions = rank_suggestions(
-            suggestions, centrality=self._refactoring_centrality(suggestions)
-        )
-        timings_finalize.__exit__(None, None, None)
-        return HealthReport(
-            repo_id="",
-            analyzed_at=datetime.now(UTC),
-            findings=findings,
-            metrics=metrics,
-            kpis=kpis,
-            function_blame_rows=self._function_blame_rows(walked),
-            execution_roles=execution_roles,
-            function_facts=self._function_fact_rows(walked),
-            repo_function_mod_p80=full_repo_fn_mod_p80,
-            refactoring_suggestions=suggestions,
-            performance_plan_policy=PerformancePlanPolicy(
-                enabled=refactoring_enabled and "performance_fix" not in disabled_refactorings,
-                min_confidence=refactoring_min_confidence,
-            ),
+        with timed(timings, "analysis.health.walk"):
+            walked = self._walk_files(self._target_files(changed_set), run.vocab, on_step)
+            self._save_walk_cache()
+        return self._score(
+            run,
+            walked,
+            dup_report,
+            changed_files=changed_files,
+            repo_function_mod_p80=repo_function_mod_p80,
+            on_step=on_step,
+            timings=timings,
         )
 
     async def analyze_async(
@@ -1095,47 +986,18 @@ class HealthAnalyzer:
         incremental run the caller passes the value computed over the full
         repo so the gate is not biased by the changed-files subset.
         """
-        cfg = config or {}
-        vocab = AssertVocabulary.from_analyzer_config(cfg)
-        disabled: list[str] = list(cfg.get("disabled_biomarkers", ()))
-        per_file_disabled: dict[str, set[str]] = cfg.get("per_file_disabled", {}) or {}
-        repo_severity_overrides: dict[str, Severity] = cfg.get("severity_overrides", {}) or {}
-        per_file_severity_overrides: dict[str, dict[str, Severity]] = (
-            cfg.get("per_file_severity_overrides", {}) or {}
-        )
-        changed_set: set[str] | None = set(changed_files) if changed_files is not None else None
-
-        analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
-        paired_tests = self._paired_tests(analyzed_paths)
-        package_roots = self._package_boundaries(analyzed_paths)
-        graph_view: HasEdge | None = ImportEdgeView(self.graph) if self.graph is not None else None
-
+        run = _RunConfig.read(config)
+        changed_set = set(changed_files) if changed_files is not None else None
         # Duplication is only consumed by the biomarker stage, so it can
         # overlap with the pre-walk instead of blocking it — on large
         # repos the scan takes seconds during which the progress bar
         # would otherwise sit at zero.
-        dup_task: asyncio.Task | None = None
-        if "dry_violation" not in disabled:
-            dup_task = asyncio.ensure_future(
-                asyncio.to_thread(
-                    detect_clones,
-                    self.parsed_files,
-                    self.git_meta_map,
-                    cache_dir=self.duplication_cache_dir,
-                    source_reader=self.read_source,
-                    changed_files=changed_set,
-                )
-            )
-
-        target_files = [
-            pf
-            for pf in self.parsed_files
-            if (changed_set is None or pf.file_info.path in changed_set)
-            and scores_language(pf.file_info.language)
-        ]
+        dup_task = asyncio.ensure_future(
+            asyncio.to_thread(self._duplication, run, changed_set, None)
+        )
+        target_files = self._target_files(changed_set)
         if not target_files:
-            if dup_task is not None:
-                dup_task.cancel()
+            dup_task.cancel()
             return HealthReport(
                 repo_id="",
                 analyzed_at=datetime.now(UTC),
@@ -1143,121 +1005,143 @@ class HealthAnalyzer:
                 metrics=[],
                 kpis={},
             )
+        walked = await self._walk_files_async(target_files, run.vocab, on_step, max_workers)
+        return self._score(
+            run,
+            walked,
+            await dup_task,
+            changed_files=changed_files,
+            repo_function_mod_p80=repo_function_mod_p80,
+            on_step=on_step,
+            timings=None,
+        )
 
-        # Pre-walk in worker threads so each task hands a list of
-        # FunctionComplexity entries to the synchronous biomarker stage.
-        # tree-sitter parsing releases the GIL → real parallelism here.
-        if self._walk_cache is not None:
-            self._walk_cache.load()
-        workers = max(1, int(max_workers or os.cpu_count() or 4))
-        semaphore = asyncio.Semaphore(workers)
+    def _duplication(
+        self, run: _RunConfig, changed: set[str] | None, timings: Any | None
+    ) -> DuplicationReport:
+        """Clone pairs for the pass, found once up front so each file's
+        biomarkers see their clone list; empty when disabled or on failure.
+
+        Repo-wide even for an incremental run, since a changed file's clone
+        partners may be unchanged files: *changed* lets the detector splice
+        its persisted pair index instead of recomputing it all.
+        """
+        from repowise.core.pipeline.phase_timing import timed
+
+        if "dry_violation" in run.disabled:
+            return DuplicationReport()
+        try:
+            with timed(timings, "analysis.health.duplication"):
+                report = detect_clones(
+                    self.parsed_files,
+                    self.git_meta_map,
+                    cache_dir=self.duplication_cache_dir,
+                    source_reader=self.read_source,
+                    changed_files=changed,
+                )
+            _log_duplication_diagnostics(report)
+            return report
+        except Exception as exc:
+            log.debug("health_duplication_failed", error=str(exc))
+            return DuplicationReport()
+
+    def _target_files(self, changed_set: set[str] | None) -> list[Any]:
+        """The parsed files this pass scores: only the changed ones on an incremental run."""
+        return [
+            pf
+            for pf in self.parsed_files
+            if (changed_set is None or pf.file_info.path in changed_set)
+            and scores_language(pf.file_info.language)
+        ]
+
+    def _walk_or_empty(self, pf: Any, vocab: AssertVocabulary) -> FileComplexity:
+        try:
+            return self._walk(pf, vocab)
+        except Exception as exc:
+            log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
+            return FileComplexity(functions=[], classes=[])
+
+    def _walk_files(
+        self, targets: list[Any], vocab: AssertVocabulary, on_step: Any | None
+    ) -> list[tuple[Any, FileComplexity]]:
+        """Walk every target before any biomarker runs, so the repo-wide
+        percentiles are computed once over the whole walked set."""
+        self._load_walk_cache()
+        walked: list[tuple[Any, FileComplexity]] = []
+        for pf in targets:
+            walked.append((pf, self._walk_or_empty(pf, vocab)))
+            # Walk tick — the phase total counts each file twice (walk +
+            # evaluate).
+            if on_step:
+                on_step(pf.file_info.path)
+        return walked
+
+    async def _walk_files_async(
+        self,
+        targets: list[Any],
+        vocab: AssertVocabulary,
+        on_step: Any | None,
+        max_workers: int | None,
+    ) -> list[tuple[Any, FileComplexity]]:
+        """:meth:`_walk_files` in worker threads: tree-sitter parsing releases
+        the GIL, so this is real parallelism."""
+        self._load_walk_cache()
+        semaphore = asyncio.Semaphore(max(1, int(max_workers or os.cpu_count() or 4)))
 
         async def _one(pf: Any) -> tuple[Any, FileComplexity]:
             async with semaphore:
-                try:
-                    fcx = await asyncio.to_thread(self._walk, pf, vocab)
-                except Exception as exc:
-                    log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
-                    fcx = FileComplexity(functions=[], classes=[])
+                fcx = await asyncio.to_thread(self._walk_or_empty, pf, vocab)
             # Walk tick — the phase total counts each file twice (walk +
             # evaluate) so the bar moves from the very first completed walk.
             if on_step:
                 on_step(pf.file_info.path)
             return pf, fcx
 
-        walked = await asyncio.gather(*[_one(pf) for pf in target_files])
+        return list(await asyncio.gather(*[_one(pf) for pf in targets]))
 
-        if dup_task is None:
-            dup_report = DuplicationReport()
-        else:
-            try:
-                dup_report = await dup_task
-                _log_duplication_diagnostics(dup_report)
-            except Exception as exc:
-                log.debug("health_duplication_failed", error=str(exc))
-                dup_report = DuplicationReport()
-        repo_fn_mod_p80 = (
-            repo_function_mod_p80
-            if repo_function_mod_p80 is not None
-            else _compute_repo_function_mod_p80(list(walked), self.git_meta_map)
-        )
-        full_repo_fn_mod_p80 = _full_repo_p80(
-            repo_fn_mod_p80, changed_files, repo_function_mod_p80
-        )
-        repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
-        repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
+    def _score(
+        self,
+        run: _RunConfig,
+        walked: list[tuple[Any, FileComplexity]],
+        dup_report: DuplicationReport,
+        *,
+        changed_files: set[str] | list[str] | None,
+        repo_function_mod_p80: int | None,
+        on_step: Any | None,
+        timings: Any | None,
+    ) -> HealthReport:
+        """Everything after the walk, shared by :meth:`analyze` and
+        :meth:`analyze_async` so the two paths cannot drift apart."""
+        from repowise.core.pipeline.phase_timing import timed
 
-        walked = list(walked)
+        with timed(timings, "analysis.health.repo_stats"):
+            fn_mod_p80 = (
+                repo_function_mod_p80
+                if repo_function_mod_p80 is not None
+                else _compute_repo_function_mod_p80(walked, self.git_meta_map)
+            )
+            full_repo_fn_mod_p80 = _full_repo_p80(
+                fn_mod_p80, changed_files, repo_function_mod_p80
+            )
         # Cross-file test oracles, same rule: resolve before the marker runs.
-        self._apply_cross_file_oracles(walked)
-        # One shared dataflow service per pass (see the sync path above).
+        with timed(timings, "analysis.health.oracle_reach"):
+            self._apply_cross_file_oracles(walked)
+        # One shared dataflow service for the whole pass: the promotion pass
+        # and the Extract Method detector read the same lazily parsed
+        # per-file object, so no file is parsed twice for dataflow.
         dataflow_cache = FileDataflowCache(self.read_source)
-        self._augment_perf_hits(walked, dataflow_cache, timings=None)
-
-        disabled_refactorings: list[str] = list(cfg.get("disabled_refactorings", ()))
-        refactoring_enabled: bool = bool(cfg.get("refactoring_enabled", True))
-        refactoring_min_confidence: str | None = cfg.get("refactoring_min_confidence")
-        file_scc_index = build_file_scc_index(self.graph)
-        methods_by_file = build_methods_by_file(self.graph)
-        findings: list[HealthFindingData] = []
-        metrics: list[HealthFileMetricData] = []
-        suggestions: list[RefactoringSuggestion] = []
-        for pf, fcx in walked:
-            self._populate_symbol_complexity(pf, fcx.functions)
-            file_disabled = list(disabled)
-            extra = per_file_disabled.get(pf.file_info.path)
-            if extra:
-                for name in extra:
-                    if name not in file_disabled:
-                        file_disabled.append(name)
-            file_severity_overrides = dict(repo_severity_overrides)
-            file_severity_overrides.update(per_file_severity_overrides.get(pf.file_info.path, {}))
-            file_metric, file_findings, file_suggestions = self._evaluate_file(
-                pf,
-                fcx,
-                paired_tests,
-                package_roots,
-                disabled=file_disabled,
-                dup_report=dup_report,
-                graph_view=graph_view,
-                repo_function_mod_p80=repo_fn_mod_p80,
-                repo_dependents_p80=repo_dependents_p80,
-                repo_active_contributors_90d=repo_active_contributors,
-                severity_overrides=file_severity_overrides or None,
-                disabled_refactorings=disabled_refactorings,
-                refactoring_enabled=refactoring_enabled,
-                refactoring_min_confidence=refactoring_min_confidence,
-                file_scc_index=file_scc_index,
-                methods_by_file=methods_by_file,
-                dataflow_cache=dataflow_cache,
-            )
-            # Every dataflow consumer has read this file by now.
-            dataflow_cache.release(pf.file_info.abs_path)
-            metrics.append(file_metric)
-            findings.extend(file_findings)
-            suggestions.extend(file_suggestions)
-            if on_step:
-                on_step(pf.file_info.path)
-
-        if changed_set is None:
-            hotspot_paths = {p for p, meta in self.git_meta_map.items() if self._is_hotspot(meta)}
-            kpis = compute_kpis(metrics, hotspot_paths)
-        else:
-            kpis = {}
-
-        execution_roles = self._mark_perf_entry_reachability(findings)
-        link_performance_findings(findings)
-        opportunities = build_performance_opportunities(findings)
-        if refactoring_enabled and "performance_fix" not in disabled_refactorings:
-            suggestions.extend(
-                performance_fix_suggestions(
-                    opportunities,
-                    min_confidence=refactoring_min_confidence,
-                )
-            )
-        suggestions = rank_suggestions(
-            suggestions, centrality=self._refactoring_centrality(suggestions)
-        )
+        self._augment_perf_hits(walked, dataflow_cache, timings)
+        with timed(timings, "analysis.health.repo_stats"):
+            inputs = self._repo_inputs(dup_report, fn_mod_p80, dataflow_cache)
+        with timed(timings, "analysis.health.evaluate"):
+            metrics, findings, suggestions = self._evaluate_all(run, walked, inputs, on_step)
+        # KPIs are repo-wide; on an incremental run they would be biased
+        # by the changed-files subset. Skip them in that case — the
+        # ``persist`` step recomputes KPIs from the merged DB rows.
+        kpis = self._kpis(metrics) if changed_files is None else {}
+        with timed(timings, "analysis.health.finalize"):
+            execution_roles = self._mark_perf_entry_reachability(findings)
+            suggestions = self._with_performance_plans(run, findings, suggestions)
         return HealthReport(
             repo_id="",
             analyzed_at=datetime.now(UTC),
@@ -1270,10 +1154,102 @@ class HealthAnalyzer:
             repo_function_mod_p80=full_repo_fn_mod_p80,
             refactoring_suggestions=suggestions,
             performance_plan_policy=PerformancePlanPolicy(
-                enabled=refactoring_enabled and "performance_fix" not in disabled_refactorings,
-                min_confidence=refactoring_min_confidence,
+                enabled=run.performance_fix,
+                min_confidence=run.refactoring_min_confidence,
             ),
         )
+
+    def _repo_inputs(
+        self,
+        dup_report: DuplicationReport,
+        fn_mod_p80: int | None,
+        dataflow_cache: FileDataflowCache,
+    ) -> _RepoInputs:
+        # PageRank is optional — graph_builder.symbol_pagerank exists but
+        # is symbol-level; we use file-level in-degree as the dependents
+        # signal (cheap, deterministic, conservative).
+        analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
+        return _RepoInputs(
+            paired_tests=self._paired_tests(analyzed_paths),
+            package_roots=self._package_boundaries(analyzed_paths),
+            graph_view=ImportEdgeView(self.graph) if self.graph is not None else None,
+            dup_report=dup_report,
+            function_mod_p80=fn_mod_p80,
+            dependents_p80=_compute_repo_dependents_p80(self.parsed_files, self.graph),
+            active_contributors=_compute_repo_active_contributors(self.git_meta_map),
+            # Repo-wide SCC index (import cycles), computed once so Break
+            # Cycle never recomputes it per file.
+            file_scc_index=build_file_scc_index(self.graph),
+            methods_by_file=build_methods_by_file(self.graph),
+            dataflow_cache=dataflow_cache,
+        )
+
+    def _evaluate_all(
+        self,
+        run: _RunConfig,
+        walked: list[tuple[Any, FileComplexity]],
+        inputs: _RepoInputs,
+        on_step: Any | None,
+    ) -> tuple[list[HealthFileMetricData], list[HealthFindingData], list[RefactoringSuggestion]]:
+        metrics: list[HealthFileMetricData] = []
+        findings: list[HealthFindingData] = []
+        suggestions: list[RefactoringSuggestion] = []
+        for pf, fcx in walked:
+            path = pf.file_info.path
+            # Side-effect: bump Symbol.complexity_estimate when we can
+            # match by enclosing line range. Symbols not matched keep
+            # their default (1).
+            self._populate_symbol_complexity(pf, fcx.functions)
+            file_metric, file_findings, file_suggestions = self._evaluate_file(
+                pf,
+                fcx,
+                inputs.paired_tests,
+                inputs.package_roots,
+                disabled=run.file_disabled(path),
+                dup_report=inputs.dup_report,
+                graph_view=inputs.graph_view,
+                repo_function_mod_p80=inputs.function_mod_p80,
+                repo_dependents_p80=inputs.dependents_p80,
+                repo_active_contributors_90d=inputs.active_contributors,
+                severity_overrides=run.file_severity_overrides(path),
+                disabled_refactorings=run.disabled_refactorings,
+                refactoring_enabled=run.refactoring_enabled,
+                refactoring_min_confidence=run.refactoring_min_confidence,
+                file_scc_index=inputs.file_scc_index,
+                methods_by_file=inputs.methods_by_file,
+                dataflow_cache=inputs.dataflow_cache,
+            )
+            # Every dataflow consumer has read this file by now.
+            inputs.dataflow_cache.release(pf.file_info.abs_path)
+            metrics.append(file_metric)
+            findings.extend(file_findings)
+            suggestions.extend(file_suggestions)
+            if on_step:
+                on_step(path)
+        return metrics, findings, suggestions
+
+    def _kpis(self, metrics: list[HealthFileMetricData]) -> dict[str, Any]:
+        hotspot_paths = {p for p, meta in self.git_meta_map.items() if self._is_hotspot(meta)}
+        return compute_kpis(metrics, hotspot_paths)
+
+    def _with_performance_plans(
+        self,
+        run: _RunConfig,
+        findings: list[HealthFindingData],
+        suggestions: list[RefactoringSuggestion],
+    ) -> list[RefactoringSuggestion]:
+        """Link the performance findings into opportunities, add their fix
+        plans to *suggestions*, and rank the whole list."""
+        link_performance_findings(findings)
+        opportunities = build_performance_opportunities(findings)
+        if run.performance_fix:
+            suggestions.extend(
+                performance_fix_suggestions(
+                    opportunities,
+                    min_confidence=run.refactoring_min_confidence,
+                )
+            )
+        return rank_suggestions(suggestions, centrality=self._refactoring_centrality(suggestions))
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1540,6 +1516,10 @@ class HealthAnalyzer:
             return clones, dup_pct
         kept = [p for p in clones if not self._installed(_partner(file_path, p))]
         return kept, _pct_of_kept(file_path, clones, kept, dup_pct)
+
+    def _load_walk_cache(self) -> None:
+        if self._walk_cache is not None:
+            self._walk_cache.load()
 
     def _save_walk_cache(self) -> None:
         """Persist the walk entries this pass used or produced, if any."""
