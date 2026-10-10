@@ -3,11 +3,13 @@
 Classifies each identifier in a statement as a write (def) or a read (use).
 Python's write sites are: assignment LHS (``x = ...``), augmented-assignment LHS
 (``x += ...`` -- both read and write), tuple/list unpacking (``a, b = ...``),
-the walrus operator (``(x := ...)``), ``for`` targets (statement and
-comprehension), and ``with ... as`` aliases. Attribute and subscript targets
-(``obj.attr = ...`` / ``arr[i] = ...``) bind no *local* variable, so their base
-identifiers are reads, not defs -- the precision-first choice that keeps reaching
-definitions sound for the locals they actually track.
+the walrus operator (``(x := ...)``), ``for`` targets, and ``with ... as``
+aliases. A comprehension's ``for`` targets are scoped to the comprehension
+(Python 3), so they are neither the function's writes nor its reads.
+Attribute and subscript targets (``obj.attr = ...`` / ``arr[i] = ...``) bind
+no *local* variable, so their base identifiers are reads, not defs -- the
+precision-first choice that keeps reaching definitions sound for the locals
+they actually track.
 
 All grammar specifics live here; the core (``defuse.py`` / ``reaching.py``) and
 the reaching-definitions fixpoint are language-agnostic.
@@ -40,6 +42,14 @@ _SPLAT_TARGETS = frozenset({"list_splat_pattern", "dictionary_splat_pattern", "l
 _SUBSCRIPT_KINDS = frozenset({"subscript"})
 # Nested scopes whose identifiers belong to a different function.
 _SCOPE_BOUNDARIES = frozenset({"lambda", "function_definition", "async_function_definition"})
+_COMPREHENSIONS = frozenset(
+    {"list_comprehension", "set_comprehension", "dictionary_comprehension", "generator_expression"}
+)
+# Module paths are not variables. Ceiling: the names an import binds are not
+# recorded as writes either, so a span holding a local import still read after
+# it is not refused; the upgrade is a def per bound name plus a re-import in
+# the helper rather than an import passed as a parameter.
+_IMPORT_KINDS = frozenset({"import_statement", "import_from_statement", "future_import_statement"})
 
 
 class PythonDefUseDialect(BaseDefUseDialect):
@@ -153,9 +163,10 @@ class PythonDefUseDialect(BaseDefUseDialect):
             self._targets(node.child_by_field_name("name"), defs, uses)
             self._process(node.child_by_field_name("value"), defs, uses)
             return
-        if t == "for_in_clause":  # comprehension ``for <target> in <iter>``
-            self._targets(node.child_by_field_name("left"), defs, uses)
-            self._process(node.child_by_field_name("right"), defs, uses)
+        if t in _COMPREHENSIONS:
+            self._comprehension(node, defs, uses)
+            return
+        if t in _IMPORT_KINDS:
             return
         if t == "with_item":
             self._with_item(node, defs, uses)
@@ -174,6 +185,25 @@ class PythonDefUseDialect(BaseDefUseDialect):
             return
         for child in node.named_children:
             self._process(child, defs, uses)
+
+    def _comprehension(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
+        """Only the first iterable runs in the enclosing scope; every other read
+        of a name a ``for`` clause binds is the comprehension's own. A walrus
+        inside still writes the enclosing scope (PEP 572)."""
+        binders: list[Occurrence] = []
+        outer: list[Occurrence] = []
+        inner: list[Occurrence] = []
+        first = True
+        for child in node.named_children:
+            if child.type == "for_in_clause":
+                self._targets(child.child_by_field_name("left"), binders, inner)
+                self._process(child.child_by_field_name("right"), defs, outer if first else inner)
+                first = False
+            else:
+                self._process(child, defs, inner)
+        bound = {b.name for b in binders}
+        kept = [*outer, *(u for u in inner if u.name not in bound)]
+        uses.extend(sorted(kept, key=lambda u: (u.line, u.column)))
 
     def _with_item(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
         value = node.child_by_field_name("value")

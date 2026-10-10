@@ -1175,3 +1175,37 @@ def test_a_refused_span_yields_only_to_a_disjoint_one(monkeypatch):
     )
     (s,) = ExtractMethodDetector().detect(ctx)
     assert s.plan["span"] == {"start": 85, "end": 95}
+
+
+def _span_in_out(src: str, s: int, e: int):
+    from repowise.core.analysis.health.dataflow import slice as slicer
+
+    def_use = _first(src).def_use
+    def_lines, use_lines = slicer._var_lines(def_use)
+    declared_first = slicer._declared_before_read(def_use)
+    return slicer._infer_in_out(def_lines, use_lines, s, e, declared_first)
+
+
+def test_a_comprehension_binder_is_not_a_parameter():
+    # Seen on get_health_findings: an earlier comprehension's ``v`` made the
+    # span's own ``v`` an input, and the call passed a name the caller lacks.
+    src = """
+    def f(severity, order, t):
+        exact = [v.strip() for v in severity if v]
+        b = len(exact)
+        allowed = [k for k, v in order.items() if v >= t]
+        return allowed, b
+    """
+    assert _span_in_out(src, 4, 5) == (("exact", "order", "t"), ("allowed", "b"))
+
+
+def test_an_import_path_naming_a_parameter_is_not_a_read():
+    # Seen on _lifespan: ``from repowise.server...`` read its ``server`` parameter.
+    src = """
+    def f(server, root):
+        a = root / "x"
+        from repowise.server.enrich import Enricher
+        e = Enricher(a)
+        return e
+    """
+    assert _span_in_out(src, 4, 5) == (("a",), ("e",))

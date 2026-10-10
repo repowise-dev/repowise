@@ -218,7 +218,11 @@ class RustDefUseDialect(BaseDefUseDialect):
             self._process(node.child_by_field_name("right"), defs, uses)
             return
         if t == _LET_DECL:
+            start = len(defs)
             self._targets(node.child_by_field_name("pattern"), defs, uses)
+            # ``let`` binds a new name (shadowing included) from the end of
+            # the statement, so its own initializer reads the outer one.
+            self._declare(defs, start, node)
             self._process(node.child_by_field_name("value"), defs, uses)
             # ``let ... else { diverge }``: the arm runs only on mismatch, so
             # anything it writes is a may-def.

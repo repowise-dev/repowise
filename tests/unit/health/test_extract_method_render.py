@@ -398,3 +398,21 @@ def test_read_after_names_the_inputs_the_host_still_uses():
     (fn,) = _functions("python", "py", src)
     span = Extraction(4, 5, ("cfg", "rows", "total"), ("total",), slice_nloc=2, ccn_removed=1)
     assert em._read_after(fn, span) == {"cfg", "total"}
+
+
+def test_a_rust_let_in_the_span_declares_the_output_it_shadows():
+    # ``x`` is written before the span, so only the in-span ``let`` tells the
+    # call to declare it (``let x = ...``) rather than assign the old one.
+    src = """
+    fn f(rows: Vec<i32>) -> i32 {
+        let x = 0;
+        println!("{}", x);
+        let x = rows.len() as i32;
+        x
+    }
+    """
+    (fn,) = _functions("rust", "rs", src)
+    lets = [d for d in fn.def_use.definitions if d.var == "x"]
+    assert lets and all(d.declares and d.declared_at is not None for d in lets)
+    span = Extraction(5, 5, ("rows",), ("x",), slice_nloc=1, ccn_removed=1)
+    assert em._out_binding(fn, span) == (True, True, False)

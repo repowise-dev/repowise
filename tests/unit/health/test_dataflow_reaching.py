@@ -168,16 +168,41 @@ def test_walrus_is_def():
     assert "n" in defs
 
 
-def test_comprehension_target_is_def():
+def test_comprehension_target_is_scoped_to_the_comprehension():
     defs, uses = _def_use_names(
         """
-        def f(source):
+        def f(source, pairs):
             data = [v * 2 for v in source if v > 0]
-            return data
+            more = {k: [w for w in k] for k, _ in pairs if (n := len(k))}
+            return data, more, n
         """
     )
-    assert {"data", "v"} <= defs
-    assert "source" in uses
+    assert {"data", "more", "n"} <= defs
+    assert not {"v", "k", "w"} & (defs | uses)
+    assert {"source", "pairs"} <= uses
+
+
+def test_first_iterable_reads_the_enclosing_name():
+    # Only the outermost iterable runs in the enclosing scope.
+    _defs, uses = _def_use_names(
+        """
+        def f(v):
+            return [v for v in v]
+        """
+    )
+    assert "v" in uses
+
+
+def test_import_module_path_is_not_a_read():
+    _defs, uses = _def_use_names(
+        """
+        def f(server):
+            from repowise.server.mcp import Enricher
+            import os.path as server_path
+            return Enricher
+        """
+    )
+    assert not {"repowise", "server", "mcp", "os", "path"} & uses
 
 
 def test_parameters_are_defs():
