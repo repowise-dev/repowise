@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 from repowise.core.workspace.update import (
     RepoUpdateResult,
@@ -141,6 +142,7 @@ def _write_state(repo: Path, commit: str | None) -> None:
     state = {}
     if commit:
         state["last_sync_commit"] = commit
+        state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
     (state_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
 
 

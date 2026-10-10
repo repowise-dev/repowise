@@ -1829,6 +1829,7 @@ async def persist_incremental_index(
     parsed_files: list[Any] | None = None,
     git_decay_map: dict | None = None,
     full_git_summary: Any | None = None,
+    history_window_changed: bool = False,
     reconcile_full_scope: bool = False,
     full_generation_page_ids: set[str] | None = None,
     vector_store: Any | None = None,
@@ -2004,6 +2005,7 @@ async def persist_incremental_index(
                             git_meta_map,
                             git_decay_map,
                             full_git_summary,
+                            keep_commit_health=not history_window_changed,
                         )
                 except Exception as exc:
                     _skip("Git persist", exc, range_scoped=True)
@@ -2155,7 +2157,9 @@ async def persist_incremental_index(
                 )
 
                 await purge_proposed_decisions_by_source(session, repo_id, "code_comment")
-                if full_git_summary is not None:
+                # A history-window change re-mines these; a walk that only
+                # refreshes rows under new rules does not, so it keeps them.
+                if full_git_summary is not None and history_window_changed:
                     await purge_proposed_decisions_by_source(
                         session, repo_id, "git_archaeology"
                     )
