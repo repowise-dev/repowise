@@ -50,7 +50,7 @@ jobs:
         run: npm run test:webview --workspace packages/vscode
 
       - name: Smoke test under a virtual display
-        run: env -u DBUS_SESSION_BUS_ADDRESS xvfb-run -a --server-args="-screen 0 1280x1024x24" npm run test --workspace packages/vscode
+        run: xvfb-run -a npm run test --workspace packages/vscode
 
       - name: Resolve release channel
         id: channel
