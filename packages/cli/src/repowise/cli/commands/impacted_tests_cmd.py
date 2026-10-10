@@ -107,7 +107,11 @@ def _resolve_repo_path(path: str | None, fmt: str):
     "jest (files), files, or auto (from the selected test files; mixed means files).",
 )
 def impacted_tests_command(
-    revspec: str | None, repo: str | None, staged: bool, fmt: str, runner: str
+    revspec: str | None,
+    repo: str | None,
+    staged: bool,
+    fmt: str,
+    runner: str,
 ) -> None:
     """Print the tests whose coverage intersects a change's changed lines."""
     if revspec and staged:
@@ -217,13 +221,14 @@ async def _collect(repo_path, change, roots: PytestRoots | None = None, config=N
 
 
 async def _place_tests(session, repo_id: str, out: dict) -> None:
-    """Record the tests the graph can see into, which selection needs to find the rest."""
-    from repowise.core.analysis.test_reachability import placed_test_files
+    """Record the tests the graph can see into, and those the indexer found it cannot."""
+    from repowise.core.analysis.test_reachability import always_run_test_files, placed_test_files
 
     if out["graph_error"] is not None:
         return
     try:
         out["placed_tests"] = await placed_test_files(session, repo_id)
+        out["always_run_tests"] = await always_run_test_files(session, repo_id)
     except Exception as exc:
         out["graph_error"] = f"{type(exc).__name__}: {exc}"
 
@@ -315,6 +320,7 @@ def _empty_result(changed_files: int) -> dict:
         "gap": None,
         "graph_error": None,
         "placed_tests": None,
+        "always_run_tests": {},
         "helper_importers": {},
         "changed_files": changed_files,
         "covered": {},  # test_id -> {test_file, source_files: [...]}
@@ -553,6 +559,7 @@ def _select(repo_path, change, result: dict, config, checkout: _Checkout):
             doc_readers=doc_readers(docs, _texts(root, sources)) if docs else {},
             plugin_loader=plugin_loader(checkout.pytest_texts),
             unplaced_tests=[] if placed is None else [t for t in known_tests if t not in placed],
+            always_run_tests=result["always_run_tests"],
         )
     )
 

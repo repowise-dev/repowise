@@ -406,6 +406,15 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
 
         run_warmups(self._parsed_files, ctx, progress=progress)
 
+        # Tests the import graph cannot see into, from the bytes already held,
+        # so selection reads a stored fact and never re-reads test files.
+        from ..always_run import stamp_always_run
+
+        try:
+            stamp_always_run(self._graph, self._parsed_files, self._source_map)
+        except Exception as exc:  # a detector bug must not fail the index
+            log.warning("always_run_detection_failed", error=str(exc))
+
         # --- Phase 1: Resolve file-level imports ---
         import_targets: dict[str, set[str]] = {}  # file → set of imported files
 

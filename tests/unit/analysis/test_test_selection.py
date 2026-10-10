@@ -774,6 +774,25 @@ def test_a_test_the_graph_cannot_see_into_runs_with_every_subset() -> None:
     assert _select(["docs/guide.md"], unplaced_tests=["tests/test_cli.py"]).tests == ()
 
 
+def test_a_test_found_walking_the_tree_runs_with_every_subset_and_says_why() -> None:
+    tiers = _tiers(inferred=[_inferred("src/a.py", "tests/test_a.py", "import-graph")])
+    lint = {"tests/test_no_copies.py": "it lists and reads files under a source directory"}
+    sel = _select(
+        ["src/a.py"],
+        tiers,
+        always_run_tests={**lint, "tests/test_gone.py": "it runs `tool` in a child process"},
+        known_tests=["tests/test_a.py", "tests/test_no_copies.py"],
+    )
+    assert not sel.run_all
+    # A detected test the checkout no longer has is left out.
+    assert sel.tests == ("tests/test_a.py", "tests/test_no_copies.py")
+    assert (
+        "1 test file(s) that list source files or run the project in a child process run "
+        "with every selection (e.g. tests/test_no_copies.py: it lists and reads files under "
+        "a source directory)." in sel.reasons
+    )
+
+
 def test_a_test_named_module_pytest_does_not_collect_is_not_runnable() -> None:
     """``core/test_paths.py`` is test-shaped, but a bare pytest never collects it."""
     config = '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'

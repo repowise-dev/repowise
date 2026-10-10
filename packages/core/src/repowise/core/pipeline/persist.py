@@ -459,6 +459,7 @@ async def persist_graph_nodes(
             "is_test": data.get("is_test", False),
             "is_entry_point": data.get("is_entry_point", False),
             "is_reachability_root": is_reachability_root(data),
+            "always_run_reason": data.get("always_run_reason"),
             # Files draw from the file-level metric tables; symbols fall
             # back to the symbol subgraph (calls + heritage) so that the
             # per-symbol UI panel shows real centrality instead of 0.

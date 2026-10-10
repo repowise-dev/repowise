@@ -443,6 +443,21 @@ async def placed_test_files(session: AsyncSession, repo_id: str) -> set[str]:
     return {row[0] for row in rows}
 
 
+async def always_run_test_files(session: AsyncSession, repo_id: str) -> dict[str, str]:
+    """``{test file: why}`` for the tests the indexer found the graph cannot see into.
+
+    Stored per file at index time (``repowise.core.ingestion.always_run``), so
+    this is one indexed read, never a scan of the test files.
+    """
+    res = await session.execute(
+        select(GraphNode.node_id, GraphNode.always_run_reason).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.always_run_reason.is_not(None),
+        )
+    )
+    return {node_id: reason for node_id, reason in res.all()}
+
+
 async def tests_reaching(
     session: AsyncSession,
     repo_id: str,

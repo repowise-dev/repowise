@@ -330,3 +330,54 @@ def test_only_files_whose_imports_moved_since_the_index_add_their_tests(
     result = _run(repo, "main...feat", "--format", "args", "--runner", "pytest")
     assert result.exit_code == 0, result.output
     assert result.stdout == expected
+
+
+def _add_test(repo, path: str, imports: str, reason: str | None = None) -> None:
+    """Land test *path* on main, index it there importing *imports*, rebase the change."""
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+
+    _git(repo, "switch", "-q", "main")
+    _write(repo, {path: "def test_x():\n    pass\n"})
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", f"add {path}")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "switch", "-q", "feat")
+    _git(repo, "rebase", "-q", "main")
+
+    async def add() -> None:
+        db = (repo / ".repowise" / "wiki.db").as_posix()
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db}")
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            node = GraphNode(
+                repository_id="r1",
+                node_id=path,
+                node_type="file",
+                is_test=True,
+                always_run_reason=reason,
+            )
+            edge = GraphEdge(
+                repository_id="r1", source_node_id=path, target_node_id=imports, edge_type="imports"
+            )
+            session.add_all([node, edge])
+            await session.execute(update(Repository).values(head_commit=head))
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(add())
+
+
+def test_a_test_the_indexer_found_walking_the_tree_runs_with_every_subset(repo) -> None:
+    walks = "it lists and reads files under a source directory"
+    _add_test(repo, "tests/test_lint.py", "src/b.py", walks)
+    _add_test(repo, "tests/test_b.py", "src/b.py")
+    result = _run(repo, "main...feat", "--format", "args", "--runner", "pytest")
+    assert result.exit_code == 0, result.output
+    # src/a.py changed: tests/test_b.py stays out, the tree walker comes in.
+    assert result.stdout == "tests/test_a.py tests/test_lint.py\n"
+    assert (
+        "1 test file(s) that list source files or run the project in a child process run with "
+        "every selection (e.g. tests/test_lint.py: it lists and reads files under a source "
+        "directory)." in _err(result)
+    )
