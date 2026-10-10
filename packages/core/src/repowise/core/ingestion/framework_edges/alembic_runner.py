@@ -41,6 +41,8 @@ if TYPE_CHECKING:
 ALEMBIC_RUNNER_HINT = "alembic_runner"
 
 _WORD = re.compile(rb"(?<![\w.-])alembic(?![\w-])", re.IGNORECASE)
+# Python 3.12+ tokenizes an f-string's literal text as its own token type.
+_FSTRING_MIDDLE = getattr(tokenize, "FSTRING_MIDDLE", None)
 
 
 def script_files(path_set: set[str]) -> list[str]:
@@ -69,9 +71,9 @@ def _in_script_dir(path: str, scripts: set[str]) -> bool:
 def names_alembic(path: str, blob: bytes) -> bool:
     """Whether *blob*'s code (not its comments or docstrings) names Alembic.
 
-    Python is read by token: a name ``alembic``, or the word in a string that
-    is not a docstring. Python that does not tokenize counts when the word is
-    anywhere in it.
+    Python is read by token: a name ``alembic``, the word in an f-string's
+    text, or in a string that is not a docstring. Python that does not
+    tokenize counts when the word is anywhere in it.
     """
     if not _WORD.search(blob):
         return False
@@ -80,6 +82,9 @@ def names_alembic(path: str, blob: bytes) -> bool:
     try:
         for tok in tokenize.tokenize(io.BytesIO(blob).readline):
             if tok.type == tokenize.NAME and tok.string == "alembic":
+                return True
+            # Since 3.12 an f-string is split into parts no string check sees.
+            if tok.type == _FSTRING_MIDDLE and _WORD.search(tok.string.encode("utf-8")):
                 return True
     except (tokenize.TokenError, SyntaxError, ValueError):
         return True

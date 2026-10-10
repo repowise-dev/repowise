@@ -64,6 +64,8 @@ _LINKED = {
         ("import alembic\nalembic.command.upgrade(cfg, 'head')\n", True),
         ("subprocess.run(['alembic', 'upgrade', 'head'])\n", True),
         ("os.system('alembic upgrade head')\n", True),
+        ('subprocess.run(f"alembic upgrade {rev}", shell=True)\n', True),
+        ('subprocess.run(f"{tool} upgrade {rev}")\n', False),
         ("from tests.db import migrate  # alembic underneath\n", False),
         ('"""Runs alembic in CI."""\nx = 1\n', False),
         ("import alembic_utils\n", False),

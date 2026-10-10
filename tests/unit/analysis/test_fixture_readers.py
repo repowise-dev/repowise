@@ -19,6 +19,7 @@ def test_a_fixture_root_is_the_directory_under_the_outermost_fixtures_directory(
 _TEXTS = {
     "tests/test_ts.py": 'ROOT = FIXTURES / "ts_sample"\n',
     "tests/test_dynamic.py": 'ROOT = HERE / "fixtures" / f"{lang}_sample"\n',
+    "tests/test_fstring.py": 'ROOT = HERE / f"ts_sample/{part}"\n',
     "tests/helpers.py": "def trees():\n    return list((HERE / 'FIXTURES').iterdir())\n",
     "tests/test_uses_helper.py": "from tests.helpers import trees\n",
     "tests/conftest.py": "import pytest\n",
@@ -47,6 +48,7 @@ def test_a_fixture_namer_becomes_every_piece_of_test_code_naming_its_tree() -> N
             "src/cli.py",
             "tests/test_ts.py",
             "tests/test_dynamic.py",
+            "tests/test_fstring.py",
             "tests/helpers.py",
         ]
     }

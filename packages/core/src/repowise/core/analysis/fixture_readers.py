@@ -122,6 +122,7 @@ def _code_text(path: str, text: str) -> str:
     from ..ingestion.languages.python_strings import _is_statement
 
     if not path.endswith(".py"):
+        # Ceiling: not string-aware, so a "/*" inside a string can hide code up to a "*/".
         return strip_comments(text.encode("utf-8")).decode("utf-8", errors="replace")
     try:
         tokens = [
