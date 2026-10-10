@@ -2633,7 +2633,13 @@ export interface PlanMeasuresResponse {
   params?: number | null;
 }
 
-/** What happened to a plan the index resolved as no longer detected. */
+/**
+ * What happened to a plan the index resolved as no longer detected.
+ *
+ * ``applied`` means the measures are consistent with the plan being applied:
+ * the target shed at least half the predicted decision points and a function
+ * fitting the extracted slice appeared beside it.
+ */
 export interface PlanPayoffResponse {
   outcome: string;
   resolved_commit?: string | null;
@@ -2642,7 +2648,6 @@ export interface PlanPayoffResponse {
   after?: PlanMeasuresResponse | null;
   realised?: Record<string, number> | null;
   new_symbol?: string | null;
-  stage?: number | null;
 }
 
 export interface PlanRiskResponse {

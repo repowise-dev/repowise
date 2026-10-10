@@ -322,7 +322,7 @@ async def test_a_resolved_plan_detail_says_what_happened_to_it(client: AsyncClie
             repo_id,
             [],
             file_paths=["pkg/leaf.py"],
-            payoff=crud.PayoffContext(fact_rows=[], live_paths=frozenset(), commit="f00d"),
+            payoff=crud.PayoffContext(fact_rows=[], is_live=lambda _path: False, commit="f00d"),
         )
         await session.commit()
 

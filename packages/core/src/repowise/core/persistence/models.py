@@ -2152,11 +2152,9 @@ class RefactoringPayoff(Base):
     after_nloc: Mapped[int | None] = mapped_column(Integer, nullable=True)
     after_params: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # A function the resolving run found in the target's file and the run
-    # before did not: the helper, when the plan was applied.
+    # before did not, sized like the plan's slice or carrying its suggested
+    # name: the helper, when the plan was applied.
     new_symbol: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # The stage of a staged plan this resolution covers; NULL for a plan
-    # without stages, the only kind tracked so far.
-    stage: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (Index("ix_refactoring_payoffs_repo_outcome", "repository_id", "outcome"),)
 

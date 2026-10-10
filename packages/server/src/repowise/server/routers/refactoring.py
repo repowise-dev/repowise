@@ -364,10 +364,7 @@ async def _plan_detail(
     row = await crud.get_refactoring_suggestion(session, repo_id, suggestion_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
-    detail = (await _service(session, repo_id).plan_recommendation(row)).detail_dict()
-    payoff = await crud.plan_payoff(session, row)
-    if payoff is not None:
-        detail["payoff"] = payoff
+    detail = await _service(session, repo_id).plan_detail_dict(row)
     return detail, row.public_id or row.id
 
 

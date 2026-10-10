@@ -1286,7 +1286,7 @@ async def persist_partial_health(
         upsert_refactoring_suggestions,
         write_function_facts,
     )
-    from repowise.core.pipeline.persist import _analyzed_commit
+    from repowise.core.pipeline.persist import _analyzed_commit, path_liveness
 
     changed_paths = sorted(
         set(getattr(report, "authoritative_paths", None) or ())
@@ -1342,7 +1342,7 @@ async def persist_partial_health(
                 # measures a resolved plan was detected against.
                 payoff=PayoffContext(
                     fact_rows=getattr(report, "function_facts", None),
-                    live_paths=frozenset(changed_paths),
+                    is_live=path_liveness(repo_path),
                     commit=analyzed_commit,
                 ),
             )

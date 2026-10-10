@@ -108,12 +108,12 @@ on the same lines. A governed plan's steps are `judgment`, and its
 A newly accepted decision shows here after the next index or update.
 
 A plan the index stops detecting is resolved, and its detail then carries a
-`payoff`: `applied` when the target lost at least half the complexity or code
-lines the plan predicted and a new function appeared beside it, `file_deleted`,
-`superseded` when an edit moved it and the same plan is found again under a new
-id, `target_changed` when it was renamed or rewritten another way, or `unknown`.
-It shows the target's size before and after and the commit that resolved it; only
-Extract Method plans are judged as applied so far.
+`payoff` with the target's size before and after and the commit that resolved
+it. `applied` means the measures are consistent with the plan being applied: the
+target lost at least half the predicted complexity and a function the size of
+the extracted span appeared beside it (Extract Method only, so far). The other
+outcomes are `file_deleted`, `superseded` (the same plan found again under a new
+id), `target_changed` (renamed or rewritten another way) and `unknown`.
 
 Break Cycle is advisory. Its plan names edges to cut, not which symbols cross
 them or how to move them, so an opportunity carries it as `evidence` rather than

@@ -9,9 +9,9 @@ against, and the run's own fact rows are the measures after.
 from __future__ import annotations
 
 import json
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,32 +21,22 @@ from ...models import RefactoringPayoff, RefactoringSuggestion, _now_utc
 from .._shared import _BATCH_SIZE
 from .function_facts import get_file_facts
 
-if TYPE_CHECKING:
-    from ....analysis.health.refactoring.payoff import FunctionMeasures
+_MEASURES = ("ccn", "nloc", "params")
 
 
 @dataclass(frozen=True)
 class PayoffContext:
-    """What the resolving run knows: its fact rows (``None`` when it had no
-    graph to key them on), the files it saw alive, and the commit it analysed."""
+    """What the resolving run knows.
 
-    fact_rows: list[Mapping[str, Any]] | None
-    live_paths: frozenset[str]
+    *fact_rows* are its ``function_facts`` rows (``None`` when it had no graph to
+    key them on); *is_live* says whether a path is still on disk or tracked by
+    git, and without it no plan reads as ``file_deleted``; *commit* is the
+    commit the run analysed.
+    """
+
+    fact_rows: Iterable[Mapping[str, Any]] | None
+    is_live: Callable[[str], bool] | None = None
     commit: str | None = None
-
-
-def _by_file(measures: Iterable[FunctionMeasures]) -> dict[str, dict[str, FunctionMeasures]]:
-    out: dict[str, dict[str, FunctionMeasures]] = {}
-    for item in measures:
-        out.setdefault(file_of_symbol(item.symbol_id), {})[item.symbol_id] = item
-    return out
-
-
-def _measures(symbol_id: str, row: Any) -> FunctionMeasures:
-    from ....analysis.health.refactoring.payoff import FunctionMeasures
-
-    get = row.get if isinstance(row, Mapping) else lambda key: getattr(row, key, None)
-    return FunctionMeasures(symbol_id, get("ccn"), get("nloc"), get("params"))
 
 
 def _loads(text: str | None) -> dict:
@@ -58,76 +48,73 @@ def _loads(text: str | None) -> dict:
 
 
 def _payoff_row(row: RefactoringSuggestion, payoff: Any, ctx: PayoffContext, now: Any) -> dict:
-    before, after = payoff.before, payoff.after
-    return {
+    out = {
         "suggestion_id": row.id,
         "repository_id": row.repository_id,
         "outcome": payoff.outcome,
         "resolved_commit": ctx.commit,
         "resolved_at": now,
-        "before_ccn": before.ccn if before else None,
-        "before_nloc": before.nloc if before else None,
-        "before_params": before.params if before else None,
-        "after_ccn": after.ccn if after else None,
-        "after_nloc": after.nloc if after else None,
-        "after_params": after.params if after else None,
         "new_symbol": payoff.new_symbol,
-        "stage": None,
     }
+    for side in ("before", "after"):
+        measures = getattr(payoff, side)
+        for key in _MEASURES:
+            out[f"{side}_{key}"] = getattr(measures, key) if measures else None
+    return out
 
 
-async def record_refactoring_payoffs(
+async def settle_refactoring_payoffs(
     session: AsyncSession,
     repository_id: str,
+    *,
     resolved: list[RefactoringSuggestion],
+    reopened: list[str],
+    detected: set[tuple[str, str, str]],
     ctx: PayoffContext,
-    detected: Collection[tuple[str, str, str]] = (),
-) -> int:
-    """Classify and store the payoff of each plan in *resolved*. Returns rows written.
+) -> None:
+    """Drop the payoffs of *reopened* plans and record those of *resolved* ones.
 
     *detected* is ``(refactoring_type, file_path, target_symbol)`` of every plan
     the run emitted, so a plan re-detected under a new id reads as superseded.
     """
     # Deferred: the refactoring package imports the persistence layer.
-    from ....analysis.health.refactoring.payoff import classify_payoff
+    from ....analysis.health.refactoring.payoff import classify_payoff, measures_by_file
 
+    await clear_refactoring_payoffs(session, reopened + [row.id for row in resolved])
     if not resolved:
-        return 0
-    live = {row.file_path for row in resolved if row.file_path in ctx.live_paths}
-    stored = await get_file_facts(session, repository_id, live)
-    before = _by_file(_measures(fact.symbol_id, fact) for fact in stored)
-    after = None
-    if ctx.fact_rows is not None:
-        after = _by_file(
-            _measures(r["symbol_id"], r)
-            for r in ctx.fact_rows
-            if file_of_symbol(r["symbol_id"]) in live
-        )
+        return
+    paths = {row.file_path for row in resolved}
+    stored = await get_file_facts(session, repository_id, paths)
+    # ORM rows become plain rows here, the one shape the classifier reads.
+    before = measures_by_file(
+        {"symbol_id": fact.symbol_id, **{key: getattr(fact, key) for key in _MEASURES}}
+        for fact in stored
+    )
+    after = measures_by_file(
+        r for r in (ctx.fact_rows or ()) if file_of_symbol(r["symbol_id"]) in paths
+    )
     now = _now_utc()
     values = []
     for row in resolved:
-        plan = _loads(row.plan_json)
         payoff = classify_payoff(
             refactoring_type=row.refactoring_type,
             target=row.target_symbol,
             evidence=_loads(row.evidence_json),
-            file_live=row.file_path in ctx.live_paths,
+            file_live=ctx.is_live(row.file_path) if ctx.is_live else None,
             before=before.get(row.file_path, {}),
-            after=None if after is None else after.get(row.file_path, {}),
-            suggested_name=plan.get("suggested_name"),
+            after=after.get(row.file_path, {}),
+            suggested_name=_loads(row.plan_json).get("suggested_name"),
             redetected=(row.refactoring_type, row.file_path, row.target_symbol) in detected,
         )
         values.append(_payoff_row(row, payoff, ctx, now))
-    await clear_refactoring_payoffs(session, [row.id for row in resolved])
     for index in range(0, len(values), _BATCH_SIZE):
         await session.execute(
             insert(RefactoringPayoff.__table__), values[index : index + _BATCH_SIZE]
         )
-    return len(values)
 
 
 async def clear_refactoring_payoffs(session: AsyncSession, suggestion_ids: list[str]) -> None:
-    """Drop the payoff of each plan in *suggestion_ids* (reopened or re-resolved)."""
+    """Drop the payoff of each plan in *suggestion_ids*."""
     for index in range(0, len(suggestion_ids), _BATCH_SIZE):
         await session.execute(
             delete(RefactoringPayoff).where(
@@ -136,21 +123,19 @@ async def clear_refactoring_payoffs(session: AsyncSession, suggestion_ids: list[
         )
 
 
-def _measure_dict(ccn: int | None, nloc: int | None, params: int | None) -> dict[str, int]:
-    return {
-        key: value
-        for key, value in (("ccn", ccn), ("nloc", nloc), ("params", params))
-        if value is not None
-    }
+def _side(payoff: RefactoringPayoff, side: str) -> dict[str, int]:
+    values = ((key, getattr(payoff, f"{side}_{key}")) for key in _MEASURES)
+    return {key: value for key, value in values if value is not None}
 
 
 async def plan_payoff(session: AsyncSession, row: RefactoringSuggestion) -> dict | None:
-    """The stored payoff of a resolved plan, for its detail; ``None`` otherwise.
+    """The stored payoff of a plan the writer resolved, for its detail.
 
-    ``realised`` is what left the target, beside the plan's own prediction in
-    its ``evidence`` (``ccn_removed``, ``slice_nloc``).
+    ``None`` for any other plan, a person's resolution included. ``realised``
+    is what left the target, beside the plan's own prediction in its
+    ``evidence`` (``ccn_removed``, ``slice_nloc``).
     """
-    if row.status != "resolved":
+    if row.status != "resolved" or row.status_reason != "no_longer_detected":
         return None
     payoff = (
         await session.execute(
@@ -159,22 +144,19 @@ async def plan_payoff(session: AsyncSession, row: RefactoringSuggestion) -> dict
     ).scalar_one_or_none()
     if payoff is None:
         return None
-    before = _measure_dict(payoff.before_ccn, payoff.before_nloc, payoff.before_params)
-    after = _measure_dict(payoff.after_ccn, payoff.after_nloc, payoff.after_params)
-    realised = {
-        f"{key}_removed": before[key] - after[key]
-        for key in ("ccn", "nloc")
-        if key in before and key in after
-    }
+    before, after = _side(payoff, "before"), _side(payoff, "after")
     out: dict[str, Any] = {
         "outcome": payoff.outcome,
         "resolved_commit": payoff.resolved_commit,
         "resolved_at": payoff.resolved_at.isoformat() if payoff.resolved_at else None,
         "before": before,
         "after": after,
-        "realised": realised,
+        "realised": {
+            f"{key}_removed": before[key] - after[key]
+            for key in ("ccn", "nloc")
+            if key in before and key in after
+        },
         "new_symbol": payoff.new_symbol,
-        "stage": payoff.stage,
     }
     return {key: value for key, value in out.items() if value not in (None, {})}
 
@@ -183,5 +165,5 @@ __all__ = [
     "PayoffContext",
     "clear_refactoring_payoffs",
     "plan_payoff",
-    "record_refactoring_payoffs",
+    "settle_refactoring_payoffs",
 ]
