@@ -168,11 +168,9 @@ Each result says how it was found, and a guess never passes for evidence:
 The graph also carries test wiring no import states: runner setup files
 (`setupFiles`, `globalSetup` and the like) link to the tests their config runs,
 a helper a test starts by a path relative to itself links to that test, and a
-`conftest.py` links to the files pytest collects. Every fixture request (a
-parameter, a fixture's own parameter, `usefixtures`, `indirect`, a literal
-`getfixturevalue`) links the requester to the fixture, so a change a conftest
-reaches only through its imports selects the tests using the fixtures that
-use it, plus one import check (see the CI guide for when it keeps every test).
+`conftest.py` links to the files pytest collects. Each fixture request links
+the test to the fixture, so a change a conftest reaches only through its
+imports selects the tests whose fixtures use it, plus one import check.
 
 With `--format list` the caveats go to stderr so the pipe stays clean. The
 command exits `0` in every case: it reports, it does not gate. `--format args`
