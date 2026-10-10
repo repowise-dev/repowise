@@ -11,6 +11,7 @@ The reads here only narrow; the row-to-fact rule is the pure builder in
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -39,13 +40,20 @@ from repowise.core.analysis.actions.build import (
     build_recent,
     build_secrets,
     lead_paths,
+    reach_paths,
     with_leads,
+    with_test_reach,
 )
 from repowise.core.analysis.actions.facts import FileFacts
 from repowise.core.analysis.actions.rules.code import FIX_FIRST_ACTIONS
 from repowise.core.analysis.actions.rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.test_reachability import (
+    DEFAULT_CALL_DEPTH,
+    load_test_files,
+    tests_reaching_by_tier,
+)
 
 from ...models import (
     ActionState,
@@ -224,6 +232,49 @@ async def _recent(
     return build_recent(rows, week=since, open_findings=open_findings, files=files)
 
 
+#: ``(call depth, import depth)`` per walk, cheapest first; the last is the
+#: unbounded closure.
+_REACH_WALKS = ((0, 1), (DEFAULT_CALL_DEPTH, 0), (0, 2), (0, sys.maxsize))
+
+
+async def _history(session: AsyncSession, repo_id: str) -> dict[str, Any]:
+    count = select(func.count()).select_from(GitCommit).where(GitCommit.repository_id == repo_id)
+    return {"history_commits": (await session.execute(count)).scalar_one()}
+
+
+async def _test_map(session: AsyncSession, repo_id: str, files: dict[str, FileFacts]) -> dict:
+    """Reaching test files for the few files that could become "add tests".
+
+    The walks ``repowise impacted-tests`` runs, call graph and the whole
+    reverse-import closure (a test importing a helper that imports the file
+    runs it too). Only a file none of them reaches is told to add tests. The
+    question is whether any test reaches, so the cheap walks go first and each
+    later one sees only what the earlier ones left: on a 21k-file repository
+    the closure alone takes seconds per file a hub module pulls in. Ceiling:
+    walked per request (about a second there); storing the reach at index time
+    is the upgrade path.
+    """
+    pending = reach_paths(files)
+    if not pending:
+        return {}
+    test_files = await load_test_files(session, repo_id)
+    reached: dict[str, Any] = {}
+    for call_depth, import_depth in _REACH_WALKS:
+        found = await tests_reaching_by_tier(
+            session,
+            repo_id,
+            pending,
+            call_depth=call_depth,
+            import_depth=import_depth,
+            test_files=test_files,
+        )
+        reached |= found
+        pending = [p for p in pending if p not in found]
+        if not pending:
+            break
+    return {"files": with_test_reach(files, {p: r.total for p, r in reached.items()})}
+
+
 async def _fix_first(session: AsyncSession, repo_id: str) -> dict[str, Any]:
     return {"fix_first": (await load_fix_first(session, repo_id, limit=FIX_FIRST_ACTIONS)).items}
 
@@ -389,7 +440,10 @@ async def load_repo_facts(session: AsyncSession, repo_id: str) -> RepoFacts:
             logger.warning("actions: %s unavailable: %s", store, exc)
             unavailable[store] = ABSENT
 
+    await read("history", lambda: _history(session, repo_id))
     await read("files", lambda: _files(session, repo_id, since))
+    if "files" in values:
+        await read("test_map", lambda: _test_map(session, repo_id, values["files"]))
     files: dict[str, FileFacts] = values.get("files") or {}
     await read("authors", lambda: _authors(session, repo_id, since))
     await read("commit_health", lambda: _recent(session, repo_id, week, files))

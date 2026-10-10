@@ -56,6 +56,7 @@ function response(week: NextAction[], quarter: NextAction[]): ActionsResponse {
       fix_commits_90d: 40,
       busy_threshold: 8,
       coverage: "unknown",
+      history_too_short: false,
     },
     horizons: { week: horizon(week), quarter: horizon(quarter) },
     rules: [

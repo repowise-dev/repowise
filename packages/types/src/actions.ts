@@ -135,6 +135,8 @@ export interface ActionsResponse {
     fix_commits_90d: number;
     busy_threshold: number;
     coverage: "measured" | "stale" | "unknown";
+    /** Too few commits indexed for history-driven rules to rank by. */
+    history_too_short: boolean;
   };
   horizons: Record<ActionHorizonKey, ActionHorizon>;
   rules: ActionRuleReport[];

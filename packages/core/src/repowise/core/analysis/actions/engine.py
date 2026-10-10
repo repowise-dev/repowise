@@ -134,6 +134,7 @@ def compose_actions(
             "fix_commits_90d": ctx.fix_commits_90d,
             "busy_threshold": ctx.busy_threshold,
             "coverage": facts.coverage.status,
+            "history_too_short": ctx.history_too_short,
         },
         "horizons": horizons,
         "rules": [o.as_dict() for o in outcomes],

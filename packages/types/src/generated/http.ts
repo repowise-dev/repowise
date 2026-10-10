@@ -23,6 +23,8 @@ export interface ActionContext {
   fix_commits_90d: number;
   busy_threshold: number;
   coverage: "measured" | "stale" | "unknown";
+  /** The index holds too few commits for history-driven rules to rank by. */
+  history_too_short: boolean;
 }
 
 export interface ActionDetail {

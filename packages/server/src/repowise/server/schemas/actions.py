@@ -77,6 +77,9 @@ class ActionContext(BaseModel):
     fix_commits_90d: int
     busy_threshold: int
     coverage: Literal["measured", "stale", "unknown"]
+    history_too_short: bool = Field(
+        description="The index holds too few commits for history-driven rules to rank by.",
+    )
 
 
 class ActionsResponse(BaseModel):

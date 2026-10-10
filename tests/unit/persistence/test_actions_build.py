@@ -129,6 +129,8 @@ def _rows(dead_ids: list[str], **overrides):
         ],
         "decisions": {"stale_decisions": [], "summary": {}},
         "coverage": {"files_measured": 0},
+        "test_map": {},
+        "history_commits": 5,
     }
     return {**rows, **overrides}
 

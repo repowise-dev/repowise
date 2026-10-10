@@ -47,6 +47,9 @@ class FileFacts:
     owner_pct: float | None
     dependents: int | None
     lead: LeadFinding | None = None
+    #: Test files the code graph says reach this file; ``None`` when not looked
+    #: up (only fragile files with no measured coverage are) or the map failed.
+    tests_reaching: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,5 +142,7 @@ class RepoFacts:
     author_last_commit: Mapping[str, datetime] = field(default_factory=dict)
     active_authors_90d: int = 0
     coverage: CoverageState = CoverageState("unknown")
+    #: Commits the index holds; ``None`` when not counted.
+    history_commits: int | None = None
     #: Store name -> why it could not be read.
     unavailable: Mapping[str, str] = field(default_factory=dict)

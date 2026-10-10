@@ -599,3 +599,85 @@ def test_rollup_carries_evidence_starting_with_the_worst_file_and_commands() -> 
     mcp = [c.mcp for c in a.commands]
     assert any(m and m.startswith('get_health(targets=["src/worst.py"') for m in mcp)
     assert 'get_change_risk(revspec="w1")' in mcp
+
+
+# ---------------------------------------------------------------------------
+# Self-checks: "add tests" needs no test reaching the file; short history
+# ---------------------------------------------------------------------------
+
+_LEAD = LeadFinding("complex_method", "high", "runEmbeddedAttempt", 40, "CCN 90")
+
+
+def test_fragile_reached_by_tests_says_simplify_not_add_tests() -> None:
+    """openclaw's attempt.ts: no coverage report, but tests reach it in the graph."""
+    path = "src/agents/embedded-agent-runner/run/attempt.ts"
+    (a,) = _run(code.fragile_file, _facts([_file(path, lead=_LEAD, tests_reaching=36)])).actions
+    assert not a.title.startswith("Add tests")
+    assert a.title == (
+        f"Simplify `runEmbeddedAttempt` in `{path}`: tests reach it, and fixes keep landing"
+    )
+    reach = next(w for w in a.why if w.label == "tests that reach it")
+    assert (reach.value, reach.basis) == ("36 test files", "inferred")
+    assert a.confidence == "medium"
+    assert a.target_symbol == "runEmbeddedAttempt"
+
+
+def test_fragile_reached_by_tests_without_a_lead_is_silent() -> None:
+    out = _run(code.fragile_file, _facts([_file("src/a.py", tests_reaching=2)]))
+    assert out.actions == ()
+
+
+def test_fragile_no_test_reaches_says_add_tests() -> None:
+    (a,) = _run(code.fragile_file, _facts([_file("src/a.py", tests_reaching=0)])).actions
+    assert a.title.startswith("Add tests around `src/a.py`")
+    reach = next(w for w in a.why if w.label == "tests that reach it")
+    assert (reach.value, reach.basis) == ("None in the code graph", "inferred")
+
+
+def test_fragile_add_tests_says_when_the_test_map_could_not_be_read() -> None:
+    facts = _facts([_file("src/a.py")], unavailable={"test_map": "Not in this index yet."})
+    (a,) = _run(code.fragile_file, facts).actions
+    assert a.title.startswith("Add tests around")
+    reach = next(w for w in a.why if w.label == "tests that reach it")
+    assert reach.basis == "unknown"
+    assert "could not be read" in reach.value
+
+
+def test_measured_coverage_wins_over_the_test_map() -> None:
+    """Ours: update_cmd/command.py (68 changes, 27 fixes, 70%) keeps "raise coverage",
+    and call_resolver.py keeps "simplify _csharp_type_id", whatever reaches them."""
+    raise_path = "packages/cli/src/repowise/cli/commands/update_cmd/command.py"
+    tested_path = "packages/core/src/repowise/core/ingestion/call_resolver.py"
+    lead = LeadFinding("complex_method", "high", "_csharp_type_id", 10, "")
+    files = [
+        _file(raise_path, commits_90d=68, fix_commits_90d=27, line_coverage_pct=70.0,
+              tests_reaching=40),
+        _file(tested_path, commits_90d=68, fix_commits_90d=27, line_coverage_pct=91.0,
+              lead=lead, tests_reaching=40),
+    ]
+    titles = {a.target_path: a.title for a in _run(code.fragile_file, _facts(files)).actions}
+    assert titles[raise_path] == f"Raise test coverage on `{raise_path}` from 70%"
+    assert titles[tested_path] == (
+        f"Simplify `_csharp_type_id` in `{tested_path}`: it is tested, and fixes keep landing"
+    )
+
+
+def test_one_commit_history_stands_history_rules_down_and_flags_the_view() -> None:
+    """hermes-dogfood: a one-commit copy has churn and fix counts that describe the copy."""
+    files = [_file(f"src/m{i}/a{j}.py", commits_90d=30, fix_commits_90d=10)
+             for i in range(2) for j in range(4)]
+    facts = _facts(files, history_commits=1, active_authors_90d=5)
+    for rule in (code.fragile_file, code.fix_concentration, hygiene.knowledge_loss):
+        out = _run(rule, facts)
+        assert (out.status, out.actions) == ("not_applicable", ())
+        assert "too few commits" in out.reason
+    view = compose_actions(facts, now=NOW)
+    assert view["context"]["history_too_short"] is True
+
+
+def test_history_at_the_busy_floor_or_uncounted_is_not_flagged() -> None:
+    files = [_file("src/a.py")]
+    for commits in (5, None):
+        facts = _facts(files, history_commits=commits)
+        assert build_context(facts).history_too_short is False
+        assert _run(code.fragile_file, facts).status == "evaluated"

@@ -729,7 +729,7 @@ repowise next --all                # up to 20 rows instead of 5
 repowise next --format json        # the whole stored view (--json also works)
 ```
 
-Rows are grouped as **Now**, **Worth planning** and **Improve what Repowise can see**, each with its impact, the facts behind it, when it counts as done, and a command when one applies. An index built before a store existed names that store and suggests `repowise update` rather than reporting it as empty.
+Rows are grouped as **Now**, **Worth planning** and **Improve what Repowise can see**, each with its impact, the facts behind it, when it counts as done, and a command when one applies. An index built before a store existed names that store and suggests `repowise update` rather than reporting it as empty. An index with fewer than five commits sets `context.history_too_short` in the JSON, and the history-ranked rows (fragile files, bug-fix concentration, knowledge loss) are left out.
 
 ---
 

@@ -48,6 +48,9 @@ Row shapes (the field names are the SQL columns):
 ``coverage``
     One mapping: ``files_measured``, ``ingested_at``, ``ingested_commit_sha``,
     ``partial``.
+``test_map``
+    One mapping of path to how many test files reach it in the code graph
+    (``repowise.core.analysis.test_reachability``), for :func:`reach_paths`.
 """
 
 from __future__ import annotations
@@ -67,7 +70,7 @@ from repowise.core.analysis.health.rows import field
 from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
 from repowise.core.author_identity import author_identity_key
 
-from .context import WEEK
+from .context import WEEK, build_context
 from .facts import (
     CoverageState,
     DeadFacts,
@@ -79,7 +82,7 @@ from .facts import (
     RepoFacts,
     SecretFacts,
 )
-from .rules.code import FIX_FIRST_ACTIONS
+from .rules.code import FIX_FIRST_ACTIONS, is_fragile
 from .rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS
 
 logger = logging.getLogger(__name__)
@@ -219,6 +222,34 @@ def with_leads(files: Mapping[str, FileFacts], findings: Rows) -> dict[str, File
                     reason=field(lead, "reason") or "",
                 ),
             )
+    return out
+
+
+def reach_paths(files: Mapping[str, FileFacts]) -> list[str]:
+    """The files whose test reach is worth a lookup: fragile, with no measured coverage.
+
+    Only these can become "add tests", so the graph walk stays keyed to a few.
+    The busy and fix bars depend on the files alone.
+    """
+    ctx = build_context(RepoFacts(anchor=None, files=files))
+    return [
+        p
+        for p, f in files.items()
+        if f.line_coverage_pct is None and is_fragile(f, ctx)
+    ]
+
+
+def with_test_reach(
+    files: Mapping[str, FileFacts], reaching: Mapping[str, int]
+) -> dict[str, FileFacts]:
+    """``files`` with each :func:`reach_paths` file's count of reaching test files.
+
+    ``reaching`` maps a path to how many test files reach it; a looked-up path
+    it does not name has none.
+    """
+    out = dict(files)
+    for path in reach_paths(files):
+        out[path] = replace(out[path], tests_reaching=int(reaching.get(path, 0)))
     return out
 
 
@@ -429,12 +460,15 @@ def build_repo_facts(
     dead_code: Rows | None = None,
     decisions: Mapping[str, Any] | None = None,
     coverage: Mapping[str, Any] | None = None,
+    test_map: Mapping[str, int] | None = None,
+    history_commits: int | None = None,
     unavailable: Mapping[str, str] | None = None,
     absent_reason: str = ABSENT,
 ) -> RepoFacts:
     """`RepoFacts` from rows (shapes in the module docstring).
 
-    ``anchor`` is the newest commit's time and ``head_sha`` its sha. A store
+    ``anchor`` is the newest commit's time and ``head_sha`` its sha;
+    ``history_commits`` is how many commits the index holds. A store
     passed as ``None`` is reported unavailable with ``absent_reason``; one that
     fails to build is reported the same way, so it costs only its own rules.
     ``unavailable`` names stores the caller withholds, with the reason; they
@@ -443,7 +477,7 @@ def build_repo_facts(
     anchor = _when(anchor)
     since = (anchor - QUARTER) if anchor else None
     week = (anchor - WEEK) if anchor else None
-    values: dict[str, Any] = {"anchor": anchor}
+    values: dict[str, Any] = {"anchor": anchor, "history_commits": history_commits}
     missing: dict[str, str] = {}
     health_findings = list(health_findings)
 
@@ -463,6 +497,8 @@ def build_repo_facts(
         return out
 
     build("files", files, file_store)
+    if "files" in values:
+        build("test_map", test_map, lambda m: {"files": with_test_reach(values["files"], m)})
     known_files: Mapping[str, FileFacts] = values.get("files") or {}
     build("authors", authors, lambda rows: build_authors(rows, since=since))
     build(
@@ -499,5 +535,7 @@ __all__ = [
     "build_repo_facts",
     "build_secrets",
     "lead_paths",
+    "reach_paths",
     "with_leads",
+    "with_test_reach",
 ]

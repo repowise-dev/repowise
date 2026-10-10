@@ -6,7 +6,7 @@ import posixpath
 from collections import defaultdict
 from datetime import datetime
 
-from ..context import RepoContext
+from ..context import HISTORY_TOO_SHORT, RepoContext
 from ..facts import FileFacts, RepoFacts
 from ..model import Action, ActionCommand, ActionDetail, RuleOutcome, WhyFact, fingerprint
 from ._text import code, plural
@@ -219,7 +219,47 @@ def _coverage_fact(f: FileFacts, facts: RepoFacts) -> WhyFact:
     return WhyFact("line coverage", "Unknown, not in the report", "unknown")
 
 
-def _is_fragile(f: FileFacts, ctx: RepoContext) -> bool:
+def _reach_fact(f: FileFacts, facts: RepoFacts) -> WhyFact:
+    if f.tests_reaching is None:
+        why = ", the test map could not be read" if "test_map" in facts.unavailable else ""
+        return WhyFact("tests that reach it", f"Unknown{why}", "unknown")
+    if f.tests_reaching == 0:
+        return WhyFact("tests that reach it", "None in the code graph", "inferred")
+    return WhyFact("tests that reach it", plural(f.tests_reaching, "test file"), "inferred")
+
+
+def _fragile_step(f: FileFacts) -> tuple[str, str, str] | None:
+    """Title, done-when and variant for a fragile file, or ``None`` to stay quiet.
+
+    Measured coverage decides first. Without it, "add tests" holds only when no
+    test reaches the file in the code graph; a file tests do reach gets the
+    simplify step instead, as an inferred claim.
+    """
+    cov = f.line_coverage_pct
+    if cov is not None and cov < COVERED_PCT:
+        return (
+            f"Raise test coverage on {code(f.path)} from {cov:.0f}%",
+            "Line coverage on this file reaches 80%.",
+            "raise",
+        )
+    if cov is None and not f.tests_reaching:
+        return (
+            f"Add tests around {code(f.path)} before its next change",
+            "A coverage report includes it at 80% or more.",
+            "unknown",
+        )
+    if f.lead is None:
+        return None
+    where = code(f.lead.function) + " in " if f.lead.function else ""
+    tested = "it is tested" if cov is not None else "tests reach it"
+    return (
+        f"Simplify {where}{code(f.path)}: {tested}, and fixes keep landing",
+        "Its lead finding closes and bug-fix commits slow down.",
+        "simplify" if cov is not None else "reached",
+    )
+
+
+def is_fragile(f: FileFacts, ctx: RepoContext) -> bool:
     return (
         not f.is_test
         and f.bug_magnet
@@ -237,39 +277,31 @@ def fragile_file(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
     rule = "fragile_file"
     if "files" in facts.unavailable:
         return RuleOutcome(rule, "unavailable", facts.unavailable["files"])
+    if ctx.history_too_short:
+        return RuleOutcome(rule, "not_applicable", HISTORY_TOO_SHORT)
     if ctx.fix_commits_90d == 0:
         return RuleOutcome(rule, "not_applicable", "No bug-fix commits in the last 90 days.")
     # A file Fix first already names carries one action, not two.
     named = fix_first_paths(facts)
     fragile = sorted(
-        (f for f in facts.files.values() if _is_fragile(f, ctx) and f.path not in named),
+        (f for f in facts.files.values() if is_fragile(f, ctx) and f.path not in named),
         key=lambda f: -(f.fix_commits_90d * f.commits_90d),
     )
     touched = [f for f in fragile if ctx.in_week(f.last_commit_at)]
     week_rows = {f.path for f in touched[:FRAGILE_WEEK_ROWS]}
     actions = []
     for f in fragile:
-        cov = f.line_coverage_pct
-        if cov is None:
-            title = f"Add tests around {code(f.path)} before its next change"
-            done = "A coverage report includes it at 80% or more."
-            variant = "unknown"
-        elif cov < COVERED_PCT:
-            title = f"Raise test coverage on {code(f.path)} from {cov:.0f}%"
-            done = "Line coverage on this file reaches 80%."
-            variant = "raise"
-        elif f.lead is not None:
-            where = code(f.lead.function) + " in " if f.lead.function else ""
-            title = f"Simplify {where}{code(f.path)}: it is tested, and fixes keep landing"
-            done = "Its lead finding closes and bug-fix commits slow down."
-            variant = "simplify"
-        else:
+        step = _fragile_step(f)
+        if step is None:
             continue
+        title, done, variant = step
         why = [
             WhyFact("commits in 90 days", str(f.commits_90d)),
             WhyFact("bug-fix commits", str(f.fix_commits_90d)),
             _coverage_fact(f, facts),
         ]
+        if f.line_coverage_pct is None:
+            why.append(_reach_fact(f, facts))
         impact = (
             f"Changed {f.commits_90d} times in 90 days, and {f.fix_commits_90d} "
             "of those commits were bug fixes."
@@ -288,11 +320,13 @@ def fragile_file(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 why=tuple(why),
                 target_kind="file",
                 target_path=f.path,
-                target_symbol=f.lead.function if variant == "simplify" and f.lead else None,
+                target_symbol=(
+                    f.lead.function if variant in ("simplify", "reached") and f.lead else None
+                ),
                 identity=f.path,
                 surface="file",
                 effort="M" if (f.nloc or 0) < 600 else "L",
-                confidence="high" if variant != "unknown" else "medium",
+                confidence="high" if variant in ("raise", "simplify") else "medium",
                 done_when=done,
                 marker=f.lead.biomarker if f.lead else None,
                 weight=float(f.fix_commits_90d * f.commits_90d),
@@ -340,6 +374,8 @@ def fix_concentration(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
     rule = "fix_concentration"
     if "files" in facts.unavailable:
         return RuleOutcome(rule, "unavailable", facts.unavailable["files"])
+    if ctx.history_too_short:
+        return RuleOutcome(rule, "not_applicable", HISTORY_TOO_SHORT)
     total = ctx.fix_commits_90d
     if total < CONCENTRATION_MIN_FIXES:
         return RuleOutcome(
@@ -391,7 +427,7 @@ def fix_concentration(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             fixed_files[folder], key=lambda p: -production[p].fix_commits_90d
         )
         includes = tuple(
-            p for p in members if _is_fragile(production[p], ctx) and p not in named
+            p for p in members if is_fragile(production[p], ctx) and p not in named
         )
         actions.append(
             Action(
