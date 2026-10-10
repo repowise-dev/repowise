@@ -1,4 +1,4 @@
-"""A mention names one particular file only when its written directory can lead there."""
+"""A mention names one particular file only when its written path can mean that file."""
 
 from __future__ import annotations
 
@@ -10,39 +10,51 @@ _UI = "packages/ui/package.json"
 
 
 @pytest.mark.parametrize(
-    ("namer", "text", "names"),
+    ("text", "names"),
     [
-        # Written with its directory: that file, or any path ending in it.
-        ("tests/unit/t.py", 'ROOT / "packages/ui/package.json"', True),
-        ("tests/unit/t.py", 'base / "ui/package.json"', True),
-        ("tests/unit/t.py", r'"packages\\ui\\package.json"', True),
-        ("tests/unit/t.py", 'ROOT / "packages/web/package.json"', False),
-        ("tests/unit/t.py", '"tests/fixtures/package.json"', False),
-        # Relative: from the namer's directory or one above it.
-        ("packages/ui/src/a.ts", "import p from '../package.json'", True),
-        ("packages/ui/src/deep/a.ts", "readFileSync('./package.json')", True),
-        ("packages/web/src/a.ts", "import p from '../package.json'", False),
-        ("packages/core/x.py", '"./package.json"', False),
-        ("a.py", '"../package.json"', True),  # leaves the repository: cannot tell
+        # A written path names the files ending in it, and those it ends in.
+        ('ROOT / "packages/ui/package.json"', True),
+        ('base / "ui/package.json"', True),
+        (r'"packages\\ui\\package.json"', True),
+        ('"/app/packages/ui/package.json"', True),
+        (r'"C:\\repo\\packages\\ui\\package.json"', True),
+        (r"C:\repo\packages\ui\package.json", True),
+        ('"myrepo/packages/ui/package.json"', True),
+        ('"file:///abs/repo/packages/ui/package.json"', True),
+        ('"PACKAGES/UI/package.json"', True),
+        ('ROOT / "packages/web/package.json"', False),
+        ('"tests/fixtures/package.json"', False),
+        ('"/app/packages/web/package.json"', False),
+        # Relative steps are dropped: what is left decides.
+        ("import p from '../ui/package.json'", True),
+        ("import p from '../web/package.json'", False),
+        ('"packages/web/../ui/package.json"', True),
+        ("import p from '../package.json'", True),
+        ("readFileSync('./package.json')", True),
         # Bare, joined to a computed base, a glob or a template: any such file.
-        ("packages/core/x.py", 'MANIFESTS = ("package.json",)', True),
-        ("packages/core/x.py", 'root + "/package.json"', True),
-        ("tests/unit/t.py", 'f"{d}/package.json"', True),
-        ("tests/unit/t.py", 'glob("packages/*/package.json")', True),
-        ("tests/unit/t.py", "the package.json.", True),
+        ('MANIFESTS = ("package.json",)', True),
+        ('root + "/package.json"', True),
+        ('f"{d}/package.json"', True),
+        ('glob("packages/*/package.json")', True),
+        ("the package.json.", True),
+        ('"\\npackage.json"', True),
+        ('"\\tpackage.json"', True),
         # Another file's name that only contains this one.
-        ("tests/unit/t.py", '"mypackage.json"', False),
-        ("tests/unit/t.py", '"package.json5"', False),
-        ("tests/unit/t.py", '"package.json.bak"', False),
+        ('"mypackage.json"', False),
+        ('"package.json5"', False),
+        ('"package.json.bak"', False),
         # One naming mention among others is enough.
-        ("tests/unit/t.py", '"packages/web/package.json", "packages/ui/package.json"', True),
+        ('"packages/web/package.json", "packages/ui/package.json"', True),
     ],
 )
-def test_a_mention_names_the_file_its_directory_can_lead_to(namer, text, names) -> None:
-    assert names_file(text, namer, _UI) is names
+def test_a_mention_names_the_file_its_written_path_can_mean(text, names) -> None:
+    assert names_file(text, _UI) is names
 
 
-def test_the_root_manifest_is_named_by_a_bare_or_root_relative_mention() -> None:
-    assert names_file('"package.json"', "scripts/x.py", "package.json")
-    assert names_file("require('../package.json')", "scripts/x.js", "package.json")
-    assert not names_file('"packages/ui/package.json"', "scripts/x.py", "package.json")
+def test_the_root_manifest_is_named_by_any_path_ending_in_its_name() -> None:
+    # A root checkout can sit anywhere, so every written path to a file of
+    # that name may be the root one.
+    assert names_file('"package.json"', "package.json")
+    assert names_file('"/abs/repo/package.json"', "package.json")
+    assert names_file('"packages/ui/package.json"', "package.json")
+    assert not names_file('"mypackage.json"', "package.json")

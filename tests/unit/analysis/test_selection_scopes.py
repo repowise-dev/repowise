@@ -216,7 +216,7 @@ def test_file_namers_lists_every_file_naming_one() -> None:
     ]
     # A manifest is named only where a written directory can lead to it.
     manifests = ["web/package.json", "other/package.json"]
-    code = [("web/src/app.ts", "import p from '../package.json'"), ("x.py", '"package.json"')]
+    code = [("web/src/app.ts", "open('./web/package.json')"), ("x.py", '"package.json"')]
     exact = file_namers(manifests, code, lambda f: f.endswith("package.json"))
     assert exact == {
         "web/package.json": ["web/src/app.ts", "x.py"],

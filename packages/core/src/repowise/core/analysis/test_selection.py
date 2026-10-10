@@ -343,14 +343,13 @@ def file_namers(
     Code that reads a file names it (``ROOT / "README.md"``), and a
     ``--doctest-glob`` turns every doc into a test, so the config declaring
     one names each doc (first). One substring test per distinct file name and
-    source. A file *exact* accepts is named only by a mention its written
-    directory can lead to (:func:`~.namer_paths.names_file`); any other is
+    source. A file *exact* accepts is named only by a mention whose written
+    path can mean it (:mod:`~.namer_paths`); any other is
     named by its name alone, since another asset may include it (a stylesheet
     ``@import``) where no code names its directory. Every namer is listed: a
     caller decides what too many means. Ceiling: code that globs a directory
     names no file.
     """
-
     by_name: dict[str, list[str]] = {}
     for f in files:
         by_name.setdefault(PurePosixPath(f).name, []).append(f)
@@ -375,11 +374,24 @@ def _named_in(
     by_name: Mapping[str, list[str]],
     exact: Callable[[str], bool] | None,
 ) -> list[str]:
-    """The files of *by_name* that *path*'s *text* names (see :func:`file_namers`)."""
-    from .namer_paths import names_file
+    """The files of *by_name* that *path*'s *text* names (see :func:`file_namers`).
 
-    held = [f for name, same in by_name.items() if name in text for f in same if f != path]
-    return [f for f in held if not (exact and exact(f)) or names_file(text, path, f)]
+    The text is scanned once per name held, whatever the number of files of
+    that name.
+    """
+    from .namer_paths import any_may_mean, mentions
+
+    out: list[str] = []
+    for name, same in by_name.items():
+        if name not in text:
+            continue
+        written = mentions(text, name) if exact and any(exact(f) for f in same) else None
+        out += [
+            f
+            for f in same
+            if f != path and (written is None or not exact(f) or any_may_mean(written, f))
+        ]
+    return out
 
 
 def plugin_loader(sources: Iterable[tuple[str, str]]) -> str | None:

@@ -2,27 +2,31 @@
 
 A namer search matches a changed file's name (``package.json``) in source
 text, and every workspace has many files of that name. A mention written with
-its directory says which one it means:
+its directory says which one it means. Each mention is reduced to its written
+path, with leading ``/``, ``./`` and ``../`` steps and inner ``a/../`` folded
+away (a relative path depends on the working directory, which the text does
+not give), and compared to the file's path, case-insensitively:
 
-- ``packages/ui/package.json`` names the file at that path, and at any path
-  ending in it (the directory may be joined to a base the code computes).
-- ``./package.json`` and ``../package.json`` are resolved from the namer's own
-  directory, and from each directory above it, which covers module-relative
-  imports and a working directory at a package or the repository root.
-- A bare ``package.json``, a path holding a template or glob character, or one
-  climbing out of the repository may mean any file of that name, so it names
-  every one of them, as before.
+- a written path names every file whose path ends in it
+  (``ui/package.json`` names ``packages/ui/package.json``), and every file
+  whose path it ends in (``/app/packages/ui/package.json``,
+  ``C:\\repo\\packages\\ui\\package.json``);
+- a bare name (``"package.json"``, ``../package.json``,
+  ``root + "/package.json"``), a glob or a template names every file of that
+  name.
 
-A mention that only continues the name (``mypackage.json``,
-``package.json5``) is a different file. Ceiling: a working directory below
-the namer, or outside its ancestry, is not followed; such code reads a path
-it builds at run time, which no text search sees.
+A mention that only continues the name (``mypackage.json``, ``package.json5``)
+is another file; an escape just before the name (``"\\npackage.json"``) is not
+part of it. Ceiling: a path built from separate parts
+(``ROOT / "ui" / "package.json"``) reads as the bare name, so it names every
+file of that name.
 """
 
 from __future__ import annotations
 
 import posixpath
 import re
+from collections.abc import Iterable
 
 # Characters a written path is made of; a mention's directory part is the run
 # of them before the name.
@@ -33,16 +37,36 @@ _OPEN_CHARS = frozenset("*?[]{}$%@~+")
 _NAME_CHAR = re.compile(r"[\w\-]")
 
 
-def names_file(text: str, namer: str, target: str) -> bool:
-    """Whether *text* (of the file *namer*) holds a mention that can mean *target*."""
-    name = posixpath.basename(target)
+def names_file(text: str, target: str) -> bool:
+    """Whether *text* holds a mention that can mean *target*."""
+    return any_may_mean(mentions(text, posixpath.basename(target)), target)
+
+
+def mentions(text: str, name: str) -> list[str | None]:
+    """Each mention of *name* in *text* as its written path, ``None`` for any directory.
+
+    A mention that is only part of a longer name is left out.
+    """
+    out: list[str | None] = []
     for match in re.finditer(re.escape(name), text):
         if _continues(text, match.end()):
             continue
         prefix = _directory_part(text, match.start())
         if prefix is None:
-            continue  # the name is the tail of a longer one
-        if _may_mean(prefix, name, namer, target):
+            continue
+        written = _strip_relative(prefix + name)
+        out.append(None if _OPEN_CHARS & set(prefix) or written == name else written)
+    return out
+
+
+def any_may_mean(written: Iterable[str | None], target: str) -> bool:
+    """Whether any mention reduced by :func:`mentions` can mean *target*."""
+    path = target.casefold()
+    for mention in written:
+        if mention is None:
+            return True
+        tail = mention.casefold()
+        if tail == path or path.endswith(f"/{tail}") or tail.endswith(f"/{path}"):
             return True
     return False
 
@@ -57,8 +81,11 @@ def _continues(text: str, end: int) -> bool:
 def _directory_part(text: str, start: int) -> str | None:
     """The written directory before the name at *start*, ``""`` when bare.
 
-    ``None`` when the name only ends a longer one (``mypackage.json``).
+    ``None`` when the name only ends a longer one (``mypackage.json``). An
+    escape such as ``\\n`` just before the name is a boundary, not a letter.
     """
+    if start >= 2 and text[start - 2] == "\\" and text[start - 1].isalpha():
+        return ""
     begin = start
     while begin > 0 and _PATH_CHAR.match(text[begin - 1]):
         begin -= 1
@@ -68,22 +95,15 @@ def _directory_part(text: str, start: int) -> str | None:
     return prefix
 
 
-def _may_mean(prefix: str, name: str, namer: str, target: str) -> bool:
-    """Whether a mention written as *prefix* + *name* in *namer* can mean *target*."""
-    if prefix in ("", "/") or _OPEN_CHARS & set(prefix):
-        return True  # bare, joined to a computed base, or a glob or template
-    written = prefix + name
-    here = posixpath.dirname(namer)
-    if posixpath.normpath(posixpath.join(here, written)).startswith("../"):
-        return True  # climbs out of the repository from the namer: cannot tell
-    base = here
-    while True:
-        if posixpath.normpath(posixpath.join(base, written)) == target:
-            return True
-        if not base:
-            break
-        base = posixpath.dirname(base)
-    if written.startswith(("./", "../")):
-        return False
-    tail = written.lstrip("/")
-    return target == tail or target.endswith(f"/{tail}")
+def _strip_relative(written: str) -> str:
+    """*written* without leading ``/``, ``./`` or ``../`` steps, inner ``a/../`` folded."""
+    parts: list[str] = []
+    for part in written.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(part)
+    return "/".join(parts)
