@@ -896,6 +896,17 @@ def test_a_test_named_module_pytest_does_not_collect_is_not_runnable() -> None:
     assert is_runnable_test("src/pkg/test_paths.py")
 
 
+def test_a_jvm_main_source_set_file_is_not_runnable() -> None:
+    from repowise.core.jvm_source_sets import read_jvm_source_sets
+
+    build = "plugins { id('org.jetbrains.kotlin.multiplatform') }\n"
+    roots = read_jvm_source_sets([("engine/build.gradle.kts", build)])
+    assert not is_runnable_test("engine/src/commonMain/kotlin/io/x/core/DynamicRootTest.kt", roots)
+    assert is_runnable_test("engine/src/test/kotlin/io/x/EngineTest.kt", roots)
+    # Without config the name decides
+    assert is_runnable_test("engine/src/commonMain/kotlin/io/x/core/DynamicRootTest.kt")
+
+
 def test_a_runner_gets_only_its_own_always_run_tests_and_hears_of_the_rest() -> None:
     config = TestSelectionConfig(
         always_run=("tests/test_smoke.py", "apps/android/FooTest.kt", "e2e/")

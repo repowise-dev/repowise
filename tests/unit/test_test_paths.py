@@ -425,3 +425,40 @@ def test_pytest_config_overrules_a_test_shaped_python_name(path: str, expected: 
 )
 def test_a_test_named_for_a_file_may_carry_a_qualifier(test_path, source, siblings, named):
     assert names_test_for(test_path, source, siblings) is named
+
+
+def test_jvm_build_config_demotes_main_source_set_test_shaped_names() -> None:
+    from repowise.core.jvm_source_sets import read_jvm_source_sets
+
+    roots = read_jvm_source_sets([
+        ("engine/build.gradle.kts", "plugins { id('org.jetbrains.kotlin.multiplatform') }\n"),
+        ("jvm/core/build.sbt", 'name := "core"\n'),
+        ("exposed-tests/build.gradle.kts", "// tests module\n"),
+    ])
+
+    # DynamicRootTest.kt is in a main source set: production with roots, test without
+    kmp_path = "engine/src/commonMain/kotlin/io/x/core/DynamicRootTest.kt"
+    assert not is_test_path(kmp_path, jvm_roots=roots)
+    assert not is_test_related_path(kmp_path, jvm_roots=roots)
+    assert is_test_path(kmp_path)
+    assert is_test_related_path(kmp_path)
+
+    # AsyncTestSuite.scala is in a main source set: production with roots, test without
+    scala_path = "jvm/core/src/main/scala/org/scalatest/AsyncTestSuite.scala"
+    assert not is_test_path(scala_path, jvm_roots=roots)
+    assert not is_test_related_path(scala_path, jvm_roots=roots)
+    assert is_test_path(scala_path)
+    assert is_test_related_path(scala_path)
+
+    # EngineTest.kt is in a test source set: test in both
+    test_path = "engine/src/test/kotlin/io/x/EngineTest.kt"
+    assert is_test_path(test_path, jvm_roots=roots)
+    assert is_test_related_path(test_path, jvm_roots=roots)
+    assert is_test_path(test_path)
+    assert is_test_related_path(test_path)
+
+    # exposed-tests/src/main/kotlin/io/x/TestDB.kt is inside a test module directory: test in both
+    module_test_path = "exposed-tests/src/main/kotlin/io/x/TestDB.kt"
+    assert is_test_path(module_test_path, jvm_roots=roots)
+    assert is_test_related_path(module_test_path, jvm_roots=roots)
+
