@@ -25,7 +25,9 @@ from typing import Any, Literal, TypeVar
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
 
 UNRELIABLE_EXECUTION_ORIGINS = frozenset({"global_unique"})
-_EXCLUDED_EXECUTION_PATHS = re.compile(
+# Not a test classifier: flows also leave out demos, examples, scripts and
+# benchmarks, which are no more product code than tests are.
+_NON_PRODUCT_FLOW_PATH_RE = re.compile(
     r"(test[s_/]|_test\.|\.test\.|\.spec\.|__tests__|conftest|"
     r"fixture[s]?[/.]|mock[s]?[/.]|stub[s]?[/.]|fake[s]?[/.]|"
     r"demo[_/.]|example[s]?[/.]|sample[s]?[/.]|benchmark[s]?[/.]|"
@@ -74,7 +76,7 @@ def is_walkable_execution_edge(
 
 def is_excluded_execution_path(path: str) -> bool:
     """Whether a flow target is test/demo/fixture/tooling material."""
-    return bool(_EXCLUDED_EXECUTION_PATHS.search(path))
+    return bool(_NON_PRODUCT_FLOW_PATH_RE.search(path))
 
 
 def _append_unique(
