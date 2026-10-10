@@ -29,7 +29,9 @@ Tree-sitter AST walker. Single AST pass per file computes:
   (`&&`, `||`).
 - **max nesting depth** — deepest nested control-flow block per function.
   `else if` arms and, in TS/JS, ternary chain arms and ternaries choosing
-  JSX (`flat_ternary_kinds`) add CCN and a flat +1 cognitive but no level.
+  JSX (`flat_ternary_kinds`), plus Python conditional-expression chains
+  (`1 if a else 2 if b else 3`), add CCN and a flat +1 cognitive but no
+  level.
 - **cognitive complexity** — SonarSource-style weighted nesting cost
   (each level adds an incrementing penalty, plus +1 for each break in
   control flow).
