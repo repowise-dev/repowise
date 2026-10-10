@@ -848,6 +848,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 # tier that answered, so it is stamped once here.
                 if call.edge_type != "calls":
                     resolved = replace(resolved, edge_type=call.edge_type)
+                if call.spawned:
+                    resolved = replace(resolved, spawned=True)
                 results.append(resolved)
 
         return results

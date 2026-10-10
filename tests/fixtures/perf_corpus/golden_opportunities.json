@@ -1751,91 +1751,6 @@
       "biomarker_types": [
         "io_in_loop"
       ],
-      "boundary_kind": "network",
-      "confidence": "high",
-      "evidence": [
-        {
-          "biomarker_type": "io_in_loop",
-          "file_path": "src/app/retry.py",
-          "finding_id": "finding_0e8c0794491c7384f4c4",
-          "function_name": "post_with_retry",
-          "line_end": 52,
-          "line_start": 50,
-          "path": [],
-          "provenance": "direct",
-          "reason": "retry_loop: io_in_loop at src/app/retry.py:50 repeats work per iteration."
-        }
-      ],
-      "evidence_truncated": false,
-      "execution_context": "production",
-      "facets": {
-        "actionability_confidence": "medium",
-        "amplification": "per_iteration",
-        "change_risk": "contained",
-        "execution_role": "unknown",
-        "exposure": "unknown",
-        "leverage": "isolated",
-        "loop_magnitude": "bounded"
-      },
-      "fix": {
-        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
-        "safety": "advisory",
-        "strategy": "batch_or_prefetch_io"
-      },
-      "intervention_kind": "function",
-      "intervention_symbol": "src/app/retry.py::post_with_retry",
-      "may_lead": false,
-      "observations_total": 1,
-      "opportunity_id": "perf3_bd36a05060a6d02a1245",
-      "performance_model_version": 3,
-      "prerequisites": [
-        "batch_api_contract",
-        "result_equivalence"
-      ],
-      "provenance": "direct",
-      "rank_factors": {
-        "affected_call_sites": 2,
-        "boundary_kind": 4,
-        "execution_context": 3,
-        "execution_role": 1,
-        "loop_magnitude": 0,
-        "multiplier_shape": 4,
-        "provenance": 3
-      },
-      "rank_score": 17,
-      "reliable_entry_reachability": null,
-      "resource_fingerprints": [],
-      "shared_path_suffix": [],
-      "siblings": [],
-      "terminal_sink": null,
-      "terminal_sinks": [],
-      "why_ranked": [
-        {
-          "factor": "boundary_kind",
-          "points": 4,
-          "value": "network"
-        },
-        {
-          "factor": "multiplier_shape",
-          "points": 4,
-          "value": "io_in_loop"
-        },
-        {
-          "factor": "execution_context",
-          "points": 3,
-          "value": "production"
-        }
-      ]
-    },
-    {
-      "actionability_reason": "strategy_requires_validation",
-      "actionability_state": "advisory",
-      "affected_call_sites_total": 1,
-      "affected_files_total": 1,
-      "biomarker_type": "io_in_loop",
-      "biomarker_types": [
-        "io_in_loop"
-      ],
       "boundary_kind": "db",
       "confidence": "high",
       "evidence": [
@@ -2279,6 +2194,84 @@
           "factor": "affected_call_sites",
           "points": 4,
           "value": 4
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "bounded_loop",
+      "actionability_state": "expected",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "network",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/retry.py",
+          "finding_id": "finding_0e8c0794491c7384f4c4",
+          "function_name": "post_with_retry",
+          "line_end": 52,
+          "line_start": 50,
+          "path": [],
+          "provenance": "direct",
+          "reason": "retry_loop: io_in_loop at src/app/retry.py:50 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "low",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "execution_role": "unknown",
+        "exposure": "unknown",
+        "leverage": "isolated",
+        "loop_magnitude": "bounded"
+      },
+      "fix": null,
+      "intervention_kind": "function",
+      "intervention_symbol": "src/app/retry.py::post_with_retry",
+      "may_lead": false,
+      "observations_total": 1,
+      "opportunity_id": "perf3_bd36a05060a6d02a1245",
+      "performance_model_version": 3,
+      "prerequisites": [],
+      "provenance": "direct",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "execution_context": 3,
+        "execution_role": 1,
+        "loop_magnitude": 0,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 17,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [],
+      "siblings": [],
+      "terminal_sink": null,
+      "terminal_sinks": [],
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "network"
         },
         {
           "factor": "multiplier_shape",

@@ -334,6 +334,9 @@ class CallSite:
     # ``obj.m()``, Ruby ``obj.m(x)``). Its bare-name reading is asked only
     # when no receiver strategy answers, never beside one.
     bare_name_fallback: bool = False
+    # Handed straight to a task scheduler (``asyncio.create_task(f())``): it runs
+    # later, beside its caller, so the caller neither waits for it nor repeats it.
+    spawned: bool = False
 
 
 # Raw extractor kinds, not the TS ``HeritageKind`` (a different payload);

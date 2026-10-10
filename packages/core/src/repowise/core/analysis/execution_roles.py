@@ -420,14 +420,22 @@ class ExecutionRoles:
         A hot walk stops at another role's declared seed (a route handler, a
         registered job): that is where the other role's work begins. A seed
         named only by convention does not stop it, because calling a function
-        runs it whatever it is called.
+        runs it whatever it is called. A coroutine handed to a task scheduler
+        (``create_task(job())``) is not run by its caller: no walk follows that
+        edge, and the coroutine is a background job of its own.
         """
         seeds = seed_roles(graph)
+        for targets in index.spawn_only.values():
+            for node in targets:
+                seeds.add("scheduled_job", node, strong=False)
         reached: dict[str, ExecutionRole] = {}
         for role in _HOT:
             if seeds.by_role[role]:
                 stop_at = seeds.strong - seeds.by_role[role]
-                for node in index.forward_reachable(seeds.by_role[role], stop_at=stop_at):
+                walk = index.forward_reachable(
+                    seeds.by_role[role], stop_at=stop_at, skip=index.spawn_only
+                )
+                for node in walk:
                     reached.setdefault(node, role)
         for role in ("startup", "cli"):
             for node in seeds.by_role[role]:

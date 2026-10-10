@@ -44,7 +44,7 @@ Each opportunity gets one state:
 | `plan_ready` | A fix strategy whose transformation is proven safe |
 | `advisory` | A strategy with a prerequisite Repowise cannot prove, such as bounded concurrency before parallelizing awaits against a database |
 | `investigate` | No supported strategy; a person has to decide |
-| `expected` | The repetition is real and nothing should change, such as deleting N files, or the function is switched off by a constant flag (reason `gated_off`) or runs once per deploy, boot or incident (reason `cold_path`) |
+| `expected` | The repetition is real and nothing should change, such as deleting N files, or the function is switched off by a constant flag (reason `gated_off`) or runs once per deploy, boot or incident (reason `cold_path`), or its loop runs a fixed number of times (reason `bounded_loop`) |
 
 A plan lists its edits, one step per call site and loop, each naming the call it
 repeats. When every site reaches one sink, the step that adds a bulk form of that
@@ -58,6 +58,7 @@ The default queue holds production opportunities in the `plan_ready` and
 `advisory` states. They are ranked by cost first; state only breaks ties.
 Only opportunities whose cost is measured are in it. A loop whose size nothing measured is `cost_proof = unproven`, never leads, and shows only with the `proof=unproven` filter.
 Each opportunity also says what runs its loop (`execution_role`: request, event consumer, scheduled job, startup, CLI, UI, tooling, test or unknown), and loops run per request rank above the rest. Roles are read for Python and TypeScript/JavaScript; other languages show `unknown`. The `role` filter lists any one role, or `all`.
+Work a request hands to `asyncio.create_task` and never waits for is a background job, not part of the request. An opportunity takes its role and loop size from the same live call sites, so a call site switched off by a constant flag or already chunked never leads it.
 
 Everything else is counted by reason, not hidden:
 

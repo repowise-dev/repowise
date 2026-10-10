@@ -436,3 +436,55 @@ async function f(xs) {
 }
 """
     assert _io_hits(src) == []
+
+
+def test_magnitude_bounded_via_a_file_number_constant():
+    src = """
+const PAGE = 5;
+async function f(items) {
+  for (const x of items.slice(0, PAGE)) {
+    await prisma.post.deleteMany({ where: { userId: x.id } });
+  }
+}
+"""
+    hits = _io_hits(src)
+    assert hits[0].loop is not None and hits[0].loop.magnitude == "bounded"
+
+
+def test_capitals_alone_never_bound_a_slice():
+    src = """
+async function f(items, LIMIT) {
+  for (const x of items.slice(0, LIMIT)) {
+    await prisma.post.deleteMany({ where: { userId: x.id } });
+  }
+}
+"""
+    hits = _io_hits(src)
+    assert hits[0].loop is None or hits[0].loop.magnitude == "unknown"
+
+
+def test_an_inner_binding_shadows_the_file_constant():
+    src = """
+const PAGE = 5;
+async function f(items, rows) {
+  const PAGE = rows.length;
+  for (const x of items.slice(0, PAGE)) {
+    await prisma.post.deleteMany({ where: { userId: x.id } });
+  }
+}
+"""
+    hits = _io_hits(src)
+    assert hits[0].loop is None or hits[0].loop.magnitude == "unknown"
+
+
+def test_a_parameter_shadows_the_file_constant():
+    src = """
+const PAGE = 5;
+async function f(items, PAGE) {
+  for (const x of items.slice(0, PAGE)) {
+    await prisma.post.deleteMany({ where: { userId: x.id } });
+  }
+}
+"""
+    hits = _io_hits(src)
+    assert hits[0].loop is None or hits[0].loop.magnitude == "unknown"

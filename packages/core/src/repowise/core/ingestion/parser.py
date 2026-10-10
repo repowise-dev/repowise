@@ -125,6 +125,7 @@ from .parser_helpers import (
 )
 from .python_local_refs import extract_python_local_refs
 from .python_overload import is_python_overload as _is_python_overload
+from .python_tasks import is_fire_and_forget
 from .sfc_source import component_call_sites, prepare_source
 from .special_handlers import SPECIAL_HANDLER_LANGUAGES, parse_special
 from .symbol_identity import disambiguate_colliding_ids, symbol_discriminator
@@ -2065,6 +2066,11 @@ class ASTParser:
                             else "calls"
                         ),
                         supplied_props=_jsx_supplied_props(site_node, src),
+                        # Ceiling: schedulers matched by name, the task followed
+                        # within its own function only (see ``python_tasks``).
+                        spawned=(
+                            file_info.language == "python" and is_fire_and_forget(site_node, src)
+                        ),
                     ),
                 )
             )

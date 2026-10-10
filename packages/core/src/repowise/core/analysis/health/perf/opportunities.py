@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...execution_roles import hottest_role
+from ..worth import dormant
 from .actionability import (
     ActionabilityState,
     FixSafety,
@@ -152,78 +153,135 @@ def _reachability(values: set[Any]) -> bool | None:
     return False if values == {False} else None
 
 
+def _inert(facts: Any) -> bool:
+    """A member that is no cost to fix: switched off by a constant-false flag,
+    or a loop that already walks its keys in chunks."""
+    return dormant(facts.details) or bool(facts.details.get("chunked_iteration"))
+
+
+@dataclass(frozen=True, slots=True)
+class _Reading:
+    """What a group's live members say, read once."""
+
+    live: list[Any]
+    markers: tuple[str, ...]
+    marker: str
+    sites: set[Any]
+    files: set[str]
+    provenance: str
+    reachable: bool | None
+    role: str
+    sinks: tuple[str, ...]
+    magnitude: str
+
+
+def _read_live(members: list[Any]) -> _Reading:
+    """Read a group's facts off its live members.
+
+    Inert members (:func:`_inert`) decide nothing while a live member exists.
+    The loop size is read only off the members the group's role comes from:
+    a request loop nobody measured never borrows a startup loop's growth, and
+    a group is ``bounded`` only when every loop of its hottest role is.
+    """
+    live = [facts for facts in members if not _inert(facts)] or members
+    markers = tuple(sorted({facts.marker for facts in live}))
+    marker = dominant_marker(markers)
+    sites = {facts.site for facts in live}
+    role = hottest_role(facts.execution_role for facts in live)
+    return _Reading(
+        live=live,
+        markers=markers,
+        marker=marker,
+        sites=sites,
+        files={site[0] for site in sites},
+        provenance=weakest_provenance({facts.provenance for facts in live}),
+        reachable=_reachability({facts.reliable_entry_reachability for facts in live}),
+        role=role,
+        sinks=tuple(sorted({facts.terminal_sink for facts in live if facts.terminal_sink})),
+        magnitude=loop_magnitude(
+            marker, [f.details for f in live if hottest_role((f.execution_role,)) == role]
+        ),
+    )
+
+
+def _facets(r: _Reading, confidence: str) -> dict[str, str]:
+    return {
+        "actionability_confidence": confidence,
+        "exposure": exposure(r.reachable),
+        "amplification": amplification(r.marker),
+        "leverage": leverage(len(r.sites)),
+        "change_risk": change_risk(len(r.files)),
+        "loop_magnitude": r.magnitude,
+        "execution_role": r.role,
+    }
+
+
 def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
     """Read one group's answers off its owners. Decides nothing itself.
 
     Context, boundary, and intervention are kernel inputs, so the group
     already agrees on them by construction. Taking them off the key keeps one
     owner for each instead of reclassifying a representative row. Sinks are
-    members' facts, so they are listed rather than assumed shared.
+    members' facts, so they are listed rather than assumed shared. Everything
+    else comes from :func:`_read_live`; inert members are listed last.
     """
     context = key_context(key)
     boundary = key_boundary(key)
-    markers = tuple(sorted({facts.marker for facts in members}))
-    marker = dominant_marker(markers)
-    sites = {facts.site for facts in members}
-    files = {site[0] for site in sites}
-    provenance = weakest_provenance({facts.provenance for facts in members})
-    evidence_confidence = provenance_confidence(provenance)
-    reachable = _reachability({facts.reliable_entry_reachability for facts in members})
-    role = hottest_role(facts.execution_role for facts in members)
-    sinks = tuple(sorted({facts.terminal_sink for facts in members if facts.terminal_sink}))
+    r = _read_live(members)
+    evidence_confidence = provenance_confidence(r.provenance)
     assessment = assess_fix(
-        marker,
-        markers,
+        r.marker,
+        r.markers,
         boundary,
-        [facts.details for facts in members],
-        cross_function=any(facts.cross_function for facts in members),
+        [facts.details for facts in r.live],
+        cross_function=any(facts.cross_function for facts in r.live),
     )
     acted = actionability(
         assessment,
         evidence_confidence,
-        expected_reason=expected_reason(members),
+        expected_reason=expected_reason(members, r.magnitude),
     )
-    magnitude = loop_magnitude(marker, [facts.details for facts in members])
+    inputs = {
+        "multiplier_shape": r.marker,
+        "boundary_kind": boundary,
+        "execution_context": context,
+        "execution_role": r.role,
+        "affected_call_sites": len(r.sites),
+        "provenance": r.provenance,
+        "loop_magnitude": r.magnitude,
+    }
     factors = rank_factors(
-        marker=marker,
+        marker=r.marker,
         boundary=boundary,
         context=context,
-        role=role,
-        site_count=len(sites),
-        provenance=provenance,
-        magnitude=magnitude,
+        role=r.role,
+        site_count=len(r.sites),
+        provenance=r.provenance,
+        magnitude=r.magnitude,
     )
-    facets = {
-        "actionability_confidence": acted.confidence,
-        "exposure": exposure(reachable),
-        "amplification": amplification(marker),
-        "leverage": leverage(len(sites)),
-        "change_risk": change_risk(len(files)),
-        "loop_magnitude": magnitude,
-        "execution_role": role,
-    }
+    facets = _facets(r, acted.confidence)
     return PerformanceOpportunity(
         opportunity_id=stable_id(key),
         performance_model_version=PERFORMANCE_MODEL_VERSION,
-        biomarker_type=marker,
-        biomarker_types=markers,
+        biomarker_type=r.marker,
+        biomarker_types=r.markers,
         boundary_kind=boundary,
         execution_context=context,
-        terminal_sink=sinks[0] if len(sinks) == 1 else None,
-        shared_path_suffix=shared_path_suffix([facts.path for facts in members if facts.path]),
+        terminal_sink=r.sinks[0] if len(r.sinks) == 1 else None,
+        shared_path_suffix=shared_path_suffix([facts.path for facts in r.live if facts.path]),
         intervention_symbol=key_intervention_symbol(key),
         intervention_kind=key_intervention_kind(key),
-        terminal_sinks=sinks,
+        terminal_sinks=r.sinks,
         resource_fingerprints=tuple(
             sorted({facts.resource_fingerprint for facts in members if facts.resource_fingerprint})
         ),
-        affected_call_sites_total=len(sites),
-        affected_files_total=len(files),
+        affected_call_sites_total=len(r.sites),
+        affected_files_total=len(r.files),
         observations_total=len(members),
-        evidence=tuple(evidence_row(facts) for facts in members[:cap]),
+        evidence=tuple(evidence_row(facts) for facts in sorted(members, key=_inert)[:cap]),
         evidence_truncated=len(members) > cap,
-        reliable_entry_reachability=reachable,
-        provenance=provenance,
+        reliable_entry_reachability=r.reachable,
+        provenance=r.provenance,
         confidence=evidence_confidence,
         facets=facets,
         actionability_state=acted.state,
@@ -231,20 +289,9 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
         prerequisites=acted.prerequisites,
         rank_score=sum(factors.values()),
         rank_factors=factors,
-        why_ranked=why_ranked(
-            factors,
-            {
-                "multiplier_shape": marker,
-                "boundary_kind": boundary,
-                "execution_context": context,
-                "execution_role": role,
-                "affected_call_sites": len(sites),
-                "provenance": provenance,
-                "loop_magnitude": magnitude,
-            },
-        ),
+        why_ranked=why_ranked(factors, inputs),
         fix=acted.fix,
-        may_lead=may_lead(marker, {facts.details.get("orm") for facts in members}, facets),
+        may_lead=may_lead(r.marker, {facts.details.get("orm") for facts in r.live}, facets),
     )
 
 

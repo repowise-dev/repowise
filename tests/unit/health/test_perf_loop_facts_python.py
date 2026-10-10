@@ -120,12 +120,58 @@ def test_magnitude_slice_constant_upper_bound_bounded():
 
 
 def test_magnitude_slice_named_constant_bounded():
-    """B1: ``xs[:LIMIT]``."""
+    """B1: ``xs[:LIMIT]`` where the module binds ``LIMIT`` to an integer literal."""
     facts = _loop(
         b"from sqlalchemy import select\n"
-        b"async def f(session, xs, LIMIT):\n"
+        b"LIMIT = 50\n"
+        b"async def f(session, xs):\n"
         b"    for x in xs[:LIMIT]:\n"
         b"        await session.execute(select(x))\n"
+    )
+    assert facts.magnitude == "bounded"
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # A parameter spelled in capitals is still a parameter.
+        b"async def f(session, xs, LIMIT):\n    for x in xs[:LIMIT]:\n"
+        b"        await session.execute(select(x))\n",
+        # Bound, but not to a literal: the user count grows.
+        b"NUM_USERS = load_users()\nasync def f(session):\n    for i in range(NUM_USERS):\n"
+        b"        await session.execute(select(i))\n",
+        # Never bound in this module.
+        b"from config import NUM_USERS\nasync def f(session):\n"
+        b"    for i in range(NUM_USERS):\n        await session.execute(select(i))\n",
+        # Rebound later in the module.
+        b"MAX = 5\nMAX = load()\nasync def f(session):\n    for i in range(MAX):\n"
+        b"        await session.execute(select(i))\n",
+        # Augmented.
+        b"MAX = 5\nMAX += extra()\nasync def f(session):\n    for i in range(MAX):\n"
+        b"        await session.execute(select(i))\n",
+        # Written through ``global`` by some function.
+        b"MAX = 5\ndef grow(n):\n    global MAX\n    MAX = n\nasync def f(session):\n"
+        b"    for i in range(MAX):\n        await session.execute(select(i))\n",
+        # Shadowed by a local of the loop's function.
+        b"MAX = 5\nasync def f(session):\n    MAX = count_rows()\n    for i in range(MAX):\n"
+        b"        await session.execute(select(i))\n",
+        # Shadowed by a parameter.
+        b"MAX = 5\nasync def f(session, MAX):\n    for i in range(MAX):\n"
+        b"        await session.execute(select(i))\n",
+    ],
+)
+def test_capitals_alone_never_prove_a_loop_bounded(src):
+    facts = _loop(b"from sqlalchemy import select\n" + src)
+    assert facts is None or facts.magnitude == "unknown"
+
+
+def test_magnitude_range_module_int_constant_bounded():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"MAX_PAGES = 5\n"
+        b"async def f(session):\n"
+        b"    for i in range(MAX_PAGES):\n"
+        b"        await session.execute(select(i))\n"
     )
     assert facts.magnitude == "bounded"
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import builtins
 import re
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, ClassVar
 
 from ..loop_facts import BatchForm
@@ -191,6 +192,88 @@ _PY_BUILTINS: frozenset[str] = frozenset(dir(builtins))
 _PY_SEM_NAME_RE = re.compile(r"(?i)(sem|semaphore|limiter|limit)$")
 # A model class is CapWords; an ALL_CAPS constant (``API_URL``) is not.
 _PY_MODEL_NAME_RE = re.compile(r"^[A-Z]\w*[a-z]\w*$")
+
+
+_PY_DEF_KINDS = frozenset({"function_definition", "lambda", "class_definition"})
+# Nodes an identifier sits in when it is the name being bound, not read.
+_PY_BINDING_PARENTS = frozenset(
+    {
+        "global_statement", "nonlocal_statement", "as_pattern_target", "aliased_import",
+        "import_from_statement", "import_statement", "parameters", "lambda_parameters",
+        "named_expression",
+    }
+)
+_PY_BINDING_WRAPPERS = frozenset(
+    {
+        "pattern_list", "tuple_pattern", "list_pattern", "typed_parameter", "default_parameter",
+        "typed_default_parameter", "list_splat_pattern", "dotted_name",
+    }
+)
+
+
+def _binds(ident: Node) -> bool:
+    """Whether *ident* is a name being bound (assigned, imported, a parameter)."""
+    cur, parent = ident, ident.parent
+    while parent is not None and parent.type in _PY_BINDING_WRAPPERS:
+        cur, parent = parent, parent.parent
+    if parent is None:
+        return False
+    if parent.type in ("assignment", "augmented_assignment", "for_statement", "for_in_clause"):
+        return parent.child_by_field_name("left") == cur
+    if parent.type in ("function_definition", "class_definition"):
+        return parent.child_by_field_name("name") == cur
+    return parent.type in _PY_BINDING_PARENTS
+
+
+def _bindings(scope: Node, name: bytes) -> list[Node]:
+    """Identifiers binding *name* in *scope* itself, not in a nested scope."""
+    found: list[Node] = []
+    stack = list(scope.children)
+    while stack:
+        node = stack.pop()
+        if node.type in _PY_DEF_KINDS:
+            stack.extend(c for c in (node.child_by_field_name("name"),) if c is not None)
+            continue
+        if node.type == "identifier" and node.text == name and _binds(node):
+            found.append(node)
+        stack.extend(node.children)
+    return found
+
+
+def _module_int_constant(name: Node) -> bool:
+    """An ALL_CAPS name its own module binds exactly once, to an integer literal
+    (``MAX = 5``), and no enclosing function rebinds or shadows.
+
+    The spelling alone proves nothing (``NUM_USERS`` grows), so a name rebound,
+    imported, augmented, written through ``global``, shadowed by a parameter or
+    a local, or bound to anything but a literal stays unknown.
+    """
+    text = name.text or b""
+    if name.type != "identifier" or len(text) < 2 or not text.decode().isupper():
+        return False
+    scope = name.parent
+    while scope is not None and scope.parent is not None:
+        if scope.type in ("function_definition", "lambda") and _bindings(scope, text):
+            return False
+        scope = scope.parent
+    if scope is None or any(
+        n.type == "global_statement" and any(c.text == text for c in n.named_children)
+        for n in _walk_tree(scope)
+    ):
+        return False
+    bound = _bindings(scope, text)
+    if len(bound) != 1 or bound[0].parent is None or bound[0].parent.type != "assignment":
+        return False
+    right = bound[0].parent.child_by_field_name("right")
+    return right is not None and right.type == "integer"
+
+
+def _walk_tree(node: Node) -> Iterator[Node]:
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(current.children)
 
 
 class PythonPerfDialect(BasePerfDialect):
@@ -940,9 +1023,7 @@ class PythonPerfDialect(BasePerfDialect):
             return None
         path = self._dotted_path(stop) if stop.type in ("identifier", "attribute") else None
         last = path.rsplit(".", 1)[-1] if path else ""
-        if (stop.type == "identifier" and last.isupper() and len(last) > 1) or (
-            last and _PY_BOUND_NAME_RE.search(last)
-        ):
+        if _module_int_constant(stop) or (last and _PY_BOUND_NAME_RE.search(last)):
             return "bounded"
         return None
 
@@ -957,11 +1038,7 @@ class PythonPerfDialect(BasePerfDialect):
         if stop is None:
             return None
         if start is None:
-            text = (stop.text or b"").decode()
-            constant = stop.type == "integer" or (
-                stop.type == "identifier" and text.isupper() and len(text) > 1
-            )
-            return "bounded" if constant else None
+            return "bounded" if stop.type == "integer" or _module_int_constant(stop) else None
         if stop.type == "binary_operator":
             left, right = stop.child_by_field_name("left"), stop.child_by_field_name("right")
             same_start = left is not None and self._dotted_path(left) == self._dotted_path(start)

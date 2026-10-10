@@ -548,8 +548,13 @@ async def test_cold_and_unproven_background_roles_sit_one_filter_away(
     served.details["execution_role"] = "request"
     cli = _finding("src/e.py", 60, ["src/e.py::run", "src/db.py::fetch"])
     cli.details["execution_role"] = "cli"
+    # A per-call cost: a bounded loop would be ``expected`` before its role is read.
     job = _finding(
-        "src/f.py", 70, ["src/f.py::run", "src/db.py::fetch"], magnitude="bounded"
+        "src/f.py",
+        70,
+        ["src/f.py::run", "src/db.py::fetch"],
+        marker="unbounded_read_reduced_in_memory",
+        magnitude=None,
     )
     job.details["execution_role"] = "scheduled_job"
     repo_id, _ = await _seed(app, client, [served, cli, job])
