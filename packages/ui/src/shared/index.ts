@@ -34,6 +34,15 @@ export {
 } from "./dismissible-notice";
 export { HostedNudge, type HostedNudgeProps } from "./hosted-nudge";
 export { InfoTip, type InfoTipProps } from "./info-tip";
+export {
+  OrbLoader,
+  ORB_STATE,
+  type OrbLoaderProps,
+  type OrbIntent,
+  type OrbSize,
+  type OrbState,
+} from "./orb-loader";
+/** @deprecated Use `OrbLoader`. */
 export { OwlLoader, type OwlLoaderProps } from "./owl-loader";
 export {
   TableSkeleton,

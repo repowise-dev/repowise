@@ -16,7 +16,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@lottiefiles/dotlottie-react": "^0.19.4",
     "@repowise-dev/api-client": "*",
     "@repowise-dev/types": "*",
     "@repowise-dev/ui": "*",
