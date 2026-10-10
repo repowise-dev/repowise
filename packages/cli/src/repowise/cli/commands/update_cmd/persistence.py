@@ -722,6 +722,7 @@ def _persist_full_update(
     reconcile_full_generation: bool = False,
     require_config_rebuild_success: bool = False,
     require_decision_persist_success: bool = False,
+    history_window_changed: bool = False,
     timings: PhaseTimings | None = None,
 ) -> int:
     """Persist a full (LLM-regenerating) update in one transaction.
@@ -763,6 +764,7 @@ def _persist_full_update(
             reconcile_full_generation=reconcile_full_generation,
             require_config_rebuild_success=require_config_rebuild_success,
             require_decision_persist_success=require_decision_persist_success,
+            history_window_changed=history_window_changed,
             timings=timings,
         )
     )
@@ -792,6 +794,7 @@ async def _persist_full_update_async(
     reconcile_full_generation: bool = False,
     require_config_rebuild_success: bool = False,
     require_decision_persist_success: bool = False,
+    history_window_changed: bool = False,
     timings: PhaseTimings | None = None,
 ) -> int:
     from repowise.cli.helpers import get_db_url_for_repo
@@ -1039,7 +1042,7 @@ async def _persist_full_update_async(
                             full_git_summary,
                             # Set only on a history-window (git config) change,
                             # the one walk that invalidates per-commit health.
-                            keep_commit_health=not require_decision_persist_success,
+                            keep_commit_health=not history_window_changed,
                         )
                 except Exception as exc:
                     _skip("Git persist", exc)
