@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.ci.github import append_step_summary, notice
-from repowise.core.ci.markdown import code, details, plural
+from repowise.core.ci.markdown import ROW_LIMIT, code, details, more_line, plural
 
 #: Record layout version, bumped when a field changes meaning.
 RECORD_VERSION = 1
@@ -125,45 +125,57 @@ def build_record(
     return record
 
 
+def _selection_line(record: Mapping[str, Any]) -> str:
+    if not record["has_selection"]:
+        return f"- No selection was recorded (selector exit {record.get('selector_exit')})."
+    if record["run_all"]:
+        return f"- Selection: run everything ({plural(len(record['reasons']), 'reason')})."
+    return (
+        f"- Selection: {record['selected_ran_files']} of "
+        f"{plural(record['ran_files'], 'test file')} that ran."
+    )
+
+
+def _failure_lines(record: Mapping[str, Any]) -> list[str]:
+    if not record["has_junit"]:
+        return ["- No test report was found, so failures could not be compared."]
+    lines = [f"- Failing test files: {len(record['failing_files'])}."]
+    if not record["has_selection"]:
+        return lines
+    missed = record["missed"]
+    shown = ", ".join(code(m) for m in missed[:ROW_LIMIT]) or "none"
+    rest = more_line(len(missed) - ROW_LIMIT, "files")
+    lines.append(f"- Failing outside the selection: {shown}{', ' + rest if rest else '.'}")
+    if record["first_failing_rank"] is not None:
+        lines.append(
+            f"- First failing file in the prioritized order: "
+            f"{record['first_failing_rank']} of {record['order_length']}."
+        )
+    return lines
+
+
 def render_summary(record: Mapping[str, Any]) -> str:
     """Markdown for the job summary."""
-    lines = ["### Test selection, recorded beside the full run", ""]
-    lines.append("Every test ran; nothing below changed which tests ran or how they passed.")
-    lines.append("")
-    if not record["has_selection"]:
-        exit_code = record.get("selector_exit")
-        lines.append(f"- No selection was recorded (selector exit {exit_code}).")
-    elif record["run_all"]:
-        lines.append(f"- Selection: run everything ({plural(len(record['reasons']), 'reason')}).")
-    else:
-        lines.append(
-            f"- Selection: {record['selected_ran_files']} of "
-            f"{plural(record['ran_files'], 'test file')} that ran."
-        )
-    if not record["has_junit"]:
-        lines.append("- No test report was found, so failures could not be compared.")
-    else:
-        lines.append(f"- Failing test files: {len(record['failing_files'])}.")
-        if record["has_selection"]:
-            missed = record["missed"]
-            missed_text = ", ".join(code(m) for m in missed[:10]) if missed else "none"
-            lines.append(f"- Failing outside the selection: {missed_text}.")
-            if record["first_failing_rank"] is not None:
-                lines.append(
-                    f"- First failing file in the prioritized order: "
-                    f"{record['first_failing_rank']} of {record['order_length']}."
-                )
+    lines = [
+        "### Test selection, recorded beside the full run",
+        "",
+        "Every test ran; nothing below changed which tests ran or how they passed.",
+        "",
+        _selection_line(record),
+        *_failure_lines(record),
+    ]
     if record.get("selector_seconds") is not None:
         lines.append(
             f"- Selector time: {record['selector_seconds']} s "
             f"(index cache: {record.get('index_cache') or 'none'})."
         )
-    lines.append("")
-    lines.append(
+    lines += [
+        "",
         "A failure outside the selection is recorded, not judged: whether it was "
-        "already red on main is decided later, from main's own records."
-    )
-    lines.extend(["", *details("Selection reasons", [code(r) for r in record["reasons"]])])
+        "already red on main is decided later, from main's own records.",
+        "",
+        *details("Selection reasons", [code(r) for r in record["reasons"]]),
+    ]
     return "\n".join(lines)
 
 
