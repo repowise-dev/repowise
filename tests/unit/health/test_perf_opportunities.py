@@ -556,13 +556,28 @@ def test_a_plan_lists_its_edits_and_marks_only_proven_ones_mechanical():
 )
 def test_a_lazy_load_may_lead_only_on_an_orm_that_cleared_the_bar(orms, leads):
     rows = [
-        _finding("app/views.py", 10 + index, marker="lazy_load_in_loop", orm=orm)
+        _finding(
+            "app/views.py",
+            10 + index,
+            marker="lazy_load_in_loop",
+            orm=orm,
+            loop_magnitude="grows_with_data",
+        )
         for index, orm in enumerate(orms)
     ]
     (opportunity,) = build_performance_opportunities(rows)
     assert opportunity.may_lead is leads
 
 
-def test_every_other_marker_may_lead():
-    (opportunity,) = build_performance_opportunities([_finding("a.py", 1)])
+def test_every_other_marker_may_lead_over_a_loop_that_grows():
+    (opportunity,) = build_performance_opportunities(
+        [_finding("a.py", 1, loop_magnitude="grows_with_data")]
+    )
     assert opportunity.may_lead is True
+
+
+@pytest.mark.parametrize("magnitude", [None, "bounded"])
+def test_a_loop_not_known_to_grow_never_leads(magnitude):
+    details = {"loop_magnitude": magnitude} if magnitude else {}
+    (opportunity,) = build_performance_opportunities([_finding("a.py", 1, **details)])
+    assert opportunity.may_lead is False

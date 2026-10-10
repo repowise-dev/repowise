@@ -63,7 +63,7 @@ from repowise.core.analysis.health.models import primary_finding, split_by_origi
 from repowise.core.analysis.health.perf.causal import code_context
 from repowise.core.analysis.health.perf.opportunity_rank import (
     DEFAULT_QUEUE_CONTEXTS,
-    default_queue_exclusion,
+    strategy_exclusion,
 )
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.scoring import biomarker_dimension
@@ -74,6 +74,7 @@ from repowise.core.analysis.health.worth import (
     WORTH_MAGNITUDE,
     dispatch_shaped,
     dormant,
+    lead_reason,
     low_priority,
     magnitude,
     measure,
@@ -927,13 +928,7 @@ GROWS_ONLY_MARKERS = frozenset({"string_concat_in_loop"})
 
 def _perf_worth(row: Any) -> bool:
     """Whether a planned cause is worth an item at all."""
-    if field(row, "biomarker_type") not in GROWS_ONLY_MARKERS:
-        return True
-    facets = detail_map(row).get("facets") or {}
-    return (
-        field(row, "execution_context") == "production"
-        and facets.get("loop_magnitude") == "grows_with_data"
-    )
+    return field(row, "biomarker_type") not in GROWS_ONLY_MARKERS or perf_low_priority(row) is None
 
 
 def _perf_value(row: Any, facets: Mapping[str, Any]) -> int:
@@ -942,19 +937,19 @@ def _perf_value(row: Any, facets: Mapping[str, Any]) -> int:
     work Fix first holds, so it shares the top band with the largest
     functions; capped below it, it never reached a top ten that size fills."""
     production = field(row, "execution_context") == "production"
-    grows = facets.get("loop_magnitude") == "grows_with_data"
-    unknown = facets.get("loop_magnitude") in (None, "unknown")
+    reachable = facets.get("exposure") == "entry_reachable"
+    reason = lead_reason(field(row, "biomarker_type"), facets)
     if (
         production
-        and facets.get("exposure") == "entry_reachable"
-        and grows
+        and reachable
+        and facets.get("loop_magnitude") == "grows_with_data"
         and field(row, "boundary_kind") in ("db", "network")
     ):
         return VALUE_MAX
-    value = 2 if production and (grows or unknown) else 1
+    value = 2 if production and reason is None else 1
     # No traffic data: a loop of unknown size that no entry point reaches is
     # most often an admin or maintenance path, where an N+1 is cheap.
-    if unknown and facets.get("exposure") != "entry_reachable":
+    if reason == "unmeasured_cost" and not reachable:
         value -= 1
     return value
 
@@ -1484,15 +1479,16 @@ def build_fix_first(
         if _open(row):
             path = field(row, "file_path") or ""
             groups[(path, field(row, "intervention_symbol") or path)].append(row)
-    # The performance default queue decides which causes are work (context and
-    # actionability, one predicate for every surface); Fix first adds its path
-    # rules and needs a stored plan to quote.
+    # The performance queue's context and actionability rule decides which
+    # causes are work; an unproven cost stays in, tiered later by
+    # ``perf_low_priority``. Fix first adds its path rules and needs a stored
+    # plan to quote.
     perf_contexts = DEFAULT_QUEUE_CONTEXTS | {"test"} if keep_tests else DEFAULT_QUEUE_CONTEXTS
     for (path, symbol), rows in groups.items():
         if out_of_scope(path, "production"):
             continue
         rows.sort(key=lambda r: (field(r, "rank_position") or 0, field(r, "opportunity_id")))
-        reasons = [default_queue_exclusion(r, perf_contexts) for r in rows]
+        reasons = [strategy_exclusion(r, perf_contexts) for r in rows]
         queued = [r for r, reason in zip(rows, reasons, strict=True) if reason is None]
         ready = [r for r in queued if _has_plan(r)]
         if not ready:

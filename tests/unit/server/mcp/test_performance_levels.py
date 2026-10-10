@@ -37,6 +37,7 @@ def _row(repo_id: str, caller: str, line: int) -> HealthFinding:
                 "cross_function": True,
                 "path": [f"{caller}::run", "src/shared.py::load", "src/db.py::fetch"],
                 "resolution_basis": "call-site",
+                "loop_magnitude": "grows_with_data",
                 "dataflow_verified": True,
             }
         ),
@@ -51,8 +52,9 @@ def _row(repo_id: str, caller: str, line: int) -> HealthFinding:
 async def materialized(session, health_data: str) -> str:
     """Five callers behind one shared helper, plus the base fixture's own row.
 
-    The fixture contributes a second production cause, which is why the totals
-    below are two rather than one.
+    The fixture contributes a second production cause whose loop nobody
+    measured, so the default queue holds one and counts the other as
+    ``unmeasured_cost``.
     """
     for index, caller in enumerate(_CALLERS, start=10):
         session.add(_row(health_data, caller, index))
@@ -142,7 +144,7 @@ async def test_the_queue_filters_before_it_caps(setup_mcp, materialized):
         performance_context="production",
         performance_boundary="db",
     )
-    assert result["performance_opportunities_total"] == 2
+    assert result["performance_opportunities_total"] == 1
     assert {
         item["execution_context"] for item in result["performance_opportunities"]
     } == {"production"}
@@ -187,6 +189,7 @@ async def test_performance_actionability_threads_through_and_defaults_off_expect
                     "cross_function": True,
                     "path": ["src/fs.py::run", "src/fs.py::read"],
                     "resolution_basis": "reliable-edge",
+                    "loop_magnitude": "grows_with_data",
                 }
             ),
             health_impact=0.0,
@@ -227,7 +230,7 @@ async def test_an_unrecognized_filter_value_is_named_not_silently_empty(
         only=["performance_opportunities"],
         performance_context="staging",
     )
-    assert result["performance_opportunities_total"] == 2
+    assert result["performance_opportunities_total"] == 1
     assert result["ignored_arguments"] == {
         "performance_context": "staging (accepted: production, tooling, test, unknown, all)"
     }

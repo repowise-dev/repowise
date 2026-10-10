@@ -383,6 +383,8 @@ Performance findings carry `health_impact: 0`; the pillar never blends into the 
 
 A bare `get_health()` ranks performance work inside `fix_first` as `perf_fix` items. `get_health(opportunity_id="perf...")` adds `plan_steps`, `validation` and `siblings`; `only=["performance_evidence"]` with `cursor` pages the evidence. Ids are stable within a performance model version; an id from an older model resolves to `model_state.state: "stale_model"` with `refresh_required`. `lifecycle_status` is `open` or `resolved`. Evidence rows carry a public `finding_id`.
 
+The `performance_opportunities` list holds causes whose cost is measured (`cost_proof` `proven`). A cause whose loop size nothing measured is `unproven`: it never sets `may_lead`, and every list leaves it out. `performance_summary.default_queue.excluded.unmeasured_cost` counts the ones the default queue drops, `performance_summary.proof` counts both values, and the `proof` facet counts them under the current filters. REST lists them with `proof=unproven` on `/api/repos/{id}/health/performance-opportunities`.
+
 ### Coverage
 
 `include=["coverage"]` returns per-file rows (`covered_line_count`, `total_coverable_lines`; targeted mode adds `covered_lines`) and a `summary`. `freshness.status` is `current` (measured at the indexed commit), `stale` or `unknown`. `report_paths` says how the report's entries mapped at ingest (`total`, `matched`, `unmatched`, `ambiguous`, `unmatched_sample`). `source_formats` lists merged formats. Dashboard mode adds `history`, one point per complete ingest, newest 10. Targeted rows add `decay`: `confirmed_lines`, `invalidated_lines` (now unknown, not uncovered), and `drifted` once a fifth of a file's measurement has moved.

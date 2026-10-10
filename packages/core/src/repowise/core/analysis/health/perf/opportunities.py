@@ -191,6 +191,14 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
         provenance=provenance,
         magnitude=magnitude,
     )
+    facets = {
+        "actionability_confidence": acted.confidence,
+        "exposure": exposure(reachable),
+        "amplification": amplification(marker),
+        "leverage": leverage(len(sites)),
+        "change_risk": change_risk(len(files)),
+        "loop_magnitude": magnitude,
+    }
     return PerformanceOpportunity(
         opportunity_id=stable_id(key),
         performance_model_version=PERFORMANCE_MODEL_VERSION,
@@ -214,14 +222,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
         reliable_entry_reachability=reachable,
         provenance=provenance,
         confidence=evidence_confidence,
-        facets={
-            "actionability_confidence": acted.confidence,
-            "exposure": exposure(reachable),
-            "amplification": amplification(marker),
-            "leverage": leverage(len(sites)),
-            "change_risk": change_risk(len(files)),
-            "loop_magnitude": magnitude,
-        },
+        facets=facets,
         actionability_state=acted.state,
         actionability_reason=acted.reason,
         prerequisites=acted.prerequisites,
@@ -240,7 +241,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
             },
         ),
         fix=acted.fix,
-        may_lead=may_lead(marker, {facts.details.get("orm") for facts in members}),
+        may_lead=may_lead(marker, {facts.details.get("orm") for facts in members}, facets),
     )
 
 

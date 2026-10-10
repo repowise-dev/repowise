@@ -21,10 +21,10 @@ from repowise.core.analysis.health.finding_identity import finding_public_id
 from repowise.core.analysis.health.fix_first.text import perf_cost
 from repowise.core.analysis.health.queue_rules import NULL_VALUE, Facet, FilterRule, SortKeys
 from repowise.core.analysis.health.rows import detail_map, field, json_field
-from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, perf_low_priority
+from repowise.core.analysis.health.worth import COST_PROOFS, LOW_PRIORITY_LABEL, perf_low_priority
 
 from .opportunities import PERFORMANCE_MODEL_VERSION
-from .opportunity_rank import DEFAULT_QUEUE_STATES, NON_LEADING_MARKERS
+from .opportunity_rank import DEFAULT_QUEUE_PROOFS, DEFAULT_QUEUE_STATES, NON_LEADING_MARKERS
 
 if TYPE_CHECKING:
     from .opportunities import PerformanceOpportunity
@@ -109,6 +109,7 @@ FILTERS: tuple[FilterRule, ...] = (
     FilterRule("boundary", "boundary_kind", "eq_or_null", "set"),
     FilterRule("confidence", "evidence_confidence", "eq", "set"),
     FilterRule("actionabilities", "actionability_state", "in", "set"),
+    FilterRule("proofs", "cost_proof", "in", "set"),
     FilterRule("file_paths", "file_path", "in", "set"),
 )
 
@@ -120,6 +121,7 @@ FACETS: tuple[Facet, ...] = (
     ("confidence", "evidence_confidence", "confidence"),
     ("actionability", "actionability_state", "actionabilities"),
     ("plan_state", "plan_state", None),
+    ("proof", "cost_proof", "proofs"),
 )
 FACET_FIELDS = tuple(column for _, column, _ in FACETS)
 
@@ -140,8 +142,8 @@ def row_sort_key(row: Any, sort: str | None = None) -> tuple[Any, ...]:
 
 
 def _facet_selection(query: PerformanceQuery) -> dict[str, Any]:
-    """What a caller chose, per facet. The default queue states are not a
-    choice, so an unfiltered actionability control still shows every state."""
+    """What a caller chose, per facet. The default queue states and proof are
+    not a choice, so an unfiltered control still shows every value."""
     return {
         "contexts": query.contexts,
         "boundary": query.boundary,
@@ -149,6 +151,7 @@ def _facet_selection(query: PerformanceQuery) -> dict[str, Any]:
         "actionabilities": (
             None if query.actionability is None else frozenset({query.actionability})
         ),
+        "proofs": None if query.proof is None else frozenset({query.proof}),
     }
 
 
@@ -196,6 +199,7 @@ class PerformanceQuery:
     boundary: str | None = None
     confidence: str | None = None
     actionability: str | None = None
+    proof: str | None = None
     view: str = "detail"
     sort: str = DEFAULT_SORT
     file_paths: tuple[str, ...] | None = None
@@ -220,6 +224,15 @@ class PerformanceQuery:
             return DEFAULT_ACTIONABILITIES
         return frozenset({self.actionability})
 
+    @property
+    def proofs(self) -> frozenset[str]:
+        """``unproven`` when asked for; else the measured causes, so every
+        surface lists what the default queue counts. The ``proof`` facet says
+        how many unproven ones sit one filter away."""
+        if self.proof is None:
+            return DEFAULT_QUEUE_PROOFS
+        return frozenset({self.proof})
+
 
 def _resolve_context(context: str | None, ignored: dict[str, str]) -> PerformanceContext:
     if not context:
@@ -240,6 +253,7 @@ def parse_query(
     boundary: str | None = None,
     confidence: str | None = None,
     actionability: str | None = None,
+    proof: str | None = None,
     view: str | None = None,
     sort: str | None = None,
     file_paths: tuple[str, ...] | None = None,
@@ -269,6 +283,7 @@ def parse_query(
             boundary=pick("performance_boundary", boundary, BOUNDARIES),
             confidence=pick("performance_confidence", confidence, CONFIDENCES),
             actionability=pick("performance_actionability", actionability, ACTIONABILITIES),
+            proof=pick("performance_proof", proof, COST_PROOFS),
             view=pick("performance_view", view, CANONICAL_VIEWS) or "detail",
             sort=pick("performance_sort", sort, CANONICAL_SORTS) or DEFAULT_SORT,
             file_paths=file_paths,
@@ -445,6 +460,7 @@ def summary_payload(row: Any | None) -> dict[str, Any]:
         "actionability": payload.get("actionability", {}),
         "context": payload.get("context", {}),
         "boundary": payload.get("boundary", {}),
+        "proof": payload.get("proof", {}),
         "with_plan_total": payload.get("with_plan_total", 0),
         **({"default_queue": payload["default_queue"]} if "default_queue" in payload else {}),
         **(
@@ -468,9 +484,10 @@ def rescope_summary(
     actionability: dict[str, int] = {}
     context: dict[str, int] = {}
     boundary: dict[str, int] = {}
+    proof: dict[str, int] = {}
     total = 0
     with_plan = 0
-    for execution_context, boundary_kind, _confidence, state, plan_state, count in groups:
+    for execution_context, boundary_kind, _confidence, state, plan_state, cost, count in groups:
         if execution_context not in contexts:
             continue
         total += count
@@ -478,6 +495,7 @@ def rescope_summary(
         context[execution_context] = context.get(execution_context, 0) + count
         key = boundary_kind or NULL_VALUE
         boundary[key] = boundary.get(key, 0) + count
+        proof[cost] = proof.get(cost, 0) + count
         if plan_state == "available":
             with_plan += count
     return {
@@ -486,6 +504,7 @@ def rescope_summary(
         "actionability": actionability,
         "context": context,
         "boundary": boundary,
+        "proof": proof,
         "with_plan_total": with_plan,
     }
 

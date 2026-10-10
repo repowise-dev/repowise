@@ -16,10 +16,12 @@ own, per opportunity or otherwise.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from math import log2
 from typing import Any
 
 from ..rows import detail_map, field
+from ..worth import cost_proof, lead_reason
 from .actionability import EXPECTED_REASONS
 
 BOUNDARY_POINTS = {"subprocess": 5, "network": 4, "db": 4, "lock": 3, "filesystem": 2}
@@ -83,12 +85,15 @@ Wilson LB 75.8%); SQLAlchemy has fewer than 30 labels and stays non-leading.
 """
 
 
-def may_lead(marker: str, orms: set[Any]) -> bool:
+def may_lead(marker: str, orms: set[Any], facets: Mapping[str, Any]) -> bool:
     """Whether a group of *marker* with members on *orms* may lead the directive.
 
-    Every member has to be on an ORM that cleared the bar: one unmeasured member
-    is enough to keep the group from leading.
+    Its cost has to be proven to matter (:func:`worth.lead_reason`), and every
+    member has to be on an ORM that cleared the bar: one unmeasured member is
+    enough to keep the group from leading.
     """
+    if lead_reason(marker, facets) is not None:
+        return False
     if marker not in NON_LEADING_MARKERS:
         return True
     return bool(orms) and orms <= LEADING_ORMS.get(marker, frozenset())
@@ -101,9 +106,9 @@ CROSS_FUNCTION_POINTS = 1
 the loop, so it earns a point that an intra-function hit does not."""
 
 CONTEXT_POINTS = {"production": 3, "tooling": 2, "test": 1, "unknown": 1}
-MAGNITUDE_POINTS = {"grows_with_data": 2, "unknown": 1, "n/a": 1, "bounded": 0}
+MAGNITUDE_POINTS = {"grows_with_data": 2, "n/a": 1, "bounded": 0, "unknown": 0}
 """A loop over a query result is paid again as the data grows; a retry loop or a
-constant-width slice is not. Unknown sits between, so a guess never outranks a fact."""
+constant-width slice is not. Unknown earns nothing, so a guess never outranks a fact."""
 PROVENANCE_POINTS = {"call-site": 3, "direct": 3, "reliable-edge": 2, "name-fallback": 0}
 
 AMPLIFICATION = {
@@ -134,15 +139,26 @@ what kept a generic sink's volume from crowding out actionable work.
 
 DEFAULT_QUEUE_CONTEXTS = frozenset({"production"})
 DEFAULT_QUEUE_STATES = frozenset({"plan_ready", "advisory"})
-"""What the queue holds when a caller names no filter: production work with a strategy.
+DEFAULT_QUEUE_PROOFS = frozenset({"proven"})
+"""What the queue holds when a caller names no filter: production work with a
+strategy whose cost is measured.
 
-Test, tooling and unclassified code, ``expected`` repetition, and causes with no
+Test, tooling and unclassified code, ``expected`` repetition, causes with no
 supported strategy (``investigate``, whose plan state is always ``no_safe_plan``)
-are true and stay one filter away, but none of them is work to schedule. Each is
-counted by :func:`default_queue_exclusion` so leaving it out is never silent.
+and causes whose loop nobody measured (``worth.cost_proof``) are true and stay one
+filter away, but none of them is work to schedule. Each is counted by
+:func:`default_queue_exclusion` so leaving it out is never silent.
 """
 
-DEFAULT_QUEUE_EXCLUSIONS = ("test", "tooling", "unknown", *EXPECTED_REASONS, "expected", "no_strategy")
+DEFAULT_QUEUE_EXCLUSIONS = (
+    "test",
+    "tooling",
+    "unknown",
+    *EXPECTED_REASONS,
+    "expected",
+    "no_strategy",
+    "unmeasured_cost",
+)
 """Every reason the default queue leaves a cause out, in the order it is checked."""
 
 _LEVERAGE_BANDS = ((1, "isolated"), (3, "local"), (9, "shared"))
@@ -277,15 +293,15 @@ def why_ranked(factors: dict[str, int], values: dict[str, Any], limit: int = 3) 
     )
 
 
-def default_queue_exclusion(
+def strategy_exclusion(
     item: Any, contexts: frozenset[str] = DEFAULT_QUEUE_CONTEXTS
 ) -> str | None:
-    """Why the default queue leaves *item* out, or ``None`` when it is queued.
+    """Why *item* is no work to schedule, by context and state, or ``None``.
 
-    One reason per cause, context first, so the counts of every reason and the
-    queue add up to the whole. Reads an opportunity, an ORM row or a plain row.
-    *contexts* widens the queue for a caller that asked for more (Fix first's
-    ``scope="all"`` keeps test code); the state rule never moves.
+    Reads an opportunity, an ORM row or a plain row. *contexts* widens it for a
+    caller that asked for more (Fix first's ``scope="all"`` keeps test code);
+    the state rule never moves. Fix first reads this rather than the default
+    queue because it keeps an unproven cause, as a ``later`` item.
     """
     context = field(item, "execution_context")
     if context not in contexts:
@@ -297,6 +313,18 @@ def default_queue_exclusion(
         return "no_strategy"
     reason = field(item, "actionability_reason") or detail_map(item).get("actionability_reason")
     return reason if reason in EXPECTED_REASONS else "expected"
+
+
+def default_queue_exclusion(item: Any) -> str | None:
+    """Why the default queue leaves *item* out, or ``None`` when it is queued.
+
+    One reason per cause, context first and proof last, so the counts of every
+    reason and the queue add up to the whole.
+    """
+    reason = strategy_exclusion(item)
+    if reason is None and cost_proof(item) not in DEFAULT_QUEUE_PROOFS:
+        return "unmeasured_cost"
+    return reason
 
 
 def default_queue_counts(items: list[Any]) -> dict[str, Any]:
@@ -333,6 +361,7 @@ __all__ = [
     "CROSS_FUNCTION_POINTS",
     "DEFAULT_QUEUE_CONTEXTS",
     "DEFAULT_QUEUE_EXCLUSIONS",
+    "DEFAULT_QUEUE_PROOFS",
     "DEFAULT_QUEUE_STATES",
     "LEADING_ORMS",
     "MAGNITUDE_POINTS",
@@ -353,6 +382,7 @@ __all__ = [
     "observation_rank",
     "rank_factors",
     "rank_sort_key",
+    "strategy_exclusion",
     "weakest_provenance",
     "why_ranked",
 ]

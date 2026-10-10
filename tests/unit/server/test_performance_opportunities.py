@@ -18,7 +18,15 @@ from repowise.core.persistence.models import PerformanceOpportunity
 from tests.unit.server.conftest import create_test_repo
 
 
-def _finding(path: str, line: int, path_nodes: list[str], *, marker: str = "io_in_loop"):
+def _finding(
+    path: str,
+    line: int,
+    path_nodes: list[str],
+    *,
+    marker: str = "io_in_loop",
+    magnitude: str | None = "grows_with_data",
+):
+    """A queue mechanics fixture: its loop is measured to grow unless told otherwise."""
     return HealthFindingData(
         biomarker_type=marker,
         severity=Severity.MEDIUM,
@@ -31,6 +39,7 @@ def _finding(path: str, line: int, path_nodes: list[str], *, marker: str = "io_i
             "cross_function": True,
             "path": path_nodes,
             "resolution_basis": "reliable-edge",
+            **({"loop_magnitude": magnitude} if magnitude else {}),
         },
         health_impact=0.0,
         reason="Database work repeats for every loop iteration.",
@@ -260,6 +269,7 @@ def _filesystem_finding(path: str, line: int, path_nodes: list[str]) -> HealthFi
             "cross_function": True,
             "path": path_nodes,
             "resolution_basis": "reliable-edge",
+            "loop_magnitude": "grows_with_data",
         },
         health_impact=0.0,
         reason="A file is read for every loop iteration.",
@@ -306,15 +316,17 @@ async def test_the_default_queue_reports_what_it_leaves_out(app, client: AsyncCl
         function_name="each",
         line_start=5,
         line_end=5,
-        details={"boundary_kind": "network"},
+        details={"boundary_kind": "network", "loop_magnitude": "grows_with_data"},
         health_impact=0.0,
         reason="A client is built for every loop iteration.",
         dimension="performance",
     )
+    unmeasured = _finding("src/d.py", 50, ["src/d.py::run", "src/db.py::fetch"], magnitude=None)
     findings = [
         *_findings(),
         no_strategy,
         _filesystem_finding("src/fs.py", 1, ["src/fs.py::run", "src/fs.py::read"]),
+        unmeasured,
     ]
     repo_id, _ = await _seed(app, client, findings)
 
@@ -330,10 +342,17 @@ async def test_the_default_queue_reports_what_it_leaves_out(app, client: AsyncCl
             "cold_path": 0,
             "expected": 1,
             "no_strategy": 1,
+            "unmeasured_cost": 1,
         },
     }
+    proof = {entry["value"]: entry["total"] for entry in default["facets"]["proof"]}
+    assert proof["unproven"] >= 1
     asked = await _page(client, repo_id, actionability="investigate")
     assert [item["intervention_symbol"] for item in asked["items"]] == ["src/clients.py::each"]
+    # Left out of the default queue, listed under its own filter, never leading.
+    unproven = await _page(client, repo_id, proof="unproven")
+    assert [item["file_path"] for item in unproven["items"]] == ["src/d.py"]
+    assert unproven["items"][0]["may_lead"] is False
 
 
 async def test_an_expected_row_never_leads(app, client: AsyncClient) -> None:

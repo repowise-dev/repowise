@@ -133,6 +133,7 @@ export async function getPerformanceOpportunities(
       boundary: opts.boundary,
       confidence: opts.confidence,
       actionability: opts.actionability,
+      proof: opts.proof,
       view: opts.view,
       sort: opts.sort,
       file_paths: opts.file_paths?.length ? opts.file_paths.join(",") : undefined,

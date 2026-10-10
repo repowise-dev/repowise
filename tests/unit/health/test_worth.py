@@ -195,6 +195,11 @@ def test_a_perf_cause_leads_only_on_a_loop_that_grows(context, facets, expected)
         ("blocking_sync_in_async", {}, "unreached_call"),
         ("goroutine_in_unbounded_loop", {}, None),
         ("sql_cartesian_join", {"loop_magnitude": "unknown"}, None),
+        ("unbounded_read_reduced_in_memory", {"exposure": "entry_reachable"}, None),
+        ("unbounded_read_reduced_in_memory", {"loop_magnitude": "n/a"}, "unreached_call"),
+        # A marker with no loop is judged per call, never as an unmeasured loop.
+        ("some_new_marker", {"loop_magnitude": "n/a", "exposure": "entry_reachable"}, None),
+        ("some_new_marker", {"loop_magnitude": "n/a"}, "unreached_call"),
     ],
 )
 def test_a_perf_cause_is_judged_by_its_kind(marker, facets, expected) -> None:
@@ -203,3 +208,50 @@ def test_a_perf_cause_is_judged_by_its_kind(marker, facets, expected) -> None:
     row = {"execution_context": "production", "biomarker_type": marker,
            "details": {"facets": facets}}
     assert perf_low_priority(row) == expected
+
+
+@pytest.mark.parametrize(
+    ("marker", "facets", "proof"),
+    [
+        ("io_in_loop", {"loop_magnitude": "unknown"}, "unproven"),
+        ("io_in_loop", {}, "unproven"),
+        ("io_in_loop", {"loop_magnitude": "bounded"}, "proven"),
+        ("io_in_loop", {"loop_magnitude": "grows_with_data"}, "proven"),
+        ("hot_path_sync_io", {"exposure": "not_entry_reachable"}, "proven"),
+        ("sql_cartesian_join", {}, "proven"),
+        ("unbounded_read_reduced_in_memory", {"loop_magnitude": "n/a"}, "proven"),
+        ("some_new_marker", {"loop_magnitude": "n/a"}, "proven"),
+    ],
+)
+def test_only_an_unmeasured_loop_is_unproven(marker, facets, proof) -> None:
+    from repowise.core.analysis.health.perf.opportunity_rank import default_queue_exclusion
+    from repowise.core.analysis.health.worth import cost_proof
+
+    row = {"execution_context": "production", "actionability_state": "advisory",
+           "biomarker_type": marker, "details": {"facets": facets}}
+    assert cost_proof(row) == proof
+    # The default queue leaves an unproven cause out under the shared reason.
+    assert default_queue_exclusion(row) == ("unmeasured_cost" if proof == "unproven" else None)
+
+
+def test_an_unknown_loop_ranks_no_higher_than_a_bounded_one() -> None:
+    from repowise.core.analysis.health.perf.opportunity_rank import MAGNITUDE_POINTS
+
+    assert MAGNITUDE_POINTS["unknown"] <= MAGNITUDE_POINTS["bounded"]
+    assert MAGNITUDE_POINTS["unknown"] < MAGNITUDE_POINTS["grows_with_data"]
+
+
+def test_the_default_queue_counts_an_unproven_cause_and_still_adds_up() -> None:
+    from repowise.core.analysis.health.perf.opportunity_rank import default_queue_counts
+
+    def row(context: str, magnitude: str) -> dict:
+        return {"execution_context": context, "actionability_state": "advisory",
+                "biomarker_type": "io_in_loop",
+                "details": {"facets": {"loop_magnitude": magnitude}}}
+
+    rows = [row("production", "grows_with_data"), row("production", "unknown"),
+            row("test", "unknown")]
+    counts = default_queue_counts(rows)
+    assert counts["total"] == 1
+    assert counts["excluded"]["unmeasured_cost"] == 1 and counts["excluded"]["test"] == 1
+    assert counts["total"] + sum(counts["excluded"].values()) == len(rows)

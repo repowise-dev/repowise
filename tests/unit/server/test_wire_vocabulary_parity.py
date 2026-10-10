@@ -121,6 +121,12 @@ def test_performance_queue_exclusions_match_python() -> None:
     assert _union_members("PerformanceQueueExclusion", "health.ts") == set(DEFAULT_QUEUE_EXCLUSIONS)
 
 
+def test_performance_cost_proofs_match_python() -> None:
+    from repowise.core.analysis.health.worth import COST_PROOFS
+
+    assert _union_members("PerformanceCostProof", "health.ts") == set(COST_PROOFS)
+
+
 def test_agent_prompt_flavors_match_python() -> None:
     from repowise.core.agent_prompts import FLAVORS
 

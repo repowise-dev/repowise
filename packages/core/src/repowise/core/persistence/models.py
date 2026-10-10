@@ -1938,6 +1938,12 @@ class PerformanceOpportunity(Base):
     # ``available`` | ``no_safe_plan`` | ``not_persisted``, decided once by the
     # writer that also decides whether a plan row exists.
     plan_state: Mapped[str] = mapped_column(String(16), nullable=False, default="no_safe_plan")
+    # ``proven`` | ``unproven`` (``worth.cost_proof``): whether anything measured
+    # that the cost grows. A store written before the column reads ``proven``
+    # until its next analysis, as it was served then.
+    cost_proof: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="proven", server_default="proven"
+    )
     fix_strategy: Mapped[str | None] = mapped_column(String(64), nullable=True)
     fix_safety: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # The file holding the symbol worth editing, so target scoping is a column.

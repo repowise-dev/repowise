@@ -102,6 +102,7 @@ def _row_kwargs(
     plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from ....analysis.health.perf.serving import intervention_file
+    from ....analysis.health.worth import cost_proof
 
     fix = opportunity.fix
     return {
@@ -116,6 +117,7 @@ def _row_kwargs(
         "actionability_state": opportunity.actionability_state,
         "evidence_confidence": opportunity.confidence,
         "plan_state": plan_state,
+        "cost_proof": cost_proof(opportunity),
         "fix_strategy": fix.strategy if fix else None,
         "fix_safety": fix.safety if fix else None,
         "file_path": intervention_file(opportunity),
@@ -140,15 +142,19 @@ def _summary_payload(
         default_queue_exclusion,
     )
     from ....analysis.health.perf.serving import intervention_file
+    from ....analysis.health.worth import cost_proof
 
     counts: dict[str, int] = {}
     contexts: dict[str, int] = {}
     boundaries: dict[str, int] = {}
+    proofs: dict[str, int] = {}
     for item in opportunities:
         counts[item.actionability_state] = counts.get(item.actionability_state, 0) + 1
         contexts[item.execution_context] = contexts.get(item.execution_context, 0) + 1
         key = item.boundary_kind or "none"
         boundaries[key] = boundaries.get(key, 0) + 1
+        proof = cost_proof(item)
+        proofs[proof] = proofs.get(proof, 0) + 1
     # The lead is the head of the default queue, so it is production work with a
     # strategy; never a marker whose measured precision is below the bar for leading.
     lead = next(
@@ -164,6 +170,7 @@ def _summary_payload(
         "actionability": counts,
         "context": contexts,
         "boundary": boundaries,
+        "proof": proofs,
         "with_plan_total": sum(1 for state in plan_states.values() if state == "available"),
         "lead": None
         if lead is None
@@ -453,6 +460,7 @@ async def list_performance_opportunities(
     boundary: str | None = None,
     confidence: str | None = None,
     actionabilities: frozenset[str] | None = None,
+    proofs: frozenset[str] | None = None,
     file_paths: tuple[str, ...] | None = None,
     sort: str = "rank",
     limit: int = 20,
@@ -471,6 +479,7 @@ async def list_performance_opportunities(
         boundary=boundary,
         confidence=confidence,
         actionabilities=actionabilities,
+        proofs=proofs,
         file_paths=file_paths,
     )
     total = int(
@@ -501,7 +510,7 @@ async def performance_facet_counts(
     repository_id: str,
     *,
     file_paths: tuple[str, ...] | None = None,
-) -> list[tuple[str, str | None, str, str, str, int]]:
+) -> list[tuple[str, str | None, str, str, str, str, int]]:
     """Grouped counts over every open opportunity, in one aggregate statement.
 
     Returned pre-aggregation, one ``(*FACET_FIELDS, count)`` tuple per group,

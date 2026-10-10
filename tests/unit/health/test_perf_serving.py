@@ -99,9 +99,9 @@ def test_summary_payload_names_absence_and_staleness() -> None:
 
 def test_rescope_summary_recounts_one_context() -> None:
     groups = [
-        ("production", None, "high", "advisory", "available", 2),
-        ("production", "db", "low", "plan_ready", "no_safe_plan", 1),
-        ("test", "db", "low", "advisory", "available", 5),
+        ("production", None, "high", "advisory", "available", "proven", 2),
+        ("production", "db", "low", "plan_ready", "no_safe_plan", "unproven", 1),
+        ("test", "db", "low", "advisory", "available", "proven", 5),
     ]
     scoped = rescope_summary({"total": 8, "x": 1}, groups, frozenset({"production"}))
     assert scoped == {
@@ -110,6 +110,7 @@ def test_rescope_summary_recounts_one_context() -> None:
         "actionability": {"advisory": 2, "plan_ready": 1},
         "context": {"production": 3},
         "boundary": {"none": 2, "db": 1},
+        "proof": {"proven": 2, "unproven": 1},
         "with_plan_total": 2,
     }
 
@@ -121,26 +122,27 @@ def test_rescope_summary_recounts_one_context() -> None:
 _SEEDS: list[dict[str, Any]] = [
     {"execution_context": "production", "boundary_kind": "db", "evidence_confidence": "high",
      "actionability_state": "plan_ready", "plan_state": "available", "file_path": "a.py",
-     "affected_call_sites_total": 4, "observations_total": 9},
+     "affected_call_sites_total": 4, "observations_total": 9, "cost_proof": "proven"},
     {"execution_context": "production", "boundary_kind": None, "evidence_confidence": "medium",
      "actionability_state": "advisory", "plan_state": "no_safe_plan", "file_path": "b.py",
-     "affected_call_sites_total": 4, "observations_total": 2},
+     "affected_call_sites_total": 4, "observations_total": 2, "cost_proof": "unproven"},
     {"execution_context": "test", "boundary_kind": "network", "evidence_confidence": "low",
      "actionability_state": "advisory", "plan_state": "not_persisted", "file_path": "a.py",
-     "affected_call_sites_total": 7, "observations_total": 2},
+     "affected_call_sites_total": 7, "observations_total": 2, "cost_proof": "proven"},
     {"execution_context": "tooling", "boundary_kind": None, "evidence_confidence": "high",
      "actionability_state": "expected", "plan_state": "no_safe_plan", "file_path": "c.py",
-     "affected_call_sites_total": 1, "observations_total": 9},
+     "affected_call_sites_total": 1, "observations_total": 9, "cost_proof": "unproven"},
     {"execution_context": "production", "boundary_kind": "db", "evidence_confidence": "high",
      "actionability_state": "investigate", "plan_state": "no_safe_plan", "file_path": "c.py",
-     "affected_call_sites_total": 0, "observations_total": 5},
+     "affected_call_sites_total": 0, "observations_total": 5, "cost_proof": "proven"},
     {"execution_context": "unknown", "boundary_kind": "filesystem", "evidence_confidence": "medium",
      "actionability_state": "plan_ready", "plan_state": "available", "file_path": "b.py",
-     "affected_call_sites_total": 7, "observations_total": 1},
+     "affected_call_sites_total": 7, "observations_total": 1, "cost_proof": "proven"},
     # Resolved: in no queue and no facet.
     {"execution_context": "production", "boundary_kind": "db", "evidence_confidence": "high",
      "actionability_state": "plan_ready", "plan_state": "available", "file_path": "a.py",
-     "affected_call_sites_total": 99, "observations_total": 99, "status": "resolved"},
+     "affected_call_sites_total": 99, "observations_total": 99, "status": "resolved",
+     "cost_proof": "proven"},
 ]
 
 _QUERIES: list[dict[str, Any]] = [
@@ -154,6 +156,8 @@ _QUERIES: list[dict[str, Any]] = [
     {"context": "all", "file_paths": ("a.py", "b.py")},
     {"context": "all", "file_paths": ()},
     {"boundary": "network"},
+    {"proof": "unproven"},
+    {"context": "all", "proof": "unproven", "actionability": "expected"},
 ]
 
 
@@ -226,6 +230,7 @@ async def test_keep_and_sort_agree_with_the_store(store, args, sort) -> None:
         boundary=query.boundary,
         confidence=query.confidence,
         actionabilities=query.actionabilities,
+        proofs=query.proofs,
         file_paths=query.file_paths,
         sort=query.sort,
         limit=query.limit,
@@ -240,7 +245,7 @@ async def test_keep_and_sort_agree_with_the_store(store, args, sort) -> None:
 def _reference_facets(groups: list[tuple], query: PerformanceQuery) -> dict[str, Any]:
     """The cross-filtered fold as the service wrote it before the rules were data."""
     dimensions = {"context": 0, "boundary": 1, "confidence": 2, "actionability": 3,
-                  "plan_state": 4}
+                  "plan_state": 4, "proof": 5}
     selected = {
         "context": query.contexts,
         "boundary": None if query.boundary is None else frozenset({query.boundary}),
@@ -249,6 +254,7 @@ def _reference_facets(groups: list[tuple], query: PerformanceQuery) -> dict[str,
             None if query.actionability is None else frozenset({query.actionability})
         ),
         "plan_state": None,
+        "proof": None if query.proof is None else frozenset({query.proof}),
     }
     facets = {}
     for name, index in dimensions.items():
@@ -260,7 +266,7 @@ def _reference_facets(groups: list[tuple], query: PerformanceQuery) -> dict[str,
                 for other, values in selected.items()
             ):
                 continue
-            counts[row[index] or "none"] = counts.get(row[index] or "none", 0) + row[5]
+            counts[row[index] or "none"] = counts.get(row[index] or "none", 0) + row[6]
         facets[name] = [
             {"value": v, "total": t}
             for v, t in sorted(counts.items(), key=lambda item: (-item[1], item[0]))

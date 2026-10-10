@@ -334,12 +334,13 @@ def test_only_a_loop_known_to_grow_leads() -> None:
 
 
 def test_an_unknown_loop_no_entry_reaches_drops_a_step() -> None:
-    assert _value(loop_magnitude="unknown", exposure="not_entry_reachable") == "1"
-    assert _value(loop_magnitude="unknown") == "1"
+    assert _value(loop_magnitude="unknown", exposure="not_entry_reachable") == "0"
+    assert _value(loop_magnitude="unknown") == "0"
 
 
-def test_reach_or_a_known_loop_keeps_the_step() -> None:
-    assert _value(loop_magnitude="unknown", exposure="entry_reachable") == "2"
+def test_reach_keeps_an_unknown_loop_a_step_below_a_known_one() -> None:
+    # An unproven cost never earns the value a loop known to grow does.
+    assert _value(loop_magnitude="unknown", exposure="entry_reachable") == "1"
     assert _value(loop_magnitude="grows_with_data", exposure="not_entry_reachable") == "2"
 
 

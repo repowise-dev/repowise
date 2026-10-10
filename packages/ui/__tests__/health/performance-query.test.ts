@@ -25,10 +25,20 @@ describe("performance filter state", () => {
       boundary: "filesystem",
       confidence: "high" as const,
       actionability: "plan_ready" as const,
+      proof: "unproven" as const,
       sort: "leverage" as const,
       offset: 40,
     };
     expect(parseFilters(serializeFilters(state))).toEqual(state);
+  });
+
+  it("asks for unproven causes only when chosen", () => {
+    // Absent means the server's default: causes whose cost is measured.
+    expect(toQuery(INITIAL_FILTERS, { limit: 20 }).proof).toBeUndefined();
+    const unproven = withFilter(INITIAL_FILTERS, "proof", "unproven");
+    expect(toQuery(unproven, { limit: 20 }).proof).toBe("unproven");
+    expect(narrowingCount(unproven)).toBe(1);
+    expect(clearNarrowing(unproven).proof).toBeNull();
   });
 
   it("round trips the expected actionability state", () => {

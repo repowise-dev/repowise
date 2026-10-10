@@ -25,11 +25,11 @@
           "boundary_kind": 4,
           "entry_reachability": 3,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 6,
           "provenance": 3
         },
-        "rank_score": 24,
+        "rank_score": 23,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": true
       },
@@ -130,11 +130,11 @@
           "boundary_kind": 4,
           "entry_reachability": 3,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 22,
+        "rank_score": 21,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": true
       },
@@ -245,11 +245,11 @@
           "boundary_kind": 4,
           "entry_reachability": 3,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 21,
+        "rank_score": 20,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": true
       },
@@ -351,11 +351,11 @@
           "boundary_kind": 4,
           "entry_reachability": 3,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 21,
+        "rank_score": 20,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": true
       },
@@ -458,11 +458,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 6,
           "provenance": 3
         },
-        "rank_score": 20,
+        "rank_score": 19,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -635,11 +635,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 18,
+        "rank_score": 17,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -741,11 +741,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 5,
           "provenance": 3
         },
-        "rank_score": 18,
+        "rank_score": 17,
         "rationale": "I/O under the lock is proven, but shared-state ordering must be validated before moving it.",
         "reliable_entry_reachability": null
       },
@@ -818,11 +818,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 17,
+        "rank_score": 16,
         "rationale": "Iterations are independent and each await already runs under self._sem.",
         "reliable_entry_reachability": null
       },
@@ -889,11 +889,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 17,
+        "rank_score": 16,
         "rationale": "Every call filters on the loop's own key, so .in_(\"repo_id\", keys) is the bulk form; the per-key call limits, orders or shares the loop with other I/O.",
         "reliable_entry_reachability": null
       },
@@ -960,11 +960,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 17,
+        "rank_score": 16,
         "rationale": "Iteration independence is proven; the concurrency the fan-out would create is not bounded by anything this group can see.",
         "reliable_entry_reachability": null
       },
@@ -1031,11 +1031,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 17,
+        "rank_score": 16,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1116,11 +1116,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 17,
+        "rank_score": 16,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1199,11 +1199,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 17,
+        "rank_score": 16,
         "rationale": "The relationship is declared lazy and the query that produced the rows does not load it; whether every iteration reaches the access, and whether another layer loads it first, is not proven.",
         "reliable_entry_reachability": null
       },
@@ -1261,11 +1261,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 17,
+        "rank_score": 16,
         "rationale": "The relationship is declared lazy and the query that produced the rows does not load it; whether every iteration reaches the access, and whether another layer loads it first, is not proven.",
         "reliable_entry_reachability": null
       },
@@ -1323,11 +1323,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 17,
+        "rank_score": 16,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": false
       },
@@ -1408,11 +1408,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 17,
+        "rank_score": 16,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": false
       },
@@ -1468,91 +1468,6 @@
       "refactoring_type": "performance_fix",
       "source_biomarker": "io_in_loop",
       "target_symbol": "src/app/reports.py::handle"
-    },
-    {
-      "blast_radius": {
-        "call_sites": 1,
-        "file_count": 1,
-        "files": [
-          "src/app/billing.py"
-        ]
-      },
-      "confidence": "medium",
-      "evidence": {
-        "affected_files_total": 1,
-        "biomarker_type": "io_in_loop",
-        "biomarker_types": [
-          "io_in_loop"
-        ],
-        "boundary_kind": "db",
-        "execution_context": "production",
-        "observations_total": 1,
-        "provenance": "call-site",
-        "rank_factors": {
-          "affected_call_sites": 2,
-          "boundary_kind": 4,
-          "entry_reachability": 0,
-          "execution_context": 3,
-          "loop_magnitude": 1,
-          "multiplier_shape": 4,
-          "provenance": 3
-        },
-        "rank_score": 17,
-        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
-        "reliable_entry_reachability": false
-      },
-      "file_path": "src/app/billing.py",
-      "impact_delta": 0.0,
-      "line_end": 13,
-      "line_start": 11,
-      "plan": {
-        "affected_locations": [
-          {
-            "call": "get_session",
-            "file_path": "src/app/billing.py",
-            "function_name": "handle",
-            "line_end": 13,
-            "line_start": 11
-          }
-        ],
-        "affected_locations_total": 1,
-        "api": null,
-        "evidence_truncated": false,
-        "intervention_symbol": "src/app/billing.py::handle",
-        "judgment_steps": 2,
-        "mechanical_steps": 0,
-        "opportunity_id": "perf3_debc1e358c095e5fd0d8",
-        "paths": [
-          [
-            "src/app/billing.py::handle",
-            "src/app/db.py::get_session"
-          ]
-        ],
-        "paths_total": 1,
-        "safety": "advisory",
-        "steps": [
-          {
-            "action": "Add a form of get_session that takes every key at once",
-            "applicability": "judgment",
-            "file_path": "src/app/db.py",
-            "line": null,
-            "order": 1,
-            "symbol": "src/app/db.py::get_session"
-          },
-          {
-            "action": "Collect the keys before the loop and replace the per-key get_session call with one batched call",
-            "applicability": "judgment",
-            "file_path": "src/app/billing.py",
-            "line": 11,
-            "order": 2,
-            "symbol": "handle"
-          }
-        ],
-        "strategy": "batch_or_prefetch_io"
-      },
-      "refactoring_type": "performance_fix",
-      "source_biomarker": "io_in_loop",
-      "target_symbol": "src/app/billing.py::handle"
     },
     {
       "blast_radius": {
@@ -1630,6 +1545,91 @@
         "call_sites": 1,
         "file_count": 1,
         "files": [
+          "src/app/billing.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "call-site",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "loop_magnitude": 0,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 16,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": false
+      },
+      "file_path": "src/app/billing.py",
+      "impact_delta": 0.0,
+      "line_end": 13,
+      "line_start": 11,
+      "plan": {
+        "affected_locations": [
+          {
+            "call": "get_session",
+            "file_path": "src/app/billing.py",
+            "function_name": "handle",
+            "line_end": 13,
+            "line_start": 11
+          }
+        ],
+        "affected_locations_total": 1,
+        "api": null,
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/billing.py::handle",
+        "judgment_steps": 2,
+        "mechanical_steps": 0,
+        "opportunity_id": "perf3_debc1e358c095e5fd0d8",
+        "paths": [
+          [
+            "src/app/billing.py::handle",
+            "src/app/db.py::get_session"
+          ]
+        ],
+        "paths_total": 1,
+        "safety": "advisory",
+        "steps": [
+          {
+            "action": "Add a form of get_session that takes every key at once",
+            "applicability": "judgment",
+            "file_path": "src/app/db.py",
+            "line": null,
+            "order": 1,
+            "symbol": "src/app/db.py::get_session"
+          },
+          {
+            "action": "Collect the keys before the loop and replace the per-key get_session call with one batched call",
+            "applicability": "judgment",
+            "file_path": "src/app/billing.py",
+            "line": 11,
+            "order": 2,
+            "symbol": "handle"
+          }
+        ],
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "src/app/billing.py::handle"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
           "scripts/backfill.py"
         ]
       },
@@ -1649,11 +1649,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 2,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 15,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1734,11 +1734,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 2
         },
-        "rank_score": 16,
+        "rank_score": 15,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1819,11 +1819,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 4,
           "provenance": 0
         },
-        "rank_score": 14,
+        "rank_score": 13,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1904,11 +1904,11 @@
           "boundary_kind": 0,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 3,
           "provenance": 3
         },
-        "rank_score": 12,
+        "rank_score": 11,
         "rationale": "The collection is proven list-backed; element hashability and ordering/identity use still require validation.",
         "reliable_entry_reachability": null
       },
@@ -1975,11 +1975,11 @@
           "boundary_kind": 0,
           "entry_reachability": 0,
           "execution_context": 3,
-          "loop_magnitude": 1,
+          "loop_magnitude": 0,
           "multiplier_shape": 3,
           "provenance": 3
         },
-        "rank_score": 12,
+        "rank_score": 11,
         "rationale": "Repeated string accumulation is proven; intermediate accumulator observations still require validation.",
         "reliable_entry_reachability": null
       },

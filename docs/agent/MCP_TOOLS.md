@@ -334,7 +334,7 @@ Code-health scores and findings from the stored analysis, across defect risk, ma
 | `refactoring_type`, `refactoring_confidence`, `refactoring_effort` | string | none | Refactoring queue filters |
 | `performance_view` | string | `detail` | `detail` or `summary` |
 | `performance_context` | string | `production` | `production`, `tooling`, `test`, `unknown` or `all` |
-| `performance_boundary`, `performance_confidence`, `performance_actionability`, `performance_sort` | string | none | Performance queue filters |
+| `performance_boundary`, `performance_confidence`, `performance_actionability`, `performance_sort` | string | none | Performance queue filters. The queue lists causes whose cost is measured; unproven ones (loop size unknown) are counted in the `proof` facet and `default_queue.excluded.unmeasured_cost` |
 | `scope` | string | `"all"` | `production` drops test files from every figure |
 | `counts` | string | `"everything"` | `code_shape` drops the git-derived half of the score |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |

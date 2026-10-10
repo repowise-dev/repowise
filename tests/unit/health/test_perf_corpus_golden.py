@@ -319,4 +319,6 @@ def test_a_lazy_load_leads_only_where_its_orm_cleared_the_bar() -> None:
         item.evidence[0]["file_path"]: item.may_lead
         for item in build_performance_opportunities(rows_for("lazy_load_by_orm"))
     }
-    assert by_orm == {"app/issues/views.py": True, "app/incidents/service.py": False}
+    # Neither loop is measured to grow, so neither leads whatever its ORM;
+    # the ORM gate over a growing loop is covered in test_perf_opportunities.
+    assert by_orm == {"app/issues/views.py": False, "app/incidents/service.py": False}

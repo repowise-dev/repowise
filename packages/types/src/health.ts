@@ -561,7 +561,15 @@ export type PerformanceFacetKey =
   | "boundary"
   | "confidence"
   | "actionability"
-  | "plan_state";
+  | "plan_state"
+  | "proof";
+
+/**
+ * Whether anything measured that a cause's cost grows with the data
+ * (`worth.COST_PROOFS`). The queue holds `proven` causes unless asked for
+ * `unproven` ones, which never lead.
+ */
+export type PerformanceCostProof = "proven" | "unproven";
 
 export type PerformanceFacets = Partial<Record<PerformanceFacetKey, PerformanceFacetCount[]>>;
 
@@ -584,6 +592,8 @@ export type PerformanceOpportunityQuery = {
   /** Evidence confidence, requested apart from fix safety and actionability. */
   confidence?: PerformanceOpportunityConfidence;
   actionability?: PerformanceActionabilityState;
+  /** Absent means `proven`; `unproven` lists the causes the default queue leaves out. */
+  proof?: PerformanceCostProof;
   /** `summary` drops the explanatory fields and keeps identity and counts. */
   view?: "detail" | "summary";
   sort?: "rank" | "leverage" | "observations";
@@ -605,7 +615,8 @@ export type PerformanceQueueExclusion =
   | "gated_off"
   | "cold_path"
   | "expected"
-  | "no_strategy";
+  | "no_strategy"
+  | "unmeasured_cost";
 
 export interface PerformanceDefaultQueue {
   total: number;
@@ -629,6 +640,8 @@ export interface PerformanceOpportunitySummary {
   actionability?: Partial<Record<PerformanceActionabilityState, number>>;
   context?: Partial<Record<PerformanceExecutionContext, number>>;
   boundary?: Record<string, number>;
+  /** Causes by cost proof; `unproven` ones sit outside the default queue. Absent on an older store. */
+  proof?: Partial<Record<PerformanceCostProof, number>>;
   with_plan_total: number;
   /** The queue a caller gets with no filter (production work with a strategy),
    *  and how many causes it leaves out per reason. Absent on an older store. */

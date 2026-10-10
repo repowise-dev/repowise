@@ -1,6 +1,7 @@
 import {
   PERF_BOUNDARY_LABEL,
   type PerformanceActionabilityState,
+  type PerformanceCostProof,
   type PerformanceExecutionContext,
   type PerformanceFacetKey,
   type PerformanceOpportunity,
@@ -63,6 +64,12 @@ export const FACET_LABEL: Record<PerformanceFacetKey, string> = {
   confidence: "Evidence confidence",
   actionability: "Actionability",
   plan_state: "Plan",
+  proof: "Cost",
+};
+
+const PROOF_LABEL: Record<PerformanceCostProof, string> = {
+  proven: "Measured",
+  unproven: "Unproven: loop size unknown",
 };
 
 const PLAN_STATE_LABEL: Record<string, string> = {
@@ -180,6 +187,7 @@ export function facetValueLabel(facet: PerformanceFacetKey, value: string): stri
   if (facet === "confidence") return CONFIDENCE_LABEL[value as PerformanceOpportunityConfidence] ?? humanizeToken(value);
   if (facet === "actionability")
     return ACTIONABILITY_LABEL[value as PerformanceActionabilityState] ?? humanizeToken(value);
+  if (facet === "proof") return PROOF_LABEL[value as PerformanceCostProof] ?? humanizeToken(value);
   return PLAN_STATE_LABEL[value] ?? humanizeToken(value);
 }
 

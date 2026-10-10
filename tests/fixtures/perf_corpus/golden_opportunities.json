@@ -67,7 +67,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/jobs.py::drain",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 3,
       "opportunity_id": "perf3_d41b04897cfde2a9eed6",
       "performance_model_version": 3,
@@ -81,11 +81,11 @@
         "boundary_kind": 4,
         "entry_reachability": 3,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 6,
         "provenance": 3
       },
-      "rank_score": 24,
+      "rank_score": 23,
       "reliable_entry_reachability": true,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -187,7 +187,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/ledger.py::apply",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 3,
       "opportunity_id": "perf3_2719b6813419ad35948b",
       "performance_model_version": 3,
@@ -201,11 +201,11 @@
         "boundary_kind": 4,
         "entry_reachability": 3,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 22,
+      "rank_score": 21,
       "reliable_entry_reachability": true,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
@@ -294,7 +294,7 @@
       },
       "intervention_kind": "shared_helper",
       "intervention_symbol": "src/app/entry.py::_hit",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 2,
       "opportunity_id": "perf3_6690af4c5e3f269c266e",
       "performance_model_version": 3,
@@ -308,11 +308,11 @@
         "boundary_kind": 4,
         "entry_reachability": 3,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 21,
+      "rank_score": 20,
       "reliable_entry_reachability": true,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -402,7 +402,7 @@
       },
       "intervention_kind": "shared_helper",
       "intervention_symbol": "src/app/repo.py::fetch_page",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 2,
       "opportunity_id": "perf3_8456a319d03ac90c6041",
       "performance_model_version": 3,
@@ -416,11 +416,11 @@
         "boundary_kind": 4,
         "entry_reachability": 3,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 21,
+      "rank_score": 20,
       "reliable_entry_reachability": true,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -511,7 +511,7 @@
       },
       "intervention_kind": "shared_helper",
       "intervention_symbol": "src/app/reindex.py::_write",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 2,
       "opportunity_id": "perf3_a123c4c38fdb1cabaa6a",
       "performance_model_version": 3,
@@ -525,11 +525,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 6,
         "provenance": 3
       },
-      "rank_score": 20,
+      "rank_score": 19,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -546,109 +546,6 @@
           "factor": "multiplier_shape",
           "points": 6,
           "value": "nested_loop_with_io"
-        },
-        {
-          "factor": "boundary_kind",
-          "points": 4,
-          "value": "db"
-        },
-        {
-          "factor": "affected_call_sites",
-          "points": 3,
-          "value": 2
-        }
-      ]
-    },
-    {
-      "actionability_reason": "no_supported_strategy",
-      "actionability_state": "investigate",
-      "affected_call_sites_total": 2,
-      "affected_files_total": 1,
-      "biomarker_type": "blocking_io_under_lock",
-      "biomarker_types": [
-        "blocking_io_under_lock"
-      ],
-      "boundary_kind": "db",
-      "confidence": "high",
-      "evidence": [
-        {
-          "biomarker_type": "blocking_io_under_lock",
-          "file_path": "src/app/pool.py",
-          "finding_id": "finding_2cca2a2e17c82f868f98",
-          "function_name": "reaper",
-          "line_end": 132,
-          "line_start": 130,
-          "path": [
-            "src/app/pool.py::reaper",
-            "src/app/store.py::flush_all",
-            "src/app/store.py::flush"
-          ],
-          "provenance": "call-site",
-          "reason": "distinct_lock_owners: blocking_io_under_lock at src/app/pool.py:130 repeats work per iteration."
-        },
-        {
-          "biomarker_type": "blocking_io_under_lock",
-          "file_path": "src/app/pool.py",
-          "finding_id": "finding_401246625d2b912b7c5c",
-          "function_name": "writer",
-          "line_end": 132,
-          "line_start": 130,
-          "path": [
-            "src/app/pool.py::writer",
-            "src/app/store.py::flush_all",
-            "src/app/store.py::flush"
-          ],
-          "provenance": "call-site",
-          "reason": "distinct_lock_owners: blocking_io_under_lock at src/app/pool.py:130 repeats work per iteration."
-        }
-      ],
-      "evidence_truncated": false,
-      "execution_context": "production",
-      "facets": {
-        "actionability_confidence": "low",
-        "amplification": "per_iteration",
-        "change_risk": "contained",
-        "exposure": "unknown",
-        "leverage": "local",
-        "loop_magnitude": "unknown"
-      },
-      "fix": null,
-      "intervention_kind": "shared_helper",
-      "intervention_symbol": "src/app/store.py::flush_all",
-      "may_lead": true,
-      "observations_total": 2,
-      "opportunity_id": "perf3_d3dace3672249fc9bd03",
-      "performance_model_version": 3,
-      "prerequisites": [
-        "single_lock_owner"
-      ],
-      "provenance": "call-site",
-      "rank_factors": {
-        "affected_call_sites": 3,
-        "boundary_kind": 4,
-        "entry_reachability": 0,
-        "execution_context": 3,
-        "loop_magnitude": 1,
-        "multiplier_shape": 5,
-        "provenance": 3
-      },
-      "rank_score": 19,
-      "reliable_entry_reachability": null,
-      "resource_fingerprints": [],
-      "shared_path_suffix": [
-        "src/app/store.py::flush_all",
-        "src/app/store.py::flush"
-      ],
-      "siblings": [],
-      "terminal_sink": "src/app/store.py::flush",
-      "terminal_sinks": [
-        "src/app/store.py::flush"
-      ],
-      "why_ranked": [
-        {
-          "factor": "multiplier_shape",
-          "points": 5,
-          "value": "blocking_io_under_lock"
         },
         {
           "factor": "boundary_kind",
@@ -745,6 +642,109 @@
       ]
     },
     {
+      "actionability_reason": "no_supported_strategy",
+      "actionability_state": "investigate",
+      "affected_call_sites_total": 2,
+      "affected_files_total": 1,
+      "biomarker_type": "blocking_io_under_lock",
+      "biomarker_types": [
+        "blocking_io_under_lock"
+      ],
+      "boundary_kind": "db",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "blocking_io_under_lock",
+          "file_path": "src/app/pool.py",
+          "finding_id": "finding_2cca2a2e17c82f868f98",
+          "function_name": "reaper",
+          "line_end": 132,
+          "line_start": 130,
+          "path": [
+            "src/app/pool.py::reaper",
+            "src/app/store.py::flush_all",
+            "src/app/store.py::flush"
+          ],
+          "provenance": "call-site",
+          "reason": "distinct_lock_owners: blocking_io_under_lock at src/app/pool.py:130 repeats work per iteration."
+        },
+        {
+          "biomarker_type": "blocking_io_under_lock",
+          "file_path": "src/app/pool.py",
+          "finding_id": "finding_401246625d2b912b7c5c",
+          "function_name": "writer",
+          "line_end": 132,
+          "line_start": 130,
+          "path": [
+            "src/app/pool.py::writer",
+            "src/app/store.py::flush_all",
+            "src/app/store.py::flush"
+          ],
+          "provenance": "call-site",
+          "reason": "distinct_lock_owners: blocking_io_under_lock at src/app/pool.py:130 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "low",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "local",
+        "loop_magnitude": "unknown"
+      },
+      "fix": null,
+      "intervention_kind": "shared_helper",
+      "intervention_symbol": "src/app/store.py::flush_all",
+      "may_lead": false,
+      "observations_total": 2,
+      "opportunity_id": "perf3_d3dace3672249fc9bd03",
+      "performance_model_version": 3,
+      "prerequisites": [
+        "single_lock_owner"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 3,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "loop_magnitude": 0,
+        "multiplier_shape": 5,
+        "provenance": 3
+      },
+      "rank_score": 18,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/store.py::flush_all",
+        "src/app/store.py::flush"
+      ],
+      "siblings": [],
+      "terminal_sink": "src/app/store.py::flush",
+      "terminal_sinks": [
+        "src/app/store.py::flush"
+      ],
+      "why_ranked": [
+        {
+          "factor": "multiplier_shape",
+          "points": 5,
+          "value": "blocking_io_under_lock"
+        },
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "affected_call_sites",
+          "points": 3,
+          "value": 2
+        }
+      ]
+    },
+    {
       "actionability_reason": "strategy_requires_validation",
       "actionability_state": "advisory",
       "affected_call_sites_total": 2,
@@ -804,7 +804,7 @@
       },
       "intervention_kind": "shared_helper",
       "intervention_symbol": "src/app/sync.py::_load",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 2,
       "opportunity_id": "perf3_8845956c083937dad1ec",
       "performance_model_version": 3,
@@ -818,11 +818,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 18,
+      "rank_score": 17,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -896,7 +896,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/cache.py::refresh",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_600194da489eff07f26a",
       "performance_model_version": 3,
@@ -909,11 +909,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 5,
         "provenance": 3
       },
-      "rank_score": 18,
+      "rank_score": 17,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -985,7 +985,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/fetch.py::fetch_each",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_877f87ea6dac79fd92fc",
       "performance_model_version": 3,
@@ -996,11 +996,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 17,
+      "rank_score": 16,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
@@ -1067,7 +1067,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/commits.py::first_commit_each",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_2a6f52da25a5ede16116",
       "performance_model_version": 3,
@@ -1080,11 +1080,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 17,
+      "rank_score": 16,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
@@ -1150,7 +1150,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/fanout.py::gather_all",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_445b62193f1ff0db3cb4",
       "performance_model_version": 3,
@@ -1163,11 +1163,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 17,
+      "rank_score": 16,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
@@ -1236,7 +1236,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/job.py::run",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_4e3feb071c73aa51a6a4",
       "performance_model_version": 3,
@@ -1250,11 +1250,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 17,
+      "rank_score": 16,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -1327,7 +1327,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/lone.py::run",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_919d91fe15e89966b389",
       "performance_model_version": 3,
@@ -1341,11 +1341,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 17,
+      "rank_score": 16,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -1428,11 +1428,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 17,
+      "rank_score": 16,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
@@ -1498,7 +1498,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "app/issues/views.py::issue_list",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_942cceadc50a644175e4",
       "performance_model_version": 3,
@@ -1511,11 +1511,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 17,
+      "rank_score": 16,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
@@ -1584,7 +1584,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/orders.py::handle",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_95567b0824b33141361d",
       "performance_model_version": 3,
@@ -1598,11 +1598,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 17,
+      "rank_score": 16,
       "reliable_entry_reachability": false,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -1676,7 +1676,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/reports.py::handle",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_a0ebb8db3cb33a2c555f",
       "performance_model_version": 3,
@@ -1690,11 +1690,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 17,
+      "rank_score": 16,
       "reliable_entry_reachability": false,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -1711,6 +1711,90 @@
           "factor": "boundary_kind",
           "points": 4,
           "value": "db"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "network",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/retry.py",
+          "finding_id": "finding_0e8c0794491c7384f4c4",
+          "function_name": "post_with_retry",
+          "line_end": 52,
+          "line_start": 50,
+          "path": [],
+          "provenance": "direct",
+          "reason": "retry_loop: io_in_loop at src/app/retry.py:50 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated",
+        "loop_magnitude": "bounded"
+      },
+      "fix": {
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "intervention_kind": "function",
+      "intervention_symbol": "src/app/retry.py::post_with_retry",
+      "may_lead": false,
+      "observations_total": 1,
+      "opportunity_id": "perf3_bd36a05060a6d02a1245",
+      "performance_model_version": 3,
+      "prerequisites": [
+        "batch_api_contract",
+        "result_equivalence"
+      ],
+      "provenance": "direct",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "loop_magnitude": 0,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 16,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [],
+      "siblings": [],
+      "terminal_sink": null,
+      "terminal_sinks": [],
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "network"
         },
         {
           "factor": "multiplier_shape",
@@ -1768,7 +1852,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/billing.py::handle",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_debc1e358c095e5fd0d8",
       "performance_model_version": 3,
@@ -1782,11 +1866,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 17,
+      "rank_score": 16,
       "reliable_entry_reachability": false,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -1853,7 +1937,7 @@
       "fix": null,
       "intervention_kind": "function",
       "intervention_symbol": "src/app/clients.py::each_varying",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_0bf2ff36ef95d9cf96f2",
       "performance_model_version": 3,
@@ -1866,11 +1950,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 17,
+      "rank_score": 16,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
@@ -1932,7 +2016,7 @@
       "fix": null,
       "intervention_kind": "function",
       "intervention_symbol": "src/app/fanout.py::gather_seq",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_350ba04f50fc0faf0d81",
       "performance_model_version": 3,
@@ -1945,11 +2029,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 17,
+      "rank_score": 16,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
@@ -2011,7 +2095,7 @@
       "fix": null,
       "intervention_kind": "function",
       "intervention_symbol": "src/app/clients.py::each",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_c6604021414ce017f289",
       "performance_model_version": 3,
@@ -2024,11 +2108,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 17,
+      "rank_score": 16,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
@@ -2139,7 +2223,7 @@
       "fix": null,
       "intervention_kind": "shared_helper",
       "intervention_symbol": "src/app/parse.py::_get_query",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 4,
       "opportunity_id": "perf3_a20111da61b63349e305",
       "performance_model_version": 3,
@@ -2150,11 +2234,11 @@
         "boundary_kind": 2,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 17,
+      "rank_score": 16,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -2171,90 +2255,6 @@
           "factor": "affected_call_sites",
           "points": 4,
           "value": 4
-        },
-        {
-          "factor": "multiplier_shape",
-          "points": 4,
-          "value": "io_in_loop"
-        },
-        {
-          "factor": "execution_context",
-          "points": 3,
-          "value": "production"
-        }
-      ]
-    },
-    {
-      "actionability_reason": "strategy_requires_validation",
-      "actionability_state": "advisory",
-      "affected_call_sites_total": 1,
-      "affected_files_total": 1,
-      "biomarker_type": "io_in_loop",
-      "biomarker_types": [
-        "io_in_loop"
-      ],
-      "boundary_kind": "network",
-      "confidence": "high",
-      "evidence": [
-        {
-          "biomarker_type": "io_in_loop",
-          "file_path": "src/app/retry.py",
-          "finding_id": "finding_0e8c0794491c7384f4c4",
-          "function_name": "post_with_retry",
-          "line_end": 52,
-          "line_start": 50,
-          "path": [],
-          "provenance": "direct",
-          "reason": "retry_loop: io_in_loop at src/app/retry.py:50 repeats work per iteration."
-        }
-      ],
-      "evidence_truncated": false,
-      "execution_context": "production",
-      "facets": {
-        "actionability_confidence": "medium",
-        "amplification": "per_iteration",
-        "change_risk": "contained",
-        "exposure": "unknown",
-        "leverage": "isolated",
-        "loop_magnitude": "bounded"
-      },
-      "fix": {
-        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
-        "safety": "advisory",
-        "strategy": "batch_or_prefetch_io"
-      },
-      "intervention_kind": "function",
-      "intervention_symbol": "src/app/retry.py::post_with_retry",
-      "may_lead": true,
-      "observations_total": 1,
-      "opportunity_id": "perf3_bd36a05060a6d02a1245",
-      "performance_model_version": 3,
-      "prerequisites": [
-        "batch_api_contract",
-        "result_equivalence"
-      ],
-      "provenance": "direct",
-      "rank_factors": {
-        "affected_call_sites": 2,
-        "boundary_kind": 4,
-        "entry_reachability": 0,
-        "execution_context": 3,
-        "loop_magnitude": 0,
-        "multiplier_shape": 4,
-        "provenance": 3
-      },
-      "rank_score": 16,
-      "reliable_entry_reachability": null,
-      "resource_fingerprints": [],
-      "shared_path_suffix": [],
-      "siblings": [],
-      "terminal_sink": null,
-      "terminal_sinks": [],
-      "why_ranked": [
-        {
-          "factor": "boundary_kind",
-          "points": 4,
-          "value": "network"
         },
         {
           "factor": "multiplier_shape",
@@ -2312,7 +2312,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "scripts/backfill.py::run",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_d5225971c0220c77ee7b",
       "performance_model_version": 3,
@@ -2326,11 +2326,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 2,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 16,
+      "rank_score": 15,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -2404,7 +2404,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/edge.py::run",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_dc2d9734ec9693504602",
       "performance_model_version": 3,
@@ -2418,11 +2418,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 2
       },
-      "rank_score": 16,
+      "rank_score": 15,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -2496,7 +2496,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "tests/test_job.py::run",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_91d25fc7b3e4e8ad00c1",
       "performance_model_version": 3,
@@ -2510,11 +2510,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 1,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 15,
+      "rank_score": 14,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -2584,7 +2584,7 @@
       "fix": null,
       "intervention_kind": "function",
       "intervention_symbol": "src/app/walker.py::index",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_9c136e77dd1c7e4e69bf",
       "performance_model_version": 3,
@@ -2595,11 +2595,11 @@
         "boundary_kind": 2,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 15,
+      "rank_score": 14,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -2669,7 +2669,7 @@
       "fix": null,
       "intervention_kind": "function",
       "intervention_symbol": "src/app/walker.py::scan",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_9fea1c21a0c25dd7af23",
       "performance_model_version": 3,
@@ -2680,11 +2680,11 @@
         "boundary_kind": 2,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 15,
+      "rank_score": 14,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -2758,7 +2758,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/guess.py::run",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_b4b1621506e7231c520b",
       "performance_model_version": 3,
@@ -2773,11 +2773,11 @@
         "boundary_kind": 4,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 0
       },
-      "rank_score": 14,
+      "rank_score": 13,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [
@@ -2844,7 +2844,7 @@
       "fix": null,
       "intervention_kind": "function",
       "intervention_symbol": "bootstrap.py::main",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_b328704ea27ecd3de70a",
       "performance_model_version": 3,
@@ -2855,11 +2855,11 @@
         "boundary_kind": 2,
         "entry_reachability": 0,
         "execution_context": 1,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 13,
+      "rank_score": 12,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
@@ -2921,7 +2921,7 @@
       "fix": null,
       "intervention_kind": "function",
       "intervention_symbol": "docs/snippets/walk.py::demo",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_b3b3f1bd1707d53f5d6e",
       "performance_model_version": 3,
@@ -2932,11 +2932,11 @@
         "boundary_kind": 2,
         "entry_reachability": 0,
         "execution_context": 1,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 4,
         "provenance": 3
       },
-      "rank_score": 13,
+      "rank_score": 12,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
@@ -3002,7 +3002,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/filters.py::select",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_68f6614ac285d1e8cb4a",
       "performance_model_version": 3,
@@ -3016,11 +3016,11 @@
         "boundary_kind": 0,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 3,
         "provenance": 3
       },
-      "rank_score": 12,
+      "rank_score": 11,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
@@ -3086,7 +3086,7 @@
       },
       "intervention_kind": "function",
       "intervention_symbol": "src/app/render.py::to_csv",
-      "may_lead": true,
+      "may_lead": false,
       "observations_total": 1,
       "opportunity_id": "perf3_ea095ac8d3d612777176",
       "performance_model_version": 3,
@@ -3099,11 +3099,11 @@
         "boundary_kind": 0,
         "entry_reachability": 0,
         "execution_context": 3,
-        "loop_magnitude": 1,
+        "loop_magnitude": 0,
         "multiplier_shape": 3,
         "provenance": 3
       },
-      "rank_score": 12,
+      "rank_score": 11,
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],

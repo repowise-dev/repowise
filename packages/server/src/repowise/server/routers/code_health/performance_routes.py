@@ -64,6 +64,13 @@ async def list_performance_opportunities(
     boundary: str | None = Query(None),
     confidence: str | None = Query(None),
     actionability: str | None = Query(None),
+    proof: str | None = Query(
+        None,
+        description=(
+            "proven (the default) or unproven: causes whose loop nobody measured "
+            "to grow, kept out of the default queue and counted in its summary."
+        ),
+    ),
     view: str = Query("detail"),
     sort: str = Query("rank"),
     file_paths: str | None = Query(
@@ -87,6 +94,7 @@ async def list_performance_opportunities(
         boundary=boundary,
         confidence=confidence,
         actionability=actionability,
+        proof=proof,
         view=view,
         sort=sort,
         file_paths=_paths(file_paths),

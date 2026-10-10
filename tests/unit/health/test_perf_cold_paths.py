@@ -24,7 +24,12 @@ def _finding(path: str, function: str) -> HealthFindingData:
         function_name=function,
         line_start=10,
         line_end=10,
-        details={"boundary_kind": "db", "cross_function": False, "path": []},
+        details={
+            "boundary_kind": "db",
+            "cross_function": False,
+            "path": [],
+            "loop_magnitude": "grows_with_data",
+        },
         health_impact=0.0,
         dimension="performance",
     )

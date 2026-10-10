@@ -96,6 +96,7 @@ class PerformanceHealthService:
             boundary=query.boundary,
             confidence=query.confidence,
             actionabilities=query.actionabilities,
+            proofs=query.proofs,
             file_paths=query.file_paths,
             sort=query.sort,
             limit=query.limit,

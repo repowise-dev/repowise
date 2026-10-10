@@ -96,6 +96,8 @@ const NARROWING: NarrowingSpec[] = [
   { key: "actionability", facet: "actionability", anyLabel: "All but expected" },
   { key: "boundary", facet: "boundary", anyLabel: "Any" },
   { key: "confidence", facet: "confidence", anyLabel: "Any" },
+  // Unproven causes (loop size unknown) are counted but never queued by default.
+  { key: "proof", facet: "proof", anyLabel: "Measured only" },
 ];
 
 /**

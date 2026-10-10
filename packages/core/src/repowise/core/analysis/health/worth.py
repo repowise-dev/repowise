@@ -271,33 +271,65 @@ def finding_priorities(findings: Sequence[Any]) -> list[LowPriority | None]:
 
 #: Performance causes that cost once per call, not once per loop iteration:
 #: they lead when an entry point reaches them.
-_PER_CALL_MARKERS = frozenset({"hot_path_sync_io", "blocking_sync_in_async", "blocking_io_under_lock"})
+_PER_CALL_MARKERS = frozenset(
+    {
+        "hot_path_sync_io",
+        "blocking_sync_in_async",
+        "blocking_io_under_lock",
+        "unbounded_read_reduced_in_memory",
+    }
+)
 #: Causes whose cost grows with the data by their shape alone.
 _GROWING_MARKERS = frozenset({"goroutine_in_unbounded_loop", "sql_cartesian_join"})
 
+CostProof = Literal["proven", "unproven"]
+COST_PROOFS: tuple[str, ...] = ("proven", "unproven")
 
-def perf_low_priority(row: Any) -> LowPriority | None:
-    """Why a performance opportunity can wait. In production code a loop cause
-    leads when its loop grows with the data, a per-call cause when an entry
-    point reaches it, and an unbounded goroutine loop or a cartesian join
-    always; the reason names whichever fact is missing."""
-    context = field(row, "execution_context")
-    if context != "production":
-        return "unknown_context" if context in (None, "unknown") else "not_production"
-    marker = field(row, "biomarker_type")
-    facets = detail_map(row).get("facets") or {}
+
+def perf_facets(row: Any) -> Mapping[str, Any]:
+    """A performance cause's facets, in memory or stored in its details."""
+    return field(row, "facets") or detail_map(row).get("facets") or {}
+
+
+def lead_reason(marker: str | None, facets: Mapping[str, Any]) -> LowPriority | None:
+    """Why a performance cause may not lead, or ``None`` when it may.
+
+    The one rule the performance queue, its lead, its rank and Fix first read.
+    A cause leads when its loop grows with the data, when it is a per-call
+    cause an entry point reaches, or when its shape grows by itself (an
+    unbounded goroutine loop, a cartesian join). A cause with no loop
+    (magnitude ``n/a``) is judged as a per-call one. ``unmeasured_cost`` is
+    the unproven case: nothing measured the loop, so it is a guess, not a cost.
+    """
     if marker in _GROWING_MARKERS:
         return None
-    if marker in _PER_CALL_MARKERS:
-        return None if facets.get("exposure") == "entry_reachable" else "unreached_call"
     magnitude_ = facets.get("loop_magnitude")
+    if marker in _PER_CALL_MARKERS or magnitude_ == "n/a":
+        return None if facets.get("exposure") == "entry_reachable" else "unreached_call"
     if magnitude_ == "grows_with_data":
         return None
     return "bounded_loop" if magnitude_ == "bounded" else "unmeasured_cost"
 
 
+def cost_proof(row: Any) -> CostProof:
+    """``unproven`` when nothing measured whether the cause's cost grows: kept
+    out of the default queue, listed under its own filter."""
+    reason = lead_reason(field(row, "biomarker_type"), perf_facets(row))
+    return "unproven" if reason == "unmeasured_cost" else "proven"
+
+
+def perf_low_priority(row: Any) -> LowPriority | None:
+    """Why a performance opportunity can wait: it runs outside production
+    code, or :func:`lead_reason` holds it back."""
+    context = field(row, "execution_context")
+    if context != "production":
+        return "unknown_context" if context in (None, "unknown") else "not_production"
+    return lead_reason(field(row, "biomarker_type"), perf_facets(row))
+
+
 __all__ = [
     "CHAIN_SHARE",
+    "COST_PROOFS",
     "EXTREME_MAGNITUDE",
     "LOW_PRIORITY_LABEL",
     "SIZE_CCN",
@@ -307,13 +339,17 @@ __all__ = [
     "TANGLED_CCN",
     "TANGLED_NESTING",
     "WORTH_MAGNITUDE",
+    "CostProof",
     "LowPriority",
+    "cost_proof",
     "dispatch_shaped",
     "dormant",
     "finding_priorities",
+    "lead_reason",
     "low_priority",
     "magnitude",
     "measure",
+    "perf_facets",
     "perf_low_priority",
     "worth_size",
 ]
