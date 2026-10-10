@@ -8,7 +8,7 @@ moves it, so every run restamps every row's role from its own role map.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, delete, insert, or_, select, update
@@ -37,6 +37,10 @@ def _row(repository_id: str, row: Mapping[str, Any]) -> dict[str, Any]:
         "receiver_assigns_known": row.get("receiver_assigns_known"),
         "receiver_assigns_json": json.dumps(list(assigns)) if assigns else None,
         "early_exits": row.get("early_exits"),
+        "ccn": row.get("ccn"),
+        "nloc": row.get("nloc"),
+        "params": row.get("params"),
+        "max_nesting": row.get("max_nesting"),
     }
 
 
@@ -51,22 +55,36 @@ def key_range(path: str) -> tuple[str, str]:
     return f"{path}::", f"{path}:;"
 
 
-async def delete_file_rows(session: AsyncSession, repository_id: str, paths: Iterable[str]) -> None:
-    """Delete the rows of *paths*, a chunk of key ranges per statement."""
+def _file_range_chunks(repository_id: str, paths: Iterable[str]) -> Iterator[Any]:
+    """The rows of *paths* as WHERE clauses, a chunk of key ranges each."""
     ranges = sorted({key_range(path) for path in paths})
     for i in range(0, len(ranges), _RANGES_PER_DELETE):
         chunk = ranges[i : i + _RANGES_PER_DELETE]
-        await session.execute(
-            delete(FunctionFact).where(
-                FunctionFact.repository_id == repository_id,
-                or_(
-                    *(
-                        and_(FunctionFact.symbol_id >= low, FunctionFact.symbol_id < high)
-                        for low, high in chunk
-                    )
-                ),
-            )
+        yield and_(
+            FunctionFact.repository_id == repository_id,
+            or_(
+                *(
+                    and_(FunctionFact.symbol_id >= low, FunctionFact.symbol_id < high)
+                    for low, high in chunk
+                )
+            ),
         )
+
+
+async def delete_file_rows(session: AsyncSession, repository_id: str, paths: Iterable[str]) -> None:
+    """Delete the rows of *paths*, a chunk of key ranges per statement."""
+    for clause in _file_range_chunks(repository_id, paths):
+        await session.execute(delete(FunctionFact).where(clause))
+
+
+async def get_file_facts(
+    session: AsyncSession, repository_id: str, paths: Iterable[str]
+) -> list[FunctionFact]:
+    """The stored rows of the functions in *paths*."""
+    out: list[FunctionFact] = []
+    for clause in _file_range_chunks(repository_id, paths):
+        out.extend((await session.execute(select(FunctionFact).where(clause))).scalars())
+    return out
 
 
 async def write_function_facts(
@@ -87,8 +105,10 @@ async def write_function_facts(
     # order fills the clustered pages instead of splitting them half empty.
     by_symbol = {row["symbol_id"]: _row(repository_id, row) for row in reversed(list(rows))}
     fresh = [by_symbol[symbol] for symbol in sorted(by_symbol)]
+    # On the table, not the mapper: the ORM bulk path splits a batch wherever a
+    # column flips between NULL and a value, which doubled this write.
     for i in range(0, len(fresh), _CHUNK):
-        await session.execute(insert(FunctionFact), fresh[i : i + _CHUNK])
+        await session.execute(insert(FunctionFact.__table__), fresh[i : i + _CHUNK])
     if roles is not None:
         await _restamp_roles(session, repository_id, roles)
     return len(fresh)
@@ -126,4 +146,10 @@ async def get_function_facts(
     return out
 
 
-__all__ = ["delete_file_rows", "get_function_facts", "key_range", "write_function_facts"]
+__all__ = [
+    "delete_file_rows",
+    "get_file_facts",
+    "get_function_facts",
+    "key_range",
+    "write_function_facts",
+]

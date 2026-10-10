@@ -307,6 +307,37 @@ async def test_plan_detail_by_id(client: AsyncClient, app) -> None:
     assert detail["plan"]["cut_edges"] == [{"from": "pkg/a.py", "to": "pkg/b.py"}]
 
 
+async def test_a_resolved_plan_detail_says_what_happened_to_it(client: AsyncClient, app) -> None:
+    from repowise.server.services.refactoring_health import RefactoringHealthService
+
+    repo_id = await _seed(client, app)
+    listed = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()["plans"]
+    open_plan = next(p for p in listed if p["refactoring_type"] == "extract_class")
+    assert "payoff" not in (await client.get(f"/api/repos/{repo_id}/refactoring/{open_plan['id']}")).json()
+
+    async with app.state.session_factory() as session:
+        # pkg/leaf.py is gone from the run that stops detecting its plan.
+        await crud.upsert_refactoring_suggestions(
+            session,
+            repo_id,
+            [],
+            file_paths=["pkg/leaf.py"],
+            payoff=crud.PayoffContext(fact_rows=[], live_paths=frozenset(), commit="f00d"),
+        )
+        await session.commit()
+
+    detail = (await client.get(f"/api/repos/{repo_id}/refactoring/{open_plan['id']}")).json()
+    assert detail["payoff"]["outcome"] == "file_deleted"
+    assert detail["payoff"]["resolved_commit"] == "f00d"
+
+    async with app.state.session_factory() as session:
+        served = await RefactoringHealthService(session, repo_id, repo_id).plan_detail(
+            open_plan["id"]
+        )
+    assert served["plan"]["status"] == "resolved"
+    assert served["plan"]["payoff"]["outcome"] == "file_deleted"
+
+
 async def test_an_unranked_plan_detail_serves_steps_without_verify(
     client: AsyncClient, app
 ) -> None:

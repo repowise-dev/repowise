@@ -178,6 +178,12 @@ def test_refactoring_recipe_vocabularies_match_python() -> None:
     assert _union_members("RecipePreconditionKind", "refactoring.ts") == set(PRECONDITION_KINDS)
 
 
+def test_refactoring_payoff_outcomes_match_python() -> None:
+    from repowise.core.analysis.health.refactoring.payoff import PAYOFF_OUTCOMES
+
+    assert _union_members("RefactoringPayoffOutcome", "refactoring.ts") == set(PAYOFF_OUTCOMES)
+
+
 def _interface_body(name: str, module: str) -> str:
     """The text between `export interface <name> {` and its closing brace."""
     text = (_TYPES_SRC / module).read_text(encoding="utf-8")

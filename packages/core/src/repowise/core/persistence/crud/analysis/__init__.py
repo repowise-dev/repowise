@@ -17,6 +17,7 @@ from . import (  # noqa: F401
     health,
     performance,
     refactoring,
+    refactoring_payoff,
 )
 from .coverage import (
     coverage_by_module,
@@ -129,12 +130,14 @@ from .refactoring_opportunities import (
     refactoring_facet_counts,
     update_refactoring_opportunity_status,
 )
+from .refactoring_payoff import PayoffContext, plan_payoff
 
 __all__ = [
     "FILE_TREND_SNAPSHOT_WINDOW",
     "HEALTH_SNAPSHOT_RETENTION",
     "HealthSnapshotHeadline",
     "HealthSnapshotScalars",
+    "PayoffContext",
     "backfill_is_test",
     "backfill_module_attribution",
     "clear_unanalysed_scores",
@@ -196,6 +199,7 @@ __all__ = [
     "opportunity_details",
     "performance_facet_counts",
     "performance_file_rollups",
+    "plan_payoff",
     "prune_unscored_health_rows",
     "ranked_refactoring_suggestions",
     "refactoring_facet_counts",

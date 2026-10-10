@@ -61,6 +61,7 @@ from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
     refactoring_reason_counts,
     refactoring_step_counts,
 )
+from repowise.core.persistence.crud.analysis.refactoring_payoff import plan_payoff
 from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
     hydrate_recommendations,
     plan_rank_inputs,
@@ -402,6 +403,9 @@ class RefactoringHealthService:
         payload = (await self.plan_recommendation(row, owner=owner)).detail_dict()
         payload["id"] = row.public_id or row.id
         payload["status"] = row.status
+        payoff = await plan_payoff(self._session, row)
+        if payoff is not None:
+            payload["payoff"] = payoff
         result: dict[str, Any] = {"resolved": True, "plan_id": plan_id, "plan": payload}
         if owner is not None:
             # On the envelope as well as the plan: a plan is a step of one

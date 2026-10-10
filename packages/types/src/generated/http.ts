@@ -2626,6 +2626,25 @@ export interface PatchCoverageTestHint {
   total: number;
 }
 
+/** A function's stored size measures; an absent one was not measured. */
+export interface PlanMeasuresResponse {
+  ccn?: number | null;
+  nloc?: number | null;
+  params?: number | null;
+}
+
+/** What happened to a plan the index resolved as no longer detected. */
+export interface PlanPayoffResponse {
+  outcome: string;
+  resolved_commit?: string | null;
+  resolved_at?: string | null;
+  before?: PlanMeasuresResponse | null;
+  after?: PlanMeasuresResponse | null;
+  realised?: Record<string, number> | null;
+  new_symbol?: string | null;
+  stage?: number | null;
+}
+
 export interface PlanRiskResponse {
   kind: string;
   text: string;
@@ -2792,6 +2811,7 @@ export interface RefactoringPlanDetailResponse {
   governed_by?: string[] | null;
   risks?: PlanRiskResponse[] | null;
   recipe?: Record<string, unknown> | null;
+  payoff?: PlanPayoffResponse | null;
 }
 
 /**

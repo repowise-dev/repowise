@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     Select,
@@ -30,6 +30,9 @@ from ....analysis.finding_registry import excluded_types
 from ...models import RefactoringSuggestion, _new_uuid, _now_utc
 from ...sql import rule_predicate
 from .._shared import _BATCH_SIZE, _finding_file_path
+
+if TYPE_CHECKING:
+    from .refactoring_payoff import PayoffContext
 
 # The finding-triage vocabulary, shared with health findings so Code Health has
 # one triage system rather than one per layer.
@@ -135,22 +138,22 @@ def _scope_predicates(
     return predicates
 
 
+def _field(item: Any, name: str) -> Any:
+    """*name* off a ``RefactoringSuggestion`` dataclass or a plain dict."""
+    return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
+
+
 def _scope_suggestions(
     suggestions: list[Any],
     *,
     allowed: set[str] | None,
     refactoring_type: str | None,
 ) -> list[Any]:
-    def _type_of(item: Any) -> Any:
-        if hasattr(item, "refactoring_type"):
-            return item.refactoring_type
-        return item.get("refactoring_type")
-
     return [
         item
         for item in suggestions
         if (allowed is None or _finding_file_path(item) in allowed)
-        and (refactoring_type is None or _type_of(item) == refactoring_type)
+        and (refactoring_type is None or _field(item, "refactoring_type") == refactoring_type)
     ]
 
 
@@ -161,6 +164,7 @@ async def finalize_refactoring_suggestions(
     *,
     file_paths: list[str] | None = None,
     refactoring_type: str | None = None,
+    payoff: PayoffContext | None = None,
 ) -> int:
     """Reconcile a detector run against the stored plans. Returns rows left open.
 
@@ -185,6 +189,9 @@ async def finalize_refactoring_suggestions(
       answering and stops reading as current;
     - a row from an older model, or one written before public ids existed, is
       resolved for the same reason. Ids are not translated across models.
+
+    With *payoff*, each current-model plan this call resolves gets a payoff row
+    (applied, file deleted, target changed), and a reopened plan loses its own.
     """
     from ....analysis.health.refactoring.identity import (
         REFACTORING_MODEL_VERSION,
@@ -237,6 +244,8 @@ async def finalize_refactoring_suggestions(
     now = _now_utc()
     seen: set[str] = set()
     pending: list[RefactoringSuggestion] = []
+    reopened: list[str] = []
+    resolved: list[RefactoringSuggestion] = []
     for suggestion, public_id in zip(scoped, public_ids, strict=True):
         if public_id in seen:
             # Two plans reaching one id would violate the uniqueness readers rely
@@ -265,6 +274,7 @@ async def finalize_refactoring_suggestions(
             row.status = "open"
             row.status_reason = None
             row.status_changed_at = now
+            reopened.append(row.id)
         row.updated_at = now
 
     for row in stored_rows:
@@ -272,6 +282,9 @@ async def finalize_refactoring_suggestions(
             continue
         if row.status in ("resolved", "false_positive"):
             continue
+        # An older model's row resolves because its id changed, not its code.
+        if row.public_id and row.model_version == REFACTORING_MODEL_VERSION:
+            resolved.append(row)
         row.status = "resolved"
         row.status_reason = "no_longer_detected"
         row.status_changed_at = now
@@ -282,6 +295,15 @@ async def finalize_refactoring_suggestions(
             session.add(row)
         await session.flush()
     await session.flush()
+    if payoff is not None:
+        from .refactoring_payoff import clear_refactoring_payoffs, record_refactoring_payoffs
+
+        detected = {
+            (_field(item, "refactoring_type"), _finding_file_path(item), _field(item, "target_symbol"))
+            for item in scoped
+        }
+        await clear_refactoring_payoffs(session, reopened)
+        await record_refactoring_payoffs(session, repository_id, resolved, payoff, detected)
 
     return sum(1 for row in stored_rows if row.status == "open") + len(pending)
 
@@ -290,13 +312,15 @@ async def save_refactoring_suggestions(
     session: AsyncSession,
     repository_id: str,
     suggestions: list[Any],
+    *,
+    payoff: PayoffContext | None = None,
 ) -> None:
     """Reconcile every refactoring suggestion for *repository_id*.
 
     The full-reindex entry point. Accepts ``RefactoringSuggestion`` dataclasses
     or plain dicts.
     """
-    await finalize_refactoring_suggestions(session, repository_id, suggestions)
+    await finalize_refactoring_suggestions(session, repository_id, suggestions, payoff=payoff)
 
 
 async def upsert_refactoring_suggestions(
@@ -306,6 +330,7 @@ async def upsert_refactoring_suggestions(
     *,
     file_paths: list[str],
     refactoring_type: str | None = None,
+    payoff: PayoffContext | None = None,
 ) -> None:
     """Reconcile suggestions **only for the given file paths**.
 
@@ -322,6 +347,7 @@ async def upsert_refactoring_suggestions(
         suggestions,
         file_paths=list(file_paths),
         refactoring_type=refactoring_type,
+        payoff=payoff,
     )
 
 

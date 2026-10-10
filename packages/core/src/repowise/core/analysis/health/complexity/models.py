@@ -140,6 +140,19 @@ class FunctionComplexity:
         if self.assertion_blocks is None:
             self.assertion_blocks = []
 
+    def stored_metrics(self) -> dict[str, int | None]:
+        """The size measures the ``function_facts`` store keeps for this function.
+
+        ``params`` is ``None`` for 0: the walk counts 0 both for no parameters
+        and for a list it could not find, and the store keeps unknown as NULL.
+        """
+        return {
+            "ccn": self.ccn,
+            "nloc": self.nloc,
+            "params": self.param_count or None,
+            "max_nesting": self.max_nesting,
+        }
+
 
 @dataclass
 class CohesionGroup:
