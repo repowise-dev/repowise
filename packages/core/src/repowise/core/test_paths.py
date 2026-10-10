@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from collections.abc import Collection
 
     from .dotnet_test_projects import DotnetTestProjects
+    from .js_test_roots import JsTestRoots
     from .pytest_roots import PytestRoots
 
 # Directory segments that mark every file beneath them as test material,
@@ -423,12 +424,17 @@ def _classify(
     language: str | None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    js_roots: JsTestRoots | None = None,
 ) -> str:
     """``"test"``, ``"support"``, or ``""`` for production code.
 
     One traversal, so the two public predicates cannot disagree with each other
     the way the copies they replace disagreed.
     """
+    if type(roots).__name__ == "JsTestRoots" and js_roots is None:
+        js_roots = roots  # type: ignore[assignment]
+        roots = None
+
     original, lowered = _parts(path)
     if not original:
         return ""
@@ -455,8 +461,13 @@ def _classify(
     if _REPO_METADATA_DIR in segments:
         return "test" if named_test else ""
 
+    # Check if a governing JS config collects this file
+    js_collected = _js_collects(path, filename, js_roots)
+
     # A test name outside a test directory still needs pytest to collect it.
-    needs_test_dir = not named_test or _pytest_skips(path, filename, roots)
+    # A JS/TS source file collected by a governing config is a test even without
+    # a test-shaped name or a test directory.
+    needs_test_dir = not (named_test or js_collected) or _pytest_skips(path, filename, roots)
     if (
         needs_test_dir
         and not _is_test_dir(segments, original_segments, filename, language)
@@ -464,11 +475,16 @@ def _classify(
     ):
         return ""
 
-    # Inside test material. A test-shaped filename wins; otherwise a
-    # scaffolding directory demotes it to support.
-    if not named_test and any(seg in _SUPPORT_DIR_TOKENS for seg in segments):
+    # Inside test material. A test-shaped filename (or one a JS config collects)
+    # wins; otherwise a scaffolding directory demotes it to support.
+    if not (named_test or js_collected) and any(seg in _SUPPORT_DIR_TOKENS for seg in segments):
         return "support"
     return "test"
+
+
+_JS_EXTENSIONS = frozenset(
+    {".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"}
+)
 
 
 def _dotnet_project_collects(
@@ -479,6 +495,15 @@ def _dotnet_project_collects(
         dotnet_projects is not None
         and filename.lower().endswith(".cs")
         and dotnet_projects.collects(path) is True
+    )
+
+
+def _js_collects(path: str, filename: str, js_roots: JsTestRoots | None) -> bool:
+    """Whether a governing Vitest or Jest config collects *path*."""
+    return (
+        js_roots is not None
+        and PurePosixPath(filename).suffix.lower() in _JS_EXTENSIONS
+        and js_roots.collects(path.replace("\\", "/")) is True
     )
 
 
@@ -496,6 +521,7 @@ def is_test_path(
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    js_roots: JsTestRoots | None = None,
 ) -> bool:
     """Whether *path* is a test.
 
@@ -504,10 +530,10 @@ def is_test_path(
     *language* when it is known: it decides the ambiguous ``spec/``/``t/``
     cases, which are RSpec for Ruby and a Perl-style test tree for Python,
     and specification or miscellaneous folders for everything else. Pass
-    *roots* to let pytest's config overrule a test-shaped Python name. Pass
+    *roots* or *js_roots* to consult test runner configs. Pass
     *dotnet_projects* to recognize C# files governed by a test project.
     """
-    return _classify(path, language, roots, dotnet_projects) == "test"
+    return _classify(path, language, roots, dotnet_projects, js_roots) == "test"
 
 
 def is_test_support_path(
@@ -515,6 +541,7 @@ def is_test_support_path(
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    js_roots: JsTestRoots | None = None,
 ) -> bool:
     """Whether *path* is test infrastructure rather than a test.
 
@@ -522,7 +549,7 @@ def is_test_support_path(
     scaffolding directories inside a test tree (``tests/factories/user.py``).
     Never true at the same time as :func:`is_test_path`.
     """
-    return _classify(path, language, roots, dotnet_projects) == "support"
+    return _classify(path, language, roots, dotnet_projects, js_roots) == "support"
 
 
 def is_test_related_path(
@@ -530,6 +557,7 @@ def is_test_related_path(
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    js_roots: JsTestRoots | None = None,
 ) -> bool:
     """Whether *path* is a test **or** test support.
 
@@ -538,8 +566,7 @@ def is_test_related_path(
     skipping files, a health biomarker exempting them. Callers that rank or
     search should prefer :func:`is_test_path`, so fixtures stay findable.
     """
-    return _classify(path, language, roots, dotnet_projects) != ""
-
+    return _classify(path, language, roots, dotnet_projects, js_roots) != ""
 
 
 def in_test_tree(path: str, language: str | None = None) -> bool:

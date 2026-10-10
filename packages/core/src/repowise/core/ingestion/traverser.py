@@ -33,6 +33,12 @@ from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatt
 from ..code_origin import is_generated_header
 from ..dotnet_test_projects import DotnetTestProjects, read_dotnet_test_projects
 from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
+from ..js_test_roots import (
+    JS_TEST_CONFIG_NAMES,
+    JsTestRoots,
+    js_test_options,
+    js_test_roots,
+)
 from ..pytest_roots import (
     PYTEST_CONFIG_NAMES,
     PytestRoots,
@@ -870,6 +876,7 @@ class FileTraverser:
             language,
             roots=scripts.pytest_roots,
             dotnet_projects=scripts.dotnet_test_projects,
+            js_roots=scripts.js_test_roots,
         )
         entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
         return FileInfo(
@@ -1205,7 +1212,7 @@ def _is_entry_point(rel_str: str, abs_path: Path, language: str) -> bool:
 
 
 class ConsoleScriptTables(NamedTuple):
-    """What one pass over the repo's Python and .NET project configs yields."""
+    """What one pass over the repo's project configs yields."""
 
     names: frozenset[str]
     """Launcher names an installer drops in the environment's script dir."""
@@ -1219,12 +1226,14 @@ class ConsoleScriptTables(NamedTuple):
     """Where a bare pytest run collects tests, which decides a test-named module."""
     dotnet_test_projects: DotnetTestProjects = DotnetTestProjects()
     """.NET test projects, which govern .cs files beneath them."""
+    js_test_roots: JsTestRoots = JsTestRoots()
+    """Where Vitest or Jest collects tests, which decides custom-pattern JS/TS tests."""
 
 
 def _collect_console_scripts(
     repo_root: Path, *, prune_nested_git: bool = True
 ) -> ConsoleScriptTables:
-    """Console-script names, module targets and distribution names.
+    """Console-script names, module targets, distribution names, and test runner roots.
 
     Reads ``[project.scripts]``, ``[project.gui-scripts]``, and every
     ``[project.entry-points.*]`` group from each ``pyproject.toml`` in the
@@ -1232,7 +1241,9 @@ def _collect_console_scripts(
     before the colon is the module it imports; ``[project].name`` is the
     distribution. Best-effort: unparsable files are skipped. The pytest
     configs (``pytest.ini``, ``tox.ini``, ``setup.cfg`` and the same
-    ``pyproject.toml``) come off this one walk and one read each.
+    ``pyproject.toml``) and Vitest/Jest configs (``vitest.config.*``,
+    ``jest.config.*``, ``package.json``, etc.) come off this one walk and one
+    read each.
     """
     from repowise.core.fs_walk import iter_glob
 
@@ -1243,36 +1254,45 @@ def _collect_console_scripts(
     pytest_configs: list[tuple[str, dict]] = []
     unreadable: list[str] = []
     csproj_files: list[tuple[str, str]] = []
-    manifest_patterns = (*PYTEST_CONFIG_NAMES, "*.csproj")
+    js_configs: list[tuple[str, dict]] = []
+    all_config_names = (*PYTEST_CONFIG_NAMES, *JS_TEST_CONFIG_NAMES, "*.csproj")
     try:
         config_files = list(
-            iter_glob(repo_root, manifest_patterns, prune_nested_git=prune_nested_git)
+            iter_glob(repo_root, all_config_names, prune_nested_git=prune_nested_git)
         )
     except OSError:
         return ConsoleScriptTables(frozenset(), frozenset(), frozenset(), frozenset())
     for config_file in config_files:
-        if config_file.name.endswith(".csproj"):
-            rel = config_file.relative_to(repo_root).as_posix()
+        name = config_file.name
+        rel = config_file.relative_to(repo_root).as_posix()
+        if name.endswith(".csproj"):
             try:
                 text = config_file.read_text(encoding="utf-8", errors="replace")
                 csproj_files.append((rel, text))
             except Exception:
                 csproj_files.append((rel, ""))
             continue
-        project, options, parsed = _read_python_config(config_file)
-        rel = config_file.relative_to(repo_root).as_posix()
-        if options is not None:
-            pytest_configs.append((rel, options))
-        if not parsed:
-            unreadable.append(rel)
-        if project is None:
-            continue
-        dist = project.get("name")
-        if isinstance(dist, str) and dist.strip():
-            distributions.add(dist.strip())
-            if (init := _distribution_init(repo_root, config_file.parent, dist)) is not None:
-                inits.add(init)
-        _add_script_targets(project, names, modules)
+        if name in PYTEST_CONFIG_NAMES:
+            project, options, parsed = _read_python_config(config_file)
+            if options is not None:
+                pytest_configs.append((rel, options))
+            if not parsed:
+                unreadable.append(rel)
+            if project is not None:
+                dist = project.get("name")
+                if isinstance(dist, str) and dist.strip():
+                    distributions.add(dist.strip())
+                    if (init := _distribution_init(repo_root, config_file.parent, dist)) is not None:
+                        inits.add(init)
+                _add_script_targets(project, names, modules)
+        if name in JS_TEST_CONFIG_NAMES:
+            try:
+                text = config_file.read_text(encoding="utf-8")
+                js_opts = js_test_options(name, text)
+                if js_opts is not None:
+                    js_configs.append((rel, js_opts))
+            except Exception:
+                pass
     return ConsoleScriptTables(
         frozenset(names),
         frozenset(modules),
@@ -1280,6 +1300,7 @@ def _collect_console_scripts(
         frozenset(inits),
         pytest_roots(pytest_configs, unreadable),
         read_dotnet_test_projects(csproj_files),
+        js_test_roots(js_configs),
     )
 
 
