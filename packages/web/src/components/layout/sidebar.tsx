@@ -457,7 +457,10 @@ export function Sidebar({
       {isIconOnly ? (
         <div className="flex flex-col items-center gap-1 border-t border-[var(--color-border-default)] py-1.5">
           <LanguageSwitcher compact />
-          <ThemeToggle compact />
+          <ThemeToggle
+            switchToDarkLabel={ts("switchToDarkTheme")}
+            switchToLightLabel={ts("switchToLightTheme")}
+          />
         </div>
       ) : (
         <div className="flex flex-col gap-2 border-t border-[var(--color-border-default)] px-3 py-2">
@@ -469,7 +472,10 @@ export function Sidebar({
             <VersionFooter />
             <div className="flex items-center gap-1">
               <LanguageSwitcher />
-              <ThemeToggle compact />
+              <ThemeToggle
+                switchToDarkLabel={ts("switchToDarkTheme")}
+                switchToLightLabel={ts("switchToLightTheme")}
+              />
             </div>
           </div>
         </div>

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ThemeProvider } from "next-themes";
 import type { ReactNode } from "react";
 import { ThemeToggle } from "../../src/shared/theme-toggle.js";
@@ -52,15 +52,8 @@ describe("ThemeToggle theme default + persistence", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole("radio", { name: "Light" })).toHaveAttribute(
-        "aria-checked",
-        "true",
-      );
+      expect(screen.getByRole("button", { name: "Switch to dark theme" })).toBeInTheDocument();
     });
-    expect(screen.getByRole("radio", { name: "Dark" })).toHaveAttribute(
-      "aria-checked",
-      "false",
-    );
     // Migration must not write anything for a fresh visitor.
     expect(localStorage.getItem(STORAGE_KEY)).not.toBe("dark");
   });
@@ -74,10 +67,7 @@ describe("ThemeToggle theme default + persistence", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole("radio", { name: "Dark" })).toHaveAttribute(
-        "aria-checked",
-        "true",
-      );
+      expect(screen.getByRole("button", { name: "Switch to light theme" })).toBeInTheDocument();
     });
     expect(localStorage.getItem(STORAGE_KEY)).toBe("dark");
   });
@@ -91,10 +81,7 @@ describe("ThemeToggle theme default + persistence", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole("radio", { name: "Light" })).toHaveAttribute(
-        "aria-checked",
-        "true",
-      );
+      expect(screen.getByRole("button", { name: "Switch to dark theme" })).toBeInTheDocument();
     });
     expect(localStorage.getItem(STORAGE_KEY)).toBe("light");
   });
@@ -110,9 +97,20 @@ describe("ThemeToggle theme default + persistence", () => {
     await waitFor(() => {
       expect(localStorage.getItem(STORAGE_KEY)).toBe("light");
     });
-    expect(screen.getByRole("radio", { name: "Light" })).toHaveAttribute(
-      "aria-checked",
-      "true",
+    expect(
+      screen.getByRole("button", { name: "Switch to dark theme" }),
+    ).toBeInTheDocument();
+  });
+
+  it("switches to the opposite theme on click", async () => {
+    render(
+      <Harness>
+        <ThemeToggle />
+      </Harness>,
     );
+    fireEvent.click(await screen.findByRole("button", { name: "Switch to dark theme" }));
+    await waitFor(() => expect(localStorage.getItem(STORAGE_KEY)).toBe("dark"));
+    fireEvent.click(await screen.findByRole("button", { name: "Switch to light theme" }));
+    await waitFor(() => expect(localStorage.getItem(STORAGE_KEY)).toBe("light"));
   });
 });

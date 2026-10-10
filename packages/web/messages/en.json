@@ -19,6 +19,8 @@
     "switched": "Language switched to {language}"
   },
   "shell": {
+    "switchToDarkTheme": "Switch to dark theme",
+    "switchToLightTheme": "Switch to light theme",
     "skipToContent": "Skip to content",
     "expandSidebar": "Expand sidebar",
     "collapseSidebar": "Collapse sidebar",

@@ -19,6 +19,8 @@
     "switched": "语言已切换为{language}"
   },
   "shell": {
+    "switchToDarkTheme": "切换到深色主题",
+    "switchToLightTheme": "切换到浅色主题",
     "skipToContent": "跳到主内容",
     "expandSidebar": "展开侧边栏",
     "collapseSidebar": "收起侧边栏",
