@@ -903,11 +903,30 @@ class TestEverySnippetIsMasked:
     def test_a_repeated_value_masks_in_linear_time(self) -> None:
         import time
 
-        line = " ".join(f'password = "{self.PW}";' for _ in range(5000))
+        def timed_scan(repeats: int) -> float:
+            line = " ".join(f'password = "{self.PW}";' for _ in range(repeats))
+            # min-of-3 filters scheduling noise and cold-cache warmup. What
+            # matters is the growth rate, not absolute speed: slow CI runners
+            # failed the old absolute 1.0 s bound at 1.21 s (issue #3202).
+            best = min(
+                self._scan_once(line) for _ in range(3)
+            )
+            return best
+
+        t_small = timed_scan(2500)
+        t_big = timed_scan(10000)
+        # 4x input: linear ~4x time, quadratic ~16x; threshold 8 sits between.
+        assert t_big / max(t_small, 1e-9) < 8, f"{t_big=:.3f} {t_small=:.3f}"
+
+    @staticmethod
+    def _scan_once(line: str) -> float:
+        import time
+
         started = time.perf_counter()
         (hit,) = scan_source("a.py", line + "\n")
-        assert time.perf_counter() - started < 1.0
-        _assert_no_raw(hit["snippet"], self.PW)
+        elapsed = time.perf_counter() - started
+        _assert_no_raw(hit["snippet"], TestEverySnippetIsMasked.PW)
+        return elapsed
 
     def test_long_github_pat_straddling_the_cut_is_masked(self) -> None:
         pat = "github_pat_" + "".join(chr(ord("A") + (i * 7) % 26) for i in range(82))
