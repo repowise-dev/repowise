@@ -455,18 +455,22 @@ function CoverageBody({
             stacked="sm"
             bare
             empty={
-              <EmptyState
-                tone="filtered"
-                title="No files match"
-                description="Adjust the path filter to see coverage rows."
-                action={{
-                  label: "Clear filters",
-                  onClick: () => {
-                    setSearch("");
-                    setVisible(PAGE);
-                  },
-                }}
-              />
+              search ? (
+                <EmptyState
+                  tone="filtered"
+                  title="No files match"
+                  description="Adjust the path filter to see coverage rows."
+                  action={{
+                    label: "Clear filters",
+                    onClick: () => {
+                      setSearch("");
+                      setVisible(PAGE);
+                    },
+                  }}
+                />
+              ) : (
+                <EmptyState size="compact" title="No files to list" />
+              )
             }
           />
           {sortedFiles.length > 0 ? (
@@ -563,11 +567,15 @@ function CoverageGap({
           stacked="sm"
           bare
           empty={
-            <EmptyState
-              tone="positive"
-              title="Every file is reached"
-              description="The graph found a test that reaches every file the coverage report didn't name."
-            />
+            map.files_total > 0 ? (
+              <EmptyState
+                tone="positive"
+                title="Every file is reached"
+                description="The graph found a test that reaches every file the coverage report didn't name."
+              />
+            ) : (
+              <EmptyState size="compact" title="No other files to check" />
+            )
           }
         />
       </div>

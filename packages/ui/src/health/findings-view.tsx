@@ -86,7 +86,11 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
   // the landing view already fired — no extra round-trip. Used to gate the
   // queue fetch and to seed the marker filter with the repo's whole
   // vocabulary rather than only the markers the current page happens to hold.
-  const { data: overview } = useSWR<HealthOverviewResponse>(
+  const {
+    data: overview,
+    error: overviewError,
+    mutate: mutateOverview,
+  } = useSWR<HealthOverviewResponse>(
     `code-health-overview:${cacheKey}`,
     () => adapter.getOverview(25),
     { revalidateOnFocus: false },
@@ -571,7 +575,22 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
           </div>
         </div>
 
-        {queueLoading && !queue ? (
+        {!overview ? (
+          overviewError ? (
+            <ApiError
+              size="compact"
+              title="Couldn't load findings"
+              message={toFriendlyMessage(overviewError)}
+              onRetry={() => void mutateOverview()}
+            />
+          ) : (
+            <div className="grid gap-3">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-28 w-full" />
+              ))}
+            </div>
+          )
+        ) : queueLoading && !queue ? (
           <div className="grid gap-3">
             {Array.from({ length: 4 }).map((_, i) => (
               <Skeleton key={i} className="h-28 w-full" />
@@ -596,7 +615,7 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
             <EmptyState
               tone="positive"
               title="No open findings"
-              description={`Health was scored across ${(overview?.summary.file_count ?? 0).toLocaleString()} files and none carries an open finding. New work appears here after the next index update.`}
+              description={`Health was scored${overview.summary.file_count ? ` across ${overview.summary.file_count.toLocaleString()} files` : ""} and none carries an open finding. New work appears here after the next index update.`}
             />
           )
         ) : (
@@ -666,7 +685,7 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
                     selectedPaths={selectedPaths}
                     onToggleSelect={toggleSelect}
                     onClearFilters={filtered ? clearFilters : undefined}
-/>
+                  />
                 </section>
               ))}
             </div>
