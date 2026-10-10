@@ -1,26 +1,38 @@
-"""Code that runs Alembic commands loads every migration script by path.
+"""Code that runs Alembic loads every migration script by path.
 
-``alembic.command.upgrade(config, "head")`` imports ``env.py`` and each file in
-the script directory's ``versions/`` from the filesystem, so the code calling
-it has no import edge to any of them, and a test that migrates a database
-reaches none of the migrations it runs. Each Python file using
-``alembic.command`` gets an edge to every file of every script directory: a
-directory holding ``env.py`` beside a ``versions/`` directory of migrations.
+``alembic.command.upgrade(config, "head")``, ``alembic.config.main(...)`` and
+an ``alembic upgrade`` subprocess all import ``env.py`` and each file in the
+script directory's ``versions/`` from the filesystem, so the code running them
+has no import edge to any of them, and a test that migrates a database
+reaches none of the migrations it runs.
 
-Ceiling: the script directory a call points at is not read from its config;
-every script directory in the repository is linked, which over-claims only in
-a repository holding several.
+Any code file (Python, JavaScript, TypeScript) whose code names ``alembic`` (an import, an attribute, a command
+line in a string; comments and docstrings aside) gets an edge to every file
+of every script directory: a directory holding ``env.py`` beside a
+``versions/`` directory. A helper that runs the command passes it on to the
+tests importing the helper through their ordinary import edges. Over-claiming
+on a file that names Alembic without running it costs only a larger
+selection.
+
+Ceilings: ``version_locations`` outside ``<script dir>/versions`` and nested
+version directories are not followed, so a migration there has no edge and a
+change to it keeps its full run; every script directory in the repository is
+linked to every runner.
 """
 
 from __future__ import annotations
 
+import io
 import posixpath
 import re
+import tokenize
 from typing import TYPE_CHECKING, Any
 
+from ..languages.python_strings import live_text
 from ..resolvers import ResolverContext
 from ..source_text import source_bytes
 from .base import DetectionContext, FrameworkHandler, _add_edge_if_new
+from .test_path_strings import _CODE_EXTS
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -28,28 +40,50 @@ if TYPE_CHECKING:
 # Stamped on the edge so consumers that mean "imports" can tell it apart.
 ALEMBIC_RUNNER_HINT = "alembic_runner"
 
-_COMMAND_USE = re.compile(
-    rb"^\s*(?:from\s+alembic\s+import\s+[^\n]*\bcommand\b"
-    rb"|import\s+alembic\.command\b"
-    rb"|from\s+alembic\.command\s+import\b)",
-    re.MULTILINE,
-)
+_WORD = re.compile(rb"(?<![\w.-])alembic(?![\w-])", re.IGNORECASE)
 
 
 def script_files(path_set: set[str]) -> list[str]:
     """``env.py`` and the migrations of every Alembic script directory in *path_set*."""
-    out: list[str] = []
-    for path in sorted(path_set):
-        folder = posixpath.dirname(path)
-        if posixpath.basename(folder) == "versions" and path.endswith(".py"):
-            env = posixpath.join(posixpath.dirname(folder), "env.py")
-            if env in path_set:
-                out.append(path)
-        elif posixpath.basename(path) == "env.py" and any(
-            p.startswith(f"{folder}/versions/") for p in path_set
-        ):
-            out.append(path)
-    return out
+    parents = {
+        posixpath.dirname(posixpath.dirname(p))
+        for p in path_set
+        if p.endswith(".py") and posixpath.basename(posixpath.dirname(p)) == "versions"
+    }
+    scripts = {d for d in parents if posixpath.join(d, "env.py") in path_set}
+    return sorted(p for p in path_set if _in_script_dir(p, scripts))
+
+
+def _in_script_dir(path: str, scripts: set[str]) -> bool:
+    """A migration in ``<script dir>/versions/``, or the script directory's ``env.py``."""
+    folder = posixpath.dirname(path)
+    if posixpath.basename(path) == "env.py":
+        return folder in scripts
+    return (
+        path.endswith(".py")
+        and posixpath.basename(folder) == "versions"
+        and posixpath.dirname(folder) in scripts
+    )
+
+
+def names_alembic(path: str, blob: bytes) -> bool:
+    """Whether *blob*'s code (not its comments or docstrings) names Alembic.
+
+    Python is read by token: a name ``alembic``, or the word in a string that
+    is not a docstring. Python that does not tokenize counts when the word is
+    anywhere in it.
+    """
+    if not _WORD.search(blob):
+        return False
+    if not path.endswith(".py"):
+        return bool(_WORD.search(live_text(path, blob)))
+    try:
+        for tok in tokenize.tokenize(io.BytesIO(blob).readline):
+            if tok.type == tokenize.NAME and tok.string == "alembic":
+                return True
+    except (tokenize.TokenError, SyntaxError, ValueError):
+        return True
+    return bool(_WORD.search(live_text(path, blob)))
 
 
 def _add_runner_edges(
@@ -59,9 +93,9 @@ def _add_runner_edges(
     if not scripts:
         return 0
     count = 0
-    for path in sorted(p for p in path_set if p.endswith(".py")):
+    for path in sorted(p for p in path_set - set(scripts) if p.endswith(_CODE_EXTS)):
         text = source_bytes(path, parsed_files[path].file_info.abs_path, ctx.source_map)
-        if b"alembic" not in text or not _COMMAND_USE.search(text):
+        if not names_alembic(path, text):
             continue
         for target in scripts:
             if _add_edge_if_new(graph, path, target):
@@ -71,7 +105,7 @@ def _add_runner_edges(
 
 
 class _AlembicRunnerHandler:
-    """Code running Alembic commands loads every migration script."""
+    """Code running Alembic loads every migration script."""
 
     def detect(self, dctx: DetectionContext) -> bool:
         return True

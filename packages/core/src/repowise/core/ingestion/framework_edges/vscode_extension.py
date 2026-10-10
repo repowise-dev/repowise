@@ -8,7 +8,11 @@ package whose ``package.json`` declares ``engines.vscode``, each test file
 importing ``vscode`` gets an edge to the files the manifest declares as its
 start (:func:`~..resolvers.ts_workspace.manifest_entry_paths`).
 
-Ceiling: a test run against another package's extension is not linked to it.
+Ceilings: a test run against another package's extension is not linked to
+it, and a launcher that starts the host without importing ``vscode``
+(``runTest.ts``) gets no edge. A ``main`` built from a source the index cannot
+map gives no entry, so no edge either, and a change to the extension keeps its
+full run.
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ if TYPE_CHECKING:
 VSCODE_HOST_HINT = "vscode_extension_host"
 
 _JS_EXTS = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")
-_IMPORTS_VSCODE = re.compile(rb"""(?:from\s+|require\(\s*|import\s*\(\s*)["']vscode["']""")
+_IMPORTS_VSCODE = re.compile(rb"""(?:from\s+|import\s+|require\(\s*|import\s*\(\s*)["']vscode["']""")
 
 
 def _extensions(ctx: ResolverContext, path_set: set[str]) -> dict[str, set[str]]:
