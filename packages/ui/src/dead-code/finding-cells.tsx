@@ -5,14 +5,12 @@ import type * as React from "react";
 import { CircleSlash, Eye, GitBranch, MoreHorizontal, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../ui/button";
-import { Badge } from "../ui/badge";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { formatConfidence } from "../lib/format";
 import { toFriendlyMessage } from "../lib/errors";
 import { cn } from "../lib/cn";
 import {
-  deadCodeConfidenceTier,
   deadCodeRiskFactorLabel,
   type DeadCodeFinding,
   type DeadCodeStatus,
@@ -75,9 +73,8 @@ export interface FindingIdentityProps {
 }
 
 /**
- * File path (linked when the host can route), symbol name, and the detector's
- * reason. The reason was already being fed to the AI prompt builder, so the
- * model saw the justification and the human did not.
+ * File path (linked when the host can route), symbol name, the detector's
+ * reason, and the "Review first" marker on rows that are not deletion-ready.
  */
 export function FindingIdentity({ finding, href, onNavigate }: FindingIdentityProps) {
   const onLinkClick = (e: MouseEvent<HTMLAnchorElement>) => {
@@ -125,43 +122,47 @@ export function FindingIdentity({ finding, href, onNavigate }: FindingIdentityPr
           {finding.reason}
         </span>
       )}
+      <FindingSafety finding={finding} />
     </div>
   );
 }
 
-/** Confidence, coloured on the shared tier boundaries rather than local ones. */
+/**
+ * Confidence as a neutral mono percent. Dead code is not an alarm, so the
+ * figure carries no red or amber; the tier is what the filter and the
+ * "Review first" marker act on.
+ */
 export function FindingConfidence({ finding }: { finding: DeadCodeFinding }) {
-  const tier = deadCodeConfidenceTier(finding.confidence);
   return (
-    <span
-      className={cn(
-        "font-medium tabular-nums text-xs",
-        tier === "high"
-          ? "text-[var(--color-error)]"
-          : tier === "medium"
-            ? "text-[var(--color-warning)]"
-            : "text-[var(--color-text-secondary)]",
-      )}
-    >
+    <span className="font-mono text-xs tabular-nums text-[var(--color-text-secondary)]">
       {formatConfidence(finding.confidence)}
     </span>
   );
 }
 
-/** "Candidate" vs "Review", with the risk factors behind the tooltip. */
+/**
+ * Marks the exception, not the default: nothing on a deletion-ready row, and
+ * a dot plus "Review first" with the reason as visible text on the rest.
+ */
 export function FindingSafety({ finding }: { finding: DeadCodeFinding }) {
-  if (finding.safe_to_delete) return <Badge variant="fresh">Candidate</Badge>;
+  if (finding.safe_to_delete) return null;
+  const factors = finding.risk_factors ?? [];
+  const why =
+    factors.length > 0
+      ? `may load at runtime (${factors.map(deadCodeRiskFactorLabel).join(", ")})`
+      : "below the deletion-ready confidence";
   return (
-    <Badge
-      variant="default"
-      title={
-        finding.risk_factors && finding.risk_factors.length > 0
-          ? `Runtime-load risk (${finding.risk_factors.map(deadCodeRiskFactorLabel).join(", ")}) - verify it isn't loaded outside static imports before deleting`
-          : "Lower confidence - verify before deleting"
-      }
-    >
-      Review
-    </Badge>
+    <span className="mt-0.5 flex min-w-0 items-baseline gap-1.5 text-2xs text-[var(--color-text-tertiary)]">
+      <span
+        aria-hidden
+        className="inline-block h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-full bg-[var(--color-warning)]"
+      />
+      <span className="min-w-0">
+        <span className="font-medium text-[var(--color-text-secondary)]">Review first</span>
+        {" · "}
+        {why}
+      </span>
+    </span>
   );
 }
 
@@ -256,7 +257,7 @@ export function FindingRowActions({
             variant="ghost"
             disabled={pending}
             onClick={() => setConfirmStatus("resolved")}
-            className="h-6 px-2 text-xs text-[var(--color-success)] hover:text-[var(--color-success)]"
+            className="h-8 px-2 text-xs"
             aria-label={`Resolve ${finding.file_path}`}
           >
             Resolve
@@ -267,7 +268,7 @@ export function FindingRowActions({
             variant="ghost"
             disabled={pending}
             onClick={() => setConfirmStatus("open")}
-            className="h-6 px-2 text-xs"
+            className="h-8 px-2 text-xs"
             aria-label={`Reopen ${finding.file_path}`}
           >
             Reopen
@@ -279,7 +280,7 @@ export function FindingRowActions({
             <Button
               size="sm"
               variant="ghost"
-              className="h-6 w-6 px-0 text-[var(--color-text-tertiary)]"
+              className="h-8 w-8 px-0 text-[var(--color-text-tertiary)]"
               aria-label={`More actions for ${finding.file_path}`}
             >
               <MoreHorizontal className="h-3.5 w-3.5" />

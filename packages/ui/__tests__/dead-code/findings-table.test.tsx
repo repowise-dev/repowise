@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/rea
 import { FindingsTable } from "../../src/dead-code/findings-table.js";
 import type { DeadCodeFinding } from "@repowise-dev/types/dead-code";
 
-// jsdom has no layout engine → stub ResizeObserver so the Radix slider mounts.
+// jsdom has no layout engine → stub ResizeObserver for the Radix primitives.
 class RO {
   observe() {}
   unobserve() {}
@@ -77,22 +77,28 @@ describe("FindingsTable kind bucketing", () => {
 
     // The regression this guards: a fixed three-kind allowlist silently dropped
     // unused_internal findings that every other surface was counting.
-    expect(screen.getByRole("tab", { name: /Unreachable Files/ })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /Unused Internals/ })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /Some Future Kind/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Unreachable files/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Unused internals/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Some future kind/ })).toBeInTheDocument();
   });
 
   it("shows no tab for a kind that is absent from the data", () => {
     renderTable([finding({ id: "a", kind: "unreachable_file" })]);
 
-    expect(screen.queryByRole("tab", { name: /Zombie Packages/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Zombie packages/ })).not.toBeInTheDocument();
   });
 
   it("renders an empty state rather than tabs when there are no findings", () => {
     renderTable([]);
 
-    expect(screen.getByText("No findings")).toBeInTheDocument();
+    expect(screen.getByText("No open findings")).toBeInTheDocument();
     expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+  });
+
+  it("words an empty review slice for its status", () => {
+    renderTable([], { status: "acknowledged" });
+
+    expect(screen.getByText("No acknowledged findings")).toBeInTheDocument();
   });
 
   it("tab counts follow the confidence filter while the tab itself stays put", async () => {
@@ -101,14 +107,13 @@ describe("FindingsTable kind bucketing", () => {
       finding({ id: "b", kind: "unreachable_file", confidence: 0.45 }),
     ]);
 
-    expect(screen.getByRole("tab", { name: /Unreachable Files 2/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Unreachable files 2/ })).toBeInTheDocument();
 
-    const slider = screen.getByLabelText("Minimum confidence");
-    for (let i = 0; i < 12; i++) fireEvent.keyDown(slider, { key: "ArrowRight" });
+    fireEvent.click(screen.getByRole("radio", { name: "High only" }));
 
     // The count drops, but the tab does not disappear from under the pointer.
     await waitFor(() =>
-      expect(screen.getByRole("tab", { name: /Unreachable Files 1/ })).toBeInTheDocument(),
+      expect(screen.getByRole("tab", { name: /Unreachable files 1/ })).toBeInTheDocument(),
     );
   });
 });
@@ -126,8 +131,7 @@ describe("FindingsTable selection", () => {
     );
 
     // Push the low-confidence row out of view first, then select all.
-    const slider = screen.getByLabelText("Minimum confidence");
-    for (let i = 0; i < 12; i++) fireEvent.keyDown(slider, { key: "ArrowRight" });
+    fireEvent.click(screen.getByRole("radio", { name: "High only" }));
     await waitFor(() =>
       expect(screen.queryByLabelText("Select finding src/hidden.ts")).not.toBeInTheDocument(),
     );
@@ -151,11 +155,10 @@ describe("FindingsTable selection", () => {
     fireEvent.click(screen.getByLabelText("Select all findings"));
     expect(screen.getByRole("button", { name: "Resolve 2 selected" })).toBeInTheDocument();
 
-    // Raise the floor past the second finding: it leaves the table, so it must
-    // leave the selection too — otherwise "Resolve N selected" resolves rows
-    // the user can no longer see.
-    const slider = screen.getByLabelText("Minimum confidence");
-    for (let i = 0; i < 12; i++) fireEvent.keyDown(slider, { key: "ArrowRight" });
+    // Narrow to high confidence: the second finding leaves the table, so it
+    // must leave the selection too, otherwise "Resolve N selected" resolves
+    // rows the user can no longer see.
+    fireEvent.click(screen.getByRole("radio", { name: "High only" }));
 
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Resolve 1 selected" })).toBeInTheDocument(),
@@ -177,7 +180,7 @@ describe("FindingsTable selection", () => {
     expect(screen.getByRole("button", { name: "Resolve 1 selected" })).toBeInTheDocument();
 
     // Radix activates a tab on mousedown, not click.
-    fireEvent.mouseDown(screen.getByRole("tab", { name: /Unused Exports/ }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /Unused exports/ }));
 
     expect(screen.queryByRole("button", { name: /Resolve \d+ selected/ })).not.toBeInTheDocument();
   });
@@ -236,6 +239,7 @@ describe("FindingsTable sort and search", () => {
       target: { value: "nothing matches this" },
     });
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.getByText("1 finding hidden by the current filters")).toBeInTheDocument();
 
     // Without this the user is left staring at an empty state with no hint
     // that their own filter, not the repository, is why.
@@ -343,5 +347,30 @@ describe("FindingsTable row actions", () => {
 
     await waitFor(() => expect(toastError).toHaveBeenCalled());
     expect(String(toastError.mock.calls[0]?.[0])).toMatch(/Couldn't update finding/);
+  });
+});
+
+describe("FindingsTable colour jobs", () => {
+  it("shows confidence as a neutral percent, never in alarm colours", () => {
+    renderTable([finding({ id: "a", confidence: 0.95 })]);
+
+    const pct = inTable().getByText("95%");
+    expect(pct.className).not.toMatch(/color-error|color-warning|color-success/);
+  });
+
+  it("keeps the row's Resolve verb neutral", () => {
+    renderTable([finding({ id: "a" })]);
+
+    const resolve = inTable().getByRole("button", { name: "Resolve src/a.ts" });
+    expect(resolve.className).not.toMatch(/color-success/);
+  });
+
+  it("grounds a selected row on the neutral selected token, not the accent", () => {
+    renderTable([finding({ id: "a" })]);
+
+    fireEvent.click(inTable().getByLabelText("Select finding src/a.ts"));
+    const row = inTable().getByRole("row", { name: /src\/a\.ts/ });
+    expect(row.className).toMatch(/color-bg-selected/);
+    expect(row.className).not.toMatch(/accent-muted/);
   });
 });
