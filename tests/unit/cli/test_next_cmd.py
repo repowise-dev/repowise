@@ -229,3 +229,63 @@ def test_reads_a_real_index(tmp_path: Path) -> None:
     out = _run(str(repo_path), "--horizon", "quarter").output
     assert "Worth planning" in out
     assert "unused" in out
+
+
+def test_reads_a_repo_local_index_after_the_folder_is_moved(tmp_path: Path) -> None:
+    original = tmp_path / "original"
+    original.mkdir()
+    asyncio.run(_build_index(original))
+    moved = tmp_path / "moved"
+    original.rename(moved)
+
+    result = _run(str(moved), "--format", "json")
+    assert result.exit_code == 0, result.output
+    view = json.loads(result.stdout)
+    assert view["status"] == "available"
+    assert "dead_code_batch" in {
+        a["rule"] for a in view["horizons"]["quarter"]["actions"]
+    }
+
+
+@pytest.mark.parametrize("env_name", ["REPOWISE_DB_URL", "REPOWISE_DATABASE_URL"])
+def test_a_configured_store_does_not_fall_back_to_another_repo(
+    tmp_path: Path, monkeypatch, env_name: str
+) -> None:
+    indexed = tmp_path / "indexed"
+    indexed.mkdir()
+    asyncio.run(_build_index(indexed))
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.setenv(env_name, f"sqlite:///{indexed}/.repowise/wiki.db")
+
+    result = _run(str(other), "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["status"] == "unavailable"
+
+
+def test_a_local_store_with_multiple_repositories_requires_an_exact_path(tmp_path: Path):
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import upsert_repository
+
+    indexed = tmp_path / "indexed"
+    indexed.mkdir()
+    asyncio.run(_build_index(indexed))
+
+    async def check():
+        engine = create_engine(f"sqlite+aiosqlite:///{indexed}/.repowise/wiki.db")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                await upsert_repository(session, name="other", local_path=str(tmp_path / "other"))
+                await session.commit()
+        finally:
+            await engine.dispose()
+        # An exact match still wins in a multi-repository local store.
+        async with repo_index_session(indexed, reconcile=False) as opened:
+            assert opened is not None
+        moved = tmp_path / "moved"
+        indexed.rename(moved)
+        async with repo_index_session(moved, reconcile=False) as opened:
+            assert opened is None
+
+    asyncio.run(check())

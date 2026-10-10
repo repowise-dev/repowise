@@ -294,11 +294,13 @@ async def repo_index_session(
     ``reconcile=False`` skips the schema reconcile, so a caller that only reads
     writes nothing to the store.
     """
+    from sqlalchemy import select
     from sqlalchemy.exc import SQLAlchemyError
 
     from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.crud import get_repository_by_path
-    from repowise.core.persistence.database import has_db_store
+    from repowise.core.persistence.database import get_configured_db_url, has_db_store
+    from repowise.core.persistence.models import Repository
 
     # The configured store, which may live outside the repo (REPOWISE_DB_URL).
     if not has_db_store(root):
@@ -317,6 +319,13 @@ async def repo_index_session(
             factory = create_session_factory(engine)
             session = await stack.enter_async_context(get_session(factory))
             repo = await get_repository_by_path(session, str(root))
+            if repo is None and get_configured_db_url() is None:
+                # A moved repo carries its local store but retains the old
+                # local_path. Never infer identity in a configured/shared store
+                # or when the local store contains more than one repository.
+                repos = (await session.scalars(select(Repository).limit(2))).all()
+                if len(repos) == 1:
+                    repo = repos[0]
             if repo is not None:
                 opened = (session, repo.id)
         except (SQLAlchemyError, OSError, LookupError):
