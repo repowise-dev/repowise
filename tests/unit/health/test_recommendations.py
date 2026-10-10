@@ -16,6 +16,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     build_recommendations,
     build_validation_plan,
     detector_native_benefit,
+    hub_files,
     hydrate_recommendations,
     rehydrate_suggestion,
     target_symbol_ids,
@@ -682,3 +683,13 @@ def test_a_qualified_spec_name_counts_as_same_stem() -> None:
     plan = build_validation_plan(_plan("run", file_path=path), {}, {path: reached})
     assert plan.tests[0] == "src/agents/run/attempt.spawn-workspace.test.ts"
     assert plan.reasons[plan.tests[0]] == "named for attempt.ts"
+
+
+def test_hubs_are_files_above_the_fan_in_bar_or_in_the_top_percent() -> None:
+    fan_in = {f"src/m{i:03}.py": 2 for i in range(300)}
+    fan_in |= {"src/top.py": 12, "src/wide.py": 51, "src/second.py": 11}
+    fan_in |= {"tests/test_a.py": 90, "external:os": 900}
+    # The top 1% of 303 files is three, and the floor keeps a fan-in of 2 out.
+    assert hub_files(fan_in, {"tests/test_a.py"}) == {"src/top.py", "src/wide.py", "src/second.py"}
+    small = {"src/a.py": 4, "src/b.py": 1}
+    assert hub_files(small, set()) == frozenset()

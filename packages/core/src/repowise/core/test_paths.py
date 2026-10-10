@@ -63,6 +63,8 @@ from pathlib import PurePath, PurePosixPath
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from .pytest_roots import PytestRoots
 
 # Directory segments that mark every file beneath them as test material,
@@ -509,29 +511,77 @@ _CLASS_TEST_SUFFIXES: dict[str, tuple[str, ...]] = {
 }
 
 
+_JS_TEST_TAILS = (
+    ".test.ts",
+    ".test.tsx",
+    ".test.js",
+    ".test.mts",
+    ".test.cts",
+    ".spec.ts",
+    ".spec.js",
+    ".spec.mts",
+    ".spec.cts",
+)
+
+
+def _paired_affixes(p: PurePath) -> list[tuple[str, str]]:
+    """``(before the stem, after the stem)`` of every conventional test name for *p*."""
+    test_suffix = ".exs" if p.suffix == ".ex" else p.suffix
+    return [
+        ("test_", test_suffix),
+        ("", f"_test{test_suffix}"),
+        ("", f"_spec{test_suffix}"),
+        *(("", tail) for tail in _JS_TEST_TAILS),
+        *(("", f"{suffix}{p.suffix}") for suffix in _CLASS_TEST_SUFFIXES.get(p.suffix, ())),
+    ]
+
+
 def paired_test_names(rel_path: str) -> frozenset[str]:
     """Filenames a test for *rel_path* would conventionally carry, any directory."""
     p = PurePath(rel_path)
     stem = p.stem
-    test_suffix = ".exs" if p.suffix == ".ex" else p.suffix
-    names = {
-        f"test_{stem}{test_suffix}",
-        f"{stem}_test{test_suffix}",
-        f"{stem}_spec{test_suffix}",
-        f"{stem}.test.ts",
-        f"{stem}.test.tsx",
-        f"{stem}.test.js",
-        f"{stem}.test.mts",
-        f"{stem}.test.cts",
-        f"{stem}.spec.ts",
-        f"{stem}.spec.js",
-        f"{stem}.spec.mts",
-        f"{stem}.spec.cts",
-    }
+    names = {f"{head}{stem}{tail}" for head, tail in _paired_affixes(p)}
     if p.suffix.lower() in _PASCAL_UNIT_SUFFIXES:
         # Delphi pairs ``uFoo.pas`` with a ``TestFoo.dpr`` program; only a
         # lowercase ``u`` is the unit prefix (``Utils.pas`` keeps its U).
         names.add(f"Test{stem[1:] if stem[:1] == 'u' else stem}.dpr")
-    for suffix in _CLASS_TEST_SUFFIXES.get(p.suffix, ()):
-        names.add(f"{stem}{suffix}{p.suffix}")
     return frozenset(names)
+
+
+def _qualified_name(test_name: str, rel_path: str) -> bool:
+    """*test_name* is a paired name for *rel_path* with a qualifier after the stem."""
+    p = PurePath(rel_path)
+    for head, tail in _paired_affixes(p):
+        lead = f"{head}{p.stem}"
+        if len(test_name) <= len(lead) + len(tail) + 1:
+            continue
+        if not (test_name.startswith(lead) and test_name.endswith(tail)):
+            continue
+        middle = test_name[len(lead) : len(test_name) - len(tail)]
+        # ``_golden``, ``.retry``, ``-cli``; or a PascalCase word before ``Test``.
+        if middle[0] in "._-" or (middle[0].isupper() and tail[:1].isupper()):
+            return True
+    return False
+
+
+def names_test_for(test_path: str, rel_path: str, siblings: Collection[str] = ()) -> bool:
+    """Whether *test_path* is named for *rel_path*: a paired name, or one with a
+    qualifier after the stem (``test_loader_golden.py``, ``loader.retry.test.ts``,
+    ``loader_retry_test.go``, ``LoaderRetryTest.java``).
+
+    *siblings* are the other files in *rel_path*'s directory. A qualified name
+    one of them claims is that file's test: ``test_foo_bar.py`` is for
+    ``foo_bar.py``, not ``foo.py``, and ``foo.config.test.ts`` for ``foo.config.ts``.
+    """
+    name = PurePath(test_path).name
+    if name in paired_test_names(rel_path):
+        return True
+    if not _qualified_name(name, rel_path):
+        return False
+    own = len(PurePath(rel_path).stem)
+    return not any(
+        name in paired_test_names(other)
+        or (len(PurePath(other).stem) > own and _qualified_name(name, other))
+        for other in siblings
+        if other != rel_path
+    )

@@ -184,12 +184,6 @@ UNRELIABLE_CALL_ORIGINS = UNRELIABLE_EXECUTION_ORIGINS
 # suite cannot produce an unbounded intermediate.
 MAX_TESTS_PER_TARGET = 50
 
-# A hub is a module most of the code imports: fan-in above this, or in the top
-# share of files by fan-in. A test reaching a file only through one is reaching
-# the hub, so a walk told to avoid hubs does not pass reach through them.
-HUB_MIN_FAN_IN = 50
-HUB_TOP_SHARE = 0.01
-
 # Which tier answered. The CLI prints this so a reader can tell "this test runs
 # into the file" from the weaker "this test imports it".
 # ``name-match`` is weaker still: a test named for the file, with no edge.
@@ -211,7 +205,6 @@ __all__ = [
     "direct_dependents",
     "files_reached_by_tests",
     "files_with_paired_tests",
-    "hub_files",
     "imported_names_by_test",
     "load_test_files",
     "rank_tests",
@@ -601,31 +594,6 @@ async def unscanned_test_files(session: AsyncSession, repo_id: str) -> set[str]:
     return {node_id for (node_id,) in res.all() if is_judged_test(node_id)}
 
 
-async def hub_files(session: AsyncSession, repo_id: str) -> frozenset[str]:
-    """Repository files that are hubs by stored fan-in (``graph_metrics.in_degree``).
-
-    Fan-in above :data:`HUB_MIN_FAN_IN`, or within the top :data:`HUB_TOP_SHARE`
-    of the repository's own non-test files. Third-party modules and tests are
-    never hubs: neither carries the repository's code between a test and a file.
-    """
-    rows = await session.execute(
-        text(
-            "SELECT m.node_id, m.in_degree FROM graph_metrics m "
-            "JOIN graph_nodes n ON n.repository_id = m.repository_id AND n.node_id = m.node_id "
-            "WHERE m.repository_id = :repo_id AND n.node_type = 'file' "
-            "AND n.is_test = :not_test AND m.node_id NOT LIKE 'external:%'"
-        ),
-        {"repo_id": repo_id, "not_test": False},
-    )
-    ranked = sorted(((int(fan_in or 0), path) for path, fan_in in rows), reverse=True)
-    top = int(len(ranked) * HUB_TOP_SHARE)
-    return frozenset(
-        path
-        for index, (fan_in, path) in enumerate(ranked)
-        if fan_in > 0 and (index < top or fan_in > HUB_MIN_FAN_IN)
-    )
-
-
 async def dependency_path(
     session: AsyncSession, repo_id: str, source: str, targets: Collection[str], max_depth: int = 64
 ) -> list[str]:
@@ -709,8 +677,8 @@ async def tests_reaching_by_tier(
     ``defines`` lookup, and the
     import tier stays file-level either way.
 
-    *avoid* names files the call walk does not pass reach through
-    (:func:`hub_files`), except for a target's own symbols. The import tier is
+    *avoid* names files the call walk does not pass reach through, except
+    into a target's own symbols. The import tier is
     one hop, so it never passes through anything.
 
     The call walk runs first; the import walk is then seeded with only the
@@ -901,12 +869,44 @@ async def imported_names_by_test(
 ) -> dict[str, dict[str, frozenset[str]]]:
     """The names each test file imports from each of *files*, keyed by file then test.
 
-    An empty set is an import of the module itself. One query, one hop: what a
-    test names, not what it reaches.
+    An empty set is an import of the module itself. One hop, plus one through a
+    re-export barrel (``index.ts``, ``__init__.py``) that imports the file: a
+    test importing ``foo`` from the barrel imports it from the file. What a test
+    names, not what it reaches.
     """
     targets = sorted({path for path in files if path})
     if not targets or not test_files:
         return {}
+    out: dict[str, dict[str, frozenset[str]]] = {}
+    barrels: dict[str, dict[str, frozenset[str]]] = {}
+    for source, target, names in await _imported_names(session, repo_id, targets):
+        if source in test_files:
+            _add_names(out, target, source, names)
+        elif PurePosixPath(source).name in BARREL_FILENAMES:
+            barrels.setdefault(source, {})[target] = names
+    if barrels:
+        for source, barrel, names in await _imported_names(session, repo_id, sorted(barrels)):
+            if source not in test_files:
+                continue
+            for target, exported in barrels[barrel].items():
+                # ``export *`` passes every name on; otherwise only the ones it re-exports.
+                passed = names if not exported or "*" in exported else names & exported
+                if passed or not names:
+                    _add_names(out, target, source, passed)
+    return out
+
+
+def _add_names(
+    out: dict[str, dict[str, frozenset[str]]], target: str, test: str, names: frozenset[str]
+) -> None:
+    by_test = out.setdefault(target, {})
+    by_test[test] = by_test.get(test, frozenset()) | names
+
+
+async def _imported_names(
+    session: AsyncSession, repo_id: str, targets: list[str]
+) -> list[tuple[str, str, frozenset[str]]]:
+    """``(importer, imported file, names)`` for every import edge into *targets*."""
     params: dict[str, Any] = {"repo_id": repo_id}
     tgt = _in_clause("p", targets, params)
     ets = _in_clause("e", sorted(FILE_DEPENDENCY_EDGE_TYPES), params)
@@ -918,18 +918,13 @@ async def imported_names_by_test(
         ),
         params,
     )
-    out: dict[str, dict[str, frozenset[str]]] = {}
+    out = []
     for source, target, names_json in rows:
-        if source not in test_files:
-            continue
         try:
             names = json.loads(names_json or "[]")
         except (TypeError, ValueError):
             names = []
-        by_test = out.setdefault(target, {})
-        by_test[source] = by_test.get(source, frozenset()) | frozenset(
-            name for name in names if isinstance(name, str)
-        )
+        out.append((source, target, frozenset(n for n in names if isinstance(n, str))))
     return out
 
 

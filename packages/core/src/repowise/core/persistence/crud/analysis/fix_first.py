@@ -471,6 +471,7 @@ async def _finding_validator(
             inputs.measured,
             inputs.inferred,
             test_limit=DEFAULT_TEST_LIMIT,
+            evidence=inputs.evidence,
             order_tests=False,
         )
         # No test found: unknown, not the bare repo-wide command a plan falls back to.

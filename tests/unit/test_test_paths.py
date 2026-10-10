@@ -16,6 +16,7 @@ from repowise.core.test_paths import (
     is_test_related_path,
     is_test_support_path,
     is_unambiguous_test_path,
+    names_test_for,
 )
 
 # (path, language or None, expected classification)
@@ -367,3 +368,29 @@ def test_pytest_config_overrules_a_test_shaped_python_name(path: str, expected: 
     assert got == expected
     # Without the config the name decides, as it does for a bare pytest.
     assert is_test_related_path(path)
+
+
+@pytest.mark.parametrize(
+    ("test_path", "source", "siblings", "named"),
+    [
+        ("tests/test_loader.py", "src/loader.py", (), True),
+        ("tests/test_attention_golden.py", "src/attention.py", (), True),
+        ("tests/test_loaders.py", "src/loader.py", (), False),
+        ("tests/test_foo_bar.py", "src/foo.py", (), True),
+        # A sibling the qualified name names exactly is that file's test.
+        ("tests/test_foo_bar.py", "src/foo.py", ("src/foo_bar.py",), False),
+        ("tests/test_foo_bar.py", "src/foo_bar.py", ("src/foo.py",), True),
+        ("src/attempt.spawn-workspace.test.ts", "src/attempt.ts", (), True),
+        # Multi-dot stems keep PurePath semantics in both directions.
+        ("src/foo.test.ts", "src/foo.config.ts", (), False),
+        ("src/foo.config.test.ts", "src/foo.config.ts", (), True),
+        ("src/foo.config.test.ts", "src/foo.ts", ("src/foo.config.ts",), False),
+        ("pkg/foo_bar_test.go", "pkg/foo.go", (), True),
+        ("pkg/foo_bar_test.go", "pkg/foo.go", ("pkg/foo_bar.go",), False),
+        ("src/FooBarTest.java", "src/Foo.java", (), True),
+        ("src/FooBarTests.cs", "src/Foo.cs", ("src/FooBar.cs",), False),
+        ("src/Footest.java", "src/Foo.java", (), False),
+    ],
+)
+def test_a_test_named_for_a_file_may_carry_a_qualifier(test_path, source, siblings, named):
+    assert names_test_for(test_path, source, siblings) is named

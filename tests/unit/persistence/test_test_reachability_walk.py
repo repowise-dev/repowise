@@ -19,7 +19,6 @@ from repowise.core.analysis.test_reachability import (
     ReachDistance,
     call_graph_from_db,
     call_graph_from_graph,
-    hub_files,
     imported_names_by_test,
     reach_into_symbols,
 )
@@ -432,22 +431,6 @@ async def _fan_in(session, repo_id, fan_in):
     await session.flush()
 
 
-async def test_hubs_are_files_with_high_or_top_share_fan_in(async_session):
-    repo = await insert_repo(async_session)
-    files = {f"src/m{i:03}.py": 2 for i in range(200)}
-    files |= {"src/top.py": 20, "src/wide.py": 51, "src/unused.py": 0}
-    await _seed(
-        async_session,
-        repo.id,
-        nodes={**dict.fromkeys(files, False), "tests/test_a.py": True, "external:os": False},
-        edges=[],
-    )
-    await _fan_in(async_session, repo.id, {**files, "tests/test_a.py": 90, "external:os": 900})
-    # Above the fan-in bar, or the top 1% of the repository's own files; never
-    # a test or a third-party module.
-    assert await hub_files(async_session, repo.id) == {"src/top.py", "src/wide.py"}
-
-
 def _via(test, middle, target):
     return [
         (test, f"{test}::test_it", "defines"),
@@ -500,53 +483,92 @@ async def test_a_hub_still_carries_reach_into_its_own_symbols(async_session):
     assert found == {"src/hub.py::inner": {"tests/test_hub.py": ReachDistance(2, 1)}}
 
 
-async def test_a_hub_plan_lists_only_tests_reaching_the_changed_symbol(async_session):
-    """Most of a suite reaches a hub through some other symbol of it; only reach
-    into the symbol a plan changes validates the plan. With none, the plan has no
-    command and asks for a characterization test first. (A test named for the
-    file would stay: ``test_walk.py`` validates any change to ``walk.py``.)"""
-    from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
-    from repowise.core.analysis.health.refactoring.recommendations import (
-        hydrate_recommendations,
-    )
-
+async def test_a_test_importing_a_file_through_a_barrel_imports_it(async_session):
     repo = await insert_repo(async_session)
-    nodes = {"tests/test_bystander.py": True, "tests/test_runner.py": True, "src/walk.py": False}
-    for path, is_test in nodes.items():
+    imports = [
+        ("src/index.ts", "src/util.ts", '["walk", "other"]'),
+        ("src/all.ts", "src/util.ts", '["*"]'),
+        ("tests/a.test.ts", "src/index.ts", '["walk"]'),
+        ("tests/b.test.ts", "src/index.ts", '["unrelated"]'),
+        ("tests/c.test.ts", "src/index.ts", "[]"),
+        ("tests/d.test.ts", "src/all.ts", '["lonely"]'),
+    ]
+    for source, target, names in imports:
         async_session.add(
-            GraphNode(repository_id=repo.id, node_id=path, node_type="file", is_test=is_test)
+            GraphEdge(
+                repository_id=repo.id,
+                source_node_id=source,
+                target_node_id=target,
+                edge_type="imports",
+                imported_names_json=names,
+            )
         )
+    await async_session.flush()
+    tests = {"tests/a.test.ts", "tests/b.test.ts", "tests/c.test.ts", "tests/d.test.ts"}
+    # ``all.ts`` is no barrel by name, so ``d`` is not followed through it.
+    assert await imported_names_by_test(async_session, repo.id, ["src/util.ts"], tests) == {
+        "src/util.ts": {"tests/a.test.ts": frozenset({"walk"}), "tests/c.test.ts": frozenset()}
+    }
+
+
+async def _hub_repo(session, *, tests=(), edges=()):
+    """``src/util.py`` is a hub (fan-in 60) with three functions: ``test_runner``
+    calls ``walk``, ``test_bystander`` calls ``other``, nothing calls ``lonely``."""
+    repo = await insert_repo(session)
+    nodes = {"tests/test_bystander.py": True, "tests/test_runner.py": True, "src/util.py": False}
+    nodes |= dict.fromkeys(tests, True)
+    for path, is_test in nodes.items():
+        session.add(GraphNode(repository_id=repo.id, node_id=path, node_type="file", is_test=is_test))
     for name, start, end in (("walk", 1, 20), ("other", 30, 40), ("lonely", 50, 60)):
-        async_session.add(
+        session.add(
             GraphNode(
                 repository_id=repo.id,
-                node_id=f"src/walk.py::{name}",
+                node_id=f"src/util.py::{name}",
                 node_type="symbol",
-                file_path="src/walk.py",
+                file_path="src/util.py",
                 start_line=start,
                 end_line=end,
             )
         )
     await _seed(
-        async_session,
+        session,
         repo.id,
         nodes={},
         edges=[
-            ("src/walk.py", "src/walk.py::walk", "defines"),
-            ("src/walk.py", "src/walk.py::other", "defines"),
-            ("src/walk.py", "src/walk.py::lonely", "defines"),
+            ("src/util.py", "src/util.py::walk", "defines"),
+            ("src/util.py", "src/util.py::other", "defines"),
+            ("src/util.py", "src/util.py::lonely", "defines"),
             ("tests/test_runner.py", "tests/test_runner.py::test_it", "defines"),
             ("tests/test_bystander.py", "tests/test_bystander.py::test_it", "defines"),
-            ("tests/test_runner.py::test_it", "src/walk.py::walk", "calls"),
-            ("tests/test_bystander.py::test_it", "src/walk.py::other", "calls"),
+            ("tests/test_runner.py::test_it", "src/util.py::walk", "calls"),
+            ("tests/test_bystander.py::test_it", "src/util.py::other", "calls"),
         ],
     )
-    await _fan_in(async_session, repo.id, {"src/walk.py": 60})
+    for source, target, names in edges:
+        session.add(
+            GraphEdge(
+                repository_id=repo.id,
+                source_node_id=source,
+                target_node_id=target,
+                edge_type="imports",
+                imported_names_json=names,
+            )
+        )
+    session.add(GraphMetric(repository_id=repo.id, node_id="src/util.py", in_degree=60))
+    await session.flush()
+    return repo
 
-    def plan(symbol, start, end):
-        return RefactoringSuggestion(
+
+async def _util_validations(session, repo_id, *, rank_only=False):
+    from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
+    from repowise.core.analysis.health.refactoring.recommendations import (
+        hydrate_recommendations,
+    )
+
+    plans = [
+        RefactoringSuggestion(
             refactoring_type="extract_method",
-            file_path="src/walk.py",
+            file_path="src/util.py",
             target_symbol=symbol,
             line_start=start,
             line_end=end,
@@ -558,17 +580,19 @@ async def test_a_hub_plan_lists_only_tests_reaching_the_changed_symbol(async_ses
             confidence="high",
             source_biomarker="long_function",
         )
+        for symbol, start, end in (("walk", 1, 20), ("lonely", 50, 60))
+    ]
+    items = await hydrate_recommendations(session, repo_id, plans, rank_only=rank_only)
+    return {item.suggestion.target_symbol: item for item in items}
 
-    walked, lonely = sorted(
-        (
-            item.validation
-            for item in await hydrate_recommendations(
-                async_session, repo.id, [plan("walk", 1, 20), plan("lonely", 50, 60)]
-            )
-        ),
-        key=lambda validation: validation.total,
-        reverse=True,
-    )
+
+async def test_a_hub_plan_lists_only_tests_reaching_the_changed_symbol(async_session):
+    """Most of a suite reaches a hub through some other symbol of it; only reach
+    into the symbol a plan changes validates the plan. With none, the plan has no
+    command and asks for a characterization test first."""
+    repo = await _hub_repo(async_session)
+    full = await _util_validations(async_session, repo.id)
+    walked, lonely = full["walk"].validation, full["lonely"].validation
     assert walked.tests == ["tests/test_runner.py"]
     assert walked.total == 1
     assert walked.prerequisite is None
@@ -578,3 +602,48 @@ async def test_a_hub_plan_lists_only_tests_reaching_the_changed_symbol(async_ses
     assert lonely.prerequisite == (
         "No test reaches this; add a characterization test for `lonely` before the edit."
     )
+    # The rank-only pass a paged list makes narrows the same way.
+    ranked = await _util_validations(async_session, repo.id, rank_only=True)
+    for symbol, item in full.items():
+        fast = ranked[symbol]
+        assert (fast.validation.basis, fast.validation.total, fast.validation.prerequisite) == (
+            item.validation.basis,
+            item.validation.total,
+            item.validation.prerequisite,
+        )
+        assert set(fast.validation.tests) == set(item.validation.tests)
+        assert fast.risk == item.risk
+
+
+async def test_a_hub_import_the_graph_cannot_tie_to_a_symbol_still_counts(async_session):
+    """``import util`` then ``util.lonely()`` with the call unresolved, a namespace
+    import, or ``lonely`` through a barrel: none proves the test misses the
+    change, so none is dropped into "no test reaches this". An import of other
+    names is proof enough."""
+    repo = await _hub_repo(
+        async_session,
+        tests=(
+            "tests/test_module.py",
+            "tests/test_star.py",
+            "tests/test_barrel.py",
+            "tests/test_named.py",
+            "tests/test_util_extra.py",
+        ),
+        edges=(
+            ("tests/test_module.py", "src/util.py", '["util"]'),
+            ("tests/test_star.py", "src/util.py", '["*"]'),
+            ("src/__init__.py", "src/util.py", '["lonely"]'),
+            ("tests/test_barrel.py", "src/__init__.py", '["lonely"]'),
+            ("tests/test_named.py", "src/util.py", '["other"]'),
+            # Named like a test of the file, but no exemption from the hub filter.
+            ("tests/test_util_extra.py", "src/util.py", '["other"]'),
+        ),
+    )
+    lonely = (await _util_validations(async_session, repo.id))["lonely"].validation
+    assert lonely.basis == "inferred"
+    assert set(lonely.tests) == {
+        "tests/test_module.py",
+        "tests/test_star.py",
+        "tests/test_barrel.py",
+    }
+    assert lonely.prerequisite is None

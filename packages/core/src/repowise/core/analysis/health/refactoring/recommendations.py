@@ -12,13 +12,14 @@ import dataclasses
 import functools
 import json
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.grading import TARGET_SCORE
+from repowise.core.analysis.health.perf.ranking import _percentile_threshold
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
@@ -26,7 +27,6 @@ from repowise.core.analysis.test_reachability import (
     ReachDistance,
     ReachedBy,
     cached_test_files,
-    hub_files,
     imported_names_by_test,
     rank_tests,
     reach_into_symbols,
@@ -35,7 +35,7 @@ from repowise.core.analysis.test_reachability import (
 )
 from repowise.core.analysis.test_selection import expand_test_scopes
 from repowise.core.code_origin import ship_rank
-from repowise.core.test_paths import is_test_support_path, paired_test_names
+from repowise.core.test_paths import is_test_support_path, names_test_for, paired_test_names
 
 from .models import RefactoringSuggestion
 
@@ -325,24 +325,61 @@ class ValidationEvidence:
     ``symbols`` is each file's symbol ids with their line spans, ``symbol_reach``
     how close each test gets to a symbol, and ``imports`` the names each test
     imports from a file. Empty, the order falls back to name and directory.
-    ``hubs`` are the files whose own reach is too broad to list (:func:`_hub_tests`).
+    ``hubs`` are the files no reach walk passes through (:func:`hub_files`), and
+    ``siblings`` each directory's files, which decide whose test a name is.
     """
 
     symbols: Mapping[str, Sequence[SymbolSpan]] = field(default_factory=dict)
     symbol_reach: Mapping[str, Mapping[str, ReachDistance]] = field(default_factory=dict)
     imports: Mapping[str, Mapping[str, frozenset[str]]] = field(default_factory=dict)
     hubs: frozenset[str] = frozenset()
+    siblings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
 class ValidationInputs:
-    """The coverage rows and reachability walk one hydration read."""
+    """The coverage rows and reachability walk one hydration read.
+
+    ``evidence`` holds the hubs and the symbol facts for hub files only: every
+    pass narrows a hub target the same way, detailed or not.
+    """
 
     measured: Mapping[str, list[dict[str, Any]]]
     inferred: Mapping[str, ReachedBy]
     test_files: set[str]
-    # Files the reach walks do not pass through (:func:`hub_files`).
-    hubs: frozenset[str] = frozenset()
+    evidence: ValidationEvidence = field(default_factory=ValidationEvidence)
+
+
+# A hub is a module most of the code imports: fan-in above the absolute bar, or
+# in the top 1% of the repository's files and at least the floor. Far stricter
+# than ``PerfRanker``'s top-quintile "central": that marks a function worth a
+# performance claim, while a hub's reach is dropped from validation, so it must
+# be a module most tests would pass through. Fan-in counts every importer,
+# tests included, as ``graph_metrics.in_degree`` stores it.
+HUB_MIN_FAN_IN = 50
+HUB_TOP_PERCENTILE = 0.99
+HUB_FAN_IN_FLOOR = 10
+
+
+def hub_files(in_degree: Mapping[str, float], test_files: Collection[str]) -> frozenset[str]:
+    """The repository's own non-test files that are hubs by stored fan-in."""
+    own = {
+        path: int(fan_in or 0)
+        for path, fan_in in in_degree.items()
+        if not path.startswith("external:") and path not in test_files
+    }
+    bar = max(HUB_FAN_IN_FLOOR, _percentile_threshold(list(own.values()), HUB_TOP_PERCENTILE))
+    return frozenset(
+        path for path, fan_in in own.items() if fan_in > HUB_MIN_FAN_IN or fan_in >= bar
+    )
+
+
+def _siblings(paths: Collection[str]) -> dict[str, tuple[str, ...]]:
+    by_dir: dict[str, list[str]] = {}
+    for path in paths:
+        if not path.startswith("external:"):
+            by_dir.setdefault(path.rsplit("/", 1)[0] if "/" in path else "", []).append(path)
+    return {directory: tuple(sorted(files)) for directory, files in by_dir.items()}
 
 
 def target_symbol_ids(
@@ -398,31 +435,32 @@ _is_support = functools.lru_cache(maxsize=8192)(is_test_support_path)
 RankedTest = tuple[tuple[int, ...], str]
 
 
+# Test names are compared once per plan they guard, like the support check.
+_names_test_for = functools.lru_cache(maxsize=65536)(names_test_for)
+
+
 @dataclass(frozen=True, slots=True)
 class _Target:
     """What a test's path is compared against: the file's name and directories."""
 
+    path: str
     name: str
-    stem: str
-    named_for: frozenset[str]
     dirs: list[str]
+    siblings: tuple[str, ...]
 
     @classmethod
-    def of(cls, file_path: str) -> _Target:
-        name = file_path.rsplit("/", 1)[-1]
+    def of(cls, file_path: str, evidence: ValidationEvidence) -> _Target:
+        directory = file_path.rsplit("/", 1)[0] if "/" in file_path else ""
         return cls(
-            name, name.split(".", 1)[0], paired_test_names(file_path), file_path.split("/")[:-1]
+            file_path,
+            file_path.rsplit("/", 1)[-1],
+            file_path.split("/")[:-1],
+            evidence.siblings.get(directory, ()),
         )
 
     def named(self, path: str) -> bool:
-        """A test named for the file, also with a qualifier: ``test_attention_golden.py``
-        for ``attention.py``, ``attempt.spawn-workspace.test.ts`` for ``attempt.ts``."""
-        test = path.rsplit("/", 1)[-1]
-        return (
-            test in self.named_for
-            or test.startswith(f"test_{self.stem}_")
-            or (test.startswith(f"{self.stem}.") and (".test." in test or ".spec." in test))
-        )
+        """A test named for the file (:func:`names_test_for`)."""
+        return _names_test_for(path, self.path, self.siblings)
 
     def shared(self, path: str) -> list[str]:
         test_dirs = set(path.split("/")[:-1])
@@ -442,10 +480,10 @@ def _near_key(path: str, hits: set[int], named: bool, shared: list[str]) -> tupl
 
 
 def _rank_by_name(
-    file_path: str, labels: set[str], covered: Mapping[str, set[int]]
+    file_path: str, labels: set[str], covered: Mapping[str, set[int]], evidence: ValidationEvidence
 ) -> dict[str, RankedTest]:
     """:func:`_rank_target_tests` without the graph evidence a rank-only pass skips."""
-    target = _Target.of(file_path)
+    target = _Target.of(file_path, evidence)
     out: dict[str, RankedTest] = {}
     for label in labels:
         path = label.split("::", 1)[0]
@@ -512,7 +550,7 @@ def _rank_target_tests(
     ``conftest.py`` was already replaced by the tests under it
     (:func:`_expand_scopes`).
     """
-    target = _Target.of(file_path)
+    target = _Target.of(file_path, evidence)
     name = target.name
     file_reach = reached.reach if reached is not None and reached.reach else {}
     imports = evidence.imports.get(file_path, {})
@@ -660,19 +698,33 @@ def _measured_labels(rows: list[dict[str, Any]], lines: set[int] | None) -> set[
 def _hub_tests(
     file_path: str, symbol_ids: Sequence[str], evidence: ValidationEvidence
 ) -> set[str] | None:
-    """For a hub file, the tests that reach or import the symbols the plan changes.
+    """For a hub file, the tests that may exercise the symbols the plan changes.
 
     Most of the suite reaches a hub through some other symbol of it, so its
-    file-level reach says nothing about this change. ``None`` keeps that reach:
-    the file is no hub, or the plan names no symbol in it.
+    file-level reach says nothing about this change. A test counts when it
+    reaches a changed symbol, imports one by name, or imports the module whole
+    (``import utils``, ``import * as u``), whose calls the graph may not have
+    resolved; only a test proven to import other names is left out. ``None``
+    keeps the file's reach: it is no hub, or the plan names no symbol in it.
     """
     if file_path not in evidence.hubs or not symbol_ids:
         return None
-    names = {_symbol_label(symbol).split(".", 1)[0] for symbol in symbol_ids}
+    module = file_path.rsplit("/", 1)[-1].split(".", 1)[0]
+    names = {_symbol_label(symbol).split(".", 1)[0] for symbol in symbol_ids} | {module, "*"}
     imported = evidence.imports.get(file_path, {})
     return {
         test for symbol in symbol_ids for test in evidence.symbol_reach.get(symbol, {})
-    } | {test for test, imports in imported.items() if imports & names}
+    } | {test for test, imports in imported.items() if not imports or imports & names}
+
+
+def _drop_hub_only(file_path: str, labels: set[str], keep: set[str]) -> set[str]:
+    """A hub target's tests: :func:`_hub_tests`, which may name an importer the
+    file walk never reached, and any of *labels* with the file's exact paired
+    name. A qualified name (``test_utils_extra.py``) earns no exemption."""
+    paired = paired_test_names(file_path)
+    return set(keep) | {
+        label for label in labels if label.split("::", 1)[0].rsplit("/", 1)[-1] in paired
+    }
 
 
 def _validation_target(
@@ -702,14 +754,11 @@ def _validation_target(
             reached is None or reached.all_tests is not None or total == len(labels)
         )
         if keep is not None and reached is not None:
-            target = _Target.of(file_path)
-            labels = {
-                label
-                for label in labels
-                if (path := label.split("::", 1)[0]) in keep or target.named(path)
-            }
-            basis, via = ("inferred", via) if labels else ("unknown", None)
-            total, identities_complete = len(labels), True
+            labels = _drop_hub_only(file_path, labels, keep)
+            if identities_complete:
+                # The whole list was filtered, so what is left is the answer.
+                basis, via = ("inferred", via) if labels else ("unknown", None)
+                total = len(labels)
     ranked = rank(labels, covered, reached)
     ordered = sorted(labels, key=lambda label: (ranked[label][0], label))
     return (
@@ -719,7 +768,7 @@ def _validation_target(
             via=via,
             total=total,
             tests=ordered[:cap],
-            truncated=total > cap,
+            truncated=total > cap or not identities_complete,
         ),
         labels,
         identities_complete,
@@ -765,7 +814,7 @@ def build_validation_plan(
         ) -> dict[str, RankedTest]:
             if not order_tests:
                 # A rank-only pass reads no graph evidence; name and directory still order.
-                return _rank_by_name(path, labels, covered)
+                return _rank_by_name(path, labels, covered, facts)
             return _rank_target_tests(
                 path,
                 span,
@@ -823,7 +872,9 @@ def build_validation_plan(
         commands=_commands(ordered_tests[:cap], total=aggregate_total),
         targets=target_rows,
         reasons={test: best[test][1] for test in ordered_tests[:cap]} if order_tests else {},
-        prerequisite=None if ordered_tests else _characterization_step(suggestion),
+        prerequisite=(
+            _characterization_step(suggestion) if aggregate_basis == "unknown" else None
+        ),
     )
 
 
@@ -1032,7 +1083,12 @@ async def hydrate_recommendations(
         node_id: float(metric.get("in_degree") or 0.0) for node_id, metric in graph_metrics.items()
     }
     plans, inputs = await _validation_plans(
-        session, repository_id, suggestions, test_limit=test_limit, detailed=not rank_only
+        session,
+        repository_id,
+        suggestions,
+        test_limit=test_limit,
+        detailed=not rank_only,
+        in_degree=centrality,
     )
     recommendations = build_recommendations(
         suggestions,
@@ -1084,6 +1140,7 @@ async def _validation_plans(
     test_limit: int,
     detailed: bool,
     inputs: ValidationInputs | None = None,
+    in_degree: Mapping[str, float] | None = None,
 ) -> tuple[list[ValidationPlan], ValidationInputs]:
     """One validation plan per suggestion, every read batched across the set.
 
@@ -1095,13 +1152,15 @@ async def _validation_plans(
         {path for suggestion in suggestions for path in affected_files(suggestion)}
     )
     if inputs is None:
-        inputs = await _validation_inputs(session, repository_id, suggestions, target_files)
+        inputs = await _validation_inputs(
+            session, repository_id, suggestions, target_files, in_degree=in_degree
+        )
     evidence = (
         await _validation_evidence(
-            session, repository_id, suggestions, target_files, inputs.test_files, inputs.hubs
+            session, repository_id, suggestions, target_files, inputs.test_files, inputs.evidence
         )
         if detailed
-        else None
+        else inputs.evidence
     )
     plans = [
         build_validation_plan(
@@ -1122,8 +1181,14 @@ async def _validation_inputs(
     repository_id: str,
     suggestions: Sequence[RefactoringSuggestion],
     target_files: Sequence[str],
+    *,
+    in_degree: Mapping[str, float] | None = None,
 ) -> ValidationInputs:
-    """Measured coverage and the tiered reachability walk for every plan's files."""
+    """Measured coverage and the tiered reachability walk for every plan's files.
+
+    *in_degree* is the stored fan-in a caller already read; without it, read here.
+    """
+    from repowise.core.persistence import crud
     from repowise.core.persistence.crud.analysis.coverage_map import tests_covering_files
 
     measured = await tests_covering_files(session, repository_id, set(target_files))
@@ -1137,9 +1202,14 @@ async def _validation_inputs(
             if not _measured_labels(measured.get(file_path, []), lines):
                 unanswered.add(file_path)
     test_files = await cached_test_files(session, repository_id)
+    if in_degree is None:
+        in_degree = {
+            node: float(metric.get("in_degree") or 0.0)
+            for node, metric in (await crud.get_graph_metrics(session, repository_id)).items()
+        }
     # A test that reaches the file only through a hub tests the hub; it is not
     # listed, and with nothing else the plan says no test reaches it.
-    hubs = await hub_files(session, repository_id)
+    hubs = hub_files(in_degree, test_files)
     inferred = (
         await tests_reaching_by_tier(
             session, repository_id, sorted(unanswered), test_files=test_files, avoid=hubs
@@ -1153,8 +1223,17 @@ async def _validation_inputs(
     inferred = {
         path: _expand_scopes(path, reached, test_files) for path, reached in inferred.items()
     }
+    hub_targets = [path for path in target_files if path in hubs]
+    evidence = await _validation_evidence(
+        session,
+        repository_id,
+        [item for item in suggestions if hubs.intersection(affected_files(item))],
+        hub_targets,
+        test_files,
+        ValidationEvidence(hubs=hubs, siblings=_siblings(in_degree)),
+    )
     return ValidationInputs(
-        measured=measured, inferred=inferred, test_files=test_files, hubs=hubs
+        measured=measured, inferred=inferred, test_files=test_files, evidence=evidence
     )
 
 
@@ -1190,7 +1269,7 @@ async def _validation_evidence(
     suggestions: Sequence[RefactoringSuggestion],
     target_files: Sequence[str],
     test_files: set[str],
-    hubs: frozenset[str] = frozenset(),
+    base: ValidationEvidence,
 ) -> ValidationEvidence:
     """Symbol spans, symbol-level reach and test imports for every plan at once.
 
@@ -1202,7 +1281,7 @@ async def _validation_evidence(
     from repowise.core.persistence.models import GraphNode
 
     if not target_files:
-        return ValidationEvidence()
+        return base
     rows = await session.execute(
         select(GraphNode.file_path, GraphNode.node_id, GraphNode.start_line, GraphNode.end_line)
         .where(GraphNode.repository_id == repository_id)
@@ -1218,13 +1297,13 @@ async def _validation_evidence(
         for file_path, lines in _line_ranges(suggestion).items()
         for symbol in target_symbol_ids(suggestion, file_path, lines, spans.get(file_path, ()))
     }
-    return ValidationEvidence(
+    return dataclasses.replace(
+        base,
         symbols=spans,
         symbol_reach=await reach_into_symbols(
-            session, repository_id, symbol_ids, test_files, avoid=hubs
+            session, repository_id, symbol_ids, test_files, avoid=base.hubs
         ),
         imports=await imported_names_by_test(session, repository_id, target_files, test_files),
-        hubs=hubs,
     )
 
 
@@ -1253,6 +1332,7 @@ __all__ = [
     "detail_recommendations",
     "detector_native_benefit",
     "enrich_blast_radius",
+    "hub_files",
     "hydrate_recommendations",
     "priority_score",
     "rehydrate_suggestion",
