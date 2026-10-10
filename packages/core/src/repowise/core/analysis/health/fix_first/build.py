@@ -362,7 +362,7 @@ class _Files:
             )
             return FixStep(
                 1,
-                f"Extract lines {start}-{end} of {tail} into {into}",
+                _stage_one(f"Extract lines {start}-{end} of {tail} into {into}", tail, body),
                 path,
                 start,
                 **_helper_code(body),
