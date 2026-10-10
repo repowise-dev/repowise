@@ -51,6 +51,8 @@ REUSE_SITE_ACTIONS: tuple[str, ...] = get_args(ReuseSiteAction)
 
 #: Share of each other's lines an occurrence and ``F`` must cover for the site to be ``F``.
 MIN_COVERAGE = 0.9
+#: Lines scanned above a function for a (multi-line) decorator.
+_DECORATOR_SCAN = 20
 _LANGUAGES = frozenset({"python", "typescript", "javascript"})
 _CALLABLE = frozenset({"function", "method"})
 _DEPENDENCY = ("imports", "dynamic_imports")
@@ -101,6 +103,9 @@ class _Fn:
     qualified: str
     is_async: bool
     private: bool
+    #: The parser's decorator list; None when the graph has none (rebuilt
+    #: from storage), and the source text is read instead.
+    decorators: tuple[str, ...] | None = None
 
 
 class _Repo:
@@ -112,6 +117,7 @@ class _Repo:
         self.language = language
         self.read = read
         self._fns: dict[str, list[_Fn]] = {}
+        self._reach: dict[tuple[str, str], bool] = {}
         self._bindings: dict[str, dict[str, set[tuple[str, ...]]]] = {}
 
     def functions(self, path: str) -> list[_Fn]:
@@ -131,6 +137,12 @@ class _Repo:
 
     def reaches(self, start: str, goal: str) -> bool:
         """Whether *start* depends on *goal* through file imports."""
+        hit = self._reach.get((start, goal))
+        if hit is None:
+            hit = self._reach[(start, goal)] = self._walk(start, goal)
+        return hit
+
+    def _walk(self, start: str, goal: str) -> bool:
         seen, queue = {start}, deque([start])
         while queue:
             node = queue.popleft()
@@ -194,9 +206,14 @@ def _functions(graph: Any, path: str, language: str) -> list[_Fn]:
                 # A graph rebuilt from storage has no ``is_async``; the header says it.
                 is_async=bool(node.get("is_async")) or "async" in signature.split("(")[0].split(),
                 private=private,
+                decorators=_decorator_list(node.get("decorators")),
             )
         )
     return out
+
+
+def _decorator_list(value: Any) -> tuple[str, ...] | None:
+    return tuple(str(d) for d in value) if isinstance(value, (list, tuple)) else None
 
 
 def _covered(repo: _Repo, occ: Occurrence) -> list[_Fn]:
@@ -360,6 +377,8 @@ def _twin_site(
     fn = src.fn
     if (fn.kind == "method" or twin.kind == "method") and not _same_class(fn, twin):
         return None, "receiver"
+    if twin.kind == "function" and twin.parent:
+        return None, "nested"  # a closure: its body may read its parent's variables
     if _decorated(lines, twin):
         return None, "decorated"
     theirs = _header(lines, twin, repo.language)
@@ -412,8 +431,11 @@ def _call_site(
     elsewhere = [t for _n, t in _code(lines, host.start, span[0] - 1, lang)] + after
     if _assigned(block, lang) & read_names(elsewhere, lang):
         return None, "outputs_used_after"
-    if (src.reads - src.own) & _host_names(lines, host, elsewhere, lang):
-        return None, "free_names"  # the host's own variable, not the module's
+    # The host's own variable, not the module's; ``F``'s name included, which
+    # the call itself must reach.
+    free = (src.reads - src.own) | {fn.name}
+    if free & _enclosing_names(repo, host.file, lines, span):
+        return None, "free_names"
     text, refused = _call_text(src, host, block, after, lang)
     if text is None:
         return None, refused
@@ -450,14 +472,22 @@ def _block_refusal(src: _Source, host: _Fn, block: list[str], language: str) -> 
     return None
 
 
-def _host_names(lines: Lines, host: _Fn, elsewhere: list[str], language: str) -> set[str]:
-    """Names *host* binds itself, outside the block: its parameters and locals."""
-    params = parameter_names(host.signature, language, host.kind)
-    if params is not None:
-        given = set(params[1])
-    else:
-        given = set(_IDENTS.findall(" ".join(_header(lines, host, language))))
-    return given | _assigned(elsewhere, language)
+def _enclosing_names(repo: _Repo, path: str, lines: Lines, span: tuple[int, int]) -> set[str]:
+    """Names every function enclosing *span* binds outside it (a closure sees
+    its parents'): parameters and locals."""
+    lang = repo.language
+    out: set[str] = set()
+    for host in repo.functions(path):
+        if not (host.start < span[0] and host.end >= span[1]):
+            continue
+        params = parameter_names(host.signature, lang, host.kind)
+        if params is not None:
+            out |= set(params[1])
+        else:
+            out |= set(_IDENTS.findall(" ".join(_header(lines, host, lang))))
+        outside = _code(lines, host.start, span[0] - 1, lang) + _code(lines, span[1] + 1, host.end, lang)
+        out |= _assigned([t for _n, t in outside], lang)
+    return out
 
 
 def _call(
@@ -548,10 +578,23 @@ def _header(lines: Lines, fn: _Fn, language: str) -> list[str]:
 
 
 def _decorated(lines: Lines, fn: _Fn) -> bool:
-    """A decorator (``@x``) on the line above *fn*'s span or opening it."""
-    above = lines[fn.start - 2].strip() if fn.start >= 2 else ""
+    """Whether *fn* carries a decorator: the parser's list when the graph has
+    one, else the source above its span (comments and blank lines skipped, a
+    multi-line decorator followed back to its ``@`` line)."""
+    if fn.decorators is not None:
+        return bool(fn.decorators)
     first = lines[fn.start - 1].strip() if fn.start <= len(lines) else ""
-    return above.startswith("@") or first.startswith("@")
+    if first.startswith("@"):
+        return True
+    depth = 0
+    for n in range(fn.start - 2, max(fn.start - 2 - _DECORATOR_SCAN, -1), -1):
+        text = lines[n].strip()
+        if not text or (depth == 0 and text.startswith(("#", "//", "/*", "*"))):
+            continue
+        depth += text.count(")") - text.count("(")
+        if depth <= 0:
+            return text.startswith("@")
+    return False
 
 
 def _renamed(text: str, old: str, new: str) -> str:
