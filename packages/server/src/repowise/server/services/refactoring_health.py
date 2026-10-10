@@ -430,7 +430,7 @@ class RefactoringHealthService:
         if row is None:
             return {"resolved": False, "plan_id": plan_id, "reason": "unknown_plan_id"}
         owner = await self._owning_opportunity(row.public_id, row.file_path)
-        payload = (await self.plan_recommendation(row, owner=owner)).as_dict()
+        payload = (await self.plan_recommendation(row, owner=owner)).detail_dict()
         payload["id"] = row.public_id or row.id
         payload["status"] = row.status
         result: dict[str, Any] = {"resolved": True, "plan_id": plan_id, "plan": payload}

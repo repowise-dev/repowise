@@ -60,6 +60,12 @@ tests named for the file, then the call graph. Tests that reach the file only
 through a widely imported hub module are left out. When no test reaches the
 change, the plan has no command and asks for a characterization test first.
 
+A plan with several steps, such as a performance fix at several call sites, gives
+each step its own `verify`: the tests that reach that step's lines and the command
+to run them. Plan detail (`get_health(plan_id=...)` and the REST plan route)
+returns it, and the performance drawer shows a step's command when it differs from
+the plan's.
+
 ## Reading the results
 
 A **plan** is one detector's output for one target. An **opportunity** is one

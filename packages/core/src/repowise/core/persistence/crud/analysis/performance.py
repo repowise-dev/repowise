@@ -312,7 +312,10 @@ async def _plan_facts(
     Serving one plan cannot afford the test-reachability walk, and without this
     it fell back to an empty profile that read as "no tests" for every plan.
     """
-    from ....analysis.health.refactoring.recommendations import hydrate_recommendations
+    from ....analysis.health.refactoring.recommendations import (
+        hydrate_recommendations,
+        steps_with_verify,
+    )
 
     if not rows:
         return {}
@@ -320,7 +323,9 @@ async def _plan_facts(
     for recommendation in await hydrate_recommendations(session, repository_id, rows):
         suggestion = recommendation.suggestion
         facts[suggestion.plan["opportunity_id"]] = {
-            "steps": (suggestion.plan or {}).get("steps", []),
+            "steps": steps_with_verify(
+                (suggestion.plan or {}).get("steps") or [], recommendation.validation
+            ),
             "effort_bucket": suggestion.effort_bucket,
             "benefit": recommendation.benefit,
             "cost": recommendation.cost,

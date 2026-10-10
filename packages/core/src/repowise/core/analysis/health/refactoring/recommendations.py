@@ -45,6 +45,7 @@ from .models import RefactoringSuggestion
 RecommendationView = Literal["canonical", "file_spread"]
 ValidationBasis = Literal["measured", "inferred", "mixed", "unknown"]
 ValidationVia = Literal["coverage", "call-graph", "import-graph", "name-match", "mixed"]
+VerifyCoverage = Literal["measured", "inferred", "none"]
 
 DEFAULT_TEST_LIMIT = 12
 # Public because the opportunity rank charges the same work and the same
@@ -301,6 +302,9 @@ class ValidationPlan:
     reasons: dict[str, str] = field(default_factory=dict)
     # What to do before the edit when no test reaches the change.
     prerequisite: str | None = None
+    # One ``verify`` per ``plan["steps"]`` entry of a multi-step plan. Kept out
+    # of :meth:`as_dict`, which every list serves; plan detail reads it.
+    step_verify: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -864,7 +868,7 @@ def build_validation_plan(
         else sum(target.total for target in target_rows)
     )
     files = affected_files(suggestion)
-    return ValidationPlan(
+    plan = ValidationPlan(
         basis=aggregate_basis,
         via=aggregate_via,
         total=aggregate_total,
@@ -879,6 +883,103 @@ def build_validation_plan(
             _characterization_step(suggestion) if aggregate_basis == "unknown" else None
         ),
     )
+    if not order_tests:
+        return plan
+    return _with_step_verify(plan, suggestion, measured, inferred, test_limit, facts)
+
+
+def _with_step_verify(
+    plan: ValidationPlan,
+    suggestion: RefactoringSuggestion,
+    measured: Mapping[str, list[dict[str, Any]]],
+    inferred: Mapping[str, ReachedBy],
+    test_limit: int,
+    facts: ValidationEvidence,
+) -> ValidationPlan:
+    """*plan* with one ``verify`` per step of a multi-step plan.
+
+    Each step is validated as a plan of its own file and span, over the same
+    batch facts, so it picks its tests the way the plan does.
+    """
+    steps = _dict_list((suggestion.plan or {}).get("steps"))
+    if len(steps) < 2:
+        return plan
+    verify = []
+    for step in steps:
+        scoped = _step_scope(suggestion, step, facts)
+        verify.append(
+            verify_of(
+                plan
+                if scoped is None
+                else build_validation_plan(
+                    scoped, measured, inferred, test_limit=test_limit, evidence=facts
+                )
+            )
+        )
+    return dataclasses.replace(plan, step_verify=verify)
+
+
+_COVERAGE: dict[str, VerifyCoverage] = {
+    "measured": "measured",
+    "inferred": "inferred",
+    # Some files measured, some only inferred: not every line is proven run.
+    "mixed": "inferred",
+    "unknown": "none",
+}
+
+
+def verify_of(validation: ValidationPlan) -> dict[str, Any]:
+    """*validation* in the per-step ``verify`` shape."""
+    return {
+        "commands": validation.commands,
+        "tests": validation.tests,
+        "coverage": _COVERAGE[validation.basis],
+    }
+
+
+def _step_scope(
+    suggestion: RefactoringSuggestion, step: Mapping[str, Any], facts: ValidationEvidence
+) -> RefactoringSuggestion | None:
+    """*suggestion* narrowed to the one file and span *step* edits.
+
+    A step with no line (an edit to a whole symbol) takes that symbol's span
+    from the graph, else the whole file. ``None`` when the step names no file.
+    """
+    path = step.get("file_path")
+    if not isinstance(path, str) or not path:
+        return None
+    line = step.get("line") if isinstance(step.get("line"), int) else None
+    symbol = step.get("symbol") if isinstance(step.get("symbol"), str) else ""
+    scoped = dataclasses.replace(
+        suggestion,
+        file_path=path,
+        target_symbol=symbol,
+        line_start=line,
+        line_end=line,
+        plan={},
+        blast_radius={},
+        validation={},
+    )
+    if line is None and symbol:
+        spans = facts.symbols.get(path, ())
+        named = set(target_symbol_ids(scoped, path, None, spans))
+        found = [(start, end) for symbol_id, start, end in spans if symbol_id in named]
+        if found:
+            scoped.line_start, scoped.line_end = found[0]
+    return scoped
+
+
+def steps_with_verify(steps: Sequence[Any], validation: ValidationPlan) -> list[dict[str, Any]]:
+    """*steps* each carrying its ``verify``.
+
+    A single-step plan, or a row stored before steps had their own, gets the
+    plan's: the same answer the plan-level validation gives.
+    """
+    rows = _dict_list(list(steps))
+    verify = validation.step_verify
+    if len(verify) != len(rows):
+        verify = [verify_of(validation)] * len(rows)
+    return [{**step, "verify": check} for step, check in zip(rows, verify, strict=True)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -927,6 +1028,17 @@ class Recommendation:
             "validation": self.validation.as_dict(),
         }
 
+    def detail_dict(self) -> dict[str, Any]:
+        """:meth:`as_dict` for one plan read alone: each step carries its ``verify``."""
+        payload = self.as_dict()
+        steps = payload["plan"].get("steps")
+        if isinstance(steps, list) and steps:
+            payload["plan"] = {
+                **payload["plan"],
+                "steps": steps_with_verify(steps, self.validation),
+            }
+        return payload
+
     def rank_facts(self) -> dict[str, Any]:
         """What ranking added to the stored plan, persisted once at finalize."""
         return {
@@ -941,6 +1053,7 @@ class Recommendation:
             # Enriched with the caller rollup, which the stored column lacks.
             "blast_radius": self.suggestion.blast_radius or {},
             "validation": self.validation.as_dict(),
+            **({"step_verify": self.validation.step_verify} if self.validation.step_verify else {}),
         }
 
 
@@ -968,6 +1081,7 @@ def stored_recommendation(row: Any) -> Recommendation | None:
         validation = validation_from_profile(facts["validation"])
     except TypeError:
         return None
+    validation = dataclasses.replace(validation, step_verify=_dict_list(facts.get("step_verify")))
     suggestion = rehydrate_suggestion(row)
     suggestion.blast_radius = dict(facts.get("blast_radius") or {})
     suggestion.validation = validation.as_dict()
@@ -1431,6 +1545,7 @@ __all__ = [
     "ValidationEvidence",
     "ValidationPlan",
     "ValidationTarget",
+    "VerifyCoverage",
     "affected_files",
     "affected_symbols",
     "apply_view",
@@ -1448,7 +1563,9 @@ __all__ = [
     "priority_score",
     "rehydrate_suggestion",
     "serialize_recommendations",
+    "steps_with_verify",
     "stored_recommendation",
     "surface_confidence_risk",
     "target_symbol_ids",
+    "verify_of",
 ]

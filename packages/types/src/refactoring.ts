@@ -45,6 +45,18 @@ export interface RecommendationValidation {
   prerequisite?: string | null;
 }
 
+/** How a step's tests were found: coverage runs its lines, the graph reaches
+ *  it, or nothing does. */
+export type StepVerifyCoverage = "measured" | "inferred" | "none";
+
+/** How to check one step of a plan, on plan detail only. A single-step plan, or
+ *  one stored by an older server, carries the plan's own answer. */
+export interface StepVerify {
+  commands: string[];
+  tests: string[];
+  coverage: StepVerifyCoverage;
+}
+
 export interface RefactoringPlan {
   id: string;
   refactoring_type: RefactoringType | string;

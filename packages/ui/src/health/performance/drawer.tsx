@@ -16,6 +16,7 @@ import { AdaptivePanel } from "../../shared/adaptive-panel";
 import { CollapsibleSection } from "../../shared/collapsible-section";
 import { InfoTip } from "../../shared/info-tip";
 import { formatNumber } from "../../lib/format";
+import { CommandLine } from "../../shared/command-line";
 import { ProvenancePathList } from "../../shared/provenance-path-list";
 import { performancePlanDetail } from "../../refactoring/types";
 import { SourceExcerpt } from "../../refactoring/source-excerpt";
@@ -226,7 +227,13 @@ function SiblingsNote({
  * one step with its locations: the server emits one step per site, and eight
  * copies of "Collect the keys before the loop" said nothing seven times.
  */
-function PlanSteps({ steps }: { steps: PerformanceOpportunityPlanStep[] }) {
+function PlanSteps({
+  steps,
+  planCommands,
+}: {
+  steps: PerformanceOpportunityPlanStep[];
+  planCommands: string[];
+}) {
   const groups: PerformanceOpportunityPlanStep[][] = [];
   for (const step of [...steps].sort((a, b) => a.order - b.order)) {
     const last = groups[groups.length - 1];
@@ -238,11 +245,18 @@ function PlanSteps({ steps }: { steps: PerformanceOpportunityPlanStep[] }) {
   }
   const where = (step: PerformanceOpportunityPlanStep) =>
     step.file_path ? `${step.file_path}${step.line ? `:${step.line}` : ""}` : null;
+  // A step's own command only when it runs something other than the plan's.
+  const ownCommands = (step: PerformanceOpportunityPlanStep) => {
+    const commands = step.verify?.commands ?? [];
+    return commands.join(" && ") === planCommands.join(" && ") ? [] : commands;
+  };
   return (
     <ol className="mt-3 space-y-1.5">
       {groups.map((group, index) => {
         const first = group[0]!;
-        const places = group.map(where).filter((p): p is string => Boolean(p));
+        const places = group
+          .map((step) => ({ place: where(step), commands: ownCommands(step) }))
+          .filter((p): p is { place: string; commands: string[] } => Boolean(p.place));
         return (
           <li key={first.order} className="text-sm text-[var(--color-text-secondary)]">
             <span className="tabular-nums text-[var(--color-text-tertiary)]">{index + 1}.</span>{" "}
@@ -256,14 +270,22 @@ function PlanSteps({ steps }: { steps: PerformanceOpportunityPlanStep[] }) {
               <span className="ml-1.5 text-xs text-[var(--color-text-tertiary)]">mechanical</span>
             ) : null}
             {places.length === 1 ? (
-              <span className="ml-1.5 break-all font-mono text-xs text-[var(--color-text-tertiary)]">
-                {places[0]}
-              </span>
+              <>
+                <span className="ml-1.5 break-all font-mono text-xs text-[var(--color-text-tertiary)]">
+                  {places[0]!.place}
+                </span>
+                {places[0]!.commands.map((command) => (
+                  <CommandLine key={command} command={command} />
+                ))}
+              </>
             ) : places.length > 1 ? (
               <ul className="mt-1 space-y-0.5 pl-5">
                 {places.map((p) => (
-                  <li key={p} className="break-all font-mono text-xs text-[var(--color-text-tertiary)]">
-                    {p}
+                  <li key={p.place} className="break-all font-mono text-xs text-[var(--color-text-tertiary)]">
+                    {p.place}
+                    {p.commands.map((command) => (
+                      <CommandLine key={command} command={command} />
+                    ))}
                   </li>
                 ))}
               </ul>
@@ -315,7 +337,9 @@ function PlanSection({
           . {opportunity.fix.rationale}
         </p>
       ) : null}
-      {steps && steps.length > 0 ? <PlanSteps steps={steps} /> : null}
+      {steps && steps.length > 0 ? (
+        <PlanSteps steps={steps} planCommands={opportunity.validation?.commands ?? []} />
+      ) : null}
       {planId && !enabled ? (
         <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
           This host cannot open the stored plan. Its id is{" "}

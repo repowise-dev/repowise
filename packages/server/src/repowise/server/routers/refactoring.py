@@ -511,7 +511,7 @@ async def get_refactoring_plan(
     if row is None:
         raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
     recommendation = await _service(session, repo_id).plan_recommendation(row)
-    return _to_response(recommendation.as_dict())
+    return _to_response(recommendation.detail_dict())
 
 
 class RefactoringStatusUpdate(BaseModel):

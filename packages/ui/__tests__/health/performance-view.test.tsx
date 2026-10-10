@@ -604,6 +604,54 @@ describe("PerformanceView drawer plan steps and validation", () => {
     expect(liTexts[1]).toContain("Batch the second call");
   });
 
+  it("shows a step's own command, with copy, only where it differs from the plan's", async () => {
+    const verify = (commands: string[]) => ({ commands, tests: [], coverage: "inferred" as const });
+    const withSteps = page({
+      items: [
+        opportunity({
+          opportunity_id: "perf2_planready",
+          validation: {
+            basis: "inferred",
+            via: "call-graph",
+            total: 2,
+            tests: ["tests/test_a.py", "tests/test_b.py"],
+            commands: ["pytest tests/test_a.py tests/test_b.py"],
+          },
+          plan_steps: [
+            {
+              order: 1,
+              action: "Batch the first call",
+              symbol: "src/a.py::run",
+              file_path: "src/a.py",
+              line: 10,
+              applicability: "judgment",
+              verify: verify(["pytest tests/test_a.py"]),
+            },
+            {
+              order: 2,
+              action: "Batch the second call",
+              symbol: "src/b.py::run",
+              file_path: "src/b.py",
+              line: 20,
+              applicability: "judgment",
+              verify: verify(["pytest tests/test_a.py tests/test_b.py"]),
+            },
+          ],
+        }),
+      ],
+    });
+    render(
+      <PerformanceView adapter={adapter({ getPerformanceOpportunities: async () => withSteps })} />,
+    );
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    const first = within(panel).getByText(/Batch the first call/).closest("li")!;
+    const second = within(panel).getByText(/Batch the second call/).closest("li")!;
+    expect(within(first).getByText("pytest tests/test_a.py")).toBeTruthy();
+    expect(within(first).getByRole("button", { name: "Copy command" })).toBeTruthy();
+    expect(within(second).queryByRole("button", { name: "Copy command" })).toBeNull();
+  });
+
   it("renders the stored validation through the shared validation summary", async () => {
     const withValidation = page({
       items: [

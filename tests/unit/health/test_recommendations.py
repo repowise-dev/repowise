@@ -19,6 +19,8 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     hub_files,
     hydrate_recommendations,
     rehydrate_suggestion,
+    steps_with_verify,
+    stored_recommendation,
     target_symbol_ids,
 )
 from repowise.core.analysis.test_reachability import ReachDistance, ReachedBy, clear_test_map_cache
@@ -697,3 +699,137 @@ def test_hubs_are_files_above_the_fan_in_bar_or_in_the_top_percent() -> None:
     assert hub_files(fan_in, {"tests/test_a.py"}) == {"src/top.py", "src/wide.py", "src/second.py"}
     small = {"src/a.py": 4, "src/b.py": 1}
     assert hub_files(small, set()) == frozenset()
+
+
+def _stepped_plan(*sites: tuple[str, int]) -> RefactoringSuggestion:
+    """A ``performance_fix`` with one step per call site, as the detector writes it."""
+    plan = _multi_site_plan()
+    plan.plan = {
+        "affected_locations": [
+            {"file_path": path, "line_start": line, "line_end": line} for path, line in sites
+        ],
+        "steps": [
+            {"order": index, "action": "Batch", "symbol": "load", "file_path": path, "line": line}
+            for index, (path, line) in enumerate(sites, 1)
+        ],
+    }
+    return plan
+
+
+_SITE_COVERAGE = {
+    "svc/orders.py": [
+        {"test_id": "tests/test_orders.py::test_first", "covered_lines": [10]},
+        {"test_id": "tests/test_orders.py::test_middle", "covered_lines": [40]},
+    ]
+}
+
+
+def test_each_step_lists_the_tests_that_run_its_own_site() -> None:
+    validation = build_validation_plan(
+        _stepped_plan(("svc/orders.py", 10), ("svc/orders.py", 40), ("svc/orders.py", 90)),
+        _SITE_COVERAGE,
+        {},
+    )
+    assert validation.tests == [
+        "tests/test_orders.py::test_first",
+        "tests/test_orders.py::test_middle",
+    ]
+    first, middle, last = validation.step_verify
+    assert first == {
+        "commands": ["pytest tests/test_orders.py::test_first"],
+        "tests": ["tests/test_orders.py::test_first"],
+        "coverage": "measured",
+    }
+    assert middle["tests"] == ["tests/test_orders.py::test_middle"]
+    # Coverage proves no test runs line 90: no command, not the plan's.
+    assert last == {"commands": [], "tests": [], "coverage": "none"}
+
+
+def test_a_step_in_another_file_takes_that_files_reach() -> None:
+    reached = {
+        "svc/billing.py": ReachedBy(
+            ["tests/test_billing.py"], "call-graph", 1, ("tests/test_billing.py",), {}
+        )
+    }
+    validation = build_validation_plan(
+        _stepped_plan(("svc/orders.py", 10), ("svc/billing.py", 5)), _SITE_COVERAGE, reached
+    )
+    orders, billing = validation.step_verify
+    assert orders["coverage"] == "measured"
+    assert billing == {
+        "commands": ["pytest tests/test_billing.py"],
+        "tests": ["tests/test_billing.py"],
+        "coverage": "inferred",
+    }
+
+
+def test_a_single_step_plan_stores_no_step_verify_and_serves_the_plans() -> None:
+    validation = build_validation_plan(_stepped_plan(("svc/orders.py", 10)), _SITE_COVERAGE, {})
+    assert validation.step_verify == []
+    (step,) = steps_with_verify(_stepped_plan(("svc/orders.py", 10)).plan["steps"], validation)
+    assert step["verify"] == {
+        "commands": validation.commands,
+        "tests": validation.tests,
+        "coverage": "measured",
+    }
+
+
+def test_a_rank_only_pass_skips_step_verify() -> None:
+    validation = build_validation_plan(
+        _stepped_plan(("svc/orders.py", 10), ("svc/orders.py", 40)),
+        _SITE_COVERAGE,
+        {},
+        order_tests=False,
+    )
+    assert validation.step_verify == []
+
+
+def test_step_verify_rides_the_stored_rank_and_lists_do_not_carry_it() -> None:
+    suggestion = _stepped_plan(("svc/orders.py", 10), ("svc/orders.py", 40))
+    validation = build_validation_plan(suggestion, _SITE_COVERAGE, {})
+    (recommendation,) = build_recommendations([suggestion], validations={0: validation})
+    facts = recommendation.rank_facts()
+    assert facts["step_verify"] == validation.step_verify
+    assert "step_verify" not in recommendation.as_dict()["validation"]
+    assert "verify" not in recommendation.as_dict()["plan"]["steps"][0]
+
+    import json
+
+    row = {
+        "id": "p1",
+        "refactoring_type": "performance_fix",
+        "file_path": suggestion.file_path,
+        "target_symbol": suggestion.target_symbol,
+        "plan_json": json.dumps(suggestion.plan),
+        "rank_json": json.dumps(facts),
+    }
+    stored = stored_recommendation(row)
+    assert stored is not None
+    steps = stored.detail_dict()["plan"]["steps"]
+    assert [step["verify"]["tests"] for step in steps] == [
+        ["tests/test_orders.py::test_first"],
+        ["tests/test_orders.py::test_middle"],
+    ]
+    assert stored.as_dict()["validation"] == recommendation.as_dict()["validation"]
+
+
+def test_a_row_stored_before_step_verify_serves_the_plans_on_every_step() -> None:
+    import json
+
+    suggestion = _stepped_plan(("svc/orders.py", 10), ("svc/orders.py", 40))
+    validation = build_validation_plan(suggestion, _SITE_COVERAGE, {})
+    (recommendation,) = build_recommendations([suggestion], validations={0: validation})
+    facts = recommendation.rank_facts()
+    del facts["step_verify"]
+    stored = stored_recommendation(
+        {
+            "id": "old",
+            "refactoring_type": "performance_fix",
+            "file_path": suggestion.file_path,
+            "plan_json": json.dumps(suggestion.plan),
+            "rank_json": json.dumps(facts),
+        }
+    )
+    assert stored is not None
+    for step in stored.detail_dict()["plan"]["steps"]:
+        assert step["verify"]["commands"] == validation.commands
