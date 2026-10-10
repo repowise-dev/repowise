@@ -556,9 +556,32 @@ def test_a_loop_variable_a_stage_declares_is_never_handed_back():
 def test_typescript_texts_hand_back_and_type_what_they_can():
     from repowise.core.analysis.health.refactoring import render
 
-    assert render.definite_type("typescript", "Outcome | undefined") == "Outcome"
-    assert render.definite_type("typescript", "undefined") == "undefined"
-    assert render.definite_type("python", "int | None") == "int | None"
+    # The author's declared type is kept; the note says the narrower one is safe.
+    widened = render.render(
+        render.HelperShape(
+            language="typescript",
+            name="settle",
+            kind="function",
+            is_async=False,
+            returns=(render.Slot("outcome", "Outcome | undefined"),),
+        )
+    )
+    assert widened.signature.endswith(": Outcome | undefined {")
+    assert widened.notes == (
+        "outcome is declared `Outcome | undefined`, but every path through these lines "
+        "writes it, so the helper may return `Outcome`.",
+    )
+    inout = render.render(
+        render.HelperShape(
+            language="typescript",
+            name="settle",
+            kind="function",
+            is_async=False,
+            params=(render.Slot("outcome", "Outcome | undefined"),),
+            returns=(render.Slot("outcome", "Outcome | undefined"),),
+        )
+    )
+    assert inout.notes == ()
     shape = render.HelperShape(
         language="typescript",
         name="settle",
@@ -584,3 +607,19 @@ def test_an_import_only_a_stage_reads_leaves_the_function():
     stages = _plans(_persist())["persist"].plan["stages"]
     notes = [n for s in stages for n in s["new_symbol"].get("notes", []) if n.startswith("Remove ")]
     assert notes and all("step_1" in n or "other_step_1" in n for n in notes)
+
+
+def test_code_no_path_reaches_has_no_bound_inputs():
+    from repowise.core.analysis.health.dataflow.assigned import DefiniteAssignment
+
+    fn = _functions(
+        """
+    def f(x):
+        y = x + 1
+        return y
+        z = y
+    """
+    )[0]
+    assigned = DefiniteAssignment(fn)
+    assert {"x", "y"} <= assigned.before(4, 4)
+    assert assigned.before(5, 5) is None

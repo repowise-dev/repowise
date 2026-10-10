@@ -31,8 +31,9 @@ into K contiguous stages, each a helper the function then calls in sequence.
   object instead of as separate parameters. The receiver never does.
 - **Composition.** The definitions each read observes
   (:func:`reaching.observed_definitions`) are checked against the plan: a
-  value defined outside a stage and read inside it must be one of its inputs, and one defined in a stage and read outside it one of its outputs.
-  A plan that fails is refused whole.
+  value defined outside a stage and read inside it must be one of its
+  inputs, and one defined in a stage and read outside it one of its
+  outputs. A plan that fails is refused whole.
 
 Function-local imports are not inputs: a helper re-imports a name, and the
 function drops an import nothing it keeps still reads.
@@ -301,7 +302,8 @@ class _Cutter:
         return best, choice
 
     def _stage(self, i: int, j: int) -> Extraction | None:
-        """Statements ``i..j`` as a stage, or None when they cannot be one."""
+        """Statements ``i..j`` as a stage, or None when they cannot be one
+        (code no path reaches included: nothing is known to be bound there)."""
         if not self._shape_allows(i, j):
             return None
         span = self.code[i : j + 1]
@@ -313,7 +315,7 @@ class _Cutter:
         params = self._with_inouts(i, j, s, params, returns)
         if params is None or len(returns) > self.max_returns:
             return None
-        bound = self.assigned.before(s)
+        bound = self.assigned.before(s, e)
         if bound is None or not set(params) <= bound:
             return None
         if not self._signature_holds(span, s, e, returns) or self._guard_needed_after(i, j, e):
@@ -443,8 +445,11 @@ def _cut_costs(code: list[Node]) -> list[int]:
 
 
 def _guard_names(st: Node, lmap: LanguageNodeMap) -> frozenset[str]:
-    """The names a guard statement tests (``if not x: raise``): an ``if`` with
-    no else arm whose body ends by raising. Empty for anything else."""
+    """The names a guard statement tests: an ``if`` with no else arm whose
+    last statement is itself a raise (Python ``if not x: raise E``) or throw
+    (TS / JS ``if (!x) throw e;`` or ``{ ...; throw e; }``). Type checkers
+    narrow ``x`` after such a guard, which a helper holding it would undo.
+    Empty for anything else, a raise nested deeper included."""
     if st.type not in lmap.if_kinds or st.child_by_field_name("alternative") is not None:
         return frozenset()
     if any(c.type in ("else_clause", "elif_clause") for c in st.children):
@@ -455,10 +460,7 @@ def _guard_names(st: Node, lmap: LanguageNodeMap) -> frozenset[str]:
     stmts = [c for c in body.named_children if not is_comment(c)]
     # ``if (!x) throw e;`` has the throw itself as its consequence.
     last = body if body.type in lmap.raise_kinds or not stmts else stmts[-1]
-    raises = last.type in lmap.raise_kinds or any(
-        c.type in lmap.raise_kinds for c in last.named_children
-    )
-    if not raises:
+    if last.type not in lmap.raise_kinds:
         return frozenset()
     condition = st.child_by_field_name("condition")
     return frozenset(_identifiers(condition)) if condition is not None else frozenset()

@@ -43,6 +43,8 @@ def _symbol_lines(step: Mapping[str, Any]) -> list[str]:
     out = []
     if symbol.get("signature_text"):
         out.append(f"New helper: `{symbol['signature_text']}`")
+    if symbol.get("return_text"):
+        out.append(f"End the helper with: `{symbol['return_text']}`")
     if call.get("new_text"):
         lines = f"{span.get('start')}-{span.get('end')}"
         out.append(f"Replace lines {lines} with: `{call['new_text']}`")

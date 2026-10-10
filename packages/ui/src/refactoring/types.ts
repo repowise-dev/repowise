@@ -181,6 +181,9 @@ export interface ExtractMethodPlan {
    *  the span. Null when the helper's form is unknown or the plan predates it.
    *  `<name>` / `<type>` are placeholders to fill. */
   signature_text: string | null;
+  /** The helper's last line handing its outputs back; null without outputs
+   *  or on a plan stored before it. */
+  return_text: string | null;
   call_site: ExtractCallSite | null;
   /** What the texts cannot say (a value that may move, a call the host
    *  cannot await). */
@@ -211,6 +214,7 @@ export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
     typed_params: Array.isArray(sym.params) ? (sym.params as ExtractSlot[]) : [],
     typed_returns: Array.isArray(sym.returns) ? (sym.returns as ExtractSlot[]) : [],
     signature_text: typeof sym.signature_text === "string" ? sym.signature_text : null,
+    return_text: typeof sym.return_text === "string" ? sym.return_text : null,
     call_site: callSite(p.call_site),
     notes: Array.isArray(sym.notes) ? (sym.notes as string[]) : [],
   };

@@ -70,6 +70,7 @@ function extractMethodSteps(plan: RefactoringPlan): string {
   const name = em.suggested_name ?? HELPER_NAME_PLACEHOLDER;
   const rendered = [
     ...(em.signature_text ? [`- **New helper:** \`${em.signature_text}\``] : []),
+    ...(em.return_text ? [`- **End the helper with:** \`${em.return_text}\``] : []),
     ...(em.call_site
       ? [`- **Replace lines ${em.span.start}–${em.span.end} with:** \`${em.call_site.new_text}\``]
       : []),
