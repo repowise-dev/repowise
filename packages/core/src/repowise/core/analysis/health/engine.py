@@ -39,7 +39,7 @@ from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from ...installed_components import is_installed_component
-from ...test_paths import is_test_path, paired_test_names
+from ...test_paths import paired_test_names
 from ..dead_code.file_reachability import file_dependency_neighbors
 from ..execution_roles import ExecutionRoles
 from ..graph_view import HasEdge, ImportEdgeView
@@ -1413,7 +1413,9 @@ class HealthAnalyzer:
                 finding.details["execution_role"] = roles.role_of(owner, finding.file_path)
         return roles
 
-    def _function_fact_rows(self, walked: list[tuple[Any, FileComplexity]]) -> list[dict]:
+    def _function_fact_rows(
+        self, walked: list[tuple[Any, FileComplexity]]
+    ) -> list[dict] | None:
         """One row per walked function the graph names, for the ``function_facts`` store.
 
         A function the graph holds no symbol for has no id to key on, and is left out.
@@ -1422,11 +1424,11 @@ class HealthAnalyzer:
         """
         index = self._execution_graph()
         if index is None:
-            return []
+            return None
         rows: list[dict] = []
         for pf, fcx in walked:
             path = pf.file_info.path
-            if is_test_path(path):
+            if pf.file_info.is_test:
                 continue
             for fc in fcx.functions:
                 symbol = index.resolve_function(path, fc.start_line, func_end=fc.end_line)
@@ -1440,6 +1442,9 @@ class HealthAnalyzer:
                         "is_generator": facts.is_generator if facts else None,
                         "uses_receiver": facts.uses_receiver if facts else None,
                         "receiver_assigns": facts.receiver_assigns if facts else None,
+                        "receiver_assigns_known": (
+                            facts.receiver_assigns is not None if facts else None
+                        ),
                         "early_exits": facts.early_exits if facts else None,
                     }
                 )

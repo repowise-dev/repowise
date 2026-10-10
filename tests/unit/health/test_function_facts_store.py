@@ -66,8 +66,8 @@ def test_the_walk_reads_whole_function_facts_in_typescript() -> None:
 
 
 class _File:
-    def __init__(self, path: str) -> None:
-        self.file_info = type("FI", (), {"path": path})()
+    def __init__(self, path: str, *, is_test: bool = False) -> None:
+        self.file_info = type("FI", (), {"path": path, "is_test": is_test})()
 
 
 def test_fact_rows_are_keyed_on_the_graph_symbol_and_skip_tests() -> None:
@@ -85,10 +85,13 @@ def test_fact_rows_are_keyed_on_the_graph_symbol_and_skip_tests() -> None:
         )
     analyzer = HealthAnalyzer(graph)
     rows = analyzer._function_fact_rows([(_File("store.py"), fcx)])
-    assert analyzer._function_fact_rows([(_File("tests/test_store.py"), fcx)]) == []
+    assert analyzer._function_fact_rows([(_File("tests/test_store.py", is_test=True), fcx)]) == []
+    # No graph: no rows to key, so the writers keep what is stored.
+    assert HealthAnalyzer(None)._function_fact_rows([(_File("store.py"), fcx)]) is None
     by_id = {row["symbol_id"]: row for row in rows}
     assert set(by_id) == {"store.py::save", "store.py::each", "store.py::plain"}
     assert by_id["store.py::save"]["receiver_assigns"] == ("cache", "count")
+    assert by_id["store.py::save"]["receiver_assigns_known"] is True
 
 
 @pytest.fixture
@@ -140,9 +143,9 @@ async def test_facts_rewrite_walked_files_and_roles_restamp_every_row(store) -> 
         session,
         repo,
         [
-            _row("a.py::f", awaits=True, receiver_assigns=("n",)),
-            _row("b.py::g", awaits=False, receiver_assigns=None),
-            _row("a.py::h", awaits=False, receiver_assigns=()),
+            _row("a.py::f", awaits=True, receiver_assigns=("n",), receiver_assigns_known=True),
+            _row("b.py::g", awaits=False, receiver_assigns=None, receiver_assigns_known=False),
+            _row("a.py::h", awaits=False, receiver_assigns=(), receiver_assigns_known=True),
             # A second walked function resolving to the same symbol: the first keeps it.
             _row("b.py::g", awaits=True),
         ],
@@ -161,7 +164,8 @@ async def test_facts_rewrite_walked_files_and_roles_restamp_every_row(store) -> 
     await write_function_facts(
         session,
         repo,
-        [_row("a.py::f", awaits=False)],
+        [_row("a.py::f", awaits=False, receiver_assigns_known=False)],
+        # A Windows path names the same file.
         file_paths={"a.py"},
         roles=ExecutionRoles({"a.py::f": "request", "b.py::g": "request"}),
     )
@@ -188,3 +192,35 @@ class C:
     assert (facts.is_generator, facts.early_exits) == (False, 0)
     # A lambda shares the instance, so its receiver use counts.
     assert facts.uses_receiver is True
+
+
+def test_a_windows_path_selects_the_same_rows() -> None:
+    from repowise.core.persistence.crud.analysis.function_facts import file_rows
+
+    def compiled(path: str) -> list[str]:
+        return [str(c.compile(compile_kwargs={"literal_binds": True})) for c in file_rows("r", path)]
+
+    assert compiled(r"pkg\a.py") == compiled("pkg/a.py")
+
+
+def test_an_expression_body_is_counted() -> None:
+    """``() => expr`` has no statements: the body node itself is what is read."""
+    source = b"const f = async () => await g();\nconst h = () => this.x = 1;\n"
+    facts = _facts("expr.ts", "typescript", source)
+    assert facts["f"] is not None and facts["f"].awaits is True
+    assert facts["h"] is not None and facts["h"].receiver_assigns == ("x",)
+
+
+def test_an_exit_macro_is_an_early_exit() -> None:
+    source = b"""fn check(x: i32) -> Result<(), E> {
+    if x < 0 { bail!("negative"); }
+    if x > 9 { return Err(E); }
+    Ok(())
+}
+fn tail() -> Result<(), E> {
+    bail!("always");
+}
+"""
+    facts = _facts("check.rs", "rust", source)
+    assert facts["check"] is not None and facts["check"].early_exits == 2
+    assert facts["tail"] is not None and facts["tail"].early_exits == 0

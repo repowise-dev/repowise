@@ -1294,6 +1294,9 @@ async def persist_partial_health(
     performance_paths = sorted(
         set(getattr(report, "performance_authoritative_paths", None) or ()) - set(changed_paths)
     )
+    # Nothing analysed: a deletion-only update runs no health analysis, so it
+    # has no role map to restamp stored roles with. Roles, like performance
+    # findings, refresh on the next run that analyses any file.
     if not changed_paths and not performance_paths:
         return
     analyzed_commit = await _analyzed_commit(session, repo_id)
@@ -1352,14 +1355,17 @@ async def persist_partial_health(
         # opportunity folds a file's plans, and a file this run did not touch
         # can still lose one when a cross-file plan elsewhere resolves.
         await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
-        # Facts for the files this run walked; roles for every stored row.
-        await write_function_facts(
-            session,
-            repo_id,
-            getattr(report, "function_facts", None) or [],
-            file_paths={*changed_paths, *performance_paths},
-            roles=getattr(report, "execution_roles", None),
-        )
+        # Facts for the files this run walked; roles for every stored row. No
+        # rows means no graph to key them on: the stored ones stay.
+        fact_rows = getattr(report, "function_facts", None)
+        if fact_rows is not None:
+            await write_function_facts(
+                session,
+                repo_id,
+                fact_rows,
+                file_paths={*changed_paths, *performance_paths},
+                roles=getattr(report, "execution_roles", None),
+            )
     # Per-function blame rollup for the changed files (keeps git_function_blame
     # current between full indexes; FULL git tier only — empty otherwise).
     fn_blame_rows = getattr(report, "function_blame_rows", None)

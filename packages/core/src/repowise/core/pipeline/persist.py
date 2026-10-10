@@ -1121,6 +1121,9 @@ async def prune_deleted_file_rows(
     # partial dead-code analysis has already loaded the module (13.7 ms when
     # it has not, measured cold after the CLI modules are up).
     from repowise.core.analysis.dead_code.analyzer import _is_synthetic_node
+    from repowise.core.persistence.crud.analysis.function_facts import (
+        file_rows as function_fact_rows,
+    )
     from repowise.core.persistence.models import (
         DeadCodeFinding,
         DocDriftFinding,
@@ -1219,16 +1222,9 @@ async def prune_deleted_file_rows(
     await _prune_table(WikiSymbol, WikiSymbol.file_path, "wiki_symbols")
     await _prune_table(SecurityFinding, SecurityFinding.file_path, "security_findings")
     await _prune_table(DeadCodeFinding, DeadCodeFinding.file_path, "dead_code_findings")
-    if dead_paths:
-        # Keyed on the symbol, and the graph rows above are the deleted ones.
-        await session.execute(
-            delete(FunctionFact).where(
-                FunctionFact.repository_id == repo_id,
-                FunctionFact.symbol_id.not_in(
-                    select(GraphNode.node_id).where(GraphNode.repository_id == repo_id)
-                ),
-            )
-        )
+    # Keyed on the symbol: a deleted file's rows are one key range of the id.
+    for path in sorted(dead_paths):
+        await session.execute(delete(FunctionFact).where(*function_fact_rows(repo_id, path)))
     # Keyed on the DOCUMENT. The incremental drift pass scopes its write to the
     # documents it read, so a deleted one is never in scope and its rows would
     # outlive the file without this. ``_FileLiveness`` asks disk and
@@ -1971,15 +1967,12 @@ async def save_full_health_report(
         # savepoint because it composes over the stored rows, so it has to see
         # the reconciliation above rather than the detector output.
         await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
-        # A report that carries no rows (an older producer) keeps the stored ones.
-        fact_rows = getattr(hr, "function_facts", None) or []
-        await write_function_facts(
-            session,
-            repo_id,
-            fact_rows,
-            file_paths=None if fact_rows else (),
-            roles=getattr(hr, "execution_roles", None),
-        )
+        # No rows means no graph to key them on: the stored ones stay.
+        fact_rows = getattr(hr, "function_facts", None)
+        if fact_rows is not None:
+            await write_function_facts(
+                session, repo_id, fact_rows, roles=getattr(hr, "execution_roles", None)
+            )
 
 
 async def refresh_governance_findings(

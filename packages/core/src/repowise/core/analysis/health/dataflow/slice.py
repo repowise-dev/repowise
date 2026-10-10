@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple
 
 from ..complexity.ast_utils import member_object, self_member_name
-from ..complexity.cyclomatic import BodyTally
+from ..complexity.body_facts import BodyTally, FactKinds, is_exit, step
 from ..complexity.nloc import _code_line_numbers
 from .dialects.base import SUPER, mentions_receiver
 
@@ -110,6 +110,8 @@ class _Scan(NamedTuple):
     awaits: tuple[frozenset[str], frozenset[str]]
     lambdas: frozenset[str] = frozenset()
     receiver: Receiver | None = None
+    # Built from the fields above by :func:`_scan_for`; derived when absent.
+    kinds: FactKinds | None = None
 
 
 class _Metrics(NamedTuple):
@@ -290,19 +292,37 @@ class _ReceiverSink:
 def body_tally(fn_node: Node, lmap: LanguageNodeMap, receiver: Receiver | None) -> BodyTally:
     """An empty tally for *fn_node*, for the complexity walk to fill. The
     receiver is watched only when the function's text names it."""
-    watched = receiver is not None and receiver.names and mentions_receiver(fn_node, receiver.names)
-    return BodyTally(
-        yield_kinds=lmap.yield_kinds,
-        exit_kinds=lmap.return_kinds | lmap.raise_kinds,
-        await_kinds=lmap.await_kinds,
-        await_scope_kinds=lmap.await_scope_kinds,
-        lambda_kinds=lmap.lambda_kinds,
-        on_receiver=_ReceiverSink(receiver) if watched else None,
-        # What ``_receiver_ref`` can answer for: a write, or a receiver leaf.
-        receiver_kinds=receiver.write_kinds | receiver.names | {SUPER, "identifier"}
-        if watched
-        else frozenset(),
+    watched = bool(
+        receiver is not None and receiver.names and mentions_receiver(fn_node, receiver.names)
     )
+    sink = _ReceiverSink(receiver) if watched and receiver is not None else None
+    return BodyTally(_function_kinds(lmap, sink), sink)
+
+
+# Built once per language map and receiver shape: the walk asks per function.
+_FUNCTION_KINDS: dict[tuple[int, frozenset[str]], FactKinds] = {}
+
+
+def _function_kinds(lmap: LanguageNodeMap, sink: _ReceiverSink | None) -> FactKinds:
+    receiver = _receiver_kinds(sink.receiver) if sink else frozenset()
+    key = (id(lmap), receiver)
+    kinds = _FUNCTION_KINDS.get(key)
+    if kinds is None:
+        kinds = _FUNCTION_KINDS[key] = FactKinds(
+            exits=lmap.return_kinds | lmap.raise_kinds,
+            exit_macros=_exit_macros(lmap),
+            yields=lmap.yield_kinds,
+            awaits=lmap.await_kinds,
+            await_scopes=lmap.await_scope_kinds,
+            lambdas=lmap.lambda_kinds,
+            receiver=receiver,
+        )
+    return kinds
+
+
+def _receiver_kinds(receiver: Receiver) -> frozenset[str]:
+    """What :func:`_receiver_ref` can answer for: a write, or a receiver leaf."""
+    return receiver.write_kinds | receiver.names | {SUPER, "identifier"}
 
 
 def function_facts(
@@ -310,12 +330,6 @@ def function_facts(
 ) -> FunctionFacts:
     """:class:`FunctionFacts` from a filled :func:`body_tally`."""
     body = fn_node.child_by_field_name("body") or fn_node
-    stmts = body.named_children
-    exit_kinds = tally.exit_kinds
-    tail = stmts[-1] if stmts else None
-    ends_in_exit = tail is not None and (
-        tail.type in exit_kinds or any(c.type in exit_kinds for c in tail.named_children[:1])
-    )
     sink = tally.on_receiver if isinstance(tally.on_receiver, _ReceiverSink) else None
     uses, assigns = _whole_receiver_facts(
         receiver, sink.uses if sink else False, frozenset(sink.assigns) if sink else frozenset()
@@ -325,8 +339,22 @@ def function_facts(
         is_generator=tally.yields > 0,
         uses_receiver=uses,
         receiver_assigns=assigns,
-        early_exits=max(0, tally.exits - ends_in_exit),
+        early_exits=max(0, tally.exits - _ends_in_exit(body, lmap, tally.kinds)),
     )
+
+
+def _ends_in_exit(body: Node, lmap: LanguageNodeMap, kinds: FactKinds) -> bool:
+    """Whether a block body's last statement leaves the function, so that exit
+    is not an early one. The statement is the exit (Python ``return x``, TS
+    ``throw e;``) or wraps it as its first named child (Rust ``return x;`` and
+    ``bail!(..);`` are expression statements). An expression body has no
+    statements, so its exits are early by definition and none are subtracted."""
+    if body.type not in lmap.block_kinds or not body.named_children:
+        return False
+    tail = body.named_children[-1]
+    if is_exit(tail, kinds):
+        return True
+    return bool(tail.named_children) and is_exit(tail.named_children[0], kinds)
 
 
 def _whole_receiver_facts(
@@ -347,7 +375,7 @@ def _scan_for(lmap: LanguageNodeMap, receiver: Receiver | None, fn_node: Node) -
     functions never mention it, and then no node needs the check."""
     if receiver is not None and not (receiver.names and mentions_receiver(fn_node, receiver.names)):
         receiver = None
-    return _Scan(
+    scan = _Scan(
         decisions=lmap.branch_kinds
         | lmap.loop_kinds
         | lmap.case_kinds
@@ -364,6 +392,7 @@ def _scan_for(lmap: LanguageNodeMap, receiver: Receiver | None, fn_node: Node) -
         lambdas=lmap.lambda_kinds,
         receiver=receiver,
     )
+    return scan._replace(kinds=_span_kinds(scan))
 
 
 def _block_prefix(
@@ -1179,67 +1208,54 @@ def _awaits(lmap: LanguageNodeMap) -> tuple[frozenset[str], frozenset[str]]:
     return lmap.await_kinds, lmap.await_scope_kinds
 
 
-def _is_jump(
-    node: Node,
-    jump_kinds: frozenset[str],
-    exit_macros: tuple[frozenset[str], frozenset[str]],
-) -> bool:
-    """True for a jump node, or a macro whose name is in *exit_macros*
-    (matched by its last segment: ``bail`` in ``anyhow::bail!``)."""
-    if node.type in jump_kinds:
-        return True
-    kinds, names = exit_macros
-    if node.type not in kinds:
-        return False
-    macro = node.child_by_field_name("macro")
-    name = macro.child_by_field_name("name") or macro if macro is not None else None
-    return name is not None and bool(name.text) and name.text.decode("utf-8", "replace") in names
+def _span_kinds(scan: _Scan) -> FactKinds:
+    await_kinds, await_scope_kinds = scan.awaits
+    return FactKinds(
+        decisions=scan.decisions,
+        jumps=scan.jumps,
+        exit_macros=scan.exit_macros,
+        awaits=await_kinds,
+        await_scopes=await_scope_kinds,
+        lambdas=scan.lambdas,
+        receiver=_receiver_kinds(scan.receiver) if scan.receiver is not None else frozenset(),
+    )
 
 
 def _span_metrics(span: list[Node], scan: _Scan) -> _Metrics:
     """Decision points, jump and await presence, and receiver references
-    within *span*: a candidate span's statements, or a function body's for
-    facts about the whole function. Nested scopes are not descended into,
-    except a lambda for the receiver alone, since it shares the instance. A
-    macro named in ``scan.exit_macros`` counts as a jump; an await under one
-    of the await scope kinds (``async`` blocks) does not suspend the
-    function."""
-    await_kinds, await_scope_kinds = scan.awaits
-    receiver = scan.receiver
-    decisions = 0
-    has_jump = has_await = uses = False
-    assigns: set[str] = set()
+    within *span*: a candidate span's statements, or a function body's.
+    Each node is read by :func:`body_facts.step`, the rule the complexity
+    walk applies to a whole function. Nested scopes are not descended into,
+    except a lambda for the receiver alone, since it shares the instance."""
+    kinds = scan.kinds or _span_kinds(scan)
+    watched = kinds.watched
+    sink = _ReceiverSink(scan.receiver) if scan.receiver is not None else None
+    tally = BodyTally(kinds, sink)
     for root in span:
-        # (node, whether its awaits count, inside a lambda: receiver only)
-        stack: list[tuple[Node, bool, bool]] = [(root, True, False)]
+        stack: list[tuple[Node, int]] = [(root, 0)]
         while stack:
-            node, counts_await, nested = stack.pop()
-            if receiver is not None:
-                uses = _receiver_ref(node, receiver, assigns) or uses
-            if not nested:
-                t = node.type
-                has_jump = has_jump or _is_jump(node, scan.jumps, scan.exit_macros)
-                has_await = has_await or (counts_await and t in await_kinds)
-                decisions += t in scan.decisions
-                counts_await = counts_await and t not in await_scope_kinds
-            _push_children(node, stack, counts_await, nested, scan)
-    return _Metrics(decisions, has_jump, has_await, uses, frozenset(assigns))
+            node, scope = stack.pop()
+            if node.type in watched:
+                scope = step(tally, node, scope)
+            _push_children(node, stack, scope, scan)
+    return _Metrics(
+        tally.decisions,
+        tally.jump,
+        tally.awaits,
+        sink.uses if sink else False,
+        frozenset(sink.assigns) if sink else frozenset(),
+    )
 
 
 def _push_children(
-    node: Node,
-    stack: list[tuple[Node, bool, bool]],
-    counts_await: bool,
-    nested: bool,
-    scan: _Scan,
+    node: Node, stack: list[tuple[Node, int]], scope: int, scan: _Scan
 ) -> None:
     """Queue *node*'s children: nested scopes are skipped, except a lambda
     when the receiver is looked for (it shares the instance)."""
     for child in node.children:
-        if child.type not in scan.scopes:
-            stack.append((child, counts_await, nested))
-        elif scan.receiver is not None and child.type in scan.lambdas:
-            stack.append((child, False, True))
+        t = child.type
+        if t not in scan.scopes or (scan.receiver is not None and t in scan.lambdas):
+            stack.append((child, scope))
 
 
 # Index access on a receiver field (``self.cache[k] = v``) assigns into it.

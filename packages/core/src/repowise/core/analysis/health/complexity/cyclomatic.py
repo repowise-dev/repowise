@@ -9,10 +9,9 @@ nodes and pull condition subtrees out for the boolean-operator tally.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .body_facts import BodyTally, step
 from .languages import LanguageNodeMap
 from .models import ConditionComplexity
 
@@ -299,62 +298,6 @@ def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> 
     return False
 
 
-@dataclass(slots=True)
-class BodyTally:
-    """Whole-function facts counted on the CCN walk's own node visits.
-
-    The CCN walk descends into lambdas and the facts must not: an ``await``,
-    ``yield`` or ``return`` inside a lambda is the lambda's. So each visit
-    carries a scope flag instead of a second walk. ``on_receiver`` sees every
-    node, lambdas included, since a lambda shares the instance; it is set only
-    when the function names its receiver. Read by ``dataflow.slice.function_facts``.
-    """
-
-    yield_kinds: frozenset[str]
-    exit_kinds: frozenset[str]
-    await_kinds: frozenset[str]
-    await_scope_kinds: frozenset[str]
-    lambda_kinds: frozenset[str]
-    on_receiver: Callable[[Node], object] | None = None
-    # The node kinds ``on_receiver`` reads; it sees no other.
-    receiver_kinds: frozenset[str] = frozenset()
-    awaits: bool = False
-    yields: int = 0
-    exits: int = 0
-    # Every kind above, so the walk skips the rest with one set lookup.
-    watched: frozenset[str] = frozenset()
-
-    def __post_init__(self) -> None:
-        self.watched = (
-            self.yield_kinds
-            | self.exit_kinds
-            | self.await_kinds
-            | self.await_scope_kinds
-            | self.lambda_kinds
-            | self.receiver_kinds
-        )
-
-
-_IN_LAMBDA = 1
-_AWAIT_BLOCKED = 2
-
-
-def _tally(tally: BodyTally, node: Node, scope: int) -> int:
-    """Count *node* into *tally*; the scope its children are visited in."""
-    t = node.type
-    if tally.on_receiver is not None and t in tally.receiver_kinds:
-        tally.on_receiver(node)
-    if t in tally.lambda_kinds:
-        scope |= _IN_LAMBDA
-    if scope & _IN_LAMBDA:
-        return scope
-    tally.yields += t in tally.yield_kinds
-    tally.exits += t in tally.exit_kinds
-    if not scope & _AWAIT_BLOCKED and t in tally.await_kinds:
-        tally.awaits = True
-    return scope | _AWAIT_BLOCKED if t in tally.await_scope_kinds else scope
-
-
 def _walk_function_body(
     body_node: Node,
     lmap: LanguageNodeMap,
@@ -383,7 +326,9 @@ def _walk_function_body(
     one-line branch is too small to name as the place to start. Also a
     side-channel only.
 
-    ``tally``, when given, is filled on the same visits (see :class:`BodyTally`).
+    ``tally``, when given, is filled on the same visits by :func:`body_facts.step`.
+    An expression body (``async () => await f()``) is a node the facts read
+    too, so the body root is counted when it is not the function itself.
     """
 
     ccn = 1
@@ -407,8 +352,8 @@ def _walk_function_body(
         node_type = node.type
         if node_type in lmap.function_kinds:
             return
-        if tally is not None and node_type in tally.watched:
-            scope = _tally(tally, node, scope)
+        if tally is not None and node_type in tally.kinds.watched:
+            scope = step(tally, node, scope)
 
         nesting_increment = 0
         ccn_increment = 0
@@ -513,12 +458,20 @@ def _walk_function_body(
         for child in node.children:
             _recurse(child, new_depth, child_markup, scope)
 
+    root_scope = 0
+    if (
+        tally is not None
+        and body_node.type in tally.kinds.watched
+        and body_node.type not in lmap.function_kinds
+        and body_node.type not in lmap.lambda_kinds
+    ):
+        root_scope = step(tally, body_node, 0)
     for child in body_node.children:
         # Per-child peak depth: temporarily swap max_nesting out so we
         # can read just this child's contribution, then restore.
         outer_max = max_nesting
         max_nesting = 0
-        _recurse(child, 0)
+        _recurse(child, 0, scope=root_scope)
         child_peak = max_nesting
         max_nesting = max(outer_max, child_peak)
         if child_peak >= 2:

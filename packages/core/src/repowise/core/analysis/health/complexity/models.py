@@ -130,7 +130,8 @@ class FunctionComplexity:
     # start flattening it. ``cyclomatic._walk_function_body``.
     deepest_block: tuple[int, int] | None = None
     # Whole-function facts (awaits, yields, receiver, early exits), stored per
-    # function symbol by the health writer. ``dataflow.slice.function_facts``.
+    # function symbol by the health writer. ``dataflow.slice.function_facts``;
+    # None means not computed (a language with no map, or a failed read).
     facts: FunctionFacts | None = None
 
     def __post_init__(self) -> None:

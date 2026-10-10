@@ -40,7 +40,8 @@ The whole-file passes share one descent of the tree (``file_scan``):
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -81,6 +82,12 @@ from .nloc import _count_file_nloc
 from .perf_walk import _collect_perf_hits, perf_pass_runs
 from .signature import is_constructor, is_signature_fixed, typed_param_counts
 from .test_case import is_test_case
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
+
+    from ..dataflow.slice import FunctionFacts
+    from .body_facts import BodyTally
 
 __all__ = [
     "ClassComplexity",
@@ -168,7 +175,7 @@ def walk_file(
     run_perf = perf_pass_runs(language, lmap)
     scan = scan_file(tree.root_node, language, lmap, source, io_names=run_perf)
     flags = module_false_constants(tree.root_node, source, language)
-    facts_of = _facts_reader(language, lmap)
+    facts_of = _facts_reader(abs_path, language, lmap)
     for fn_node in _collect_function_nodes(tree.root_node, lmap):
         body = fn_node.child_by_field_name("body") or fn_node
         deepest: list[int] = []
@@ -239,24 +246,41 @@ def walk_file(
     )
 
 
-def _facts_reader(language: str, lmap: Any) -> Any:
+FactsStart = Callable[["Node"], tuple["BodyTally | None", Callable[[], "FunctionFacts | None"]]]
+"""``fn_node -> (tally, finish)``; see :func:`_facts_reader`."""
+
+
+def _facts_reader(abs_path: str, language: str, lmap: Any) -> FactsStart:
     """``fn_node -> (tally, finish)``: an empty tally the CCN walk fills, and
     the call that reads :class:`FunctionFacts` off it once it is filled.
 
+    A failure leaves the function's facts ``None`` (not computed) and is
+    logged with the file, since a stored row then says nothing about it.
     Deferred import: the dataflow package imports this one.
     """
     from ..dataflow import body_tally, function_facts, get_defuse_dialect
 
     dialect = get_defuse_dialect(language)
 
-    def start(fn_node: Any) -> tuple[Any, Any]:
+    def failed(exc: Exception) -> None:
+        log.warning("function_facts_failed", path=abs_path, error=str(exc))
+
+    def start(fn_node: Node) -> tuple[BodyTally | None, Callable[[], FunctionFacts | None]]:
         try:
             receiver = dialect.receiver(fn_node, lmap) if dialect is not None else None
             tally = body_tally(fn_node, lmap, receiver)
         except Exception as exc:
-            log.debug("function_facts_failed", error=str(exc))
+            failed(exc)
             return None, lambda: None
-        return tally, lambda: function_facts(fn_node, lmap, receiver, tally)
+
+        def finish() -> FunctionFacts | None:
+            try:
+                return function_facts(fn_node, lmap, receiver, tally)
+            except Exception as exc:
+                failed(exc)
+                return None
+
+        return tally, finish
 
     return start
 

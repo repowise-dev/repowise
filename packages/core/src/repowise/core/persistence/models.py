@@ -2089,7 +2089,11 @@ class FunctionFact(Base):
         ForeignKey("repositories.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    symbol_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    # Bytewise order on PostgreSQL, so a file's rows are one key range
+    # (``crud.analysis.function_facts.file_rows``); SQLite compares bytes already.
+    symbol_id: Mapped[str] = mapped_column(
+        Text().with_variant(Text(collation="C"), "postgresql"), primary_key=True
+    )
     # ``execution_roles.ExecutionRole``.
     execution_role: Mapped[str] = mapped_column(
         String(16), nullable=False, default="unknown", server_default="unknown"

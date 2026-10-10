@@ -31,7 +31,12 @@ def upgrade() -> None:
             sa.ForeignKey("repositories.id", ondelete="CASCADE"),
             primary_key=True,
         ),
-        sa.Column("symbol_id", sa.Text(), primary_key=True),
+        # Bytewise order, so a file's rows are one key range of the id.
+        sa.Column(
+            "symbol_id",
+            sa.Text().with_variant(sa.Text(collation="C"), "postgresql"),
+            primary_key=True,
+        ),
         sa.Column("execution_role", sa.String(16), nullable=False, server_default="unknown"),
         sa.Column("awaits", sa.Boolean(), nullable=True),
         sa.Column("is_generator", sa.Boolean(), nullable=True),

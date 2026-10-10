@@ -31,14 +31,20 @@ def _row(repository_id: str, row: Mapping[str, Any]) -> dict[str, Any]:
         "awaits": row.get("awaits"),
         "is_generator": row.get("is_generator"),
         "uses_receiver": row.get("uses_receiver"),
-        "receiver_assigns_known": None if row.get("awaits") is None else assigns is not None,
+        "receiver_assigns_known": row.get("receiver_assigns_known"),
         "receiver_assigns_json": json.dumps(list(assigns)) if assigns else None,
         "early_exits": row.get("early_exits"),
     }
 
 
-def _file_rows(repository_id: str, path: str) -> Any:
-    """A file's rows as a key range: every symbol id there is ``path::...``."""
+def file_rows(repository_id: str, path: str) -> Any:
+    """A file's rows as a key range: every symbol id there is ``path::...``.
+
+    Symbol ids carry forward slashes; ``:;`` is the first string after every
+    ``path::`` suffix in bytewise order, which the column's ``C`` collation
+    gives PostgreSQL too.
+    """
+    path = path.replace("\\", "/")
     return (
         FunctionFact.repository_id == repository_id,
         FunctionFact.symbol_id >= f"{path}::",
@@ -60,7 +66,7 @@ async def write_function_facts(
         await session.execute(delete(FunctionFact).where(FunctionFact.repository_id == repository_id))
     else:
         for path in sorted(set(file_paths)):
-            await session.execute(delete(FunctionFact).where(*_file_rows(repository_id, path)))
+            await session.execute(delete(FunctionFact).where(*file_rows(repository_id, path)))
     # Two walked functions can resolve to one symbol; the first keeps it. Key
     # order fills the clustered pages instead of splitting them half empty.
     by_symbol = {row["symbol_id"]: _row(repository_id, row) for row in reversed(list(rows))}
@@ -104,4 +110,4 @@ async def get_function_facts(
     return out
 
 
-__all__ = ["get_function_facts", "write_function_facts"]
+__all__ = ["file_rows", "get_function_facts", "write_function_facts"]
