@@ -381,3 +381,27 @@ def test_a_test_the_indexer_found_walking_the_tree_runs_with_every_subset(repo) 
         "every selection (e.g. tests/test_lint.py: it lists and reads files under a source "
         "directory)." in _err(result)
     )
+
+
+def test_explain_names_the_changed_file_and_the_route(repo) -> None:
+    _add_test(repo, "tests/test_b.py", "src/b.py")
+    result = _run(repo, "main...feat", "--explain", "tests/test_a.py")
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == [
+        "Selected: src/a.py changed (import-graph).",
+        "Route: tests/test_a.py -> src/a.py",
+    ]
+    missed = _run(repo, "main...feat", "--explain", "./tests/test_b.py")
+    assert missed.stdout.startswith("Not selected: no changed file reaches it")
+
+
+def test_explain_joins_the_json_report(repo) -> None:
+    result = _run(repo, "main...feat", "--format", "json", "--explain", "tests/test_a.py")
+    data = json.loads(result.stdout)
+    assert data["explain"] == {
+        "test": "tests/test_a.py",
+        "selected": True,
+        "lines": ["Selected: src/a.py changed (import-graph).", "Route: tests/test_a.py -> src/a.py"],
+        "route": ["tests/test_a.py", "src/a.py"],
+    }
+    assert data["selected"]["why"] == {"tests/test_a.py": "src/a.py changed (import-graph)"}

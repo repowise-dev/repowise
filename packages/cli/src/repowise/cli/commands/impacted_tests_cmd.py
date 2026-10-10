@@ -25,6 +25,7 @@ Examples:
     repowise impacted-tests abc123          # a single commit
     repowise impacted-tests main..HEAD --format list | xargs pytest
     repowise impacted-tests main...HEAD --format args --runner pytest
+    repowise impacted-tests main...HEAD --explain tests/unit/test_api.py
 """
 
 from __future__ import annotations
@@ -106,12 +107,22 @@ def _resolve_repo_path(path: str | None, fmt: str):
     help="Who --format args is for: pytest (node ids and files), go (package dirs), "
     "jest (files), files, or auto (from the selected test files; mixed means files).",
 )
+@click.option(
+    "--explain",
+    "explain",
+    default=None,
+    metavar="TEST",
+    help="Say why one test file (or node id) was or was not selected: the changed file and "
+    "the route that reached it, or the rule that runs it. With --format json it is added "
+    "to the report as 'explain'.",
+)
 def impacted_tests_command(
     revspec: str | None,
     repo: str | None,
     staged: bool,
     fmt: str,
     runner: str,
+    explain: str | None,
 ) -> None:
     """Print the tests whose coverage intersects a change's changed lines."""
     if revspec and staged:
@@ -123,23 +134,27 @@ def impacted_tests_command(
 
     repo_path = _resolve_repo_path(repo, fmt)
     try:
-        change, config = _read_change(repo_path, revspec, staged, fmt)
+        change, config = _read_change(repo_path, revspec, staged, fmt, bool(explain))
     except CannotEvaluateError as exc:
         cannot_evaluate(fmt, exc.code, str(exc))
 
+    explain = explain.replace("\\", "/").removeprefix("./") if explain else None
     checkout = _read_checkout(repo_path)
-    result = run_async(_collect(repo_path, change, checkout.roots, config))
+    result = run_async(_collect(repo_path, change, checkout.roots, config, explain))
     result["diff"] = change.label
     if config is not None:
         result["selection"] = _select(repo_path, change, result, config, checkout)
-    _render(result, fmt, runner)
+    if explain and fmt != "json":
+        _render_explain(result, explain)
+        return
+    _render(result, fmt, runner, explain)
 
 
-def _read_change(repo_path, revspec: str | None, staged: bool, fmt: str):
+def _read_change(repo_path, revspec: str | None, staged: bool, fmt: str, explain: bool = False):
     """``(change set, selection config or None)``, or :class:`CannotEvaluateError`."""
     from repowise.core.ci.base import in_ci
 
-    config = _selection_config(repo_path) if fmt in ("json", "args") else None
+    config = _selection_config(repo_path) if explain or fmt in ("json", "args") else None
     if revspec is None and not staged and in_ci():
         # In CI the change to test is the pull request's, not the staged index.
         revspec = ci_revspec(str(repo_root(str(repo_path))), None)
@@ -177,11 +192,18 @@ def _read_checkout(repo_path) -> _Checkout:
     return _Checkout(tracked, texts, roots)
 
 
-async def _collect(repo_path, change, roots: PytestRoots | None = None, config=None) -> dict:
+async def _collect(
+    repo_path,
+    change,
+    roots: PytestRoots | None = None,
+    config=None,
+    explain: str | None = None,
+) -> dict:
     """Resolve the change's files to impacted tests + labelled fallbacks.
 
     With a selection *config*, files changed since the index was built are
-    walked too, so selection can add the tests reaching them.
+    walked too, so selection can add the tests reaching them. With *explain*,
+    the import route from that test to a changed file is looked up as well.
     """
     from repowise.core.persistence.crud import (
         get_health_metrics,
@@ -216,8 +238,23 @@ async def _collect(repo_path, change, roots: PytestRoots | None = None, config=N
             session, repo_id, _query_lines(change, measured), repo_keys, out, roots, routes
         )
         await _place_tests(session, repo_id, out)
+        if explain:
+            await _explain_route(session, repo_id, explain, change, out)
 
     return out
+
+
+async def _explain_route(session, repo_id: str, test: str, change, out: dict) -> None:
+    """The dependency route from *test* to a changed file, for ``--explain`` only."""
+    from repowise.core.analysis.test_reachability import dependency_path
+
+    changed = [*change.files, *change.deleted]
+    try:
+        out["explain_route"] = await dependency_path(
+            session, repo_id, test.split("::", 1)[0], changed
+        )
+    except Exception:
+        out["explain_route"] = []  # the explanation still stands without its route
 
 
 async def _place_tests(session, repo_id: str, out: dict) -> None:
@@ -321,6 +358,7 @@ def _empty_result(changed_files: int) -> dict:
         "graph_error": None,
         "placed_tests": None,
         "always_run_tests": {},
+        "explain_route": [],
         "helper_importers": {},
         "changed_files": changed_files,
         "covered": {},  # test_id -> {test_file, source_files: [...]}
@@ -591,9 +629,9 @@ def _machine_test_ids(result: dict) -> list[str]:
     return [i for i in ids if not (i in seen or seen.add(i))]
 
 
-def _render(result: dict, fmt: str, runner: str = "auto") -> None:
+def _render(result: dict, fmt: str, runner: str = "auto", explain: str | None = None) -> None:
     if fmt in ("json", "args"):
-        _render_selection(result, fmt, runner)
+        _render_selection(result, fmt, runner, explain)
         return
 
     if fmt == "list":
@@ -615,7 +653,23 @@ def _render(result: dict, fmt: str, runner: str = "auto") -> None:
     _render_table(result)
 
 
-def _render_selection(result: dict, fmt: str, runner: str) -> None:
+def _explanation(result: dict, test: str) -> dict:
+    """``--explain``: the selection's own record for *test*, plus the route behind it."""
+    from repowise.core.analysis.test_selection import explain_test
+
+    selected, lines = explain_test(result["selection"], test)
+    route = result["explain_route"] if selected else []
+    if len(route) > 1:
+        lines.append("Route: " + " -> ".join(route))
+    return {"test": test, "selected": selected, "lines": lines, "route": route}
+
+
+def _render_explain(result: dict, test: str) -> None:
+    for line in _explanation(result, test)["lines"]:
+        click.echo(line)
+
+
+def _render_selection(result: dict, fmt: str, runner: str, explain: str | None = None) -> None:
     """``--format args`` (one line, reasons on stderr) or ``--format json``."""
     from repowise.core.analysis.test_selection import format_args, resolve_runner, runner_args
 
@@ -635,6 +689,7 @@ def _render_selection(result: dict, fmt: str, runner: str) -> None:
 
     selected = selection.to_dict()
     run_all, reasons = selected.pop("run_all"), selected.pop("reasons")
+    extra = {"explain": _explanation(result, explain)} if explain else {}
     emit_json(
         {
             "diff": result["diff"],
@@ -659,6 +714,7 @@ def _render_selection(result: dict, fmt: str, runner: str) -> None:
             "selected": selected,
             "runner": resolved,
             "args": args,
+            **extra,
         }
     )
 

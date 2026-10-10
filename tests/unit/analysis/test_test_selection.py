@@ -791,6 +791,31 @@ def test_a_test_found_walking_the_tree_runs_with_every_subset_and_says_why() -> 
         "with every selection (e.g. tests/test_no_copies.py: it lists and reads files under "
         "a source directory)." in sel.reasons
     )
+    assert sel.why == {
+        "tests/test_a.py": "src/a.py changed (import-graph)",
+        "tests/test_no_copies.py": (
+            "runs with every subset: it lists and reads files under a source directory"
+        ),
+    }
+
+
+def test_explain_says_what_selected_a_test_or_that_nothing_did() -> None:
+    from repowise.core.analysis.test_selection import explain_test
+
+    tiers = _tiers(inferred=[_inferred("src/a.py", "tests/test_a.py", "call-graph")])
+    sel = _select(["src/a.py"], tiers, config=TestSelectionConfig(always_run=("tests/smoke",)))
+    assert explain_test(sel, "tests/test_a.py::test_one") == (
+        True,
+        ["Selected: src/a.py changed (call-graph)."],
+    )
+    assert explain_test(sel, "tests/smoke")[0] is True
+    selected, lines = explain_test(sel, "tests/test_b.py")
+    assert not selected and lines[0].startswith("Not selected: no changed file reaches it")
+    full = _select(["uv.lock"])
+    assert explain_test(full, "tests/test_b.py") == (
+        True,
+        ["Every test runs:", "uv.lock changed: dependencies can change any test."],
+    )
 
 
 def test_a_test_named_module_pytest_does_not_collect_is_not_runnable() -> None:

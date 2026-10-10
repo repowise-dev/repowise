@@ -261,6 +261,7 @@ a per-test coverage map (`repowise coverage add`) makes it more precise.
 - A changed `conftest.py`, test package `__init__.py` or imported test helper selects the tests under or importing it, not everything.
 - Without a range, in CI it reads the pull request's change; locally, the staged changes.
 - `tests.full_run_on` (gitignore patterns) adds run-everything paths; `tests.always_run` is appended to every selection as written.
+- `--explain <test>` says why one test file was or was not selected: the changed file, the evidence (coverage, call graph, import graph) and the import route from the test to it, or the rule that runs it. With `--format json` the same answer is added as `explain`, and `selected.why` holds it for every selected test.
 - Ceiling: on the JVM and .NET, a same-package test linked only by an unresolved call is missed. So is a test that reaches the change through a plugin or registry loaded by a string name, a tree walk or child process done inside a shared helper it calls, or one in another language: list such tests in `tests.always_run`, and run the full suite on the default branch.
 
 **What to expect.** The subset is only as small as the code is loosely coupled.

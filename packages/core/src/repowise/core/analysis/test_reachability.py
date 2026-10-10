@@ -458,6 +458,37 @@ async def always_run_test_files(session: AsyncSession, repo_id: str) -> dict[str
     return {node_id: reason for node_id, reason in res.all()}
 
 
+async def dependency_path(
+    session: AsyncSession, repo_id: str, source: str, targets: Collection[str], max_depth: int = 64
+) -> list[str]:
+    """The shortest file-dependency route from *source* to any of *targets*, ends included.
+
+    ``[]`` when none is found within *max_depth* hops. Breadth-first, one ``IN``
+    query per level, the shape the reaching walks use.
+    """
+    goals = set(targets)
+    parent: dict[str, str | None] = {source: None}
+    frontier = [source]
+    for _ in range(max_depth):
+        if not frontier or goals & parent.keys():
+            break
+        level, frontier = frontier, []
+        for dependent, dependency in await _edges_from(
+            session, repo_id, level, sorted(FILE_DEPENDENCY_EDGE_TYPES)
+        ):
+            if dependency not in parent:
+                parent[dependency] = dependent
+                frontier.append(dependency)
+    hit = goals & parent.keys()
+    if not hit:
+        return []
+    route, node = [], min(hit)
+    while node is not None:
+        route.append(node)
+        node = parent[node]
+    return route[::-1]
+
+
 async def tests_reaching(
     session: AsyncSession,
     repo_id: str,
