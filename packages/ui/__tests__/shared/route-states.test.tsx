@@ -24,12 +24,13 @@ describe("RouteError", () => {
 
 describe("RouteNotFound", () => {
   it("is neutral, not an alert", () => {
-    render(<RouteNotFound title="Repository not found" back={<a href="/">Back</a>} />);
+    render(<RouteNotFound title="Repository not found" links={[<a key="d" href="/">Back</a>]} />);
     expect(
       screen.getByRole("heading", { level: 1, name: "Repository not found" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Back" })).toBeInTheDocument();
+    expect(screen.getByText("404")).toBeInTheDocument();
   });
 });
 

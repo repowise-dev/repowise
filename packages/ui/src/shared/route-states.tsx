@@ -1,7 +1,8 @@
 import * as React from "react";
-import { AlertTriangle, Compass, RefreshCw } from "lucide-react";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 import { cn } from "../lib/cn";
 import { Button } from "../ui/button";
+import { OrbLoader, ORB_STATE } from "./orb-loader";
 
 const FRAME =
   "flex min-h-[60vh] flex-col items-center justify-center gap-4 px-4 py-10 text-center sm:px-6";
@@ -81,40 +82,60 @@ export function RouteError({
 export interface RouteNotFoundProps {
   title?: string;
   description?: string;
-  /** Bare icon; tinted tertiary. Defaults to a compass. */
+  /** Mono micro-label above the title. Default "404". */
+  code?: string;
+  /** Replaces the default searching orb. */
   icon?: React.ReactNode;
-  /** Way back, see `RouteLinkElement`. */
-  back?: RouteLinkElement;
+  /** Useful next steps: host links (`<Link>`), rendered as a short list. */
+  links?: RouteLinkElement[];
+  /** Heading above `links`. Default "Try one of these". */
+  linksLabel?: string;
+  /** One-line aside under the links, e.g. the search shortcut. */
+  hint?: React.ReactNode;
   className?: string;
 }
 
-/** Route-level 404 body. Neutral, never an error colour. */
+/** Route-level 404 body. Calm and neutral, never an error colour. */
 export function RouteNotFound({
   title = "Page not found",
   description = "The page you are looking for does not exist or has moved.",
+  code = "404",
   icon,
-  back,
+  links,
+  linksLabel = "Try one of these",
+  hint,
   className,
 }: RouteNotFoundProps) {
   return (
-    <div className={cn(FRAME, className)}>
-      <span
-        aria-hidden
-        className="inline-flex text-[var(--color-text-tertiary)] [&_svg]:h-6 [&_svg]:w-6"
-      >
-        {icon ?? <Compass />}
+    <div className={cn(FRAME, "gap-5", className)}>
+      <span aria-hidden className="inline-flex text-[var(--color-text-tertiary)]">
+        {icon ?? <OrbLoader state={ORB_STATE.searching} size={64} />}
       </span>
-      <div className="max-w-[52ch] space-y-1">
+      <div className="max-w-[52ch] space-y-1.5">
+        <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+          {code}
+        </p>
         <h1 className="text-[18px] font-semibold text-[var(--color-text-primary)]">{title}</h1>
         <p className="text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
           {description}
         </p>
       </div>
-      {back && (
-        <Button asChild size="sm" variant="outline" className="h-8">
-          {back}
-        </Button>
+      {links && links.length > 0 && (
+        <nav aria-label={linksLabel} className="w-full max-w-xs space-y-2">
+          <p className="text-[11px] font-medium text-[var(--color-text-tertiary)]">{linksLabel}</p>
+          <ul className="flex flex-col divide-y divide-[var(--color-border-default)] rounded-md border border-[var(--color-border-default)] text-left text-sm">
+            {links.map((link, i) => (
+              <li
+                key={i}
+                className="[&>a]:flex [&>a]:min-h-10 [&>a]:items-center [&>a]:gap-2 [&>a]:px-3 [&>a]:text-[var(--color-text-primary)] [&>a]:transition-colors [&>a:hover]:bg-[var(--color-bg-wash-hover)] [&>a:focus-visible]:outline-none [&>a:focus-visible]:ring-2 [&>a:focus-visible]:ring-[var(--color-accent-primary)] [&_svg]:h-4 [&_svg]:w-4 [&_svg]:text-[var(--color-text-tertiary)]"
+              >
+                {link}
+              </li>
+            ))}
+          </ul>
+        </nav>
       )}
+      {hint && <p className="text-[11px] text-[var(--color-text-tertiary)]">{hint}</p>}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ChevronLeft } from "lucide-react";
+import { LayoutDashboard } from "lucide-react";
 import { getTranslations } from "next-intl/server";
 import { RouteNotFound } from "@repowise-dev/ui/shared/route-states";
 
@@ -10,12 +10,20 @@ export default async function NotFound() {
     <RouteNotFound
       title={t("notFoundTitle")}
       description={t("notFoundBody")}
-      back={
-        <Link href="/">
-          <ChevronLeft className="h-4 w-4" aria-hidden />
-          {t("backToDashboard")}
-        </Link>
-      }
+      linksLabel={t("notFoundLinks")}
+      links={[
+        <Link key="dashboard" href="/">
+          <LayoutDashboard aria-hidden />
+          {t("dashboard")}
+        </Link>,
+      ]}
+      hint={t.rich("notFoundSearchHint", {
+        kbd: (chunks) => (
+          <kbd className="rounded border border-[var(--color-border-default)] px-1 font-mono text-[10px]">
+            {chunks}
+          </kbd>
+        ),
+      })}
     />
   );
 }
