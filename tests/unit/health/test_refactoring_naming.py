@@ -7,8 +7,10 @@ one thing per detector.
 from __future__ import annotations
 
 from repowise.core.analysis.health.refactoring.naming import (
+    banner_words,
     identifier_slug,
     join_identifier,
+    label_words,
     split_words,
 )
 
@@ -103,3 +105,39 @@ def test_join_identifier_uses_the_first_word_as_lowercase_head():
 def test_join_identifier_of_no_words_is_empty():
     assert join_identifier([], "camelCase") == ""
     assert join_identifier([], "snake_case") == ""
+
+
+# -- banner comments and stage labels ---------------------------------------------
+
+
+def test_banner_words_reads_one_short_line_between_rules():
+    assert banner_words(["# Build table"]) == ["build", "table"]
+    assert banner_words(["// Group by consumer repo"]) == ["group", "by", "consumer", "repo"]
+    assert banner_words(["# ---- Graph metrics ----------"]) == ["graph", "metrics"]
+    assert banner_words(["# ── Core runtime state ──"]) == ["core", "runtime", "state"]
+    assert banner_words(["# =====", "# Load edges", "# ====="]) == ["load", "edges"]
+    assert banner_words(["/* Load edges */"]) == ["load", "edges"]
+    # Step numbers, asides and articles are not part of the name.
+    assert banner_words(["# 3. Remove the wrapper script"]) == ["remove", "wrapper", "script"]
+    assert banner_words(["# Step 1: Parse git logs"]) == ["parse", "git", "logs"]
+    assert banner_words(["# Neighboring communities (cap at 5)"]) == ["neighboring", "communities"]
+
+
+def test_banner_words_refuses_prose_code_and_directives():
+    assert banner_words([]) == []
+    assert banner_words(["# Decisions"]) == []  # a heading, not a name
+    assert banner_words(["# Lazy import to avoid circular dependency at load"]) == []
+    assert banner_words(["# Sum values", "# then count them"]) == []
+    assert banner_words(["# Build labels and map indices -> skill names"]) == []
+    assert banner_words(["# Check for image/picture"]) == []
+    assert banner_words(["# [3] get_running_pid()"]) == []
+    assert banner_words(["# Kimi: top-level reasoning effort"]) == []
+    assert banner_words(["// eslint-disable-next-line no-await-in-loop"]) == []
+    assert banner_words(["# TODO tidy this up"]) == []
+
+
+def test_label_words_reads_a_timed_stage_label():
+    assert label_words('with timed(timings, "persist.pages"):') == ["persist", "pages"]
+    assert label_words("with timed(self._t, 'detect_changes'):\n    x = 1") == ["detect", "changes"]
+    assert label_words('with span("persist.pages"):') == []
+    assert label_words("x = timed") == []

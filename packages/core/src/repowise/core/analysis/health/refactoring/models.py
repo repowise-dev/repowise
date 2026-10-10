@@ -48,8 +48,9 @@ For Extract Method:
 - ``plan`` = ``{"span": {"start": int, "end": int}, "params": [str, ...],
   "returns": [str, ...], "suggested_name": str | None, "needs_async": bool}``
   — the lines to lift, the inferred signature, a deterministic starting name
-  (from the slice's single informative OUT value, else absent; an editable
-  starting point, not unique within a file), and whether the span awaits, so
+  (a stage label, a banner comment, or the single OUT value of an effect-free
+  span; never one a sibling in the helper's scope already uses; else absent),
+  and whether the span awaits, so
   the helper is async and its call awaited. An awaiting plan adds
   ``"async_host": bool``, False when the enclosing function is not async.
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` — the size and

@@ -8,12 +8,34 @@ wrote it, which is the defect this module exists to not repeat.
 
 Precision-first, and the same posture in both detectors: without semantics we
 cannot name a block for what it *does*, so a name is anchored to something the
-plan already knows for certain (where the helper lands, or the value it
-produces) and never guesses intent. It is an editable starting point, which is
+plan already knows for certain (where the helper lands, the value it produces,
+or the name its author already wrote over it: a banner comment, a stage label)
+and never guesses intent. It is an editable starting point, which is
 how every surface frames it, not a claim about behaviour.
 """
 
 from __future__ import annotations
+
+import re
+
+# A section banner names its block in a few words; a longer comment is an
+# explanation, and a name built from it is a sentence.
+_MAX_BANNER_WORDS = 5
+_COMMENT_MARK = re.compile(r"^\s*(?:#+|//+|/\*+|\*+)|\*+/\s*$")
+# Rules and separators drawn around a banner: ``# ---- Graph metrics ----``.
+_RULE_CHARS = " \t-=~#*_+.─━═"
+_ENUMERATION = re.compile(r"^(?:\d+[.)]|\[\d+\]|(?:step|pass)\s+\d+\s*[:.)])\s*", re.IGNORECASE)
+_PARENTHETICAL = re.compile(r"\([^)]*\)")
+_BANNER_WORD = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*")
+# Comments that talk to a tool or a reviewer, not about the code below them.
+_DIRECTIVES = frozenset(
+    {"todo", "fixme", "xxx", "hack", "note", "noqa", "nosec", "pragma"}
+    | {"eslint", "prettier", "istanbul", "c8", "biome", "nolint", "noinspection", "jshint"}
+)
+_ARTICLES = frozenset({"a", "an", "the"})
+# ``with timed(timings, "persist.pages"):`` -- the stage label the timing
+# helper already records for the block it opens.
+_TIMED_LABEL = re.compile(r"\btimed\(\s*[^,()]+,\s*[\"']([A-Za-z_][\w.]*)[\"']")
 
 
 def identifier_slug(label: str | None) -> str:
@@ -89,3 +111,38 @@ def join_identifier(words: list[str], convention: str) -> str:
         head, *rest = words
         return head + "".join(w.capitalize() for w in rest)
     return "_".join(words)
+
+
+def banner_words(comment_lines: list[str]) -> list[str]:
+    """The words of a section banner, or ``[]`` when the comment is not one.
+
+    A banner is one line of short prose, optionally drawn between rules
+    (``# ==== / # Environment / # ====`` or ``# -- Load edges --``), with a
+    leading step number dropped. Two to ``_MAX_BANNER_WORDS`` plain words: one
+    word is a heading (``# Decisions``), not a name for what the block does,
+    and anything holding code, paths or punctuation (``# key -> value``) is
+    prose about the code rather than its name.
+    """
+    content = []
+    for line in comment_lines:
+        text = _COMMENT_MARK.sub("", line).strip(_RULE_CHARS)
+        if text:
+            content.append(text)
+    if len(content) != 1:
+        return []
+    text = _ENUMERATION.sub("", _PARENTHETICAL.sub("", content[0]).strip())
+    tokens = text.strip().rstrip(".:").split()
+    if not 2 <= len(tokens) <= _MAX_BANNER_WORDS:
+        return []
+    if not all(_BANNER_WORD.fullmatch(t) for t in tokens):
+        return []
+    if tokens[0].lower().split("-")[0] in _DIRECTIVES:
+        return []
+    return [w for t in tokens for w in split_words(t) if w not in _ARTICLES]
+
+
+def label_words(statement_text: str) -> list[str]:
+    """The words of a ``timed(..., "label")`` stage label opening a statement."""
+    first_line = statement_text.split("\n", 1)[0]
+    match = _TIMED_LABEL.search(first_line)
+    return split_words(match.group(1)) if match else []
