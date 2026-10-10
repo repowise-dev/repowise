@@ -151,7 +151,9 @@ class RustDefUseDialect(BaseDefUseDialect):
         if t in lmap.loop_kinds:
             pattern = node.child_by_field_name("pattern")
             if pattern is not None:  # ``for PAT in expr`` -- binds every entry
+                start = len(defs)
                 self._targets(pattern, defs, uses)
+                self._loop_scoped(defs, start)
                 self._process(node.child_by_field_name("value"), defs, uses)
             else:  # ``while cond`` / ``while let`` / bare ``loop`` (no head)
                 self._condition(node.child_by_field_name("condition"), defs, uses)

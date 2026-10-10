@@ -40,7 +40,7 @@ precision-first contract the perf pillar depends on.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -67,6 +67,10 @@ class Occurrence:
     #: a read in the source. It keeps must-def proofs conservative; code that
     #: asks what a span actually reads skips it.
     echo: bool = False
+    #: A write that declares the name: a declaration (also when its declarator
+    #: ends on a later line and ``declared_at`` is None) or a block-scoped loop
+    #: binder.
+    declares: bool = False
 
 
 @dataclass(frozen=True)
@@ -79,6 +83,16 @@ class StatementDefUse:
 
     defs: tuple[Occurrence, ...]
     uses: tuple[Occurrence, ...]
+
+
+@dataclass
+class Captured:
+    """What nested closures do to the enclosing function's variables (see
+    :meth:`BaseDefUseDialect.collect_captured`)."""
+
+    reads: list[Occurrence] = field(default_factory=list)
+    shared: list[Occurrence] = field(default_factory=list)
+    writes: list[Occurrence] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -142,8 +156,16 @@ class BaseDefUseDialect:
         """
         end_row, end_col = declarator.end_point
         for i in range(start, len(defs)):
-            if defs[i].line == end_row + 1:
-                defs[i] = replace(defs[i], declared_at=end_col)
+            at = end_col if defs[i].line == end_row + 1 else None
+            defs[i] = replace(defs[i], declared_at=at, declares=True)
+
+    @staticmethod
+    def _loop_scoped(defs: list[Occurrence], start: int) -> None:
+        """Mark ``defs[start:]`` as declared by a loop header: block-scoped,
+        so not the enclosing scope's variable of that name. Only ``declares``
+        is set; ``declared_at`` keeps the line rule for the header."""
+        for i in range(start, len(defs)):
+            defs[i] = replace(defs[i], declares=True)
 
     # -- read (use) collection ------------------------------------------------
 
@@ -177,50 +199,99 @@ class BaseDefUseDialect:
         for child in node.named_children:
             self.collect_reads(child, out)
 
-    def collect_captured_reads(self, node: Node | None, out: list[Occurrence]) -> None:
-        """Append the reads made inside nested scopes under *node* to *out*.
+    #: Whether a plain assignment inside a nested scope writes the enclosing
+    #: function's variable (JS/TS, Go, Rust, C++ closures). Python's assignment
+    #: makes the name the closure's own local instead.
+    closure_writes_outer: bool = True
+
+    def collect_captured(self, node: Node | None, out: Captured) -> None:
+        """Collect into *out* what nested scopes under *node* do to the
+        enclosing function's variables.
 
         :meth:`collect_reads` stops at a nested function or lambda because its
         reads are not the statement's own. A closure still reads the enclosing
         function's variables, though, so code that moves one of them has to
         see those reads: a span whose closure reads a local needs it passed in,
         and a span defining a local a later closure reads has to return it.
-        Left out: names the nested scope binds as its own parameters, its own
-        name (a nested ``def``), and locals it writes on a line before it first
-        reads them (``const t2 = v * 2``), which are its own variables. A local
-        written and read on one line is kept, which can only add a parameter or
-        a return, never drop one.
+        Left out of ``reads``: names the nested scope binds as its own
+        parameters, its own name (a nested ``def``), and locals it writes on a
+        line before it first reads them (``const t2 = v * 2``), which are its
+        own variables. A local written and read on one line is kept, which can
+        only add a parameter or a return, never drop one.
+
+        ``shared`` and ``writes`` are what the scope reads and assigns of names
+        it does not bind at all: not declared in it (a loop binder read on its
+        own line is the scope's), and in Python not assigned in it either.
+        Those are the variables the closure shares with the function.
         """
         if node is None:
             return
         if not self._is_scope_boundary(node):
             for child in node.named_children:
-                self.collect_captured_reads(child, out)
+                self.collect_captured(child, out)
             return
-        writes, reads = self._closure_def_use(node)
-        bound = self._closure_bound_names(node) | _written_before_read(writes, reads)
-        out.extend(occ for occ in reads if occ.name not in bound)
+        writes, direct, inner = self._closure_def_use(node)
+        own_reads = [*direct, *inner.reads]
+        params = self._closure_bound_names(node)
+        bound = params | _written_before_read(writes, own_reads)
+        out.reads.extend(occ for occ in own_reads if occ.name not in bound)
+        binders, outer = self._scope_binders(node)
+        own = params | binders
+        own |= {w.name for w in writes if w.declares or not self.closure_writes_outer}
+        own -= outer
+        out.shared.extend(occ for occ in (*direct, *inner.shared) if occ.name not in own)
+        out.writes.extend(w for w in (*writes, *inner.writes) if w.name not in own)
 
-    def _closure_def_use(self, node: Node) -> tuple[list[Occurrence], list[Occurrence]]:
-        """Writes and reads inside nested scope *node*, deeper closures included.
+    def _closure_def_use(self, node: Node) -> tuple[list[Occurrence], list[Occurrence], Captured]:
+        """The writes and direct reads inside nested scope *node*, and what
+        deeper closures inside it capture.
 
         The body goes through the dialect's own walk, which tells a declaration
         from a read; a scope with no ``body`` field falls back to plain reads.
         """
         writes: list[Occurrence] = []
         reads: list[Occurrence] = []
+        inner = Captured()
         body = node.child_by_field_name("body")
         process = getattr(self, "_process", None)
         if body is not None and process is not None:
             process(body, writes, reads)
-            self.collect_captured_reads(body, reads)
-            return writes, reads
+            self.collect_captured(body, inner)
+            return writes, reads, inner
         name = node.child_by_field_name("name")
         for child in node.named_children:
             if name is None or child.id != name.id:
                 self.collect_reads(child, reads)
-                self.collect_captured_reads(child, reads)
-        return writes, reads
+                self.collect_captured(child, inner)
+        return writes, reads, inner
+
+    #: Statements that make a name in a nested scope refer to an outer
+    #: variable (Python ``nonlocal`` / ``global``).
+    outer_decl_kinds: frozenset[str] = frozenset()
+
+    def _scope_binders(self, node: Node) -> tuple[set[str], set[str]]:
+        """Names a loop header in nested scope *node* binds, and the names it
+        declares outer (:attr:`outer_decl_kinds`). Deeper scopes are not
+        entered. A loop binder is read on its own line, so the line rule that
+        trims ``reads`` keeps it.
+        """
+        binders: set[str] = set()
+        outer: set[str] = set()
+        stack = list(node.named_children)
+        while stack:
+            cur = stack.pop()
+            if self._is_scope_boundary(cur):
+                continue
+            if cur.type in self.outer_decl_kinds:
+                outer |= {occ.name for occ in _leaf_names(cur, self.identifier_kinds)}
+            elif "for" in cur.type:
+                for clause in (cur, *cur.named_children):
+                    for field_name in ("left", "pattern", "name"):
+                        target = clause.child_by_field_name(field_name)
+                        if target is not None and clause.child_by_field_name("body") is not None:
+                            binders |= {o.name for o in _leaf_names(target, self.identifier_kinds)}
+            stack.extend(cur.named_children)
+        return binders, outer
 
     def _closure_bound_names(self, node: Node) -> set[str]:
         """Names a nested scope binds as its own parameters.
@@ -308,6 +379,18 @@ class BaseDefUseDialect:
             self._process(child, inner_defs, uses)
         defs.extend(inner_defs)
         uses.extend(echoes(inner_defs))
+
+
+def _leaf_names(node: Node, kinds: frozenset[str]) -> list[Occurrence]:
+    """Every identifier leaf under *node*."""
+    out: list[Occurrence] = []
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        if cur.type in kinds and cur.text:
+            out.append(Occurrence(cur.text.decode("utf-8", "replace"), cur.start_point[0] + 1))
+        stack.extend(cur.named_children)
+    return out
 
 
 def echoes(defs: list[Occurrence]) -> list[Occurrence]:

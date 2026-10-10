@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from ..complexity.languages import LanguageNodeMap
     from .analyze import FunctionAnalysis
     from .defuse import FunctionDefUse
+    from .dialects.base import Occurrence
 
 # Gates (precision-first; tuned to suppress trivial or unwieldy extractions).
 _MIN_STMTS = 2  # at least two statements
@@ -115,6 +116,9 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
     declared_first = _declared_before_read(analysis.def_use)
     hoisted = _hoisted_bindings(def_lines, use_lines)
     decl_lines = _declaration_lines(analysis.def_use)
+    closure_reads = _closure_lines(analysis.def_use.captured_shared, def_lines)
+    closure_writes = _closure_lines(analysis.def_use.captured_writes, def_lines)
+    declares = _declaring_lines(analysis.def_use) if closure_reads or closure_writes else {}
     decision_kinds = (
         lmap.branch_kinds
         | lmap.loop_kinds
@@ -209,6 +213,10 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                 ):
                     continue
                 if nested_prefix[j + 1] > nested_prefix[i]:
+                    continue
+                if _closure_state_crosses(
+                    s, e, closure_reads, closure_writes, declares, def_lines, use_lines
+                ):
                     continue
                 if loop is not None and not _loop_carry_free(
                     span, loop, s, e, def_lines, use_lines, lmap
@@ -396,6 +404,76 @@ def _infer_in_out(
                 if not redefined:
                     returns.append(var)
     return tuple(params), tuple(returns)
+
+
+def _closure_lines(
+    occurrences: tuple[Occurrence, ...], def_lines: dict[str, list[int]]
+) -> dict[str, list[int]]:
+    """Per variable this function binds, the lines a closure reads or writes it."""
+    lines: dict[str, list[int]] = defaultdict(list)
+    for occ in occurrences:
+        if occ.name in def_lines:
+            lines[occ.name].append(occ.line)
+    return lines
+
+
+def _declaring_lines(def_use: FunctionDefUse) -> dict[str, set[int]]:
+    """Per variable, every line a declaration of it starts on, multi-line
+    declarators included (unlike :func:`_declaration_lines`)."""
+    lines: dict[str, set[int]] = defaultdict(set)
+    for d in def_use.definitions:
+        if d.declares:
+            lines[d.var].add(d.line)
+    return lines
+
+
+def _closure_state_crosses(
+    s: int,
+    e: int,
+    closure_reads: dict[str, list[int]],
+    closure_writes: dict[str, list[int]],
+    declares: dict[str, set[int]],
+    def_lines: dict[str, list[int]],
+    use_lines: dict[str, list[int]],
+) -> bool:
+    """True when a local a closure shares crosses the span boundary.
+
+    A closure runs when it is called, not where it is written, so line
+    liveness cannot place its reads and writes; an IN/OUT signature copies a
+    value where the closure needs the variable itself. Refused:
+
+    - a closure in the span writes a local the code outside it refers to: the
+      lifted closure writes the helper's copy;
+    - a closure outside the span writes a local the span refers to: the span
+      reads or writes a stale copy;
+    - the span writes a local a closure written above it reads: the closure
+      runs later and sees the old value. Measured on hermes
+      ``apps/desktop/src/lib/ansi.ts::parseAnsi``, whose ``pushText`` reads
+      the ``bold`` / ``fg`` a span inside the loop sets.
+
+    Block scopes are not modelled, so a name the span declares is its own
+    binding, not the closure's: ``const x`` in a loop body below a callback
+    reading an outer ``x`` is a different variable.
+    """
+
+    def own(var: str) -> bool:
+        return any(s <= ln <= e for ln in declares.get(var, ()))
+
+    for var, writes in closure_writes.items():
+        if own(var):
+            continue
+        inside = sum(1 for ln in writes if s <= ln <= e)
+        refs = (*def_lines.get(var, ()), *use_lines.get(var, ()))
+        if inside and any(not s <= ln <= e for ln in (*refs, *writes)):
+            return True
+        if inside < len(writes) and any(s <= ln <= e for ln in refs):
+            return True
+    return any(
+        any(ln < s for ln in reads)
+        and any(s <= ln <= e for ln in def_lines.get(var, ()))
+        and not own(var)
+        for var, reads in closure_reads.items()
+    )
 
 
 def _holds_a_named_nested_function(span: list[Node], lmap: LanguageNodeMap) -> bool:

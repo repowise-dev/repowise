@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .dialects.base import Occurrence
+from .dialects.base import Captured, Occurrence
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -42,6 +42,8 @@ class Definition:
     line: int  # 1-indexed
     #: Where on ``line`` a declared name starts to exist; see ``Occurrence``.
     declared_at: int | None = None
+    #: The write declares the name (``Occurrence.declares``).
+    declares: bool = False
 
 
 @dataclass
@@ -63,12 +65,17 @@ class FunctionDefUse:
     inside nested closures, kept apart from the per-block uses because they
     run when the closure is called, not where it is written; code that moves
     statements (the Extract Method slicer) still has to count them.
+    ``captured_shared`` / ``captured_writes`` are the reads and assignments
+    nested closures make of variables they do not bind themselves, kept apart
+    for the same reason.
     """
 
     blocks: dict[int, BlockDefUse]
     definitions: list[Definition]
     params: tuple[Occurrence, ...]
     captured: tuple[Occurrence, ...] = ()
+    captured_shared: tuple[Occurrence, ...] = ()
+    captured_writes: tuple[Occurrence, ...] = ()
 
     def block(self, block_id: int) -> BlockDefUse | None:
         return self.blocks.get(block_id)
@@ -99,6 +106,7 @@ def compute_def_use(
             index=counter,
             line=occ.line,
             declared_at=occ.declared_at,
+            declares=occ.declares,
         )
         counter += 1
         bdu.defs.append(definition)
@@ -122,8 +130,13 @@ def compute_def_use(
                 _add_def(occ, block.id)
             bdu.uses.extend(sdu.uses)
 
-    captured: list[Occurrence] = []
-    dialect.collect_captured_reads(fn_node.child_by_field_name("body"), captured)
+    captured = Captured()
+    dialect.collect_captured(fn_node.child_by_field_name("body"), captured)
     return FunctionDefUse(
-        blocks=blocks, definitions=definitions, params=params, captured=tuple(captured)
+        blocks=blocks,
+        definitions=definitions,
+        params=params,
+        captured=tuple(captured.reads),
+        captured_shared=tuple(captured.shared),
+        captured_writes=tuple(captured.writes),
     )

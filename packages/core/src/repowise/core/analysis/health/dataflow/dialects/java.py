@@ -118,7 +118,9 @@ class JavaDefUseDialect(BaseDefUseDialect):
     ) -> None:
         t = node.type
         if t == _ENHANCED_FOR:  # ``for (T v : xs)``
+            start = len(defs)
             self._targets(node.child_by_field_name("name"), defs, uses)
+            self._loop_scoped(defs, start)
             self._process(node.child_by_field_name("value"), defs, uses)
         elif t in lmap.loop_kinds:  # for: init/cond/update; while / do: cond
             self._process(node.child_by_field_name("init"), defs, uses)

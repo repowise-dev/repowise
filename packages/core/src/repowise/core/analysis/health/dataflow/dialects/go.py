@@ -90,7 +90,10 @@ class GoDefUseDialect(BaseDefUseDialect):
                 if t in lmap.block_kinds:
                     continue  # the body lives in successor blocks
                 if t == _RANGE_CLAUSE:
+                    start = len(defs)
                     self._targets(child.child_by_field_name("left"), defs, uses)
+                    if any(tok.type == ":=" for tok in child.children):
+                        self._loop_scoped(defs, start)
                     self._process(child.child_by_field_name("right"), defs, uses)
                 elif t == _FOR_CLAUSE:
                     self._process(child.child_by_field_name("initializer"), defs, uses)

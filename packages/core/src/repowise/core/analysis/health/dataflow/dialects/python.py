@@ -49,6 +49,10 @@ class PythonDefUseDialect(BaseDefUseDialect):
 
     # A nested ``def`` is visible in the enclosing scope from its statement on.
     enclosing_binder_kinds = frozenset({"function_definition", "async_function_definition"})
+    # Assignment makes a closure-local name; only ``nonlocal`` / ``global``
+    # reach out of a nested scope.
+    closure_writes_outer = False
+    outer_decl_kinds = frozenset({"nonlocal_statement", "global_statement"})
 
     def _is_scope_boundary(self, node: Node) -> bool:
         return node.type in _SCOPE_BOUNDARIES

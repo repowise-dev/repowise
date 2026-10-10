@@ -112,7 +112,10 @@ class TsJsDefUseDialect(BaseDefUseDialect):
             left = node.child_by_field_name("left")
             right = node.child_by_field_name("right")
             if left is not None or right is not None:  # for-of / for-in binder
+                start = len(defs)
                 self._targets(left, defs, uses)
+                if node.child_by_field_name("kind") is not None:  # const / let / var
+                    self._loop_scoped(defs, start)
                 self._process(right, defs, uses)
                 return
             # C-style for / while / do: initializer + condition + increment.

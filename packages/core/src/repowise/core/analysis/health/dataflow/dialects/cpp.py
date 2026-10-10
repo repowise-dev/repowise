@@ -160,6 +160,7 @@ class CppDefUseDialect(BaseDefUseDialect):
             binder = self._binder_identifier(node.child_by_field_name("declarator"))
             if binder is not None:
                 defs.append(self._occ(binder))
+                self._loop_scoped(defs, len(defs) - 1)
             self._process(node.child_by_field_name("right"), defs, uses)
         elif t in lmap.loop_kinds:  # for: init/cond/update; while / do: cond
             self._process(node.child_by_field_name("initializer"), defs, uses)
