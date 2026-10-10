@@ -164,6 +164,7 @@ def _find_extractions_reference(analysis, lmap):
         _infer_in_out,
         _loop_carry_free,
         _outs_definitely_assigned,
+        _reads_observing,
         _Scan,
         _sorted,
         _span_metrics,
@@ -184,6 +185,7 @@ def _find_extractions_reference(analysis, lmap):
     body_nloc = _stmts_nloc(body_container.named_children, lines)
     def_lines, use_lines = _var_lines(analysis.def_use)
     declared_first = _declared_before_read(analysis.def_use)
+    reads = _reads_observing(analysis)
     decision_kinds = (
         lmap.branch_kinds
         | lmap.loop_kinds
@@ -245,7 +247,9 @@ def _find_extractions_reference(analysis, lmap):
                     continue
                 s = span[0].start_point[0] + 1
                 e = span[-1].end_point[0] + 1
-                params, returns = _infer_in_out(def_lines, use_lines, s, e, declared_first)
+                params, returns = _infer_in_out(
+                    def_lines, use_lines, s, e, declared_first, reads=reads
+                )
                 if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
                     continue
                 if not _outs_definitely_assigned(span, returns, def_lines, lmap):
@@ -1180,10 +1184,11 @@ def test_a_refused_span_yields_only_to_a_disjoint_one(monkeypatch):
 def _span_in_out(src: str, s: int, e: int):
     from repowise.core.analysis.health.dataflow import slice as slicer
 
-    def_use = _first(src).def_use
-    def_lines, use_lines = slicer._var_lines(def_use)
-    declared_first = slicer._declared_before_read(def_use)
-    return slicer._infer_in_out(def_lines, use_lines, s, e, declared_first)
+    fn = _first(src)
+    def_lines, use_lines = slicer._var_lines(fn.def_use)
+    declared_first = slicer._declared_before_read(fn.def_use)
+    reads = slicer._reads_observing(fn)
+    return slicer._infer_in_out(def_lines, use_lines, s, e, declared_first, reads=reads)
 
 
 def test_a_comprehension_binder_is_not_a_parameter():

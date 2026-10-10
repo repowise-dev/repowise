@@ -2097,10 +2097,16 @@ def test_go_name_declared_afresh_after_the_span_does_not_refuse_it():
 def _rust_in_out(src: str, s: int, e: int):
     from repowise.core.analysis.health.dataflow import slice as slicing
 
-    def_use = _first("rust", src).def_use
+    fn = _first("rust", src)
+    def_use = fn.def_use
     def_lines, use_lines = slicing._var_lines(def_use)
     return slicing._infer_in_out(
-        def_lines, use_lines, s, e, slicing._declared_before_read(def_use)
+        def_lines,
+        use_lines,
+        s,
+        e,
+        slicing._declared_before_read(def_use),
+        reads=slicing._reads_observing(fn),
     )
 
 

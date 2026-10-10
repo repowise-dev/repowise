@@ -486,6 +486,15 @@ class _CFGBuilder:
         body_out = self._process_seq(
             self._body_stmts(try_node.child_by_field_name("body")), body_entry
         )
+        # An exception may leave the region before its first statement
+        # completes or from any block inside it, so the state before the body
+        # and at the end of every body block can reach the handlers and the
+        # ``finally``. Blocks are numbered in creation order, so the body's
+        # are the ids from its entry up.
+        protected = [cur, *self.blocks[body_entry.id :]]
+        if finally_clause is not None:
+            for src in protected:
+                self._edge(src, normal_join)
 
         # ``else`` runs only when the body completed without an exception.
         else_clause = next((c for c in try_node.children if c.type == "else_clause"), None)
@@ -498,12 +507,12 @@ class _CFGBuilder:
         elif body_out is not None:
             self._edge(body_out, normal_join)
 
-        # except handlers are reachable from the protected region (an exception
-        # may escape any statement in the body -> approximate with an edge from
-        # the body entry to each handler).
+        # except handlers are reachable from the whole protected region.
         for handler in (c for c in try_node.children if c.type in self.lmap.catch_kinds):
             handler_entry = self._new("handler")
             self._edge(body_entry, handler_entry)
+            for src in protected:
+                self._edge(src, handler_entry)
             if finally_clause is not None:
                 # Finally also runs when a handler returns or re-raises. This
                 # edge lets handler definitions reach reads in the finally body.
