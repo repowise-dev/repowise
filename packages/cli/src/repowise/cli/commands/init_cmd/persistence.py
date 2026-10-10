@@ -35,6 +35,7 @@ from repowise.core.index_scope import (
     file_page_scope,
     stamp_index_scope,
 )
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.repo_config import config_dependency_fingerprints
 
 logger = structlog.get_logger(__name__)
@@ -339,10 +340,15 @@ def effective_run_mode_for_resume(repo_path: Path, run_mode: str, resume: bool) 
 
 
 def apply_git_history_coverage_state(state: dict[str, Any], result: Any) -> None:
-    """Replace achieved Git coverage, clearing stale data when unavailable."""
+    """Replace achieved Git coverage, clearing stale data when unavailable.
+
+    A run that walked git also wrote every row under the current history
+    rules, so it stamps their version and the next update does not walk again.
+    """
     summary = getattr(result, "git_summary", None)
     if summary is None:
         return
+    state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
     coverage = getattr(summary, "history_coverage", None)
     if coverage is None:
         state.pop("git_history_coverage", None)

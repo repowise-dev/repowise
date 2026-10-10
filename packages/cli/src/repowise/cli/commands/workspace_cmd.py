@@ -648,6 +648,8 @@ def _run_index_for_repo(
             docs_skip_reason = f"generation error: {exc}"
 
     # Persist state.json so `repowise update` has a baseline commit.
+    from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
+
     head = get_head_commit(repo_path)
     state: dict = {
         "last_sync_commit": head,
@@ -655,6 +657,8 @@ def _run_index_for_repo(
         # No template fallback on this path: without a provider the added repo
         # is indexed with no pages at all.
         **docs_mode_state_fields("llm" if generate_docs and provider is not None else "none"),
+        # The full index just walked git under the current history rules.
+        GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION,
     }
     if generate_docs and provider is not None:
         state["provider"] = provider.provider_name

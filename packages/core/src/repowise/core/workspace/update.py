@@ -46,6 +46,11 @@ from repowise.core.update_lock import (
 
 from ..docs_mode import docs_mode_state_fields
 from ..ingestion.change_detector import has_working_tree_changes
+from ..ingestion.git_indexer import (
+    GIT_HISTORY_VERSION,
+    GIT_HISTORY_VERSION_KEY,
+    git_history_stale,
+)
 from ..pipeline.phase_timing import PhaseTimingRecorder
 from .config import WorkspaceConfig
 
@@ -156,6 +161,9 @@ class RepoUpdateResult:
     # commit-anchored path, which leaves the stored list alone.
     working_tree_paths: list[str] | None = None
     phase_timings: dict[str, float] | None = None
+    # True when this run walked the whole git history and persisted every row,
+    # so the caller stamps ``git_history_version``.
+    git_history_refreshed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +421,7 @@ async def _incremental_repo_update(
     base_ref: str,
     exclude_patterns: list[str] | None = None,
     include_working_tree: bool = False,
+    force_full_git: bool = False,
 ) -> RepoUpdateResult | None:
     """Refresh an already-indexed repo through the incremental update path.
 
@@ -458,7 +467,7 @@ async def _incremental_repo_update(
         detector.get_changed_files(base_ref, head),
         working_tree_diffs,
     )
-    if not file_diffs:
+    if not file_diffs and not force_full_git:
         # New commits but nothing the index cares about changed (merge/empty
         # commits, or every change excluded). Report success so the caller
         # bumps ``last_sync_commit`` instead of re-diffing forever.
@@ -475,6 +484,7 @@ async def _incremental_repo_update(
     # persisted alongside the changed rows, kept out of git_meta_map so partial
     # health's repo-wide aggregates are unaffected (mirrors the CLI path).
     git_decay_map: dict[str, dict] = {}
+    full_git_summaries: list[Any] = []
     (
         parsed_files,
         source_map,
@@ -491,6 +501,8 @@ async def _incremental_repo_update(
         include_submodules=bool(state.get("include_submodules", False)),
         include_nested_repos=bool(state.get("include_nested_repos", False)),
         idle_decay_sink=git_decay_map,
+        force_full_git=force_full_git,
+        git_summary_sink=full_git_summaries,
         log=_log.info,
     )
 
@@ -564,6 +576,8 @@ async def _incremental_repo_update(
         log=_log.info,
     )
 
+    # A full walk is stamped only when its rows reached the store.
+    failed_steps: list[str] = []
     await persist_incremental_index(
         repo_path,
         graph_builder,
@@ -580,6 +594,8 @@ async def _incremental_repo_update(
         knowledge_graph_result=kg,
         parsed_files=parsed_files,
         git_decay_map=git_decay_map,
+        full_git_summary=full_git_summaries[0] if full_git_summaries else None,
+        failed_steps=failed_steps,
         log=_log.info,
     )
 
@@ -600,6 +616,7 @@ async def _incremental_repo_update(
         symbol_count=sum(len(pf.symbols) for pf in parsed_files),
         kg_state=kg_state,
         working_tree_paths=working_tree_paths,
+        git_history_refreshed=bool(full_git_summaries) and "Git persist" not in failed_steps,
     )
 
 
@@ -723,6 +740,7 @@ async def update_single_repo_index(
                 base_ref=str(base_ref),
                 exclude_patterns=exclude_patterns,
                 include_working_tree=include_working_tree,
+                force_full_git=git_history_stale(state),
             )
             if incremental_result is not None:
                 return incremental_result
@@ -763,6 +781,7 @@ async def update_single_repo_index(
             file_count=result.file_count,
             symbol_count=result.symbol_count,
             kg_state=kg_state,
+            git_history_refreshed=getattr(result, "git_summary", None) is not None,
         )
     except Exception as exc:
         return RepoUpdateResult(
@@ -891,6 +910,15 @@ async def update_workspace(
         # commit-to-commit staleness check above says "up to date" for exactly
         # the work the watcher woke up for.
         if not is_stale and include_working_tree and has_working_tree_changes(abs_path):
+            is_stale = True
+
+        # Rows written under older git history rules: one full walk refreshes
+        # them, as the single-repo update does, even with HEAD unmoved.
+        if (
+            not is_stale
+            and git_history_stale(state)
+            and await _has_persisted_repo_index(abs_path)
+        ):
             is_stale = True
 
         if not is_stale:
@@ -1038,6 +1066,8 @@ async def update_workspace(
                         state["working_tree_paths"] = result.working_tree_paths
                     if result.phase_timings is not None:
                         state["phase_timings"] = result.phase_timings
+                    if result.git_history_refreshed:
+                        state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
                     # Stamp the config fingerprint so the drift check in
                     # update_single_repo_index stays calibrated (and legacy repos
                     # without one stop re-triggering the full re-index).

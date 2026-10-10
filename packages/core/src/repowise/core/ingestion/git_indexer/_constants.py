@@ -327,6 +327,29 @@ _CO_CHANGE_COMMIT_DECAY_TAU: float = CO_CHANGE_COMMIT_DECAY_TAU
 # Hotspot temporal decay: half-life for exponentially weighted churn score.
 HOTSPOT_HALFLIFE_DAYS: float = 180.0
 
+#: The rules that turn git history into stored per-file rows (change numbers,
+#: author identity). Stamped into state.json as ``git_history_version`` by every
+#: full git walk; an update that finds another value, or none, walks the whole
+#: history once instead of only the changed files, since a changed file's row is
+#: the only one an incremental walk rewrites. Bump it when such a rule changes.
+#:
+#: v1: change numbers and author identity read through ``repowise.core.forges``
+#: (GitLab ``!N`` merge requests, Azure and Bitbucket PRs, GitLab noreply and
+#: forge bot accounts).
+GIT_HISTORY_VERSION: int = 1
+GIT_HISTORY_VERSION_KEY = "git_history_version"
+
+
+def git_history_stale(state: dict[str, Any]) -> bool:
+    """Whether the stored git rows predate :data:`GIT_HISTORY_VERSION`.
+
+    Unlike the health analyzer stamp, a missing stamp counts as stale: the
+    rows of an index written before it carry the change-number and identity
+    defects v1 fixes, and only a full walk rewrites the rows of files that
+    do not change.
+    """
+    return state.get(GIT_HISTORY_VERSION_KEY) != GIT_HISTORY_VERSION
+
 # Absolute activity floors for hotspot classification (issue #361). The
 # churn percentile is repo-relative, so on a quiet repo "top quartile"
 # degenerates to "any file touched in the last 90 days" — a single drive-by

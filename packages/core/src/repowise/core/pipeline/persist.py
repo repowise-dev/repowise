@@ -1741,8 +1741,18 @@ async def replace_git_history(
     repo_id: str,
     git_meta_map: dict[str, dict],
     git_summary: Any,
+    *,
+    keep_commit_health: bool = False,
 ) -> None:
-    """Replace every history-derived row from one authoritative Git walk."""
+    """Replace every history-derived row from one authoritative Git walk.
+
+    ``keep_commit_health`` keeps the per-commit health rows. A walk that only
+    re-reads the same window under new rules leaves each commit's code, so its
+    health is still right, and the capped ``refresh_commit_health`` could not
+    rebuild rows past its budget. Those rows key on ``(repository_id, sha)``
+    alone, so nothing dangles; unreachable shas are pruned by the update's
+    orphan sweep.
+    """
     from types import SimpleNamespace
 
     from sqlalchemy import delete
@@ -1759,14 +1769,8 @@ async def replace_git_history(
     # Function blame describes the current source tree and is produced by the
     # health pass, not by persist_git. Preserve it across a history-window
     # replacement; scope reconciliation prunes entries for excluded files.
-    for model in (
-        FixEvent,
-        GitCommit,
-        GitCommitFile,
-        GitCommitHealthDelta,
-        GitCommitHealthFinding,
-        GitMetadata,
-    ):
+    health = () if keep_commit_health else (GitCommitHealthDelta, GitCommitHealthFinding)
+    for model in (FixEvent, GitCommit, GitCommitFile, *health, GitMetadata):
         await session.execute(delete(model).where(model.repository_id == repo_id))
     await persist_git(
         SimpleNamespace(
@@ -1784,10 +1788,18 @@ async def persist_git_refresh(
     git_meta_map: dict[str, dict],
     git_decay_map: dict[str, dict] | None,
     full_git_summary: Any | None,
+    *,
+    keep_commit_health: bool = False,
 ) -> None:
     """Persist either a full history replacement or an incremental refresh."""
     if full_git_summary is not None:
-        await replace_git_history(session, repo_id, git_meta_map, full_git_summary)
+        await replace_git_history(
+            session,
+            repo_id,
+            git_meta_map,
+            full_git_summary,
+            keep_commit_health=keep_commit_health,
+        )
         return
 
     from sqlalchemy import select

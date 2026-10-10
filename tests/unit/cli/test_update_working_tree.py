@@ -10,7 +10,11 @@ from sqlalchemy import select
 
 from repowise.cli.commands.update_cmd import command as update_command_mod
 from repowise.cli.main import cli
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from tests.unit.cli.test_update_e2e import _git, _index_full, _make_git_repo
+
+# An index written by this build: its git rows follow the current rules.
+CURRENT_GIT_HISTORY = {GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION}
 
 
 def _capture_run_update(monkeypatch) -> dict:
@@ -63,7 +67,7 @@ def test_uncommitted_rename_is_indexed_with_working_tree(tmp_path: Path) -> None
     repo = _make_git_repo(tmp_path)
     _index_full(repo)
     head = _git(repo, "rev-parse", "HEAD")
-    save_state(repo, {"last_sync_commit": head, "docs_enabled": False})
+    save_state(repo, {"last_sync_commit": head, "docs_enabled": False, **CURRENT_GIT_HISTORY})
 
     # Rename the function and its caller's call site, without committing.
     (repo / "a.py").write_text("def alpha_renamed():\n    return 1\n")
@@ -89,7 +93,14 @@ def test_workspace_update_indexes_uncommitted_work_with_working_tree(
 
     repo = _make_workspace(tmp_path)
     _index_full(repo)
-    save_state(repo, {"last_sync_commit": _git(repo, "rev-parse", "HEAD"), "docs_enabled": False})
+    save_state(
+        repo,
+        {
+            "last_sync_commit": _git(repo, "rev-parse", "HEAD"),
+            "docs_enabled": False,
+            **CURRENT_GIT_HISTORY,
+        },
+    )
     monkeypatch.chdir(repo)
     # Records the indexed head in the workspace config, so only the edit below is new.
     assert CliRunner().invoke(cli, ["update", "--workspace"]).exit_code == 0
@@ -198,7 +209,7 @@ def test_working_tree_only_update_skips_history_phases_until_the_commit(
     repo = _make_git_repo(tmp_path)
     _index_full(repo)
     head = _git(repo, "rev-parse", "HEAD")
-    save_state(repo, {"last_sync_commit": head, "docs_enabled": False})
+    save_state(repo, {"last_sync_commit": head, "docs_enabled": False, **CURRENT_GIT_HISTORY})
     health_at_head = asyncio.run(_store_view(repo))["health"]
 
     analysis = _spy(monkeypatch, update_command_mod, "_run_partial_analysis")
@@ -235,7 +246,14 @@ def test_working_tree_update_then_commit_converges_with_a_fresh_index(tmp_path: 
 
     repo = _make_git_repo(tmp_path)
     _index_full(repo)
-    save_state(repo, {"last_sync_commit": _git(repo, "rev-parse", "HEAD"), "docs_enabled": False})
+    save_state(
+        repo,
+        {
+            "last_sync_commit": _git(repo, "rev-parse", "HEAD"),
+            "docs_enabled": False,
+            **CURRENT_GIT_HISTORY,
+        },
+    )
 
     (repo / "a.py").write_text(_EDITED_A)
     (repo / "b.py").write_text(_EDITED_B)
@@ -269,6 +287,7 @@ def test_working_tree_update_after_a_config_change_still_rescores(
             "last_sync_commit": _git(repo, "rev-parse", "HEAD"),
             "docs_enabled": False,
             "config_fingerprint": "an-older-config",
+            **CURRENT_GIT_HISTORY,
         },
     )
     analysis = _spy(monkeypatch, update_command_mod, "_run_partial_analysis")

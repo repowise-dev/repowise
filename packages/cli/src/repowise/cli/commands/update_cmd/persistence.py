@@ -29,6 +29,7 @@ from repowise.cli.helpers import (
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.pipeline import PhaseTimings, timed
 
 from .incremental import _build_repo_graph
@@ -437,6 +438,7 @@ def _persist_index_only_update(
     dependency_fingerprints: dict[str, str] | None = None,
     vector_store: Any | None = None,
     require_config_rebuild_success: bool = False,
+    history_window_changed: bool = False,
     timings: PhaseTimings | None = None,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
@@ -477,6 +479,7 @@ def _persist_index_only_update(
             parsed_files=parsed_files,
             git_decay_map=git_decay_map,
             full_git_summary=full_git_summary,
+            history_window_changed=history_window_changed,
             reconcile_full_scope=reconcile_full_scope,
             full_generation_page_ids=full_generation_page_ids,
             vector_store=vector_store,
@@ -557,6 +560,10 @@ def _persist_index_only_update(
             new_state["git_history_coverage"] = coverage.to_dict()
         else:
             new_state.pop("git_history_coverage", None)
+        # Every row was rewritten under the current rules, unless they never
+        # reached the store; then the next update walks again.
+        if "Git persist" not in failed_steps:
+            new_state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
     # Before save_state, and reading ``state`` (the pre-update dict) for the old
     # pointer: this is what keeps a degraded run recoverable now that the
     # pointer below advances to head regardless.
@@ -715,6 +722,7 @@ def _persist_full_update(
     reconcile_full_generation: bool = False,
     require_config_rebuild_success: bool = False,
     require_decision_persist_success: bool = False,
+    history_window_changed: bool = False,
     timings: PhaseTimings | None = None,
 ) -> int:
     """Persist a full (LLM-regenerating) update in one transaction.
@@ -756,6 +764,7 @@ def _persist_full_update(
             reconcile_full_generation=reconcile_full_generation,
             require_config_rebuild_success=require_config_rebuild_success,
             require_decision_persist_success=require_decision_persist_success,
+            history_window_changed=history_window_changed,
             timings=timings,
         )
     )
@@ -785,6 +794,7 @@ async def _persist_full_update_async(
     reconcile_full_generation: bool = False,
     require_config_rebuild_success: bool = False,
     require_decision_persist_success: bool = False,
+    history_window_changed: bool = False,
     timings: PhaseTimings | None = None,
 ) -> int:
     from repowise.cli.helpers import get_db_url_for_repo
@@ -1030,10 +1040,15 @@ async def _persist_full_update_async(
                             git_meta_map,
                             git_decay_map,
                             full_git_summary,
+                            # Set only on a history-window (git config) change,
+                            # the one walk that invalidates per-commit health.
+                            keep_commit_health=not history_window_changed,
                         )
                 except Exception as exc:
                     _skip("Git persist", exc)
-                    if require_config_rebuild_success:
+                    # A full walk stamps the history version once persisted,
+                    # so losing its rows here must fail the run, not stamp it.
+                    if require_config_rebuild_success or full_git_summary is not None:
                         raise
                 try:
                     with timed(timings, "persist.commits"):
