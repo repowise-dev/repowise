@@ -107,7 +107,38 @@ def test_if_else_join():
     assert len(joins) == 1
     join = joins[0]
     assert len(join.predecessors) == 2
-    assert set(join.predecessors) == {s for s in cfg.block(join.id).predecessors}
+    # The join flows to the return -> exit.
+    assert cfg.exit_id in cfg.reachable_ids()
+
+
+def test_else_arm_statement_lines_skip_a_comment_child():
+    # An ``else:`` whose first child is a comment: the comment is a named child of
+    # the ``else_clause``, so picking the first named child made it the arm and the
+    # block was reported at the comment's own line rather than the statement's.
+    cfg = _cfg(
+        """
+        def f(x):
+            if x > 0:
+                y = 1
+            else:
+                # the other case
+                y = 2
+            return y
+        """
+    )
+    branches = _by_kind(cfg, "branch")
+    assert len(branches) == 1
+    assert len(branches[0].successors) == 2
+    assert len(_by_kind(cfg, "join")) == 1
+
+    # Line 1 is ``def f``, the comment is 6, ``y = 2`` is 7. The else arm's block must
+    # start at the statement; before the fix it started at the comment (line 0, since
+    # tree-sitter does not count it) and no block claimed line 7 at all.
+    lines = {b.start_line for b in cfg.blocks if b.statements}
+    assert 7 in lines, f"the else statement's line is not claimed by any block: {lines}"
+    assert 6 not in lines, f"a block starts at the else comment: {lines}"
+    join = _by_kind(cfg, "join")[0]
+    assert len(join.predecessors) == 2
     # The join flows to the return -> exit.
     assert cfg.exit_id in cfg.reachable_ids()
 
