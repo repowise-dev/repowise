@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { fileEntityPath } from "../shared/entity/routes";
+import { AllClearStat } from "../shared/empty-state";
 import { truncatePath } from "../lib/format";
 import { healthBand } from "../health/tokens";
 import { formatScore } from "@repowise-dev/types/health";
@@ -457,14 +458,7 @@ function PerformancePillarStat({
       {score == null ? (
         <span className="text-sm text-[var(--color-text-tertiary)]">Not measured</span>
       ) : clear ? (
-        <span className="flex items-baseline gap-1.5">
-          <span className="text-xl font-bold tabular-nums leading-none text-[var(--color-success)]">
-            0
-          </span>
-          <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--color-success)]">
-            All clear
-          </span>
-        </span>
+        <AllClearStat />
       ) : (
         <span className="flex items-baseline gap-1.5">
           <span className="text-xl font-bold tabular-nums leading-none text-[var(--color-text-primary)]">

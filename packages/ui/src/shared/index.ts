@@ -25,6 +25,7 @@ export {
 export { Toaster, toast, type ToasterProps } from "./toast";
 export * from "./breadcrumb";
 export * from "./empty-state";
+export { Callout, type CalloutProps, type CalloutTone } from "./callout";
 export * from "./ci-hint";
 export {
   DismissibleNotice,
