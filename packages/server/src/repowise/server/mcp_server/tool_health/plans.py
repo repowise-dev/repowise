@@ -1,19 +1,13 @@
-"""Refactoring-plan projection for get_health: validation profiles and plan status."""
+"""Refactoring-plan projection for get_health: the queue's plans and plan status."""
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import TYPE_CHECKING, Any
 
-from repowise.server.mcp_server._budget import (
-    OmissionCollector,
-    register_post_enforce,
-    register_post_shed,
-)
-from repowise.server.mcp_server.tool_health.paging import Pager, _stamp_collection
+from repowise.server.mcp_server._budget import register_post_enforce
+from repowise.server.mcp_server.tool_health.paging import Pager
+from repowise.server.mcp_server.tool_health.pillars import _merge_ignored
 from repowise.server.mcp_server.tool_health.request import HealthRequest
-from repowise.server.mcp_server.tool_health.serialize import _serialize_refactoring
 
 if TYPE_CHECKING:
     from repowise.server.mcp_server.tool_health.loading import HealthData
@@ -22,39 +16,35 @@ if TYPE_CHECKING:
 def _render_plans(
     result: dict[str, Any], data: HealthData, req: HealthRequest, pager: Pager
 ) -> None:
-    """The plan list, its shared validation profiles, and why it may be empty.
+    """The queue's plans in queue order, one compact row each, and why the list may be empty.
 
-    Canonical is the shared REST/MCP/CLI order.  File diversity remains
-    available only through the explicitly named ``file_spread`` view.
+    ``refactoring_scope`` and the refactoring filters apply as on the queue;
+    ``get_health(plan_id=...)`` returns one plan in full (detector detail,
+    evidence, validation).
     """
-    recommendations = data.refactoring_recommendations
-    validation_profiles: dict[str, dict[str, Any]] = {}
-    plan_payload = []
-    for recommendation in pager.bound(
-        recommendations, "refactoring_plans", cap=req.plans_cap
-    ):
-        payload = _serialize_refactoring(recommendation, data.reference_repository)
-        validation = payload.pop("validation", None)
-        if validation:
-            profile_id, profile = _validation_profile(validation)
-            validation_profiles.setdefault(profile_id, profile)
-            payload["validation_profile_id"] = profile_id
-        plan_payload.append(payload)
-    result["refactoring_plans"] = plan_payload
-    if validation_profiles:
-        result["validation_profiles"] = list(validation_profiles.values())
-        _stamp_collection(
-            result,
-            "validation_profiles",
-            total=len(validation_profiles),
-            reason="profile_cap",
-        )
-    result["refactoring_plans_total"] = len(data.refactoring_rows)
+    page = data.refactoring_plans
+    rows = [_plan_row(item) for item in page.items] if page is not None else []
+    total = page.total if page is not None else 0
+    result["refactoring_plans"] = rows
+    result["refactoring_plans_total"] = total
+    if page is not None:
+        result["refactoring_plans_scope"] = page.scope
+        # The opportunities the plans are steps of: the queue's own count.
+        result["refactoring_plans_opportunities_total"] = page.opportunities_total
+        if page.hidden is not None:
+            result["refactoring_plans_hidden"] = page.hidden
+        if page.next_offset is not None:
+            pager.recoveries["refactoring_plans"] = (
+                page.next_offset,
+                max(len(rows), 1),
+                total - page.next_offset,
+            )
+    _merge_ignored(result, data.refactoring_plans_ignored)
     if req.wants("refactoring_plans"):
         scoped = data.pop.scoped
         result["refactoring_plans_status"] = _refactoring_plans_status(
-            available_plans_total=len(recommendations),
-            plans_emitted=len(plan_payload),
+            available_plans_total=total,
+            plans_emitted=len(rows),
             scoped=scoped,
             has_eligible_metrics=bool(data.metric_rows if scoped else data.pop.all_metrics),
             finding=next(iter(data.findings.emitted), None),
@@ -64,32 +54,28 @@ def _render_plans(
     # type as ``suggestion_legend``, not per finding: the text is keyed by type.
 
 
-def _validation_profile(validation: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """Deduplicate a plan's repeated tests, targets, and command material."""
-    encoded = json.dumps(validation, sort_keys=True, separators=(",", ":"), default=str)
-    profile_id = "validation_" + hashlib.sha256(encoded.encode()).hexdigest()[:16]
-    tests = list(validation.get("tests") or [])
-    targets = list(validation.get("targets") or [])
-    profile = {
-        key: value
-        for key, value in validation.items()
-        if key not in {"tests", "targets", "commands", "truncated"}
-    }
-    profile.update(
-        {
-            "id": profile_id,
-            "tests": tests,
-            "tests_total": int(validation.get("total") or len(tests)),
-            "tests_emitted": len(tests),
-            "targets": targets,
-            "commands": list(validation.get("commands") or []),
-            "commands_total": len(validation.get("commands") or []),
-            "commands_emitted": len(validation.get("commands") or []),
-        }
-    )
-    if profile["tests_emitted"] < profile["tests_total"]:
-        profile["tests_reduced_reason"] = "analysis_source_cap"
-    return profile_id, profile
+_PLAN_ROW_FIELDS = (
+    "refactoring_type",
+    "file_path",
+    "target_symbol",
+    "line_start",
+    "line_end",
+    "effort_bucket",
+    "confidence",
+    "impact_delta",
+    "source_biomarker",
+    "opportunity_id",
+)
+
+
+def _plan_row(step: dict[str, Any]) -> dict[str, Any]:
+    """One stored step as a list row; the full plan is one ``plan_id`` call away."""
+    row: dict[str, Any] = {"id": step.get("plan_id")}
+    row.update((name, step.get(name)) for name in _PLAN_ROW_FIELDS)
+    row["classification"] = (step.get("applicability") or {}).get("classification")
+    if step.get("relocated_by"):
+        row["relocated_by"] = step["relocated_by"]
+    return row
 
 
 def _finding_next_action(finding: Any, repo: str | None) -> dict[str, Any]:
@@ -160,37 +146,6 @@ def _refactoring_plans_status(
     }
 
 
-def _prune_orphaned_validation_profiles(
-    result: dict[str, Any], collector: OmissionCollector
-) -> None:
-    """Drop profiles whose plan the response budget removed.
-
-    A profile left behind by its shed plan is an id that resolves to nothing.
-    """
-    plans = result.get("refactoring_plans")
-    profiles = result.get("validation_profiles")
-    if not isinstance(plans, list) or not isinstance(profiles, list):
-        return
-    referenced = {
-        plan.get("validation_profile_id")
-        for plan in plans
-        if isinstance(plan, dict) and plan.get("validation_profile_id")
-    }
-    kept = [
-        profile
-        for profile in profiles
-        if isinstance(profile, dict) and profile.get("id") in referenced
-    ]
-    dropped = [profile for profile in profiles if profile not in kept]
-    if not dropped:
-        return
-    collector.add("validation_profiles no longer referenced after response budgeting", dropped)
-    result["validation_profiles"] = kept
-    result["validation_profiles_emitted"] = len(kept)
-    result["validation_profiles_reduced_reason"] = "response_budget"
-    result["truncated"] = True
-
-
 def _reconcile_plan_status(result: dict[str, Any]) -> None:
     """Keep plan availability honest after the final budget mutates collections."""
     status = result.get("refactoring_plans_status")
@@ -208,5 +163,4 @@ def _reconcile_plan_status(result: dict[str, Any]) -> None:
     )
 
 
-register_post_shed("get_health", _prune_orphaned_validation_profiles)
 register_post_enforce("get_health", _reconcile_plan_status)

@@ -550,7 +550,7 @@ async def load_fix_first(
     if full is None:
         full = await _build(session, repository_id, limit=None, scope=scope, item_id=None)
         _remember((*base, None, None), full)
-    queue = full if key[-2:] == (None, None) else _view(full, limit=limit, item_id=item_id)
+    queue = full if key[-2:] == (None, None) else queue_view(full, limit=limit, item_id=item_id)
     _remember(key, queue)
     return queue
 
@@ -568,13 +568,17 @@ def _remember(key: tuple[Any, ...], queue: FixFirstQueue) -> None:
         _cache.popitem(last=False)
 
 
-def _view(full: FixFirstQueue, *, limit: int | None, item_id: str | None) -> FixFirstQueue:
+def queue_view(
+    full: FixFirstQueue, *, limit: int | None, offset: int = 0, item_id: str | None = None
+) -> FixFirstQueue:
     """What ``build_fix_first`` returns for this limit or id, from the full
-    queue: the same items at the same ranks, ``shown`` recounted."""
+    queue: the same items at the same ranks, ``shown`` recounted. ``offset``
+    skips that many items, for a page past the first."""
     if item_id is not None:
         items = tuple(i for i in full.items if i.id == item_id)
     else:
-        items = full.items if limit is None else full.items[: max(limit, 0)]
+        start = max(offset, 0)
+        items = full.items[start:] if limit is None else full.items[start : start + max(limit, 0)]
     return replace(full, items=items, totals=replace(full.totals, shown=len(items)))
 
 
@@ -616,4 +620,4 @@ async def _build(
     )
 
 
-__all__ = ["CACHE_SIZE", "FINDING_FILES", "clear_fix_first_cache", "load_fix_first"]
+__all__ = ["CACHE_SIZE", "FINDING_FILES", "clear_fix_first_cache", "load_fix_first", "queue_view"]

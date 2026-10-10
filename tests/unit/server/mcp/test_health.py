@@ -232,6 +232,8 @@ async def _seed_plans(session, rid, plans):
             for p in plans
         ],
     )
+    # The plan list is a view of the opportunity queue the finalizer composes.
+    await crud.finalize_refactoring_opportunities(session, rid)
     await session.commit()
 
 
@@ -272,28 +274,6 @@ async def test_entity_recovery_retains_health_semantics_and_freshness(
     assert plan_detail["plan"]["id"] == plan["id"]
     assert plan_detail["plan"]["file_path"] == plan["file_path"]
     assert plan_detail["_meta"]["health_analysis"]["recomputed_this_call"] is False
-
-
-def test_validation_profiles_deduplicate_without_dropping_commands_or_target_tests():
-    from repowise.server.mcp_server.tool_health import _validation_profile
-
-    validation = {
-        "tests": ["tests/test_service.py::test_auth"],
-        "total": 1,
-        "commands": ["pytest tests/test_service.py::test_auth"],
-        "targets": [
-            {
-                "file_path": "src/auth/service.py",
-                "tests": ["tests/test_service.py::test_auth"],
-                "total": 1,
-            }
-        ],
-    }
-    _profile_id, profile = _validation_profile(validation)
-
-    assert profile["commands"] == validation["commands"]
-    assert profile["commands_total"] == profile["commands_emitted"] == 1
-    assert profile["targets"][0]["tests"] == validation["targets"][0]["tests"]
 
 
 @pytest.mark.asyncio
@@ -500,7 +480,8 @@ async def test_get_health_dashboard_leads_with_fix_first(setup_mcp, health_data)
 
     block = (await get_health())["fix_first"]
     lead = block["lead"]
-    assert lead == block["items"][0]
+    # Only the lead carries its next call; every item's is one fix_id away.
+    assert {k: v for k, v in lead.items() if k != "next_call"} == block["items"][0]
     # The file's strongest code-shape finding, said in plain words.
     assert lead["kind"] == "finding"
     assert lead["target"]["file_path"] == "src/auth/service.py"
@@ -1058,10 +1039,9 @@ async def test_include_names_work_as_only_aliases(setup_mcp, health_data, alias,
     if resolved == "refactoring_plans":
         allowed |= {
             "refactoring_plans_status",
-            "validation_profiles",
-            "validation_profiles_total",
-            "validation_profiles_emitted",
-            "validation_profiles_reduced_reason",
+            "refactoring_plans_scope",
+            "refactoring_plans_hidden",
+            "refactoring_plans_opportunities_total",
         }
     assert set(result) - {"mode", "targets", "_meta"} <= allowed
 
@@ -1475,19 +1455,16 @@ async def test_coverage_carries_its_trend_capped_to_the_newest_points(
 
 
 @pytest.mark.asyncio
-async def test_refactoring_plans_spread_across_files(setup_mcp, health_data, session):
-    """The explicit file_spread view spreads the cap without changing rank.
+async def test_refactoring_plans_follow_the_queue_in_queue_order(setup_mcp, health_data, session):
+    """The plan list is a view of the opportunity queue: each opportunity's
+    steps together, opportunities in the queue's order, paged by plan.
 
-    ``deficit_by_path`` is a *file* property, so a pure deficit sort puts every
-    plan on the worst file ahead of every plan on the second worst. Measured on
-    this repo's own index before the fix, asking for the top 8 plans returned 8
-    plans on a single file out of 1,903 — an agent asking "what should I
-    refactor?" got no view of the repo at all. Filed as C4.
+    The old list ranked every stored plan per request, capped it at six and
+    then lost most of those to the response budget: on large repositories a
+    request for 15 plans returned 2 or 3, all performance fixes.
     """
     from repowise.server.mcp_server import get_health
 
-    # Six plans on the worst file, two on the other. Impact descends within the
-    # worst file so a deficit-then-impact sort would take all six of them first.
     await _seed_plans(
         session,
         health_data,
@@ -1510,32 +1487,49 @@ async def test_refactoring_plans_spread_across_files(setup_mcp, health_data, ses
             for i in range(2)
         ],
     )
+    queue = await get_health(
+        include=["refactoring"], only=["refactoring_opportunities"], refactoring_scope="all"
+    )
+    order = [row["opportunity_id"] for row in queue["refactoring_opportunities"]]
+    steps = {row["opportunity_id"]: row["steps_total"] for row in queue["refactoring_opportunities"]}
 
-    plans = (
+    first = await get_health(
+        include=["refactoring"], only=["refactoring_plans"], limit=4, refactoring_scope="all"
+    )
+    plans = first["refactoring_plans"]
+    assert len(plans) == 4
+    assert first["refactoring_plans_total"] == sum(steps.values()) == 8
+    assert first["refactoring_plans_opportunities_total"] == len(order)
+    assert first["refactoring_plans_scope"] == "all"
+    # The next page keeps the scope it was asked under.
+    call = first["recovery"]["refactoring_plans"]["call"]
+    assert "refactoring_scope='all'" in call and call.endswith("cursor=4)")
+
+    rest = (
         await get_health(
             include=["refactoring"],
             only=["refactoring_plans"],
-            limit=4,
-            refactoring_view="file_spread",
+            limit=25,
+            cursor=4,
+            refactoring_scope="all",
         )
     )["refactoring_plans"]
-    assert len(plans) == 4
-    # Both files are represented rather than the worst file owning the list.
-    assert len({p["file_path"] for p in plans}) == 2
-    # The worst file still leads — spreading reorders within the cap, it does
-    # not demote the worst file.
-    assert plans[0]["file_path"] == "src/auth/service.py"
-    # Within a file, the higher-impact plan still comes first.
-    worst = [p["target_symbol"] for p in plans if p["file_path"] == "src/auth/service.py"]
-    assert worst == sorted(worst, key=lambda t: int(t.split("_")[1]))
+    every = plans + rest
+    assert len(every) == 8 and len({p["id"] for p in every}) == 8
+    # Opportunities in queue order, each one's steps contiguous.
+    seen = [p["opportunity_id"] for p in every]
+    assert list(dict.fromkeys(seen)) == order
+    assert seen == sorted(seen, key=order.index)
+    # A row is compact; the full plan is one call away and agrees with it.
+    detail = await get_health(plan_id=every[0]["id"])
+    assert detail["plan"]["file_path"] == every[0]["file_path"]
+    assert "plan" not in every[0] and "evidence" not in every[0]
 
 
 @pytest.mark.asyncio
-async def test_refactoring_spread_is_exhaustive_when_one_file_has_them_all(
-    setup_mcp, health_data, session
-):
-    """One file holding every plan must still fill the cap — the round-robin
-    drains a file's queue rather than capping it at one row per file."""
+async def test_refactoring_plans_honour_scope(setup_mcp, health_data, session):
+    """``refactoring_scope="all"`` lists the inventory; the default lists what
+    Fix first takes and counts the rest by reason, as the queue does."""
     from repowise.server.mcp_server import get_health
 
     await _seed_plans(
@@ -1543,20 +1537,94 @@ async def test_refactoring_spread_is_exhaustive_when_one_file_has_them_all(
         health_data,
         [
             {
-                "file_path": "src/auth/service.py",
-                "target_symbol": f"only_{i}",
+                "file_path": "src/utils/helpers.py",
+                "target_symbol": "tiny",
                 "source_biomarker": "complex_method",
-                "impact_delta": 5.0 - i,
+                "impact_delta": 0.01,
             }
-            for i in range(5)
         ],
     )
+    asked = {"include": ["refactoring"], "only": ["refactoring_plans"], "limit": 15}
+    default = await get_health(**asked)
+    everything = await get_health(**asked, refactoring_scope="all")
+    queue = await get_health(
+        include=["refactoring"], only=["refactoring_opportunities"], refactoring_scope="all"
+    )
 
-    plans = (
-        await get_health(include=["refactoring"], only=["refactoring_plans"], limit=4)
-    )["refactoring_plans"]
-    assert len(plans) == 4
-    assert {p["file_path"] for p in plans} == {"src/auth/service.py"}
+    assert default["refactoring_plans_scope"] == "fix_first"
+    assert everything["refactoring_plans_scope"] == "all"
+    assert everything["refactoring_plans_opportunities_total"] == (
+        queue["refactoring_opportunities_total"]
+    )
+    hidden = default["refactoring_plans_hidden"]["total"]
+    assert default["refactoring_plans_opportunities_total"] + hidden == (
+        everything["refactoring_plans_opportunities_total"]
+    )
+    assert hidden >= 1
+    assert default["refactoring_plans_total"] < everything["refactoring_plans_total"]
+
+
+@pytest.mark.asyncio
+async def test_fix_first_named_page_honours_limit_and_cursor(setup_mcp, health_data):
+    """``only=["fix_first"]`` pages the queue by ``limit`` (up to 25) and
+    ``cursor``; the bare dashboard keeps its five-item head. Both carry the
+    count vocabulary and the same lead."""
+    from repowise.server.mcp_server import get_health
+    from repowise.server.mcp_server.tool_health.loading import (
+        FIX_FIRST_CAP,
+        FIX_FIRST_PAGE_CAP,
+    )
+
+    dashboard = (await get_health(limit=50))["fix_first"]
+    whole = await get_health(only=["fix_first"], limit=50)
+    block = whole["fix_first"]
+    eligible = block["counts"]["eligible"]
+    assert eligible >= 1
+    assert len(dashboard["items"]) == min(eligible, FIX_FIRST_CAP)
+    assert len(block["items"]) == min(eligible, FIX_FIRST_PAGE_CAP)
+    assert block["items_total"] == eligible
+    counts = block["counts"]
+    assert set(counts) == {"inventory", "in_scope", "eligible", "due", "shown", "excluded"}
+    assert counts["inventory"] >= counts["in_scope"] >= counts["eligible"] >= counts["due"]
+    assert counts["shown"] == len(block["items"])
+    assert all(n > 0 for n in counts["excluded"].values())
+
+    first = await get_health(only=["fix_first"], limit=1)
+    assert len(first["fix_first"]["items"]) == 1
+    if eligible > 1:
+        assert first["recovery"]["fix_first"]["call"].endswith("cursor=1)")
+    else:
+        assert "fix_first" not in (first.get("recovery") or {})
+    second = (await get_health(only=["fix_first"], limit=1, cursor=1))["fix_first"]
+    assert second["cursor"] == 1
+    assert second["items"] == block["items"][1:2]
+    # The lead is the queue's, whatever page is shown.
+    assert second["lead"] == block["lead"] == dashboard["lead"]
+
+
+def test_fix_first_counts_split_scope_from_worth():
+    from repowise.core.analysis.health.fix_first.model import FixFirstQueue, FixTotals
+
+    excluded = dict.fromkeys(("test", "tooling", "below_min_worth", "vendored"), 0)
+    excluded.update(test=4, tooling=1, below_min_worth=3)
+    queue = FixFirstQueue(totals=FixTotals(candidates=10, eligible=2, shown=2, excluded=excluded))
+    assert queue.counts(shown=1) == {
+        "inventory": 10,
+        "in_scope": 5,
+        "eligible": 2,
+        "due": 0,
+        "shown": 1,
+        "excluded": {"test": 4, "tooling": 1, "below_min_worth": 3},
+    }
+
+
+@pytest.mark.asyncio
+async def test_unknown_only_keys_are_rejected_with_a_hint(setup_mcp, health_data):
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(only=["performance"])
+    assert result["unknown_only_keys"] == ["performance"]
+    assert "performance_opportunities" in result["unknown_only_keys_hint"]
 
 
 @pytest.mark.asyncio

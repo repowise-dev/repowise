@@ -19,12 +19,7 @@ from repowise.core.analysis.health.fix_first import FixFirstQueue
 from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
 from repowise.core.analysis.health.ranking import deduction_by_path, sort_metrics_worst_first
-from repowise.core.analysis.health.refactoring.recommendations import (
-    Recommendation,
-    detail_recommendations,
-    hydrate_recommendations,
-)
-from repowise.core.analysis.health.refactoring.serving import plan_view
+from repowise.core.analysis.health.refactoring.serving import parse_query as parse_refactoring_query
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import project_scope
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
@@ -36,13 +31,12 @@ from repowise.core.persistence.crud import (
     get_git_metadata_bulk,
     get_hotspot_file_paths,
     get_node_degree_counts_bulk,
-    get_refactoring_suggestions,
     get_test_file_paths,
     list_health_snapshots,
     load_coverage_for_repo,
     load_coverage_history,
 )
-from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+from repowise.core.persistence.crud.analysis.fix_first import load_fix_first, queue_view
 from repowise.core.persistence.models import HealthFileMetric
 from repowise.server.mcp_server._helpers import filter_rows_by_attr
 from repowise.server.mcp_server.tool_health.findings import (
@@ -61,11 +55,19 @@ from repowise.server.mcp_server.tool_health.population import Population, load_p
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.mcp_server.tool_health.summary import _leads_by_file
 from repowise.server.services.performance_health import PerformanceHealthService
-from repowise.server.services.refactoring_health import RefactoringHealthService
+from repowise.server.services.refactoring_health import (
+    RefactoringHealthService,
+    RefactoringPlanPage,
+)
 
 FIX_FIRST_CAP = 5
-"""Items in the dashboard's ``fix_first`` block, however large ``limit`` is.
-The rest are one ``get_health(fix_id=...)`` or REST page away."""
+"""Items in the bare dashboard's ``fix_first`` block, however large ``limit`` is.
+The rest are one ``only=["fix_first"]`` page or ``get_health(fix_id=...)`` away."""
+
+FIX_FIRST_PAGE_CAP = 25
+"""Items one ``only=["fix_first"]`` page emits: ``limit`` up to this, ``cursor``
+for the next page. Measured at about 15k chars for 25 items on a large
+repository, inside the default 24k budget; the budget trims the tail beyond."""
 
 
 @dataclass
@@ -87,8 +89,9 @@ class HealthData:
     perf_coverage: PerfCoverage | None = None
     perf_findings_count: int = 0
     accuracy_rows: list[Any] = field(default_factory=list)
-    refactoring_rows: list[Any] = field(default_factory=list)
-    refactoring_recommendations: list[Recommendation] = field(default_factory=list)
+    #: The queue's plans, read only when ``refactoring_plans`` is named.
+    refactoring_plans: RefactoringPlanPage | None = None
+    refactoring_plans_ignored: dict[str, str] = field(default_factory=dict)
     coverage_rows: list[Any] = field(default_factory=list)
     coverage_summary: dict[str, Any] = field(default_factory=dict)
     coverage_history: list[dict[str, Any]] = field(default_factory=list)
@@ -98,6 +101,8 @@ class HealthData:
     churn_points: list[dict[str, Any]] = field(default_factory=list)
     snapshots: list[Any] = field(default_factory=list)
     fix_first: FixFirstQueue | None = None
+    #: The whole queue the page was cut from: its lead and its counts.
+    fix_first_full: FixFirstQueue | None = None
     # Dashboard only: the worst-first test files, ranked apart from
     # ``metric_rows`` so a test never heads the production worklist.
     test_metric_rows: list[HealthFileMetric] = field(default_factory=list)
@@ -150,8 +155,8 @@ async def load_health_data(
         session, repository, pop, req, findings.lead_rows
     )
     data.accuracy_rows = await read_accuracy_rows(session, repository, pop, req)
-    data.refactoring_rows, data.refactoring_recommendations = await _read_refactoring_plans(
-        session, repository, pop, req
+    data.refactoring_plans, data.refactoring_plans_ignored = await _read_refactoring_plans(
+        session, repository, reference_repository, pop, req
     )
     data.refactoring, data.performance = await _read_pillars(
         session, repository, reference_repository, pop, req
@@ -168,7 +173,7 @@ async def load_health_data(
     data.by_leverage, data.leads = _rank_leverage_and_leads(
         pop, metric_rows, findings, req, data.test_metric_rows
     )
-    data.fix_first = await _read_fix_first(session, repository, pop, req)
+    data.fix_first, data.fix_first_full = await _read_fix_first(session, repository, pop, req)
     return data
 
 
@@ -220,37 +225,27 @@ async def _read_perf_headline(
 
 
 async def _read_refactoring_plans(
-    session: Any, repository: Any, pop: Population, req: HealthRequest
-) -> tuple[list[Any], list[Recommendation]]:
-    """Plans scoped to the same targets, exclude-filtered like findings."""
+    session: Any, repository: Any, reference_repository: str, pop: Population, req: HealthRequest
+) -> tuple[RefactoringPlanPage | None, dict[str, str]]:
+    """The queue's plans, scoped, filtered and ordered as the queue is.
+
+    ``refactoring_scope`` resolves as on the opportunity queue: ``fix_first``
+    for the repository, ``all`` once targets are named.
+    """
     if not req.plans_requested or pop.nothing_resolved:
-        return [], []
-    rows = pop.in_scope_rows(
-        await get_refactoring_suggestions(
-            session,
-            repository.id,
-            file_paths=list(pop.effective_targets) if pop.scoped else None,
-        ),
-        "file_path",
+        return None, {}
+    query, ignored = parse_refactoring_query(
+        view=req.refactoring_view,
+        lead_type=req.refactoring_type,
+        confidence=req.refactoring_confidence,
+        effort=req.refactoring_effort,
+        scope=req.refactoring_scope,
+        file_paths=pop.target_paths,
+        limit=req.plans_cap,
+        offset=req.cursor,
     )
-    recommendations = await hydrate_recommendations(
-        session,
-        repository.id,
-        rows,
-        metric_rows=pop.all_metrics,
-        view=plan_view(req.refactoring_view),
-        rank_only=True,
-    )
-    # Every row is ranked; only the page the response emits, and the lede's
-    # lead plan, need the evidence that orders their tests.
-    shown = {0, *range(req.cursor, req.cursor + req.plans_cap)}
-    indexes = [index for index in sorted(shown) if index < len(recommendations)]
-    detailed = await detail_recommendations(
-        session, repository.id, [recommendations[index] for index in indexes]
-    )
-    for index, item in zip(indexes, detailed, strict=True):
-        recommendations[index] = item
-    return rows, recommendations
+    service = RefactoringHealthService(session, repository.id, reference_repository)
+    return await service.plan_page(query), ignored
 
 
 async def _read_pillars(
@@ -433,12 +428,19 @@ def _rank_leverage_and_leads(
 
 async def _read_fix_first(
     session: Any, repository: Any, pop: Population, req: HealthRequest
-) -> FixFirstQueue | None:
-    """The dashboard's one lead: the Fix-first queue core builds from stored rows.
+) -> tuple[FixFirstQueue | None, FixFirstQueue | None]:
+    """The dashboard's one lead: the Fix-first queue core builds from stored rows,
+    as the page this call emits and the whole queue.
 
     Always the production population, whatever ``scope`` says: a test file is
-    never the first thing to fix.
+    never the first thing to fix. The full queue is cached per store write, so
+    the page and the whole queue cost one build.
     """
     if pop.scoped or not req.wants("fix_first"):
-        return None
-    return await load_fix_first(session, repository.id, limit=min(req.limit, FIX_FIRST_CAP))
+        return None, None
+    full = await load_fix_first(session, repository.id, limit=None)
+    if req.pages_fix_first:
+        page = queue_view(full, limit=min(req.limit, FIX_FIRST_PAGE_CAP), offset=req.cursor)
+    else:
+        page = queue_view(full, limit=min(req.limit, FIX_FIRST_CAP))
+    return page, full

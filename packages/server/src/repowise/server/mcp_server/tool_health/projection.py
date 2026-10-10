@@ -32,14 +32,15 @@ _ALWAYS_KEPT = frozenset(
     }
 )
 
+# The miss seen in practice is a dimension or pillar name passed as a key.
+_UNKNOWN_ONLY_HINT = (
+    "`only` names response keys, such as fix_first, top_findings, "
+    "performance_opportunities or refactoring_plans; a dimension such as "
+    "performance is an `include` value. See docs/agent/MCP_TOOLS.md."
+)
+
 _PLAN_COMPANIONS = frozenset(
-    {
-        "refactoring_plans_status",
-        "validation_profiles",
-        "validation_profiles_total",
-        "validation_profiles_emitted",
-        "validation_profiles_reduced_reason",
-    }
+    {"refactoring_plans_status", "refactoring_plans_opportunities_total"}
 )
 
 
@@ -119,4 +120,5 @@ def _project(
     if unknown:
         result["unknown_only_keys"] = unknown
         _stamp_collection(result, "unknown_only_keys", total=len(unknown))
+        result["unknown_only_keys_hint"] = _UNKNOWN_ONLY_HINT
     return result

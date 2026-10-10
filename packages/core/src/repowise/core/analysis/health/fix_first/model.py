@@ -62,6 +62,13 @@ FixExclusion = Literal[
 ]
 FIX_EXCLUSIONS: tuple[str, ...] = get_args(FixExclusion)
 
+#: Exclusions that say where the code lives, not whether the work is worth
+#: doing: a unit excluded for one of these was never in scope.
+SCOPE_EXCLUSIONS = frozenset({"test", "tooling", "generated", "vendored", "docs_example"})
+
+#: Tiers a unit is due in: worth scheduling now, not just worth listing.
+DUE_TIERS = frozenset({"now", "next"})
+
 FixScope = Literal["production", "all"]
 FIX_SCOPES: tuple[str, ...] = get_args(FixScope)
 
@@ -256,8 +263,28 @@ class FixFirstQueue:
             "basis": dict(self.basis),
         }
 
+    def counts(self, shown: int) -> dict[str, Any]:
+        """The five-level count vocabulary, on the full queue (``limit=None``).
+
+        ``inventory`` every unit the builder considered; ``in_scope`` those not
+        excluded by :data:`SCOPE_EXCLUSIONS`; ``eligible`` those that became an
+        item; ``due`` eligible items in a :data:`DUE_TIERS` tier; ``shown`` what
+        the caller emits; ``excluded`` every non-zero exclusion, by reason.
+        """
+        excluded = {reason: n for reason, n in self.totals.excluded.items() if n}
+        out_of_scope = sum(n for reason, n in excluded.items() if reason in SCOPE_EXCLUSIONS)
+        return {
+            "inventory": self.totals.candidates,
+            "in_scope": self.totals.candidates - out_of_scope,
+            "eligible": self.totals.eligible,
+            "due": sum(1 for item in self.items if item.tier in DUE_TIERS),
+            "shown": shown,
+            "excluded": excluded,
+        }
+
 
 __all__ = [
+    "DUE_TIERS",
     "EFFORT_RANK",
     "FIX_EFFORTS",
     "FIX_EXCLUSIONS",
@@ -270,6 +297,7 @@ __all__ = [
     "FIX_SCOPES",
     "FIX_TIERS",
     "LEVEL_RANK",
+    "SCOPE_EXCLUSIONS",
     "TIER_RANK",
     "FixAction",
     "FixConfidence",

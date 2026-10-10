@@ -22,6 +22,9 @@ _ONLY_ALIASES = {
     "refactoring": "refactoring_plans",
 }
 
+PLANS_PAGE_CAP = 25
+"""Refactoring plans one response emits; ``cursor`` pages on."""
+
 _RANKED_DIMENSIONS_DEFAULT = {"defect", "maintainability"}
 """Dimensions the impact-ranked findings list carries when none is asked for."""
 
@@ -116,8 +119,15 @@ class HealthRequest:
 
     @property
     def plans_cap(self) -> int:
-        """How many refactoring plans one response emits, whatever ``limit`` says."""
-        return min(self.limit, 6)
+        """How many refactoring plans one response emits: ``limit``, up to
+        :data:`PLANS_PAGE_CAP`. Plans are compact rows, so a full page fits the budget."""
+        return min(self.limit, PLANS_PAGE_CAP)
+
+    @property
+    def pages_fix_first(self) -> bool:
+        """``fix_first`` named in ``only``: the queue pages by ``limit`` and
+        ``cursor`` instead of the bare dashboard's fixed head."""
+        return "fix_first" in self.only_set
 
     def wants(self, block: str) -> bool:
         """True when ``block`` survives the ``only`` projection.

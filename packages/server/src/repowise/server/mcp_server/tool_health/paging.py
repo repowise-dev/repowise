@@ -9,10 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from repowise.core.analysis.health.refactoring.recommendations import Recommendation
 from repowise.server.mcp_server._budget import OmissionCollector
-from repowise.server.mcp_server.tool_health.request import HealthRequest
-from repowise.server.mcp_server.tool_health.serialize import _serialize_refactoring
+from repowise.server.mcp_server.tool_health.request import PLANS_PAGE_CAP, HealthRequest
 
 _PAGED_COLLECTIONS = frozenset(
     {
@@ -37,10 +35,11 @@ _PAGED_COLLECTIONS = frozenset(
 )
 
 # The queues page six at a time whatever ``limit`` says; see the pillar caps.
-_QUEUE_COLLECTIONS = frozenset(
-    {"refactoring_plans", "refactoring_opportunities", "performance_opportunities"}
-)
+_QUEUE_COLLECTIONS = frozenset({"refactoring_opportunities", "performance_opportunities"})
 _QUEUE_PAGE = 6
+
+#: A collection's fixed page, for naming a cut below ``limit`` a cap.
+_COLLECTION_CAPS = {"refactoring_plans": PLANS_PAGE_CAP, "performance_opportunities": _QUEUE_PAGE}
 
 
 class Pager:
@@ -96,13 +95,14 @@ class Pager:
                 "call": (
                     f"get_health(targets={req.raw_targets!r}, include={list(req.include or [])!r}, "
                     f"repo={req.repo!r}, limit={next_limit}, only={[root]!r}, "
-                    f"refactoring_view='{req.refactoring_view}', cursor={next_cursor})"
+                    f"refactoring_view='{req.refactoring_view}'{_queue_filters(req)}, "
+                    f"cursor={next_cursor})"
                 ),
             }
         return recovery or None
 
     def report_omissions(
-        self, result: dict[str, Any], collector: OmissionCollector, reference_repository: str
+        self, result: dict[str, Any], collector: OmissionCollector
     ) -> None:
         """Hand every dropped tail whose block survived to the omission store."""
         for label, dropped in self.omissions.items():
@@ -110,13 +110,32 @@ class Pager:
             if root in result:
                 collector.add(
                     f"{label} beyond emitted cap ({len(dropped)} dropped)",
-                    [_omitted_row(row, reference_repository) for row in dropped],
+                    [_omitted_row(row) for row in dropped],
                 )
 
 
-def _omitted_row(row: Any, reference_repository: str) -> Any:
-    if isinstance(row, Recommendation):
-        return _serialize_refactoring(row, reference_repository)
+_QUEUE_FILTERS = (
+    "refactoring_type",
+    "refactoring_confidence",
+    "refactoring_effort",
+    "refactoring_scope",
+    "performance_view",
+    "performance_context",
+    "performance_boundary",
+    "performance_confidence",
+    "performance_actionability",
+    "performance_sort",
+)
+
+
+def _queue_filters(req: HealthRequest) -> str:
+    """The queue filters the call set, so the next page reads the same queue."""
+    return "".join(
+        f", {name}={value!r}" for name in _QUEUE_FILTERS if (value := getattr(req, name)) is not None
+    )
+
+
+def _omitted_row(row: Any) -> Any:
     return row.as_dict() if hasattr(row, "as_dict") else row
 
 
@@ -127,11 +146,10 @@ def _stamp_collection_totals(
     for key, total in totals.items():
         if total is None:
             continue
+        cap = _COLLECTION_CAPS.get(key)
         cap_reason = (
             "collection_cap"
-            if key in {"refactoring_plans", "performance_opportunities"}
-            and limit > _QUEUE_PAGE
-            and len(result.get(key, [])) == _QUEUE_PAGE
+            if cap is not None and limit > cap and len(result.get(key, [])) == cap
             else "limit"
         )
         _stamp_collection(result, key, total=total, reason=cap_reason)

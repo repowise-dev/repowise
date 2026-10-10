@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from repowise.core.analysis.health.aggregation import module_rollups as _module_rollups
 from repowise.server.mcp_server.tool_health.coverage import _attach_coverage_decay
-from repowise.server.mcp_server.tool_health.plans import _validation_profile
 from repowise.server.mcp_server.tool_health.serialize import (
     _health_finding_id,
     _perf_rank,
@@ -28,6 +27,5 @@ __all__ = [
     "_rank_emitted",
     "_refactoring_plan_id",
     "_serialize_refactoring",
-    "_validation_profile",
     "get_health",
 ]

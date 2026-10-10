@@ -323,14 +323,14 @@ Code-health scores and findings from the stored analysis, across defect risk, ma
 |-----------|------|---------|---------|
 | `targets` | list[string] | none (dashboard) | File paths or `module:<name>`. Misses are named in `unresolved` |
 | `include` | list[string] | none | Blocks: `biomarkers`, `refactoring`, `trend`, `coverage`, `accuracy`, `signals`, `churn_complexity`, `doc_drift`, `semantics`, `unverified`. Dimension filters: `performance`, `defect`, `maintainability`, `advisory` |
-| `only` | list[string] | none | Keep just these top-level keys; identity, totals and recovery fields always survive |
-| `limit` | int | `20` | Max rows in every ranked list, capped at 50; `0` for none |
-| `cursor` | int | `0` | Offset into a ranked list; the `recovery` block names the next call |
+| `only` | list[string] | none | Keep just these top-level keys; identity, totals and recovery fields always survive. An unknown key is named in `unknown_only_keys` with `unknown_only_keys_hint` |
+| `limit` | int | `20` | Max rows in every ranked list, capped at 50; `0` for none. `fix_first` shows five on the bare dashboard and up to 25 when named in `only`; `refactoring_plans` up to 25 |
+| `cursor` | int | `0` | Offset into a ranked list (and into `fix_first` when named in `only`); the `recovery` block names the next call |
 | `fix_id` | string | none | Open one `fix_first` item in full |
 | `finding_id`, `plan_id` | string | none | Open one finding or refactoring plan by id |
 | `opportunity_id` | string | none | Open one opportunity: `perf...` for performance, `refop...` for a refactoring |
 | `refactoring_view` | string | `"diversified"` | `diversified`, `canonical` or `file_spread` |
-| `refactoring_scope` | string | `fix_first` without targets, `all` with | Which open refactoring opportunities to list |
+| `refactoring_scope` | string | `fix_first` without targets, `all` with | Which open refactoring opportunities, and their plans, to list |
 | `refactoring_type`, `refactoring_confidence`, `refactoring_effort` | string | none | Refactoring queue filters |
 | `performance_view` | string | `detail` | `detail` or `summary` |
 | `performance_context` | string | `production` | `production`, `tooling`, `test`, `unknown` or `all` |
@@ -341,13 +341,15 @@ Code-health scores and findings from the stored analysis, across defect risk, ma
 
 Only one of `fix_id`, `finding_id`, `plan_id`, `opportunity_id` per call; passing two returns `mode: "conflict"`.
 
-**Key return fields:** `mode`, `fix_first` (`lead`, up to five `items` each with a `next_call`, `totals`), `kpis`, `gap_analysis`, `worst_files`, `high_leverage_files` (ranked by `weighted_deficit`), `top_findings`, `unresolved`, and the opt-in blocks you named. `_meta.health_analysis` says whether stored analysis exists and which commit it describes.
+**Key return fields:** `mode`, `fix_first` (`lead` with its `next_call`, up to five `items`, `counts`, `totals`), `kpis`, `gap_analysis`, `worst_files`, `high_leverage_files` (ranked by `weighted_deficit`), `top_findings`, `unresolved`, and the opt-in blocks you named. `_meta.health_analysis` says whether stored analysis exists and which commit it describes.
 
 The response is bounded. Pair `include` with `only` to keep one block, e.g. `get_health(include=["refactoring"], only=["refactoring_opportunities"])`.
 
 ```
-get_health(only=["fix_first"])
+get_health(only=["fix_first"], limit=25)
+get_health(only=["fix_first"], limit=25, cursor=25)
 get_health(fix_id="fix1_...")
+get_health(include=["refactoring"], only=["refactoring_plans"], limit=15, refactoring_scope="all")
 get_health(targets=["src/api/server.py"], include=["signals"])
 get_health(include=["performance"], only=["performance_summary"])
 get_health(include=["coverage"], only=["coverage"])

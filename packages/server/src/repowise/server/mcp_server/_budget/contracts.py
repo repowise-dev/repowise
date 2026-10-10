@@ -323,11 +323,14 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "performance_summary",
             "high_leverage_files[]",
             "secondary_rankings",
+            # A named page holds up to 25 items; its tail goes last of all.
+            "fix_first.items[]",
         ),
         protected=(
             "mode",
-            # The one lead, bounded by construction (at most five compact
-            # items): shedding it would leave the dashboard with nothing to do.
+            # The one lead: shedding the block would leave the dashboard with
+            # nothing to do. Bounded by construction (five compact items, or
+            # one named page), and only its page's tail is ever trimmed.
             "fix_first",
             "fix_id",
             "opportunity_id",

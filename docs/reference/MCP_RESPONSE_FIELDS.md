@@ -107,7 +107,7 @@ The key is absent when every argument was understood. One entry per argument.
 
 ## Next-call shape
 
-Every suggested follow-up (`get_health`'s `fix_first[].next_call`, the refactoring and performance summaries' `next_call`, `get_risk`'s `directive.next_calls`) has one shape:
+Every suggested follow-up (`get_health`'s `fix_first.lead.next_call`, the refactoring and performance summaries' `next_call`, `get_risk`'s `directive.next_calls`) has one shape:
 
 | Field | Meaning |
 |-------|---------|
@@ -325,8 +325,10 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 
 | Field | Meaning |
 |-------|---------|
-| `lead` | Equal to `items[0]` |
-| `items` | Up to five: `id`, `tier`, `kind`, `title`, `target`, `why`, `gain`, `effort`, `confidence`, `next_call` |
+| `lead` | The queue's first item, whatever page `items` is, with its `next_call` |
+| `items` | Up to five on the bare dashboard; with `only=["fix_first"]`, `limit` items (at most 25) from `cursor`, and `recovery.fix_first` names the next page. Each: `id`, `tier`, `kind`, `title`, `target`, `why`, `gain`, `effort`, `confidence`; `get_health(fix_id=...)` returns one in full, with its `next_call` |
+| `items_total`, `cursor` | The eligible items `items` was cut from, and where the page starts |
+| `counts` | `inventory` (every unit considered), `in_scope` (less units excluded for where the code lives: `test`, `tooling`, `generated`, `vendored`, `docs_example`), `eligible` (became an item), `due` (eligible items in tier `now` or `next`), `shown` (items in this response), `excluded` (every non-zero exclusion, by reason) |
 | `tier` | `now` (worth doing, safe to start), `next` (worth doing, needs judgment), `later` |
 | `kind` | `refactor` (one file's composed refactoring), `perf_fix` (one intervention with its sinks), `finding` (a code-shape finding with no plan) |
 | `totals` | `candidates`, `eligible`, `shown`, `excluded` counted by reason (`gated_off`: a constant flag in the same file switches the function off; `unreachable`: sure dead code, delete it), and `dormant`: distinct functions kept out as `gated_off` |
@@ -365,7 +367,7 @@ Provisional finding types appear only with `include=["unverified"]`, each marked
 | `semantics` | `_meta.health_semantics`: the legend for deficit points and percentiles |
 | `performance`, `defect`, `maintainability`, `advisory` | Filter findings to one dimension; `performance` also adds the performance queue |
 
-`only` aliases: `biomarkers` -> `findings`, `accuracy` -> `defect_accuracy`, `refactoring` -> `refactoring_plans`. Dimension names have no single key and land in `unknown_only_keys`; for `signals` in targeted mode, name `metrics`.
+`only` aliases: `biomarkers` -> `findings`, `accuracy` -> `defect_accuracy`, `refactoring` -> `refactoring_plans`. Dimension names have no single key and land in `unknown_only_keys`, beside `unknown_only_keys_hint`; for `signals` in targeted mode, name `metrics`.
 
 ### Refactoring
 
@@ -373,7 +375,7 @@ Provisional finding types appear only with `include=["unverified"]`, each marked
 
 `get_health(opportunity_id="refop...")` returns full steps, member plans, the validation profile and `next_actions`; `only=["refactoring_evidence"]` with `cursor` pages the evidence. `found` says whether the id matched; `status` is `open`, `acknowledged`, `resolved` or `false_positive`. `refactoring_summary` rolls up by type, effort, confidence and lifecycle.
 
-`refactoring_plans` is the raw per-detector list, returned only when named in `only`: `extract_class` (cohesion `groups`), `extract_helper` (clone `occurrences`, `suggested_site`), `move_method`, `break_cycle` (`cut_edges`). Each carries `evidence`, `impact_delta`, `effort_bucket`, `blast_radius`, `file_weighted_deficit` and an `id` for `generate_refactoring_code`. An empty requested list has `refactoring_plans_status.reason`: `no_applicable_findings`, `plan_analysis_indeterminate`, `no_eligible_targets` or `analysis_unavailable`. See [REFACTORING.md](../layers/REFACTORING.md).
+`refactoring_plans`, returned only when named in `only`, lists the plans of the refactoring queue in queue order: each opportunity's steps together, in step order, under the same `refactoring_scope`, filters and view as `refactoring_opportunities`, up to 25 per page. A row is compact: `id` (for `plan_id` and `generate_refactoring_code`), `refactoring_type`, `file_path`, `target_symbol`, `line_start`, `line_end`, `effort_bucket`, `confidence`, `impact_delta`, `source_biomarker`, `opportunity_id`, `classification` (`mechanical` or `judgment`) and `relocated_by` when set; `get_health(plan_id=...)` returns the plan in full (detector detail such as cohesion `groups` or `cut_edges`, `evidence`, `blast_radius`, validation). `refactoring_plans_total` counts plans in scope, `refactoring_plans_opportunities_total` the opportunities they are steps of, `refactoring_plans_scope` names the scope and `refactoring_plans_hidden` counts what the `fix_first` scope leaves out, by reason. Performance plans are listed by `performance_opportunities`. An empty requested list has `refactoring_plans_status.reason`: `no_applicable_findings`, `plan_analysis_indeterminate`, `no_eligible_targets` or `analysis_unavailable`. See [REFACTORING.md](../layers/REFACTORING.md).
 
 ### Performance
 

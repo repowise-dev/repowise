@@ -566,7 +566,9 @@ async def test_canonical_emitter_reference_inventory(
     # leads with composed opportunities. The plan reference is still emitted by
     # get_health, so the inventory asks the call that carries it.
     responses["get_health"].append(
-        await get_health(include=["refactoring"], only=["refactoring_plans"])
+        await get_health(
+            include=["refactoring"], only=["refactoring_plans"], refactoring_scope="all"
+        )
     )
     inventory = {
         emitter: [
@@ -722,6 +724,7 @@ async def _seed_plan(session, repository_id: str) -> None:
             }
         ],
     )
+    await crud.finalize_refactoring_opportunities(session, repository_id)
     await session.commit()
 
 
@@ -868,6 +871,7 @@ async def test_finding_and_plan_ids_are_stable_and_resolve_in_one_call(
         include=["biomarkers", "refactoring"],
         only=["top_findings", "refactoring_plans"],
         limit=10,
+        refactoring_scope="all",
     )
     health_finding = health["top_findings"][0]
     health_lookup = await get_health(finding_id=health_finding["id"])

@@ -266,43 +266,6 @@ def test_adversarial_payload_goldens_fit_and_recover_in_one_lookup(
             assert f'"id": {row_id}' not in joined
 
 
-def test_health_budget_prunes_profiles_for_removed_plans(
-    setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import repowise.server.mcp_server as mcp_mod
-
-    (tmp_path / ".repowise").mkdir()
-    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
-    plans = [
-        {"id": f"plan-{index}", "validation_profile_id": f"profile-{index}"}
-        for index in range(8)
-    ]
-    profiles = [
-        {
-            "id": f"profile-{index}",
-            "commands": [f"pytest tests/test_{index}.py " + "x" * 6_000],
-        }
-        for index in range(8)
-    ]
-    payload = {
-        "mode": "targets",
-        "targets": ["src/large.py"],
-        "refactoring_plans": plans,
-        "refactoring_plans_total": len(plans),
-        "validation_profiles": profiles,
-        "validation_profiles_total": len(profiles),
-        "_meta": {"contract_version": 1},
-    }
-
-    result = _enforce("get_health", payload, ["refactoring"])
-    referenced = {plan["validation_profile_id"] for plan in result["refactoring_plans"]}
-    retained = {profile["id"] for profile in result["validation_profiles"]}
-    assert retained == referenced
-    assert result["validation_profiles_emitted"] == len(retained)
-    assert result["validation_profiles_reduced_reason"] == "response_budget"
-    assert result["_meta"]["response_budget"]["serialized_chars"] <= EXPANDED_RESPONSE_CHARS
-
-
 def test_explicit_include_uses_the_expansion_tier(
     setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

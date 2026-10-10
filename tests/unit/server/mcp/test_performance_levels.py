@@ -102,8 +102,10 @@ async def test_a_bare_dashboard_leads_with_something_to_do(setup_mcp, materializ
     # it points at the loop of its first caller, so its title names the helper.
     shared = [i for i in perf if i["title"].endswith(" load")]
     assert len(shared) == 1, perf
-    assert shared[0]["next_call"]["arguments"]["opportunity_id"].startswith("perf")
-    assert 0 < len(json.dumps(shared[0])) <= 1500
+    # A list item's next call is one fix_id away; only the lead carries it inline.
+    item = (await get_health(fix_id=shared[0]["id"]))["item"]
+    assert item["next_call"]["arguments"]["opportunity_id"].startswith("perf")
+    assert 0 < len(json.dumps(shared[0])) <= 1000
 
 
 @pytest.mark.asyncio

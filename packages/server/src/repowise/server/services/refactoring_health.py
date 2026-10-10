@@ -44,6 +44,7 @@ from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
     list_refactoring_opportunities,
     refactoring_facet_counts,
     refactoring_opportunity_ids,
+    refactoring_step_counts,
 )
 from repowise.core.persistence.models import RefactoringOpportunity, RefactoringSuggestion
 
@@ -61,6 +62,52 @@ class RefactoringPage:
     #: Under ``fix_first``: the opportunities the same filters match that Fix
     #: first leaves out, ``{"total": n, "by_reason": {reason: n}}``.
     hidden: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RefactoringPlanPage:
+    """One page of the queue's plans: stored steps, each with its opportunity id."""
+
+    items: list[dict[str, Any]]
+    #: Plans in scope, and the opportunities they are steps of.
+    total: int
+    opportunities_total: int
+    next_offset: int | None
+    scope: str = "all"
+    hidden: dict[str, Any] | None = None
+
+
+def _filters(query: RefactoringQuery) -> dict[str, Any]:
+    """The store's filter arguments for *query*."""
+    return {
+        "status": query.status,
+        "lead_types": list(query.lead_types) if query.lead_types else None,
+        "confidence": query.confidence,
+        "effort": query.effort,
+        "file_paths": list(query.file_paths) if query.file_paths is not None else None,
+        "path_contains": query.path_contains,
+        "path_prefix": query.path_prefix,
+        "mechanical_only": query.mechanical_only,
+        "addresses_primary": query.addresses_primary,
+    }
+
+
+def _plan_window(counts: list[tuple[str, int]], offset: int, limit: int) -> dict[str, tuple[int, int]]:
+    """Which steps of which opportunities fall in plans ``[offset, offset + limit)``.
+
+    *counts* is ``(opportunity_id, step_count)`` in queue order; the result
+    maps each touched opportunity to its ``(start, stop)`` step slice.
+    """
+    window: dict[str, tuple[int, int]] = {}
+    position, end = 0, offset + max(limit, 0)
+    for opportunity_id, steps in counts:
+        if position >= end:
+            break
+        start, stop = max(offset - position, 0), min(end - position, steps)
+        if start < stop:
+            window[opportunity_id] = (start, stop)
+        position += steps
+    return window
 
 
 class RefactoringHealthService:
@@ -95,21 +142,8 @@ class RefactoringHealthService:
         write) says which opportunities it takes, and one id-only read of the
         filtered set counts what it leaves out, by reason.
         """
-        filters: dict[str, Any] = {
-            "status": query.status,
-            "lead_types": list(query.lead_types) if query.lead_types else None,
-            "confidence": query.confidence,
-            "effort": query.effort,
-            "file_paths": list(query.file_paths) if query.file_paths is not None else None,
-            "path_contains": query.path_contains,
-            "path_prefix": query.path_prefix,
-            "mechanical_only": query.mechanical_only,
-            "addresses_primary": query.addresses_primary,
-        }
-        shown_ids: list[str] | None = None
-        hidden: dict[str, Any] | None = None
-        if query.scope == "fix_first":
-            shown_ids, hidden = await self._fix_first_scope(filters)
+        filters = _filters(query)
+        shown_ids, hidden = await self._scope(query, filters)
         rows, total = await list_refactoring_opportunities(
             self._session,
             self._repository_id,
@@ -146,6 +180,56 @@ class RefactoringHealthService:
             scope=query.scope,
             hidden=hidden,
         )
+
+    async def plan_page(self, query: RefactoringQuery) -> RefactoringPlanPage:
+        """The queue's plans in queue order: each opportunity's steps, in step order.
+
+        A plan is a step of one opportunity, so the plan list is a view of the
+        queue: the same scope, filters and order, paged by plan. One narrow read
+        of step counts places the page; only the opportunities it touches are
+        decoded.
+        """
+        filters = _filters(query)
+        shown_ids, hidden = await self._scope(query, filters)
+        counts = await refactoring_step_counts(
+            self._session,
+            self._repository_id,
+            **filters,
+            opportunity_ids=shown_ids,
+            order=query.resolved_order,
+        )
+        window = _plan_window(counts, query.offset, query.limit)
+        rows, _total = await list_refactoring_opportunities(
+            self._session,
+            self._repository_id,
+            status=query.status,
+            opportunity_ids=list(window),
+            order=query.resolved_order,
+            limit=len(window),
+        )
+        items = [
+            {**step, "opportunity_id": row.opportunity_id}
+            for row in rows
+            for step in (detail_map(row).get("steps") or [])[slice(*window[row.opportunity_id])]
+        ]
+        total = sum(steps for _id, steps in counts)
+        next_offset = query.offset + len(items)
+        return RefactoringPlanPage(
+            items=items,
+            total=total,
+            opportunities_total=len(counts),
+            next_offset=next_offset if items and next_offset < total else None,
+            scope=query.scope,
+            hidden=hidden,
+        )
+
+    async def _scope(
+        self, query: RefactoringQuery, filters: dict[str, Any]
+    ) -> tuple[list[str] | None, dict[str, Any] | None]:
+        """The ids a ``fix_first`` scope keeps and what it hides; ``all`` keeps every row."""
+        if query.scope != "fix_first":
+            return None, None
+        return await self._fix_first_scope(filters)
 
     async def _fix_first_scope(
         self, filters: dict[str, Any]
@@ -406,4 +490,4 @@ class RefactoringHealthService:
         return [plan_payload(by_id[pid]) for pid in plan_ids if pid in by_id]
 
 
-__all__ = ["RefactoringHealthService", "RefactoringPage"]
+__all__ = ["RefactoringHealthService", "RefactoringPage", "RefactoringPlanPage"]
