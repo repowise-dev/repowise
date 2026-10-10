@@ -378,6 +378,7 @@ log = structlog.get_logger(__name__)
 # ``test_<stem>.py`` hardcoded, so the prefix layout only ever matched Python;
 # it now follows the file's own suffix, and ``<stem>_spec`` joins the suffix
 # forms. Files that were counted untested and are not become tested, which
+# moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
 HEALTH_ANALYZER_VERSION = 38
 
