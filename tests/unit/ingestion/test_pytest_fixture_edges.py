@@ -441,3 +441,25 @@ def test_conftest_edge_is_marked_as_a_convention_not_an_import() -> None:
     }
     assert "hint_source" not in graph["tests/test_db.py"]["tests/conftest.py"]
     assert not graph.has_edge("app.py", "tests/conftest.py")
+
+
+def test_a_helper_beside_the_tests_gets_no_conftest_edge() -> None:
+    """pytest collects only test files; a helper sees no fixture, so no route through it."""
+    from repowise.core.ingestion.framework_edges.pytest_edges import _add_conftest_edges
+
+    graph = nx.DiGraph()
+    for node in (
+        "tests/conftest.py",
+        "tests/lsp/conftest.py",
+        "tests/lsp/test_client.py",
+        "tests/lsp/_mock_server.py",
+        "tests/lsp/__init__.py",
+    ):
+        graph.add_node(node, is_test=True)
+
+    _add_conftest_edges(graph, set(graph.nodes))
+
+    assert graph.has_edge("tests/lsp/test_client.py", "tests/conftest.py")
+    assert graph.has_edge("tests/lsp/conftest.py", "tests/conftest.py")
+    assert not graph.has_edge("tests/lsp/_mock_server.py", "tests/conftest.py")
+    assert not graph.has_edge("tests/lsp/__init__.py", "tests/conftest.py")

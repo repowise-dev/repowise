@@ -2,7 +2,8 @@
 
 Detects convention-based relationships (Django, FastAPI, Flask, ASP.NET, Rails,
 Laravel, Spring, Express/Nest, Angular, Gin/Echo/Chi, Axum/Actix/Rocket, TYPO3, Godot
-``class_name`` globals, pytest ``conftest.py`` and AWS Lambda handlers) and adds
+``class_name`` globals, pytest ``conftest.py``, JS/TS test-runner setup files,
+helpers a test names by path, and AWS Lambda handlers) and adds
 ``edge_type="framework"`` edges that no static import graph captures.
 
 Previously a single ``framework_edges.py`` module; split (PR 3.5) into one
@@ -43,6 +44,8 @@ from . import (
     remix,
     rust,
     spring,
+    test_path_strings,
+    test_runner_setup,
     trpc,
     typo3,
 )
@@ -58,6 +61,8 @@ if TYPE_CHECKING:
 # order is load-bearing because ``_add_edge_if_new`` is first-wins.
 _HANDLERS: list[FrameworkHandler] = [
     *pytest_edges.HANDLERS,  # always runs
+    *test_runner_setup.HANDLERS,
+    *test_path_strings.HANDLERS,
     *django.HANDLERS,
     *fastapi.HANDLERS,
     *flask.HANDLERS,

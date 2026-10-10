@@ -17,6 +17,7 @@ import re
 from functools import lru_cache
 
 from repowise.core.code_origin import is_build_file, is_vendored_or_generated_path
+from repowise.core.ingestion.framework_edges.test_runner_setup import TEST_SETUP_KEYS
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 # Non-code languages (registry passthrough languages plus "unknown").
@@ -1013,10 +1014,7 @@ _TOOL_CONFIG_PATHS: tuple[str, ...] = ("/.changeset/config.json",)
 # changelog module. A path under any other key (``coverage.exclude``,
 # ``ignores``) or in a comment is not loaded.
 _TOOL_CONFIG_LOAD_KEYS: tuple[str, ...] = (
-    "setupFiles",
-    "setupFilesAfterEnv",
-    "globalSetup",
-    "globalTeardown",
+    *TEST_SETUP_KEYS,
     "entry",
     "entryPoints",
     "input",

@@ -207,7 +207,12 @@ CONFTEST_HINT = "pytest_conftest"
 
 
 def _add_conftest_edges(graph: nx.DiGraph, path_set: set[str]) -> int:
-    """conftest.py -> test files in the same or child directories."""
+    """Collected tests and nested conftests -> each conftest.py at or above them.
+
+    A helper beside the tests is not collected and sees no fixture, so it gets
+    no edge: one would put the helper on the route of every change the conftest
+    reaches. Collection is read as :data:`_TEST_FILE_RE`, with its ceiling.
+    """
     count = 0
     conftest_paths = [p for p in path_set if Path(p).name == "conftest.py"]
 
@@ -216,6 +221,8 @@ def _add_conftest_edges(graph: nx.DiGraph, path_set: set[str]) -> int:
         prefix = f"{conf_dir}/" if conf_dir != "." else ""
         for p in path_set:
             if p == conf:
+                continue
+            if not (_TEST_FILE_RE.search(p) or Path(p).name == "conftest.py"):
                 continue
             node = graph.nodes.get(p, {})
             if not node.get("is_test", False):

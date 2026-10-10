@@ -153,6 +153,12 @@ def source_text(
     return read_text(parsed, encoding=encoding)
 
 
+def source_bytes(path: str, parsed: Any, source_map: dict[str, bytes]) -> bytes:
+    """:func:`source_text` as bytes, without a decode round trip when ingestion has them."""
+    raw = source_map.get(path)
+    return raw if raw is not None else read_text(parsed).encode("utf-8")
+
+
 def _build_class_to_file(
     parsed_files: dict[str, Any], languages: tuple[str, ...]
 ) -> dict[str, str]:
