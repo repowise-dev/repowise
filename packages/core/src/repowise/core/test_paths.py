@@ -65,6 +65,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Collection
 
+    from .jvm_source_sets import JvmSourceSets
     from .pytest_roots import PytestRoots
 
 # Directory segments that mark every file beneath them as test material,
@@ -394,12 +395,21 @@ def _has_wildcard_pair(
     )
 
 
-def _classify(path: str, language: str | None, roots: PytestRoots | None = None) -> str:
+def _classify(
+    path: str,
+    language: str | None,
+    roots: PytestRoots | None = None,
+    jvm_roots: JvmSourceSets | None = None,
+) -> str:
     """``"test"``, ``"support"``, or ``""`` for production code.
 
     One traversal, so the two public predicates cannot disagree with each other
     the way the copies they replace disagreed.
     """
+    if roots is not None and hasattr(roots, "collects") and not hasattr(roots, "may_collect_name"):
+        jvm_roots = roots  # type: ignore[assignment]
+        roots = None
+
     original, lowered = _parts(path)
     if not original:
         return ""
@@ -426,8 +436,13 @@ def _classify(path: str, language: str | None, roots: PytestRoots | None = None)
     if _REPO_METADATA_DIR in segments:
         return "test" if named_test else ""
 
-    # A test name outside a test directory still needs pytest to collect it.
-    needs_test_dir = not named_test or _pytest_skips(path, filename, roots)
+    # A test name outside a test directory still needs pytest to collect it,
+    # or JVM build configuration not to mark it as a main source set.
+    needs_test_dir = (
+        not named_test
+        or _pytest_skips(path, filename, roots)
+        or _jvm_skips(path, filename, jvm_roots)
+    )
     if needs_test_dir and not _is_test_dir(segments, original_segments, filename, language):
         return ""
 
@@ -436,6 +451,18 @@ def _classify(path: str, language: str | None, roots: PytestRoots | None = None)
     if not named_test and any(seg in _SUPPORT_DIR_TOKENS for seg in segments):
         return "support"
     return "test"
+
+
+_JVM_EXTENSIONS = frozenset({".java", ".kt", ".scala"})
+
+
+def _jvm_skips(path: str, filename: str, jvm_roots: JvmSourceSets | None) -> bool:
+    """Whether JVM build configuration marks *path* as a main source set."""
+    return (
+        jvm_roots is not None
+        and PurePosixPath(filename).suffix.lower() in _JVM_EXTENSIONS
+        and jvm_roots.collects(path.replace("\\", "/")) is False
+    )
 
 
 def _pytest_skips(path: str, filename: str, roots: PytestRoots | None) -> bool:
@@ -448,7 +475,10 @@ def _pytest_skips(path: str, filename: str, roots: PytestRoots | None) -> bool:
 
 
 def is_test_path(
-    path: str, language: str | None = None, roots: PytestRoots | None = None
+    path: str,
+    language: str | None = None,
+    roots: PytestRoots | None = None,
+    jvm_roots: JvmSourceSets | None = None,
 ) -> bool:
     """Whether *path* is a test.
 
@@ -457,13 +487,17 @@ def is_test_path(
     *language* when it is known: it decides the ambiguous ``spec/``/``t/``
     cases, which are RSpec for Ruby and a Perl-style test tree for Python,
     and specification or miscellaneous folders for everything else. Pass
-    *roots* to let pytest's config overrule a test-shaped Python name.
+    *roots* to let pytest's config overrule a test-shaped Python name, and
+    *jvm_roots* to let JVM build configuration overrule a test-shaped JVM class.
     """
-    return _classify(path, language, roots) == "test"
+    return _classify(path, language, roots, jvm_roots) == "test"
 
 
 def is_test_support_path(
-    path: str, language: str | None = None, roots: PytestRoots | None = None
+    path: str,
+    language: str | None = None,
+    roots: PytestRoots | None = None,
+    jvm_roots: JvmSourceSets | None = None,
 ) -> bool:
     """Whether *path* is test infrastructure rather than a test.
 
@@ -471,11 +505,14 @@ def is_test_support_path(
     scaffolding directories inside a test tree (``tests/factories/user.py``).
     Never true at the same time as :func:`is_test_path`.
     """
-    return _classify(path, language, roots) == "support"
+    return _classify(path, language, roots, jvm_roots) == "support"
 
 
 def is_test_related_path(
-    path: str, language: str | None = None, roots: PytestRoots | None = None
+    path: str,
+    language: str | None = None,
+    roots: PytestRoots | None = None,
+    jvm_roots: JvmSourceSets | None = None,
 ) -> bool:
     """Whether *path* is a test **or** test support.
 
@@ -484,7 +521,7 @@ def is_test_related_path(
     skipping files, a health biomarker exempting them. Callers that rank or
     search should prefer :func:`is_test_path`, so fixtures stay findable.
     """
-    return _classify(path, language, roots) != ""
+    return _classify(path, language, roots, jvm_roots) != ""
 
 
 def is_unambiguous_test_path(path: str, language: str | None = None) -> bool:
