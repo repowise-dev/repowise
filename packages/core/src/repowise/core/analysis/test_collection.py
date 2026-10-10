@@ -177,12 +177,7 @@ def _scan_texts(
     from .test_selection import is_scan_source
 
     known = dict(checkout.pytest_texts)  # conftests and pytest configs, read already
-    names = {PurePosixPath(p).name for p in asked}
-    held = checkout.holding(names) if checkout.holding else None
-    by_path: dict[str, list[str]] = {}
-    for name, holders in (held or {}).items():
-        for path in holders:
-            by_path.setdefault(path, []).append(name)
+    held = _held_names(checkout, asked)
     for p in checkout.tracked:
         if not is_scan_source(p) or _stop(cancelled):
             continue
@@ -190,8 +185,21 @@ def _scan_texts(
             yield p, known[p]
         elif held is None:
             yield p, checkout.read(p) or ""
-        elif p in by_path:
-            yield p, "\0".join(by_path[p])
+        elif p in held:
+            yield p, "\0".join(held[p])
+
+
+def _held_names(checkout: Checkout, asked: Collection[str]) -> dict[str, list[str]] | None:
+    """``{path: the asked file names its text holds}``, or ``None`` without ``holding``."""
+    names = {PurePosixPath(p).name for p in asked}
+    held = checkout.holding(names) if checkout.holding else None
+    if held is None:
+        return None
+    by_path: dict[str, list[str]] = {}
+    for name, holders in held.items():
+        for path in holders:
+            by_path.setdefault(path, []).append(name)
+    return by_path
 
 
 async def collect(

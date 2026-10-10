@@ -555,9 +555,12 @@ def _conftest_routes(
         with_importers(full, parents)
         for conf in sorted(t for t in full if scope_kind(t) == "conftest" and t != target):
             via = set(entries.get(target, {}).get(conf, ()))
-            for h in imported.get(conf, ()):
-                if h != conf and h in full:
-                    via |= set(parent_entries.get(h, {}).get(conf, ()))
+            via.update(
+                v
+                for h in imported.get(conf, ())
+                if h != conf and h in full
+                for v in parent_entries.get(h, {}).get(conf, ())
+            )
             # A parent conftest is not an import: pytest links a nested
             # conftest to it, and that parent's own decision covers the route.
             own = frozenset(v for v in via if scope_kind(v) != "conftest")
@@ -574,12 +577,11 @@ def _judge_routes(
     it is matched against it once."""
     facts: dict[str, ConftestFacts | None] = {}
     uses: dict[tuple[str, frozenset[str]], ConftestUse] = {}
-    for by_conf in routes.values():
-        for conf, route in by_conf.items():
-            if conf not in facts:
-                source = read(conf)
-                facts[conf] = None if source is None else ConftestFacts.parse(source, conf)
-            _judge(conf, route, facts[conf], plugin_loader, uses)
+    for conf, route in (pair for by_conf in routes.values() for pair in by_conf.items()):
+        if conf not in facts:
+            source = read(conf)
+            facts[conf] = None if source is None else ConftestFacts.parse(source, conf)
+        _judge(conf, route, facts[conf], plugin_loader, uses)
 
 
 def _judge(
