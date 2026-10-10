@@ -440,7 +440,8 @@ export interface PerformanceOpportunityPlanStep {
   file_path: string | null;
   line: number | null;
   applicability: StepClassification;
-  /** How to check this step. Absent on a store written before steps had one. */
+  /** How to check this step, when it differs from the plan's validation.
+   *  Absent: the plan's validation checks it. */
   verify?: StepVerify;
 }
 

@@ -320,7 +320,9 @@ async def _plan_facts(
     if not rows:
         return {}
     facts: dict[str, dict[str, Any]] = {}
-    for recommendation in await hydrate_recommendations(session, repository_id, rows):
+    for recommendation in await hydrate_recommendations(
+        session, repository_id, rows, step_verify=True
+    ):
         suggestion = recommendation.suggestion
         facts[suggestion.plan["opportunity_id"]] = {
             "steps": steps_with_verify(

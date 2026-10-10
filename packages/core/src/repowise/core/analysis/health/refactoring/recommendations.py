@@ -302,9 +302,10 @@ class ValidationPlan:
     reasons: dict[str, str] = field(default_factory=dict)
     # What to do before the edit when no test reaches the change.
     prerequisite: str | None = None
-    # One ``verify`` per ``plan["steps"]`` entry of a multi-step plan. Kept out
+    # Per ``plan["steps"]`` entry of a multi-step plan, its ``verify`` where it
+    # differs from the plan's, else ``None``; empty when none differs. Kept out
     # of :meth:`as_dict`, which every list serves; plan detail reads it.
-    step_verify: list[dict[str, Any]] = field(default_factory=list)
+    step_verify: list[dict[str, Any] | None] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -868,7 +869,7 @@ def build_validation_plan(
         else sum(target.total for target in target_rows)
     )
     files = affected_files(suggestion)
-    plan = ValidationPlan(
+    return ValidationPlan(
         basis=aggregate_basis,
         via=aggregate_via,
         total=aggregate_total,
@@ -883,39 +884,44 @@ def build_validation_plan(
             _characterization_step(suggestion) if aggregate_basis == "unknown" else None
         ),
     )
-    if not order_tests:
-        return plan
-    return _with_step_verify(plan, suggestion, measured, inferred, test_limit, facts)
 
 
-def _with_step_verify(
+def with_step_verify(
     plan: ValidationPlan,
     suggestion: RefactoringSuggestion,
     measured: Mapping[str, list[dict[str, Any]]],
     inferred: Mapping[str, ReachedBy],
-    test_limit: int,
-    facts: ValidationEvidence,
+    *,
+    test_limit: int = DEFAULT_TEST_LIMIT,
+    evidence: ValidationEvidence | None = None,
 ) -> ValidationPlan:
-    """*plan* with one ``verify`` per step of a multi-step plan.
+    """*plan* with the ``verify`` of each step of a multi-step plan that differs.
 
     Each step is validated as a plan of its own file and span, over the same
-    batch facts, so it picks its tests the way the plan does.
+    batch facts, so it picks its tests the way the plan does. Most steps get
+    the plan's own answer, which detail already shows once, so only the rest
+    are kept.
     """
     steps = _dict_list((suggestion.plan or {}).get("steps"))
     if len(steps) < 2:
         return plan
-    verify = []
+    facts = evidence or ValidationEvidence()
+    own = verify_of(plan)
+    verify: list[dict[str, Any] | None] = []
     for step in steps:
         scoped = _step_scope(suggestion, step, facts)
-        verify.append(
-            verify_of(
-                plan
-                if scoped is None
-                else build_validation_plan(
+        check = (
+            own
+            if scoped is None
+            else verify_of(
+                build_validation_plan(
                     scoped, measured, inferred, test_limit=test_limit, evidence=facts
                 )
             )
         )
+        verify.append(None if check == own else check)
+    if not any(verify):
+        return plan
     return dataclasses.replace(plan, step_verify=verify)
 
 
@@ -926,6 +932,9 @@ _COVERAGE: dict[str, VerifyCoverage] = {
     "mixed": "inferred",
     "unknown": "none",
 }
+
+
+_VERIFY_KEYS = frozenset({"commands", "tests", "coverage"})
 
 
 def verify_of(validation: ValidationPlan) -> dict[str, Any]:
@@ -956,30 +965,41 @@ def _step_scope(
         target_symbol=symbol,
         line_start=line,
         line_end=line,
+        # No steps, locations or blast files: the step's own file and lines only.
         plan={},
         blast_radius={},
         validation={},
     )
     if line is None and symbol:
-        spans = facts.symbols.get(path, ())
-        named = set(target_symbol_ids(scoped, path, None, spans))
-        found = [(start, end) for symbol_id, start, end in spans if symbol_id in named]
-        if found:
-            scoped.line_start, scoped.line_end = found[0]
+        span = _symbol_span(scoped, facts)
+        if span is not None:
+            scoped.line_start, scoped.line_end = span
     return scoped
 
 
-def steps_with_verify(steps: Sequence[Any], validation: ValidationPlan) -> list[dict[str, Any]]:
-    """*steps* each carrying its ``verify``.
+def _symbol_span(
+    scoped: RefactoringSuggestion, facts: ValidationEvidence
+) -> tuple[int, int] | None:
+    """The graph span of the symbol *scoped* names in its file, if the graph has it."""
+    spans = facts.symbols.get(scoped.file_path, ())
+    named = set(target_symbol_ids(scoped, scoped.file_path, None, spans))
+    return next(((start, end) for symbol_id, start, end in spans if symbol_id in named), None)
 
-    A single-step plan, or a row stored before steps had their own, gets the
-    plan's: the same answer the plan-level validation gives.
+
+def steps_with_verify(steps: Sequence[Any], validation: ValidationPlan) -> list[dict[str, Any]]:
+    """*steps*, those whose checks differ from the plan's carrying ``verify``.
+
+    A step without one is checked by the plan-level validation: every step of
+    a single-step plan, and of a row stored before steps had their own.
     """
     rows = _dict_list(list(steps))
     verify = validation.step_verify
     if len(verify) != len(rows):
-        verify = [verify_of(validation)] * len(rows)
-    return [{**step, "verify": check} for step, check in zip(rows, verify, strict=True)]
+        return rows
+    return [
+        {**step, "verify": check} if check else step
+        for step, check in zip(rows, verify, strict=True)
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1029,10 +1049,11 @@ class Recommendation:
         }
 
     def detail_dict(self) -> dict[str, Any]:
-        """:meth:`as_dict` for one plan read alone: each step carries its ``verify``."""
+        """:meth:`as_dict` for one plan read alone: a step whose checks differ
+        from the plan's carries its ``verify``."""
         payload = self.as_dict()
         steps = payload["plan"].get("steps")
-        if isinstance(steps, list) and steps:
+        if isinstance(steps, list) and self.validation.step_verify:
             payload["plan"] = {
                 **payload["plan"],
                 "steps": steps_with_verify(steps, self.validation),
@@ -1081,7 +1102,14 @@ def stored_recommendation(row: Any) -> Recommendation | None:
         validation = validation_from_profile(facts["validation"])
     except TypeError:
         return None
-    validation = dataclasses.replace(validation, step_verify=_dict_list(facts.get("step_verify")))
+    stored_steps = facts.get("step_verify")
+    validation = dataclasses.replace(
+        validation,
+        step_verify=[
+            check if isinstance(check, dict) and check.keys() >= _VERIFY_KEYS else None
+            for check in (stored_steps if isinstance(stored_steps, list) else [])
+        ],
+    )
     suggestion = rehydrate_suggestion(row)
     suggestion.blast_radius = dict(facts.get("blast_radius") or {})
     suggestion.validation = validation.as_dict()
@@ -1270,6 +1298,7 @@ async def hydrate_recommendations(
     view: RecommendationView = "canonical",
     test_limit: int = DEFAULT_TEST_LIMIT,
     rank_only: bool = False,
+    step_verify: bool = False,
 ) -> list[Recommendation]:
     """Hydrate, enrich, validate, rank, and serialize-ready all *rows*.
 
@@ -1281,6 +1310,10 @@ async def hydrate_recommendations(
     rank and validation basis are unchanged, the test order falls back to name
     and directory. A paged surface ranks every row this way, then passes the
     rows it returns through :func:`detail_recommendations`.
+
+    *step_verify* also validates each step of a multi-step plan
+    (:func:`with_step_verify`). Finalize asks, so it is stored once; a live
+    read never rebuilds it and serves the plan-level answer.
     """
     from repowise.core.persistence import crud
 
@@ -1303,6 +1336,7 @@ async def hydrate_recommendations(
         test_limit=test_limit,
         detailed=not rank_only,
         in_degree=centrality,
+        step_verify=step_verify and not rank_only,
     )
     recommendations = build_recommendations(
         suggestions,
@@ -1355,6 +1389,7 @@ async def _validation_plans(
     detailed: bool,
     inputs: ValidationInputs | None = None,
     in_degree: Mapping[str, float] | None = None,
+    step_verify: bool = False,
 ) -> tuple[list[ValidationPlan], ValidationInputs]:
     """One validation plan per suggestion, every read batched across the set.
 
@@ -1387,6 +1422,18 @@ async def _validation_plans(
         )
         for suggestion in suggestions
     ]
+    if step_verify:
+        plans = [
+            with_step_verify(
+                plan,
+                suggestion,
+                inputs.measured,
+                inputs.inferred,
+                test_limit=test_limit,
+                evidence=evidence,
+            )
+            for plan, suggestion in zip(plans, suggestions, strict=True)
+        ]
     return plans, inputs
 
 
@@ -1568,4 +1615,5 @@ __all__ = [
     "surface_confidence_risk",
     "target_symbol_ids",
     "verify_of",
+    "with_step_verify",
 ]

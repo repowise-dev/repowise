@@ -400,7 +400,7 @@ async def test_plan_detail_by_id(client: AsyncClient, app) -> None:
     assert detail["plan"]["cut_edges"] == [{"from": "pkg/a.py", "to": "pkg/b.py"}]
 
 
-async def test_plan_detail_steps_carry_verify_and_the_list_does_not(
+async def test_an_unranked_plan_detail_serves_steps_without_verify(
     client: AsyncClient, app
 ) -> None:
     repo_id = await _seed(client, app)
@@ -435,10 +435,9 @@ async def test_plan_detail_steps_carry_verify_and_the_list_does_not(
         )
     ).json()["plans"]
     assert listed[0]["plan"]["steps"] == steps
+    # Unranked here, so the read serves the plan-level answer and rebuilds no step.
     detail = (await client.get(f"/api/repos/{repo_id}/refactoring/{listed[0]['id']}")).json()
-    assert [set(step["verify"]) for step in detail["plan"]["steps"]] == [
-        {"commands", "tests", "coverage"}
-    ] * 2
+    assert detail["plan"]["steps"] == steps
 
 
 async def test_plan_detail_unknown_id_404(client: AsyncClient, app) -> None:

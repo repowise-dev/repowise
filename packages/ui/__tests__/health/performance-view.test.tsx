@@ -604,8 +604,7 @@ describe("PerformanceView drawer plan steps and validation", () => {
     expect(liTexts[1]).toContain("Batch the second call");
   });
 
-  it("shows a step's own command, with copy, only where it differs from the plan's", async () => {
-    const verify = (commands: string[]) => ({ commands, tests: [], coverage: "inferred" as const });
+  it("shows a step's own check only where the server says it differs from the plan's", async () => {
     const withSteps = page({
       items: [
         opportunity({
@@ -625,7 +624,11 @@ describe("PerformanceView drawer plan steps and validation", () => {
               file_path: "src/a.py",
               line: 10,
               applicability: "judgment",
-              verify: verify(["pytest tests/test_a.py"]),
+              verify: {
+                commands: ["pytest tests/test_a.py"],
+                tests: ["tests/test_a.py"],
+                coverage: "inferred",
+              },
             },
             {
               order: 2,
@@ -634,7 +637,15 @@ describe("PerformanceView drawer plan steps and validation", () => {
               file_path: "src/b.py",
               line: 20,
               applicability: "judgment",
-              verify: verify(["pytest tests/test_a.py tests/test_b.py"]),
+            },
+            {
+              order: 3,
+              action: "Batch the third call",
+              symbol: "src/c.py::run",
+              file_path: "src/c.py",
+              line: 30,
+              applicability: "judgment",
+              verify: { commands: [], tests: [], coverage: "none" },
             },
           ],
         }),
@@ -645,11 +656,16 @@ describe("PerformanceView drawer plan steps and validation", () => {
     );
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
-    const first = within(panel).getByText(/Batch the first call/).closest("li")!;
-    const second = within(panel).getByText(/Batch the second call/).closest("li")!;
+    const step = (text: RegExp) => within(panel).getByText(text).closest("li")!;
+    const first = step(/Batch the first call/);
     expect(within(first).getByText("pytest tests/test_a.py")).toBeTruthy();
     expect(within(first).getByRole("button", { name: "Copy command" })).toBeTruthy();
+    const second = step(/Batch the second call/);
     expect(within(second).queryByRole("button", { name: "Copy command" })).toBeNull();
+    expect(within(second).queryByText(/No test reaches/)).toBeNull();
+    const third = step(/Batch the third call/);
+    expect(within(third).getByText("No test reaches this step.")).toBeTruthy();
+    expect(within(third).queryByRole("button", { name: "Copy command" })).toBeNull();
   });
 
   it("renders the stored validation through the shared validation summary", async () => {

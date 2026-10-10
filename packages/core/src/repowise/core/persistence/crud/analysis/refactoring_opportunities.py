@@ -283,7 +283,7 @@ async def _rank_live_plans(session: AsyncSession, repository_id: str) -> list[An
             )
         )
     ).scalars()
-    ranked = await hydrate_recommendations(session, repository_id, list(rows))
+    ranked = await hydrate_recommendations(session, repository_id, list(rows), step_verify=True)
     await store_plan_ranks(session, repository_id, ranked)
     return ranked
 

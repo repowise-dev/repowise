@@ -16,11 +16,11 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     verify_of,
 )
 
-_CONTRACT = Path(__file__).resolve().parents[3] / "packages" / "types" / "src" / "refactoring.ts"
+_TYPES = Path(__file__).resolve().parents[3] / "packages" / "types" / "src"
 
 
-def _source() -> str:
-    return _CONTRACT.read_text(encoding="utf-8")
+def _source(name: str = "refactoring.ts") -> str:
+    return (_TYPES / name).read_text(encoding="utf-8")
 
 
 def test_the_coverage_union_matches_the_engine() -> None:
@@ -35,3 +35,10 @@ def test_the_verify_fields_match_the_engine() -> None:
     fields = set(re.findall(r"^\s*(\w+)\??:", match.group(1), re.MULTILINE))
     plan = ValidationPlan("unknown", None, 0, [], False, [], [], [])
     assert fields == set(verify_of(plan))
+
+
+def test_a_performance_plan_step_carries_the_same_verify() -> None:
+    """The drawer reads stored performance steps through this type."""
+    match = re.search(r"interface PerformanceOpportunityPlanStep \{([^}]+)\}", _source("health.ts"))
+    assert match, "PerformanceOpportunityPlanStep is not declared in health.ts"
+    assert re.search(r"^\s*verify\?:\s*StepVerify;", match.group(1), re.MULTILINE)
