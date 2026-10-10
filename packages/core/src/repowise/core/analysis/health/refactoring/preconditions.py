@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from ..refactoring_summary import groups_named, needs_design
 from .models import RefactoringSuggestion
 from .recommendations import affected_files, blast_size
 
@@ -75,33 +76,6 @@ def _int_or_none(value: Any) -> int | None:
     return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
-def _named_groups(plan: dict[str, Any]) -> bool | None:
-    """Whether every proposed group is named: the file a split group lands in,
-    or the class an extracted group becomes.
-
-    ``None`` when the plan proposes no groups at all: absence of groups is not
-    evidence that the naming succeeded, and R1 made an unnameable group emit
-    ``null`` rather than invent a filename.
-    """
-    groups = [group for group in (plan.get("groups") or []) if isinstance(group, dict)]
-    if not groups:
-        return None
-    return all(group.get("suggested_file") or group.get("name") for group in groups)
-
-
-# The types whose plan is a set of groups to create. With a group unnamed, the
-# plan says what to separate but not what the result is, which is a design
-# decision for a person, not a step to hand off.
-_GROUPING_TYPES = frozenset({"split_file", "extract_class"})
-
-
-def needs_design(suggestion: RefactoringSuggestion) -> bool:
-    """Whether *suggestion* is a grouping plan with a group it does not name."""
-    if suggestion.refactoring_type not in _GROUPING_TYPES:
-        return False
-    return _named_groups(suggestion.plan or {}) is not True
-
-
 # Which facts each refactoring type can even have. A key absent here is not
 # unknown, it is meaningless: asking whether an Extract Method needs a
 # re-export shim has no answer, and reporting one as ``None`` would read as a
@@ -140,7 +114,7 @@ def step_facts(suggestion: RefactoringSuggestion) -> tuple[dict[str, Any], tuple
         "callers": _int_or_none(blast.get("callers")),
         "co_change_count": _int_or_none(evidence.get("co_change_count")),
         "shim_required": plan.get("shim_required") if "shim_required" in plan else None,
-        "groups_named": _named_groups(plan),
+        "groups_named": groups_named(plan),
         # No graph is in scope here, so whether a framework registers the symbols
         # a step moves is never known. It is reported rather than omitted because
         # it is the fact that keeps every symbol-moving step a judgment call.

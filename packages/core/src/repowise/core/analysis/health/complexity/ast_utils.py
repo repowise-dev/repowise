@@ -177,7 +177,10 @@ def _find_call_callback_callee(node: Node) -> str | None:
         # argument in its text; its identifier path names the same call.
         path = ".".join(_identifier_chain(callee, lower=False))
     if len(path) > _MAX_CALLEE_PATH:
-        path = path[-_MAX_CALLEE_PATH:].partition(".")[2]
+        # Start the kept tail at a segment boundary; one identifier longer than
+        # the cap has none, so its own tail stands.
+        tail = path[-_MAX_CALLEE_PATH:]
+        path = tail.partition(".")[2] or tail
     return path or None
 
 
@@ -366,8 +369,8 @@ def _identifier_chain(node: Node, *, lower: bool = True) -> list[str]:
     document order.
 
     Order is load-bearing: the last entry is the name being called, the rest
-    the receiver path. Argument and type-argument lists are never descended
-    into.
+    the receiver path. Argument lists and ``type_arguments`` (TypeScript,
+    Java) are never descended into; C#'s ``type_argument_list`` still is.
     """
     names: list[str] = []
     stack: list[Node] = [node]

@@ -57,7 +57,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...finding_registry import excluded_types
-from ..refactoring_summary import ADVISORY_TYPES
+from ..refactoring_summary import ADVISORY_TYPES, needs_design
 from ..rows import field
 from .extract_helper import ACTIVE_CO_CHANGE
 from .identity import REFACTORING_MODEL_VERSION, assign_public_ids, stable_id
@@ -72,7 +72,7 @@ from .opportunity_rank import (
     weakest_confidence,
     why_ranked,
 )
-from .preconditions import StepApplicability, classify_step, needs_design
+from .preconditions import StepApplicability, classify_step
 from .recommendations import affected_files, rehydrate_suggestion
 
 # Opportunity ids share the plan id's version and digest, and differ in the

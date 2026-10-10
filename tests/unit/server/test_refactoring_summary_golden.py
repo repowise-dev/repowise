@@ -45,6 +45,7 @@ def test_summary_counts_and_threshold_edges() -> None:
         ],
         "files_total": 5,
         "structural_total": 3,  # break_cycle is advisory: counted in by_type only
+        "design_total": 2,  # the split and the class name no group: never a step
         "performance_total": 1,
         "small_effort_total": 3,
         "health_recovery_total": 6,
@@ -59,6 +60,7 @@ def test_summary_of_nothing() -> None:
         "by_type": [],
         "files_total": 0,
         "structural_total": 0,
+        "design_total": 0,
         "performance_total": 0,
         "small_effort_total": 0,
         "health_recovery_total": 0,

@@ -2802,6 +2802,7 @@ export interface RefactoringSummary {
   by_type: RefactoringTypeCount[];
   files_total?: number | null;
   structural_total?: number | null;
+  design_total?: number | null;
   performance_total?: number | null;
   small_effort_total?: number | null;
   health_recovery_total?: number | null;

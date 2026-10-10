@@ -250,3 +250,29 @@ def test_an_idiomatic_cycle_is_marked_optional_in_the_detail(capsys):
     _render_refactoring_targets([], [], [cycle], fmt="md")
     text = capsys.readouterr().out
     assert "(same directory, idiomatic; optional)" in text
+
+
+def test_an_unattached_split_with_an_unnamed_group_says_it_needs_design(capsys):
+    split = RefactoringSuggestion(
+        refactoring_type="split_file",
+        file_path="pkg/big.py",
+        target_symbol="big.py -> 2 files",
+        line_start=None,
+        line_end=None,
+        plan={
+            "groups": [
+                {"name": "walk", "symbols": ["walk"], "suggested_file": "pkg/walk.py"},
+                {"name": None, "symbols": ["a", "b"], "suggested_file": None},
+            ],
+            "shim_required": True,
+        },
+        evidence={"group_count": 2},
+        impact_delta=0.0,
+        effort_bucket="L",
+        blast_radius={"dependent_count": 0},
+        confidence="high",
+    )
+    _render_refactoring_targets([], [], [split], fmt="md")
+    text = capsys.readouterr().out
+    assert "1 need design: a group has no name yet." in text
+    assert "- **big.py -> 2 files** (pkg/big.py) needs design" in text

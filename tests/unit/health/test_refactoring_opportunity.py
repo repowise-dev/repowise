@@ -204,27 +204,47 @@ def test_plan_inventory_is_steps_plus_evidence_plus_unattached() -> None:
     """The rollup's plan counts reconcile with the opportunities they fold into."""
     from repowise.core.analysis.health.refactoring.identity import assign_public_ids
     from repowise.core.analysis.health.refactoring.opportunity import claimed_plan_ids
+    from repowise.core.analysis.health.refactoring_summary import needs_design, summarize_plans
     from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
         _summary_payload,
     )
 
+    groups = [{"name": None, "methods": ["a", "b"], "fields": ["x", "y"]}] * 2
     rows = [
         plan("extract_method"),
         cycle(),
         clone(intra=True, co_change=0),
         cycle(file_path="svc/only_cycle.py"),
+        unnamed_split(),
+        plan("extract_class", "Billing", file_path="svc/billing.py", plan={"groups": groups}),
+        split(file_path="svc/named.py"),
     ]
     opportunities = compose_opportunities(rows)
-    plan_ids = set(assign_public_ids(rows))
-    summary = _summary_payload(opportunities, {}, None, plan_ids)
+    ids = assign_public_ids(rows)
+    plan_ids = set(ids)
+    design_ids = {pid for pid, row in zip(ids, rows, strict=True) if needs_design(row)}
+    summary = _summary_payload(opportunities, {}, None, plan_ids, design_ids)
     steps = sum(item.step_count for item in opportunities)
-    assert summary["evidence_total"] == 2  # the cycle and the clone in orders.py
-    assert summary["unattached_plans_total"] == 1  # the cycle-only file
-    assert summary["plans_total"] == 4
+    # orders.py: the cycle, the clone and the unnamed split
+    assert summary["evidence_total"] == 3
+    # the cycle-only file and the unnamed class
+    assert summary["unattached_plans_total"] == 2
+    assert summary["plans_total"] == 7
     assert summary["plans_total"] == (
         steps + summary["evidence_total"] + summary["unattached_plans_total"]
     )
-    assert len(plan_ids - claimed_plan_ids(opportunities)) == 1
+    assert len(plan_ids - claimed_plan_ids(opportunities)) == 2
+    # Every held-out grouping plan is in the evidence or unattached share, and the
+    # structural chip less the held-out ones is the structural steps.
+    assert summary["design_total"] == 2
+    chips = summarize_plans(rows)
+    structural_steps = sum(
+        step.refactoring_type in ("split_file", "extract_class", "move_method")
+        for item in opportunities
+        for step in item.steps
+    )
+    assert chips["design_total"] == summary["design_total"]
+    assert chips["structural_total"] - chips["design_total"] == structural_steps == 1
 
 
 # --------------------------------------------------------------------------

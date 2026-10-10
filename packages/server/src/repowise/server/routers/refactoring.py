@@ -110,6 +110,7 @@ class RefactoringSummary(BaseModel):
     by_type: list[RefactoringTypeCount]
     files_total: int | None = None
     structural_total: int | None = None
+    design_total: int | None = None
     performance_total: int | None = None
     small_effort_total: int | None = None
     health_recovery_total: int | None = None

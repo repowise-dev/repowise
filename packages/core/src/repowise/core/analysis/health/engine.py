@@ -114,7 +114,11 @@ log = structlog.get_logger(__name__)
 # or ``python_files`` leaves it out (``core/test_selection.py``). Its
 # ``is_test`` flag flips, and the biomarkers and ``has_test_file`` now read that
 # stored flag instead of re-classifying the path, so such a module joins the
-# production scores and findings.
+# production scores and findings. A callback passed to a chained or curried
+# call (``it.each([...])(...)``, ``z.object({...}).superRefine(...)``) is named
+# by the call's dotted path without its arguments, so findings and perf hits
+# inside one get a new ``function_name`` and a new public id; triage stored on
+# the old id no longer attaches.
 #
 # v38: Split File's co-change edge reads per-function commit
 # sets (the 50 newest distinct commits of each function, stored on

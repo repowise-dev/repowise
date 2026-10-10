@@ -80,6 +80,9 @@ export interface RefactoringSummary {
   /** Additive Phase 4 aggregates; absent on older servers. */
   files_total?: number;
   structural_total?: number;
+  /** Split File / Extract Class plans with an unnamed group (`needs_design`):
+   *  counted in `structural_total`, never a step. */
+  design_total?: number;
   performance_total?: number;
   small_effort_total?: number;
   health_recovery_total?: number;
@@ -346,10 +349,13 @@ export interface RefactoringRollupAvailable {
   judgment_steps_total: number;
   /** The plan inventory: steps + evidence + unattached. Absent on older indexes. */
   plans_total?: number;
-  /** Plans carried as evidence (demoted clones, advisory cycles), not steps. */
+  /** Plans carried as evidence (demoted clones, advisory cycles, unnamed groups), not steps. */
   evidence_total?: number;
   /** Plans no opportunity carries; listed only in the plan inventory. */
   unattached_plans_total?: number;
+  /** Plans held out of the steps for an unnamed group (`needs_design`); part of
+   *  the evidence and unattached shares. */
+  design_total?: number;
   by_lead_type: Record<string, number>;
   by_effort: Record<string, number>;
   by_confidence: Record<string, number>;
