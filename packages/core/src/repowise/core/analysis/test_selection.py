@@ -711,7 +711,7 @@ def _scope_tests(scope: Scope, ev: _Evidence) -> list[str]:
         return []
     return [
         t
-        for t in ev.tests_under({scope.root})
+        for t in _known_under(ev, {scope.root})
         if (not scope.suffixes or t.lower().endswith(scope.suffixes)) and t not in ev.deleted
     ]
 
@@ -959,15 +959,8 @@ class _Evidence:
     every_subset: frozenset[str] = frozenset()
     # Explanations that do not force a full run, gathered while deciding.
     notes: list[str] = field(default_factory=list)
-    # Known tests under each directory set, asked once per changed file.
-    _under: dict[frozenset[str], list[str]] = field(default_factory=dict, compare=False)
-
-    def tests_under(self, dirs: Collection[str]) -> list[str]:
-        """Known tests below any of *dirs*, worked out once per directory set."""
-        key = frozenset(dirs)
-        if key not in self._under:
-            self._under[key] = _under(key, self.known_tests)
-        return self._under[key]
+    # Known tests under each directory set (:func:`_known_under`), per selection.
+    under_memo: dict[frozenset[str], list[str]] = field(default_factory=dict, compare=False)
 
     @classmethod
     def of(cls, inp: SelectionInput, deleted: set[str]) -> _Evidence:
@@ -1073,7 +1066,15 @@ def _scope_files(path: str, found: list[_TestRef], basis: str) -> tuple[set[str]
 def _expand_scopes(tests: list[_TestRef], scopes: set[str], ev: _Evidence) -> list[_TestRef]:
     kept = [(t, f) for t, f in tests if f not in scopes]
     dirs = {str(PurePosixPath(i).parent) for i in scopes}
-    return kept + [(t, t) for t in ev.tests_under(dirs) if t not in ev.deleted]
+    return kept + [(t, t) for t in _known_under(ev, dirs) if t not in ev.deleted]
+
+
+def _known_under(ev: _Evidence, dirs: Collection[str]) -> list[str]:
+    """Known tests below any of *dirs*, worked out once per directory set per selection."""
+    key = frozenset(dirs)
+    if key not in ev.under_memo:
+        ev.under_memo[key] = _under(key, ev.known_tests)
+    return ev.under_memo[key]
 
 
 def _own_helper_reasons(path: str, ev: _Evidence) -> list[str]:
