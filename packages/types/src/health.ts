@@ -603,6 +603,7 @@ export type PerformanceQueueExclusion =
   | "tooling"
   | "unknown"
   | "gated_off"
+  | "cold_path"
   | "expected"
   | "no_strategy";
 

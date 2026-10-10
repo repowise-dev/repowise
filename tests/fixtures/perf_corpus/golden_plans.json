@@ -111,7 +111,7 @@
         "call_sites": 3,
         "file_count": 1,
         "files": [
-          "src/app/migrate.py"
+          "src/app/ledger.py"
         ]
       },
       "confidence": "medium",
@@ -138,7 +138,7 @@
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": true
       },
-      "file_path": "src/app/migrate.py",
+      "file_path": "src/app/ledger.py",
       "impact_delta": 0.0,
       "line_end": 587,
       "line_start": 587,
@@ -146,21 +146,21 @@
         "affected_locations": [
           {
             "call": "_move",
-            "file_path": "src/app/migrate.py",
+            "file_path": "src/app/ledger.py",
             "function_name": "apply",
             "line_end": 587,
             "line_start": 587
           },
           {
             "call": "_fold_one",
-            "file_path": "src/app/migrate.py",
+            "file_path": "src/app/ledger.py",
             "function_name": "apply",
             "line_end": 590,
             "line_start": 590
           },
           {
             "call": "_write_alias",
-            "file_path": "src/app/migrate.py",
+            "file_path": "src/app/ledger.py",
             "function_name": "apply",
             "line_end": 591,
             "line_start": 591
@@ -169,22 +169,22 @@
         "affected_locations_total": 3,
         "api": null,
         "evidence_truncated": false,
-        "intervention_symbol": "src/app/migrate.py::apply",
+        "intervention_symbol": "src/app/ledger.py::apply",
         "judgment_steps": 3,
         "mechanical_steps": 0,
-        "opportunity_id": "perf3_b03c60fe41fa017130c6",
+        "opportunity_id": "perf3_2719b6813419ad35948b",
         "paths": [
           [
-            "src/app/migrate.py::apply",
-            "src/app/migrate.py::_move"
+            "src/app/ledger.py::apply",
+            "src/app/ledger.py::_move"
           ],
           [
-            "src/app/migrate.py::apply",
-            "src/app/migrate.py::_fold_one"
+            "src/app/ledger.py::apply",
+            "src/app/ledger.py::_fold_one"
           ],
           [
-            "src/app/migrate.py::apply",
-            "src/app/migrate.py::_write_alias"
+            "src/app/ledger.py::apply",
+            "src/app/ledger.py::_write_alias"
           ]
         ],
         "paths_total": 3,
@@ -193,7 +193,7 @@
           {
             "action": "Collect the keys before the loop and replace the per-key _move call with one batched call",
             "applicability": "judgment",
-            "file_path": "src/app/migrate.py",
+            "file_path": "src/app/ledger.py",
             "line": 587,
             "order": 1,
             "symbol": "apply"
@@ -201,7 +201,7 @@
           {
             "action": "Collect the keys before the loop and replace the per-key _fold_one call with one batched call",
             "applicability": "judgment",
-            "file_path": "src/app/migrate.py",
+            "file_path": "src/app/ledger.py",
             "line": 590,
             "order": 2,
             "symbol": "apply"
@@ -209,7 +209,7 @@
           {
             "action": "Collect the keys before the loop and replace the per-key _write_alias call with one batched call",
             "applicability": "judgment",
-            "file_path": "src/app/migrate.py",
+            "file_path": "src/app/ledger.py",
             "line": 591,
             "order": 3,
             "symbol": "apply"
@@ -219,7 +219,7 @@
       },
       "refactoring_type": "performance_fix",
       "source_biomarker": "io_in_loop",
-      "target_symbol": "src/app/migrate.py::apply"
+      "target_symbol": "src/app/ledger.py::apply"
     },
     {
       "blast_radius": {

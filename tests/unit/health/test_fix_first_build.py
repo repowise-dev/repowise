@@ -52,6 +52,7 @@ def test_each_exclusion_is_counted_by_reason() -> None:
         "docs_example": 0,
         "deprecated": 0,
         "gated_off": 0,
+        "cold_path": 0,
         "unreachable": 0,
         "inherent_dispatch": 0,
         "small_function": 0,

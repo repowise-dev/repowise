@@ -246,10 +246,12 @@ Findings group into **opportunities**, one per place you would edit (the functio
 holding the loop, or a helper every caller goes through). Each opportunity carries
 one state: `plan_ready` (a proven fix strategy), `advisory` (a strategy with
 unproven prerequisites), `investigate` (no supported strategy) or `expected` (the
-repetition is real and nothing should change, such as deleting N files, or the
-function that holds it is switched off by a constant flag, reason `gated_off`). The
-default queue holds production `plan_ready` and `advisory` opportunities, ranked by
-cost first; state only breaks ties. Everything left out is counted by reason.
+repetition is real and nothing should change, such as deleting N files; reason
+`gated_off` when a constant flag switches the function off, `cold_path` when it is
+named for a migration, startup, shutdown or crash recovery and so runs once per
+deploy, boot or incident). The default queue holds production `plan_ready` and
+`advisory` opportunities, ranked by cost first; state only breaks ties. Everything
+left out is counted by reason.
 
 Performance analysis covers Python, TypeScript/JavaScript (including Vue and Svelte
 scripts), Java, Go, C# (including Razor), Rust, Kotlin, Scala, Ruby, C++, Dart and

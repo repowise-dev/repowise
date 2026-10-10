@@ -38,6 +38,7 @@ export type FixExclusion =
   | "docs_example"
   | "deprecated"
   | "gated_off"
+  | "cold_path"
   | "unreachable"
   | "inherent_dispatch"
   | "small_function"

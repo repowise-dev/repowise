@@ -327,6 +327,7 @@ async def test_the_default_queue_reports_what_it_leaves_out(app, client: AsyncCl
             "tooling": 0,
             "unknown": 0,
             "gated_off": 0,
+            "cold_path": 0,
             "expected": 1,
             "no_strategy": 1,
         },

@@ -129,45 +129,45 @@
       "evidence": [
         {
           "biomarker_type": "io_in_loop",
-          "file_path": "src/app/migrate.py",
-          "finding_id": "finding_99e6a402db90eaf9544e",
+          "file_path": "src/app/ledger.py",
+          "finding_id": "finding_bb8108f2272355e7bb47",
           "function_name": "apply",
           "line_end": 587,
           "line_start": 587,
           "path": [
-            "src/app/migrate.py::apply",
-            "src/app/migrate.py::_move"
+            "src/app/ledger.py::apply",
+            "src/app/ledger.py::_move"
           ],
           "provenance": "call-site",
-          "reason": "one_loop_many_sinks: io_in_loop at src/app/migrate.py:587 repeats work per iteration."
+          "reason": "one_loop_many_sinks: io_in_loop at src/app/ledger.py:587 repeats work per iteration."
         },
         {
           "biomarker_type": "io_in_loop",
-          "file_path": "src/app/migrate.py",
-          "finding_id": "finding_9b7378f919d4c62c71b6",
+          "file_path": "src/app/ledger.py",
+          "finding_id": "finding_6679c8c4aeba8ea75c58",
           "function_name": "apply",
           "line_end": 590,
           "line_start": 590,
           "path": [
-            "src/app/migrate.py::apply",
-            "src/app/migrate.py::_fold_one"
+            "src/app/ledger.py::apply",
+            "src/app/ledger.py::_fold_one"
           ],
           "provenance": "call-site",
-          "reason": "one_loop_many_sinks: io_in_loop at src/app/migrate.py:590 repeats work per iteration."
+          "reason": "one_loop_many_sinks: io_in_loop at src/app/ledger.py:590 repeats work per iteration."
         },
         {
           "biomarker_type": "io_in_loop",
-          "file_path": "src/app/migrate.py",
-          "finding_id": "finding_bcbd5e05d77811ea7695",
+          "file_path": "src/app/ledger.py",
+          "finding_id": "finding_b80478e54b854ac7d586",
           "function_name": "apply",
           "line_end": 591,
           "line_start": 591,
           "path": [
-            "src/app/migrate.py::apply",
-            "src/app/migrate.py::_write_alias"
+            "src/app/ledger.py::apply",
+            "src/app/ledger.py::_write_alias"
           ],
           "provenance": "call-site",
-          "reason": "one_loop_many_sinks: io_in_loop at src/app/migrate.py:591 repeats work per iteration."
+          "reason": "one_loop_many_sinks: io_in_loop at src/app/ledger.py:591 repeats work per iteration."
         }
       ],
       "evidence_truncated": false,
@@ -186,10 +186,10 @@
         "strategy": "batch_or_prefetch_io"
       },
       "intervention_kind": "function",
-      "intervention_symbol": "src/app/migrate.py::apply",
+      "intervention_symbol": "src/app/ledger.py::apply",
       "may_lead": true,
       "observations_total": 3,
-      "opportunity_id": "perf3_b03c60fe41fa017130c6",
+      "opportunity_id": "perf3_2719b6813419ad35948b",
       "performance_model_version": 3,
       "prerequisites": [
         "batch_api_contract",
@@ -212,9 +212,9 @@
       "siblings": [],
       "terminal_sink": null,
       "terminal_sinks": [
-        "src/app/migrate.py::_fold_one",
-        "src/app/migrate.py::_move",
-        "src/app/migrate.py::_write_alias"
+        "src/app/ledger.py::_fold_one",
+        "src/app/ledger.py::_move",
+        "src/app/ledger.py::_write_alias"
       ],
       "why_ranked": [
         {

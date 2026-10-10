@@ -21,17 +21,19 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from ..worth import dormant
+from .cold_paths import is_cold_path
 
 FixSafety = Literal["proven", "advisory"]
 OpportunityConfidence = Literal["high", "medium", "low"]
 # ``expected``: the repetition is real and there is nothing to change, either
 # by its nature or for a reason :func:`expected_reason` reads off the group
-# (``gated_off``: a constant-false flag switches the function off).
+# (``gated_off``: a constant-false flag switches the function off;
+# ``cold_path``: it runs once per deploy, boot or incident).
 ActionabilityState = Literal["plan_ready", "advisory", "investigate", "expected"]
 
 #: Reasons :func:`expected_reason` gives, in precedence order. The default
 #: queue counts each under its own name rather than as ``expected``.
-EXPECTED_REASONS: tuple[str, ...] = ("gated_off",)
+EXPECTED_REASONS: tuple[str, ...] = ("gated_off", "cold_path")
 
 # Refusals that are facts about the code, not missing proofs: nothing to investigate.
 _EXPECTED_REFUSALS = frozenset({"inherent_to_boundary", "loop_already_chunked"})
@@ -293,10 +295,17 @@ def expected_reason(members: Sequence[Any]) -> str | None:
     """Why a group needs no change whatever its strategy, or ``None``.
 
     ``gated_off``: every member sits in a function a constant-false flag in
-    its own file switches off. Reasons are checked in precedence order.
+    its own file switches off. ``cold_path``: every loop owner is named for a
+    migration, startup, shutdown or crash recovery (:mod:`.cold_paths`), so it
+    runs once per deploy, boot or incident. Reasons are checked in precedence
+    order.
     """
-    if members and all(dormant(facts.details) for facts in members):
+    if not members:
+        return None
+    if all(dormant(facts.details) for facts in members):
         return "gated_off"
+    if all(is_cold_path(facts.file_path, facts.function_name) for facts in members):
+        return "cold_path"
     return None
 
 

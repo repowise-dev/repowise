@@ -710,7 +710,11 @@ through, or `<file>::__module__` for top-level code. Sinks, call sites and
 same-family co-signals (`io_in_loop` with `nested_loop_with_io`) are members. Two
 loops in one function are one site, because findings carry the sink's line. Each
 carries one `actionability` state (`plan_ready`, `advisory`, `investigate`,
-`expected`). The default queue holds production `plan_ready` and `advisory`, ranked
+`expected`). A group every member's name or file stem marks as a migration,
+startup, shutdown or crash recovery (`perf/cold_paths.py`) is `expected` with reason
+`cold_path`, with or without a strategy; `gated_off` takes precedence. The identity
+kernel's `execution_context` stays path-only.
+The default queue holds production `plan_ready` and `advisory`, ranked
 by `rank_score`; actionability only breaks ties. Excluded reasons are counted in
 `default_queue`.
 

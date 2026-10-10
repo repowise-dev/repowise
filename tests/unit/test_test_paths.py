@@ -199,6 +199,12 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("src/components/__snapshots__/Button.test.tsx.snap", None, "support"),
     # tsd / vitest type tests
     ("src/types/index.test-d.ts", None, "test"),
+    # vitest suite modules a `.test.ts` file registers
+    ("src/gateway/server.auth.default-token.suite.ts", None, "test"),
+    ("src/gateway/suite.ts", None, ""),
+    # infixes apply to every source extension (no per-extension infix rule), so a
+    # benchmark.js suite reads as test: a known false positive, accepted
+    ("bench/array.suite.js", None, "test"),
     # a bare `test`/`tests` stem is a suite in Python and Rust only; `test.ts` in an
     # examples folder is an example, and `scripts/test.sh` runs the suite
     ("examples/basic/src/test.ts", None, ""),
