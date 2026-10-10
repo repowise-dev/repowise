@@ -1065,6 +1065,9 @@ class TestSecretPrecision:
             ("README.md", 'export OPENAI_API_KEY="your-key-here"\n'),
             ("README.md", 'API_KEY="sk-<your key>"\n'),
             ("README.md", 'SECRET="$(op read op://vault/app/secret)"\n'),
+            ("deploy.sh", 'TOKEN="$(kubectl get secret app -o jsonpath=\x27{.data.t}\x27 | base64 -d)"\n'),
+            ("src/app.py", 'API_KEY = "prefix-${VAR}-suffix"\n'),
+            ("src/app.py", 'TOKEN = "prefix-{{var}}-suffix"\n'),
             ("src/app.py", 'TOKEN = "xxxxxxxxxxxx"\n'),
         ],
     )
@@ -1107,6 +1110,7 @@ class TestSecretPrecision:
             ('TOKEN = "Bearer eyJhbGciOiJIUzI1NiJ9abc"\n', "hardcoded_secret"),
             ('const val API_TOKEN = "productionAccessKey"\n', "hardcoded_secret"),
             ('password="Tr0ub4dor 3xyz"\n', "hardcoded_password"),
+            ('password = "plain$password123"\n', "hardcoded_password"),
         ],
     )
     def test_credential_like_values_still_fire(self, source: str, kind: str) -> None:

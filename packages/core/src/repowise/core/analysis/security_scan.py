@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # the same way ``HEALTH_ANALYZER_VERSION`` forces a full health re-score
 # (#3072). Without this, a scanner fix only ever reaches a file a user
 # happens to edit.
-SECURITY_SCANNER_VERSION = 2
+SECURITY_SCANNER_VERSION = 3
 
 _CREDENTIAL_EXACT_PLACEHOLDERS: frozenset[str] = frozenset({"password", "changeit"})
 
@@ -369,9 +369,9 @@ _KEYWORD_KINDS: frozenset[str] = frozenset({"hardcoded_password", "hardcoded_sec
 # is a key's or marker's name, a constant holding its own name, and a template
 # placeholder or shell substitution is filled in when it runs; none of them is a
 # credential. Letters only: a digit or capital makes it look like a key.
-_TEMPLATE_VALUE = re.compile(r"\{\{.*\}\}|\$\{[^}]*\}|\$\(.*\)")
+_TEMPLATE_VALUE = re.compile(r"\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\)")
 _SCHEME_TEMPLATE_VALUE = re.compile(
-    r"(?i:(?:bearer|basic|token))\s+(?:\{\{.*\}\}|\$\{[^}]*\}|\$\(.*\))"
+    r"(?i:(?:bearer|basic|token))\s+(?:\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\))"
 )
 _OWN_NAME_VALUE = re.compile(r"[A-Za-z_-]+")
 _KEY_NAME_VALUE = re.compile(r"[a-z]+(?:[_-][a-z]+)+|[a-z_]*_[a-z_]*")
@@ -405,8 +405,8 @@ def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
         return False
     # A leading ``--`` is a CSS custom property or a CLI flag, not a key.
     return not (
-        _TEMPLATE_VALUE.fullmatch(value)
-        or _SCHEME_TEMPLATE_VALUE.fullmatch(value)
+        _TEMPLATE_VALUE.search(value)
+        or _SCHEME_TEMPLATE_VALUE.search(value)
         or _is_plain_word(value)
         or value.startswith("--")
     )
