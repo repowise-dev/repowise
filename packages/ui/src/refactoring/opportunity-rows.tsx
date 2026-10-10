@@ -203,7 +203,7 @@ function OpportunityRow({
         </span>
         {/* Full path, no ellipsis: a truncated title reports a layout decision
             to the reader as missing content. */}
-        <span className="mt-0.5 block break-all font-mono text-2xs text-[var(--color-text-tertiary)]">
+        <span className="mt-0.5 block break-all font-mono text-xs text-[var(--color-text-tertiary)]">
           {opportunity.file_path}
         </span>
         <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
@@ -214,14 +214,14 @@ function OpportunityRow({
       <div className="order-3 text-xs text-[var(--color-text-secondary)] lg:order-none lg:pt-px">
         {stepSummary(opportunity)}
         <br />
-        <span className="text-2xs text-[var(--color-text-tertiary)]">
+        <span className="text-xs text-[var(--color-text-tertiary)]">
           {effort} effort
           {opportunity.affected_files_total > 1
             ? `, ${formatNumber(opportunity.affected_files_total)} files`
             : ""}
         </span>
         {opportunity.confidence !== "high" ? (
-          <span className="ml-2 inline-flex items-center gap-1.5 text-2xs text-[var(--color-caution)]">
+          <span className="ml-2 inline-flex items-center gap-1.5 text-xs text-[var(--color-caution)]">
             <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-current" />
             {opportunity.confidence} confidence
           </span>
@@ -242,8 +242,8 @@ function OpportunityRow({
           title={addressesPrimaryLabel(opportunity.addresses_primary_problem)}
           className={
             opportunity.addresses_primary_problem === true
-              ? "block text-2xs text-[var(--color-text-secondary)]"
-              : "block text-2xs text-[var(--color-text-tertiary)]"
+              ? "block text-xs text-[var(--color-text-secondary)]"
+              : "block text-xs text-[var(--color-text-tertiary)]"
           }
         >
           {addressesPrimaryShort(opportunity.addresses_primary_problem)}
@@ -270,7 +270,7 @@ function OpportunityRow({
         <span
           role="status"
           className={
-            failed ? "mt-0.5 block text-2xs text-[var(--color-error)]" : "sr-only"
+            failed ? "mt-0.5 block text-xs text-[var(--color-error)]" : "sr-only"
           }
         >
           {failed ? "Could not save" : ""}
@@ -389,7 +389,7 @@ function RowOverflow({
               aria-label="Triage this opportunity"
               className="mt-1 border-t border-[var(--color-border-default)] pt-1"
             >
-              <p className="px-3 pb-1 pt-1 text-2xs uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">
+              <p className="px-3 pb-1 pt-1 text-xs uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">
                 Triage
               </p>
               {TRIAGE_STATUSES.map((option) => {

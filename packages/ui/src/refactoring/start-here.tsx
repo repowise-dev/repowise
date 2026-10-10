@@ -147,7 +147,7 @@ export function StartHere({
                 </span>
                 {/* Full path, no ellipsis: a truncated title reports a layout
                     decision to the reader as missing content. */}
-                <span className="mt-0.5 block break-all font-mono text-2xs text-[var(--color-text-tertiary)]">
+                <span className="mt-0.5 block break-all font-mono text-xs text-[var(--color-text-tertiary)]">
                   {item.file_path}
                 </span>
                 <span className="mt-1.5 block max-w-[70ch] text-sm text-[var(--color-text-secondary)]">

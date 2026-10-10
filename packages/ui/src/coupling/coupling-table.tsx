@@ -232,7 +232,7 @@ export function CouplingTable({
           {fileCell(e.target, e, "↔ ")}
           {/* Lead with the claim, not the score: what the two shares actually
               say about this pair, and whether the graph explains it. */}
-          <p className="mt-0.5 text-2xs leading-snug text-[var(--color-text-tertiary)]">
+          <p className="mt-0.5 text-xs leading-snug text-[var(--color-text-tertiary)]">
             {couplingClaim(e, labelFor)}
           </p>
         </div>

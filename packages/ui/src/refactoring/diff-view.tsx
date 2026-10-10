@@ -122,7 +122,7 @@ export function DiffView({ diff, emptyFallback }: DiffViewProps) {
             <span className="truncate font-mono text-xs text-[var(--color-text-primary)]" title={file.path}>
               {file.path || "(diff)"}
             </span>
-            <span className="shrink-0 font-mono text-2xs tabular-nums">
+            <span className="shrink-0 font-mono text-xs tabular-nums">
               <span className="text-[var(--color-success)]">+{file.added}</span>{" "}
               <span className="text-[var(--color-error)]">-{file.removed}</span>
             </span>

@@ -402,7 +402,7 @@ function DecisionLaneRow({
               {onAccept && blockers.length > 0 && (
                 <p className="max-w-[28ch] text-right text-xs text-[var(--color-text-tertiary)]">
                   Cannot accept: {blockers.join("; ")}. Fill it in with{" "}
-                  <code className="font-mono text-2xs">
+                  <code className="font-mono text-xs">
                     repowise decision confirm {d.id.slice(0, 8)}
                   </code>
                   .
@@ -432,7 +432,7 @@ function SignatureMark({ decision }: { decision: DecisionRecord }) {
     .join(", session ");
   return (
     <span
-      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border border-[var(--color-border-default)] px-1.5 text-2xs text-[var(--color-text-tertiary)]"
+      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border border-[var(--color-border-default)] px-1.5 text-xs text-[var(--color-text-tertiary)]"
       title={who ? `${label}: ${who}` : label}
     >
       {label}
@@ -452,7 +452,7 @@ function SignatureMark({ decision }: { decision: DecisionRecord }) {
 function CurrencyMark({ currency }: { currency: DecisionCurrency }) {
   return (
     <span
-      className="inline-flex items-center gap-1.5 whitespace-nowrap text-2xs text-[var(--color-text-tertiary)]"
+      className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-[var(--color-text-tertiary)]"
       title={DECISION_CURRENCY_DESCRIPTIONS[currency]}
     >
       <span

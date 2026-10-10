@@ -243,14 +243,14 @@ function DrawerBody({
   return (
     <>
       <div className="border-b border-[var(--color-border-default)] px-5 py-4 pr-12">
-        <div className="text-2xs text-[var(--color-text-secondary)]">
+        <div className="text-xs text-[var(--color-text-secondary)]">
           {meta.label}
           {detail.lead_biomarker ? ` · against ${humanizeBiomarker(detail.lead_biomarker)}` : ""}
         </div>
         <SheetTitle className="mt-0.5 break-words font-mono text-sm font-semibold text-[var(--color-text-primary)]">
           {name}
         </SheetTitle>
-        <p className="mt-1 break-all font-mono text-2xs text-[var(--color-text-tertiary)]">
+        <p className="mt-1 break-all font-mono text-xs text-[var(--color-text-tertiary)]">
           {detail.file_path}
         </p>
       </div>
@@ -313,7 +313,7 @@ function DrawerBody({
                 );
               })}
             </div>
-            <p className="mt-1.5 text-2xs text-[var(--color-text-tertiary)]">
+            <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">
               Applies to all {detail.step_count} step{detail.step_count === 1 ? "" : "s"}.{" "}
               {status === "false_positive"
                 ? "A false positive is suppressed on every later analysis."
@@ -322,7 +322,7 @@ function DrawerBody({
             <p
               role="status"
               className={
-                failed ? "mt-1 text-2xs text-[var(--color-error)]" : "sr-only"
+                failed ? "mt-1 text-xs text-[var(--color-error)]" : "sr-only"
               }
             >
               {failed ? "Could not save that. The refactoring plan is unchanged." : ""}
@@ -360,7 +360,7 @@ function DrawerBody({
             ))}
           </ol>
           {detail.steps_total != null && detail.steps_emitted < detail.steps_total ? (
-            <p className="mt-2 text-2xs text-[var(--color-text-tertiary)]">
+            <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
               Showing {detail.steps_emitted} of {detail.steps_total} steps.
             </p>
           ) : null}
@@ -426,7 +426,7 @@ function DrawerBody({
               ))}
             </ul>
             {detail.evidence_truncated ? (
-              <p className="mt-2 text-2xs text-[var(--color-text-tertiary)]">
+              <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
                 Showing {detail.evidence_emitted} of {detail.evidence_total} observations.
               </p>
             ) : null}
@@ -542,7 +542,7 @@ function StepCard({
         {/* Not a colour-only mark: the word is the signal, and the tint only
             reinforces it. */}
         <span
-          className={`rounded px-1.5 py-0.5 text-2xs font-medium ${
+          className={`rounded px-1.5 py-0.5 text-xs font-medium ${
             mechanical
               ? "bg-[var(--color-success)]/12 text-[var(--color-success)]"
               : "bg-[var(--color-bg-inset)] text-[var(--color-text-secondary)]"
@@ -551,7 +551,7 @@ function StepCard({
           {mechanical ? "Mechanical" : "Judgment"}
         </span>
         {isRelocated(step) ? (
-          <span className="rounded bg-[var(--color-caution)]/15 px-1.5 py-0.5 text-2xs font-medium text-[var(--color-caution)]">
+          <span className="rounded bg-[var(--color-caution)]/15 px-1.5 py-0.5 text-xs font-medium text-[var(--color-caution)]">
             Moved by an earlier step
           </span>
         ) : null}
@@ -566,7 +566,7 @@ function StepCard({
         {step.target_symbol || meta.label}
       </button>
 
-      <p className="mt-0.5 break-all font-mono text-2xs text-[var(--color-text-tertiary)]">
+      <p className="mt-0.5 break-all font-mono text-xs text-[var(--color-text-tertiary)]">
         {href ? (
           <a href={href} className="underline-offset-2 hover:underline">
             {step.file_path}
@@ -667,7 +667,7 @@ function StepCode({
           {plan && onGenerateCode ? (
             <GenerateCodePanel plan={plan} onGenerate={onGenerateCode} />
           ) : plan ? (
-            <p className="text-2xs text-[var(--color-text-tertiary)]">
+            <p className="text-xs text-[var(--color-text-tertiary)]">
               A diff preview is drafted by a model on request. Code generation is off here.
             </p>
           ) : null}

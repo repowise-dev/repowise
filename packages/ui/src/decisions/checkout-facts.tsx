@@ -117,7 +117,7 @@ export function CheckoutFacts({ facts, available, total }: CheckoutFactsProps) {
               ))}
             </ul>
             {shared && (
-              <p className="mt-1.5 text-2xs text-[var(--color-text-tertiary)]">
+              <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">
                 {shared}
               </p>
             )}
@@ -153,7 +153,7 @@ function FactRow({
         {fact.evidence}
       </p>
       {shown > 0 && (
-        <p className="mt-0.5 font-mono text-2xs text-[var(--color-text-tertiary)] break-all">
+        <p className="mt-0.5 font-mono text-xs text-[var(--color-text-tertiary)] break-all">
           {fact.nodes.join(", ")}
           {hidden > 0 && (
             <span className="tabular-nums"> and {hidden} more</span>
@@ -165,7 +165,7 @@ function FactRow({
           for free would read as a doubt about the fact rather than about the
           check. */}
       {fact.still_true && !hideVerdict && (
-        <p className="mt-0.5 text-2xs text-[var(--color-text-tertiary)]">
+        <p className="mt-0.5 text-xs text-[var(--color-text-tertiary)]">
           {fact.still_true}
         </p>
       )}
