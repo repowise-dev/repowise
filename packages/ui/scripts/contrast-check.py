@@ -101,9 +101,9 @@ def contrast(fg: str, bg: str) -> float:
 LIGHT = {
     "bg-root": "#FBF6F1",
     "bg-surface": "#FFFFFF",
-    "bg-elevated": "#FBF4EE",
-    "bg-inset": "#F4EAE1",
-    "bg-canvas": "#F4EAE1",  # --color-bg-canvas → var(--color-bg-inset)
+    "bg-elevated": "#F7F4F1",
+    "bg-inset": "#F0EBE6",
+    "bg-canvas": "#F0EBE6",  # --color-bg-canvas → var(--color-bg-inset)
     "text-primary": "#241B2C",
     "text-secondary": "#5E5360",
     "text-tertiary": "#8C7F88",
@@ -115,7 +115,7 @@ LIGHT = {
     "border-default": "rgba(88,67,108,0.12)",
     "border-active": "rgba(176,107,18,0.90)",
     "success": "#1D8155",
-    "warning": "#9A6614",
+    "warning": "#856700",
     "error": "#B23A2E",
     "info": "#58436C",
     # Blueprint diagram ink (light) — KG canvas + mermaid.
@@ -157,7 +157,7 @@ DARK = {
     "border-default": "rgba(213,197,232,0.10)",
     "border-active": "rgba(245,149,32,0.55)",
     "success": "#34D399",
-    "warning": "#F2A03D",
+    "warning": "#E8B339",
     "error": "#E06A5A",
     "info": "#A98FC4",
     # Blueprint diagram ink (dark) — border carries canvas separation.
@@ -196,6 +196,8 @@ CHECKS = [
     ("text-inverse", "accent-primary", 4.5, "Text on accent-primary fill"),
     ("success", "bg-surface", 4.5, "Success text on card"),
     ("warning", "bg-surface", 4.5, "Warning text on card"),
+    ("warning", "bg-root", 4.5, "Warning text on page"),
+    ("warning", "bg-elevated", 4.5, "Warning text on elevated"),
     ("error", "bg-surface", 4.5, "Error text on card"),
     ("info", "bg-surface", 4.5, "Info text on card"),
     ("border-active", "bg-surface", 3.0, "Active border on card"),

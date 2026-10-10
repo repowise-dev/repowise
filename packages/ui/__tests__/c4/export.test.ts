@@ -190,7 +190,7 @@ describe("SVG export - new node types", () => {
     expect(svg).toContain("#fffdf8"); // --color-kg-node-fill (paper card)
     expect(svg).toContain("#241b2c"); // --color-kg-node-text / ink outline
     expect(svg).toContain("#826aa0"); // --color-diagram-cluster-border (ghost portal)
-    expect(svg).toContain("#f4eae1"); // warm paper canvas
+    expect(svg).toContain("#f0ebe6"); // warm paper canvas
     expect(svg).toContain("kg-grid"); // graph-paper pattern
     expect(svg).toContain('stroke-dasharray="8 5"'); // dashed ghost boundary
   });

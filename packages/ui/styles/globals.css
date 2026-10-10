@@ -67,16 +67,21 @@
   /* TIER 2 — Semantic tokens (LIGHT defaults; `.dark` overrides below) */
   /* ================================================================== */
 
-  /* Core surfaces — warm paper / pure-white cards */
+  /* Core surfaces — warm paper root / pure-white cards. Elevated and inset
+     are near-neutral so raised rows and wells don't stack peach on peach. */
   --color-bg-root: #fbf6f1;
   --color-bg-surface: #ffffff;
-  --color-bg-elevated: #fbf4ee;
+  --color-bg-elevated: #f7f4f1;
   --color-bg-overlay: #ffffff;
-  --color-bg-inset: #f4eae1;
+  --color-bg-inset: #f0ebe6;
   /* A well measured from the overlay plane rather than from root. Light mode
-     needs no separate value: overlay is white, so the same warm inset already
+     needs no separate value: overlay is white, so the same inset already
      recesses correctly inside a dialog. See the dark block for why it exists. */
-  --color-bg-inset-on-overlay: #f4eae1;
+  --color-bg-inset-on-overlay: #f0ebe6;
+  /* Selected row / tab / chip ground. Neutral ink alpha: orange belongs on
+     the indicator (bar, underline, dot), not on the whole ground. */
+  --color-bg-selected: rgba(36, 27, 44, 0.06);
+  --color-bg-selected-hover: rgba(36, 27, 44, 0.09);
 
   /* Borders — plum-tinted hairlines */
   --color-border-default: rgba(88, 67, 108, 0.12);
@@ -95,7 +100,7 @@
   --color-accent-fill: #f59520;
   --color-accent-fill-hover: #e0850f;
   --color-accent-hover: #824f10;
-  --color-accent-muted: rgba(245, 149, 32, 0.12);
+  --color-accent-muted: rgba(245, 149, 32, 0.07);
   --color-accent-secondary: #58436c;
 
   /* Model work — the plum accent doing one named job.
@@ -136,12 +141,13 @@
 
   /* Confidence system */
   --color-confidence-fresh: #1d8155;
-  --color-confidence-stale: #9a6614;
+  --color-confidence-stale: #856700;
   --color-confidence-outdated: #b23a2e;
 
   /* Semantic status */
   --color-success: #1d8155;
-  --color-warning: #9a6614;
+  /* Yellower than the accent so a warning never reads as a selected state. */
+  --color-warning: #856700;
   --color-error: #b23a2e;
   --color-info: #3f6ea5; /* muted blue — distinct from the plum accent-secondary */
   --color-caution: #a8821f; /* between warning and success; medium severity / fair score band */
@@ -294,6 +300,7 @@
      paper-theme green sitting on the dark ramp. */
   --color-success-muted: color-mix(in srgb, var(--color-success) 12%, transparent);
   --color-error-muted: color-mix(in srgb, var(--color-error) 14%, transparent);
+  --color-warning-muted: color-mix(in srgb, var(--color-warning) 8%, transparent);
   --color-border-subtle: var(--color-border-default);
   /* Faint hairline for table row dividers — half the weight of a normal
      border so rows whisper while the header rule still reads. References the
@@ -324,7 +331,8 @@
      brand orange melting into a warm peach. For brand chips, icon blobs,
      small accent panels, avatars, selected/active art. Dark text reads on
      the whole sweep. `--gradient-warm-wash` is the ultra-subtle background
-     version (theme-aware) for empty-states, hero washes, and section bands. */
+     version (theme-aware) for hero washes and section bands; product empty
+     states stay on the neutral planes. */
   --gradient-warm: linear-gradient(135deg, #f59520 0%, #ffd9b0 100%);
   --gradient-warm-wash: linear-gradient(160deg, #fff4ea 0%, #ffe6cf 55%, #ffd9bd 100%);
 
@@ -466,6 +474,8 @@
   --color-bg-overlay: #1f1f23;
   --color-bg-inset: #0a0a0b;
   --color-bg-inset-on-overlay: #141417;
+  --color-bg-selected: rgba(255, 255, 255, 0.06);
+  --color-bg-selected-hover: rgba(255, 255, 255, 0.09);
 
   /* Neutral hairlines so card / sidebar / table edges read on the gray base.
      Lighter than before: the same alpha reads considerably louder against
@@ -506,11 +516,11 @@
   --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 26%, var(--color-bg-inset));
 
   --color-confidence-fresh: #34d399;
-  --color-confidence-stale: #f2a03d;
+  --color-confidence-stale: #e8b339;
   --color-confidence-outdated: #e06a5a;
 
   --color-success: #34d399;
-  --color-warning: #f2a03d;
+  --color-warning: #e8b339;
   --color-error: #e06a5a;
   --color-info: #7da7d9; /* muted blue — distinct from the plum accent-secondary */
   --color-caution: #d9b04a;
@@ -732,9 +742,15 @@ body {
 /* Selection                                                             */
 /* -------------------------------------------------------------------- */
 
+/* Own value rather than accent-muted: that ground is deliberately faint now
+   and a selection has to stay visible over it. */
 ::selection {
-  background-color: var(--color-accent-muted);
+  background-color: rgba(245, 149, 32, 0.22);
   color: var(--color-text-primary);
+}
+
+.dark ::selection {
+  background-color: rgba(245, 149, 32, 0.28);
 }
 
 /* -------------------------------------------------------------------- */

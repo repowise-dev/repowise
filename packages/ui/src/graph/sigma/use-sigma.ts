@@ -439,11 +439,11 @@ function resolveVizPalette(theme: "light" | "dark"): VizPalette {
   return {
     risk: {
       high: resolveToken("--color-risk-high", "#b23a2e"),
-      medium: resolveToken("--color-risk-medium", "#9a6614"),
+      medium: resolveToken("--color-risk-medium", "#856700"),
       low: resolveToken("--color-risk-low", "#1d8155"),
     },
-    hotspot: resolveToken("--color-warning", "#9a6614"),
-    decision: resolveToken("--color-warning", "#9a6614"),
+    hotspot: resolveToken("--color-warning", "#856700"),
+    decision: resolveToken("--color-warning", "#856700"),
     label: resolveToken("--color-text-secondary", dark ? "#a79db3" : "#5e5360"),
     pathHighlight: resolveToken("--color-accent-fill", "#f59520"),
     edge: edgeColorsForTheme(theme),
