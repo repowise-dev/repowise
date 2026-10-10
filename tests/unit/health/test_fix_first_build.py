@@ -216,16 +216,20 @@ def test_value_leads_tier_and_a_huge_function_says_so() -> None:
     )
 
 
-def test_every_open_refactoring_opportunity_carries_its_reason() -> None:
-    queue = _build(limit=0)
+def test_every_open_refactoring_opportunity_is_judged() -> None:
+    judged: dict = {}
+    queue = _build(limit=0, judged=judged)
     assert queue.items == ()
-    assert queue.refactoring_reasons == {
+    assert {k: j.reason for k, j in judged.items()} == {
         "refop2_core": None,
         "refop2_small": "below_min_worth",
         "refop2_test": "test",
     }
-    # Off the wire: the reasons are a read-model input, not part of the queue.
-    assert "refactoring_reasons" not in queue.as_dict()
+    # An eligible plan is valued and tiered as its item is; an excluded one is not.
+    full = _build(limit=None)
+    item = next(i for i in full.items if i.source.opportunity_id == "refop2_core")
+    assert judged["refop2_core"].tier == item.tier and judged["refop2_core"].value is not None
+    assert judged["refop2_small"].value is None and judged["refop2_small"].tier is None
 
 
 def test_a_finding_item_takes_its_tests_from_the_validate_callback() -> None:

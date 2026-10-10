@@ -7,6 +7,7 @@
  */
 
 import type { ActionCommand } from "./actions.js";
+import type { QueueCounts } from "./queue.js";
 
 export type FixTier = "now" | "next" | "later";
 
@@ -125,20 +126,8 @@ export interface FixFirstTotals {
   dormant: number;
 }
 
-/**
- * The five-level count vocabulary (`FixFirstQueue.counts` in core), read on the
- * whole queue: every unit considered, those in scope (not excluded for where
- * the code lives), those that became an item, those due (tier now or next),
- * and those this response shows; `excluded` holds the non-zero exclusions.
- */
-export interface FixFirstCounts {
-  inventory: number;
-  in_scope: number;
-  eligible: number;
-  due: number;
-  shown: number;
-  excluded: Partial<Record<FixExclusion, number>>;
-}
+/** The count vocabulary (`QueueCounts`) read on the whole Fix first queue. */
+export type FixFirstCounts = QueueCounts;
 
 export interface FixFirstQueue<Item = FixItem> {
   items: Item[];
@@ -149,4 +138,6 @@ export interface FixFirstQueue<Item = FixItem> {
   by_improves: Record<FixImproves, number>;
   model_version: number;
   basis: { analyzed_commit: string | null; health_analyzed_at: string | null };
+  /** The items' counts; `totals` stays for older readers. */
+  counts?: QueueCounts;
 }

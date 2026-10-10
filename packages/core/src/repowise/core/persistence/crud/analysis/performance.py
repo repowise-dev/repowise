@@ -105,9 +105,10 @@ def _row_kwargs(
 ) -> dict[str, Any]:
     from ....analysis.health.perf.serving import intervention_file
     from ....analysis.health.queue.eligibility import queue_proof
+    from ....analysis.health.queue.counts import perf_judgement
 
     fix = opportunity.fix
-    return {
+    row = {
         "opportunity_id": opportunity.opportunity_id,
         "performance_model_version": opportunity.performance_model_version,
         "status": "open",
@@ -132,6 +133,13 @@ def _row_kwargs(
         "details_json": json.dumps(opportunity_details(opportunity, plan), separators=(",", ":")),
         "analyzed_commit": analyzed_commit,
     }
+    # Judged on the row as stored, which Fix first reads the same way.
+    judged = {
+        **row,
+        "facets": opportunity.facets,
+        "actionability_reason": opportunity.actionability_reason,
+    }
+    return {**row, **perf_judgement(judged, opportunity.facets, plan or {}).columns()}
 
 
 def _summary_payload(
@@ -508,6 +516,7 @@ async def list_performance_opportunities(
     actionabilities: frozenset[str] | None = None,
     proofs: frozenset[str] | None = None,
     roles: frozenset[str] | None = None,
+    queue_eligible: bool | None = None,
     file_paths: tuple[str, ...] | None = None,
     sort: str = "rank",
     limit: int = 20,
@@ -528,6 +537,7 @@ async def list_performance_opportunities(
         actionabilities=actionabilities,
         proofs=proofs,
         roles=roles,
+        queue_eligible=queue_eligible,
         file_paths=file_paths,
     )
     total = int(

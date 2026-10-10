@@ -155,6 +155,7 @@ def _render_stored_refactoring_targets(
                 "summary": summary,
                 "total": page.total,
                 "hidden": page.hidden,
+                "counts": page.counts,
                 "details": details,
                 "metrics": metrics,
                 "findings": findings,
@@ -171,11 +172,14 @@ def _render_stored_refactoring_targets(
     analyzed_commit = stored["summary"].get("analyzed_commit")
     if fmt == "table":
         commit = f" at {analyzed_commit[:7]}" if analyzed_commit else ""
-        hidden = (stored["hidden"] or {}).get("total") or 0
+        counts = stored["counts"]
+        # Each number names its level, so "of N" never mixes the eligible
+        # queue with the inventory.
         scope = (
-            f"{stored['total']} worth doing ({hidden} more in the full inventory)"
+            f"{stored['total']:,} eligible plans ({counts['inventory']:,} open, "
+            f"{counts['due']:,} due now or next)"
             if stored["hidden"] is not None
-            else f"{stored['total']} open opportunities"
+            else f"{stored['total']:,} open plans ({counts['eligible']:,} eligible)"
         )
         console.print(
             f"[dim]Read from the index{commit}. Showing {len(rows)} of {scope}. "
@@ -194,6 +198,7 @@ def _render_stored_refactoring_targets(
             "analyzed_commit": analyzed_commit,
             "opportunities_total": stored["total"],
             "opportunities_hidden": stored["hidden"],
+            "counts": stored["counts"],
             "targets": targets,
             "refactoring_opportunities": rows,
             "refactoring_plans": [_list_row(plan) for plan in plans],

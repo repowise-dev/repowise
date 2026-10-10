@@ -213,7 +213,8 @@ def _summary_payload(
     plan_ids: set[str],
     design_plan_ids: set[str],
 ) -> dict[str, Any]:
-    """The rollup. ``plans_total`` is the plan inventory behind it, split into
+    """The rollup of open opportunities; ``by_status`` also counts the ones
+    picked up. ``plans_total`` is the plan inventory behind it, split into
     steps, evidence and plans in no opportunity, so the plan and opportunity
     counts reconcile. ``design_total`` names the grouping plans held out of the
     steps for an unnamed group; they sit in the evidence or unattached share."""
@@ -226,11 +227,13 @@ def _summary_payload(
     mechanical = judgment = 0
     addresses_primary = not_primary = unknown_primary = 0
     for item in opportunities:
+        state = statuses.get(item.opportunity_id, "open")
+        by_status[state] = by_status.get(state, 0) + 1
+    open_items = _open_items(opportunities, statuses)
+    for item in open_items:
         by_type[item.lead_refactoring_type] = by_type.get(item.lead_refactoring_type, 0) + 1
         by_effort[item.effort_bucket] = by_effort.get(item.effort_bucket, 0) + 1
         by_confidence[item.confidence] = by_confidence.get(item.confidence, 0) + 1
-        state = statuses.get(item.opportunity_id, "open")
-        by_status[state] = by_status.get(state, 0) + 1
         mechanical += item.mechanical_steps
         judgment += item.judgment_steps
         if item.addresses_primary_problem is True:
@@ -240,13 +243,13 @@ def _summary_payload(
         else:
             unknown_primary += 1
     return {
-        "opportunities_total": len(opportunities),
-        "files_total": len({item.file_path for item in opportunities}),
+        "opportunities_total": len(open_items),
+        "files_total": len({item.file_path for item in open_items}),
         "steps_total": mechanical + judgment,
         "mechanical_steps_total": mechanical,
         "judgment_steps_total": judgment,
         "plans_total": len(plan_ids),
-        "evidence_total": sum(len(item.evidence) for item in opportunities),
+        "evidence_total": sum(len(item.evidence) for item in open_items),
         "unattached_plans_total": len(plan_ids - claimed_plan_ids(opportunities)),
         "design_total": len(design_plan_ids & plan_ids),
         "by_lead_type": by_type,
@@ -260,6 +263,12 @@ def _summary_payload(
         },
         "lead": lead_details,
     }
+
+
+def _open_items(
+    opportunities: list[OpportunityModel], statuses: dict[str, str]
+) -> list[OpportunityModel]:
+    return [o for o in opportunities if statuses.get(o.opportunity_id, "open") == "open"]
 
 
 async def _rank_live_plans(session: AsyncSession, repository_id: str) -> list[Any]:
@@ -576,7 +585,7 @@ async def _write_summary(
         row = RefactoringSummary(repository_id=repository_id)
         session.add(row)
     row.refactoring_model_version = REFACTORING_MODEL_VERSION
-    row.opportunities_total = len(opportunities)
+    row.opportunities_total = len(_open_items(opportunities, statuses))
     row.summary_json = payload
     row.analyzed_commit = analyzed_commit
     row.updated_at = _now_utc()
@@ -622,6 +631,7 @@ async def list_refactoring_opportunities(
     mechanical_only: bool = False,
     addresses_primary: bool | None = None,
     opportunity_ids: list[str] | None = None,
+    queue_eligible: bool | None = None,
     order: str | None = None,
     limit: int = 20,
     offset: int = 0,
@@ -641,6 +651,7 @@ async def list_refactoring_opportunities(
         mechanical_only=mechanical_only,
         addresses_primary=addresses_primary,
         opportunity_ids=opportunity_ids,
+        queue_eligible=queue_eligible,
     )
     total = int(
         (
@@ -693,35 +704,24 @@ async def refactoring_opportunities_by_id(
     return {row.opportunity_id: row for row in rows.scalars().all()}
 
 
-async def refactoring_opportunity_ids(
-    session: AsyncSession,
-    repository_id: str,
-    *,
-    status: str = "open",
-    lead_types: list[str] | None = None,
-    confidence: str | None = None,
-    effort: str | None = None,
-    file_paths: list[str] | None = None,
-    path_contains: str | None = None,
-    path_prefix: str | None = None,
-    mechanical_only: bool = False,
-    addresses_primary: bool | None = None,
-) -> list[str]:
-    """The ids the same filters match, unpaged: one narrow column."""
-    predicates = _opportunity_filters(
-        repository_id,
-        status=status,
-        lead_types=lead_types,
-        confidence=confidence,
-        effort=effort,
-        file_paths=file_paths,
-        path_contains=path_contains,
-        path_prefix=path_prefix,
-        mechanical_only=mechanical_only,
-        addresses_primary=addresses_primary,
+async def refactoring_reason_counts(
+    session: AsyncSession, repository_id: str, *, status: str = "open", **filters: Any
+) -> dict[str | None, int]:
+    """How many rows the filters match, by stored queue reason (``None`` for
+    an eligible row): one grouped read, exact at any size."""
+    from ....analysis.health.queue.counts import NOT_JUDGED
+
+    o = RefactoringOpportunity
+    rows = await session.execute(
+        select(o.queue_eligible, o.queue_reason, func.count())
+        .where(*_opportunity_filters(repository_id, status=status, **filters))
+        .group_by(o.queue_eligible, o.queue_reason)
     )
-    rows = await session.execute(select(RefactoringOpportunity.opportunity_id).where(*predicates))
-    return [opportunity_id for (opportunity_id,) in rows.all()]
+    out: dict[str | None, int] = {}
+    for eligible, reason, n in rows.all():
+        key = NOT_JUDGED if eligible is None else None if eligible else reason
+        out[key] = out.get(key, 0) + int(n)
+    return out
 
 
 async def get_refactoring_opportunity(
@@ -822,31 +822,28 @@ async def get_refactoring_summary(
 
 
 async def refactoring_facet_counts(
-    session: AsyncSession,
-    repository_id: str,
-    *,
-    status: str = "open",
-    opportunity_ids: list[str] | None = None,
+    session: AsyncSession, repository_id: str, *, status: str = "open", **filters: Any
 ) -> dict[str, dict[str, int]]:
-    """Counts for every facet dimension, in one statement.
+    """Counts for every facet dimension, in one statement, under the list's
+    filters: each facet counts under every filter but its own.
 
     Grouped by all three dimensions at once and folded here rather than one
     statement each, so adding a facet never adds a round trip.
-    ``opportunity_ids`` narrows the counts to a scope the list applies too.
     """
-    from ....analysis.health.refactoring.serving import FACET_FIELDS, fold_facets
+    from ....analysis.health.refactoring.serving import (
+        FACET_FIELDS,
+        fold_facets,
+        split_facet_params,
+    )
 
+    row_filters, selection = split_facet_params({"status": status, **filters})
     columns = tuple(getattr(RefactoringOpportunity, name) for name in FACET_FIELDS)
     rows = await session.execute(
         select(*columns, func.count())
-        .where(
-            *_opportunity_filters(
-                repository_id, status=status, opportunity_ids=opportunity_ids
-            )
-        )
+        .where(*_opportunity_filters(repository_id, **row_filters))
         .group_by(*columns)
     )
-    return fold_facets(rows.all())
+    return fold_facets(rows.all(), selection)
 
 
 __all__ = [
@@ -856,7 +853,7 @@ __all__ = [
     "list_refactoring_opportunities",
     "refactoring_facet_counts",
     "refactoring_opportunities_by_id",
-    "refactoring_opportunity_ids",
+    "refactoring_reason_counts",
     "refactoring_step_counts",
     "update_refactoring_opportunity_status",
 ]

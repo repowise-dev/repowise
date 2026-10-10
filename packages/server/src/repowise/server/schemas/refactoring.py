@@ -13,6 +13,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from repowise.core.analysis.health.queue.counts import QueueCounts
+
 
 class RefactoringHiddenCounts(BaseModel):
     """What the ``fix_first`` scope leaves out of a page's filtered set."""
@@ -41,6 +43,8 @@ class RefactoringOpportunitiesResponse(BaseModel):
     scope: Literal["fix_first", "all"] = "all"
     #: Under ``fix_first``, the rest of the filtered set, by reason.
     hidden: RefactoringHiddenCounts | None = None
+    #: The plans' count vocabulary over the open inventory (``queue.counts``).
+    counts: QueueCounts | None = None
 
 
 class RefactoringRollupResponse(BaseModel):

@@ -120,6 +120,7 @@ async def list_performance_opportunities(
         "next_offset": page.next_offset,
         "facets": page.facets,
         "summary": page.summary,
+        "counts": page.counts,
         **({"ignored_arguments": ignored} if ignored else {}),
     }
 

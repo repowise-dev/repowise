@@ -3,6 +3,7 @@
 import type { ActionCommand } from "./actions.js";
 import type { FixExclusion } from "./fix-first.js";
 import type { Paginated } from "./pagination.js";
+import type { QueueCounts } from "./queue.js";
 
 export type RefactoringType =
   | "extract_class"
@@ -497,6 +498,8 @@ export interface RefactoringOpportunityPage {
   scope?: RefactoringScope;
   /** Under ``fix_first`` only. */
   hidden?: RefactoringHiddenCounts;
+  /** The plans' count vocabulary over the open inventory in the queried files. */
+  counts?: QueueCounts;
 }
 
 /** ``GET /api/repos/{repo_id}/refactoring/summary``. */

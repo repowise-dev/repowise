@@ -37,6 +37,7 @@ from repowise.core.persistence.crud import (
     load_coverage_history,
 )
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first, queue_view
+from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
 from repowise.core.persistence.models import HealthFileMetric
 from repowise.server.mcp_server._helpers import filter_rows_by_attr
 from repowise.server.mcp_server.tool_health.findings import (
@@ -94,6 +95,8 @@ class HealthData:
     fix_first: FixFirstQueue | None = None
     #: The whole queue the page was cut from: its lead and its counts.
     fix_first_full: FixFirstQueue | None = None
+    #: The findings' count vocabulary, read only when ``top_findings`` is named.
+    finding_counts: dict[str, Any] | None = None
     # Dashboard only: the worst-first test files, ranked apart from
     # ``metric_rows`` so a test never heads the production worklist.
     test_metric_rows: list[HealthFileMetric] = field(default_factory=list)
@@ -165,6 +168,9 @@ async def load_health_data(
         pop, metric_rows, findings, req, data.test_metric_rows
     )
     data.fix_first, data.fix_first_full = await _read_fix_first(session, repository, pop, req)
+    if "top_findings" in req.only_set and not pop.nothing_resolved:
+        counts = await unit_counts(session, repository.id, "findings", file_paths=pop.target_paths)
+        data.finding_counts = counts.as_dict()
     return data
 
 

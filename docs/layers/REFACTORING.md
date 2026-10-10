@@ -116,7 +116,9 @@ in the code anchors one. A Split File or Extract Class plan with an unnamed grou
 is held as `needs_design`, like a cycle: it is not a step and never reaches Fix
 first. A plan led by Move Method or Extract Class stays in the full list but is
 kept out of Fix first and the default scope, counted as not yet audited, until
-that kind passes a per-language review. Code only moves within a language family,
+that kind passes a per-language review. When such a step follows another lead, the
+Fix first item leaves it out and says how many steps it held back; the full plan
+keeps them. Code only moves within a language family,
 so Java, Kotlin and Scala are separate. A callback is named after the call it is
 passed to. An Extract Method helper is named from a stage label, a banner comment,
 or `compute_<value>` when the span has no outside effects. A name already taken

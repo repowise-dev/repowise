@@ -24,7 +24,6 @@ from typing import Any, Literal
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.queue.eligibility import Tally, Verdict
 from repowise.core.analysis.health.queue_rules import keep, sort_key
 from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 from repowise.core.analysis.health.refactoring.recommendations import (
@@ -53,7 +52,7 @@ from repowise.core.analysis.health.refactoring.serving import (
 )
 from repowise.core.analysis.health.refactoring_summary import summarize_plans
 from repowise.core.analysis.health.rows import detail_map, json_field
-from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
 from repowise.core.persistence.crud.analysis.refactoring import (
     get_refactoring_suggestions,
     ranked_refactoring_suggestions,
@@ -65,7 +64,7 @@ from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
     list_refactoring_opportunities,
     refactoring_facet_counts,
     refactoring_opportunities_by_id,
-    refactoring_opportunity_ids,
+    refactoring_reason_counts,
     refactoring_step_counts,
 )
 from repowise.core.persistence.models import RefactoringOpportunity, RefactoringSuggestion
@@ -84,6 +83,8 @@ class RefactoringPage:
     #: Under ``fix_first``: the opportunities the same filters match that Fix
     #: first leaves out, ``{"total": n, "by_reason": {reason: n}}``.
     hidden: dict[str, Any] | None = None
+    #: The plans' count vocabulary (``queue.counts``) in the query's files.
+    counts: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +99,7 @@ class RefactoringPlanPage:
     next_offset: int
     scope: str = "all"
     hidden: dict[str, Any] | None = None
+    counts: dict[str, Any] = field(default_factory=dict)
 
 
 def _filters(query: RefactoringQuery) -> dict[str, Any]:
@@ -233,13 +235,11 @@ class RefactoringHealthService:
         write) says which opportunities it takes, and one id-only read of the
         filtered set counts what it leaves out, by reason.
         """
-        filters = _filters(query)
-        shown_ids, hidden = await self._scope(query, filters)
+        filters, hidden = await self._scope(query, _filters(query))
         rows, total = await list_refactoring_opportunities(
             self._session,
             self._repository_id,
             **filters,
-            opportunity_ids=shown_ids,
             order=query.resolved_order,
             limit=query.limit,
             offset=query.offset,
@@ -255,21 +255,16 @@ class RefactoringHealthService:
             offset=query.offset,
             next_offset=next_offset if next_offset < total else None,
             facets=(
-                # Scoped to the status being listed. Facets counting the open
-                # set while the list shows the resolved one would put a badge on
-                # a tab that returns nothing.
-                await refactoring_facet_counts(
-                    self._session,
-                    self._repository_id,
-                    status=query.status,
-                    opportunity_ids=shown_ids,
-                )
+                # Under the list's status, scope and filters, so a badge never
+                # counts rows its tab would not return.
+                await refactoring_facet_counts(self._session, self._repository_id, **filters)
                 if with_facets
                 else {}
             ),
             summary=await self.summary() if with_summary else None,
             scope=query.scope,
             hidden=hidden,
+            counts=await self._counts(query, len(items)),
         )
 
     async def plan_page(self, query: RefactoringQuery) -> RefactoringPlanPage:
@@ -280,13 +275,11 @@ class RefactoringHealthService:
         of step counts places the page; only the opportunities it touches are
         decoded.
         """
-        filters = _filters(query)
-        shown_ids, hidden = await self._scope(query, filters)
+        filters, hidden = await self._scope(query, _filters(query))
         counts = await refactoring_step_counts(
             self._session,
             self._repository_id,
             **filters,
-            opportunity_ids=shown_ids,
             order=query.resolved_order,
         )
         window = _plan_window(counts, query.offset, query.limit)
@@ -307,39 +300,34 @@ class RefactoringHealthService:
             next_offset=query.offset + sum(stop - start for start, stop in window.values()),
             scope=query.scope,
             hidden=hidden,
+            counts=await self._counts(query, len(window)),
         )
 
     async def _scope(
         self, query: RefactoringQuery, filters: dict[str, Any]
-    ) -> tuple[list[str] | None, dict[str, Any] | None]:
-        """The ids a ``fix_first`` scope keeps and what it hides; ``all`` keeps every row."""
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """The filters a scope reads, and under ``fix_first`` what the same
+        filters match that Fix first leaves out, by the reason stored on each
+        row at index time. ``all`` keeps every row."""
         if query.scope != "fix_first":
-            return None, None
-        return await self._fix_first_scope(filters)
+            return filters, None
+        by_reason = await refactoring_reason_counts(self._session, self._repository_id, **filters)
+        left_out = {reason: n for reason, n in by_reason.items() if reason is not None}
+        return {**filters, "queue_eligible": True}, {
+            "total": sum(left_out.values()),
+            "by_reason": dict(sorted(left_out.items(), key=lambda i: (-i[1], i[0]))),
+        }
 
-    async def _fix_first_scope(
-        self, filters: dict[str, Any]
-    ) -> tuple[list[str], dict[str, Any]]:
-        """The filtered ids Fix first takes, and what it leaves out by reason.
-
-        Ceiling: the shown ids go back to the page read as an ``IN`` list, one
-        entry per open opportunity Fix first takes (94 on this repository).
-        Upgrade path: store the eligibility on the opportunity row at index
-        time and filter on the column.
-        """
-        queue = await load_fix_first(self._session, self._repository_id, limit=0, verify=False)
-        reasons = queue.refactoring_reasons
-        matched = await refactoring_opportunity_ids(
-            self._session, self._repository_id, **filters
+    async def _counts(self, query: RefactoringQuery, shown: int) -> dict[str, Any]:
+        """The plans' counts in the query's files: where the page sits in the queue."""
+        counts = await unit_counts(
+            self._session,
+            self._repository_id,
+            "plans",
+            shown=shown,
+            file_paths=query.file_paths,
         )
-        # The queue is keyed on the stores' newest write, so it has read every
-        # open id; one written between the two reads is in neither count.
-        shown = [i for i in matched if i in reasons and reasons[i] is None]
-        left_out = Tally()
-        for i in matched:
-            if reason := reasons.get(i):
-                left_out.add(Verdict(reason))
-        return shown, {"total": left_out.total, "by_reason": left_out.by_reason()}
+        return counts.as_dict()
 
     # -- headline ---------------------------------------------------------
 

@@ -71,6 +71,7 @@ async def _store(repo_path: Path, paths: list[str] = _PATHS) -> list[str]:
         init_db,
         upsert_repository,
     )
+    from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
     from repowise.server.services.refactoring_health import RefactoringHealthService
 
     db_path = repo_path / ".repowise" / "wiki.db"
@@ -90,6 +91,7 @@ async def _store(repo_path: Path, paths: list[str] = _PATHS) -> list[str]:
             await crud.finalize_refactoring_opportunities(
                 session, repo.id, analyzed_commit="c" * 40
             )
+            await write_read_snapshots(session, repo.id)
             await session.commit()
             page = await RefactoringHealthService(session, repo.id, "repo").page(
                 parse_query(limit=20)[0]

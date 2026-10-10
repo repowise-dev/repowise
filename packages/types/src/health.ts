@@ -18,6 +18,7 @@
 import type { C4IoKind } from "./external-systems.js";
 import type { CoverageHistoryPoint, CoverageSummary } from "./generated/http.js";
 import type { Paginated } from "./pagination.js";
+import type { QueueCounts, QueueCountsByUnit } from "./queue.js";
 import type {
   StepClassification,
   StepVerify,
@@ -689,6 +690,8 @@ export interface PerformanceOpportunityPage extends Paginated<PerformanceOpportu
   facets: PerformanceFacets;
   /** Filter values the server did not recognize, named rather than dropped. */
   ignored_arguments?: Record<string, string>;
+  /** The causes' count vocabulary over the open inventory in the queried files. */
+  counts?: QueueCounts;
 }
 
 export interface HealthModuleRow {
@@ -784,6 +787,8 @@ export interface HealthOverviewResponse {
   top_findings: HealthFinding[];
   modules?: HealthModuleRow[];
   biomarkers?: BiomarkerBreakdownRow[];
+  /** Every queue unit's counts, unprojected by the page's scope or counts. */
+  queue_counts?: QueueCountsByUnit;
   meta?: {
     last_indexed_at: string | null;
     head_commit: string | null;

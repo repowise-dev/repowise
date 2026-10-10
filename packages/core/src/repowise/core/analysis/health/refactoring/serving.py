@@ -43,8 +43,8 @@ DEFAULT_VIEW = "diversified"
 # Which open opportunities a queue lists:
 #
 # - ``fix_first``  the default for a repository-wide open queue: only the
-#   opportunities Fix first would take (its eligibility and exclusion rules,
-#   read from the same builder), with the rest counted by reason.
+#   opportunities Fix first would take (the judgement the index stored on each
+#   row), with the rest counted by reason.
 # - ``all``  the full inventory. The default when the caller names files (a
 #   file surface asks for its own work) or lists a triaged status, which Fix
 #   first never reads.
@@ -90,8 +90,9 @@ CANONICAL_ORDERS = tuple(SORTS)
 #: In the order the store has always emitted its predicates.
 FILTERS: tuple[FilterRule, ...] = (
     FilterRule("status", "status", "eq", "always"),
-    # A scope resolved in Python (Fix first's eligible set).
     FilterRule("opportunity_ids", "opportunity_id", "in", "set"),
+    # The ``fix_first`` scope: the judgement stored at index time.
+    FilterRule("queue_eligible", "queue_eligible", "is", "set"),
     # A list is how the board's "Structural" tab asks for four types at once.
     FilterRule("lead_types", "lead_refactoring_type", "in", "truthy"),
     FilterRule("confidence", "confidence", "eq", "set"),
@@ -105,14 +106,17 @@ FILTERS: tuple[FilterRule, ...] = (
     FilterRule("addresses_primary", "addresses_primary_problem", "is", "set"),
 )
 
-#: Facet name and the field it counts. No facet is cross-filtered: the counts
-#: are over the status and scope alone.
+#: Facet name, the field it counts, and the filter that narrows it. Each facet
+#: is counted under every other filter, so choosing a type keeps the other
+#: types' counts.
 FACETS: tuple[Facet, ...] = (
-    ("lead_type", "lead_refactoring_type", None),
-    ("effort", "effort_bucket", None),
-    ("confidence", "confidence", None),
+    ("lead_type", "lead_refactoring_type", "lead_types"),
+    ("effort", "effort_bucket", "effort"),
+    ("confidence", "confidence", "confidence"),
 )
 FACET_FIELDS = tuple(column for _, column, _ in FACETS)
+#: The filters a facet cross-filters by, applied after grouping, not in SQL.
+FACET_PARAMS = frozenset(param for _, _, param in FACETS if param)
 
 
 def sort_keys(order: str | None) -> SortKeys:
@@ -130,20 +134,31 @@ def row_sort_key(row: Any, order: str | None = None) -> tuple[Any, ...]:
     return queue_rules.sort_key(sort_keys(order), row)
 
 
-def fold_facets(groups: Iterable[Sequence[Any]]) -> dict[str, dict[str, int]]:
-    """Fold ``(*facet values, count)`` groups into per-facet counts; a NULL is skipped."""
-    return queue_rules.fold_facets(groups, FACETS)
+def split_facet_params(params: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``(row filters, facet selection)``: the filters every count applies,
+    and the ones each facet applies to the others only."""
+    rows = {k: v for k, v in params.items() if k not in FACET_PARAMS}
+    return rows, {k: v for k, v in params.items() if k in FACET_PARAMS}
 
 
-def facet_counts(
-    rows: Iterable[Any], *, status: str = "open", opportunity_ids: Sequence[str] | None = None
+def fold_facets(
+    groups: Iterable[Sequence[Any]], selection: Mapping[str, Any] | None = None
 ) -> dict[str, dict[str, int]]:
-    """Counts for every facet over the rows a status (and scope) selects."""
-    params = {"status": status, "opportunity_ids": opportunity_ids}
+    """Fold ``(*facet values, count)`` groups into per-facet counts, each
+    cross-filtered by the *selection* of the others; a NULL is skipped."""
+    return queue_rules.fold_facets(groups, FACETS, rules=FILTERS, selection=selection)
+
+
+def facet_counts(rows: Iterable[Any], **params: Any) -> dict[str, dict[str, int]]:
+    """Counts for every facet over *rows*, under the queue filters in *params*."""
+    row_params, selection = split_facet_params({"status": "open", **params})
     return fold_facets(
-        (*(field(row, column) for column in FACET_FIELDS), 1)
-        for row in rows
-        if keep(row, params)
+        (
+            (*(field(row, column) for column in FACET_FIELDS), 1)
+            for row in rows
+            if keep(row, row_params)
+        ),
+        selection,
     )
 
 

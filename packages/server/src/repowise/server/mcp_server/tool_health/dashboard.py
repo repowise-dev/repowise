@@ -73,6 +73,7 @@ def build_dashboard(
             "top_findings",
         ),
         "top_findings_total": findings.findings_total,
+        **({"top_findings_counts": data.finding_counts} if data.finding_counts else {}),
         # The test half of the same ranked set, kept out of the production list.
         "test_findings": pager.bound(
             [
@@ -117,8 +118,11 @@ def _fix_first_block(data: HealthData, req: HealthRequest, pager: Pager) -> dict
     block = page.as_dict(compact=True)
     for item in block["items"]:
         item.pop("next_call", None)
+    # Zero reasons say nothing an agent reads; ``counts.excluded`` omits them too.
+    totals = block["totals"]
+    totals["excluded"] = {reason: n for reason, n in totals["excluded"].items() if n}
     block["lead"] = full.lead.compact() if full.lead is not None else None
-    block["counts"] = full.counts(shown=len(page.items))
+    block["counts"] = full.counts(shown=len(page.items)).as_dict()
     block["items_total"] = full.totals.eligible
     block["cursor"] = req.fix_first_cursor
     if full.lead is not None:

@@ -59,9 +59,11 @@ from typing import Any
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.complexity.dispatch import DISPATCH_SHARE
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
+from repowise.core.analysis.health.queue.counts import Judgement
 from repowise.core.analysis.health.queue.eligibility import (
     DEAD_CONFIDENCE,
     DEFAULT_QUEUE_CONTEXTS,
+    UNAUDITED_KINDS,
     DeadSpan,
     Tally,
     Verdict,
@@ -75,6 +77,8 @@ from repowise.core.analysis.health.queue.eligibility import (
 )
 from repowise.core.analysis.health.queue.order import LEVEL_RANK, order
 from repowise.core.analysis.health.queue.value import (
+    perf_confidence,
+    perf_ready,
     perf_value,
     shape_value,
     size_value,
@@ -592,6 +596,9 @@ def _refactor_unit(
 ) -> _Unit:
     path = field(row, "file_path")
     lead = steps[0]
+    # Steps of a kind not yet audited stay in the full plan, never in the item.
+    kept = [s for s in steps if not _unaudited(s)]
+    held_back, steps = len(steps) - len(kept), kept
     lead_type = lead.get("refactoring_type") or field(row, "lead_refactoring_type") or ""
     sym = text.short_symbol(lead.get("target_symbol")) or text.basename(path)
     marker = field(row, "lead_biomarker") or (
@@ -654,6 +661,7 @@ def _refactor_unit(
             FixFact("health recoverable", f"+{gain:.1f}", "inferred"),
             *([FixFact("size", size_text)] if size_text else []),
             FixFact("steps", f"{len(steps)} ({mechanical_n} mechanical)"),
+            *([FixFact("steps held back", text.held_back(held_back))] if held_back else []),
             *files.common_facts(path, dependents),
         ]
         nloc = files.nloc(path)
@@ -733,6 +741,10 @@ def _refactor_unit(
     )
 
 
+def _unaudited(step: Mapping[str, Any]) -> bool:
+    return step.get("refactoring_type") in UNAUDITED_KINDS
+
+
 def _refactor_measure(
     kind: str, sym: str, path: str, step: Mapping[str, Any], plan: Any, files: _Files
 ) -> str | None:
@@ -799,9 +811,6 @@ def _perf_unit(
     plan_steps = plan.get("steps") or []
     mechanical = bool(plan_steps) and all(
         s.get("applicability") == "mechanical" for s in plan_steps
-    )
-    ready = (
-        field(lead, "actionability_state") == "plan_ready" or field(lead, "fix_safety") == "proven"
     )
     effort = plan.get("effort_bucket")
 
@@ -917,14 +926,13 @@ def _perf_unit(
             ),
         }
 
-    confidence = facets.get("actionability_confidence") or "low"
-    confidence = confidence if confidence in LEVEL_RANK else "low"
+    confidence = perf_confidence(facets)
     return _finish(
         kind="perf_fix",
         may_lead=details.get("may_lead") is not False,
         source_id=f"{path}::{symbol or path}",
         value=perf_value(lead, facets),
-        ready=ready or mechanical,
+        ready=perf_ready(lead, plan),
         score=_num(field(lead, "rank_score")),
         confidence=confidence,
         effort=effort or "M",
@@ -945,18 +953,49 @@ def _perf_unit(
 # --- findings with no plan ----------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class _FindingRank:
+    """What a finding's value and tier read: one rule for the item and the stored judgement."""
+
+    shape: dict[str, int]
+    hot: bool
+    cloned: bool
+    low: str | None
+    value: int
+    cold_value: int
+
+    @property
+    def tier(self) -> str:
+        return tier(self.cold_value, "medium", False, self.low)[0]
+
+
+def _finding_rank(finding: Any, files: _Files) -> _FindingRank:
+    path = field(finding, "file_path")
+    marker = field(finding, "biomarker_type") or ""
+    impact = _num(field(finding, "health_impact"))
+    hot = files.hot(path)
+    shape = files.shape(path, field(finding, "function_name"))
+    cloned = marker in SIZE_MARKERS and files.cloned(path, shape)
+    return _FindingRank(
+        shape,
+        hot,
+        cloned,
+        low_priority(marker, shape, error_kind=detail_map(finding).get("kind")),
+        shape_value(impact, shape, cloned, hot=hot),
+        shape_value(impact, shape, cloned, hot=False),
+    )
+
+
 def _finding_unit(lead: Any, files: _Files, first: FixStep, validate: Validate | None) -> _Unit:
     path = field(lead, "file_path")
     marker = field(lead, "biomarker_type") or ""
     function = field(lead, "function_name")
     impact = _num(field(lead, "health_impact"))
-    hot = files.hot(path)
     public_id = field(lead, "public_id")
     dimension = biomarker_dimension(marker)
-    shape = files.shape(path, function)
+    rank = _finding_rank(lead, files)
+    shape, hot, cloned, low = rank.shape, rank.hot, rank.cloned, rank.low
     size = size_value(shape, hot)
-    cloned = marker in SIZE_MARKERS and files.cloned(path, shape)
-    low = low_priority(marker, shape, error_kind=detail_map(lead).get("kind"))
 
     def fields() -> dict[str, Any]:
         where = function or text.basename(path)
@@ -1012,8 +1051,8 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep, validate: Validate |
     return _finish(
         kind="finding",
         source_id=public_id or f"{path}::{marker}::{function or ''}",
-        value=shape_value(impact, shape, cloned, hot=hot),
-        cold_value=shape_value(impact, shape, cloned, hot=False),
+        value=rank.value,
+        cold_value=rank.cold_value,
         ready=False,
         score=impact,
         confidence="medium",
@@ -1077,6 +1116,77 @@ def _basis(metrics: Rows) -> dict[str, str | None]:
     }
 
 
+def _shown_findings(findings: Iterable[Any]) -> dict[str, list[Any]]:
+    """Open code-health findings that score, of a shown type, by file."""
+    hidden = excluded_types()
+    by_file: dict[str, list[Any]] = defaultdict(list)
+    for f in findings:
+        if (
+            _num(field(f, "health_impact")) > 0
+            and field(f, "biomarker_type") not in hidden
+            and field(f, "dimension") != "performance"
+            and _open(f)
+        ):
+            by_file[field(f, "file_path")].append(f)
+    return by_file
+
+
+def _prepare(
+    metrics: list[Any],
+    findings: Iterable[Any],
+    plans: list[Any],
+    dead_code: Rows,
+    hot_cuts: tuple[float, float] | None,
+) -> tuple[dict[str, tuple[list[Any], list[Any]]], _Files]:
+    """Findings split into (code shape, history) by file, and the file facts."""
+    split = {path: split_by_origin(rows) for path, rows in _shown_findings(findings).items()}
+    files = _Files(
+        metrics,
+        {p: hist for p, (_shape, hist) in split.items() if hist},
+        _by_function(f for shape, _hist in split.values() for f in shape),
+        hot_cuts,
+        _clone_spans(plans),
+        _extractions(plans),
+        _dead_spans(dead_code),
+    )
+    return split, files
+
+
+def judge_findings(
+    *,
+    metrics: Rows = (),
+    findings: Rows = (),
+    plans: Rows = (),
+    dead_code: Rows = (),
+    hot_cuts: tuple[float, float] | None = None,
+) -> dict[Any, Judgement]:
+    """Each open code-health finding's place in the queue, keyed by its ``id``.
+
+    The rule Fix first applies to a file's findings, one finding at a time:
+    the file's scope, then history-only markers, then :func:`finding_verdict`;
+    an eligible finding is valued and tiered as its item would be. Pass every
+    open finding of the files judged, so a function's shape is whole.
+    """
+    metrics = list(metrics)
+    split, files = _prepare(metrics, findings, list(plans), dead_code, hot_cuts)
+
+    def first_step(finding: Any) -> bool:
+        return files.first_step(finding) is not None
+
+    out: dict[Any, Judgement] = {}
+    for path, (shape, history) in split.items():
+        scope = path_verdict(path, files.is_test(path), None, files.origin(path))
+        for f in history:
+            out[field(f, "id")] = Judgement.of(scope if not scope.eligible else Verdict("history_only"))
+        for f in shape:
+            verdict = scope if not scope.eligible else finding_verdict(f, files, first_step)
+            rank = _finding_rank(f, files) if verdict.eligible else None
+            out[field(f, "id")] = Judgement.of(
+                verdict, rank and rank.value, rank and rank.tier
+            )
+    return out
+
+
 def build_fix_first(
     *,
     metrics: Rows = (),
@@ -1092,6 +1202,7 @@ def build_fix_first(
     hot_cuts: tuple[float, float] | None = None,
     symbol_lines: Mapping[str, int] | None = None,
     validate: Validate | None = None,
+    judged: dict[str, Judgement] | None = None,
 ) -> FixFirstQueue:
     """One ranked queue of what to fix, from stored rows (shapes in the module docstring).
 
@@ -1107,33 +1218,13 @@ def build_fix_first(
     is the validation profile (``basis``, ``via``, ``total``, ``tests``,
     ``commands``) of a finding with no plan, read lazily for the items shown;
     without it such an item's Verify stays unknown. ``dead_code`` rows make
-    the units they cover ``unreachable``.
+    the units they cover ``unreachable``. ``judged`` is filled with every open
+    refactoring opportunity's judgement, by id, for the index to store.
     """
     metrics = list(metrics)
-    findings = list(findings)
     keep_tests = scope == "all"
-    hidden = excluded_types()
-
-    by_file: dict[str, list[Any]] = defaultdict(list)
-    for f in findings:
-        if (
-            _num(field(f, "health_impact")) > 0
-            and field(f, "biomarker_type") not in hidden
-            and field(f, "dimension") != "performance"
-            and _open(f)
-        ):
-            by_file[field(f, "file_path")].append(f)
-    split = {path: split_by_origin(rows) for path, rows in by_file.items()}
     plans = list(plans)
-    files = _Files(
-        metrics,
-        {p: hist for p, (_shape, hist) in split.items() if hist},
-        _by_function(f for shape, _hist in split.values() for f in shape),
-        hot_cuts,
-        _clone_spans(plans),
-        _extractions(plans),
-        _dead_spans(dead_code),
-    )
+    split, files = _prepare(metrics, findings, plans, dead_code, hot_cuts)
     tally = Tally(FIX_EXCLUSIONS)
 
     def exclude(verdict: Verdict, path: str, symbol: str | None = None) -> bool:
@@ -1154,7 +1245,6 @@ def build_fix_first(
 
     units: list[_Unit] = []
     planned_files: set[str] = set()
-    refactoring_reasons: dict[str, str | None] = {}
     for row in sorted(
         (r for r in refactoring if _open(r)),
         key=lambda r: (field(r, "rank_position") or 0, field(r, "opportunity_id")),
@@ -1167,10 +1257,14 @@ def build_fix_first(
         if verdict.eligible:
             verdict = refactor_verdict(gain, steps, files, path, concrete)
             exclude(verdict, path, steps[0].get("target_symbol") if steps else None)
-        refactoring_reasons[field(row, "opportunity_id")] = verdict.reason
         if not verdict.eligible:
+            if judged is not None:
+                judged[field(row, "opportunity_id")] = Judgement(verdict.reason)
             continue
-        units.append(_refactor_unit(row, details, steps, gain, plan_rows, files))
+        unit = _refactor_unit(row, details, steps, gain, plan_rows, files)
+        units.append(unit)
+        if judged is not None:
+            judged[field(row, "opportunity_id")] = Judgement(None, unit.value, unit.tier)
         # Only a plan that became an item speaks for the file's findings; an
         # excluded one leaves them to compete on their own.
         planned_files.add(path)
@@ -1240,7 +1334,6 @@ def build_fix_first(
         ),
         by_improves={k: by_improves.get(k, 0) for k in FIX_IMPROVES},
         basis=dict(basis) if basis is not None else _basis(metrics),
-        refactoring_reasons=refactoring_reasons,
     )
 
 
@@ -1253,4 +1346,5 @@ __all__ = [
     "build_fix_first",
     "hot_cut",
     "hot_cut_offset",
+    "judge_findings",
 ]

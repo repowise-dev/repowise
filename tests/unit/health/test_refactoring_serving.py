@@ -263,6 +263,8 @@ _FILTERS: list[dict[str, Any]] = [
     {"opportunity_ids": ["refop_0", "refop_2", "refop_5"]},
     {"opportunity_ids": []},
     {"lead_types": ["extract_method"], "mechanical_only": True, "path_prefix": "pkg_a/"},
+    {"queue_eligible": True},
+    {"queue_eligible": True, "effort": "S"},
 ]
 
 
@@ -283,6 +285,9 @@ def _seed_rows(repository_id: str) -> list[Any]:
             evidence_total=0,
             affected_files_total=1,
             details_json="{}",
+            # Every other row judged eligible, as the index stores it.
+            queue_eligible=i % 2 == 0,
+            queue_reason=None if i % 2 == 0 else "below_min_worth",
             **seed,
         )
         for i, seed in enumerate(_SEEDS)
@@ -293,7 +298,7 @@ def _as_mapping(row: Any) -> dict[str, Any]:
     return {column: getattr(row, column) for column in (
         "opportunity_id", "status", "file_path", "lead_refactoring_type", "confidence",
         "effort_bucket", "mechanical_steps", "addresses_primary_problem", "rank_position",
-        "queue_position", "recoverable_health", "step_count",
+        "queue_position", "recoverable_health", "step_count", "queue_eligible",
     )}
 
 
@@ -324,7 +329,7 @@ async def store(tmp_path: Path):
 async def test_keep_and_sort_agree_with_the_store(store, params, order) -> None:
     from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
         list_refactoring_opportunities,
-        refactoring_opportunity_ids,
+        refactoring_reason_counts,
     )
 
     session, repository_id = store
@@ -339,11 +344,9 @@ async def test_keep_and_sort_agree_with_the_store(store, params, order) -> None:
         )
         assert [field(row, "opportunity_id") for row in kept] == expected
     assert total == len(expected)
-    unpaged = await refactoring_opportunity_ids(
-        session, repository_id, **{k: v for k, v in params.items() if k != "opportunity_ids"}
-    )
-    if "opportunity_ids" not in params:
-        assert sorted(unpaged) == sorted(expected)
+    by_reason = await refactoring_reason_counts(session, repository_id, **params)
+    assert sum(by_reason.values()) == len(expected)
+    assert by_reason.get(None, 0) == sum(1 for r in stored if r.queue_eligible)
 
 
 def test_keep_reads_a_parsed_query() -> None:
@@ -353,19 +356,41 @@ def test_keep_reads_a_parsed_query() -> None:
 
 
 @pytest.mark.parametrize("status", ["open", "acknowledged", "resolved"])
-@pytest.mark.parametrize("ids", [None, ["refop_0", "refop_4"], []])
-async def test_facet_counts_agree_with_the_store(store, status, ids) -> None:
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"opportunity_ids": ["refop_0", "refop_4"]},
+        {"opportunity_ids": []},
+        {"queue_eligible": True},
+        {"path_contains": "mod", "effort": "S"},
+        {"lead_types": ["extract_method"], "mechanical_only": True},
+    ],
+)
+async def test_facet_counts_agree_with_the_store(store, status, params) -> None:
     from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
         refactoring_facet_counts,
     )
 
     session, repository_id = store
-    expected = await refactoring_facet_counts(
-        session, repository_id, status=status, opportunity_ids=ids
-    )
-    assert facet_counts(_seed_rows(repository_id), status=status, opportunity_ids=ids) == expected
+    expected = await refactoring_facet_counts(session, repository_id, status=status, **params)
+    assert facet_counts(_seed_rows(repository_id), status=status, **params) == expected
     assert (
-        facet_counts([_as_mapping(r) for r in _seed_rows(repository_id)], status=status,
-                     opportunity_ids=ids)
+        facet_counts([_as_mapping(r) for r in _seed_rows(repository_id)], status=status, **params)
         == expected
     )
+
+
+async def test_facets_follow_every_filter_but_their_own(store) -> None:
+    """A search narrows every facet; a chosen type keeps the other types' counts."""
+    from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
+        refactoring_facet_counts,
+    )
+
+    session, repository_id = store
+    facets = await refactoring_facet_counts(
+        session, repository_id, path_contains="other/", lead_types=["extract_method"]
+    )
+    # Only other/v.py is open under other/; its type counts though it is the one chosen.
+    assert facets["lead_type"] == {"extract_method": 1}
+    assert facets["effort"] == {"S": 1}

@@ -60,7 +60,10 @@ def test_parse_query_reports_what_it_discards() -> None:
 def test_query_resolves_contexts_and_default_queue() -> None:
     assert parse_query(context="all")[0].contexts is None
     assert parse_query(context="production_tooling")[0].contexts == {"production", "tooling"}
-    assert parse_query()[0].actionabilities == {"plan_ready", "advisory"}
+    # The default queue is the stored judgement; any other context keeps its states.
+    assert parse_query()[0].queue_eligible is True and parse_query()[0].actionabilities is None
+    assert parse_query(context="all")[0].actionabilities == {"plan_ready", "advisory"}
+    assert parse_query(context="all")[0].queue_eligible is None
     assert parse_query(actionability="expected")[0].actionabilities == {"expected"}
     assert parse_query(boundary="none")[0].boundary == "none"
 
@@ -175,6 +178,12 @@ def _seed_rows(repository_id: str) -> list[Any]:
             status=seed.get("status", "open"),
             rank_position=i,
             details_json="{}",
+            # The default queue's rule, as the index judges and stores it.
+            queue_eligible=(
+                seed["execution_context"] == "production"
+                and seed["actionability_state"] in ("plan_ready", "advisory")
+                and seed["cost_proof"] == "proven"
+            ),
             **{k: v for k, v in seed.items() if k != "status"},
         )
         for i, seed in enumerate(_SEEDS)
@@ -185,7 +194,7 @@ def _as_mapping(row: Any) -> dict[str, Any]:
     return {
         column: getattr(row, column)
         for column in (
-            "opportunity_id", "status", "rank_position", *_SEEDS[0],
+            "opportunity_id", "status", "rank_position", "queue_eligible", *_SEEDS[0],
         )
     }
 
@@ -235,6 +244,7 @@ async def test_keep_and_sort_agree_with_the_store(store, args, sort) -> None:
         actionabilities=query.actionabilities,
         proofs=query.proofs,
         roles=query.roles,
+        queue_eligible=query.queue_eligible,
         file_paths=query.file_paths,
         sort=query.sort,
         limit=query.limit,

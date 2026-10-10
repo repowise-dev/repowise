@@ -101,6 +101,7 @@ def _project(
                 f"{k}_reduced_reason",
                 f"{k}_scope",
                 f"{k}_hidden",
+                f"{k}_counts",
             )
         }
     )

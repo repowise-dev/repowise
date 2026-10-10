@@ -27,7 +27,7 @@ The dashboard (`repowise serve`) has a Code Health page per repository at
 `/repos/<id>/code-health`.
 
 ```
-Fix first (3 of 41 eligible; tests, tooling and history-only files left out)
+Fix first (3 of 41 eligible items, 12 due; 230 in the inventory, tests, tooling and history-only files left out)
  1. Extract the retry branch from parse_config  now, effort M, +1.4 health
     src/config/loader.py:212
     CCN 47 and nesting 6 in a file changed 19 times this quarter.
@@ -116,6 +116,11 @@ places while another kind has work worth doing.
 | `now` | Worth doing, safe to start |
 | `next` | Worth doing, needs judgment |
 | `later` | Real but can wait; the reason is shown |
+
+Findings, performance causes, refactoring plans and Fix first items are counted the
+same way everywhere: open in the inventory, in scope, eligible, due (tier `now` or
+`next`) and shown, with every exclusion named by its reason. The numbers on the
+dashboard, in `get_health` and in `repowise health --format json` (`queue_counts`) agree.
 
 ### Do next
 

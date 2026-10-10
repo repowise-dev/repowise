@@ -9,6 +9,12 @@
 // `?` mirrors the schema's `required` list, which states what a request may
 // omit. A response field with a server-side default is still always sent.
 
+/**
+ * A way to see more: the MCP call an agent makes, the CLI line a person runs.
+ *
+ * ``tool`` and ``arguments`` are the structured call; ``mcp`` is that call
+ * rendered by :func:`render_call`. Build one with :meth:`call`.
+ */
 export interface ActionCommand {
   purpose: string;
   mcp?: string | null;
@@ -1571,6 +1577,7 @@ export interface FixFirstQueueResponse {
   by_improves: Record<string, number>;
   model_version: number;
   basis: Record<string, string | null>;
+  counts: QueueCounts;
 }
 
 export interface FixGain {
@@ -2685,6 +2692,16 @@ export interface PublishResponse {
   repo?: string | null;
 }
 
+/** One unit's counts at the five levels, and the reasons for what is out. */
+export interface QueueCounts {
+  inventory?: number;
+  in_scope?: number;
+  eligible?: number;
+  due?: number;
+  shown?: number;
+  excluded?: Record<string, number>;
+}
+
 /** What the ``fix_first`` scope leaves out of a page's filtered set. */
 export interface RefactoringHiddenCounts {
   total?: number;
@@ -2703,6 +2720,7 @@ export interface RefactoringOpportunitiesResponse {
   ignored_arguments?: Record<string, string> | null;
   scope?: "fix_first" | "all";
   hidden?: RefactoringHiddenCounts | null;
+  counts?: QueueCounts | null;
 }
 
 /**

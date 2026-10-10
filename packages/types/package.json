@@ -36,6 +36,7 @@
     "./stats": "./src/stats.ts",
     "./refactoring": "./src/refactoring.ts",
     "./fix-first": "./src/fix-first.ts",
+    "./queue": "./src/queue.ts",
     "./agent-prompts": "./src/agent-prompts.ts",
     "./serve-lock": "./src/serve-lock.ts",
     "./generated/http": "./src/generated/http.ts"

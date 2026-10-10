@@ -10,7 +10,7 @@ import hashlib
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, get_args
 
-from repowise.core.analysis.health.queue.eligibility import SCOPE_EXCLUSIONS
+from repowise.core.analysis.health.queue.counts import QueueCounts, counts_of
 from repowise.core.analysis.health.queue.order import DUE_TIERS, Tier
 from repowise.core.analysis.next_call import ActionCommand
 
@@ -234,10 +234,6 @@ class FixFirstQueue:
     basis: dict[str, str | None] = field(
         default_factory=lambda: {"analyzed_commit": None, "health_analyzed_at": None}
     )
-    #: Every open refactoring opportunity the builder read, by id: ``None``
-    #: when it is eligible, else the exclusion that kept it out. The
-    #: refactoring view's default scope reads it; never on the wire.
-    refactoring_reasons: dict[str, str | None] = field(default_factory=dict)
 
     @property
     def lead(self) -> FixItem | None:
@@ -257,24 +253,12 @@ class FixFirstQueue:
             "basis": dict(self.basis),
         }
 
-    def counts(self, shown: int) -> dict[str, Any]:
-        """The five-level count vocabulary, on the full queue (``limit=None``).
-
-        ``inventory`` every unit the builder considered; ``in_scope`` those not
-        excluded by :data:`SCOPE_EXCLUSIONS`; ``eligible`` those that became an
-        item; ``due`` eligible items in a :data:`DUE_TIERS` tier; ``shown`` what
-        the caller emits; ``excluded`` every non-zero exclusion, by reason.
-        """
-        excluded = {reason: n for reason, n in self.totals.excluded.items() if n}
-        out_of_scope = sum(n for reason, n in excluded.items() if reason in SCOPE_EXCLUSIONS)
-        return {
-            "inventory": self.totals.candidates,
-            "in_scope": self.totals.candidates - out_of_scope,
-            "eligible": self.totals.eligible,
-            "due": sum(1 for item in self.items if item.tier in DUE_TIERS),
-            "shown": shown,
-            "excluded": excluded,
-        }
+    def counts(self, shown: int) -> QueueCounts:
+        """The count vocabulary (``queue.counts``) on the full queue
+        (``limit=None``): ``inventory`` every unit the builder considered,
+        ``due`` the items in a :data:`DUE_TIERS` tier."""
+        due = sum(1 for item in self.items if item.tier in DUE_TIERS)
+        return counts_of(self.totals.eligible, due, self.totals.excluded, shown)
 
 
 __all__ = [

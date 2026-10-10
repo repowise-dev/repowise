@@ -11,8 +11,9 @@ from typing import Any
 from repowise.cli.helpers import console
 
 
-def _render_fix_first(queue: Any) -> None:
-    """What to fix first, as core ranks it: title, where, why, effort, how to verify."""
+def _render_fix_first(queue: Any, rows: int | None = None) -> None:
+    """What to fix first, as core ranks it: title, where, why, effort, how to
+    verify. ``queue`` is the whole queue; its first ``rows`` items print."""
     from rich.markup import escape
 
     if queue is None:
@@ -20,12 +21,14 @@ def _render_fix_first(queue: Any) -> None:
     if not queue.items:
         console.print("\n[bold]Fix first[/bold]: nothing eligible in the stored analysis.")
         return
-    totals = queue.totals
+    shown = queue.items if rows is None else queue.items[:rows]
+    counts = queue.counts(len(shown))
     console.print(
-        f"\n[bold]Fix first[/bold] [dim]({totals.shown} of {totals.eligible} eligible; "
-        "tests, tooling and history-only files left out)[/dim]"
+        f"\n[bold]Fix first[/bold] [dim]({counts.shown} of {counts.eligible:,} eligible items, "
+        f"{counts.due:,} due; {counts.inventory:,} in the inventory, tests, tooling and "
+        "history-only files left out)[/dim]"
     )
-    for item in queue.items:
+    for item in shown:
         target = item.target
         where = target.file_path + (f":{target.line_start}" if target.line_start else "")
         console.print(

@@ -18,6 +18,7 @@ from repowise.core.analysis.health.grading import distribution as health_distrib
 from repowise.core.analysis.health.ranking import deduction_by_path
 from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS, hotspot_health
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.queue_counts import all_unit_counts
 from repowise.server.deps import get_db_session
 from repowise.server.mcp_server._meta import resolve_indexed_commit
 
@@ -144,6 +145,12 @@ async def health_overview(
         "top_findings": top_findings,
         "modules": module_rollups(metrics, deductions),
         "biomarkers": biomarker_breakdown(findings),
+        # Every queue unit's count vocabulary, over the stored judgements: the
+        # same numbers the lists, MCP and the CLI report, whatever scope or
+        # counts this page projects.
+        "queue_counts": await all_unit_counts(
+            session, repo_id, shown={"findings": len(top_findings)}
+        ),
         "meta": {
             "last_indexed_at": last_indexed_at,
             # Prefer state.json's last_sync_commit over a possibly-stale DB row

@@ -135,6 +135,11 @@ def plural(n: int, noun: str) -> str:
     return f"{n:,} {noun}" if n == 1 else f"{n:,} {noun}s"
 
 
+def held_back(n: int) -> str:
+    """Steps of a refactoring kind not yet audited, kept out of the item."""
+    return f"{n} (move or extract-class, not yet audited; in the full plan)"
+
+
 def short_symbol(symbol: str | None) -> str | None:
     """``path/to/x.py::Cls.method`` reads as ``Cls.method``."""
     return symbol.rsplit("::", 1)[-1] if symbol else None

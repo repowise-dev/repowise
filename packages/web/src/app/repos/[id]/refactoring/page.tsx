@@ -275,6 +275,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
     scope,
     appliedScope: data?.scope ?? "all",
     hidden: data?.hidden ?? null,
+    counts: data?.counts ?? null,
     total: data?.total ?? 0,
     offset,
     nextOffset: data?.next_offset ?? null,

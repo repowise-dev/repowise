@@ -220,6 +220,7 @@ def _render_performance(
         result["performance_opportunities"] = page.items
         result["performance_opportunities_total"] = page.total
         result["performance_opportunities_emitted"] = len(page.items)
+        result["performance_opportunities_counts"] = page.counts
         if page.next_offset is not None:
             pager.recoveries["performance_opportunities"] = (
                 page.next_offset,

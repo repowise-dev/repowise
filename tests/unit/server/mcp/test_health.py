@@ -1041,6 +1041,7 @@ async def test_include_names_work_as_only_aliases(setup_mcp, health_data, alias,
             "refactoring_plans_status",
             "refactoring_plans_scope",
             "refactoring_plans_hidden",
+            "refactoring_plans_counts",
             "refactoring_plans_opportunities_total",
         }
     assert set(result) - {"mode", "targets", "_meta"} <= allowed
@@ -1667,7 +1668,7 @@ def test_fix_first_counts_split_scope_from_worth():
     excluded = dict.fromkeys(("test", "tooling", "below_min_worth", "vendored"), 0)
     excluded.update(test=4, tooling=1, below_min_worth=3)
     queue = FixFirstQueue(totals=FixTotals(candidates=10, eligible=2, shown=2, excluded=excluded))
-    assert queue.counts(shown=1) == {
+    assert queue.counts(shown=1).as_dict() == {
         "inventory": 10,
         "in_scope": 5,
         "eligible": 2,

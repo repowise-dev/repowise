@@ -65,6 +65,21 @@ def perf_value(row: Any, facets: Mapping[str, Any]) -> int:
     return value
 
 
+def perf_confidence(facets: Mapping[str, Any]) -> str:
+    """How sure the strategy is; ``low`` when it was not recorded."""
+    level = facets.get("actionability_confidence") or "low"
+    return level if level in LEVEL_RANK else "low"
+
+
+def perf_ready(row: Any, plan: Mapping[str, Any]) -> bool:
+    """Whether a cause's fix is safe to start: a ready or proven strategy,
+    or a stored plan whose every step is mechanical."""
+    if field(row, "actionability_state") == "plan_ready" or field(row, "fix_safety") == "proven":
+        return True
+    steps = plan.get("steps") or []
+    return bool(steps) and all(s.get("applicability") == "mechanical" for s in steps)
+
+
 def tier(value: int, confidence: str, ready: bool, low: str | None) -> tuple[str, str]:
     """The tier and its reason, from a value that leaves the hot-file bonus
     out: history orders items within a tier but never lifts one. A problem
@@ -84,6 +99,8 @@ __all__ = [
     "SIZE_SEVERE",
     "VALUE_MAX",
     "gain_value",
+    "perf_confidence",
+    "perf_ready",
     "perf_value",
     "shape_value",
     "size_value",

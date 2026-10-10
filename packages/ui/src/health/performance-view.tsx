@@ -212,7 +212,11 @@ export function PerformanceView({
         <PageLede
           label="Causal opportunities"
           value={summary.total.toLocaleString()}
-          unit="ranked causes, not repeated observations"
+          unit={
+            data.counts
+              ? `ranked causes, not repeated observations; ${data.counts.eligible.toLocaleString()} in the default queue, ${data.counts.inventory.toLocaleString()} in the repository`
+              : "ranked causes, not repeated observations"
+          }
           layout="beside"
           figureFooter={
             <p className="text-caption text-[var(--color-text-tertiary)]">

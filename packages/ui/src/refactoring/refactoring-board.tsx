@@ -59,6 +59,7 @@ import type {
   RefactoringOrder,
   RefactoringScope,
 } from "@repowise-dev/types/refactoring";
+import type { QueueCounts } from "@repowise-dev/types/queue";
 
 const PAGE_SIZE = 60;
 
@@ -91,6 +92,8 @@ export interface RefactoringBoardServerState {
   appliedScope?: RefactoringScope | undefined;
   /** Under `fix_first`, what the filtered set leaves out, by reason. */
   hidden?: RefactoringHiddenCounts | null | undefined;
+  /** The plans' count vocabulary, so the lede and the tabs name their level. */
+  counts?: QueueCounts | null | undefined;
   total: number;
   offset: number;
   nextOffset: number | null;
@@ -160,7 +163,10 @@ export function RefactoringBoard({
   const rollupTotal =
     summary && summary.status === "available" ? summary.opportunities_total : null;
   // Empty only when the inventory is: the default scope can list none of it.
-  const inventory = rollupTotal ?? serverState.total + (serverState.hidden?.total ?? 0);
+  const inventory =
+    serverState.counts?.inventory ??
+    rollupTotal ??
+    serverState.total + (serverState.hidden?.total ?? 0);
   const filtersActive =
     serverState.query.trim() !== "" ||
     serverState.effort !== null ||
@@ -204,6 +210,7 @@ export function RefactoringBoard({
       {showLede ? (
         <RefactoringLede
           summary={summary}
+          counts={serverState.counts}
           indexedFileCount={indexedFileCount}
           facets={facets}
           quickWinsActive={quickWinsActive}

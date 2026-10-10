@@ -1748,7 +1748,23 @@ class DocDriftFinding(Base):
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class HealthFinding(Base):
+class QueueVerdict:
+    """A unit's place in the default queue, judged once at index time by
+    ``analysis.health.queue`` so lists filter and count it in SQL.
+
+    ``queue_eligible`` is NULL until the first judgement (a store written
+    before the columns), ``False`` with the one ``queue_reason`` that kept the
+    unit out, or ``True``; ``queue_value`` (0-4) and ``queue_tier`` are set on
+    eligible units only.
+    """
+
+    queue_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    queue_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    queue_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    queue_tier: Mapped[str | None] = mapped_column(String(8), nullable=True)
+
+
+class HealthFinding(QueueVerdict, Base):
     """One biomarker hit produced by the code-health analyzer."""
 
     __tablename__ = "health_findings"
@@ -1913,7 +1929,7 @@ class RefactoringSuggestion(Base):
     )
 
 
-class PerformanceOpportunity(Base):
+class PerformanceOpportunity(QueueVerdict, Base):
     """One causal performance opportunity, materialized for serving.
 
     The queue used to be rebuilt from every open performance finding on every
@@ -2011,6 +2027,13 @@ class PerformanceOpportunity(Base):
             "rank_position",
         ),
         Index("ix_performance_opportunities_repo_status_path", "repository_id", "status", "file_path"),
+        Index(
+            "ix_performance_opportunities_repo_status_queue",
+            "repository_id",
+            "status",
+            "queue_eligible",
+            "rank_position",
+        ),
     )
 
 
@@ -2042,7 +2065,7 @@ class PerformanceSummary(Base):
     )
 
 
-class RefactoringOpportunity(Base):
+class RefactoringOpportunity(QueueVerdict, Base):
     """One file's composed refactoring work, materialized for serving.
 
     Composition folds a file's plans into one ordered, precondition-aware
@@ -2134,6 +2157,13 @@ class RefactoringOpportunity(Base):
             "repository_id",
             "status",
             "file_path",
+        ),
+        Index(
+            "ix_refactoring_opportunities_repo_status_eligible",
+            "repository_id",
+            "status",
+            "queue_eligible",
+            "queue_position",
         ),
     )
 

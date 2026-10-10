@@ -431,6 +431,7 @@ export default function CodeHealthPage() {
   // it here would put a bigger number on the tab than the tab can show.
   if (overview) {
     badges.findings =
+      overview.queue_counts?.findings.inventory ??
       overview.summary.open_findings - (overview.summary.performance_findings ?? 0);
   }
   if (deadCode) badges["dead-code"] = deadCode.total_findings;

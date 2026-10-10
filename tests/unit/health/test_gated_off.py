@@ -214,10 +214,14 @@ def test_a_gated_function_is_no_item_and_counts_as_dormant() -> None:
 
 
 def test_a_plan_on_a_gated_function_leaves_the_refactoring_default_scope() -> None:
+    judged: dict = {}
     queue = build_fix_first(
-        metrics=METRICS[:1], findings=[_fix_finding(gated_off=True)], refactoring=REFACTORING[:1]
+        metrics=METRICS[:1],
+        findings=[_fix_finding(gated_off=True)],
+        refactoring=REFACTORING[:1],
+        judged=judged,
     )
-    assert queue.refactoring_reasons["refop2_core"] == "gated_off"
+    assert judged["refop2_core"].reason == "gated_off"
     # The plan and the finding it leaves behind sit in one function.
     assert queue.totals.excluded["gated_off"] == 2 and queue.totals.dormant == 1
 
@@ -293,12 +297,13 @@ def _dead(**over) -> dict:
     ],
 )
 def test_sure_dead_code_makes_its_target_unreachable(dead: dict) -> None:
+    judged: dict = {}
     queue = build_fix_first(
         metrics=METRICS[:1], findings=[_fix_finding()], refactoring=REFACTORING[:1],
-        dead_code=[dead],
+        dead_code=[dead], judged=judged,
     )
     assert queue.items == ()
-    assert queue.refactoring_reasons["refop2_core"] == "unreachable"
+    assert judged["refop2_core"].reason == "unreachable"
     assert queue.totals.excluded["unreachable"] == 2 and queue.totals.dormant == 0
 
 

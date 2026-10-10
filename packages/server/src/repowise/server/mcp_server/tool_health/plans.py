@@ -33,6 +33,7 @@ def _render_plans(
         result["refactoring_plans_opportunities_total"] = page.opportunities_total
         if page.hidden is not None:
             result["refactoring_plans_hidden"] = page.hidden
+        result["refactoring_plans_counts"] = page.counts
         pager.note_page(
             "refactoring_plans",
             start=req.cursor,

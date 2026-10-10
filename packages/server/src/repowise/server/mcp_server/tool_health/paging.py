@@ -40,6 +40,10 @@ _PAGED_COLLECTIONS = frozenset(
 _QUEUE_COLLECTIONS = frozenset({"refactoring_opportunities", "performance_opportunities"})
 _QUEUE_PAGE = 6
 
+#: Collections of one unit each whose ``<key>_counts.shown`` is the rows that
+#: arrived. A plan page's rows are steps, so its count stays the opportunities.
+_COUNTED_COLLECTIONS = ("top_findings", "performance_opportunities")
+
 #: A collection's fixed page, for naming a cut below ``limit`` a cap.
 _COLLECTION_CAPS = {"refactoring_plans": PLANS_PAGE_CAP, "performance_opportunities": _QUEUE_PAGE}
 
@@ -165,6 +169,10 @@ def _settle_pages(result: dict[str, Any], call: Mapping[str, Any]) -> None:
                 limit=req.fix_first_cap,
             )
             _restate(result, pager, req, "fix_first")
+    for key in _COUNTED_COLLECTIONS:
+        counts = result.get(f"{key}_counts")
+        if isinstance(counts, dict) and isinstance(result.get(key), list):
+            counts["shown"] = len(result[key])
     plans = result.get("refactoring_plans")
     if isinstance(plans, list) and "refactoring_plans_total" in result:
         total = int(result["refactoring_plans_total"] or 0)

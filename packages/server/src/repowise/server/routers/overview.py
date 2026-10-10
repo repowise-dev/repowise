@@ -25,6 +25,7 @@ from repowise.core.analysis.health.aggregation import (
 )
 from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GenerationJob,
@@ -563,6 +564,9 @@ async def overview_summary(
             "worst_performer_path": health_summary.get("worst_performer_path"),
             "worst_performer_score": health_summary.get("worst_performer_score"),
             "open_findings": health_summary.get("open_findings", 0),
+            # The findings' count vocabulary, which the Code Health page and the
+            # agent surfaces report too; ``open_findings`` stays for older readers.
+            "finding_counts": (await unit_counts(session, repo_id, "findings")).as_dict(),
             # The two co-equal pillars surfaced alongside the defect headline.
             "maintainability_average": health_summary.get("maintainability_average"),
             "performance_average": health_summary.get("performance_average"),

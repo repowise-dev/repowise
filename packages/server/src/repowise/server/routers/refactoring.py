@@ -368,6 +368,7 @@ async def get_refactoring_opportunities(
         "facets": page.facets,
         "summary": page.summary,
         "scope": page.scope,
+        "counts": page.counts,
     }
     if page.hidden is not None:
         body["hidden"] = page.hidden

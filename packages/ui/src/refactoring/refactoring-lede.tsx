@@ -18,6 +18,7 @@ import type {
   RefactoringOpportunityPage,
   RefactoringOpportunityRollup,
 } from "@repowise-dev/types/refactoring";
+import type { QueueCounts } from "@repowise-dev/types/queue";
 
 /** The page's facet counts, by facet then value. */
 export type RefactoringFacets = RefactoringOpportunityPage["facets"];
@@ -25,6 +26,8 @@ export type RefactoringFacets = RefactoringOpportunityPage["facets"];
 export interface RefactoringLedeProps {
   /** The repository rollup. Absent or unavailable and the lede does not render. */
   summary?: RefactoringOpportunityRollup | null | undefined;
+  /** The plans' count vocabulary; names how many of the open ones are worth doing now. */
+  counts?: QueueCounts | null | undefined;
   /** Files indexed, for the all-clear line. */
   indexedFileCount?: number | undefined;
   /** The page's facet counts. Absent and the chips do not render. */
@@ -49,6 +52,7 @@ function plural(n: number, one: string, many: string): string {
 
 export function RefactoringLede({
   summary,
+  counts,
   indexedFileCount,
   facets,
   quickWinsActive = false,
@@ -97,7 +101,12 @@ export function RefactoringLede({
     <PageLede
       label="Open opportunities"
       value={formatNumber(total)}
-      unit={files ? `one per file, across ${plural(files, "file", "files")}` : undefined}
+      unit={
+        files
+          ? `one per file, across ${plural(files, "file", "files")}` +
+            (counts ? `; ${formatNumber(counts.eligible)} worth doing first` : "")
+          : undefined
+      }
       action={action}
     >
       <p>

@@ -25,11 +25,11 @@ reads one row instead of building.
 from __future__ import annotations
 
 from collections import OrderedDict, namedtuple
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, replace
 from typing import Any
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.finding_registry import excluded_types
@@ -43,7 +43,9 @@ from repowise.core.analysis.health.fix_first.build import (
     DEAD_CONFIDENCE,
     hot_cut,
     hot_cut_offset,
+    judge_findings,
 )
+from repowise.core.analysis.health.queue.counts import Judgement
 from repowise.core.analysis.health.queue.eligibility import DEFAULT_QUEUE_STATES, MIN_WORTH
 from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 from repowise.core.analysis.health.refactoring.models import (
@@ -87,9 +89,11 @@ def _plain(result: Any) -> list[Any]:
     return [shape(*r) for r in rows]
 
 
-async def _metrics(session: AsyncSession, repo_id: str, paths: set[str]) -> list[Any]:
-    if not paths:
+async def _metrics(session: AsyncSession, repo_id: str, paths: set[str] | None) -> list[Any]:
+    """The named files' rows; ``None`` reads every file."""
+    if paths is not None and not paths:
         return []
+    scoped = HealthFileMetric.file_path.in_(paths) if paths is not None else true()
     return _plain(
         await session.execute(
             select(
@@ -112,9 +116,7 @@ async def _metrics(session: AsyncSession, repo_id: str, paths: set[str]) -> list
                 (GraphMetric.repository_id == HealthFileMetric.repository_id)
                 & (GraphMetric.node_id == HealthFileMetric.file_path),
             )
-            .where(
-                HealthFileMetric.repository_id == repo_id, HealthFileMetric.file_path.in_(paths)
-            )
+            .where(HealthFileMetric.repository_id == repo_id, scoped)
         )
     )
 
@@ -169,7 +171,7 @@ async def _basis(session: AsyncSession, repo_id: str) -> dict[str, str | None]:
     return {"analyzed_commit": row.analyzed_commit, "health_analyzed_at": row.updated_at.isoformat()}
 
 
-def _eligible_findings(repo_id: str) -> Any:
+def queue_findings(repo_id: str) -> Any:
     """Open, scoring, code-health findings a surface may show."""
     f = HealthFinding
     return and_(
@@ -200,7 +202,7 @@ async def _finding_files(session: AsyncSession, repo_id: str) -> tuple[set[str],
                 func.max(f.biomarker_type).label("marker"),
                 func.max(f.health_impact).label("impact"),
             )
-            .where(_eligible_findings(repo_id))
+            .where(queue_findings(repo_id))
             .group_by(f.file_path)
         )
     ).all()
@@ -241,7 +243,7 @@ async def _findings(
                 # History numbers become plain context sentences.
                 f.details_json,
             ).where(
-                _eligible_findings(repo_id),
+                queue_findings(repo_id),
                 or_(
                     f.file_path.in_(full),
                     and_(
@@ -272,11 +274,7 @@ async def _refactoring(session: AsyncSession, repo_id: str) -> list[Any]:
                 o.status,
                 case((o.recoverable_health >= MIN_WORTH, o.details_json)).label("details_json"),
             )
-            .where(
-                o.repository_id == repo_id,
-                o.status == "open",
-                o.refactoring_model_version == REFACTORING_MODEL_VERSION,
-            )
+            .where(open_opportunities(repo_id))
             .order_by(o.rank_position)
         )
     )
@@ -372,20 +370,20 @@ def _steps(refactoring: list[Any]) -> list[dict[str, Any]]:
 
 
 async def _plans(
-    session: AsyncSession, repo_id: str, steps: list[dict[str, Any]], files: set[str]
+    session: AsyncSession, repo_id: str, steps: list[dict[str, Any]], files: set[str] | None
 ) -> list[Any]:
     """The plans those steps name (span, signature, evidence), the open
     Extract Method plans in ``files``, where a finding with no plan of its own
     takes its first concrete step from, and every open Extract Helper plan,
     whose occurrences say where verified duplicates sit (a plan is stored at
-    one anchor file and names every site, so it is not filtered by file)."""
+    one anchor file and names every site, so it is not filtered by file).
+    ``files=None`` reads the Extract Method plans of every file."""
     ids = {s.get("plan_id") for s in steps if s.get("plan_id")}
     s = RefactoringSuggestion
     named = s.public_id.in_(ids) if ids else None
+    extract = and_(s.refactoring_type == "extract_method", s.status == "open")
     extractions = (
-        and_(s.refactoring_type == "extract_method", s.status == "open", s.file_path.in_(files))
-        if files
-        else None
+        extract if files is None else and_(extract, s.file_path.in_(files)) if files else None
     )
     helpers = and_(s.refactoring_type == "extract_helper", s.status == "open")
     wanted = [c for c in (named, extractions, helpers) if c is not None]
@@ -531,19 +529,121 @@ _KEY = snapshot_key(SNAPSHOT_KIND, FIX_FIRST_MODEL_VERSION)
 
 
 async def write_fix_first_snapshot(session: AsyncSession, repository_id: str) -> bool:
-    """Store the whole production queue, tests resolved, for the next reader.
+    """Store the whole production queue, tests resolved, for the next reader,
+    and each refactoring opportunity's and finding's judgement on its row.
 
     The whole queue rather than its head: an id lookup, a page past the
-    first, the counts and the refactoring list's exclusion reasons are all
-    read from it. The writer of the stores calls this once they are final.
-    Returns whether it wrote (a row still current writes nothing).
+    first and the counts are all read from it. The writer of the stores calls
+    this once they are final. Returns whether it wrote (a row still current
+    writes nothing, unless a unit on it was never judged).
     """
 
     async def build() -> dict[str, Any]:
-        full = await _build(session, repository_id, limit=None, scope="production", item_id=None)
+        judged: dict[str, Judgement] = {}
+        full = await _build(
+            session, repository_id, limit=None, scope="production", item_id=None, judged=judged
+        )
+        await _store_judgements(session, repository_id, judged)
         return asdict(full)
 
-    return await refresh_snapshot(session, repository_id, SNAPSHOT_KIND, _KEY, build)
+    return await refresh_snapshot(
+        session,
+        repository_id,
+        SNAPSHOT_KIND,
+        _KEY,
+        build,
+        force=await _unjudged(session, repository_id),
+    )
+
+
+def open_opportunities(repo_id: str) -> Any:
+    o = RefactoringOpportunity
+    return and_(
+        o.repository_id == repo_id,
+        o.status == "open",
+        o.refactoring_model_version == REFACTORING_MODEL_VERSION,
+    )
+
+
+async def _unjudged(session: AsyncSession, repo_id: str) -> bool:
+    """Whether an open unit the queue judges has no judgement stored (a
+    store written before the columns)."""
+    for model, open_units in (
+        (RefactoringOpportunity, open_opportunities(repo_id)),
+        (HealthFinding, queue_findings(repo_id)),
+    ):
+        found = await session.execute(
+            select(model.id).where(open_units, model.queue_eligible.is_(None)).limit(1)
+        )
+        if found.first() is not None:
+            return True
+    return False
+
+
+async def _store_judgements(
+    session: AsyncSession, repo_id: str, refactoring: dict[str, Judgement]
+) -> None:
+    """Write each open refactoring opportunity's and finding's judgement,
+    only where it changed: an update run rewrites what moved."""
+    o = RefactoringOpportunity
+    stored = (
+        await session.execute(
+            select(o.id, o.opportunity_id, *_queue_columns(o)).where(open_opportunities(repo_id))
+        )
+    ).all()
+    await _write_changed(
+        session, o, ((r, refactoring.get(r.opportunity_id)) for r in stored)
+    )
+    findings = await _judged_findings(session, repo_id)
+    paths = {f.file_path for f in findings}
+    judged = judge_findings(
+        metrics=await _metrics(session, repo_id, None) if paths else [],
+        findings=findings,
+        plans=await _plans(session, repo_id, [], None) if paths else [],
+        dead_code=await _dead_code(session, repo_id),
+        hot_cuts=await _hot_cuts(session, repo_id),
+    )
+    await _write_changed(session, HealthFinding, ((f, judged.get(f.id)) for f in findings))
+
+
+def _queue_columns(model: Any) -> tuple[Any, ...]:
+    return (model.queue_eligible, model.queue_reason, model.queue_value, model.queue_tier)
+
+
+async def _write_changed(
+    session: AsyncSession, model: Any, rows: Iterable[tuple[Any, Judgement | None]]
+) -> None:
+    changed = []
+    for row, judgement in rows:
+        if judgement is None:
+            continue  # not read by the builder this run: left as it was
+        values = judgement.columns()
+        if any(getattr(row, name) != value for name, value in values.items()):
+            changed.append({"id": row.id, **values})
+    if changed:
+        await session.execute(update(model), changed)
+
+
+async def _judged_findings(session: AsyncSession, repo_id: str) -> list[Any]:
+    """Every finding the queue judges, with what judging reads and its stored judgement."""
+    f = HealthFinding
+    return _plain(
+        await session.execute(
+            select(
+                f.id,
+                f.file_path,
+                f.biomarker_type,
+                f.function_name,
+                f.line_start,
+                f.line_end,
+                f.health_impact,
+                f.dimension,
+                f.status,
+                f.details_json,
+                *_queue_columns(f),
+            ).where(queue_findings(repo_id))
+        )
+    )
 
 
 async def _stored(session: AsyncSession, repo_id: str, scope: str) -> FixFirstQueue | None:
@@ -640,6 +740,7 @@ async def _build(
     scope: str,
     item_id: str | None,
     verify: bool = True,
+    judged: dict[str, Judgement] | None = None,
 ) -> FixFirstQueue:
     refactoring = _decoded(await _refactoring(session, repository_id))
     performance = _decoded(await _performance(session, repository_id))
@@ -668,6 +769,7 @@ async def _build(
         hot_cuts=await _hot_cuts(session, repository_id),
         symbol_lines=await _symbol_lines(session, repository_id, performance),
         validate=await _finding_validator(session, repository_id, findings) if verify else None,
+        judged=judged,
     )
 
 

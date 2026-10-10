@@ -52,8 +52,8 @@ def _load_persisted_coverage_map(repo_path: object) -> dict[str, dict]:
         return {}
 
 
-def _load_fix_first(repo_path: object, *, limit: int) -> Any:
-    """The stored Fix-first queue, or ``None`` when the store cannot answer.
+def _load_fix_first(repo_path: object) -> Any:
+    """The whole stored Fix-first queue, or ``None`` when the store cannot answer.
 
     Best-effort like the coverage read: a missing repo row or an older store
     leaves the report without the section; the report itself still prints.
@@ -66,7 +66,25 @@ def _load_fix_first(repo_path: object, *, limit: int) -> Any:
             if opened is None:
                 return None
             session, repo_id = opened
-            return await load_fix_first(session, repo_id, limit=limit)
+            return await load_fix_first(session, repo_id, limit=None)
+
+    try:
+        return run_async(_do())
+    except Exception:
+        return None
+
+
+def _load_queue_counts(repo_path: object) -> dict[str, Any] | None:
+    """Every queue unit's stored counts, by noun; ``None`` when the store cannot answer."""
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.persistence.crud.analysis.queue_counts import all_unit_counts
+
+    async def _do() -> Any:
+        async with repo_index_session(Path(str(repo_path))) as opened:
+            if opened is None:
+                return None
+            session, repo_id = opened
+            return await all_unit_counts(session, repo_id)
 
     try:
         return run_async(_do())

@@ -337,7 +337,7 @@ export function buildExplore(
       key: "code-health",
       label: "Code health",
       href: `${r.base}/code-health`,
-      description: `Per-file scores, ${formatNumber(health.open_findings)} open findings, coverage and refactoring targets`,
+      description: `Per-file scores, ${formatNumber(health.finding_counts?.inventory ?? health.open_findings)} open findings, coverage and refactoring targets`,
     },
     {
       key: "knowledge-graph",

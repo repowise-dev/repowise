@@ -6,6 +6,7 @@
 
 import type { Hotspot } from "./git.js";
 import type { DefectAccuracy, HealthSeverity } from "./health.js";
+import type { QueueCounts } from "./queue.js";
 
 export interface OverviewRepoMeta {
   id: string;
@@ -84,6 +85,8 @@ export interface OverviewHealth {
   worst_performer_path: string | null;
   worst_performer_score: number | null;
   open_findings: number;
+  /** The findings' count vocabulary; the same numbers the Code Health page shows. */
+  finding_counts?: QueueCounts;
   /** Co-equal maintainability pillar headline (NLOC-weighted). `null` when no
    *  file carries a maintainability score yet. */
   maintainability_average?: number | null;
