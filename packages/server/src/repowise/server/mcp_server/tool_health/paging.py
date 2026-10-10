@@ -7,9 +7,11 @@ shared omission store.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import fields
 from typing import Any
 
-from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget import OmissionCollector, register_post_enforce
 from repowise.server.mcp_server.tool_health.request import PLANS_PAGE_CAP, HealthRequest
 
 _PAGED_COLLECTIONS = frozenset(
@@ -81,6 +83,12 @@ class Pager:
             # leaving the caller with nothing to call.
             self.recoveries[label] = (0, min(len(rows), max(row_cap, 1), 50), len(rows))
 
+    def note_page(self, label: str, *, start: int, shown: int, total: int, limit: int) -> None:
+        """A page of ``total`` rows from ``start`` that holds ``shown``: the next
+        page's recovery, when there is one."""
+        if limit and start + shown < total:
+            self.recoveries[label] = (start + shown, max(shown, 1), total - start - shown)
+
     def recovery_block(
         self, result: dict[str, Any], req: HealthRequest
     ) -> dict[str, dict[str, Any]] | None:
@@ -92,18 +100,11 @@ class Pager:
                 continue
             recovery[label] = {
                 "remaining": remaining,
-                "call": (
-                    f"get_health(targets={req.raw_targets!r}, include={list(req.include or [])!r}, "
-                    f"repo={req.repo!r}, limit={next_limit}, only={[root]!r}, "
-                    f"refactoring_view='{req.refactoring_view}'{_queue_filters(req)}, "
-                    f"cursor={next_cursor})"
-                ),
+                "call": call_for(req, root, limit=next_limit, cursor=next_cursor),
             }
         return recovery or None
 
-    def report_omissions(
-        self, result: dict[str, Any], collector: OmissionCollector
-    ) -> None:
+    def report_omissions(self, result: dict[str, Any], collector: OmissionCollector) -> None:
         """Hand every dropped tail whose block survived to the omission store."""
         for label, dropped in self.omissions.items():
             root = label.split(".", 1)[0]
@@ -114,25 +115,81 @@ class Pager:
                 )
 
 
-_QUEUE_FILTERS = (
-    "refactoring_type",
-    "refactoring_confidence",
-    "refactoring_effort",
-    "refactoring_scope",
-    "performance_view",
-    "performance_context",
-    "performance_boundary",
-    "performance_confidence",
-    "performance_actionability",
-    "performance_sort",
+#: Every queue argument the request takes except the view, which every call names.
+_QUEUE_FILTERS = tuple(
+    f.name
+    for f in fields(HealthRequest)
+    if f.init
+    and f.name.startswith(("refactoring_", "performance_"))
+    and f.name != "refactoring_view"
 )
 
 
-def _queue_filters(req: HealthRequest) -> str:
-    """The queue filters the call set, so the next page reads the same queue."""
-    return "".join(
+def call_for(req: HealthRequest, root: str, *, limit: int, cursor: int) -> str:
+    """The call that reads ``root`` again from ``cursor``, under the same
+    arguments and queue filters, so the next page reads the same queue."""
+    filters = "".join(
         f", {name}={value!r}" for name in _QUEUE_FILTERS if (value := getattr(req, name)) is not None
     )
+    return (
+        f"get_health(targets={req.raw_targets!r}, include={list(req.include or [])!r}, "
+        f"repo={req.repo!r}, limit={limit}, only={[root]!r}, "
+        f"refactoring_view='{req.refactoring_view}'{filters}, cursor={cursor})"
+    )
+
+
+def _settle_pages(result: dict[str, Any], call: Mapping[str, Any]) -> None:
+    """Restate each named page from what the response budget delivered.
+
+    A page's next cursor is set before the budget runs; a trimmed tail would
+    otherwise be skipped by the next call, and ``counts.shown`` would count
+    rows that never arrived.
+    """
+    names = [f.name for f in fields(HealthRequest) if f.init]
+    if any(name not in call for name in names):
+        return  # not get_health's own signature: nothing to restate the call from
+    req = HealthRequest(**{name: call[name] for name in names})
+    pager = Pager(req.limit, req.cursor)
+    block = result.get("fix_first")
+    if isinstance(block, dict) and isinstance(block.get("items"), list):
+        shown = len(block["items"])
+        if isinstance(block.get("counts"), dict):
+            block["counts"]["shown"] = shown
+        if req.pages_fix_first:
+            total = int(block.get("items_total") or 0)
+            pager.note_page(
+                "fix_first",
+                start=req.fix_first_cursor,
+                shown=shown,
+                total=total,
+                limit=req.fix_first_cap,
+            )
+            _restate(result, pager, req, "fix_first")
+    plans = result.get("refactoring_plans")
+    if isinstance(plans, list) and "refactoring_plans_total" in result:
+        total = int(result["refactoring_plans_total"] or 0)
+        pager.note_page(
+            "refactoring_plans",
+            start=req.cursor,
+            shown=len(plans),
+            total=total,
+            limit=req.plans_cap,
+        )
+        _restate(result, pager, req, "refactoring_plans")
+
+
+def _restate(result: dict[str, Any], pager: Pager, req: HealthRequest, label: str) -> None:
+    """Replace ``label``'s recovery with the one ``pager`` holds, or drop it."""
+    recovery = {key: value for key, value in (result.get("recovery") or {}).items() if key != label}
+    if label in pager.recoveries:
+        recovery[label] = (pager.recovery_block(result, req) or {})[label]
+    if recovery:
+        result["recovery"] = recovery
+    else:
+        result.pop("recovery", None)
+
+
+register_post_enforce("get_health", _settle_pages, with_call=True)
 
 
 def _omitted_row(row: Any) -> Any:

@@ -648,6 +648,20 @@ async def refactoring_step_counts(
     return [(opportunity_id, int(steps or 0)) for opportunity_id, steps in rows.all()]
 
 
+async def refactoring_opportunities_by_id(
+    session: AsyncSession, repository_id: str, opportunity_ids: list[str], *, status: str = "open"
+) -> dict[str, RefactoringOpportunity]:
+    """The named current-model rows in *status*, by id: one read, no count."""
+    if not opportunity_ids:
+        return {}
+    rows = await session.execute(
+        select(RefactoringOpportunity).where(
+            *_opportunity_filters(repository_id, status=status, opportunity_ids=opportunity_ids)
+        )
+    )
+    return {row.opportunity_id: row for row in rows.scalars().all()}
+
+
 async def refactoring_opportunity_ids(
     session: AsyncSession,
     repository_id: str,
@@ -810,6 +824,7 @@ __all__ = [
     "get_refactoring_summary",
     "list_refactoring_opportunities",
     "refactoring_facet_counts",
+    "refactoring_opportunities_by_id",
     "refactoring_opportunity_ids",
     "refactoring_step_counts",
     "update_refactoring_opportunity_status",

@@ -25,6 +25,15 @@ _ONLY_ALIASES = {
 PLANS_PAGE_CAP = 25
 """Refactoring plans one response emits; ``cursor`` pages on."""
 
+FIX_FIRST_CAP = 5
+"""Items in the bare dashboard's ``fix_first`` block, however large ``limit`` is.
+The rest are one ``only=["fix_first"]`` page or ``get_health(fix_id=...)`` away."""
+
+FIX_FIRST_PAGE_CAP = 25
+"""Items one ``only=["fix_first"]`` page emits: ``limit`` up to this, ``cursor``
+for the next page. Measured at about 16k chars for 25 items on a large
+repository, inside the default 24k budget; the budget trims the tail beyond."""
+
 _RANKED_DIMENSIONS_DEFAULT = {"defect", "maintainability"}
 """Dimensions the impact-ranked findings list carries when none is asked for."""
 
@@ -128,6 +137,16 @@ class HealthRequest:
         """``fix_first`` named in ``only``: the queue pages by ``limit`` and
         ``cursor`` instead of the bare dashboard's fixed head."""
         return "fix_first" in self.only_set
+
+    @property
+    def fix_first_cap(self) -> int:
+        """Fix-first items this response emits."""
+        return min(self.limit, FIX_FIRST_PAGE_CAP if self.pages_fix_first else FIX_FIRST_CAP)
+
+    @property
+    def fix_first_cursor(self) -> int:
+        """Where the Fix-first page starts: the bare dashboard always leads."""
+        return self.cursor if self.pages_fix_first else 0
 
     def wants(self, block: str) -> bool:
         """True when ``block`` survives the ``only`` projection.

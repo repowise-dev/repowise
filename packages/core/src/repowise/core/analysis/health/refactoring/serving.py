@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from repowise.core.analysis.health.queue_rules import FilterRule
 from repowise.core.analysis.health.rows import detail_map, field
@@ -37,10 +37,6 @@ _VIEW_ORDERS: dict[str, str] = {
 }
 CANONICAL_VIEWS = tuple(_VIEW_ORDERS)
 DEFAULT_VIEW = "diversified"
-
-# The legacy plan list has no notion of the diversified order, so the new
-# default resolves to the value that list has always defaulted to.
-_PLAN_VIEWS = {"canonical": "canonical", "file_spread": "file_spread", "diversified": "canonical"}
 
 # Which open opportunities a queue lists:
 #
@@ -302,11 +298,6 @@ def parse_query(
         ),
         ignored,
     )
-
-
-def plan_view(view: str | None) -> Literal["canonical", "file_spread"]:
-    """The legacy plan list's view for a caller's ``refactoring_view``."""
-    return _PLAN_VIEWS.get(view or DEFAULT_VIEW, "canonical")  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +565,6 @@ __all__ = [
     "next_actions",
     "parse_query",
     "plan_payload",
-    "plan_view",
     "row_sort_key",
     "serialize",
     "stored_validation",

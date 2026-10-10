@@ -1570,7 +1570,7 @@ async def test_fix_first_named_page_honours_limit_and_cursor(setup_mcp, health_d
     ``cursor``; the bare dashboard keeps its five-item head. Both carry the
     count vocabulary and the same lead."""
     from repowise.server.mcp_server import get_health
-    from repowise.server.mcp_server.tool_health.loading import (
+    from repowise.server.mcp_server.tool_health.request import (
         FIX_FIRST_CAP,
         FIX_FIRST_PAGE_CAP,
     )

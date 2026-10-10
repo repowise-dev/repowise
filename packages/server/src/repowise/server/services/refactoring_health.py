@@ -43,6 +43,7 @@ from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
     get_refactoring_summary,
     list_refactoring_opportunities,
     refactoring_facet_counts,
+    refactoring_opportunities_by_id,
     refactoring_opportunity_ids,
     refactoring_step_counts,
 )
@@ -72,7 +73,8 @@ class RefactoringPlanPage:
     #: Plans in scope, and the opportunities they are steps of.
     total: int
     opportunities_total: int
-    next_offset: int | None
+    #: Where the next page starts: the page's offset plus the plans it covers.
+    next_offset: int
     scope: str = "all"
     hidden: dict[str, Any] | None = None
 
@@ -92,7 +94,9 @@ def _filters(query: RefactoringQuery) -> dict[str, Any]:
     }
 
 
-def _plan_window(counts: list[tuple[str, int]], offset: int, limit: int) -> dict[str, tuple[int, int]]:
+def _plan_window(
+    counts: list[tuple[str, int]], offset: int, limit: int
+) -> dict[str, tuple[int, int]]:
     """Which steps of which opportunities fall in plans ``[offset, offset + limit)``.
 
     *counts* is ``(opportunity_id, step_count)`` in queue order; the result
@@ -199,26 +203,21 @@ class RefactoringHealthService:
             order=query.resolved_order,
         )
         window = _plan_window(counts, query.offset, query.limit)
-        rows, _total = await list_refactoring_opportunities(
-            self._session,
-            self._repository_id,
-            status=query.status,
-            opportunity_ids=list(window),
-            order=query.resolved_order,
-            limit=len(window),
+        rows = await refactoring_opportunities_by_id(
+            self._session, self._repository_id, list(window), status=query.status
         )
+        # The window is in queue order; the read is not.
         items = [
-            {**step, "opportunity_id": row.opportunity_id}
-            for row in rows
-            for step in (detail_map(row).get("steps") or [])[slice(*window[row.opportunity_id])]
+            {**step, "opportunity_id": opportunity_id}
+            for opportunity_id, (start, stop) in window.items()
+            if opportunity_id in rows
+            for step in (detail_map(rows[opportunity_id]).get("steps") or [])[start:stop]
         ]
-        total = sum(steps for _id, steps in counts)
-        next_offset = query.offset + len(items)
         return RefactoringPlanPage(
             items=items,
-            total=total,
+            total=sum(steps for _id, steps in counts),
             opportunities_total=len(counts),
-            next_offset=next_offset if items and next_offset < total else None,
+            next_offset=query.offset + sum(stop - start for start, stop in window.values()),
             scope=query.scope,
             hidden=hidden,
         )

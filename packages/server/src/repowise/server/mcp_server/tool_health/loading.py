@@ -60,15 +60,6 @@ from repowise.server.services.refactoring_health import (
     RefactoringPlanPage,
 )
 
-FIX_FIRST_CAP = 5
-"""Items in the bare dashboard's ``fix_first`` block, however large ``limit`` is.
-The rest are one ``only=["fix_first"]`` page or ``get_health(fix_id=...)`` away."""
-
-FIX_FIRST_PAGE_CAP = 25
-"""Items one ``only=["fix_first"]`` page emits: ``limit`` up to this, ``cursor``
-for the next page. Measured at about 15k chars for 25 items on a large
-repository, inside the default 24k budget; the budget trims the tail beyond."""
-
 
 @dataclass
 class HealthData:
@@ -439,8 +430,4 @@ async def _read_fix_first(
     if pop.scoped or not req.wants("fix_first"):
         return None, None
     full = await load_fix_first(session, repository.id, limit=None)
-    if req.pages_fix_first:
-        page = queue_view(full, limit=min(req.limit, FIX_FIRST_PAGE_CAP), offset=req.cursor)
-    else:
-        page = queue_view(full, limit=min(req.limit, FIX_FIRST_CAP))
-    return page, full
+    return queue_view(full, limit=req.fix_first_cap, offset=req.fix_first_cursor), full

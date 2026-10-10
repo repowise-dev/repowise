@@ -783,6 +783,21 @@ def _emergency_fit(
             return
 
 
+def _call_arguments(
+    signature: inspect.Signature, args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The call's arguments with defaults applied; ``None`` when the signature
+    is not the tool's own (a bridged call budgets with an empty one)."""
+    if not signature.parameters:
+        return None
+    try:
+        bound = signature.bind_partial(*args, **kwargs)
+    except TypeError:
+        return None
+    bound.apply_defaults()
+    return dict(bound.arguments)
+
+
 def _lead_with_dropped_targets(
     tool: str,
     result: dict[str, Any],
@@ -889,7 +904,7 @@ def enforce_response_budget(
         emergency.attach(result)
         trimmed = True
 
-    run_post_enforce(tool, result)
+    run_post_enforce(tool, result, _call_arguments(signature, args, kwargs))
 
     if result.get("truncated"):
         result.setdefault("_meta", {}).setdefault("state", {})["truncated"] = True

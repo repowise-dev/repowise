@@ -650,3 +650,89 @@ def test_a_tool_with_no_graph_counts_claims_no_floor() -> None:
     result = _enforce("get_overview", _payload("get_overview", 0))
 
     assert "floor" not in result["_meta"]
+
+
+def _enforce_health(payload: dict[str, Any], **kwargs: Any) -> dict:
+    """Budget *payload* as a ``get_health`` call with *kwargs*, hooks and all."""
+    from repowise.server.mcp_server import ensure_full_surface, get_health
+
+    ensure_full_surface()
+    return enforce_response_budget(
+        "get_health",
+        payload,
+        signature=inspect.signature(get_health),
+        args=(),
+        kwargs=kwargs,
+    )
+
+
+def _fix_first_page(total: int, cursor: int = 0) -> dict[str, Any]:
+    items = [{"id": f"fix1_{index}", "why": "w" * 2_000} for index in range(25)]
+    return {
+        "mode": "dashboard",
+        "fix_first": {
+            "items": items,
+            "lead": items[0],
+            "counts": {"inventory": total, "in_scope": total, "eligible": total, "due": 0,
+                       "shown": len(items), "excluded": {}},
+            "items_total": total,
+            "cursor": cursor,
+        },
+        "recovery": {"fix_first": {"remaining": total - cursor - 25, "call": "stale"}}
+        if cursor + 25 < total
+        else {},
+        "_meta": {"contract_version": 1},
+    }
+
+
+@pytest.mark.parametrize(("total", "cursor"), [(100, 25), (50, 25)])
+def test_a_trimmed_fix_first_page_restates_its_next_cursor(
+    setup_mcp: str, total: int, cursor: int
+) -> None:
+    """The budget trims a 25-item page's tail; the next page must start at the
+    first row the caller did not get, including on the last page, which had no
+    next call before the trim."""
+    result = _enforce_health(
+        _fix_first_page(total, cursor), only=["fix_first"], limit=25, cursor=cursor
+    )
+    block = result["fix_first"]
+    shown = len(block["items"])
+    assert 0 < shown < 25
+    assert block["counts"]["shown"] == shown
+    recovery = result["recovery"]["fix_first"]
+    assert recovery["remaining"] == total - cursor - shown
+    assert recovery["call"].endswith(f"cursor={cursor + shown})")
+    assert "only=['fix_first']" in recovery["call"]
+
+
+def test_a_trimmed_plan_page_restates_its_next_cursor(setup_mcp: str) -> None:
+    plans = [{"id": f"refac4_{index}", "target_symbol": "s" * 2_000} for index in range(25)]
+    payload = {
+        "mode": "dashboard",
+        "refactoring_plans": plans,
+        "refactoring_plans_total": 25,
+        "refactoring_plans_status": {"state": "available", "reason": None},
+        "_meta": {"contract_version": 1},
+    }
+    result = _enforce_health(
+        payload,
+        include=["refactoring"],
+        only=["refactoring_plans"],
+        limit=25,
+        refactoring_scope="all",
+    )
+    shown = len(result["refactoring_plans"])
+    assert 0 < shown < 25
+    recovery = result["recovery"]["refactoring_plans"]
+    assert recovery["remaining"] == 25 - shown
+    assert recovery["call"].endswith(f"cursor={shown})")
+    assert "refactoring_scope='all'" in recovery["call"]
+
+
+def test_an_untrimmed_last_page_names_no_next_call(setup_mcp: str) -> None:
+    payload = _fix_first_page(total=25)
+    for item in payload["fix_first"]["items"]:
+        item["why"] = "w"
+    result = _enforce_health(payload, only=["fix_first"], limit=25)
+    assert len(result["fix_first"]["items"]) == 25
+    assert "fix_first" not in (result.get("recovery") or {})

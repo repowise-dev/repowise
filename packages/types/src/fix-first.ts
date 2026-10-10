@@ -123,6 +123,21 @@ export interface FixFirstTotals {
   dormant: number;
 }
 
+/**
+ * The five-level count vocabulary (`FixFirstQueue.counts` in core), read on the
+ * whole queue: every unit considered, those in scope (not excluded for where
+ * the code lives), those that became an item, those due (tier now or next),
+ * and those this response shows; `excluded` holds the non-zero exclusions.
+ */
+export interface FixFirstCounts {
+  inventory: number;
+  in_scope: number;
+  eligible: number;
+  due: number;
+  shown: number;
+  excluded: Partial<Record<FixExclusion, number>>;
+}
+
 export interface FixFirstQueue<Item = FixItem> {
   items: Item[];
   /** `items[0]`, or null when nothing is eligible. */

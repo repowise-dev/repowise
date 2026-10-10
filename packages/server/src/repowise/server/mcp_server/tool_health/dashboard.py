@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from repowise.core.analysis.health.aggregation import module_rollups as _module_rollups
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.grading import distribution as health_distribution
-from repowise.server.mcp_server._budget import register_post_enforce
 from repowise.server.mcp_server.tool_health.loading import HealthData
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.request import HealthRequest
@@ -121,38 +119,19 @@ def _fix_first_block(data: HealthData, req: HealthRequest, pager: Pager) -> dict
         item.pop("next_call", None)
     block["lead"] = full.lead.compact() if full.lead is not None else None
     block["counts"] = full.counts(shown=len(page.items))
-    eligible = full.totals.eligible
-    block["items_total"] = eligible
-    cursor = req.cursor if req.pages_fix_first else 0
-    block["cursor"] = cursor
+    block["items_total"] = full.totals.eligible
+    block["cursor"] = req.fix_first_cursor
     if full.lead is not None:
         block["detail_call"] = f"get_health(fix_id={full.lead.id!r})"
-    next_cursor = cursor + len(page.items)
-    if req.pages_fix_first and page.items and next_cursor < eligible:
-        pager.recoveries["fix_first"] = (next_cursor, len(page.items), eligible - next_cursor)
+    if req.pages_fix_first:
+        pager.note_page(
+            "fix_first",
+            start=req.fix_first_cursor,
+            shown=len(page.items),
+            total=full.totals.eligible,
+            limit=req.fix_first_cap,
+        )
     return block
-
-
-_RECOVERY_CURSOR = re.compile(r"cursor=\d+\)$")
-
-
-def _settle_fix_first_page(result: dict[str, Any]) -> None:
-    """Restate a named page after the response budget trimmed its tail, so
-    ``counts.shown`` and the next page's cursor count what was delivered."""
-    block = result.get("fix_first")
-    if not isinstance(block, dict) or "cursor" not in block:
-        return
-    shown = len(block.get("items") or [])
-    if isinstance(block.get("counts"), dict):
-        block["counts"]["shown"] = shown
-    recovery = (result.get("recovery") or {}).get("fix_first")
-    if isinstance(recovery, dict):
-        next_cursor = block["cursor"] + shown
-        recovery["remaining"] = int(block.get("items_total") or 0) - next_cursor
-        recovery["call"] = _RECOVERY_CURSOR.sub(f"cursor={next_cursor})", recovery["call"])
-
-
-register_post_enforce("get_health", _settle_fix_first_page)
 
 
 def _metric_row(data: HealthData, m: Any) -> dict[str, Any]:

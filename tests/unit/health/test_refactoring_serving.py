@@ -23,7 +23,6 @@ from repowise.core.analysis.health.refactoring.serving import (
     next_actions,
     parse_query,
     plan_payload,
-    plan_view,
     row_sort_key,
     serialize,
     stored_validation,
@@ -73,13 +72,6 @@ def test_parse_query_scope_follows_files_and_status() -> None:
     assert parse_query(status="resolved", scope="fix_first")[0].scope == "all"
     assert parse_query(view="canonical")[0].resolved_order == "rank"
     assert parse_query(view="canonical", order="file")[0].resolved_order == "file"
-
-
-def test_plan_view_maps_the_new_default_to_canonical() -> None:
-    assert plan_view(None) == "canonical"
-    assert plan_view("diversified") == "canonical"
-    assert plan_view("file_spread") == "file_spread"
-    assert plan_view("unknown") == "canonical"
 
 
 def test_evidence_block_names_the_next_cursor() -> None:

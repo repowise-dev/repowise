@@ -33,12 +33,13 @@ def _render_plans(
         result["refactoring_plans_opportunities_total"] = page.opportunities_total
         if page.hidden is not None:
             result["refactoring_plans_hidden"] = page.hidden
-        if page.next_offset is not None:
-            pager.recoveries["refactoring_plans"] = (
-                page.next_offset,
-                max(len(rows), 1),
-                total - page.next_offset,
-            )
+        pager.note_page(
+            "refactoring_plans",
+            start=req.cursor,
+            shown=page.next_offset - req.cursor,
+            total=total,
+            limit=req.plans_cap,
+        )
     _merge_ignored(result, data.refactoring_plans_ignored)
     if req.wants("refactoring_plans"):
         scoped = data.pop.scoped
