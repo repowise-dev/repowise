@@ -297,7 +297,7 @@ def _indexed_commit(repo_path, row_commit: str | None, out: dict) -> None:
     The same order the server's freshness check reads. When both are recorded
     and disagree, the index's own history is in doubt, so the commit is unknown.
     """
-    from ..workspace.update import read_state_commit
+    from ..workspace.state import read_state_commit
 
     state = read_state_commit(Path(repo_path))
     if state and row_commit and state != row_commit:
