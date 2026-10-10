@@ -237,6 +237,76 @@ export function slotLabel(slot: ExtractSlot): string {
   return slot.type ? `${slot.name}: ${slot.type}` : slot.name;
 }
 
+/** One helper of a staged Extract Method plan, in the order the function
+ *  calls them. `name` is null when nothing in the code anchors one. */
+export interface ExtractStage {
+  name: string | null;
+  span: { start: number; end: number };
+  ccn: number | null;
+  signature_text: string | null;
+  call_text: string | null;
+  return_text: string | null;
+  notes: string[];
+}
+
+/** The object carrying the values the stages share, declared once. */
+export interface ExtractParameterObject {
+  name: string;
+  declaration_text: string | null;
+  construct_text: string;
+  construct_before: number | null;
+}
+
+/** A staged plan's helpers (`plan.stages`); empty for a single-span plan. */
+export function extractMethodStages(plan: RefactoringPlan): ExtractStage[] {
+  const raw = ((plan.plan ?? {}) as Record<string, unknown>).stages;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry): ExtractStage[] => {
+    const s = (entry ?? {}) as Record<string, unknown>;
+    const span = (s.span ?? {}) as Record<string, unknown>;
+    const start = Number(span.start ?? 0);
+    const end = Number(span.end ?? 0);
+    if (!start || !end) return [];
+    const sym = (s.new_symbol ?? {}) as Record<string, unknown>;
+    const site = callSite(s.call_site);
+    return [
+      {
+        name: typeof s.suggested_name === "string" ? s.suggested_name : null,
+        span: { start, end },
+        ccn: typeof s.ccn === "number" ? s.ccn : null,
+        signature_text: typeof sym.signature_text === "string" ? sym.signature_text : null,
+        call_text: site ? site.new_text : null,
+        return_text: typeof sym.return_text === "string" ? sym.return_text : null,
+        notes: Array.isArray(sym.notes) ? (sym.notes as string[]) : [],
+      },
+    ];
+  });
+}
+
+/** A staged plan's shared parameter object, or null without one. */
+export function extractParameterObject(plan: RefactoringPlan): ExtractParameterObject | null {
+  const raw = ((plan.plan ?? {}) as Record<string, unknown>).parameter_object as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  if (!raw || typeof raw !== "object" || typeof raw.construct_text !== "string") return null;
+  return {
+    name: typeof raw.name === "string" ? raw.name : HELPER_NAME_PLACEHOLDER,
+    declaration_text: typeof raw.declaration_text === "string" ? raw.declaration_text : null,
+    construct_text: raw.construct_text,
+    construct_before: typeof raw.construct_before === "number" ? raw.construct_before : null,
+  };
+}
+
+/** The function's cyclomatic complexity before and after a staged split. */
+export function extractOrchestrator(plan: RefactoringPlan): { before: number; after: number } | null {
+  const raw = ((plan.plan ?? {}) as Record<string, unknown>).orchestrator as
+    | Record<string, unknown>
+    | undefined;
+  if (!raw || typeof raw.ccn_before !== "number" || typeof raw.ccn_after !== "number") return null;
+  return { before: raw.ccn_before, after: raw.ccn_after };
+}
+
 /** The helper an extraction proposes, as one line: `async name(a, b) -> c`.
  *  For a plan stored before the server rendered `signature_text`. */
 export function extractMethodSignature(em: ExtractMethodPlan): string {
