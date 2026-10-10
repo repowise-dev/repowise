@@ -60,6 +60,7 @@ import {
   getRefactoringOpportunity,
   getRefactoringPlan,
   getRefactoringSettings,
+  updateRefactoringSettings,
   updateRefactoringOpportunityStatus,
   type RefactoringSettings,
 } from "@/lib/api/refactoring";
@@ -214,7 +215,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   // Opt-in code generation. Enabled only when the repo's config turns it on (a
   // local-`serve` capability); the settings call 404s on hosted backends, which
   // simply leaves the action hidden.
-  const { data: settings } = useSWR<RefactoringSettings>(
+  const { data: settings, mutate: mutateSettings } = useSWR<RefactoringSettings>(
     `refactoring-settings:${repoId}`,
     () => getRefactoringSettings(repoId),
     { revalidateOnFocus: false, shouldRetryOnError: false },
@@ -225,6 +226,21 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         ? (plan: RefactoringPlan) => generateRefactoringCode(repoId, plan.id)
         : undefined,
     [settings?.enabled, repoId],
+  );
+  const modelSetting = useMemo(
+    () =>
+      settings
+        ? {
+            value: settings,
+            onToggle: async (enabled: boolean) => {
+              await mutateSettings(await updateRefactoringSettings(repoId, enabled), {
+                revalidate: false,
+              });
+            },
+            setupHref: `${prefix}/settings#provider`,
+          }
+        : undefined,
+    [settings, mutateSettings, repoId, prefix],
   );
 
   const facetCounts = data?.facets?.lead_type ?? {};
@@ -388,6 +404,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         onAiPrompt={(plan) => setPromptFor({ kind: "plan", value: plan })}
         onGenerateCode={onGenerateCode}
         settingsHref={`${prefix}/settings`}
+        modelSetting={modelSetting}
         fileHref={fileHref}
       />
 

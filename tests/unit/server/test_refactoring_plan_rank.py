@@ -215,7 +215,9 @@ async def test_one_plan_reads_its_stored_rank(
         return _Generated(suggestion)
 
     monkeypatch.setattr(llm, "llm_enrichment_enabled", lambda _config: True)
-    monkeypatch.setattr(llm, "build_enrichment_provider", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        "repowise.server.provider_config.get_chat_provider_instance", lambda **_k: object()
+    )
     monkeypatch.setattr(llm, "enrich_suggestion", enrich)
     response = await client.post(f"/api/repos/{repo_id}/refactoring/{listed[0]['id']}/generate-code")
     assert response.status_code == 200, response.text

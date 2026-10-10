@@ -453,8 +453,8 @@ deployment with no local checkout:
   recorded are servable, and `.git`/`.repowise` paths are refused),
   `POST /api/repos/{id}/preflight`,
   `POST /api/repos/{id}/refactoring/{suggestion_id}/generate-code`
-  (`404` without an accessible checkout, `403` when `refactoring.llm.enabled`
-  is false)
+  (`404` without an accessible checkout, `403` unless `refactoring.llm.enabled`
+  is true)
 - validate the path at registration: `POST /api/repos` rejects a `local_path`
   that is not an existing git directory with a `422` body
 

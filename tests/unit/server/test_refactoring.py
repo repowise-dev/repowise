@@ -585,14 +585,13 @@ async def test_min_confidence_filters(client: AsyncClient, app) -> None:
 async def _seed_enrich_repo(client: AsyncClient, app, *, enabled: bool) -> tuple[str, str]:
     """A repo with a real checkout (config + one source file) and one plan.
 
-    Uses the ``mock`` provider so ``build_enrichment_provider`` resolves a
-    MockProvider with no API key. Returns ``(repo_id, suggestion_id)``."""
+    The provider is stubbed per test through the shared chat resolver.
+    Returns ``(repo_id, suggestion_id)``."""
     repo_dir = Path(tempfile.mkdtemp()) / "enrich-repo"
     (repo_dir / "pkg").mkdir(parents=True, exist_ok=True)
     (repo_dir / ".git").mkdir(exist_ok=True)
     (repo_dir / ".repowise").mkdir(exist_ok=True)
-    # enabled defaults on, so the disabled case writes an explicit false.
-    cfg = "provider: mock\n"
+    cfg = "provider: anthropic\n"
     cfg += f"refactoring:\n  llm:\n    enabled: {'true' if enabled else 'false'}\n"
     (repo_dir / ".repowise" / "config.yaml").write_text(cfg, encoding="utf-8")
     (repo_dir / "pkg" / "leaf.py").write_text(
@@ -640,7 +639,24 @@ async def _seed_enrich_repo(client: AsyncClient, app, *, enabled: bool) -> tuple
     return repo_id, suggestion_id
 
 
-async def test_generate_code_happy_path(client: AsyncClient, app) -> None:
+def _stub_chat_resolver(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Route the shared chat resolver to a MockProvider and record its calls."""
+    from repowise.core.providers.llm.mock import MockProvider
+
+    calls: list[dict] = []
+
+    def fake(**kwargs):
+        calls.append(kwargs)
+        return MockProvider()
+
+    monkeypatch.setattr("repowise.server.provider_config.get_chat_provider_instance", fake)
+    return calls
+
+
+async def test_generate_code_happy_path(
+    client: AsyncClient, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _stub_chat_resolver(monkeypatch)
     repo_id, sid = await _seed_enrich_repo(client, app, enabled=True)
     resp = await client.post(f"/api/repos/{repo_id}/refactoring/{sid}/generate-code", json={})
     assert resp.status_code == 200
@@ -648,6 +664,10 @@ async def test_generate_code_happy_path(client: AsyncClient, app) -> None:
     assert body["refactoring_type"] == "extract_class"
     assert body["target_symbol"] == "GodClass"
     assert body["provider"] == "mock"
+    # Generation asks the resolver chat uses, scoped to this repo, not its own.
+    assert len(calls) == 1
+    assert calls[0]["repo_id"] == repo_id
+    assert calls[0]["repo_path"].name == "enrich-repo"
     assert body["content"]  # the mock returned something
     assert body["spans"] and body["spans"][0]["file"] == "pkg/leaf.py"
 
@@ -669,58 +689,52 @@ async def test_generate_code_unknown_id_404(client: AsyncClient, app) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_settings_default_enabled_when_unset(client: AsyncClient, app) -> None:
-    """An untouched repo (no config) reads as enabled with no provider/model."""
+@pytest.fixture
+def _isolated_provider_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the server-global provider store out of the user's home."""
+    monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(tmp_path / "server-store"))
+
+
+@pytest.mark.usefixtures("_isolated_provider_store")
+async def test_settings_default_off_when_unset(client: AsyncClient, app) -> None:
+    """An untouched repo reads as off; code generation waits for a yes."""
     repo = await create_test_repo(client)
     resp = await client.get(f"/api/repos/{repo['id']}/refactoring/settings")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body == {"enabled": True, "provider": None, "model": None}
+    assert resp.json()["enabled"] is False
 
 
-async def test_settings_put_round_trips_and_preserves_other_keys(client: AsyncClient, app) -> None:
+@pytest.mark.usefixtures("_isolated_provider_store")
+async def test_settings_round_trip_shows_chat_model_and_no_secret(
+    client: AsyncClient, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import yaml
 
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret-value")
     repo = await create_test_repo(client)
     repo_id = repo["id"]
-    # Seed an unrelated key so we can assert the writer preserves it.
     repo_dir = Path(repo["local_path"])
     (repo_dir / ".repowise").mkdir(exist_ok=True)
-    (repo_dir / ".repowise" / "config.yaml").write_text("provider: anthropic\n", encoding="utf-8")
-
-    resp = await client.put(
-        f"/api/repos/{repo_id}/refactoring/settings",
-        json={"enabled": False, "provider": "openai", "model": "gpt-x"},
+    (repo_dir / ".repowise" / "config.yaml").write_text(
+        "provider: anthropic\nmodel: claude-test\n", encoding="utf-8"
     )
+
+    resp = await client.put(f"/api/repos/{repo_id}/refactoring/settings", json={"enabled": True})
     assert resp.status_code == 200
-    assert resp.json() == {"enabled": False, "provider": "openai", "model": "gpt-x"}
+    expected = {"enabled": True, "provider": "anthropic", "model": "claude-test"}
+    assert resp.json() == expected
+    assert "sk-ant-secret-value" not in resp.text
 
-    # GET reflects the write, and the unrelated top-level key survived.
     got = await client.get(f"/api/repos/{repo_id}/refactoring/settings")
-    assert got.json() == {"enabled": False, "provider": "openai", "model": "gpt-x"}
+    assert got.json() == expected
     cfg = yaml.safe_load((repo_dir / ".repowise" / "config.yaml").read_text(encoding="utf-8"))
+    # Only the switch is written; the model stays where chat reads it.
     assert cfg["provider"] == "anthropic"
-    assert cfg["refactoring"]["llm"] == {"enabled": False, "provider": "openai", "model": "gpt-x"}
-
-
-async def test_settings_put_blank_provider_clears_key(client: AsyncClient, app) -> None:
-    import yaml
-
-    repo = await create_test_repo(client)
-    repo_id = repo["id"]
-    await client.put(
-        f"/api/repos/{repo_id}/refactoring/settings",
-        json={"enabled": True, "provider": "openai", "model": "gpt-x"},
-    )
-    # Re-save with blank provider/model -> the keys are removed, not "".
-    resp = await client.put(
-        f"/api/repos/{repo_id}/refactoring/settings",
-        json={"enabled": True, "provider": "", "model": "  "},
-    )
-    assert resp.json() == {"enabled": True, "provider": None, "model": None}
-    repo_dir = Path(repo["local_path"])
-    cfg = yaml.safe_load((repo_dir / ".repowise" / "config.yaml").read_text(encoding="utf-8"))
     assert cfg["refactoring"]["llm"] == {"enabled": True}
+
+    await client.put(f"/api/repos/{repo_id}/refactoring/settings", json={"enabled": False})
+    got = await client.get(f"/api/repos/{repo_id}/refactoring/settings")
+    assert got.json()["enabled"] is False
 
 
 async def test_settings_unknown_repo_404(client: AsyncClient, app) -> None:

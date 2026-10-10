@@ -110,76 +110,22 @@ class EnrichmentResult:
 
 
 # ---------------------------------------------------------------------------
-# Config gate + provider resolution (server / MCP surfaces)
+# Config gate (server / MCP surfaces). The provider itself is resolved by the
+# caller through the same path chat and page generation use.
 # ---------------------------------------------------------------------------
 
 
 def llm_enrichment_enabled(config: dict[str, Any]) -> bool:
     """Whether code generation is enabled for this repo (``refactoring.llm.enabled``).
 
-    Enabled unless the repo explicitly turns it off — an unset key means on.
-    Code generation never runs during indexing and only ever fires on an
-    explicit request (a button click / CLI flag / MCP call), and the web + MCP
-    surfaces both require a local checkout (they 404 without one), so defaulting
-    on simply makes the local-``serve`` experience work without a config trip;
-    a repo can still set ``refactoring.llm.enabled: false`` to disable it.
+    Off unless the repo turns it on: generation sends source to a model, so it
+    waits for an explicit yes in config or from the settings toggle.
     """
     refactoring = config.get("refactoring")
-    if not isinstance(refactoring, dict):
-        return True
-    llm = refactoring.get("llm")
+    llm = refactoring.get("llm") if isinstance(refactoring, dict) else None
     if not isinstance(llm, dict):
-        return True
-    return bool(llm.get("enabled", True))
-
-
-def build_enrichment_provider(
-    repo_path: Path,
-    *,
-    provider_name: str | None = None,
-    model: str | None = None,
-) -> BaseProvider:
-    """Resolve a provider for server/MCP enrichment from repo config + env.
-
-    Mirrors the CLI resolver in spirit (config provider/model, key from env)
-    but lives in core so the server and MCP layers don't depend on the CLI.
-    Reads ``.repowise/config.yaml`` for provider/model and the per-repo
-    ``.repowise/.env`` (without mutating ``os.environ``) plus the process env
-    for the API key. Raises ``ValueError`` when no provider/key can be found.
-    """
-    import os
-
-    from repowise.core.providers import get_provider
-    from repowise.core.providers.llm.registry import (
-        PROVIDER_AUTODETECT_ORDER,
-        provider_credentials_present,
-        provider_kwargs,
-    )
-    from repowise.core.repo_config import load_repo_config, load_repo_env
-
-    cfg = load_repo_config(repo_path)
-    repo_env = load_repo_env(repo_path)
-
-    def _env(name: str) -> str | None:
-        return os.environ.get(name) or repo_env.get(name)
-
-    name = provider_name or cfg.get("provider")
-    chosen_model = model or cfg.get("model")
-
-    # Auto-detect from whichever key is present when the config names none.
-    if name is None:
-        name = next(
-            (c for c in PROVIDER_AUTODETECT_ORDER if provider_credentials_present(c, _env)),
-            None,
-        )
-    if name is None:
-        raise ValueError(
-            "No LLM provider configured for refactoring enrichment. Set "
-            "'provider' in .repowise/config.yaml or an API key env var."
-        )
-
-    kwargs = provider_kwargs(name, model=chosen_model, repo_path=repo_path, getenv=_env)
-    return get_provider(name, **kwargs)
+        return False
+    return bool(llm.get("enabled", False))
 
 
 # ---------------------------------------------------------------------------

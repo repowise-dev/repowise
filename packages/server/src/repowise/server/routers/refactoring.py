@@ -223,29 +223,32 @@ async def get_refactoring_plan_page(
 
 
 class RefactoringSettings(BaseModel):
-    """The opt-in code-generation switches, mirrored from ``refactoring.llm``."""
+    """The code-generation switch plus the model it will use.
+
+    ``provider`` / ``model`` are read-only: they come from the same resolver
+    chat uses, so the user configures a model once. Never carries a key.
+    """
 
     enabled: bool = False
     provider: str | None = None
     model: str | None = None
 
 
-def _read_refactoring_settings(config: dict[str, Any]) -> RefactoringSettings:
-    """Project ``refactoring.llm`` out of a loaded config, tolerant of shape.
+class RefactoringSettingsUpdate(BaseModel):
+    """The one writable field, ``refactoring.llm.enabled``."""
 
-    ``enabled`` defaults to ``True`` when unset, matching
-    :func:`llm_enrichment_enabled` — an untouched repo shows the toggle on.
-    """
-    refactoring = config.get("refactoring")
-    llm = refactoring.get("llm") if isinstance(refactoring, dict) else None
-    if not isinstance(llm, dict):
-        return RefactoringSettings(enabled=True)
-    provider = llm.get("provider")
-    model = llm.get("model")
+    enabled: bool
+
+
+def _read_refactoring_settings(
+    config: dict[str, Any], repo_id: str, repo_path: Path
+) -> RefactoringSettings:
+    from repowise.core.analysis.health.refactoring.llm import llm_enrichment_enabled
+    from repowise.server.provider_config import get_active_provider
+
+    provider, model = get_active_provider(repo_id=repo_id, repo_path=repo_path)
     return RefactoringSettings(
-        enabled=bool(llm.get("enabled", True)),
-        provider=provider if isinstance(provider, str) and provider else None,
-        model=model if isinstance(model, str) and model else None,
+        enabled=llm_enrichment_enabled(config), provider=provider, model=model
     )
 
 
@@ -451,24 +454,22 @@ async def get_refactoring_settings(
     repo_id: str,
     session: AsyncSession = Depends(get_db_session),
 ) -> RefactoringSettings:
-    """Current ``refactoring.llm`` settings for the repo (enabled + provider/model)."""
+    """Whether code generation is on for the repo, and the provider/model it uses."""
     from repowise.core.repo_config import load_repo_config
 
     repo_path = await _local_repo_path(session, repo_id)
-    return _read_refactoring_settings(load_repo_config(repo_path))
+    return _read_refactoring_settings(load_repo_config(repo_path), repo_id, repo_path)
 
 
 @router.put("/{repo_id}/refactoring/settings", response_model=RefactoringSettings)
 async def update_refactoring_settings(
     repo_id: str,
-    body: RefactoringSettings,
+    body: RefactoringSettingsUpdate,
     session: AsyncSession = Depends(get_db_session),
 ) -> RefactoringSettings:
-    """Persist the ``refactoring.llm`` block to the repo's ``.repowise/config.yaml``.
+    """Write ``refactoring.llm.enabled`` to the repo's ``.repowise/config.yaml``.
 
-    Round-trips through the loaded config so unrelated keys are preserved, then
-    writes only the ``refactoring.llm.{enabled,provider,model}`` sub-tree. A
-    blank provider/model clears that key rather than writing an empty string.
+    Round-trips through the loaded config so unrelated keys are preserved.
     """
     from repowise.core.repo_config import load_repo_config, save_repo_config
 
@@ -483,21 +484,10 @@ async def update_refactoring_settings(
     if not isinstance(llm, dict):
         llm = {}
         refactoring["llm"] = llm
-
-    llm["enabled"] = bool(body.enabled)
-    provider = (body.provider or "").strip()
-    model = (body.model or "").strip()
-    if provider:
-        llm["provider"] = provider
-    else:
-        llm.pop("provider", None)
-    if model:
-        llm["model"] = model
-    else:
-        llm.pop("model", None)
+    llm["enabled"] = body.enabled
 
     save_repo_config(repo_path, config)
-    return _read_refactoring_settings(config)
+    return _read_refactoring_settings(config, repo_id, repo_path)
 
 
 @router.get("/{repo_id}/refactoring/{suggestion_id}", response_model=RefactoringPlanResponse)
@@ -558,7 +548,7 @@ async def update_refactoring_plan_status(
 
 
 class GenerateCodeRequest(BaseModel):
-    """Optional per-call overrides for the enrichment provider/model."""
+    """Optional per-call provider/model overrides, as chat accepts."""
 
     provider: str | None = None
     model: str | None = None
@@ -594,17 +584,18 @@ async def generate_refactoring_code(
 ) -> GenerateCodeResponse:
     """Generate the refactored code + a unified diff for one plan, on demand.
 
-    Strictly opt-in: returns 403 unless ``refactoring.llm.enabled`` is set in the
-    repo's ``.repowise/config.yaml``. Needs the working tree on disk (it reads
-    the plan's real source spans), so this is a local-``serve`` capability, not a
-    hosted one — it returns 404 when the repo has no accessible checkout.
+    Opt-in: returns 403 unless ``refactoring.llm.enabled`` is true in the repo's
+    ``.repowise/config.yaml``. The provider resolves exactly as chat's does.
+    Needs the working tree on disk (it reads the plan's real source spans), so
+    this is a local-``serve`` capability, not a hosted one — it returns 404 when
+    the repo has no accessible checkout.
     """
     from repowise.core.analysis.health.refactoring.llm import (
-        build_enrichment_provider,
         enrich_suggestion,
         llm_enrichment_enabled,
     )
     from repowise.core.repo_config import load_repo_config
+    from repowise.server.provider_config import get_chat_provider_instance
 
     repo = await crud.get_repository(session, repo_id)
     if repo is None or not repo.local_path:
@@ -630,8 +621,11 @@ async def generate_refactoring_code(
 
     body = body or GenerateCodeRequest()
     try:
-        provider = build_enrichment_provider(
-            repo_path, provider_name=body.provider, model=body.model
+        provider = get_chat_provider_instance(
+            repo_path=repo_path,
+            repo_id=repo_id,
+            provider_override=body.provider,
+            model_override=body.model,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

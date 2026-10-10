@@ -1677,7 +1677,7 @@ export interface FixVerify {
   basis: "measured" | "inferred" | "unknown";
 }
 
-/** Optional per-call overrides for the enrichment provider/model. */
+/** Optional per-call provider/model overrides, as chat accepts. */
 export interface GenerateCodeRequest {
   provider?: string | null;
   model?: string | null;
@@ -2789,11 +2789,21 @@ export interface RefactoringRollupResponse {
   directive?: Record<string, unknown>;
 }
 
-/** The opt-in code-generation switches, mirrored from ``refactoring.llm``. */
+/**
+ * The code-generation switch plus the model it will use.
+ *
+ * ``provider`` / ``model`` are read-only: they come from the same resolver
+ * chat uses, so the user configures a model once. Never carries a key.
+ */
 export interface RefactoringSettings {
   enabled?: boolean;
   provider?: string | null;
   model?: string | null;
+}
+
+/** The one writable field, ``refactoring.llm.enabled``. */
+export interface RefactoringSettingsUpdate {
+  enabled: boolean;
 }
 
 /** Same shape and vocabulary as health finding triage — one triage system. */

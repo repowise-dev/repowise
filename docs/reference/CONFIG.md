@@ -597,15 +597,13 @@ refactoring:
     disabled: []              # e.g. [move_method] to silence one detector
   min_confidence: null        # low | medium | high (confidence floor; null = no floor)
   llm:
-    enabled: true             # code generation, on by default; set false to disable
-    provider: null            # falls back to the repo's configured LLM provider
-    model: null                # falls back to the repo's configured model
+    enabled: false            # code generation, off by default; uses chat's provider and model
 ```
 
 - The deterministic layer is **zero-LLM** and runs in the `init` / `update`
-  health pass. Code generation is the only part that calls a provider: it is on
-  by default but never runs during indexing, only on an explicit request (set
-  `llm.enabled: false` to disable it).
+  health pass. Code generation is the only part that calls a provider: it is off
+  by default and never runs during indexing, only on an explicit request (set
+  `llm.enabled: true` to enable it).
 - `enabled: false` skips the whole deterministic detector pass; `detectors.disabled`
   silences named detectors (`extract_class`, `split_file`, ...) while the rest run.
 - `min_confidence` is a floor applied when the plans are detected, so a plan below it

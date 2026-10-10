@@ -89,7 +89,7 @@ PUT  /api/repos/{repo_id}/refactoring/settings
 `llm/enrich.py` gathers source spans, builds the prompt, calls the provider, runs the
 per-type self-check and caches results under the repo's `.repowise` directory by a
 hash of plan, source and model. `llm_enrichment_enabled` treats an unset
-`refactoring.llm.enabled` as on. `build_enrichment_provider` resolves the top-level
-`provider`/`model` from config, or the first provider with a key in the environment
-or `.repowise/.env`. The MCP tool (`tool_refactoring.py`) is registered
+`refactoring.llm.enabled` as off. The REST endpoint and MCP tool resolve the provider
+with `get_chat_provider_instance` (`server/provider_config.py`), the resolver chat uses;
+the CLI uses `resolve_provider`, as page generation does. The MCP tool (`tool_refactoring.py`) is registered
 `default=False`.

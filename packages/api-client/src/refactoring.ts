@@ -27,6 +27,7 @@ export type {
   RefactoringTriageStatus,
 };
 
+/** The code-generation switch and the provider/model chat resolves (read-only). */
 export interface RefactoringSettings {
   enabled: boolean;
   provider: string | null;
@@ -111,11 +112,12 @@ export async function getRefactoringSettings(repoId: string): Promise<Refactorin
   return apiGet<RefactoringSettings>(`/api/repos/${repoId}/refactoring/settings`);
 }
 
+/** Write `refactoring.llm.enabled`, the only writable setting. */
 export async function updateRefactoringSettings(
   repoId: string,
-  settings: RefactoringSettings,
+  enabled: boolean,
 ): Promise<RefactoringSettings> {
-  return apiPut<RefactoringSettings>(`/api/repos/${repoId}/refactoring/settings`, settings);
+  return apiPut<RefactoringSettings>(`/api/repos/${repoId}/refactoring/settings`, { enabled });
 }
 
 // ---------------------------------------------------------------------------

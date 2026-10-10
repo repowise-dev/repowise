@@ -270,3 +270,34 @@ describe("RefactoringDrawer validation", () => {
     expect(toggle.textContent).not.toContain("guarding");
   });
 });
+
+describe("RefactoringDrawer code generation", () => {
+  const modelSetting = {
+    value: { enabled: false, provider: "anthropic", model: "claude-test" },
+    onToggle: async () => {},
+  };
+
+  it("offers the model switch while generation is off", () => {
+    render(
+      <RefactoringDrawer plan={PLAN} open onOpenChange={() => {}} modelSetting={modelSetting} />,
+    );
+    expect(screen.getByRole("switch", { name: /name helpers and draft code/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Generate code" })).toBeNull();
+  });
+
+  it("shows the action, not the switch, once generation is on", () => {
+    render(
+      <RefactoringDrawer
+        plan={PLAN}
+        open
+        onOpenChange={() => {}}
+        modelSetting={modelSetting}
+        onGenerateCode={async () => {
+          throw new Error("not called");
+        }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Generate code" })).toBeTruthy();
+    expect(screen.queryByRole("switch")).toBeNull();
+  });
+});

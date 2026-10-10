@@ -21,7 +21,6 @@ from repowise.core.analysis.health.refactoring.llm.enrich import (
     _extract_diff,
     _gather_spans,
     _validate_extract_method,
-    build_enrichment_provider,
 )
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.providers.llm.base import GeneratedResponse
@@ -387,59 +386,11 @@ async def test_self_check_skipped_for_non_extract_class(tmp_path: Path) -> None:
 
 def test_llm_enrichment_enabled_gate() -> None:
     assert llm_enrichment_enabled({"refactoring": {"llm": {"enabled": True}}}) is True
-    # Only an explicit false disables it; an unset key defaults on (the local
-    # serve experience works without a config trip).
+    # Off unless the repo turns it on: generation sends source to a model.
     assert llm_enrichment_enabled({"refactoring": {"llm": {"enabled": False}}}) is False
-    assert llm_enrichment_enabled({"refactoring": {}}) is True
-    assert llm_enrichment_enabled({}) is True
-
-
-def test_build_enrichment_provider_auto_detects_kimi(tmp_path, monkeypatch) -> None:
-    for key in (
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "OPENROUTER_API_KEY",
-        "DEEPSEEK_API_KEY",
-        "GEMINI_API_KEY",
-        "GOOGLE_API_KEY",
-        "OLLAMA_BASE_URL",
-        "LITELLM_API_KEY",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test")
-
-    captured = {}
-
-    def fake_get_provider(name, **kwargs):
-        captured["name"] = name
-        captured["kwargs"] = kwargs
-        return object()
-
-    monkeypatch.setattr("repowise.core.providers.get_provider", fake_get_provider)
-
-    provider = build_enrichment_provider(tmp_path)
-
-    assert provider is not None
-    assert captured == {
-        "name": "kimi",
-        "kwargs": {"api_key": "sk-kimi-test"},
-    }
-
-
-def test_build_enrichment_provider_runs_a_repo_cwd_cli_in_the_repo(tmp_path, monkeypatch) -> None:
-    """A configured agent CLI that works in the repo's directory is told which repo."""
-    captured = {}
-
-    def fake_get_provider(name, **kwargs):
-        captured.update(kwargs, name=name)
-        return object()
-
-    monkeypatch.setattr("repowise.core.providers.get_provider", fake_get_provider)
-
-    build_enrichment_provider(tmp_path, provider_name="codex_cli")
-
-    assert captured["name"] == "codex_cli"
-    assert captured["repo_path"] == tmp_path
+    assert llm_enrichment_enabled({"refactoring": {"llm": {}}}) is False
+    assert llm_enrichment_enabled({"refactoring": {}}) is False
+    assert llm_enrichment_enabled({}) is False
 
 
 def test_validate_extract_method_detects_ccn_drop():

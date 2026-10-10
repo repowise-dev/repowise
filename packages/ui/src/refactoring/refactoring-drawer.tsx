@@ -28,6 +28,7 @@ import { Skeleton, SkeletonRegion } from "../ui/skeleton";
 import { formatNumber } from "../lib/format";
 import { PlanComparison } from "./plan-comparison";
 import { GenerateCodePanel } from "./generate-code-panel";
+import { RefactoringModelToggle, type RefactoringModelToggleProps } from "./refactoring-settings-card";
 import { PriorityExplanation } from "./priority-explanation";
 import { ValidationSummary } from "./validation-summary";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, typeMeta } from "./meta";
@@ -51,6 +52,8 @@ export interface RefactoringDrawerProps {
   /** Opt-in LLM code generation. Omit to hide the section entirely. */
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
   settingsHref?: string | undefined;
+  /** The code-generation switch, offered in place of the action while it is off. */
+  modelSetting?: RefactoringModelToggleProps | undefined;
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
 }
 
@@ -64,6 +67,7 @@ export function RefactoringDrawer({
   onAiPrompt,
   onGenerateCode,
   settingsHref,
+  modelSetting,
   fileHref,
 }: RefactoringDrawerProps) {
   return (
@@ -82,6 +86,7 @@ export function RefactoringDrawer({
             onAiPrompt={onAiPrompt}
             onGenerateCode={onGenerateCode}
             settingsHref={settingsHref}
+            modelSetting={modelSetting}
             fileHref={fileHref}
             contextSlot={contextSlot}
           />
@@ -115,6 +120,7 @@ function DrawerBody({
   onAiPrompt,
   onGenerateCode,
   settingsHref,
+  modelSetting,
   fileHref,
   contextSlot,
 }: {
@@ -122,6 +128,7 @@ function DrawerBody({
   onAiPrompt?: ((plan: RefactoringPlan) => void) | undefined;
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
   settingsHref?: string | undefined;
+  modelSetting?: RefactoringModelToggleProps | undefined;
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
   contextSlot?: ReactNode;
 }) {
@@ -197,6 +204,10 @@ function DrawerBody({
               ) : null}
             </div>
             <GenerateCodePanel plan={plan} onGenerate={onGenerateCode} />
+          </section>
+        ) : modelSetting ? (
+          <section className="border-t border-[var(--color-border-default)] pt-4">
+            <RefactoringModelToggle {...modelSetting} />
           </section>
         ) : null}
 

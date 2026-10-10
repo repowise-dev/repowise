@@ -136,10 +136,12 @@ after production files.
 
 ## Code generation
 
-Code generation is **on by default** but only runs when you ask for it, and it
-needs an LLM API key. It never runs during indexing. Set
-`refactoring.llm.enabled: false` to turn it off for the dashboard and MCP. The CLI
-flag is itself an explicit request and does not read that setting.
+Code generation is **off by default**, only runs when you ask for it, and never
+runs during indexing. Turn it on with the "Use your configured model to name helpers
+and draft code" switch on the repository's Settings page or in an open plan, or with
+`refactoring.llm.enabled: true`. The switch names the provider and model it will use,
+which is the one chat uses, so there is nothing else to configure. The CLI flag is
+itself an explicit request and does not read that setting.
 
 You can ask from three places:
 
@@ -158,10 +160,9 @@ remaining function's complexity dropped. Results are cached by a hash of plan,
 source and model, so an unchanged plan is not paid for twice. Nothing is applied
 to your files.
 
-It uses the repository's configured `provider` and `model`, or the first provider
-whose API key is set. With generation disabled, the MCP tool returns the plan with
-`generation.available: false` and the REST endpoint returns `403`. With no key, MCP
-returns `error: "no_provider"`.
+It uses the same provider and model as chat. With generation disabled, the MCP
+tool returns the plan with `generation.available: false` and the REST endpoint
+returns `403`. With no key, MCP returns `error: "no_provider"`.
 
 ## Configuration
 
@@ -174,7 +175,7 @@ refactoring:
     disabled: []             # e.g. [move_method, split_file]
   min_confidence: medium     # low | medium | high; unset keeps every plan
   llm:
-    enabled: true            # code generation; set false to disable
+    enabled: false           # code generation; set true to enable
 ```
 
 Detector names are the snake-case plan types: `extract_class`, `extract_method`,
