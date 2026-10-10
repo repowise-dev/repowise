@@ -99,7 +99,7 @@ dependencies = [
     # Server
     "fastapi>=0.115,<1",
     "uvicorn[standard]>=0.32,<1",
-    "mcp>=1.0,<2",
+    "mcp>=1.7,<2",
     "apscheduler>=3.10,<4",
     "cryptography>=50.0.0,<51",
     # LLM providers (bundled — no extras needed)
