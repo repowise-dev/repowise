@@ -103,3 +103,91 @@ def test_budget_sheds_the_block_before_the_protected_ones():
     order = contract.shed_order
     assert order.index("next_actions.quarter.actions[]") < order.index("next_actions")
     assert "next_actions" not in contract.protected
+
+
+
+def _factory(url: str):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from repowise.core.persistence import create_engine
+
+    return async_sessionmaker(create_engine(url))
+
+
+def _record(monkeypatch, gate=None):
+    """Stand-ins for the two slow blocks that note the session each read on."""
+    from repowise.server.mcp_server.tool_overview import tool
+
+    seen: dict = {}
+
+    async def code_health(session, _repo):
+        seen["code_health"] = session
+        if gate is not None:
+            await gate.wait()  # finishes only if next_actions runs meanwhile
+        return {"average_health": 7.0}
+
+    async def next_actions(session, _repo):
+        seen["next_actions"] = session
+        if gate is not None:
+            gate.set()
+        return {}, None
+
+    monkeypatch.setattr(tool, "_build_code_health", code_health)
+    monkeypatch.setattr(tool, "_build_next_actions", next_actions)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_on_a_file_store_the_slow_blocks_read_together_on_their_own_sessions(
+    tmp_path, monkeypatch
+):
+    import asyncio
+
+    from repowise.server.mcp_server.tool_overview.tool import _slow_reads
+
+    seen = _record(monkeypatch, gate=asyncio.Event())
+    caller = object()
+    slow = _slow_reads(caller, _factory(f"sqlite+aiosqlite:///{(tmp_path / 'w.db').as_posix()}"), None)
+    health, actions = await asyncio.wait_for(slow, timeout=10)
+
+    assert health == {"average_health": 7.0} and actions == ({}, None)
+    assert seen["code_health"] is not caller and seen["next_actions"] is not caller
+    assert seen["code_health"] is not seen["next_actions"]
+
+
+@pytest.mark.asyncio
+async def test_on_a_shared_connection_they_read_in_turn_on_the_callers_session(monkeypatch):
+    from repowise.server.mcp_server.tool_overview.tool import _slow_reads
+
+    seen = _record(monkeypatch)
+    caller = object()
+    slow = _slow_reads(caller, _factory("sqlite+aiosqlite:///:memory:"), None)
+    assert seen == {}, "nothing reads before the caller's own reads are done"
+    await slow
+    assert seen == {"code_health": caller, "next_actions": caller}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_overview_leaves_no_slow_read_running(tmp_path, monkeypatch):
+    import asyncio
+
+    from repowise.server.mcp_server.tool_overview.tool import _abandon, _slow_reads
+
+    _record(monkeypatch, gate=asyncio.Event())
+    from repowise.server.mcp_server.tool_overview import tool
+
+    async def stuck(session, _repo):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(tool, "_build_next_actions", stuck)
+    before = asyncio.all_tasks()
+    slow = _slow_reads(object(), _factory(f"sqlite+aiosqlite:///{(tmp_path / 'w.db').as_posix()}"), None)
+    await asyncio.sleep(0)
+    await _abandon(slow)
+
+    assert slow.done()
+    assert asyncio.all_tasks() <= before
+    # The fallback is a coroutine that never started; abandoning closes it.
+    lazy = _slow_reads(object(), _factory("sqlite+aiosqlite:///:memory:"), None)
+    await _abandon(lazy)
+    assert lazy.cr_frame is None

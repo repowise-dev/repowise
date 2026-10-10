@@ -240,7 +240,7 @@ class RefactoringHealthService:
         Upgrade path: store the eligibility on the opportunity row at index
         time and filter on the column.
         """
-        queue = await load_fix_first(self._session, self._repository_id, limit=0)
+        queue = await load_fix_first(self._session, self._repository_id, limit=0, verify=False)
         reasons = queue.refactoring_reasons
         matched = await refactoring_opportunity_ids(
             self._session, self._repository_id, **filters

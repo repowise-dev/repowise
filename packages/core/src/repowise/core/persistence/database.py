@@ -165,6 +165,7 @@ __all__ = [
     "get_session",
     "init_db",
     "resolve_db_url",
+    "schema_behind",
 ]
 
 DB_FILENAME = "wiki.db"
@@ -681,3 +682,28 @@ async def init_db(engine: AsyncEngine) -> None:
             from repowise.core.persistence.search import PAGE_FTS_DDL
 
             await conn.execute(text(PAGE_FTS_DDL))
+
+
+async def schema_behind(engine: AsyncEngine) -> bool:
+    """Whether a table or column the models declare is missing from the store.
+
+    One catalogue read, so a reader can skip the reconcile ``init_db`` runs and
+    pay for it only on a store an older repowise wrote. SQLite only; another
+    backend is migrated by Alembic and reads as current.
+    """
+    if engine.dialect.name != "sqlite":
+        return False
+    async with engine.connect() as conn:
+        rows = await conn.execute(
+            text(
+                "SELECT m.name, p.name FROM sqlite_master AS m "
+                "JOIN pragma_table_info(m.name) AS p WHERE m.type = 'table'"
+            )
+        )
+        live: dict[str, set[str]] = {}
+        for table, column in rows:
+            live.setdefault(table, set()).add(column)
+    return any(
+        not {c.name for c in table.columns} <= live.get(name, set())
+        for name, table in Base.metadata.tables.items()
+    )

@@ -6,10 +6,13 @@ import json
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import networkx as nx
 import structlog
+
+if TYPE_CHECKING:
+    # An annotation only: networkx costs ~0.7 s to import on a read path.
+    import networkx as nx
 
 log = structlog.get_logger(__name__)
 

@@ -87,7 +87,7 @@ async def _index_symbol_names(root: Path) -> frozenset[str] | None:
 
     from repowise.core.persistence.crud import get_symbol_names
 
-    async with repo_index_session(root, reconcile=False) as opened:
+    async with repo_index_session(root) as opened:
         if opened is None:
             return None
         session, repo_id = opened

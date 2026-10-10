@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.pool import StaticPool
 
 from repowise.core.persistence.crud import code_file_rows
 from repowise.core.persistence.database import get_session
@@ -99,7 +102,7 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         result = await _repo_overview(
-            session, repository, exclude_spec, set(include or []), collector
+            session, ctx.session_factory, repository, exclude_spec, set(include or []), collector
         )
 
         # Made once per session, so this is where the full scope that every
@@ -111,25 +114,34 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
 
 async def _repo_overview(
     session: Any,
+    session_factory: Any,
     repository: Any,
     exclude_spec: Any,
     want: set[str],
     collector: OmissionCollector,
 ) -> dict[str, Any]:
-    """Every single-repo block, in payload order; empty optional blocks are left out."""
-    overview_page = await _load_overview_page(session, repository)
-    module_pages = await _load_module_pages(session, repository, collector)
-    entry_point_ids = await _resolve_entry_point_ids(session, repository, exclude_spec)
-    all_git = await _load_git_rows(session, repository, exclude_spec)
-    architecture = await _build_architecture(session, repository)
-    dependencies = await _build_package_dependencies(session, repository, exclude_spec)
-    if dependencies:
-        architecture = {**architecture, "dependencies": dependencies}
-    code_health = await _build_code_health(session, repository)
-    next_actions, next_actions_reason = await _build_next_actions(session, repository)
-    requested = await _requested_blocks(session, repository, exclude_spec, all_git, want)
-    sections, outline = await _load_outline(session, repository, want, collector)
+    """Every single-repo block, in payload order; empty optional blocks are left out.
+
+    Code health and the next actions are the slow reads and need nothing else
+    here, so each runs on its own read session while the rest is read.
+    """
+    slow = _slow_reads(session, session_factory, repository)
+    try:
+        overview_page = await _load_overview_page(session, repository)
+        module_pages = await _load_module_pages(session, repository, collector)
+        entry_point_ids = await _resolve_entry_point_ids(session, repository, exclude_spec)
+        all_git = await _load_git_rows(session, repository, exclude_spec)
+        architecture = await _build_architecture(session, repository)
+        dependencies = await _build_package_dependencies(session, repository, exclude_spec)
+        if dependencies:
+            architecture = {**architecture, "dependencies": dependencies}
+        requested = await _requested_blocks(session, repository, exclude_spec, all_git, want)
+        sections, outline = await _load_outline(session, repository, want, collector)
+    except BaseException:
+        await _abandon(slow)
+        raise
     content_md, content_hint = _overview_content(overview_page, "content" in want)
+    code_health, (next_actions, next_actions_reason) = await slow
 
     result: dict[str, Any] = {
         "title": _resolve_title(overview_page, repository),
@@ -178,6 +190,45 @@ async def _repo_overview(
 
     result["tool_surface"] = _tool_surface_guide(is_workspace=_state._registry is not None)
     return result
+
+
+def _slow_reads(session: Any, session_factory: Any, repository: Any) -> Awaitable[Any]:
+    """``(code health, next actions)``: started now on their own sessions, or,
+    on a store whose sessions share one connection, read later on *session*."""
+    if not _own_connections(session_factory):
+        return _in_turn(session, repository)
+
+    async def apart(build: Any) -> Any:
+        async with get_session(session_factory) as own:
+            return await build(own, repository)
+
+    return asyncio.gather(apart(_build_code_health), apart(_build_next_actions))
+
+
+async def _in_turn(session: Any, repository: Any) -> tuple[Any, Any]:
+    return (
+        await _build_code_health(session, repository),
+        await _build_next_actions(session, repository),
+    )
+
+
+async def _abandon(slow: Any) -> None:
+    """Stop the slow reads when the rest failed, so no task outlives the call."""
+    if isinstance(slow, asyncio.Future):
+        slow.cancel()
+        await asyncio.gather(slow, return_exceptions=True)
+    else:
+        slow.close()  # an in-turn read that never started
+
+
+def _own_connections(session_factory: Any) -> bool:
+    """Whether each session gets its own connection, so two can read at once.
+
+    A ``StaticPool`` (in-memory SQLite) hands every session the same one, where
+    their savepoints would collide.
+    """
+    bind = session_factory.kw.get("bind")
+    return bind is not None and not isinstance(bind.sync_engine.pool, StaticPool)
 
 
 _OUTLINE_HINT = (

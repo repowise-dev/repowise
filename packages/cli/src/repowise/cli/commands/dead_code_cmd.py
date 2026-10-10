@@ -64,7 +64,7 @@ async def _read_stored(repo_path: Path, config: dict) -> DeadCodeReport | None:
 
     from repowise.core.persistence.crud import finding_data_from_row, get_dead_code_findings
 
-    async with repo_index_session(repo_path, reconcile=False) as opened:
+    async with repo_index_session(repo_path) as opened:
         if opened is None:
             return None
         session, repo_id = opened

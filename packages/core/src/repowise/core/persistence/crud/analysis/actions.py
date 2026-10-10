@@ -248,7 +248,9 @@ async def _test_map(session: AsyncSession, repo_id: str, files: dict[str, FileFa
 
 
 async def _fix_first(session: AsyncSession, repo_id: str) -> dict[str, Any]:
-    return {"fix_first": (await load_fix_first(session, repo_id, limit=FIX_FIRST_ACTIONS)).items}
+    # An action names the item and links to its full read; it carries no tests.
+    queue = await load_fix_first(session, repo_id, limit=FIX_FIRST_ACTIONS, verify=False)
+    return {"fix_first": queue.items}
 
 
 async def _secrets(session: AsyncSession, repo_id: str, files: dict[str, FileFacts]) -> dict:

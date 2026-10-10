@@ -320,3 +320,31 @@ def test_json_text_renders_for_both_dialects() -> None:
     query = select(json_text(column("details_json"), "actionability_reason"))
     assert "json_extract(details_json" in str(query.compile(dialect=sqlite.dialect()))
     assert "CAST(details_json AS JSON) ->>" in str(query.compile(dialect=postgresql.dialect()))
+
+
+async def test_an_unverified_read_skips_the_test_lookup(async_session, monkeypatch) -> None:
+    """The actions view never shows tests, so it must not pay for resolving them.
+
+    The verified queue, once built, answers an unverified read too.
+    """
+    from repowise.core.persistence.crud.analysis import fix_first as loader
+
+    rid = await seed_fix_first(async_session)
+    loader.clear_fix_first_cache()
+    calls = 0
+    original = loader._finding_validator
+
+    async def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(loader, "_finding_validator", counting)
+    bare = await load_fix_first(async_session, rid, verify=False)
+    assert calls == 0
+    assert [i.id for i in bare.items] == [i.id for i in (await load_fix_first(async_session, rid)).items]
+    assert calls == 1
+    assert (await load_fix_first(async_session, rid, limit=None, verify=False)).items == (
+        await load_fix_first(async_session, rid, limit=None)
+    ).items
+    assert calls == 1

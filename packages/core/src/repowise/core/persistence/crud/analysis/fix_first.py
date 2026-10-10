@@ -528,10 +528,13 @@ async def load_fix_first(
     limit: int | None = DEFAULT_LIMIT,
     scope: str = "production",
     item_id: str | None = None,
+    verify: bool = True,
 ) -> FixFirstQueue:
     """The Fix-first queue for one repository, from its stored analysis.
 
     ``item_id`` keeps only that item, at its rank, for a lookup by id.
+    ``verify=False`` leaves a plan-less finding's tests unresolved, for a
+    caller that never shows them: that read is most of a cold build.
 
     The full queue is built once per store write and every ``limit`` and id
     is a slice of it: the reads are the same whatever is kept, and writing
@@ -543,14 +546,17 @@ async def load_fix_first(
         scope,
         await _stamp(session, repository_id),
     )
-    key = (*base, limit, item_id)
+    key = (*base, verify, limit, item_id)
     queue = _cached(key)
     if queue is not None:
         return queue
-    full = _cached((*base, None, None))
+    # A verified queue answers an unverified ask too; never the reverse.
+    full = _cached((*base, True, None, None)) or _cached((*base, verify, None, None))
     if full is None:
-        full = await _build(session, repository_id, limit=None, scope=scope, item_id=None)
-        _remember((*base, None, None), full)
+        full = await _build(
+            session, repository_id, limit=None, scope=scope, item_id=None, verify=verify
+        )
+        _remember((*base, verify, None, None), full)
     queue = full if key[-2:] == (None, None) else queue_view(full, limit=limit, item_id=item_id)
     _remember(key, queue)
     return queue
@@ -590,6 +596,7 @@ async def _build(
     limit: int | None,
     scope: str,
     item_id: str | None,
+    verify: bool = True,
 ) -> FixFirstQueue:
     refactoring = _decoded(await _refactoring(session, repository_id))
     performance = _decoded(await _performance(session, repository_id))
@@ -617,7 +624,7 @@ async def _build(
         basis=await _basis(session, repository_id),
         hot_cuts=await _hot_cuts(session, repository_id),
         symbol_lines=await _symbol_lines(session, repository_id, performance),
-        validate=await _finding_validator(session, repository_id, findings),
+        validate=await _finding_validator(session, repository_id, findings) if verify else None,
     )
 
 

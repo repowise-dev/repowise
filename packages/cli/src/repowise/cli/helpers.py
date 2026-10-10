@@ -283,22 +283,34 @@ def get_db_url_for_repo(repo_path: Path) -> str:
     return resolve_db_url(repo_path)
 
 
-@contextlib.asynccontextmanager
-async def repo_index_session(
-    root: Path, *, reconcile: bool = True
-) -> AsyncIterator[tuple[AsyncSession, str] | None]:
-    """Open the repo-local store, yielding ``(session, repo_id)`` or ``None``.
+STALE_INDEX_MESSAGE = (
+    "This index was written by an older version of repowise; run `repowise update`."
+)
 
-    A scoring or scanning command must never fail because the index is absent,
-    stale or locked, so every storage error yields ``None`` instead.
-    ``reconcile=False`` skips the schema reconcile, so a caller that only reads
-    writes nothing to the store.
+
+class StaleIndexError(click.ClickException):
+    """The store lacks a table or column this version reads, and could not be repaired."""
+
+    def __init__(self) -> None:
+        super().__init__(STALE_INDEX_MESSAGE)
+
+
+@contextlib.asynccontextmanager
+async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, str] | None]:
+    """Open the repo-local store for reading, yielding ``(session, repo_id)`` or ``None``.
+
+    A scoring or scanning command must never fail because the index is absent
+    or locked, so every storage error yields ``None`` instead. The schema is
+    reconciled only when a catalogue read finds it behind the models: the
+    reconcile costs a read command 0.3 s and writes to the store, so a current
+    store skips it. A store still behind after it raises :class:`StaleIndexError`,
+    since every answer read from it would be missing what it lacks.
     """
     from sqlalchemy.exc import SQLAlchemyError
 
     from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.crud import get_repository_by_path
-    from repowise.core.persistence.database import has_db_store
+    from repowise.core.persistence.database import has_db_store, schema_behind
 
     # The configured store, which may live outside the repo (REPOWISE_DB_URL).
     if not has_db_store(root):
@@ -310,10 +322,12 @@ async def repo_index_session(
         opened: tuple[AsyncSession, str] | None = None
         try:
             url = get_db_url_for_repo(root)
-            if reconcile:
-                await reconcile_schema_best_effort(url)
             engine = create_engine(url)
             stack.push_async_callback(engine.dispose)
+            if await schema_behind(engine):
+                await reconcile_schema_best_effort(url)
+                if await schema_behind(engine):
+                    raise StaleIndexError
             factory = create_session_factory(engine)
             session = await stack.enter_async_context(get_session(factory))
             repo = await get_repository_by_path(session, str(root))
@@ -341,8 +355,9 @@ async def reconcile_schema_best_effort(db_url: str) -> None:
     have gained since, and the ORM then fails with a raw ``no such column`` on
     the first query — which for a read command means every read. ``init_db``
     back-fills those columns in place and is idempotent, so the CLI pairs it
-    with ``create_engine`` everywhere it opens a store, the way the MCP server,
-    the workspace registry and the FastAPI app already do in their lifespans.
+    with ``create_engine`` where a command opens a store, the way the MCP
+    server, the workspace registry and the FastAPI app already do in their
+    lifespans. :func:`repo_index_session` runs it only on a store found behind.
 
     Opportunistic, not a precondition, which is the part worth having in one
     place. Reconciling needs a write, and a store can be read-only or

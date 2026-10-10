@@ -28,7 +28,9 @@ Internal layout (Phase 1 refactor):
 
 from __future__ import annotations
 
-from .analyzer import DeadCodeAnalyzer
+from typing import TYPE_CHECKING
+
+from ...lazy_exports import lazy_exports
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .risk_factors import (
     RISK_CAP_CONFIDENCE,
@@ -37,6 +39,13 @@ from .risk_factors import (
     path_risk_factors,
     risk_evidence,
 )
+
+if TYPE_CHECKING:
+    from .analyzer import DeadCodeAnalyzer
+
+# The analyzer pulls in ingestion (~0.8 s); the persistence layer imports
+# this package for its models on every CLI command and never runs it.
+__getattr__, __dir__ = lazy_exports(__name__, {"DeadCodeAnalyzer": ".analyzer"}, globals())
 
 __all__ = [
     "RISK_CAP_CONFIDENCE",
