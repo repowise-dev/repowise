@@ -1,8 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Info, X } from "lucide-react";
-import { cn } from "../lib/cn";
+import { DismissibleNotice } from "./dismissible-notice";
 
 const STORAGE_PREFIX = "repowise:release-notice-dismissed:";
 
@@ -14,21 +13,28 @@ export interface ReleaseNoticeProps {
   /** The release this notice belongs to. Omit only if the notice is not tied
    *  to one, in which case dismissal is permanent. */
   version?: string | null;
+  /** The one line the notice reads as. */
   children: React.ReactNode;
+  /** The explanation, behind a "What changed" toggle on the same line. */
+  detail?: React.ReactNode;
   className?: string;
 }
 
 /**
  * A one-time, dismissible "this changed in the release you just installed"
- * notice. Lives in the shared package so both the web app and hosted can show
+ * line. Lives in the shared package so both the web app and hosted can show
  * it; the web app's `UpgradeBanner` does a different job (an upgrade is
  * *available*) and is not what this replaces.
+ *
+ * One line, so it does not outrank the page it sits on; the explanation opens
+ * in place. The visual is the shared {@link DismissibleNotice}; this owns only
+ * whether the reader has dismissed it.
  *
  * Dismissal is best-effort `localStorage`: blocked site data leaves the notice
  * showing rather than throwing, which is the right failure for something whose
  * purpose is to be read once.
  */
-export function ReleaseNotice({ id, version, children, className }: ReleaseNoticeProps) {
+export function ReleaseNotice({ id, version, children, detail, className }: ReleaseNoticeProps) {
   const storageKey = STORAGE_PREFIX + id + (version ? `:v${version}` : "");
   // Start dismissed so it does not flash in before the stored answer is read.
   const [dismissed, setDismissed] = React.useState(true);
@@ -54,27 +60,21 @@ export function ReleaseNotice({ id, version, children, className }: ReleaseNotic
   };
 
   return (
-    <div
-      role="status"
-      className={cn(
-        "flex items-start gap-3 rounded-md border border-[var(--color-border-default)]",
-        "bg-[var(--color-bg-elevated)] px-4 py-3 text-sm",
-        className,
+    <DismissibleNotice onDismiss={dismiss} {...(className ? { className } : {})}>
+      {detail ? (
+        <details className="group/release">
+          <summary className="cursor-pointer list-none rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+            {children}{" "}
+            <span className="text-[var(--color-accent-primary)] underline-offset-2 hover:underline">
+              <span className="group-open/release:hidden">What changed</span>
+              <span className="hidden group-open/release:inline">Hide</span>
+            </span>
+          </summary>
+          <div className="mt-1.5">{detail}</div>
+        </details>
+      ) : (
+        children
       )}
-    >
-      <Info
-        className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]"
-        aria-hidden="true"
-      />
-      <div className="flex-1 text-[var(--color-text-secondary)]">{children}</div>
-      <button
-        type="button"
-        onClick={dismiss}
-        aria-label="Dismiss"
-        className="rounded p-1 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]"
-      >
-        <X className="h-4 w-4" />
-      </button>
-    </div>
+    </DismissibleNotice>
   );
 }
