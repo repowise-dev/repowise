@@ -42,6 +42,16 @@ are test trees while ``latest/`` and ``contest/`` stay single words that are not
 **Filename rules are source rules.** ``test_``, ``_test`` and ``.test.`` name a
 test only on a source-language file: ``tsconfig.test.json`` and
 ``workflows/release.test.yml`` are configuration that happens to share the word.
+
+**A Python test name needs pytest to agree.** ``test_x.py`` outside any test
+directory is a test only if pytest would collect it: when the nearest pytest
+config sets ``testpaths`` or ``python_files`` that leave it out, it is a
+production module named for what it does (``core/test_selection.py``). Pass
+*roots* (:mod:`.pytest_roots`) for that; without it the name decides, which is
+what pytest does with no config. Other languages keep their name rules: a Go
+``_test.go`` or a ``.test.ts`` is a test by its toolchain's own convention.
+Ingestion passes *roots* when it stamps ``is_test``; path-only callers that
+pass none answer by name, so read the stored flag where one is at hand.
 """
 
 from __future__ import annotations
@@ -50,6 +60,10 @@ import re
 from dataclasses import dataclass
 from functools import cache
 from pathlib import PurePath, PurePosixPath
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .pytest_roots import PytestRoots
 
 # Directory segments that mark every file beneath them as test material,
 # whatever the filename. ``__test__`` is the Jest variant of ``__tests__``;
@@ -360,7 +374,7 @@ def _has_wildcard_pair(
     )
 
 
-def _classify(path: str, language: str | None) -> str:
+def _classify(path: str, language: str | None, roots: PytestRoots | None = None) -> str:
     """``"test"``, ``"support"``, or ``""`` for production code.
 
     One traversal, so the two public predicates cannot disagree with each other
@@ -392,7 +406,9 @@ def _classify(path: str, language: str | None) -> str:
     if _REPO_METADATA_DIR in segments:
         return "test" if named_test else ""
 
-    if not named_test and not _is_test_dir(segments, original_segments, filename, language):
+    # A test name outside a test directory still needs pytest to collect it.
+    needs_test_dir = not named_test or _pytest_skips(path, filename, roots)
+    if needs_test_dir and not _is_test_dir(segments, original_segments, filename, language):
         return ""
 
     # Inside test material. A test-shaped filename wins; otherwise a
@@ -402,29 +418,45 @@ def _classify(path: str, language: str | None) -> str:
     return "test"
 
 
-def is_test_path(path: str, language: str | None = None) -> bool:
+def _pytest_skips(path: str, filename: str, roots: PytestRoots | None) -> bool:
+    """Whether pytest's config keeps a test-named Python file out of collection."""
+    return (
+        roots is not None
+        and PurePosixPath(filename).suffix.lower() == ".py"
+        and roots.collects(path.replace("\\", "/")) is False
+    )
+
+
+def is_test_path(
+    path: str, language: str | None = None, roots: PytestRoots | None = None
+) -> bool:
     """Whether *path* is a test.
 
     Test *support* (``conftest.py``, ``tests/factories/user.py``) is
     deliberately not a test here - see :func:`is_test_support_path`. Pass
     *language* when it is known: it decides the ambiguous ``spec/``/``t/``
     cases, which are RSpec for Ruby and a Perl-style test tree for Python,
-    and specification or miscellaneous folders for everything else.
+    and specification or miscellaneous folders for everything else. Pass
+    *roots* to let pytest's config overrule a test-shaped Python name.
     """
-    return _classify(path, language) == "test"
+    return _classify(path, language, roots) == "test"
 
 
-def is_test_support_path(path: str, language: str | None = None) -> bool:
+def is_test_support_path(
+    path: str, language: str | None = None, roots: PytestRoots | None = None
+) -> bool:
     """Whether *path* is test infrastructure rather than a test.
 
     ``conftest.py``, ``spec_helper.rb``, ``FooFixtures.java``, and the
     scaffolding directories inside a test tree (``tests/factories/user.py``).
     Never true at the same time as :func:`is_test_path`.
     """
-    return _classify(path, language) == "support"
+    return _classify(path, language, roots) == "support"
 
 
-def is_test_related_path(path: str, language: str | None = None) -> bool:
+def is_test_related_path(
+    path: str, language: str | None = None, roots: PytestRoots | None = None
+) -> bool:
     """Whether *path* is a test **or** test support.
 
     This is what stamps ``FileInfo.is_test`` at ingestion, and what callers
@@ -432,7 +464,7 @@ def is_test_related_path(path: str, language: str | None = None) -> bool:
     skipping files, a health biomarker exempting them. Callers that rank or
     search should prefer :func:`is_test_path`, so fixtures stay findable.
     """
-    return _classify(path, language) != ""
+    return _classify(path, language, roots) != ""
 
 
 def is_unambiguous_test_path(path: str, language: str | None = None) -> bool:

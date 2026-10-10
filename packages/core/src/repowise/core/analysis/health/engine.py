@@ -110,7 +110,12 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp (v38): Split File's co-change edge reads per-function commit
+# Current stamp (v39): a Python module named like a test outside every test
+# directory is production code when the nearest pytest config's ``testpaths``
+# or ``python_files`` leaves it out (``core/test_selection.py``). Its
+# ``is_test`` flag flips, so it joins the production scores and findings.
+#
+# v38: Split File's co-change edge reads per-function commit
 # sets (the 50 newest distinct commits of each function, stored on
 # ``git_function_blame``), and a class takes the union of its methods' sets
 # instead of blame over its whole span. Group membership is a kernel input to
@@ -380,7 +385,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 38
+HEALTH_ANALYZER_VERSION = 39
 
 
 def _mark_deprecated(

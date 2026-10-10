@@ -218,7 +218,9 @@ def _slugify(text: str) -> str:
 # reaches the export instead of being dropped.
 # "5": which files are tests changed (``repowise.core.test_paths``), moving the
 # ``test`` tag on file nodes without moving a node or edge count.
-KG_BUILDER_VERSION = "5"
+# "6": a test-named Python module that pytest's config does not collect is no
+# longer a test, moving its ``test`` tag.
+KG_BUILDER_VERSION = "6"
 
 # An unmapped type is dropped from the export entirely (see the
 # `if not kg_type: continue` below), which is silent. Six real types used to be

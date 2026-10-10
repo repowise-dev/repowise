@@ -268,7 +268,8 @@ def test_tests_the_graph_cannot_see_run_and_production_modules_do_not(repo) -> N
     result = _run(repo, "main...feat", "--format", "args", "--runner", "pytest")
     assert result.exit_code == 0, result.output
     assert result.stdout == "tests/test_a.py tests/test_cli.py\n"
-    assert "2 test file(s) the graph cannot see into" in _err(result)
+    # src/test_util.py is production code, not a test the graph cannot see into.
+    assert "1 test file(s) the graph cannot see into" in _err(result)
 
 
 def test_a_changed_test_package_init_selects_the_tests_under_it(repo) -> None:

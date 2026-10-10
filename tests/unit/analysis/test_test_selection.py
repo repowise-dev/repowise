@@ -15,12 +15,13 @@ from repowise.core.analysis.test_selection import (
     TestSelectionConfig,
     doc_readers,
     format_args,
+    is_runnable_test,
     plugin_loader,
-    pytest_testpaths,
     resolve_runner,
     runner_args,
     select_tests,
 )
+from repowise.core.pytest_roots import read_pytest_roots
 
 _NONE = TestSelectionConfig()
 
@@ -669,33 +670,12 @@ def test_a_test_the_graph_cannot_see_into_runs_with_every_subset() -> None:
     assert _select(["docs/guide.md"], unplaced_tests=["tests/test_cli.py"]).tests == ()
 
 
-def test_pytest_is_not_given_production_modules_outside_testpaths() -> None:
+def test_a_test_named_module_pytest_does_not_collect_is_not_runnable() -> None:
     """``core/test_paths.py`` is test-shaped, but a bare pytest never collects it."""
-    tests = ("tests/test_a.py", "src/pkg/test_paths.py", "src/pkg/tests/test_b.py")
-    sel = Selection(run_all=False, reasons=(), tests=tests, pytest_testpaths=("tests",))
-    assert runner_args(sel, "pytest") == ["tests/test_a.py", "src/pkg/tests/test_b.py"]
-    assert runner_args(Selection(run_all=False, reasons=(), tests=tests), "pytest") == list(tests)
-
-
-@pytest.mark.parametrize(
-    ("files", "expected"),
-    [
-        (
-            {"pyproject.toml": '[tool.pytest.ini_options]\ntestpaths = ["tests", "./it/"]\n'},
-            ("tests", "it"),
-        ),
-        (
-            {"setup.cfg": "[tool:pytest]\ntestpaths = tests\n    integration\n"},
-            ("tests", "integration"),
-        ),
-        # pytest.ini wins even with no section, over a pyproject that has one.
-        (
-            {"pytest.ini": "", "pyproject.toml": '[tool.pytest.ini_options]\ntestpaths = ["t"]\n'},
-            (),
-        ),
-        ({"pyproject.toml": "not toml ["}, ()),
-        ({}, ()),
-    ],
-)
-def test_pytest_testpaths_reads_the_config_pytest_reads(files, expected) -> None:
-    assert pytest_testpaths(files.get) == expected
+    config = '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+    roots = read_pytest_roots([("pyproject.toml", config)])
+    assert not is_runnable_test("src/pkg/test_paths.py", roots)
+    assert is_runnable_test("tests/test_a.py", roots)
+    assert is_runnable_test("src/pkg/tests/test_b.py", roots)
+    # With no config the name decides, as it does for pytest.
+    assert is_runnable_test("src/pkg/test_paths.py")

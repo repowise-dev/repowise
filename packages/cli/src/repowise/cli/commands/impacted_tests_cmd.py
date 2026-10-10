@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, NamedTuple
 
 import click
 from rich.table import Table
@@ -53,6 +54,9 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.output import emit_json
 from repowise.core.analysis.test_selection import RUNNERS
+
+if TYPE_CHECKING:
+    from repowise.core.pytest_roots import PytestRoots
 
 # The whole reverse-import closure: a test importing a module that imports the
 # changed file runs it too. No depth limit: the walk ends when no node gains a
@@ -119,10 +123,11 @@ def impacted_tests_command(
     except CannotEvaluateError as exc:
         cannot_evaluate(fmt, exc.code, str(exc))
 
-    result = run_async(_collect(repo_path, change))
+    checkout = _read_checkout(repo_path)
+    result = run_async(_collect(repo_path, change, checkout.roots))
     result["diff"] = change.label
     if config is not None:
-        result["selection"] = _select(repo_path, change, result, config)
+        result["selection"] = _select(repo_path, change, result, config, checkout)
     _render(result, fmt, runner)
 
 
@@ -147,7 +152,28 @@ def _selection_config(repo_path):
         raise CannotEvaluateError("config_invalid", str(exc)) from exc
 
 
-async def _collect(repo_path, change) -> dict:
+class _Checkout(NamedTuple):
+    """Tracked paths and the pytest files among them, each read once per run."""
+
+    tracked: list[str]
+    pytest_texts: list[tuple[str, str]]
+    roots: PytestRoots
+
+
+def _read_checkout(repo_path) -> _Checkout:
+    """Tracked files, their conftests and pytest configs, and pytest's collection roots."""
+    from repowise.core import git_refs
+    from repowise.core.analysis.test_selection import is_scan_source
+    from repowise.core.pytest_roots import PYTEST_CONFIG_NAMES, read_pytest_roots
+
+    root = Path(repo_path)
+    tracked = git_refs.tracked_paths(str(root))
+    texts = list(_texts(root, [p for p in tracked if is_scan_source(p)], pytest_only=True))
+    roots = read_pytest_roots((p, t) for p, t in texts if Path(p).name in PYTEST_CONFIG_NAMES)
+    return _Checkout(tracked, texts, roots)
+
+
+async def _collect(repo_path, change, roots: PytestRoots | None = None) -> dict:
     """Resolve the change's files to impacted tests + labelled fallbacks."""
     from repowise.core.persistence.crud import (
         get_health_metrics,
@@ -177,7 +203,9 @@ async def _collect(repo_path, change) -> dict:
         # Repo file keys back the filename-pattern fallback (same source the
         # aggregate coverage ingest resolves against).
         repo_keys = {m.file_path for m in await get_health_metrics(session, repo_id)}
-        await _resolve_impacted(session, repo_id, _query_lines(change, measured), repo_keys, out)
+        await _resolve_impacted(
+            session, repo_id, _query_lines(change, measured), repo_keys, out, roots
+        )
         await _place_tests(session, repo_id, out)
 
     return out
@@ -264,6 +292,7 @@ async def _resolve_impacted(
     changed: dict[str, set[int] | None],
     repo_keys: set[str],
     out: dict,
+    roots: PytestRoots | None = None,
 ) -> dict:
     """Classify each changed file: covered tests, inferred tests, or unknown.
 
@@ -314,7 +343,7 @@ async def _resolve_impacted(
         return out
 
     try:
-        candidates, importers = await _graph_candidates(session, repo_id, graph_targets)
+        candidates, importers = await _graph_candidates(session, repo_id, graph_targets, roots)
     except Exception as exc:
         # Nothing the graph said can be trusted; selection runs everything.
         out["graph_error"] = f"{type(exc).__name__}: {exc}"
@@ -344,7 +373,7 @@ async def _resolve_impacted(
 
 
 async def _graph_candidates(
-    session, repo_id: str, targets: list[str]
+    session, repo_id: str, targets: list[str], roots: PytestRoots | None = None
 ) -> tuple[dict[str, list], dict[str, list[str]]]:
     """``{target: [(test file, via), ...]}`` from the graph, and each test file's importers.
 
@@ -363,7 +392,7 @@ async def _graph_candidates(
     from repowise.core.analysis.test_selection import is_code_file
 
     test_files = {f for f in await load_test_files(session, repo_id) if is_code_file(f)}
-    found = await _tier_picks(session, repo_id, targets, test_files)
+    found = await _tier_picks(session, repo_id, targets, test_files, roots)
     seeds = {t for picks in found.values() for t in picks}
     parents = await _test_importers(session, repo_id, seeds, test_files)
     out = {target: _with_importers(picks, parents) for target, picks in found.items()}
@@ -376,11 +405,11 @@ def _all_tests(reached) -> tuple[str, ...]:
 
 
 async def _tier_picks(
-    session, repo_id: str, targets: list[str], test_files: set[str]
+    session, repo_id: str, targets: list[str], test_files: set[str], roots: PytestRoots | None
 ) -> dict[str, dict[str, str]]:
     """``{target: {test file: via}}``: a changed test itself, then the call and import walks."""
     from repowise.core.analysis.test_reachability import tests_reaching_by_tier
-    from repowise.core.test_paths import is_test_path
+    from repowise.core.analysis.test_selection import is_runnable_test
 
     reaching = await tests_reaching_by_tier(session, repo_id, targets, test_files=test_files)
     importers = await tests_reaching_by_tier(
@@ -394,7 +423,8 @@ async def _tier_picks(
     found: dict[str, dict[str, str]] = {}
     for target in targets:
         picks = found.setdefault(target, {})
-        if target in test_files or is_test_path(target):
+        # A test the index has not seen yet (new in this change) is still its own pick.
+        if target in test_files or is_runnable_test(target, roots):
             picks[target] = "changed-test"
         for reached, via in ((reaching.get(target), None), (importers.get(target), "import-graph")):
             for t in _all_tests(reached) if reached else ():
@@ -437,9 +467,8 @@ def _with_importers(picks: dict[str, str], parents: dict[str, set[str]]) -> list
     return list(picks.items())
 
 
-def _select(repo_path, change, result: dict, config):
+def _select(repo_path, change, result: dict, config, checkout: _Checkout):
     """The run-all-or-subset decision for ``--format args`` / ``json``."""
-    from repowise.core import git_refs
     from repowise.core.analysis.changed_lines import index_gap
     from repowise.core.analysis.test_selection import (
         SelectionInput,
@@ -448,19 +477,18 @@ def _select(repo_path, change, result: dict, config):
         is_runnable_test,
         is_scan_source,
         plugin_loader,
-        pytest_testpaths,
         select_tests,
     )
 
     named = {g["test_file"] for g in result["inferred"]}
     named |= {i["test_file"] for i in result["covered"].values() if i["test_file"]}
     root = Path(repo_path)
-    tracked = git_refs.tracked_paths(str(root))
+    tracked = checkout.tracked
     go_test_dirs = {str(Path(p).parent.as_posix()) for p in tracked if p.endswith("_test.go")}
-    known_tests = sorted(p for p in tracked if is_runnable_test(p))
     placed = result["placed_tests"]
     docs = [p for p in (*change.files, *change.deleted) if is_documentation(p)]
     sources = [p for p in tracked if is_scan_source(p)]
+    known_tests = sorted(p for p in tracked if is_runnable_test(p, checkout.roots))
     return select_tests(
         SelectionInput(
             changed=change.files,
@@ -478,9 +506,8 @@ def _select(repo_path, change, result: dict, config):
             go_test_dirs=go_test_dirs,
             known_tests=known_tests,
             doc_readers=doc_readers(docs, _texts(root, sources)) if docs else {},
-            plugin_loader=plugin_loader(_texts(root, sources, pytest_only=True)),
+            plugin_loader=plugin_loader(checkout.pytest_texts),
             unplaced_tests=[] if placed is None else [t for t in known_tests if t not in placed],
-            pytest_testpaths=pytest_testpaths(lambda name: _text(root / name)),
         )
     )
 

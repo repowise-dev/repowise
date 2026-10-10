@@ -31,6 +31,7 @@ from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatt
 
 from ..code_origin import is_generated_header
 from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
+from ..pytest_roots import PYTEST_CONFIG_NAMES, PytestRoots, pytest_options, pytest_roots
 from ..test_paths import is_test_related_path
 from .languages.registry import REGISTRY as _LANG_REGISTRY
 from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
@@ -779,7 +780,9 @@ class FileTraverser:
             _is_console_script_target(rel_str, self._console_script_modules)
             or rel_str in self._distribution_inits
         )
-        is_test = is_test_related_path(rel_str, language)
+        is_test = is_test_related_path(
+            rel_str, language, self._console_script_tables().pytest_roots
+        )
         entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
         return FileInfo(
             path=rel_str,
@@ -1114,7 +1117,7 @@ def _is_entry_point(rel_str: str, abs_path: Path, language: str) -> bool:
 
 
 class ConsoleScriptTables(NamedTuple):
-    """What one pass over the repo's ``pyproject.toml`` files yields."""
+    """What one pass over the repo's Python project configs yields."""
 
     names: frozenset[str]
     """Launcher names an installer drops in the environment's script dir."""
@@ -1124,6 +1127,8 @@ class ConsoleScriptTables(NamedTuple):
     """``[project].name`` values — the distributions this repo installs as."""
     package_inits: frozenset[str]
     """Repo-relative ``__init__.py`` of each distribution's own import package."""
+    pytest_roots: PytestRoots = PytestRoots()
+    """Where a bare pytest run collects tests, which decides a test-named module."""
 
 
 def _collect_console_scripts(
@@ -1135,7 +1140,9 @@ def _collect_console_scripts(
     ``[project.entry-points.*]`` group from each ``pyproject.toml`` in the
     repo. In ``name = "pkg.module:func"`` the key is the launcher and the part
     before the colon is the module it imports; ``[project].name`` is the
-    distribution. Best-effort: unparsable files are skipped.
+    distribution. Best-effort: unparsable files are skipped. The pytest
+    configs (``pytest.ini``, ``tox.ini``, ``setup.cfg`` and the same
+    ``pyproject.toml``) come off this one walk and one read each.
     """
     from repowise.core.fs_walk import iter_glob
 
@@ -1143,14 +1150,17 @@ def _collect_console_scripts(
     modules: set[str] = set()
     distributions: set[str] = set()
     inits: set[str] = set()
+    pytest_configs: list[tuple[str, dict]] = []
     try:
         config_files = list(
-            iter_glob(repo_root, ("pyproject.toml",), prune_nested_git=prune_nested_git)
+            iter_glob(repo_root, tuple(PYTEST_CONFIG_NAMES), prune_nested_git=prune_nested_git)
         )
     except OSError:
         return ConsoleScriptTables(frozenset(), frozenset(), frozenset(), frozenset())
     for config_file in config_files:
-        project = _pyproject_project_table(config_file)
+        project, options = _read_python_config(config_file)
+        if options is not None:
+            pytest_configs.append((config_file.relative_to(repo_root).as_posix(), options))
         if project is None:
             continue
         dist = project.get("name")
@@ -1160,7 +1170,11 @@ def _collect_console_scripts(
                 inits.add(init)
         _add_script_targets(project, names, modules)
     return ConsoleScriptTables(
-        frozenset(names), frozenset(modules), frozenset(distributions), frozenset(inits)
+        frozenset(names),
+        frozenset(modules),
+        frozenset(distributions),
+        frozenset(inits),
+        pytest_roots(pytest_configs),
     )
 
 
@@ -1179,16 +1193,20 @@ def _distribution_init(repo_root: Path, base: Path, dist: str) -> str | None:
     return init.relative_to(repo_root).as_posix()
 
 
-def _pyproject_project_table(config_file: Path) -> dict | None:
-    """The ``[project]`` table of one pyproject.toml, or None if unreadable or absent."""
+def _read_python_config(config_file: Path) -> tuple[dict | None, dict | None]:
+    """``([project] table, pytest options)`` of one config, each None if absent or unreadable."""
     import tomllib
 
     try:
-        data = tomllib.loads(config_file.read_text(encoding="utf-8"))
+        text = config_file.read_text(encoding="utf-8")
+        if config_file.name != "pyproject.toml":
+            return None, pytest_options(config_file.name, text)
+        data = tomllib.loads(text)
     except Exception:
-        return None
+        return None, None
     project = data.get("project")
-    return project if isinstance(project, dict) else None
+    options = pytest_options(config_file.name, toml=data)
+    return (project if isinstance(project, dict) else None), options
 
 
 def _add_script_targets(project: dict, names: set[str], modules: set[str]) -> None:

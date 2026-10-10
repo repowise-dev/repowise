@@ -382,6 +382,22 @@ class TestFileTraverser:
         main_file = next(p for p in files if p.endswith("main.py"))
         assert files[main_file].is_test is False
 
+    def test_a_test_named_module_outside_pytest_testpaths_is_production(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\n[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+        )
+        for rel in ("demo/test_selection.py", "tests/test_demo.py", "tools/test_cli.py"):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("x = 1\n")
+        # A nested config governs its own directory.
+        (tmp_path / "tools" / "pytest.ini").write_text("[pytest]\n")
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["demo/test_selection.py"] is False
+        assert files["tests/test_demo.py"] is True
+        assert files["tools/test_cli.py"] is True
+
     def test_file_info_fields(self, tmp_path: Path) -> None:
         (tmp_path / "calc.py").write_text("class Calc: pass")
         traverser = FileTraverser(tmp_path)

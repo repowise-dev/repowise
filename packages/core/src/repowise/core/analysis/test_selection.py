@@ -45,18 +45,16 @@ a pipeline must branch on the run-all flag rather than rely on the sentinel.
 
 from __future__ import annotations
 
-import configparser
 import re
 import shlex
-import tomllib
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
-from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 from typing import Any
 
 import pathspec
 
+from ..pytest_roots import PYTEST_CONFIG_NAMES, PytestRoots
 from ..support_paths import DOC_EXTENSIONS
 from ..test_paths import is_test_path, is_test_related_path, is_test_support_path
 
@@ -244,7 +242,6 @@ class Selection:
     always_run: tuple[str, ...] = ()
     skipped_files: tuple[str, ...] = ()
     basis: Mapping[str, str] = field(default_factory=dict)
-    pytest_testpaths: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -277,8 +274,6 @@ def is_documentation(path: str) -> bool:
     )
 
 
-# pytest config a doctest glob or a plugin can be declared in.
-_PYTEST_CONFIGS = frozenset({"pyproject.toml", "setup.cfg", "pytest.ini", "tox.ini"})
 # ``pytest_plugins = [...]`` or ``-p name`` (not ``-p no:name``, which disables one).
 _PLUGIN_DECLARATION = re.compile(r"\bpytest_plugins\b|(?:^|[\s\"'=])-p\s*(?!no:)[A-Za-z_]")
 
@@ -286,7 +281,7 @@ _PLUGIN_DECLARATION = re.compile(r"\bpytest_plugins\b|(?:^|[\s\"'=])-p\s*(?!no:)
 def is_scan_source(path: str) -> bool:
     """Code or pytest config: the files :func:`doc_readers` and :func:`plugin_loader` read."""
     name = PurePosixPath(path).name
-    return is_code_file(path) or name in _PYTEST_CONFIGS
+    return is_code_file(path) or name in PYTEST_CONFIG_NAMES
 
 
 def doc_readers(docs: Collection[str], sources: Iterable[tuple[str, str]]) -> dict[str, str]:
@@ -319,7 +314,7 @@ def plugin_loader(sources: Iterable[tuple[str, str]]) -> str | None:
     """
     for path, text in sources:
         name = PurePosixPath(path).name
-        pytest_file = name == "conftest.py" or name in _PYTEST_CONFIGS
+        pytest_file = name == "conftest.py" or name in PYTEST_CONFIG_NAMES
         if pytest_file and _PLUGIN_DECLARATION.search(text):
             return path
     return None
@@ -358,10 +353,18 @@ def is_test_helper(path: str) -> bool:
     )
 
 
-def is_runnable_test(path: str) -> bool:
-    """A test-shaped file name with an extension a runner collects tests from."""
+def is_runnable_test(path: str, roots: PytestRoots | None = None) -> bool:
+    """A test-shaped file name with an extension a runner collects tests from.
+
+    With *roots*, a Python file pytest's config leaves out of collection
+    (``core/test_paths.py``) is not one: the same rule that stamps ``is_test``.
+    """
     p = PurePosixPath(path)
-    return p.suffix.lower() in _TEST_CODE_SUFFIXES and is_test_path(p.name)
+    return (
+        p.suffix.lower() in _TEST_CODE_SUFFIXES
+        and is_test_path(p.name)
+        and (roots is None or is_test_path(path, roots=roots))
+    )
 
 
 def full_run_reason(path: str, extra: Iterable[str] = ()) -> str | None:
@@ -419,7 +422,6 @@ class SelectionInput:
     doc_readers: Mapping[str, str] = field(default_factory=dict)
     plugin_loader: str | None = None
     unplaced_tests: Collection[str] = ()
-    pytest_testpaths: tuple[str, ...] = ()
 
 
 @dataclass
@@ -460,7 +462,6 @@ def select_tests(inp: SelectionInput) -> Selection:
         always_run=inp.config.always_run,
         skipped_files=tuple(triage.skipped),
         basis=basis,
-        pytest_testpaths=inp.pytest_testpaths,
     )
 
 
@@ -842,67 +843,7 @@ def resolve_runner(selection: Selection, runner: str) -> str:
 
 
 def _pytest_args(selection: Selection) -> list[str]:
-    roots = selection.pytest_testpaths
-    return [
-        t
-        for t in selection.tests
-        if (f := t.split("::", 1)[0]).endswith(_PYTHON) and _pytest_collects(f, roots)
-    ]
-
-
-def _pytest_collects(path: str, testpaths: tuple[str, ...]) -> bool:
-    """Whether a bare ``pytest`` would run *path*, so passing it adds nothing new.
-
-    A test-shaped module outside ``testpaths`` and outside any test tree is
-    production code (``core/test_paths.py``) that pytest would fail to collect;
-    a full run never runs it, so neither does a subset.
-    """
-    p = PurePosixPath(path)
-    # A neutral file name asks about the directory alone: in a test tree, keep it.
-    if not testpaths or is_test_related_path(str(p.parent / "__init__.py")):
-        return True
-    candidates = [path, *(str(parent) for parent in p.parents)]
-    return any(fnmatchcase(c, root) for root in testpaths for c in candidates)
-
-
-# Where pytest reads ``testpaths`` from, in its own order: the first file that
-# holds the section wins, and a ``pytest.ini`` wins even without one.
-_PYTEST_SECTIONS = (
-    ("pytest.ini", "pytest"),
-    ("pyproject.toml", None),
-    ("tox.ini", "pytest"),
-    ("setup.cfg", "tool:pytest"),
-)
-
-
-def pytest_testpaths(read: Callable[[str], str | None]) -> tuple[str, ...]:
-    """``testpaths`` from the root pytest config (*read* returns a file's text or None).
-
-    ``()`` when unset or unreadable, which filters nothing.
-    """
-    for name, section in _PYTEST_SECTIONS:
-        if (text := read(name)) is None:
-            continue
-        try:
-            value = _testpaths_value(text, section, always=name == "pytest.ini")
-        except (tomllib.TOMLDecodeError, configparser.Error):
-            return ()
-        if value is not None:
-            paths = value.split() if isinstance(value, str) else value
-            return tuple(str(v).strip("/").removeprefix("./") or "." for v in paths)
-    return ()
-
-
-def _testpaths_value(text: str, section: str | None, *, always: bool) -> Any:
-    """The raw ``testpaths`` of one config, ``None`` when it has no pytest section."""
-    if section is None:
-        block = tomllib.loads(text).get("tool", {}).get("pytest", {}).get("ini_options")
-        return None if block is None else block.get("testpaths", ())
-    parser = configparser.ConfigParser(interpolation=None)
-    parser.read_string(text)
-    if not parser.has_section(section):
-        return "" if always else None
-    return parser.get(section, "testpaths", fallback="")
+    return [t for t in selection.tests if t.split("::", 1)[0].endswith(_PYTHON)]
 
 
 def _go_args(selection: Selection) -> list[str]:

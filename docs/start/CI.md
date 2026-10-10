@@ -256,7 +256,7 @@ a per-test coverage map (`repowise coverage add`) makes it more precise.
 - It also runs everything for: non-code files in a test tree; a changed file with no known test or only a filename guess; a route through a test helper no test imports; any Python test helper while a conftest or pytest config loads plugins by name.
 - It also runs everything for: a missing, out-of-date or unreadable index; a per-test map at its row cap; a deleted file no known test used.
 - Only `docs/` and root README-like files (README, CHANGELOG, LICENSE, CONTRIBUTING) are skipped, and only when no code names them (a test that reads `README.md` names it); an empty line means only those changed.
-- Tests the graph cannot see into (not indexed, or importing nothing it resolves, such as a test that only runs a subprocess) run with every subset. With `--runner pytest`, test-named modules outside `testpaths` and outside test directories are left out, as a bare `pytest` leaves them out.
+- Tests the graph cannot see into (not indexed, or importing nothing it resolves, such as a test that only runs a subprocess) run with every subset. A Python module named like a test but outside every test directory is not a test when the nearest pytest config's `testpaths` or `python_files` leaves it out, as a bare `pytest` does: it is selected through like any other code.
 - A changed `conftest.py`, test package `__init__.py` or imported test helper selects the tests under or importing it, not everything.
 - Without a range, in CI it reads the pull request's change; locally, the staged changes.
 - `tests.full_run_on` (gitignore patterns) adds run-everything paths; `tests.always_run` is appended to every selection as written.

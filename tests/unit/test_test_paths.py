@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from repowise.core.pytest_roots import read_pytest_roots
 from repowise.core.test_paths import (
     is_test_path,
     is_test_related_path,
@@ -330,3 +331,33 @@ def test_unambiguous_test_paths_need_more_than_a_test_shaped_name_under_src(
     path: str, expected: bool
 ) -> None:
     assert is_unambiguous_test_path(path) is expected
+
+
+_ROOTS = read_pytest_roots(
+    [("pyproject.toml", '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')]
+)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        # production modules named for what they do, outside testpaths
+        ("packages/core/src/repowise/core/test_paths.py", ""),
+        ("packages/core/src/repowise/core/analysis/test_selection.py", ""),
+        ("hermes_cli/approvals_test.py", ""),
+        # a test directory still settles it, inside testpaths or not
+        ("tests/unit/test_engine.py", "test"),
+        ("packages/ui/tests/test_a.py", "test"),
+        ("pkg/tests/helpers/test_builders.py", "test"),
+        ("conftest.py", "support"),
+        # pytest config says nothing about other languages
+        ("src/app/format.test.ts", "test"),
+        ("pkg/server/handler_test.go", "test"),
+    ],
+)
+def test_pytest_config_overrules_a_test_shaped_python_name(path: str, expected: str) -> None:
+    got = "test" if is_test_path(path, roots=_ROOTS) else ""
+    got = "support" if is_test_support_path(path, roots=_ROOTS) else got
+    assert got == expected
+    # Without the config the name decides, as it does for a bare pytest.
+    assert is_test_related_path(path)
