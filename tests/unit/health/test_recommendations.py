@@ -20,7 +20,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     rehydrate_suggestion,
     target_symbol_ids,
 )
-from repowise.core.analysis.test_reachability import ReachDistance, ReachedBy
+from repowise.core.analysis.test_reachability import ReachDistance, ReachedBy, clear_test_map_cache
 from repowise.core.persistence.crud import save_test_coverage
 from repowise.core.persistence.database import init_db
 from tests.unit.persistence.helpers import insert_repo
@@ -287,11 +287,15 @@ async def test_query_count_is_constant_as_plan_and_test_counts_grow() -> None:
 
     event.listen(engine.sync_engine, "before_cursor_execute", record)
     try:
+        # Both calls start from a cold test-map cache, so the count measures the
+        # payload, not whether the first call warmed it.
+        clear_test_map_cache()
         statements.clear()
         await hydrate_recommendations(async_session, repo.id, [_plan("one", file_path="src/f0.py")])
         small = len(statements)
         await save_test_coverage(async_session, repo.id, records, source_format="coverage.py")
         await async_session.commit()
+        clear_test_map_cache()
         statements.clear()
         await hydrate_recommendations(
             async_session,

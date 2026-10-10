@@ -432,24 +432,19 @@ _cache: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
 
 async def _index_stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
     """What moves when an index run rewrites the graph: the repository row and
-    the file metrics written beside the graph rows (the stamp Fix first uses)."""
-    repo = (
-        await session.execute(
-            select(
-                Repository.head_commit,
-                Repository.updated_at,
-                Repository.graph_edges_parser_fingerprint,
-            ).where(Repository.id == repo_id)
-        )
-    ).one_or_none()
-    metrics = (
-        await session.execute(
-            select(func.max(HealthFileMetric.updated_at), func.count()).where(
-                HealthFileMetric.repository_id == repo_id
-            )
-        )
-    ).one()
-    return (*(repo or ()), *metrics)
+    the file metrics written beside the graph rows (the stamp Fix first uses).
+    One statement, so a cached answer costs one read."""
+    repo = Repository.id == repo_id
+    metrics = HealthFileMetric.repository_id == repo_id
+    columns = (
+        select(Repository.head_commit).where(repo),
+        select(Repository.updated_at).where(repo),
+        select(Repository.graph_edges_parser_fingerprint).where(repo),
+        select(func.max(HealthFileMetric.updated_at)).where(metrics),
+        select(func.count()).select_from(HealthFileMetric).where(metrics),
+    )
+    row = (await session.execute(select(*(c.scalar_subquery() for c in columns)))).one()
+    return tuple(row)
 
 
 async def _cache_key(session: AsyncSession, repo_id: str, *parts: Any) -> tuple[Any, ...]:

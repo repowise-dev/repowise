@@ -9,6 +9,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import event
 
+from repowise.core.analysis.test_reachability import clear_test_map_cache
 from repowise.core.persistence import (
     batch_upsert_graph_edges,
     batch_upsert_graph_nodes,
@@ -273,6 +274,9 @@ async def test_paged_targets_query_count_is_constant_as_payload_grows(
     repo_id = await _seed(client, app)
 
     async def request_count(limit: int) -> int:
+        # Each request starts from a cold test-map cache, so the count measures
+        # the payload, not whether the previous request warmed it.
+        clear_test_map_cache()
         statements: list[str] = []
 
         def record(*args) -> None:
