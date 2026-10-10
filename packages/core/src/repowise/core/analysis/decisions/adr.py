@@ -10,10 +10,9 @@ from repowise.core.ingestion.traverser import load_gitignore_spec
 
 from .source_files import _SKIP_DIRS
 
-# Conventional ADR homes, as repo-root-relative posix directories. Every ``.md``
-# directly inside one is a candidate regardless of filename; matching is on the
-# whole relative dir, so a stray ``vendor/x/adr/`` does not qualify.
-_ADR_DIRS = frozenset(
+# Conventional ADR homes at the repo root. Every ``.md`` directly inside one
+# is a candidate regardless of filename.
+_CONVENTIONAL_ROOT_DIRS = frozenset(
     {
         "adr",
         "adrs",
@@ -25,7 +24,33 @@ _ADR_DIRS = frozenset(
         "doc/adr",
     }
 )
+# Nested ADR homes recognized at arbitrary directory depths. Deliberately
+# excludes "architecture" (#3057) to avoid sweeping up general design notes
+# in package subdirectories.
+_ADR_DIR_NAMES = frozenset({"adr", "adrs", "decisions"})
+_ADR_SUFFIXES = frozenset(
+    {
+        "doc/adr",
+        "docs/adr",
+        "doc/adrs",
+        "docs/adrs",
+        "doc/decisions",
+        "docs/decisions",
+    }
+)
 _MAX_ADR_FILES = 60
+
+
+def _is_adr_dir(rel_dir: str) -> bool:
+    """Return True if rel_dir is a recognized ADR directory."""
+    if not rel_dir:
+        return False
+    if rel_dir in _CONVENTIONAL_ROOT_DIRS:
+        return True
+    parts = rel_dir.lower().split("/")
+    return parts[-1] in _ADR_DIR_NAMES or (
+        len(parts) >= 2 and f"{parts[-2]}/{parts[-1]}" in _ADR_SUFFIXES
+    )
 
 # Nygard/MADR section headings. Mapped to the ExtractedDecision fields they
 # populate during the deterministic (LLM-free) parse.
@@ -47,9 +72,9 @@ def find_adr_files(repo_path: Path) -> list[Path]:
     """Collect candidate ADR files from the conventional dirs + name match.
 
     One :func:`walk_repo` pass answers both halves: files directly under a
-    conventional ADR directory (root-anchored, as the old shallow globs
-    were) rank ahead of loose ``*adr*.md`` name matches, and the cap is
-    applied to the two buckets in that order.
+    conventional ADR directory (root-anchored or nested) rank ahead of loose
+    ``*adr*.md`` name matches, and the cap is applied to the two buckets in
+    that order.
 
     Ignored paths are excluded. :mod:`repowise.core.fs_walk` prunes junk
     dirs and nested repos but deliberately reads no ignore files, so
@@ -72,7 +97,7 @@ def find_adr_files(repo_path: Path) -> list[Path]:
             and not ignore.match_file(f"{rel_dir}/{d}/" if rel_dir else f"{d}/")
         ]
 
-        in_adr_dir = rel_dir in _ADR_DIRS
+        in_adr_dir = _is_adr_dir(rel_dir)
         for fname in filenames:
             bucket = _adr_bucket(fname, in_adr_dir, conventional, loose)
             if bucket is None:
