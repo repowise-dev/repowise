@@ -400,12 +400,9 @@ class RefactoringHealthService:
         owner = await owning_refactoring_opportunity(
             self._session, self._repository_id, row.public_id, row.file_path
         )
-        payload = (await self.plan_recommendation(row, owner=owner)).detail_dict()
+        payload = await self.plan_detail_dict(row, owner=owner)
         payload["id"] = row.public_id or row.id
         payload["status"] = row.status
-        payoff = await plan_payoff(self._session, row)
-        if payoff is not None:
-            payload["payoff"] = payoff
         result: dict[str, Any] = {"resolved": True, "plan_id": plan_id, "plan": payload}
         if owner is not None:
             # On the envelope as well as the plan: a plan is a step of one
@@ -454,6 +451,15 @@ class RefactoringHealthService:
             )
             plans = [item.as_dict() for item in ranked]
         return {"summary": {"total": chips["total"], "by_type": chips["by_type"]}, "plans": plans}
+
+    async def plan_detail_dict(self, row: Any, *, owner: Any = None) -> dict[str, Any]:
+        """One stored plan's detail, as REST and MCP serve it: the ranked plan,
+        and what happened to it when the index resolved it."""
+        detail = (await self.plan_recommendation(row, owner=owner)).detail_dict()
+        payoff = await plan_payoff(self._session, row)
+        if payoff is not None:
+            detail["payoff"] = payoff
+        return detail
 
     async def plan_recommendation(self, row: Any, *, owner: Any = None) -> Any:
         """One stored plan as a ranked recommendation, without the repository.

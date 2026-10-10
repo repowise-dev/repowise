@@ -157,8 +157,8 @@ export interface RefactoringPlanPayoff {
   after?: PlanMeasures;
   /** Measured drop (`ccn_removed`, `nloc_removed`), beside the plan's predicted `evidence`. */
   realised?: Record<string, number>;
+  /** The function that appeared beside the target, sized like the plan's slice. */
   new_symbol?: string;
-  stage?: number;
 }
 
 /** What one recipe step does to the code. Mirrors ``refactoring.recipe.RECIPE_ACTIONS``. */

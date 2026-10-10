@@ -56,7 +56,6 @@ def upgrade() -> None:
         sa.Column("after_nloc", sa.Integer(), nullable=True),
         sa.Column("after_params", sa.Integer(), nullable=True),
         sa.Column("new_symbol", sa.Text(), nullable=True),
-        sa.Column("stage", sa.Integer(), nullable=True),
     )
     op.create_index(
         "ix_refactoring_payoffs_repo_outcome",

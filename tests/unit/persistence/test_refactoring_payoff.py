@@ -1,7 +1,8 @@
 """A plan that stops being detected says what happened to it.
 
-Applied, file deleted or target changed, from the target's stored measures
-before the resolving run and the run's own measures after, with the commit.
+Applied, file deleted, superseded or target changed, from the target's stored
+measures before the resolving run and the run's own measures after, with the
+commit.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from repowise.core.persistence.crud.analysis import (
     get_refactoring_suggestion,
     plan_payoff,
     save_refactoring_suggestions,
+    update_refactoring_suggestion_status,
     upsert_refactoring_suggestions,
     write_function_facts,
 )
@@ -93,8 +95,40 @@ def test_an_extract_that_moved_the_predicted_complexity_out_is_applied() -> None
     assert (payoff.before.ccn, payoff.after.ccn) == (14, 9)
 
 
-def test_a_deleted_file_is_file_deleted() -> None:
-    assert _classify({}, None, file_live=False).outcome == FILE_DELETED
+def test_a_new_function_the_size_of_the_slice_counts_as_the_helper() -> None:
+    before = _measures(_fact("a.py::run", 14, 50))
+    after = _measures(
+        _fact("a.py::run", 8, 30), _fact("a.py::_anchor", 1, 2), _fact("a.py::rows", 5, 20)
+    )
+    payoff = _classify(before, after)
+    assert (payoff.outcome, payoff.new_symbol) == (APPLIED, "a.py::rows")
+
+
+def test_any_new_function_is_not_enough_for_applied() -> None:
+    before = _measures(_fact("a.py::run", 14, 50))
+    # Shed the complexity, but the only new function is far smaller than the slice.
+    after = _measures(_fact("a.py::run", 8, 30), _fact("a.py::_anchor", 1, 2))
+    payoff = _classify(before, after)
+    assert payoff.outcome == TARGET_CHANGED
+    assert payoff.new_symbol is None
+
+
+def test_lines_alone_do_not_make_it_applied() -> None:
+    before = _measures(_fact("a.py::run", 14, 50))
+    after = _measures(_fact("a.py::run", 13, 30), _fact("a.py::_load_rows", 1, 18))
+    assert _classify(before, after).outcome == TARGET_CHANGED
+
+
+def test_a_deleted_file_is_file_deleted_and_keeps_the_before_measures() -> None:
+    before = _measures(_fact("a.py::run", 14, 50))
+    payoff = _classify(before, {}, file_live=False)
+    assert payoff.outcome == FILE_DELETED
+    assert payoff.before.ccn == 14
+
+
+def test_without_liveness_a_missing_file_is_never_called_deleted() -> None:
+    before = _measures(_fact("a.py::run", 14, 50))
+    assert _classify(before, {}, file_live=None).outcome == UNKNOWN
 
 
 def test_a_renamed_target_is_target_changed() -> None:
@@ -111,16 +145,21 @@ def test_a_rewrite_that_left_no_helper_is_target_changed() -> None:
 
 def test_too_small_a_drop_is_not_applied() -> None:
     before = _measures(_fact("a.py::run", 14, 50))
-    after = _measures(_fact("a.py::run", 13, 49), _fact("a.py::_load_rows", 2, 3))
+    after = _measures(_fact("a.py::run", 13, 49), _fact("a.py::_load_rows", 2, 18))
     assert _classify(before, after).outcome == TARGET_CHANGED
+
+
+def test_a_file_with_no_measures_after_the_run_is_unknown() -> None:
+    before = _measures(_fact("a.py::run", 14, 50))
+    # Unscored, excluded, or a run with no graph to key facts on.
+    assert _classify(before, {}).outcome == UNKNOWN
+    assert _classify(before, {}, redetected=True).outcome == SUPERSEDED
 
 
 def test_unmeasured_sides_are_unknown_never_a_guess() -> None:
     before = _measures(_fact("a.py::run", None, None))
     after = _measures(_fact("a.py::run", 9, 34), _fact("a.py::_load_rows", 6, 18))
     assert _classify(before, after).outcome == UNKNOWN
-    # No after measures at all (the run had no graph to key facts on).
-    assert _classify(_measures(_fact("a.py::run", 14, 50)), None).outcome == UNKNOWN
     # Nothing measured moved: the detector changed its mind, not the code.
     same = _measures(_fact("a.py::run", 14, 50))
     assert _classify(same, same).outcome == UNKNOWN
@@ -136,22 +175,6 @@ def test_an_edited_target_detected_again_under_a_new_id_is_superseded() -> None:
     assert _classify({}, {}, kind="split_file", redetected=True).outcome == SUPERSEDED
 
 
-def test_the_most_complex_new_function_is_taken_for_the_helper() -> None:
-    before = _measures(_fact("a.py::run", 14, 50))
-    after = _measures(
-        _fact("a.py::run", 2, 5), _fact("a.py::_anchor", 1, 2), _fact("a.py::rank", 9, 30)
-    )
-    payoff = classify_payoff(
-        refactoring_type="extract_method",
-        target="run",
-        evidence={"ccn_removed": 6},
-        file_live=True,
-        before=before,
-        after=after,
-    )
-    assert (payoff.outcome, payoff.new_symbol) == (APPLIED, "a.py::rank")
-
-
 def test_kinds_without_a_function_target_are_unknown_unless_deleted() -> None:
     assert _classify({}, {}, kind="split_file").outcome == UNKNOWN
     assert _classify({}, {}, kind="split_file", file_live=False).outcome == FILE_DELETED
@@ -164,11 +187,17 @@ def test_two_functions_sharing_the_name_are_ambiguous() -> None:
 
 
 def test_stored_metrics_keep_an_unfound_parameter_list_unknown() -> None:
-    fc = FunctionComplexity(name="f", start_line=1, end_line=9, ccn=4, max_nesting=2, cognitive=3, nloc=8)
+    fc = FunctionComplexity(
+        name="f", start_line=1, end_line=9, ccn=4, max_nesting=2, cognitive=3, nloc=8
+    )
     assert fc.stored_metrics() == {"ccn": 4, "nloc": 8, "params": None, "max_nesting": 2}
 
 
 # --- the writer ---------------------------------------------------------------
+
+
+def _live(*paths: str):
+    return lambda path: path in paths
 
 
 async def _resolve_all(session, repo_id: str, facts: list[dict] | None, *, live: set[str]):
@@ -176,7 +205,7 @@ async def _resolve_all(session, repo_id: str, facts: list[dict] | None, *, live:
         session,
         repo_id,
         [],
-        payoff=PayoffContext(fact_rows=facts, live_paths=frozenset(live), commit="abc123"),
+        payoff=PayoffContext(fact_rows=facts, is_live=_live(*live), commit="abc123"),
     )
 
 
@@ -208,13 +237,11 @@ async def test_resolving_an_applied_plan_stores_before_after_and_the_commit(asyn
         32,
     )
     assert stored.new_symbol == "a.py::_load_rows"
-    assert stored.stage is None
 
     detail = await plan_payoff(async_session, row)
     assert detail["outcome"] == APPLIED
     assert detail["realised"] == {"ccn_removed": 6, "nloc_removed": 18}
     assert detail["before"] == {"ccn": 14, "nloc": 50, "params": 2}
-    assert "stage" not in detail
 
 
 @pytest.mark.asyncio
@@ -224,6 +251,18 @@ async def test_a_plan_in_a_deleted_file_is_file_deleted(async_session):
     await _resolve_all(async_session, repo.id, [], live=set())
     (stored,) = (await _payoffs(async_session, repo.id)).values()
     assert stored.outcome == FILE_DELETED
+
+
+@pytest.mark.asyncio
+async def test_a_present_but_unscored_file_is_unknown_not_deleted(async_session):
+    repo = await insert_repo(async_session)
+    await save_refactoring_suggestions(async_session, repo.id, [_plan()])
+    await write_function_facts(async_session, repo.id, [_fact("a.py::run", 14, 50)])
+    # The run kept the file (excluded, or scored nothing) but measured none of it.
+    await _resolve_all(async_session, repo.id, [_fact("b.py::other", 1, 1)], live={"a.py"})
+    (stored,) = (await _payoffs(async_session, repo.id)).values()
+    assert stored.outcome == UNKNOWN
+    assert stored.before_ccn == 14
 
 
 @pytest.mark.asyncio
@@ -248,9 +287,7 @@ async def test_a_plan_detected_again_after_an_edit_is_superseded(async_session):
         async_session,
         repo.id,
         [moved],
-        payoff=PayoffContext(
-            fact_rows=[_fact("a.py::run", 15, 53)], live_paths=frozenset({"a.py"})
-        ),
+        payoff=PayoffContext(fact_rows=[_fact("a.py::run", 15, 53)], is_live=_live("a.py")),
     )
     (stored,) = (await _payoffs(async_session, repo.id)).values()
     assert stored.outcome == SUPERSEDED
@@ -267,11 +304,22 @@ async def test_a_reopened_plan_loses_its_payoff_and_open_plans_show_none(async_s
         async_session,
         repo.id,
         [_plan()],
-        payoff=PayoffContext(fact_rows=[], live_paths=frozenset({"a.py"})),
+        payoff=PayoffContext(fact_rows=[], is_live=_live("a.py")),
     )
     (row,) = (await async_session.execute(select(SuggestionRow))).scalars()
     assert row.status == "open"
     assert await _payoffs(async_session, repo.id) == {}
+    assert await plan_payoff(async_session, row) is None
+
+
+@pytest.mark.asyncio
+async def test_a_plan_a_person_resolved_shows_no_payoff(async_session):
+    repo = await insert_repo(async_session)
+    await save_refactoring_suggestions(async_session, repo.id, [_plan()])
+    await _resolve_all(async_session, repo.id, [], live=set())
+    (row,) = (await async_session.execute(select(SuggestionRow))).scalars()
+    assert (await plan_payoff(async_session, row))["outcome"] == FILE_DELETED
+    await update_refactoring_suggestion_status(async_session, repo.id, row.id, "resolved")
     assert await plan_payoff(async_session, row) is None
 
 
@@ -291,14 +339,14 @@ async def test_an_older_models_row_resolves_without_a_payoff(async_session):
 async def test_an_incremental_update_keeps_payoffs_outside_its_scope(async_session):
     repo = await insert_repo(async_session)
     await save_refactoring_suggestions(async_session, repo.id, [_plan("a.py"), _plan("b.py")])
-    ctx = PayoffContext(fact_rows=[], live_paths=frozenset({"a.py"}), commit="c1")
+    ctx = PayoffContext(fact_rows=[], is_live=_live("a.py", "b.py"), commit="c1")
     await upsert_refactoring_suggestions(
         async_session, repo.id, [_plan("b.py")], file_paths=["a.py"], payoff=ctx
     )
     first = await _payoffs(async_session, repo.id)
     assert len(first) == 1
 
-    ctx = PayoffContext(fact_rows=[], live_paths=frozenset({"b.py"}), commit="c2")
+    ctx = PayoffContext(fact_rows=[], is_live=_live("a.py", "b.py"), commit="c2")
     await upsert_refactoring_suggestions(async_session, repo.id, [], file_paths=["b.py"], payoff=ctx)
     second = await _payoffs(async_session, repo.id)
     assert len(second) == 2
@@ -319,6 +367,30 @@ async def test_without_a_payoff_context_the_writer_records_nothing(async_session
 
 
 @pytest.mark.asyncio
+async def test_the_deleted_file_prune_resolves_its_plans_as_file_deleted(async_session, tmp_path):
+    from repowise.core.pipeline.persist import prune_deleted_file_rows
+
+    repo = await insert_repo(async_session)
+    (tmp_path / "kept.py").write_text("def run():\n    pass\n", encoding="utf-8")
+    await save_refactoring_suggestions(
+        async_session, repo.id, [_plan("kept.py"), _plan("gone.py")]
+    )
+    await write_function_facts(async_session, repo.id, [_fact("gone.py::run", 14, 50)])
+
+    await prune_deleted_file_rows(async_session, repo.id, tmp_path)
+
+    rows = {r.file_path: r for r in (await async_session.execute(select(SuggestionRow))).scalars()}
+    assert rows["kept.py"].status == "open"
+    assert (rows["gone.py"].status, rows["gone.py"].status_reason) == (
+        "resolved",
+        "no_longer_detected",
+    )
+    (stored,) = (await _payoffs(async_session, repo.id)).values()
+    assert (stored.suggestion_id, stored.outcome) == (rows["gone.py"].id, FILE_DELETED)
+    assert stored.before_ccn == 14
+
+
+@pytest.mark.asyncio
 async def test_fact_rows_store_the_size_measures(async_session):
     repo = await insert_repo(async_session)
     await write_function_facts(async_session, repo.id, [_fact("a.py::run", 14, 50, None)])
@@ -330,9 +402,22 @@ async def test_fact_rows_store_the_size_measures(async_session):
 
 
 def _columns(db_path: Path, table: str) -> set[str]:
+    return {name for name, _notnull, _pk in _shape(db_path, table)[0]}
+
+
+def _shape(db_path: Path, table: str) -> tuple[set[tuple], set[tuple]]:
+    """``(name, notnull, pk)`` per column and ``(name, columns)`` per index."""
     conn = sqlite3.connect(db_path)
     try:
-        return {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+        columns = {
+            (row[1], row[3], row[5]) for row in conn.execute(f'PRAGMA table_info("{table}")')
+        }
+        indexes = {
+            (name, tuple(r[2] for r in conn.execute(f'PRAGMA index_info("{name}")')))
+            for _seq, name, *_rest in conn.execute(f'PRAGMA index_list("{table}")')
+            if not name.startswith("sqlite_autoindex")
+        }
+        return columns, indexes
     finally:
         conn.close()
 
@@ -378,4 +463,4 @@ def test_the_migration_and_the_model_agree(tmp_path: Path) -> None:
 
     asyncio.run(_build())
     for table in ("function_facts", "refactoring_payoffs"):
-        assert _columns(migrated, table) == _columns(declared, table)
+        assert _shape(migrated, table) == _shape(declared, table)

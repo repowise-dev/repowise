@@ -161,7 +161,12 @@ class PlanMeasuresResponse(BaseModel):
 
 
 class PlanPayoffResponse(BaseModel):
-    """What happened to a plan the index resolved as no longer detected."""
+    """What happened to a plan the index resolved as no longer detected.
+
+    ``applied`` means the measures are consistent with the plan being applied:
+    the target shed at least half the predicted decision points and a function
+    fitting the extracted slice appeared beside it.
+    """
 
     #: ``refactoring.payoff.PAYOFF_OUTCOMES``.
     outcome: str
@@ -171,8 +176,9 @@ class PlanPayoffResponse(BaseModel):
     after: PlanMeasuresResponse | None = None
     #: Measured drop, beside the plan's predicted ``evidence``.
     realised: dict[str, int] | None = None
+    #: The function that appeared beside the target, sized like the plan's
+    #: slice or carrying its suggested name.
     new_symbol: str | None = None
-    stage: int | None = None
 
 
 class RefactoringPlanDetailResponse(RefactoringPlanResponse):

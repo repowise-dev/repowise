@@ -143,6 +143,14 @@ def _field(item: Any, name: str) -> Any:
     return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
 
 
+def _target_of(item: Any) -> tuple[str, str, str]:
+    return (
+        _field(item, "refactoring_type"),
+        _finding_file_path(item),
+        _field(item, "target_symbol"),
+    )
+
+
 def _scope_suggestions(
     suggestions: list[Any],
     *,
@@ -191,7 +199,7 @@ async def finalize_refactoring_suggestions(
       resolved for the same reason. Ids are not translated across models.
 
     With *payoff*, each current-model plan this call resolves gets a payoff row
-    (applied, file deleted, target changed), and a reopened plan loses its own.
+    (``refactoring_payoff``), and a reopened plan loses its own.
     """
     from ....analysis.health.refactoring.identity import (
         REFACTORING_MODEL_VERSION,
@@ -296,14 +304,16 @@ async def finalize_refactoring_suggestions(
         await session.flush()
     await session.flush()
     if payoff is not None:
-        from .refactoring_payoff import clear_refactoring_payoffs, record_refactoring_payoffs
+        from .refactoring_payoff import settle_refactoring_payoffs
 
-        detected = {
-            (_field(item, "refactoring_type"), _finding_file_path(item), _field(item, "target_symbol"))
-            for item in scoped
-        }
-        await clear_refactoring_payoffs(session, reopened)
-        await record_refactoring_payoffs(session, repository_id, resolved, payoff, detected)
+        await settle_refactoring_payoffs(
+            session,
+            repository_id,
+            resolved=resolved,
+            reopened=reopened,
+            detected={_target_of(item) for item in scoped},
+            ctx=payoff,
+        )
 
     return sum(1 for row in stored_rows if row.status == "open") + len(pending)
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -1072,6 +1072,38 @@ class _FileLiveness:
         return path in self._tracked
 
 
+def path_liveness(repo_path: Any) -> Callable[[str], bool] | None:
+    """Whether a repo-relative path is still on disk or tracked by git; ``None``
+    without a checkout to ask, so no caller reads a path as deleted on no evidence."""
+    return _FileLiveness(repo_path).is_live if repo_path else None
+
+
+async def _resolve_plans_of_deleted_files(
+    session: Any, repo_id: str, dead: Callable[[set[str], str], list[str]], liveness: Any
+) -> None:
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud import PayoffContext, upsert_refactoring_suggestions
+    from repowise.core.persistence.models import RefactoringSuggestion
+
+    live_plan_paths = await session.execute(
+        select(RefactoringSuggestion.file_path)
+        .where(
+            RefactoringSuggestion.repository_id == repo_id,
+            RefactoringSuggestion.status.in_(("open", "acknowledged")),
+        )
+        .distinct()
+    )
+    gone = dead(set(live_plan_paths.scalars().all()), "refactoring_suggestions")
+    if gone:
+        payoff = PayoffContext(
+            fact_rows=None,
+            is_live=liveness.is_live,
+            commit=await _analyzed_commit(session, repo_id),
+        )
+        await upsert_refactoring_suggestions(session, repo_id, [], file_paths=gone, payoff=payoff)
+
+
 async def prune_deleted_file_rows(
     session: Any,
     repo_id: str,
@@ -1219,6 +1251,11 @@ async def prune_deleted_file_rows(
     await _prune_table(WikiSymbol, WikiSymbol.file_path, "wiki_symbols")
     await _prune_table(SecurityFinding, SecurityFinding.file_path, "security_findings")
     await _prune_table(DeadCodeFinding, DeadCodeFinding.file_path, "dead_code_findings")
+    # Plans are resolved, not deleted, so a held id keeps answering. A scoped
+    # run never names a deleted file (or a renamed file's old path) again, so
+    # this is the one place they resolve. Before the facts below go: those are
+    # the target's measures the payoff keeps.
+    await _resolve_plans_of_deleted_files(session, repo_id, _dead, liveness)
     # Keyed on the symbol: a deleted file's rows are one key range of the id.
     await delete_file_rows(session, repo_id, dead_paths)
     # Keyed on the DOCUMENT. The incremental drift pass scopes its write to the
@@ -1895,6 +1932,7 @@ async def save_full_health_report(
     health_report: Any,
     *,
     analyzed_commit: str | None,
+    repo_path: Any = None,
 ) -> None:
     """Full-replace a repository's health rows and everything derived from them.
 
@@ -1906,7 +1944,8 @@ async def save_full_health_report(
 
     ``analyzed_commit`` stamps the metric rows and the read models with the
     commit these scores were computed against; ``None`` reads as "not
-    recorded", which is honest, while a wrong sha would not be.
+    recorded", which is honest, while a wrong sha would not be. ``repo_path``
+    lets a plan whose file is gone read as deleted.
     """
     from repowise.core.persistence.crud import (
         PayoffContext,
@@ -1917,7 +1956,6 @@ async def save_full_health_report(
         save_refactoring_suggestions,
         write_function_facts,
     )
-    from repowise.core.persistence.crud._shared import _finding_file_path
 
     hr = health_report
     metrics = list(getattr(hr, "metrics", None) or [])
@@ -1955,7 +1993,7 @@ async def save_full_health_report(
             # measures a resolved plan was detected against.
             payoff=PayoffContext(
                 fact_rows=getattr(hr, "function_facts", None),
-                live_paths=frozenset(_finding_file_path(metric) for metric in metrics),
+                is_live=path_liveness(repo_path),
                 commit=analyzed_commit,
             ),
         )
@@ -2080,7 +2118,13 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         # metric rows, so a reader can tell how far the health pass lags the
         # index instead of assuming the two moved together.
         head_sha = await _analyzed_commit(session, repo_id)
-        await save_full_health_report(session, repo_id, hr, analyzed_commit=head_sha)
+        await save_full_health_report(
+            session,
+            repo_id,
+            hr,
+            analyzed_commit=head_sha,
+            repo_path=getattr(result, "repo_path", None),
+        )
         # Resolved coverage rows, when a report was ingested this run.
         coverage_files = getattr(hr, "coverage_files", None)
         if coverage_files:
