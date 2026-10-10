@@ -163,7 +163,7 @@ def render_summary(record: Mapping[str, Any]) -> str:
         "A failure outside the selection is recorded, not judged: whether it was "
         "already red on main is decided later, from main's own records."
     )
-    lines.extend(["", *details("Run-everything reasons", [code(r) for r in record["reasons"]])])
+    lines.extend(["", *details("Selection reasons", [code(r) for r in record["reasons"]])])
     return "\n".join(lines)
 
 

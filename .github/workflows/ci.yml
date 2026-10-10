@@ -110,6 +110,7 @@ jobs:
     continue-on-error: true
     permissions:
       contents: read
+      actions: write   # deletes older index caches; main pushes only
 
     steps:
       - uses: actions/checkout@v4
@@ -158,6 +159,18 @@ jobs:
         with:
           path: .repowise
           key: repowise-index-${{ github.sha }}
+
+      # Keep the three newest indexes so they never evict the dependency
+      # caches the test jobs restore.
+      - name: Delete older indexes
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh cache list --key repowise-index- --sort created_at --order desc --limit 100 \
+            --json key --jq '.[].key' | tail -n +4 | xargs -r -n1 gh cache delete || true
 
   impacted-tests-shadow:
     name: Test selection (recorded only)
