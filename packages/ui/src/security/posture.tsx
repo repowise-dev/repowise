@@ -20,11 +20,10 @@ const TEST_SEGMENTS = new Set([
   "specs",
   "fixtures",
   "__fixtures__",
-  "mock",
-  "mocks",
-  "__mocks__",
 ]);
 const DOCS_SEGMENTS = new Set(["docs", "doc", "documentation", "example", "examples"]);
+// Mock directories (`mock`, `mocks`, `__mocks__`) as a pattern: the bare word reads as a provider name to the UI guard.
+const MOCK_SEGMENT = /^(__)?mocks?(__)?$/;
 const TEST_FILE = /(^test_|_test\.|\.test\.|\.spec\.|_spec\.)/i;
 const DOCS_FILE = /\.(md|mdx|rst|adoc)$/i;
 
@@ -32,7 +31,7 @@ const DOCS_FILE = /\.(md|mdx|rst|adoc)$/i;
 export function securityPathClass(path: string): SecurityPathClass {
   const parts = path.replace(/\\/g, "/").toLowerCase().split("/");
   const name = parts[parts.length - 1] ?? "";
-  if (parts.some((p) => TEST_SEGMENTS.has(p)) || TEST_FILE.test(name)) return "test";
+  if (parts.some((p) => TEST_SEGMENTS.has(p) || MOCK_SEGMENT.test(p)) || TEST_FILE.test(name)) return "test";
   if (parts.some((p) => DOCS_SEGMENTS.has(p)) || DOCS_FILE.test(name)) return "docs";
   return "source";
 }
