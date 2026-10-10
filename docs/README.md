@@ -41,6 +41,7 @@ For a map of every layer and how they feed each other, read
 | Doc | What it covers |
 |-----|----------------|
 | [layers/CODE_HEALTH.md](layers/CODE_HEALTH.md) | Defect risk, maintainability and performance risk per file, and the Fix first queue |
+| [layers/PERFORMANCE.md](layers/PERFORMANCE.md) | N+1 queries, I/O in loops and blocking calls, grouped into plans and a default queue |
 | [layers/REFACTORING.md](layers/REFACTORING.md) | Graph-aware refactoring plans, from Extract Method to Performance Fix |
 | [layers/OWNERSHIP.md](layers/OWNERSHIP.md) | Owners, bus factor, and where knowledge is at risk |
 | [start/DASHBOARD.md](start/DASHBOARD.md) | Every view in the local dashboard |

@@ -702,6 +702,8 @@ growing data.
 
 ### 6.4 Performance opportunities (`perf/`)
 
+User guide: [PERFORMANCE.md](../layers/PERFORMANCE.md).
+
 **Sinks.** `io_in_loop` resolves a call inside a loop through the graph's
 resolver and classifies the target against the I/O-boundary lexicon
 (`io_boundaries.py`: db, network, filesystem, subprocess, lock). It fires only on a

@@ -89,7 +89,7 @@ against real bug history. The same machinery judges a change before it merges.
 |---|---|---|
 | Code health score | Per-file score, bands, trends, badges | [CODE_HEALTH.md](CODE_HEALTH.md) |
 | Fix first | A ranked queue of what to fix, by impact and effort (`repowise next`) | [CODE_HEALTH.md](CODE_HEALTH.md#fix-first) |
-| Performance findings | N+1 queries, I/O in loops, blocking calls in async code, traced across functions | [CODE_HEALTH.md](CODE_HEALTH.md#performance-findings) |
+| Performance findings | N+1 queries, I/O in loops, blocking calls in async code, traced across functions | [PERFORMANCE.md](PERFORMANCE.md) |
 | Refactoring plans | Extract Class, Extract Method, Extract Helper, Move Method, Break Cycle, Split File, Performance Fix | [REFACTORING.md](REFACTORING.md) |
 | Change risk | Where a commit or range ranks against the repo's recent history, and what it made worse | [CHANGE_RISK.md](CHANGE_RISK.md) |
 | Tests and coverage gates | Impacted tests, patch coverage, untested hotspots | [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md), [CI.md](../start/CI.md) |
