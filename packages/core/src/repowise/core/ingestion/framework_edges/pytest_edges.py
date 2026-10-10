@@ -354,37 +354,50 @@ def _decorator_requests(decorators: Iterable[str]) -> _Requests:
     for dec in decorators:
         dec = dec.strip()
         if _USEFIXTURES_RE.match(dec):
-            for arg in _call_arguments(dec):
-                if _LITERAL_RE.fullmatch(arg):
-                    out.requested.append(arg[1:-1])
-                else:
-                    out.unknown = True
-            continue
-        if not _PARAMETRIZE_RE.match(dec):
-            continue
-        # Only the first argument is the argnames spec: reading the whole
-        # decorator makes every parametrize value look like a supplied name.
-        args = _call_arguments(dec)
-        if not args:
-            continue
-        names = _argnames(args[0])
-        indirect = next(
-            (a.split("=", 1)[1].strip() for a in args[1:] if _INDIRECT_KWARG_RE.match(a)),
-            args[2] if len(args) > 2 and "=" not in args[2] else None,
-        )
-        # `indirect` hands the value to the fixture of that name: a request.
-        if indirect in (None, "False"):
-            out.supplied.update(names)
-        elif indirect == "True":
-            out.requested.extend(names)
-        elif _LITERAL_LIST_RE.fullmatch(indirect):
-            via = set(_QUOTED_RE.findall(indirect))
-            out.requested.extend(n for n in names if n in via)
-            out.supplied.update(n for n in names if n not in via)
-        else:
-            out.requested.extend(names)
-            out.unknown = True
+            _add_usefixtures(dec, out)
+        elif _PARAMETRIZE_RE.match(dec):
+            _add_parametrize(dec, out)
     return out
+
+
+def _add_usefixtures(dec: str, out: _Requests) -> None:
+    """A ``usefixtures`` decorator: each literal argument is a request."""
+    for arg in _call_arguments(dec):
+        if _LITERAL_RE.fullmatch(arg):
+            out.requested.append(arg[1:-1])
+        else:
+            out.unknown = True
+
+
+def _add_parametrize(dec: str, out: _Requests) -> None:
+    """A ``parametrize`` decorator: its argnames are supplied, or requested via ``indirect``."""
+    # Only the first argument is the argnames spec: reading the whole
+    # decorator makes every parametrize value look like a supplied name.
+    args = _call_arguments(dec)
+    if not args:
+        return
+    names = _argnames(args[0])
+    indirect = _indirect_argument(args)
+    # `indirect` hands the value to the fixture of that name: a request.
+    if indirect in (None, "False"):
+        out.supplied.update(names)
+    elif indirect == "True":
+        out.requested.extend(names)
+    elif _LITERAL_LIST_RE.fullmatch(indirect):
+        via = set(_QUOTED_RE.findall(indirect))
+        out.requested.extend(n for n in names if n in via)
+        out.supplied.update(n for n in names if n not in via)
+    else:
+        out.requested.extend(names)
+        out.unknown = True
+
+
+def _indirect_argument(args: list[str]) -> str | None:
+    """A parametrize call's ``indirect`` value: the keyword, else the third positional."""
+    return next(
+        (a.split("=", 1)[1].strip() for a in args[1:] if _INDIRECT_KWARG_RE.match(a)),
+        args[2] if len(args) > 2 and "=" not in args[2] else None,
+    )
 
 
 def _requested_fixtures(sym: Any, supplied: set[str] = frozenset()) -> list[str]:
@@ -565,37 +578,10 @@ def _link_file(
     not declare, or a request form only the text shows (:func:`_hidden_request`).
     The third is true when a helper asks for one, for whichever test calls it.
     """
-    is_conftest = Path(path).name == "conftest.py"
     own = _declared_fixtures(parsed)
     fixture_ids = set(own.values())
-    # Nearest-first: the deepest conftest directory that is a prefix of this
-    # file's directory shadows the ones above it, as pytest does.
-    chain = sorted(
-        (d for d in conftests if path.startswith(f"{d}/") or d == "."),
-        key=len,
-        reverse=True,
-    )
-
-    def link(sym: Any, names: Iterable[str]) -> int:
-        scopes = _fixture_scopes(parsed, sym.parent_name)
-        added = 0
-        for name in names:
-            hits = [own[(s, name)] for s in scopes if (s, name) in own]
-            hits += [conftests[d][name] for d in chain if name in conftests[d]]
-            target = next((h for h in hits if h != sym.id), None)
-            if target and add_symbol_edge(graph, sym.id, target):
-                graph[sym.id][target]["hint_source"] = FIXTURE_HINT
-                added += 1
-        return added
-
-    classes = {sym.name: sym for sym in parsed.symbols if sym.kind == "class"}
-    collected = {c for c in classes if any(fnmatch(c, g) for g in class_globs)}
-    # A collected class runs the tests of every base it names, with their marks.
-    inherited = {s for c in collected for s in _fixture_scopes(parsed, c) if s}
-    hidden = any(b not in classes and b not in _PLAIN_BASES for b in inherited)
-    marks = {c: _decorator_requests(classes[c].decorators) for c in inherited if c in classes}
-    hidden = hidden or any(r.unknown for r in marks.values())
-
+    linker = _FileLinker(graph, parsed, own, conftests, _conftest_chain(path, conftests))
+    collected, inherited, marks, class_hidden = _test_classes(parsed, class_globs)
     # Decorator uses of `usefixtures` this file records (the computed ones are
     # flagged by `_decorator_requests` itself).
     recorded = Counter(
@@ -604,56 +590,172 @@ def _link_file(
         for dec in sym.decorators
         if _USEFIXTURES_RE.match(dec.strip())
     )
-    count = 0
-    tests = []
-    for sym in parsed.symbols:
+    is_conftest = Path(path).name == "conftest.py"
+    tests, symbol_hidden = _link_symbols(
+        linker, fixture_ids, None if is_conftest else collected | inherited, marks
+    )
+
+    text = read(path) if read is not None else None
+    if text is None:
+        # Unread, the file may hold any request form.
+        return linker.count, True, False
+    text_hidden, everywhere = _link_text(linker, text, tests, fixture_ids, recorded)
+    return linker.count, class_hidden or symbol_hidden or text_hidden, everywhere
+
+
+def _conftest_chain(path: str, conftests: dict[str, dict[str, str]]) -> list[str]:
+    """Conftest directories above *path*, nearest first.
+
+    The deepest conftest directory that is a prefix of this file's directory
+    shadows the ones above it, as pytest does.
+    """
+    return sorted(
+        (d for d in conftests if path.startswith(f"{d}/") or d == "."),
+        key=len,
+        reverse=True,
+    )
+
+
+@dataclass
+class _FileLinker:
+    """One file's fixture lookup, and the count of edges it has added."""
+
+    graph: nx.DiGraph
+    parsed: Any
+    own: dict[tuple[str | None, str], str]
+    conftests: dict[str, dict[str, str]]
+    chain: list[str]
+    count: int = 0
+
+    def link(self, sym: Any, names: Iterable[str]) -> None:
+        """Edge *sym* to the fixture each of *names* resolves to: own scopes, then conftests."""
+        scopes = _fixture_scopes(self.parsed, sym.parent_name)
+        for name in names:
+            hits = [self.own[(s, name)] for s in scopes if (s, name) in self.own]
+            hits += [self.conftests[d][name] for d in self.chain if name in self.conftests[d]]
+            target = next((h for h in hits if h != sym.id), None)
+            if target and add_symbol_edge(self.graph, sym.id, target):
+                self.graph[sym.id][target]["hint_source"] = FIXTURE_HINT
+                self.count += 1
+
+
+def _test_classes(
+    parsed: Any, class_globs: tuple[str, ...]
+) -> tuple[set[str], set[str], dict[str, _Requests], bool]:
+    """``(collected, inherited, marks, hidden)`` for the file's classes.
+
+    A collected class runs the tests of every base it names, with their marks;
+    a base this file does not declare, or a computed mark, hides a request.
+    """
+    classes = {sym.name: sym for sym in parsed.symbols if sym.kind == "class"}
+    collected = {c for c in classes if any(fnmatch(c, g) for g in class_globs)}
+    inherited = {s for c in collected for s in _fixture_scopes(parsed, c) if s}
+    marks = {c: _decorator_requests(classes[c].decorators) for c in inherited if c in classes}
+    foreign_base = any(b not in classes and b not in _PLAIN_BASES for b in inherited)
+    return collected, inherited, marks, foreign_base or any(r.unknown for r in marks.values())
+
+
+def _link_symbols(
+    linker: _FileLinker,
+    fixture_ids: set[str],
+    runnable: set[str] | None,
+    marks: dict[str, _Requests],
+) -> tuple[list[Any], bool]:
+    """Link every fixture and collected test in the file; ``(tests, any computed request)``.
+
+    *runnable* is the classes whose test methods pytest collects, ``None`` in a
+    conftest, where nothing is collected as a test.
+    """
+    tests: list[Any] = []
+    hidden = False
+    for sym in linker.parsed.symbols:
         if sym.kind not in ("function", "method"):
             continue
         own_requests = _decorator_requests(sym.decorators)
         hidden = hidden or own_requests.unknown
         if sym.id in fixture_ids:
-            names = _requested_fixtures(sym, own_requests.supplied) + own_requests.requested
-            count += link(sym, names)
-            continue
-        if is_conftest or not sym.name.startswith(DEFAULT_PYTHON_FUNCTIONS):
-            continue
-        if sym.parent_name and sym.parent_name not in collected | inherited:
-            continue
-        tests.append(sym)
-        scoped = [marks[s] for s in _fixture_scopes(parsed, sym.parent_name) if s in marks]
-        supplied = own_requests.supplied.union(*(r.supplied for r in scoped))
-        names = _requested_fixtures(sym, supplied) + own_requests.requested
-        count += link(sym, names + [n for r in scoped for n in r.requested])
+            linker.link(sym, _requested_fixtures(sym, own_requests.supplied) + own_requests.requested)
+        elif _is_collected_test(sym, runnable):
+            tests.append(sym)
+            linker.link(sym, _test_requests(linker.parsed, sym, own_requests, marks))
+    return tests, hidden
 
-    text = read(path) if read is not None else None
-    everywhere = False
-    if text is None:
-        # Unread, the file may hold any request form.
-        return count, True, everywhere
-    hidden = hidden or _hidden_request(text) is not None
-    if "pytestmark" in text:
-        module_marks, unknown = _module_usefixtures(text)
-        hidden = hidden or unknown
-        recorded["usefixtures"] += sum(
-            len(_USEFIXTURES_CALL_RE.findall(m)) for m in _PYTESTMARK_RE.findall(text)
-        )
-        for sym in tests:
-            count += link(sym, module_marks)
-    if "getfixturevalue" in text:
-        runtime, unknown = _runtime_requests(text, parsed.symbols)
-        hidden = hidden or unknown
-        for sym, name in runtime:
-            if sym in tests or sym.id in fixture_ids:
-                count += link(sym, [name])
-                recorded["getfixturevalue"] += 1
-            else:
-                # A helper asking for a fixture serves whichever test calls it.
-                everywhere = True
+
+def _is_collected_test(sym: Any, runnable: set[str] | None) -> bool:
+    """Whether pytest collects *sym* as a test: a test name, in the module or a collected class."""
+    if runnable is None or not sym.name.startswith(DEFAULT_PYTHON_FUNCTIONS):
+        return False
+    return not sym.parent_name or sym.parent_name in runnable
+
+
+def _test_requests(
+    parsed: Any, sym: Any, own_requests: _Requests, marks: dict[str, _Requests]
+) -> list[str]:
+    """Fixtures a test asks for: its parameters and decorators, then its classes' marks."""
+    scoped = [marks[s] for s in _fixture_scopes(parsed, sym.parent_name) if s in marks]
+    supplied = own_requests.supplied.union(*(r.supplied for r in scoped))
+    names = _requested_fixtures(sym, supplied) + own_requests.requested
+    return names + [n for r in scoped for n in r.requested]
+
+
+def _link_text(
+    linker: _FileLinker,
+    text: str,
+    tests: list[Any],
+    fixture_ids: set[str],
+    recorded: Counter[str],
+) -> tuple[bool, bool]:
+    """Link the request forms only the file's text shows; ``(hidden, everywhere)``."""
+    marks_unknown = _link_module_marks(linker, text, tests, recorded)
+    runtime_unknown, everywhere = _link_runtime_requests(linker, text, tests, fixture_ids, recorded)
     # Any other use (an alias, a mark stored in a variable, `add_marker`,
     # `request.fixturenames`, a lazy-fixture plugin) is a request no edge records.
     uses = _request_name_uses(text)
-    hidden = hidden or uses is None or any(n > recorded[name] for name, n in uses.items())
-    return count, hidden, everywhere
+    hidden = (
+        _hidden_request(text) is not None
+        or marks_unknown
+        or runtime_unknown
+        or uses is None
+        or any(n > recorded[name] for name, n in uses.items())
+    )
+    return hidden, everywhere
+
+
+def _link_module_marks(
+    linker: _FileLinker, text: str, tests: list[Any], recorded: Counter[str]
+) -> bool:
+    """Link every test to a module ``pytestmark``'s fixtures; whether any is computed."""
+    if "pytestmark" not in text:
+        return False
+    module_marks, unknown = _module_usefixtures(text)
+    recorded["usefixtures"] += sum(
+        len(_USEFIXTURES_CALL_RE.findall(m)) for m in _PYTESTMARK_RE.findall(text)
+    )
+    for sym in tests:
+        linker.link(sym, module_marks)
+    return unknown
+
+
+def _link_runtime_requests(
+    linker: _FileLinker,
+    text: str,
+    tests: list[Any],
+    fixture_ids: set[str],
+    recorded: Counter[str],
+) -> tuple[bool, bool]:
+    """Link literal ``getfixturevalue`` calls; ``(any computed, a helper asks)``."""
+    if "getfixturevalue" not in text:
+        return False, False
+    runtime, unknown = _runtime_requests(text, linker.parsed.symbols)
+    everywhere = False
+    for sym, name in runtime:
+        if sym in tests or sym.id in fixture_ids:
+            linker.link(sym, [name])
+            recorded["getfixturevalue"] += 1
+        else:
+            # A helper asking for a fixture serves whichever test calls it.
+            everywhere = True
+    return unknown, everywhere
 
 
 def _source_reader(ctx: ResolverContext) -> Callable[[str], str | None]:
