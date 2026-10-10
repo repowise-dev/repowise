@@ -8,6 +8,7 @@ import { OwnerProfileView } from "@repowise-dev/ui/owners/owner-profile";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { formatDate, formatRelativeTimeOrNull } from "@repowise-dev/ui/lib/format";
+import { ApiClientError } from "@/lib/api/client";
 import { getOwnerProfile } from "@/lib/api/owners";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -37,7 +38,7 @@ export default async function OwnerProfilePage({
   // Only a 404 means "no such contributor"; anything else is a failed
   // request and goes to the route error boundary.
   const profile = await getOwnerProfile(id, ownerKey).catch((e: unknown) => {
-    if ((e as { status?: number })?.status === 404) return null;
+    if (e instanceof ApiClientError && e.status === 404) return null;
     throw e;
   });
 
