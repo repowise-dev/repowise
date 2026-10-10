@@ -15,7 +15,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from repowise.core.analysis.health.queue_rules import FilterRule
+from repowise.core.analysis.health import queue_rules
+from repowise.core.analysis.health.queue_rules import Facet, FilterRule, SortKeys
 from repowise.core.analysis.health.rows import detail_map, field
 
 from .recommendations import _loads_dict
@@ -80,7 +81,7 @@ UNAVAILABLE: dict[str, Any] = {
 #: Orders the queue can be read in, as ``(field, descending)`` keys. Every one
 #: ends in a unique column so the total order is deterministic and a deep
 #: offset cannot repeat or skip a row. A descending field must be numeric.
-SORTS: dict[str, tuple[tuple[str, bool], ...]] = {
+SORTS: dict[str, SortKeys] = {
     "queue": (("queue_position", False),),
     "rank": (("rank_position", False),),
     "health": (("recoverable_health", True), ("rank_position", False)),
@@ -108,71 +109,34 @@ FILTERS: tuple[FilterRule, ...] = (
     FilterRule("addresses_primary", "addresses_primary_problem", "is", "set"),
 )
 
-#: Facet name -> the field it counts.
-FACETS: tuple[tuple[str, str], ...] = (
-    ("lead_type", "lead_refactoring_type"),
-    ("effort", "effort_bucket"),
-    ("confidence", "confidence"),
+#: Facet name and the field it counts. No facet is cross-filtered: the counts
+#: are over the status and scope alone.
+FACETS: tuple[Facet, ...] = (
+    ("lead_type", "lead_refactoring_type", None),
+    ("effort", "effort_bucket", None),
+    ("confidence", "confidence", None),
 )
+FACET_FIELDS = tuple(column for _, column, _ in FACETS)
 
 
-def active_filters(params: Any) -> list[tuple[FilterRule, Any]]:
-    """The rules *params* (a query or a mapping) actually narrows by, with values."""
-    active: list[tuple[FilterRule, Any]] = []
-    for rule in FILTERS:
-        value = field(params, rule.param)
-        if rule.applies == "set" and value is None:
-            continue
-        if rule.applies == "truthy" and not value:
-            continue
-        active.append((rule, value))
-    return active
-
-
-def _matches(rule: FilterRule, value: Any, actual: Any) -> bool:
-    if rule.op == "eq":
-        return actual == value
-    if rule.op == "in":
-        return actual in value
-    if rule.op == "contains":
-        # Ceiling: SQLite folds ASCII case only, Python folds Unicode; the two
-        # differ only on a non-ASCII path fragment.
-        return actual is not None and value.lower() in actual.lower()
-    if rule.op == "prefix":
-        # Case-sensitive, as PostgreSQL's LIKE is. SQLite's LIKE folds ASCII
-        # case; paths differing only in case are not a case the queue meets.
-        return actual is not None and actual.startswith(value)
-    if rule.op == "positive":
-        return (actual or 0) > 0
-    # ``is``: SQL ``IS true/false``, so a NULL never matches either.
-    return actual is not None and bool(actual) is bool(value)
+def sort_keys(order: str | None) -> SortKeys:
+    """The keys for *order*; an unknown order reads as the default."""
+    return SORTS.get(order or DEFAULT_ORDER, SORTS[DEFAULT_ORDER])
 
 
 def keep(row: Any, params: Any) -> bool:
     """Whether *row* passes every filter *params* sets (a query or a mapping)."""
-    return all(
-        _matches(rule, value, field(row, rule.field)) for rule, value in active_filters(params)
-    )
+    return queue_rules.keep(FILTERS, row, params)
 
 
 def row_sort_key(row: Any, order: str | None = None) -> tuple[Any, ...]:
     """The sort key for *order*; an unknown order reads as the default."""
-    key: list[Any] = []
-    for name, descending in SORTS.get(order or DEFAULT_ORDER, SORTS[DEFAULT_ORDER]):
-        value = field(row, name)
-        key.append(-value if descending else value)
-    return tuple(key)
+    return queue_rules.sort_key(sort_keys(order), row)
 
 
 def fold_facets(groups: Iterable[Sequence[Any]]) -> dict[str, dict[str, int]]:
     """Fold ``(*facet values, count)`` groups into per-facet counts; a NULL is skipped."""
-    facets: dict[str, dict[str, int]] = {name: {} for name, _ in FACETS}
-    for group in groups:
-        count = int(group[-1])
-        for (name, _), key in zip(FACETS, group[:-1], strict=True):
-            if key is not None:
-                facets[name][str(key)] = facets[name].get(str(key), 0) + count
-    return facets
+    return queue_rules.fold_facets(groups, FACETS)
 
 
 def facet_counts(
@@ -181,7 +145,7 @@ def facet_counts(
     """Counts for every facet over the rows a status (and scope) selects."""
     params = {"status": status, "opportunity_ids": opportunity_ids}
     return fold_facets(
-        (*(field(row, column) for _, column in FACETS), 1)
+        (*(field(row, column) for column in FACET_FIELDS), 1)
         for row in rows
         if keep(row, params)
     )
@@ -560,12 +524,12 @@ __all__ = [
     "DEFAULT_SCOPE",
     "DEFAULT_VIEW",
     "FACETS",
+    "FACET_FIELDS",
     "FILTERS",
     "SCOPES",
     "SORTS",
     "UNAVAILABLE",
     "RefactoringQuery",
-    "active_filters",
     "directive_from_summary",
     "evidence_block",
     "facet_counts",
@@ -577,6 +541,7 @@ __all__ = [
     "plan_view",
     "row_sort_key",
     "serialize",
+    "sort_keys",
     "stored_validation",
     "summary_payload",
     "validation_from_profile",

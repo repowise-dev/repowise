@@ -30,7 +30,7 @@ from ...models import (
     _new_uuid,
     _now_utc,
 )
-from ...sql import LIKE_ESCAPE, escape_like
+from ...sql import order_by, rule_predicate
 
 if TYPE_CHECKING:
     from ....analysis.health.refactoring.opportunity import (
@@ -47,17 +47,6 @@ _LIVE_PLAN_STATUSES = frozenset({"open", "acknowledged"})
 # again, so the reconciler must not read its absence as "the work disappeared"
 # and restate the decision as its own.
 _DECIDED_STATUSES = frozenset({"resolved", "false_positive"})
-
-def _order_by(order: str | None) -> tuple[Any, ...]:
-    """The ``ORDER BY`` for *order*, built from the serving layer's sort table."""
-    from ....analysis.health.refactoring.serving import DEFAULT_ORDER, SORTS
-
-    return tuple(
-        getattr(RefactoringOpportunity, name).desc()
-        if descending
-        else getattr(RefactoringOpportunity, name).asc()
-        for name, descending in SORTS.get(order or DEFAULT_ORDER, SORTS[DEFAULT_ORDER])
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -546,38 +535,23 @@ async def _write_summary(
 # ---------------------------------------------------------------------------
 
 
-def _predicate(rule: Any, value: Any) -> Any:
-    """One serving-layer filter rule as a SQL predicate."""
-    column = getattr(RefactoringOpportunity, rule.field)
-    if rule.op == "eq":
-        return column == value
-    if rule.op == "in":
-        # One value is still one equality; an empty list matches nothing.
-        return column == value[0] if len(value) == 1 else column.in_(value)
-    if rule.op == "contains":
-        # Escaping goes through the shared helper so a path fragment is read
-        # as a path fragment here the same way it is everywhere else.
-        return column.ilike(f"%{escape_like(value)}%", escape=LIKE_ESCAPE)
-    if rule.op == "prefix":
-        return column.like(f"{escape_like(value)}%", escape=LIKE_ESCAPE)
-    if rule.op == "positive":
-        return column > 0
-    return column.is_(value)
-
-
 def _opportunity_filters(repository_id: str, **params: Any) -> list[Any]:
     """The ``WHERE`` for *params*, built from the serving layer's filter table.
 
     Only the current model's rows are served: an older model's ids are never
     composed again, so a row of one is history, not queue.
     """
+    from ....analysis.health.queue_rules import active_filters
     from ....analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
-    from ....analysis.health.refactoring.serving import active_filters
+    from ....analysis.health.refactoring.serving import FILTERS
 
     return [
         RefactoringOpportunity.repository_id == repository_id,
         RefactoringOpportunity.refactoring_model_version == REFACTORING_MODEL_VERSION,
-        *(_predicate(rule, value) for rule, value in active_filters(params)),
+        *(
+            rule_predicate(RefactoringOpportunity, rule, value)
+            for rule, value in active_filters(FILTERS, params)
+        ),
     ]
 
 
@@ -620,10 +594,12 @@ async def list_refactoring_opportunities(
             )
         ).scalar_one()
     )
+    from ....analysis.health.refactoring.serving import sort_keys
+
     query: Select[Any] = (
         select(RefactoringOpportunity)
         .where(*predicates)
-        .order_by(*_order_by(order))
+        .order_by(*order_by(RefactoringOpportunity, sort_keys(order)))
         .offset(max(offset, 0))
         .limit(max(limit, 0))
     )
@@ -772,9 +748,9 @@ async def refactoring_facet_counts(
     statement each, so adding a facet never adds a round trip.
     ``opportunity_ids`` narrows the counts to a scope the list applies too.
     """
-    from ....analysis.health.refactoring.serving import FACETS, fold_facets
+    from ....analysis.health.refactoring.serving import FACET_FIELDS, fold_facets
 
-    columns = tuple(getattr(RefactoringOpportunity, name) for _, name in FACETS)
+    columns = tuple(getattr(RefactoringOpportunity, name) for name in FACET_FIELDS)
     rows = await session.execute(
         select(*columns, func.count())
         .where(

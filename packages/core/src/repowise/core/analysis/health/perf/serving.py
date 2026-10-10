@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from repowise.core.analysis.health import queue_rules
 from repowise.core.analysis.health.finding_identity import finding_public_id
 from repowise.core.analysis.health.fix_first.text import perf_cost
-from repowise.core.analysis.health.queue_rules import NULL_VALUE, FilterRule, SortKeys
+from repowise.core.analysis.health.queue_rules import NULL_VALUE, Facet, FilterRule, SortKeys
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, perf_low_priority
 
@@ -114,7 +114,7 @@ FILTERS: tuple[FilterRule, ...] = (
 
 #: Facet name, the field it counts, and the filter parameter it is
 #: cross-filtered by (``None``: no filter narrows it).
-FACETS: tuple[tuple[str, str, str | None], ...] = (
+FACETS: tuple[Facet, ...] = (
     ("context", "execution_context", "contexts"),
     ("boundary", "boundary_kind", "boundary"),
     ("confidence", "evidence_confidence", "confidence"),
@@ -122,9 +122,6 @@ FACETS: tuple[tuple[str, str, str | None], ...] = (
     ("plan_state", "plan_state", None),
 )
 FACET_FIELDS = tuple(column for _, column, _ in FACETS)
-
-# The rules a facet group can be tested by: the ones on a facet's own field.
-_FACET_FILTERS = tuple(rule for rule in FILTERS if rule.field in FACET_FIELDS)
 
 
 def sort_keys(sort: str | None) -> SortKeys:
@@ -155,35 +152,21 @@ def _facet_selection(query: PerformanceQuery) -> dict[str, Any]:
     }
 
 
-def _count(groups: list[dict[str, Any]], column: str, params: dict[str, Any]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for group in groups:
-        if queue_rules.keep(_FACET_FILTERS, group, params):
-            key = group[column] or NULL_VALUE
-            counts[key] = counts.get(key, 0) + group["count"]
-    return counts
-
-
 def fold_facets(
     groups: Iterable[Sequence[Any]], query: PerformanceQuery
 ) -> dict[str, list[dict[str, Any]]]:
-    """Fold ``(*facet fields, count)`` groups into per-value counts.
-
-    Each facet is cross-filtered by the *other* selections: counting a facet
-    under its own filter would leave every alternative at zero, so choosing
-    one value would erase the others from the control.
-    """
-    rows = [dict(zip((*FACET_FIELDS, "count"), group, strict=True)) for group in groups]
-    selection = _facet_selection(query)
-    facets: dict[str, list[dict[str, Any]]] = {}
-    for name, column, own in FACETS:
-        others = {param: value for param, value in selection.items() if param != own}
-        counts = _count(rows, column, others)
-        facets[name] = [
+    """Fold ``(*facet fields, count)`` groups into per-value counts, largest
+    first, each facet cross-filtered by the query's other selections."""
+    folded = queue_rules.fold_facets(
+        groups, FACETS, rules=FILTERS, selection=_facet_selection(query), null=NULL_VALUE
+    )
+    return {
+        name: [
             {"value": value, "total": total}
             for value, total in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
         ]
-    return facets
+        for name, counts in folded.items()
+    }
 
 
 def facet_counts(rows: Iterable[Any], query: PerformanceQuery) -> dict[str, list[dict[str, Any]]]:
