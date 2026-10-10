@@ -181,11 +181,12 @@ false positive, and no vocabulary row can give it any. (Languages without an `ex
 Kotlin, where the call node sits directly in the statement list — are
 handled too: the call node is matched as the statement itself.)
 
-Ships control-flow + assertion mappings for **all eleven full-tier
-languages** (Python, TypeScript, JavaScript, Go, Java, Kotlin, Rust, C++,
-C#, Scala, Ruby) plus the `tsx`/`jsx` aliases, Dart, Object Pascal, and PHP; class-level (LCOM4 /
-god-class) mappings for all of those except **Go** (methods attach to a type
-via an external receiver, so there is no single grouping node). Ruby maps
+Ships control-flow + assertion mappings for eleven full-tier languages
+(Python, TypeScript, JavaScript, Go, Java, Kotlin, Rust, C++, C#, Scala,
+Ruby), the `tsx`/`jsx` aliases, and three Good-tier languages: Dart, Object
+Pascal and PHP. Class-level (LCOM4 / god-class) mappings cover all of those
+except **Go** (methods attach to a type via an external receiver, so there is
+no single grouping node) and Object Pascal. Ruby maps
 `class_kinds` (size / god-class facts) but leaves `member_access_kinds`
 unmapped on purpose — receiver-less `@ivar` idiom — so its LCOM4 stays at the
 no-signal valve. Adding more languages — any tier — is purely additive in

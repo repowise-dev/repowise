@@ -45,12 +45,7 @@ _CASES = {
             'Assert.Contains("x", r.Tags);',
             "Assert.Equal(\n        1,\n        r.First());",
         ],
-        [
-            "Assert.IsNotNull(r);",
-            "Assert.True(done);",
-            "r.Should().NotBeNull();",
-            "Assert.Null(err);",
-        ],
+        ["Assert.IsNotNull(r);", "Assert.True(done);", "r.Should().NotBeNull();", "Assert.Null(err);"],
     ),
     "typescript": (
         "tests/foo.test.ts",
@@ -150,7 +145,7 @@ def test_a_value_check_is_not_a_flag_check(language: str, line: str):
 @pytest.mark.parametrize(
     ("language", "line"),
     [
-        ("java", '  assertNull(err, "message");'),
+        ("java", "  assertNull(err, \"message\");"),
         ("kotlin", "assertTrue(done)"),
         ("csharp", "Assert.IsFalse(failed);"),
         ("python", "self.assertIsNone(err)"),

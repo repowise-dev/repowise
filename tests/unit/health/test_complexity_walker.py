@@ -585,7 +585,9 @@ def test_cpp_namespace_or_type_after_a_macro_is_not_a_function(tmp_path):
 
 
 @pytest.mark.parametrize("language", ["cpp", "c"])
-def test_function_behind_a_macro_with_an_aggregate_return_type_stays_a_function(tmp_path, language):
+def test_function_behind_a_macro_with_an_aggregate_return_type_stays_a_function(
+    tmp_path, language
+):
     # The stray ``struct S`` lands in the head as it does for a misread scope,
     # but the declarator is a real function_declarator.
     source = b"""int plain(void) { return 0; }

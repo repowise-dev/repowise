@@ -61,12 +61,7 @@ def _evaluate(path: str, language: str, source: bytes, tmp_path) -> HealthFileMe
         symbols=[],
     )
     metric, _, _ = HealthAnalyzer(graph=None)._evaluate_file(
-        pf,
-        fcx,
-        paired_tests=set(),
-        package_roots=set(),
-        disabled=[],
-        dup_report=DuplicationReport(),
+        pf, fcx, paired_tests=set(), package_roots=set(), disabled=[], dup_report=DuplicationReport()
     )
     return metric
 

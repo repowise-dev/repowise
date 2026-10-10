@@ -97,8 +97,9 @@ def _is_elif_continuation(node: Node) -> bool:
 
     - Python: a dedicated ``elif_clause`` node (always a continuation).
     - Ruby: a dedicated ``elsif`` node (always a continuation).
-    - PHP: a dedicated ``else_if_clause`` node (always a continuation).
-    - TypeScript / Rust / C++ / PHP (with space): the else-if is wrapped in an ``else_clause``.
+    - PHP: a dedicated ``else_if_clause`` node for ``elseif`` (always a
+      continuation); ``else if`` is wrapped in an ``else_clause`` as below.
+    - TypeScript / Rust / C++: the else-if is wrapped in an ``else_clause``.
     - Java / Go / C# / Dart / Kotlin / Pascal: the else-if node is the
       sibling that immediately follows the parent ``if``'s else token
       (spelled ``else`` in those grammars, ``kElse`` in Pascal's).

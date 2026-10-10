@@ -62,6 +62,16 @@ _NARROW = 2
 _VERIFICATION = 3
 
 
+_PHP_CALL_KINDS = frozenset(
+    {
+        "function_call_expression",
+        "member_call_expression",
+        "scoped_call_expression",
+        "nullsafe_member_call_expression",
+    }
+)
+
+
 def _callee_matches_assert(call_node: Node) -> bool:
     """True if any identifier in *call_node*'s callee chain is assert-ish.
 
@@ -73,20 +83,19 @@ def _callee_matches_assert(call_node: Node) -> bool:
     # Fallback when no ``function``/``macro`` field is exposed: the first
     # named child is usually the callee.
     roots = [callee] if callee is not None else [c for c in call_node.children if c.is_named][:1]
-    if call_node.type in (
-        "member_call_expression",
-        "scoped_call_expression",
-        "nullsafe_member_call_expression",
-    ):
+    # PHP spells identifiers ``name`` (not ``*identifier``), and a method
+    # call keeps its method name in a ``name`` field. Both are gated on PHP's
+    # call node kinds, which no other mapped grammar has.
+    is_php_call = call_node.type in _PHP_CALL_KINDS
+    if is_php_call and call_node.type != "function_call_expression":
         name_node = call_node.child_by_field_name("name")
         if name_node is not None:
             roots.append(name_node)
     stack: list[Node] = list(roots)
     while stack:
         node = stack.pop()
-        if (
-            node.type.endswith(_IDENTIFIER_SUFFIX) or node.type == "name"
-        ) and node.text is not None:
+        is_ident = node.type.endswith(_IDENTIFIER_SUFFIX) or (is_php_call and node.type == "name")
+        if is_ident and node.text is not None:
             name = node.text.decode("utf-8", errors="replace").lower()
             if any(name.startswith(p) for p in NARROW_PREFIXES):
                 return True
@@ -152,7 +161,9 @@ def _private_callee_matches_assert(call_node: Node) -> bool:
     if names is None:
         return False
     called, roots = names
-    return any(name.lstrip("_").startswith(NARROW_PREFIXES) for name in (called, *roots) if name)
+    return any(
+        name.lstrip("_").startswith(NARROW_PREFIXES) for name in (called, *roots) if name
+    )
 
 
 def _dialect_tier(call_node: Node, dialect: AssertDialect) -> int:
@@ -198,7 +209,9 @@ def _find_assert_call(stmt: Node, kinds: frozenset[str]) -> Node | None:
     return None
 
 
-def _context_manager_tier(stmt: Node, lmap: LanguageNodeMap, dialect: AssertDialect | None) -> int:
+def _context_manager_tier(
+    stmt: Node, lmap: LanguageNodeMap, dialect: AssertDialect | None
+) -> int:
     """The tier a ``with`` header asserts at, body excluded.
 
     ``assert_call_kinds`` is the language's plain call node, so stopping at the
@@ -423,7 +436,9 @@ def _collect_assertion_facts(
         # its assertion directly under the arrow. Run detection below is
         # unconditional and so is untouched by this.
         counts_here = (
-            node is body_node or node.type in lmap.block_kinds or node.type in lmap.lambda_kinds
+            node is body_node
+            or node.type in lmap.block_kinds
+            or node.type in lmap.lambda_kinds
         )
         _scan_siblings(node, count_total=counts_here)
         # ``under_lambda`` keeps the raise count on this body only. The

@@ -59,9 +59,7 @@ def test_elixir_reports_nothing_rather_than_a_wrong_function() -> None:
     No grammar guard here on purpose: ``walk_file`` returns on the missing-map
     check before it ever asks for a parser, so this holds either way.
     """
-    source = (
-        "defmodule A do\n  def one(x), do: x\nend\n\ndefmodule B do\n  def two(y), do: y\nend\n"
-    )
+    source = "defmodule A do\n  def one(x), do: x\nend\n\ndefmodule B do\n  def two(y), do: y\nend\n"
     fc = walk_file("sample.ex", "elixir", source.encode("utf-8"))
     assert fc.functions == []
 
@@ -472,6 +470,18 @@ function booleans($a, $b, $c, $d) {
         {"booleans": 8},
     ),
     (
+        "xor does not short-circuit, so it adds no path; and / or still do",
+        """<?php
+function wordy($a, $b, $c) {
+    if ($a xor $b) {
+        return 1;
+    }
+    return $a and $b or $c;
+}
+""",
+        {"wordy": 4},
+    ),
+    (
         "loops and try-catch add complexity",
         """<?php
 function control_flow($items) {
@@ -522,3 +532,49 @@ function matching($x) {
 def test_php_complexity(source: str, expected: dict[str, int]) -> None:
     _require_language("php")
     assert _rows("php", source, "php") == expected
+
+
+def test_php_name_nodes_count_only_in_php_calls() -> None:
+    """The ``name`` identifier match is gated to PHP's call kinds.
+
+    No other mapped grammar has a ``name`` node or PHP's call node kinds, so
+    their assertion counting cannot change through that gate.
+    """
+    from repowise.core.analysis.health.complexity.assertions import _PHP_CALL_KINDS
+    from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
+    from repowise.core.ingestion.parser import _get_language, grammar_tag_for
+
+    php_only = _PHP_CALL_KINDS | {"name"}
+    for language in LANGUAGE_MAPS:
+        if language == "php":
+            continue
+        try:
+            grammar = _get_language(grammar_tag_for(language, "x"))
+        except Exception:
+            continue
+        if grammar is None:
+            continue
+        kinds = {
+            grammar.node_kind_for_id(i)
+            for i in range(grammar.node_kind_count)
+            if grammar.node_kind_is_named(i)
+        }
+        assert not kinds & php_only, language
+
+
+def test_php_argument_named_assert_is_not_an_assertion() -> None:
+    _require_language("php")
+    source = b"""<?php
+class FooTest {
+    public function testIt() {
+        $this->assertSame(1, $x);
+        $this->assertSame(2, $y);
+        $this->assertSame(3, $z);
+        helper($assertion);
+        helper($assertion);
+    }
+}
+"""
+    fc = walk_file("FooTest.php", "php", source)
+    (fn,) = fc.functions
+    assert fn.assertion_count == 3
