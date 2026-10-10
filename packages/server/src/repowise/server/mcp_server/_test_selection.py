@@ -3,7 +3,8 @@
 ``get_change_risk`` and ``get_risk`` ask the same question ``repowise
 impacted-tests`` answers, so they run the same collection and the same
 fail-closed :func:`~repowise.core.analysis.test_selection.select_tests`
-(:mod:`repowise.core.analysis.test_collection`) and only shape the answer:
+(:mod:`repowise.core.analysis.test_collection`) and the same order
+(:mod:`repowise.core.analysis.test_ranking`), and only shape the answer:
 whether every test must run and why, the head of the run list with the reason
 each test is in it, and which evidence decided each changed file.
 """
@@ -50,7 +51,7 @@ class SelectionUnavailableError(Exception):
 async def select_change_tests(
     repo_path: Any, session_factory: Any, change: Any
 ) -> tuple[dict[str, Any], Selection, Any]:
-    """``(collection result, selection, checkout)`` for *change*, or
+    """``(collection result, selection in run order, checkout)`` for *change*, or
     :class:`SelectionUnavailableError`.
 
     The checkout read (``git ls-files`` plus pytest's conftests and configs)
@@ -100,6 +101,7 @@ async def _select(
     repo_path: Any, session_factory: Any, change: Any, config: Any, cancel: threading.Event
 ) -> tuple:
     from repowise.core.analysis.test_collection import read_checkout, select_for_change
+    from repowise.core.analysis.test_ranking import ordered, rank_change
     from repowise.core.persistence.database import get_session
     from repowise.server.mcp_server._helpers import _get_repo
 
@@ -116,7 +118,10 @@ async def _select(
             indexed_commit=repository.head_commit,
             cancelled=cancel.is_set,
         )
-    return result, selection, checkout
+        ranked = await rank_change(
+            session, repository.id, change, result, selection, checkout.read
+        )
+    return result, ordered(selection, ranked), checkout
 
 
 def files_change(repo_path: Any, paths: list[str]) -> Any:
@@ -138,30 +143,6 @@ def files_change(repo_path: Any, paths: list[str]) -> Any:
         base=git_refs.resolve(str(root), "HEAD") or None,
         head=None,
     )
-
-
-def run_order(result: dict[str, Any], selection: Selection) -> list[str]:
-    """``selection.tests`` ordered for a reader who runs the head first.
-
-    A test the change edits leads, then tests reaching more of the changed
-    files, then the selection's own order; tests that run with every subset
-    come last, since no changed file named them.
-    """
-    changed = set(selection.basis)
-    reach: dict[str, set[str]] = {}
-    for row in result.get("inferred") or ():
-        reach.setdefault(row["test_file"], set()).add(row["source_file"])
-    for info in (result.get("covered") or {}).values():
-        if info.get("test_file"):
-            reach.setdefault(info["test_file"], set()).update(info.get("source_files") or ())
-
-    def key(item: tuple[int, str]) -> tuple[bool, bool, int, int]:
-        index, test = item
-        path = test.split("::", 1)[0]
-        hits = len(reach.get(path, set()) & changed)
-        return path not in changed, not selected_by_change(selection, path), -hits, index
-
-    return [test for _, test in sorted(enumerate(selection.tests), key=key)]
 
 
 def run_kind(tests: list[str]) -> str | None:
@@ -193,12 +174,12 @@ def selection_block(
     test (documentation, a deleted test); with ``run_all`` true it means nothing
     narrower than the full suite is known.
     """
-    ordered = run_order(result, selection)
-    shown = ordered[:limit]
-    if len(ordered) > limit:
+    run_list = list(selection.tests)  # in run order (``test_ranking``)
+    shown = run_list[:limit]
+    if len(run_list) > limit:
         collector.add(
-            f"{label}.tests_to_run beyond cap={limit} ({len(ordered) - limit} dropped)",
-            ordered[limit:],
+            f"{label}.tests_to_run beyond cap={limit} ({len(run_list) - limit} dropped)",
+            run_list[limit:],
         )
     reasons = list(selection.reasons)
     if len(reasons) > _REASONS_LIMIT:
@@ -218,8 +199,8 @@ def selection_block(
         "map_present": not result.get("map_empty", True),
         "tests_to_run": shown,
         "tests_to_run_kind": run_kind(shown),
-        "total": len(ordered),
-        "truncated": len(ordered) > limit,
+        "total": len(run_list),
+        "truncated": len(run_list) > limit,
         "always_run_total": always,
         "why": {
             path: selection.why[path]
@@ -227,7 +208,7 @@ def selection_block(
             if path in selection.why
         },
         "basis_by_file": dict(basis_rows[:_BASIS_LIMIT]),
-        "summary": _summary(selection, len(ordered), always, limit),
+        "summary": _summary(selection, len(run_list), always, limit),
     }
     if len(basis_rows) > _BASIS_LIMIT:
         block["basis_by_file_total"] = len(basis_rows)

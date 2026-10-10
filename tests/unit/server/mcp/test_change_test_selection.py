@@ -414,3 +414,40 @@ async def test_workspace_get_risk_selects_in_the_member_repository(tmp_path, mon
     # test_walks.py is tracked there but not indexed, so it runs with every subset.
     assert directive["tests_to_run"] == ["tests/test_status.py", "tests/test_walks.py"]
     assert directive["tests_run_all"] is False
+
+
+@pytest.mark.asyncio
+async def test_both_tools_list_tests_in_the_selections_run_order(tmp_path, monkeypatch) -> None:
+    import json
+
+    from repowise.core.persistence.models import GitMetadata
+
+    repo, base = _repo(tmp_path, {**_STATUS, "tests/test_z.py": "from src.status import status\n"})
+    _commit(repo, {"src/status.py": "def status():\n    return 2\n"}, "fix: status")
+    factory = await _index(
+        base,
+        {"src/status.py": False, "tests/test_status.py": True, "tests/test_z.py": True},
+        [
+            ("tests/test_status.py", "src/status.py", "imports"),
+            ("tests/test_z.py", "src/status.py", "imports"),
+        ],
+    )
+    # History pairs tests/test_z.py with the changed file, so it leads its tier.
+    partners = [{"file_path": "tests/test_z.py", "co_change_count": 3.0, "frequency": 3}]
+    async with factory() as s:
+        s.add(
+            GitMetadata(
+                repository_id="repo1",
+                file_path="src/status.py",
+                co_change_partners_json=json.dumps(partners),
+            )
+        )
+        await s.commit()
+
+    it = (await _change_risk(monkeypatch, repo, factory))["impacted_tests"]
+    directive = await _risk_directive(monkeypatch, repo, factory, ["src/status.py"])
+
+    # tests/test_walks.py imports nothing indexed, so it runs with every subset, last.
+    order = ["tests/test_z.py", "tests/test_status.py", "tests/test_walks.py"]
+    assert it["tests_to_run"] == order and list(it["why"]) == order
+    assert directive["tests_to_run"] == order

@@ -35,7 +35,6 @@ from repowise.server.mcp_server._test_selection import (
     UNAVAILABLE_REASON,
     basis_of,
     run_kind,
-    run_order,
 )
 
 
@@ -587,7 +586,7 @@ def _tests_to_run(
             "tests_status": tests.status,
             "tests_status_reason": tests.message,
         }
-    population = run_order(tests.result, selection)
+    population = list(selection.tests)  # in run order (``test_ranking``)
     reasons = list(selection.reasons)
     if len(reasons) > _RUN_ALL_REASONS_LIMIT:
         collector.add(

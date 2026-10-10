@@ -432,6 +432,7 @@ def test_explain_names_the_changed_file_and_the_route(repo) -> None:
     assert result.stdout.splitlines() == [
         "Selected: src/a.py changed (import-graph).",
         "Route: tests/test_a.py -> src/a.py",
+        "Order: 1 of 1 (reaches a changed file through other files).",
     ]
     missed = _run(repo, "main...feat", "--explain", "./tests/test_b.py")
     assert missed.stdout.startswith("Not selected: no changed file reaches it")
@@ -443,8 +444,22 @@ def test_explain_joins_the_json_report(repo) -> None:
     assert data["explain"] == {
         "test": "tests/test_a.py",
         "selected": True,
-        "lines": ["Selected: src/a.py changed (import-graph).", "Route: tests/test_a.py -> src/a.py"],
+        "lines": [
+            "Selected: src/a.py changed (import-graph).",
+            "Route: tests/test_a.py -> src/a.py",
+            "Order: 1 of 1 (reaches a changed file through other files).",
+        ],
         "route": ["tests/test_a.py", "src/a.py"],
+        "order": {
+            "position": 1,
+            "of": 1,
+            "test": "tests/test_a.py",
+            "tier": "transitive",
+            "hops": None,
+            "co_change": 0,
+            "failed_last_run": False,
+            "reason": "reaches a changed file through other files",
+        },
     }
     assert data["selected"]["why"] == {"tests/test_a.py": "src/a.py changed (import-graph)"}
 
@@ -461,3 +476,77 @@ def test_a_runner_is_told_of_always_run_tests_for_another(repo) -> None:
     assert data["left_out"] == {"jest": ["web/app.test.ts"]}
     files = _run(repo, "main...feat", "--format", "args", "--runner", "files")
     assert files.stdout == "tests/test_a.py web/app.test.ts\n"
+
+
+def _co_change(repo, path: str, partners: dict[str, int]) -> None:
+    """Store *partners* as *path*'s co-change record, each with that many shared commits."""
+    from repowise.core.persistence.models import GitMetadata
+
+    async def add() -> None:
+        db = (repo / ".repowise" / "wiki.db").as_posix()
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db}")
+        records = [
+            {"file_path": p, "co_change_count": float(n), "frequency": n}
+            for p, n in partners.items()
+        ]
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            session.add(
+                GitMetadata(
+                    repository_id="r1", file_path=path, co_change_partners_json=json.dumps(records)
+                )
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(add())
+
+
+def test_prioritize_lists_the_whole_suite_selected_first(repo) -> None:
+    _add_test(repo, "tests/test_b.py", "src/b.py")
+    _add_test(repo, "tests/test_c.py", "src/b.py")
+    _co_change(repo, "src/a.py", {"tests/test_c.py": 4})
+    result = _run(repo, "main...feat", "--format", "args", "--runner", "pytest", "--prioritize")
+    assert result.exit_code == 0, result.output
+    # The selected test leads; of the rest, the one history pairs with src/a.py.
+    assert result.stdout == "tests/test_a.py tests/test_c.py tests/test_b.py\n"
+    assert "the 1 selected first" in _err(result)
+    listed = _run(repo, "main...feat", "--format", "list", "--prioritize")
+    assert listed.stdout.splitlines() == ["tests/test_a.py", "tests/test_c.py", "tests/test_b.py"]
+    data = json.loads(_run(repo, "main...feat", "--format", "json", "--prioritize").stdout)
+    assert data["run_all"] is False and data["selected"]["tests"] == ["tests/test_a.py"]
+    assert [(o["test"], o["tier"], o["co_change"]) for o in data["order"]] == [
+        ("tests/test_a.py", "transitive", 0),
+        ("tests/test_c.py", "rest", 4),
+        ("tests/test_b.py", "rest", 0),
+    ]
+
+
+def test_prioritize_still_orders_a_full_run(repo) -> None:
+    _write(repo, {"Makefile": "all:\n"})
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "build")
+    result = _run(repo, "main...feat", "--format", "args", "--runner", "pytest", "--prioritize")
+    assert result.stdout == "tests/test_a.py\n"
+    assert _err(result).startswith("Run every test, in this order:")
+    assert "Makefile changed" in _err(result)
+
+
+def test_selected_tests_run_in_order_and_a_last_failure_breaks_a_tie(repo) -> None:
+    _add_test(repo, "tests/test_z.py", "src/a.py")
+    plain = _run(repo, "main...feat", "--format", "args", "--runner", "pytest")
+    assert plain.stdout == "tests/test_a.py tests/test_z.py\n"
+    cache = repo / ".pytest_cache" / "v" / "cache"
+    cache.mkdir(parents=True)
+    (cache / "lastfailed").write_text('{"tests/test_z.py::test_x": true}', encoding="utf-8")
+    result = _run(repo, "main...feat", "--format", "args", "--runner", "pytest")
+    assert result.stdout == "tests/test_z.py tests/test_a.py\n"
+    explained = _run(repo, "main...feat", "--explain", "tests/test_z.py")
+    assert explained.stdout.splitlines()[-1] == (
+        "Order: 1 of 2 (reaches a changed file through other files; failed in the last run)."
+    )
+
+
+def test_prioritize_needs_a_machine_format(repo) -> None:
+    result = _run(repo, "main...feat", "--prioritize")
+    assert result.exit_code != 0
+    assert "--prioritize needs --format args, list or json" in result.output + result.stderr

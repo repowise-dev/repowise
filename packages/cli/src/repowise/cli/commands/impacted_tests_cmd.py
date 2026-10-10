@@ -26,6 +26,7 @@ Examples:
     repowise impacted-tests main..HEAD --format list | xargs pytest
     repowise impacted-tests main...HEAD --format args --runner pytest
     repowise impacted-tests main...HEAD --explain tests/unit/test_api.py
+    repowise impacted-tests main...HEAD --format args --prioritize
 """
 
 from __future__ import annotations
@@ -107,6 +108,13 @@ def _resolve_repo_path(path: str | None, fmt: str):
     "the route that reached it, or the rule that runs it. With --format json it is added "
     "to the report as 'explain'.",
 )
+@click.option(
+    "--prioritize",
+    is_flag=True,
+    help="With --format args, list or json: list the whole suite, the selected tests first in "
+    "the order likeliest to fail, then every other test. Nothing is skipped, and a full run "
+    "is ordered too, so CI can run the head with -x and then the rest.",
+)
 def impacted_tests_command(
     revspec: str | None,
     repo: str | None,
@@ -114,10 +122,13 @@ def impacted_tests_command(
     fmt: str,
     runner: str,
     explain: str | None,
+    prioritize: bool,
 ) -> None:
     """Print the tests whose coverage intersects a change's changed lines."""
     if revspec and staged:
         raise click.ClickException("Give a revision range or --staged, not both.")
+    if prioritize and fmt == "table":
+        raise click.ClickException("--prioritize needs --format args, list or json.")
 
     # json/list/args go to downstream tools; keep stdout clean of log noise.
     if fmt != "table":
@@ -125,21 +136,19 @@ def impacted_tests_command(
 
     repo_path = _resolve_repo_path(repo, fmt)
     try:
-        change, config = _read_change(repo_path, revspec, staged, fmt, bool(explain))
+        change, config = _read_change(repo_path, revspec, staged, fmt, bool(explain) or prioritize)
     except CannotEvaluateError as exc:
         cannot_evaluate(fmt, exc.code, str(exc))
 
     explain = explain.replace("\\", "/").removeprefix("./") if explain else None
     checkout = read_checkout(repo_path)
     plan = plan_scopes(change, config, checkout) if config is not None else None
-    result = run_async(_collect(repo_path, change, checkout, config, explain, plan))
+    result = run_async(_collect(repo_path, change, checkout, config, explain, plan, prioritize))
     result["diff"] = change.label
-    if plan is not None:
-        result["selection"] = select(change, result, config, checkout, plan)
     if explain and fmt != "json":
         _render_explain(result, explain)
         return
-    _render(result, fmt, runner, explain)
+    _render(result, fmt, runner, explain, prioritize)
 
 
 def _read_change(repo_path, revspec: str | None, staged: bool, fmt: str, explain: bool = False):
@@ -163,21 +172,24 @@ def _selection_config(repo_path):
         raise CannotEvaluateError("config_invalid", str(exc)) from exc
 
 
-async def _collect(repo_path, change, checkout, config, explain: str | None, plan) -> dict:
-    """Open the index and collect the change's tests (``test_collection.collect``)."""
+async def _collect(
+    repo_path, change, checkout, config, explain: str | None, plan, prioritize: bool = False
+) -> dict:
+    """Open the index, collect the change's tests (``test_collection.collect``) and decide."""
     from repowise.core.analysis.test_collection import collect, empty_result
     from repowise.core.persistence.crud import get_repository
 
+    decide = (change, checkout, config, plan, prioritize)
     if not (change.files or change.deleted):
-        return empty_result(0)
+        return await _decide(None, "", empty_result(0), *decide)
     async with repo_index_session(Path(repo_path)) as opened:
         if opened is None:
             out = empty_result(len(change.files) + len(change.deleted))
             out["no_index"] = True
-            return out
+            return await _decide(None, "", out, *decide)
         session, repo_id = opened
         repo_row = await get_repository(session, repo_id)
-        return await collect(
+        out = await collect(
             session,
             repo_id,
             repo_path,
@@ -189,6 +201,26 @@ async def _collect(repo_path, change, checkout, config, explain: str | None, pla
             dict(checkout.pytest_texts),
             indexed_commit=repo_row.head_commit if repo_row else None,
         )
+        return await _decide(session, repo_id, out, *decide)
+
+
+async def _decide(session, repo_id: str, out: dict, change, checkout, config, plan, prioritize):
+    """Select (when the config was read) and order the selection, inside the index session.
+
+    ``ranked`` holds the selected tests in run order, then with *prioritize*
+    every other test of the suite.
+    """
+    from repowise.core.analysis.test_ranking import ordered, rank_change, suite
+
+    if plan is None:
+        return out
+    selection = select(change, out, config, checkout, plan)
+    everything = suite(checkout.tracked, checkout.roots) if prioritize else None
+    out["ranked"] = await rank_change(
+        session, repo_id, change, out, selection, checkout.read, everything=everything
+    )
+    out["selection"] = ordered(selection, out["ranked"])
+    return out
 
 
 def _machine_test_ids(result: dict) -> list[str]:
@@ -200,9 +232,20 @@ def _machine_test_ids(result: dict) -> list[str]:
     return [i for i in ids if not (i in seen or seen.add(i))]
 
 
-def _render(result: dict, fmt: str, runner: str = "auto", explain: str | None = None) -> None:
+def _render(
+    result: dict,
+    fmt: str,
+    runner: str = "auto",
+    explain: str | None = None,
+    prioritize: bool = False,
+) -> None:
     if fmt in ("json", "args"):
-        _render_selection(result, fmt, runner, explain)
+        _render_selection(result, fmt, runner, explain, prioritize)
+        return
+
+    if fmt == "list" and prioritize:
+        for test in _run_list(result, True).tests:
+            click.echo(test)
         return
 
     if fmt == "list":
@@ -232,7 +275,14 @@ def _explanation(result: dict, test: str) -> dict:
     route = result["explain_route"] if selected_by_change(result["selection"], test) else []
     if len(route) > 1:
         lines.append("Route: " + " -> ".join(route))
-    return {"test": test, "selected": selected, "lines": lines, "route": route}
+    out = {"test": test, "selected": selected, "lines": lines, "route": route}
+    ranked = result.get("ranked") or []
+    path = test.split("::", 1)[0]
+    at = next((i for i, r in enumerate(ranked) if r.test in (test, path)), None)
+    if at is not None:
+        lines.append(f"Order: {at + 1} of {len(ranked)} ({ranked[at].reason}).")
+        out["order"] = {"position": at + 1, "of": len(ranked), **ranked[at].to_dict()}
+    return out
 
 
 def _render_explain(result: dict, test: str) -> None:
@@ -240,7 +290,32 @@ def _render_explain(result: dict, test: str) -> None:
         click.echo(line)
 
 
-def _render_selection(result: dict, fmt: str, runner: str, explain: str | None = None) -> None:
+def _run_list(result: dict, prioritize: bool):
+    """The selection in run order; with *prioritize*, the whole suite with it first."""
+    from repowise.core.analysis.test_ranking import ordered
+
+    if not prioritize:
+        return result["selection"]
+    return ordered(result["selection"], result["ranked"], whole=True)
+
+
+def _args_header(selection, args: list[str], resolved: str, prioritize: bool) -> str:
+    if prioritize:
+        selected = {*selection.tests, *selection.test_files}
+        head = sum(a in selected for a in args)
+        lead = "Run every test" if selection.run_all else "Run the selected tests first"
+        return (
+            f"{lead}, in this order: {len(args)} argument(s) for {resolved}, "
+            f"the {head} selected first."
+        )
+    if selection.run_all:
+        return "Run every test:"
+    return f"{len(args)} argument(s) for {resolved}."
+
+
+def _render_selection(
+    result: dict, fmt: str, runner: str, explain: str | None = None, prioritize: bool = False
+) -> None:
     """``--format args`` (one line, reasons on stderr) or ``--format json``."""
     from repowise.core.analysis.test_selection import (
         format_args,
@@ -251,16 +326,14 @@ def _render_selection(result: dict, fmt: str, runner: str, explain: str | None =
     )
 
     selection = result["selection"]
-    resolved = resolve_runner(selection, runner)
-    args = runner_args(selection, resolved)
-    notes = runner_notes(selection, resolved)
+    run_list = _run_list(result, prioritize)
+    resolved = resolve_runner(run_list, runner)
+    args = runner_args(run_list, resolved)
+    notes = runner_notes(run_list, resolved)
     if fmt == "args":
         click.echo(format_args(args))
         # Plain stderr, one reason per line: a CI log must not wrap or style them.
-        if selection.run_all:
-            click.echo("Run every test:", err=True)
-        else:
-            click.echo(f"{len(args)} argument(s) for {resolved}.", err=True)
+        click.echo(_args_header(selection, args, resolved, prioritize), err=True)
         for reason in (*selection.reasons, *notes):
             click.echo(f"  {reason}", err=True)
         return
@@ -292,7 +365,8 @@ def _render_selection(result: dict, fmt: str, runner: str, explain: str | None =
             "selected": selected,
             "runner": resolved,
             "args": args,
-            "left_out": left_out(selection, resolved),
+            "left_out": left_out(run_list, resolved),
+            "order": [r.to_dict() for r in result.get("ranked") or ()],
             **extra,
         }
     )

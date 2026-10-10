@@ -14,6 +14,7 @@ from sqlalchemy import ColumnElement, and_, delete, func, or_, select, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...co_change import CoChangePartner, parse_partners
 from ..models import (
     FixEvent,
     GitCommit,
@@ -115,6 +116,25 @@ async def get_git_metadata_bulk(
         )
         for gm in result.scalars().all():
             out[gm.file_path] = gm
+    return out
+
+
+async def get_co_change_partners(
+    session: AsyncSession, repository_id: str, file_paths: Sequence[str]
+) -> dict[str, list[CoChangePartner]]:
+    """``{file: its stored co-change partners}`` for *file_paths*, reading only that column."""
+    out: dict[str, list[CoChangePartner]] = {}
+    unique_paths = list(dict.fromkeys(file_paths))
+    for i in range(0, len(unique_paths), _BATCH_SIZE):
+        result = await session.execute(
+            select(GitMetadata.file_path, GitMetadata.co_change_partners_json).where(
+                GitMetadata.repository_id == repository_id,
+                GitMetadata.file_path.in_(unique_paths[i : i + _BATCH_SIZE]),
+            )
+        )
+        for file_path, raw in result.all():
+            if partners := parse_partners(raw):
+                out[file_path] = partners
     return out
 
 
