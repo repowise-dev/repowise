@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect } from "react";
+import useSWR from "swr";
 import type { ActionsResponse, NextAction } from "@repowise-dev/types/actions";
 import type { AgentPromptFlavor } from "@repowise-dev/types/agent-prompts";
 import { NextActions } from "@repowise-dev/ui/overview/next-actions";
@@ -14,7 +15,19 @@ import { getActionPrompt, getActions, setActionState } from "@/lib/api/actions";
  * list itself, and every word on it, is the shared component.
  */
 export function NextActionsPanel({ repoId, data }: { repoId: string; data: ActionsResponse }) {
-  const [view, setView] = useState(data);
+  // The server-rendered view seeds the key; after an answer, revalidating it
+  // re-reads the list so the sentence and counts say what is left. SWR keeps
+  // only the latest response and keeps the last good view when a read fails.
+  const key = `actions:${repoId}`;
+  const { data: view, mutate } = useSWR(key, () => getActions(repoId), {
+    fallbackData: data,
+    revalidateOnMount: false,
+    revalidateOnFocus: false,
+  });
+  // A newer server render (navigation, refresh) replaces whatever was cached.
+  useEffect(() => {
+    void mutate(data, { revalidate: false });
+  }, [data, mutate]);
   const base = `/repos/${repoId}`;
   const loadPrompt = useCallback(
     async (action: NextAction, flavor: AgentPromptFlavor) =>
@@ -23,7 +36,7 @@ export function NextActionsPanel({ repoId, data }: { repoId: string; data: Actio
   );
   return (
     <NextActions
-      data={view}
+      data={view ?? data}
       loadPrompt={loadPrompt}
       LinkComponent={Link}
       hrefFor={(action) => actionHref(action, base)}
@@ -33,9 +46,7 @@ export function NextActionsPanel({ repoId, data }: { repoId: string; data: Actio
           state,
           fingerprint: action.fingerprint,
         });
-        // Re-read so the sentence over the list counts what is left; a failed
-        // re-read keeps the list as it was rather than reporting the write lost.
-        void getActions(repoId).then(setView, () => undefined);
+        void mutate();
       }}
     />
   );

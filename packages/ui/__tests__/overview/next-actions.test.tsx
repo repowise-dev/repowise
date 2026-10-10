@@ -112,6 +112,31 @@ describe("NextActions", () => {
     expect(onSetState.mock.calls[0]?.[0].fingerprint).toBe("fp1");
   });
 
+  it("still says everything is answered once the re-read view drops the row", async () => {
+    const onSetState = vi.fn().mockResolvedValue(undefined);
+    const before = response([], [action()]);
+    const { rerender } = render(
+      <NextActions data={before} hrefFor={() => null} onSetState={onSetState} />,
+    );
+    const chip = () => screen.getByRole("radio", { name: /This quarter/ });
+    expect(chip()).toHaveTextContent("1");
+    fireEvent.click(screen.getByRole("button", { name: /More for Raise test coverage/ }));
+    fireEvent.click(await screen.findByText("Dismiss"));
+    // Until the re-read lands, the count stays with the view, as the sentence does.
+    expect(chip()).toHaveTextContent("1");
+    await waitFor(() => expect(onSetState).toHaveBeenCalledTimes(1));
+
+    const after = response([], []);
+    after.horizons.quarter.hidden = 1;
+    rerender(<NextActions data={after} hrefFor={() => null} onSetState={onSetState} />);
+    expect(screen.getByText(/You have answered everything listed here/)).toBeInTheDocument();
+    expect(screen.queryByText(/none of them produced work/)).toBeNull();
+    expect(chip()).toHaveTextContent("0");
+    // The other time frame held nothing to answer, so it reads as empty.
+    fireEvent.click(screen.getByRole("radio", { name: /This week/ }));
+    expect(screen.getByText(/none of them produced work/)).toBeInTheDocument();
+  });
+
   it("brings a row back when the write fails", async () => {
     const onSetState = vi.fn().mockRejectedValue(new Error("nope"));
     render(

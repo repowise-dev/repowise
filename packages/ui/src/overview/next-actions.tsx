@@ -75,19 +75,17 @@ export function NextActions({
 }: NextActionsProps) {
   // Open on the week unless it holds no work and the quarter does: a lone
   // "add a coverage report" is not a reason to show an empty week first.
-  const work = (key: ActionHorizonKey, less: ReadonlySet<string> = new Set()) =>
-    data
-      ? (data.horizons[key].by_tier.act_now ?? 0) +
-        (data.horizons[key].by_tier.plan ?? 0) -
-        data.horizons[key].actions.filter((a) => a.tier !== "improve_signal" && less.has(a.id))
-          .length
-      : 0;
+  // Counts come from `data` alone, like the sentence, so the two agree; both
+  // move when the host passes the re-read view after an answer.
+  const work = (key: ActionHorizonKey) =>
+    data ? (data.horizons[key].by_tier.act_now ?? 0) + (data.horizons[key].by_tier.plan ?? 0) : 0;
   const initial: ActionHorizonKey = work("week") === 0 && work("quarter") > 0 ? "quarter" : "week";
   const [horizon, setHorizon] = useState<ActionHorizonKey>(initial);
   const [expanded, setExpanded] = useState(false);
   // Optimistic: a row the person answered leaves at once and comes back if the
-  // write fails.
-  const [answered, setAnswered] = useState<ReadonlySet<string>>(new Set());
+  // write fails. Kept by id with the action, so "answered everything" still
+  // knows its time frame once a re-read drops the row.
+  const [answered, setAnswered] = useState<ReadonlyMap<string, NextAction>>(new Map());
   const [opened, setOpened] = useState<NextAction | null>(null);
 
   const rows = useMemo(
@@ -103,10 +101,10 @@ export function NextActions({
 
   const answer = (action: NextAction, state: ActionStateValue, message: string) => {
     if (!onSetState) return;
-    setAnswered((s) => new Set(s).add(action.id));
+    setAnswered((s) => new Map(s).set(action.id, action));
     const restore = () =>
       setAnswered((s) => {
-        const next = new Set(s);
+        const next = new Map(s);
         next.delete(action.id);
         return next;
       });
@@ -138,8 +136,8 @@ export function NextActions({
           label="Time frame"
           value={horizon}
           options={[
-            { value: "week", label: "This week", count: String(work("week", answered)), hint: "What the last 7 days of commits changed" },
-            { value: "quarter", label: "This quarter", count: String(work("quarter", answered)), hint: "What the last 90 days say is worth planning" },
+            { value: "week", label: "This week", count: String(work("week")), hint: "What the last 7 days of commits changed" },
+            { value: "quarter", label: "This quarter", count: String(work("quarter")), hint: "What the last 90 days say is worth planning" },
           ]}
           onChange={(v) => {
             setHorizon(v);
@@ -148,7 +146,7 @@ export function NextActions({
         />
       }
     >
-      {shown.length === 0 && answered.size > 0 && h.actions.length > 0 ? (
+      {shown.length === 0 && [...answered.values()].some((a) => a.horizons.includes(horizon)) ? (
         <p className="py-2 text-sm text-[var(--color-text-secondary)]">
           You have answered everything listed here. Answers are kept until the facts change.
         </p>

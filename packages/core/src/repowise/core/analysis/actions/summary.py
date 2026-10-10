@@ -9,15 +9,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from .rules._text import plural
+
 
 def work(horizon: dict[str, Any]) -> int:
     """``act_now`` plus ``plan``: the part of a horizon that is real work."""
     by_tier = horizon.get("by_tier", {})
     return int(by_tier.get("act_now", 0)) + int(by_tier.get("plan", 0))
-
-
-def plural(n: int, noun: str) -> str:
-    return f"{n:,} {noun}{'' if n == 1 else 's'}"
 
 
 def _sentence(horizons: dict[str, Any], name: str, anchor: datetime | None) -> str:

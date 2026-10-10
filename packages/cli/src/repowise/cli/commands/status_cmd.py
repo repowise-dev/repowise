@@ -347,11 +347,11 @@ def _next_actions_lines(view: dict | None) -> list[str]:
         return []
     from rich.markup import escape
 
-    from repowise.cli.commands.next_cmd import default_horizon, render_title
+    from repowise.cli.commands.next_cmd import default_horizon, render_title, sentence
 
     # The week's sentence names both windows when the week is quiet; the row
     # under it comes from whichever window ``repowise next`` would open on.
-    lines = [f"[bold]Next:[/bold] {escape(view['summary']['week'])}"]
+    lines = [f"[bold]Next:[/bold] {escape(sentence(view, 'week'))}"]
     horizon = default_horizon(view)
     top = next(
         (a for a in view["horizons"][horizon]["actions"] if a["tier"] in ("act_now", "plan")),

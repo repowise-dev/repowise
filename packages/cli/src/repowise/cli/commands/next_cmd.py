@@ -59,6 +59,19 @@ def default_horizon(view: dict[str, Any]) -> str:
     return "quarter" if week == 0 and quarter > 0 else "week"
 
 
+def sentence(view: dict[str, Any], horizon: str) -> str:
+    """The view's own sentence; worded by core here for a view that predates it."""
+    found = (view.get("summary") or {}).get(horizon)
+    if found:
+        return found
+    from datetime import datetime
+
+    from repowise.core.analysis.actions.summary import summarize
+
+    anchor = view.get("anchor")
+    return summarize(view["horizons"], datetime.fromisoformat(anchor) if anchor else None)[horizon]
+
+
 def render_title(title: str) -> str:
     """Rich markup for action text: the backtick spans (paths, symbols) set bold cyan."""
     from rich.markup import escape
@@ -88,10 +101,10 @@ def render(view: dict[str, Any], horizon: str, limit: int) -> None:
     from rich.markup import escape
 
     from repowise.core.analysis.actions import TIER_LABELS
-    from repowise.core.analysis.actions.summary import plural
+    from repowise.core.analysis.actions.rules._text import plural
 
     h = view["horizons"][horizon]
-    console.print(f"[bold]{escape(view['summary'][horizon])}[/bold]")
+    console.print(f"[bold]{escape(sentence(view, horizon))}[/bold]")
     shown = h["actions"][:limit]
     for tier, heading in TIER_LABELS.items():
         rows = [a for a in shown if a["tier"] == tier]

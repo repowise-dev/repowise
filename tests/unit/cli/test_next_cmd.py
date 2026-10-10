@@ -89,6 +89,16 @@ def test_prints_the_sentence_the_view_carries(canned, tmp_path: Path) -> None:
     assert status_cmd._next_actions_lines(view)[0].endswith("Core wording, week.")
 
 
+def test_a_view_without_a_summary_is_worded_by_core(canned, tmp_path: Path) -> None:
+    view = _view([_action(1, "act_now", "Fix `a`")], [])
+    del view["summary"]
+    canned(view)
+
+    out = _run(str(tmp_path)).output
+    assert out.startswith("1 thing worth doing in the week to Sep 28, the last indexed commit, 1 of them now.")
+    assert status_cmd._next_actions_lines(view)[0].endswith("1 of them now.")
+
+
 def test_groups_by_tier_under_the_status_sentence(canned, tmp_path: Path) -> None:
     week = [
         _action(1, "act_now", "Rotate the key in `src/settings.py`"),
