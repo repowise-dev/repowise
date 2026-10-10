@@ -190,6 +190,29 @@ def build_contextual_next_steps(
     return steps
 
 
+def keyless_upgrade_note(semantic_available: bool, reindex_command: str | None = None) -> str:
+    """One sentence naming the upgrade commands a keyless index has left.
+
+    Shared verbatim between ``repowise init``'s closing note and ``repowise
+    status``'s template-only scope line (#3105), so the wording cannot drift
+    between the two surfaces. Plain wording, no counts or percentages, and
+    nothing implying the keyless index is unfinished or broken — it is a
+    complete index; this just names what more is available.
+
+    ``reindex_command`` lets a caller that has ``search.next_command`` from
+    the stamped scope use that exact command instead of the generic default,
+    so the note cannot name a flag combination the run did not actually need.
+    """
+    prose = (
+        "repowise generate writes the subsystem pages with a model "
+        "(needs a key, or --provider ollama for a local model)"
+    )
+    if semantic_available:
+        return f"{prose}."
+    command = reindex_command or "repowise reindex --embedder ..."
+    return f"{prose}; {command} adds semantic search."
+
+
 def build_status_notes(setup: Any) -> list[str]:
     """Rich-markup notes about MCP and hook wiring, shown beside the panel.
 

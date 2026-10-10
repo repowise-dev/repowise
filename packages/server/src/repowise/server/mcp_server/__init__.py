@@ -338,6 +338,7 @@ _STATE_NAMES = frozenset(
         "_embedder_status",
         "_release_check",
         "_release_announced",
+        "_keyless_note_announced",
     }
 )
 

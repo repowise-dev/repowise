@@ -12,6 +12,7 @@ import time
 from repowise.server.mcp_server._meta import _normalize_target_path
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import keyless_note_meta as _keyless_note_meta
 from repowise.server.mcp_server.tool_answer.bodies import (
     _build_symbol_bodies,
     _gather_body_candidates,
@@ -214,6 +215,7 @@ async def _degraded_payload(
             targets=[*citations, *fallback_targets],
         ),
         "degraded": reason,
+        **(_keyless_note_meta() if reason == "no-llm-provider" else {}),
     }
     return _with_candidates(payload, resolved_pool if resolved_pool is not None else hits)
 

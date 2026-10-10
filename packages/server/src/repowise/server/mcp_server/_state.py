@@ -72,3 +72,8 @@ _vector_store_errors: dict[str, str] = {}
 # each newer release is surfaced once per process rather than on every call.
 _release_check: Any = None
 _release_announced: str | None = None
+
+# Whether ``get_answer``'s ``no-llm-provider`` degraded path has already named
+# what a key or local model would add in this process. Same once-per-process
+# shape as ``_release_announced``: a fact the caller only needs the first time.
+_keyless_note_announced: bool = False

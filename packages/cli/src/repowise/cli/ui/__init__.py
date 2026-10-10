@@ -42,6 +42,7 @@ _LAZY: dict[str, str] = {
     "build_completion_panel": "result_panels",
     "build_contextual_next_steps": "result_panels",
     "build_status_notes": "result_panels",
+    "keyless_upgrade_note": "result_panels",
     "format_bytes": "brand",
     "format_elapsed": "brand",
     "interactive_advanced_config": "mode_selection",

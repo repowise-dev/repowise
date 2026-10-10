@@ -853,6 +853,28 @@ def _release_meta() -> dict[str, Any]:
     }
 
 
+def keyless_note_meta() -> dict[str, Any]:
+    """Name what a key or a local model would add, once per process, the
+    first time ``get_answer`` degrades with ``no-llm-provider`` (#3105).
+
+    The agent reading a keyless answer is told synthesis is missing, but
+    nothing says how to get it. Same once-per-process shape as
+    :func:`_release_meta`: a fact the caller only needs once, not charged
+    against every later response's budget.
+    """
+    from repowise.server.mcp_server import _state
+
+    if _state._keyless_note_announced:
+        return {}
+    _state._keyless_note_announced = True
+    return {
+        "keyless_note": (
+            "repowise generate writes synthesized answers with a model "
+            "(needs a key, or --provider ollama for a local model)"
+        )
+    }
+
+
 def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
     """Hint for source retrieval (kept for backward compat with tool_symbol.py)."""
     return None

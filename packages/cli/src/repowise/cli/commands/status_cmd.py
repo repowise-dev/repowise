@@ -23,6 +23,7 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.output import emit_json, format_option, notice_console
 from repowise.cli.ui.brand import format_bytes
+from repowise.cli.ui.result_panels import keyless_upgrade_note
 from repowise.core.docs_mode import resolve_docs_mode
 from repowise.core.index_scope import resolve_index_scope
 
@@ -698,6 +699,15 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     if scope["upgrade"]["status"] not in ("unknown", "not_applicable", "complete"):
         state_table.add_row("Full upgrade", scope["upgrade"]["status"])
     console.print(state_table)
+
+    # A template-only scope is a finished keyless index, not a broken one —
+    # name the upgrade commands here too, since "Full upgrade  pending" above
+    # names no command on its own (#3105). Mirrors the init closing note.
+    if scope["content_provenance"] == "template":
+        note = keyless_upgrade_note(
+            scope["search"]["semantic"] == "available", scope["search"]["next_command"]
+        )
+        console.print(f"[dim]{note}[/dim]")
 
     if not has_db:
         console.print(f"[yellow]Database not found at {db_path}.[/yellow]")

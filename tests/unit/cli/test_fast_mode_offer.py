@@ -8,6 +8,7 @@ from repowise.cli.ui import (
     RepoScanInfo,
     build_contextual_next_steps,
     build_status_notes,
+    keyless_upgrade_note,
     should_offer_fast_mode,
 )
 
@@ -195,3 +196,28 @@ def test_next_steps_render_without_truncation_or_collision():
     out = console.export_text()
     assert "repowise hook rewrite install" in out
     assert "compress noisy command output" in out
+
+
+def test_keyless_upgrade_note_names_both_commands_by_default():
+    note = keyless_upgrade_note(semantic_available=False)
+    assert "repowise generate" in note
+    assert "--provider ollama" in note
+    assert "repowise reindex --embedder ..." in note
+
+
+def test_keyless_upgrade_note_omits_search_half_when_already_available():
+    note = keyless_upgrade_note(semantic_available=True)
+    assert "repowise generate" in note
+    assert "reindex" not in note
+    assert "embedder" not in note
+
+
+def test_keyless_upgrade_note_uses_the_scope_s_own_next_command():
+    note = keyless_upgrade_note(semantic_available=False, reindex_command="repowise reindex")
+    assert "repowise reindex" in note
+    assert "--embedder ..." not in note
+
+
+def test_keyless_upgrade_note_falls_back_without_a_next_command():
+    note = keyless_upgrade_note(semantic_available=False, reindex_command=None)
+    assert "repowise reindex --embedder ..." in note
