@@ -3,6 +3,7 @@ import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
 import { getDefaultHref } from "../dashboard/attention-href";
 import { formatNumber } from "../lib/format";
 import { fileEntityPath } from "../shared/entity";
+import { PageFrame } from "../shared/page-shell";
 import { StatRibbon } from "../stats/stat-ribbon";
 import { AttentionAreas } from "./attention-areas";
 import { AttentionRows } from "./attention-rows";
@@ -145,7 +146,7 @@ export function OverviewBody({
   );
 
   return (
-    <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-6 p-[var(--page-pad)] sm:gap-8">
+    <PageFrame>
       {slots.header}
 
       <ChangeLine since={previousSnapshotAt(summary)} stats={changeStats} />
@@ -257,6 +258,6 @@ export function OverviewBody({
       <OverviewSection title="Explore this codebase">
         <ExploreList entries={explore} LinkComponent={LinkComponent} />
       </OverviewSection>
-    </div>
+    </PageFrame>
   );
 }

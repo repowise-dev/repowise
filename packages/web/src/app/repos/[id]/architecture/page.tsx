@@ -46,7 +46,7 @@ import { use, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useQueryState, parseAsStringLiteral } from "nuqs";
-import { Code2 } from "lucide-react";
+import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { ErrorBoundary } from "@repowise-dev/ui/shared";
 import { GraphView } from "@/components/architecture/graph-view";
@@ -202,7 +202,7 @@ export default function ArchitecturePage({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 px-4 pt-3 sm:px-6">
+      <div className="shrink-0 px-[var(--page-pad)] pt-3">
         <ViewTabs
           tabs={tabs}
           value={activeTab}
@@ -229,30 +229,24 @@ export default function ArchitecturePage({
         )}
         {activeTab === "packages" && <DependenciesView repoId={repoId} />}
         {activeTab === "symbols" && (
-          <div className="max-w-[1600px] space-y-6 p-4 sm:p-6">
+          <PageFrame maxWidth="wide">
             <SymbolIndexHeader />
             <SymbolTable repoId={repoId} />
-          </div>
+          </PageFrame>
         )}
         {activeTab === "coupling" && (
-          <div className="mx-auto max-w-[1500px] p-4 sm:p-6">
-            {/* Wider than the other tabs: the pairs table carries a sentence
-                per row plus both modules. The ring keeps its own 820px cap. */}
-            <div className="mb-2">
-              <h1 className="mb-1 flex items-center gap-2 text-xl font-semibold text-[var(--color-text-primary)]">
-                <Code2 className="h-5 w-5 text-[var(--color-accent-primary)]" />
-                {t("couplingTitle")}
-              </h1>
-              <p className="text-sm text-[var(--color-text-secondary)]">
-                {COUPLING_DISCLAIMER}
-              </p>
-            </div>
+          <PageFrame maxWidth="wide">
+            {/* The tab is already named Coupling, so the page carries the
+                disclaimer alone rather than a second page title. */}
+            <p className="max-w-[68ch] text-sm text-[var(--color-text-secondary)]">
+              {COUPLING_DISCLAIMER}
+            </p>
             {/* Contain a render throw to the tab instead of letting it reach
                 the route boundary and blank the page. */}
             <ErrorBoundary title={tCoupling("loadFailed")}>
               <CouplingTab repoId={repoId} />
             </ErrorBoundary>
-          </div>
+          </PageFrame>
         )}
       </div>
     </div>

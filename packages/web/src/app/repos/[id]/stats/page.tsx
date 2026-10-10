@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { BarChart3 } from "lucide-react";
 import { getStatsHighlights } from "@/lib/api/stats";
+import { ApiClientError } from "@/lib/api/client";
 import { PageShell } from "@repowise-dev/ui/shared";
 import { StatsView } from "@/components/stats/stats-view";
 
@@ -22,8 +23,9 @@ export default async function StatsPage({ params }: Props) {
   let data;
   try {
     data = await getStatsHighlights(id);
-  } catch {
-    notFound();
+  } catch (err) {
+    if (err instanceof ApiClientError && err.status === 404) notFound();
+    throw err;
   }
 
   return (

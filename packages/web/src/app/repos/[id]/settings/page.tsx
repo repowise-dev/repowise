@@ -58,7 +58,7 @@ export default async function RepoSettingsPage({ params }: Props) {
     <PageShell
       title={t("title")}
       description={t("description", { repo: repo.name })}
-      className="max-w-3xl"
+      maxWidth="narrow"
     >
       <OverviewSection
         title={t("generalTitle")}

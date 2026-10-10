@@ -14,10 +14,10 @@ export default async function ArchitectureLoading() {
       className="flex h-full flex-col"
       label={t("architecture")}
     >
-      <div className="shrink-0 px-4 pt-3 sm:px-6">
+      <div className="shrink-0 px-[var(--page-pad)] pt-3">
         <Skeleton className="h-9 w-80 max-w-full rounded-lg" />
       </div>
-      <div className="min-h-0 flex-1 p-4 sm:p-6">
+      <div className="min-h-0 flex-1 p-[var(--page-pad)]">
         <Skeleton className="h-full w-full rounded-lg" />
       </div>
     </SkeletonRegion>

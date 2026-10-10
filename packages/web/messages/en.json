@@ -84,6 +84,7 @@
       "loading": "Loading Repowise"
     },
     "reindexHint": {
+      "label": "Reindex",
       "body": "This index was built by an older repowise. It still works, but a reindex is recommended to pick up the latest format."
     },
     "whatsNewModal": {
@@ -146,6 +147,10 @@
     "files": "Files"
   },
   "errors": {
+    "workspaceErrorTitle": "Failed to load the workspace",
+    "workspaceErrorFallback": "Could not load workspace data. The backend may be unavailable.",
+    "settingsErrorTitle": "Failed to load settings",
+    "settingsErrorFallback": "Could not load settings. The backend may be unavailable.",
     "notFoundTitle": "Page not found",
     "notFoundBody": "The page you requested doesn't exist. It may have been moved or never existed.",
     "backToDashboard": "Back to dashboard",
@@ -218,10 +223,12 @@
       "description": "The things about this codebase you can't see anywhere else: how big it got, when it started, when the work happens, and the records it holds."
     },
     "commits": {
+      "emptyTitle": "No scored commits yet",
+      "emptyAction": "Go to overview",
       "title": "Commits",
       "description": "Every commit scored for change-risk against this repo's own history, so 'elevated' means elevated here rather than on some global curve.",
       "emptyDescription": "Every commit scored for change-risk against this repo's own history.",
-      "emptyHint": "Per-commit change-risk is captured on the next full index. Run a sync and the review queue fills in behind it.",
+      "emptyHint": "Per-commit change risk is captured on the next full index. Run a sync from the overview and the review queue fills in behind it.",
       "reviewQueueTitle": "Review queue",
       "reviewQueueDescription": "Newest first by default. Priority is a tercile of this repo's own distribution, so sorting by it shows only the top third — the filters narrow the whole repository, not the page.",
       "scoreBehaviourTitle": "How the score behaves here",
@@ -231,7 +238,6 @@
       "evolutionDescription": "Commit categories over time, read off the subject line. Fixes carry the accent because that is the series this chart exists to show."
     },
     "architecture": {
-      "couplingTitle": "Change coupling",
       "tabs": {
         "map": "Map",
         "coupling": "Coupling",
@@ -315,6 +321,8 @@
       "unknownName": "unknown"
     },
     "costs": {
+      "spendEmptyTitle": "No model calls recorded yet",
+      "spendEmptyDescription": "Nothing has been spent on this repository. Model spend appears here once Repowise generates docs or answers with a model.",
       "title": "Usage & savings",
       "description": "What agents avoided, what Repowise cost, and how we know.",
       "savingsErrorTitle": "Couldn't load agent savings",
@@ -362,6 +370,7 @@
       "footer": "Sync schedule, exclude patterns and deletion are per repository, on <link>the repository page</link>."
     },
     "workspace": {
+      "emptyAction": "Read the quickstart",
       "title": "Workspace",
       "description": "Every repository registered in this workspace, and what connects them.",
       "emptyTitle": "No repositories discovered yet",
@@ -419,6 +428,8 @@
       }
     },
     "docsFreshness": {
+      "loadErrorTitle": "Couldn't load documentation pages",
+      "loadErrorBody": "The backend did not return this repository's pages. Reload to try again.",
       "title": "Doc freshness",
       "header": "Freshness across {count} pages",
       "freshPct": "{pct}% of pages are fresh",
@@ -1134,6 +1145,12 @@
     }
   },
   "loading": {
+    "workspace": "Loading workspace",
+    "settings": "Loading settings",
+    "docs": "Loading documentation",
+    "overview": "Loading overview",
+    "file": "Loading file",
+    "symbol": "Loading symbol",
     "page": "Loading page",
     "repo": "Loading",
     "architecture": "Loading architecture",

@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getSymbolDetail } from "@/lib/api/symbols";
+import { ApiClientError } from "@/lib/api/client";
+import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 import { SymbolPage } from "@repowise-dev/ui/symbols";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import type { SymbolDetailResponse } from "@repowise-dev/types/symbols";
@@ -23,14 +25,15 @@ export default async function SymbolEntityPage({ params }: Props) {
   let detail: SymbolDetailResponse;
   try {
     detail = await getSymbolDetail(id, decoded);
-  } catch {
-    notFound();
+  } catch (err) {
+    if (err instanceof ApiClientError && err.status === 404) notFound();
+    throw err;
   }
 
   const filePath = detail.symbol.file_path;
 
   return (
-    <div className="mx-auto w-full max-w-[1100px] p-4 sm:p-6">
+    <PageFrame>
       <SymbolPage
         data={detail}
         repoId={id}
@@ -40,6 +43,6 @@ export default async function SymbolEntityPage({ params }: Props) {
           { label: detail.symbol.name },
         ]}
       />
-    </div>
+    </PageFrame>
   );
 }

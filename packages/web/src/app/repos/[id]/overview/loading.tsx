@@ -1,4 +1,6 @@
-import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { getTranslations } from "next-intl/server";
+import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
+import { Skeleton, SkeletonRegion } from "@repowise-dev/ui/ui/skeleton";
 
 /**
  * Skeleton mirroring the Overview layout — identity header, change line,
@@ -8,9 +10,11 @@ import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
  * match causes a visible reflow the moment content lands, which reads as
  * slower than showing nothing. (The owl stays reserved for brand moments.)
  */
-export default function OverviewLoading() {
+export default async function OverviewLoading() {
+  const t = await getTranslations("loading");
   return (
-    <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-6 p-[var(--page-pad)] sm:gap-8">
+    <SkeletonRegion label={t("overview")}>
+    <PageFrame>
       {/* Identity header: mark, title, description, meta row */}
       <div className="flex gap-4">
         <Skeleton className="h-10 w-10 rounded-xl" />
@@ -47,6 +51,7 @@ export default function OverviewLoading() {
 
       <Skeleton className="h-48" />
       <Skeleton className="h-40" />
-    </div>
+    </PageFrame>
+    </SkeletonRegion>
   );
 }

@@ -10,6 +10,8 @@ import { listAllPages } from "@/lib/api/pages";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { getTranslations } from "next-intl/server";
 import { HostedNudgeSlot } from "@/components/hosted/hosted-nudge-slot";
+import { ApiError } from "@repowise-dev/ui/shared/api-error";
+import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 
 export const metadata: Metadata = { title: "Doc freshness" };
 
@@ -22,13 +24,14 @@ export default async function CoveragePage({
   const t = await getTranslations("views.docsFreshness");
 
   let pages: Awaited<ReturnType<typeof listAllPages>> = [];
+  let failed = false;
 
   try {
     // Auto-paginate past the 500-item API cap so the counts, donut, and the
     // freshness table see every page, not just the first page of results.
     pages = await listAllPages(id);
   } catch {
-    // API unavailable
+    failed = true;
   }
 
   const total = pages.length;
@@ -44,12 +47,20 @@ export default async function CoveragePage({
   return (
     <div className="flex flex-col h-full">
       <DocsHeader>
-        <span className="text-xs text-[var(--color-text-tertiary)]">
-          {t("header", { count: formatNumber(total) })}
-        </span>
+        {!failed && (
+          <span className="text-xs text-[var(--color-text-tertiary)]">
+            {t("header", { count: formatNumber(total) })}
+          </span>
+        )}
       </DocsHeader>
 
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 max-w-[1600px]">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+      {failed ? (
+        <PageFrame maxWidth="wide">
+          <ApiError title={t("loadErrorTitle")} message={t("loadErrorBody")} />
+        </PageFrame>
+      ) : (
+      <PageFrame maxWidth="wide">
       <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
         {/* Donut */}
         <div className="flex flex-col items-center gap-4 lg:w-56 shrink-0">
@@ -112,6 +123,8 @@ export default async function CoveragePage({
       )}
 
       <FreshnessTableWithRegenerate pages={pages} repoId={id} />
+      </PageFrame>
+      )}
       </div>
     </div>
   );

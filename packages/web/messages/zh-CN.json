@@ -84,6 +84,7 @@
       "loading": "正在加载 Repowise"
     },
     "reindexHint": {
+      "label": "重新索引",
       "body": "这个索引是由旧版 repowise 构建的。它仍然可用，但建议重新索引，以采用最新的存储格式。"
     },
     "whatsNewModal": {
@@ -146,6 +147,10 @@
     "files": "文件"
   },
   "errors": {
+    "workspaceErrorTitle": "无法加载工作区",
+    "workspaceErrorFallback": "无法加载工作区数据，后端可能不可用。",
+    "settingsErrorTitle": "无法加载设置",
+    "settingsErrorFallback": "无法加载设置，后端可能不可用。",
     "notFoundTitle": "页面不存在",
     "notFoundBody": "你请求的页面不存在，可能已被移动，或从未存在。",
     "backToDashboard": "返回仪表盘",
@@ -218,10 +223,12 @@
       "description": "这些是这个代码库在其他地方看不到的信息：它有多大、从何时开始、工作发生在什么时间，以及它保持的纪录。"
     },
     "commits": {
+      "emptyTitle": "尚无已评分的提交",
+      "emptyAction": "前往概览",
       "title": "提交",
       "description": "每个提交都针对该仓库自身的历史评定了变更风险，因此「偏高」是相对本仓库偏高，而不是套用某条全局曲线。",
       "emptyDescription": "每个提交都针对该仓库自身的历史评定了变更风险。",
-      "emptyHint": "每次完整索引时会采集逐提交的变更风险。跑一次同步，评审队列随后就会填充。",
+      "emptyHint": "每次提交的变更风险会在下一次完整索引时记录。在概览页运行一次同步，审查队列就会随之填充。",
       "reviewQueueTitle": "评审队列",
       "reviewQueueDescription": "默认按最新排序。优先级取自本仓库自身分布的三分位，因此按它排序只会显示前三分之一——筛选条件收窄的是整个仓库，而不是当前这一页。",
       "scoreBehaviourTitle": "分数在这个仓库里的表现",
@@ -231,7 +238,6 @@
       "evolutionDescription": "按提交标题归类出的各类提交随时间的变化。修复类高亮显示，因为这张图存在的意义就是展示这一条序列。"
     },
     "architecture": {
-      "couplingTitle": "变更耦合",
       "tabs": {
         "map": "地图",
         "coupling": "耦合",
@@ -315,6 +321,8 @@
       "unknownName": "未知"
     },
     "costs": {
+      "spendEmptyTitle": "尚无模型调用记录",
+      "spendEmptyDescription": "此仓库还没有产生任何花费。Repowise 使用模型生成文档或回答问题后，花费会显示在这里。",
       "title": "用量与节省",
       "description": "智能体避开了什么、Repowise 花了多少，以及我们凭什么这么说。",
       "savingsErrorTitle": "无法加载智能体节省数据",
@@ -362,6 +370,7 @@
       "footer": "同步计划、排除规则与删除按代码仓库分别设置，见<link>代码仓库页面</link>。"
     },
     "workspace": {
+      "emptyAction": "阅读快速入门",
       "title": "工作区",
       "description": "这个工作区中注册的全部代码仓库，以及它们之间的关联。",
       "emptyTitle": "尚未发现任何代码仓库",
@@ -419,6 +428,8 @@
       }
     },
     "docsFreshness": {
+      "loadErrorTitle": "无法加载文档页面",
+      "loadErrorBody": "后端没有返回此仓库的页面，请刷新后重试。",
       "title": "文档新鲜度",
       "header": "{count} 页文档的新鲜度",
       "freshPct": "{pct}% 的页面是新鲜的",
@@ -1134,6 +1145,12 @@
     }
   },
   "loading": {
+    "workspace": "正在加载工作区",
+    "settings": "正在加载设置",
+    "docs": "正在加载文档",
+    "overview": "正在加载概览",
+    "file": "正在加载文件",
+    "symbol": "正在加载符号",
     "page": "正在加载页面",
     "repo": "正在加载",
     "architecture": "正在加载架构",

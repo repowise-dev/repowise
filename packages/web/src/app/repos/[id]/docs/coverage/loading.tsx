@@ -1,5 +1,6 @@
 import { getTranslations } from "next-intl/server";
 import { StatGridSkeleton } from "@repowise-dev/ui/shared/loading-skeletons";
+import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 import { SkeletonRegion, Skeleton } from "@repowise-dev/ui/ui/skeleton";
 
 /**
@@ -15,7 +16,7 @@ export default async function DocsCoverageLoading() {
       <div className="shrink-0 border-b border-[var(--color-border-default)] px-4 py-3 sm:px-6">
         <Skeleton className="h-6 w-56 max-w-full" />
       </div>
-      <div className="max-w-[1600px] flex-1 space-y-6 p-4 sm:p-6">
+      <PageFrame maxWidth="wide" className="flex-1">
         <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div className="flex shrink-0 flex-col items-center gap-4 lg:w-56">
             <Skeleton className="h-40 w-40 rounded-full" />
@@ -24,7 +25,7 @@ export default async function DocsCoverageLoading() {
           <StatGridSkeleton count={3} className="flex-1" />
         </div>
         <Skeleton className="h-72 w-full rounded-xl" />
-      </div>
+      </PageFrame>
     </SkeletonRegion>
   );
 }

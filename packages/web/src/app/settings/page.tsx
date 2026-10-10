@@ -20,7 +20,7 @@ export const metadata: Metadata = { title: "Settings" };
  * systems, two heading scales for the same role. Both run `PageShell` and
  * `OverviewSection` now, and everything on the page autosaves.
  *
- * `max-w-3xl` rather than the default 1280: this is a form, and a control that
+ * `narrow` rather than the default 1280: this is a form, and a control that
  * stretches to 1280 loses the relationship between its label and itself.
  */
 export default async function SettingsPage() {
@@ -30,7 +30,7 @@ export default async function SettingsPage() {
     <PageShell
       title={t("title")}
       description={t("description")}
-      className="max-w-3xl"
+      maxWidth="narrow"
     >
       <ConnectionSection />
       <ProviderSection />

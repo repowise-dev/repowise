@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getOverviewSummary } from "@/lib/api/overview";
+import { ApiClientError } from "@/lib/api/client";
+import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 import { getActions } from "@/lib/api/actions";
 import { getProviders } from "@/lib/api/providers";
 import { getCommitsPage } from "@/lib/api/git";
@@ -59,7 +61,12 @@ export default async function OverviewPage({ params }: Props) {
   // only buy a slower first paint and worse indexability. The commits call
   // replaces a client-side SWR fetch that used to waterfall in after paint.
   const [summary, providers, commitsPage, actions] = await Promise.all([
-    safeFetch(() => getOverviewSummary(id)),
+    // Only a 404 means the repo is gone; any other failure reaches the route
+    // error boundary instead of reading as "not found".
+    getOverviewSummary(id).catch((err: unknown) => {
+      if (err instanceof ApiClientError && err.status === 404) return null;
+      throw err;
+    }),
     safeFetch(() => getProviders()),
     safeFetch(() => getCommitsPage(id, { sort: "date", limit: COMMIT_LIMIT })),
     safeFetch(() => getActions(id)),
@@ -121,10 +128,10 @@ export default async function OverviewPage({ params }: Props) {
 
   if (isFresh) {
     return (
-      <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-8 p-[var(--page-pad)]">
+      <PageFrame>
         {header}
         <FirstIndexExperience repoId={id} repoName={repo.name} />
-      </div>
+      </PageFrame>
     );
   }
 

@@ -1,4 +1,6 @@
-import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { getTranslations } from "next-intl/server";
+import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
+import { Skeleton, SkeletonRegion } from "@repowise-dev/ui/ui/skeleton";
 
 /**
  * Shapes match the real header: eyebrow, path, the lede's 44px figure beside
@@ -7,9 +9,11 @@ import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
  * all, so content landing reflowed everything — which reads as slower than
  * showing nothing.
  */
-export default function FilePageLoading() {
+export default async function FilePageLoading() {
+  const t = await getTranslations("loading");
   return (
-    <div className="mx-auto flex w-full max-w-[1280px] flex-col p-[var(--page-pad)]">
+    <SkeletonRegion label={t("file")}>
+    <PageFrame>
       <div className="flex flex-col gap-8">
         <div className="flex flex-col gap-6">
           <div>
@@ -32,6 +36,7 @@ export default function FilePageLoading() {
         <Skeleton className="h-9 w-full max-w-lg" />
         <Skeleton className="h-96 w-full" />
       </div>
-    </div>
+    </PageFrame>
+    </SkeletonRegion>
   );
 }
