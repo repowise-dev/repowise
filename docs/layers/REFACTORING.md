@@ -55,19 +55,10 @@ filters for type, confidence and effort. A plan's drawer explains its rank, show
 the tests that reach the code and the command to run them, and can export the
 structured plan for an agent. The page never edits code or runs tests on its own.
 
-A plan's tests (`validation`) come in this order: measured coverage of the
-changed lines, then tests named for the file (also with a qualifier, such as
-`test_loader_golden.py` or `loader.retry.test.ts`, unless a sibling file carries
-that name), then tests in a mirroring directory, then the call graph, nearest
-first. A test that reaches the file only
-through a hub, a module with a fan-in above 50 or in the top 1% of the
-repository's files by fan-in (and at least 10), is left out. For a file that is
-itself a hub, only tests that reach or import the changed symbol count, or import
-the module whole. Commands always name test files. When no test reaches the
-change, the plan has no command. Its `validation.prerequisite` then says to add a
-characterization test for the symbol before the edit. A plan whose only tests
-were reached through a hub ranks lower, because unknown validation carries more
-risk than inferred.
+A plan lists the tests closest to the change first: measured coverage, then
+tests named for the file, then the call graph. Tests that reach the file only
+through a widely imported hub module are left out. When no test reaches the
+change, the plan has no command and asks for a characterization test first.
 
 ## Reading the results
 
