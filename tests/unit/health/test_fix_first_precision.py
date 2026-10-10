@@ -564,3 +564,15 @@ def test_a_perf_step_names_its_function_unless_the_action_already_does() -> None
     assert _perf_step_text(quoted, "src/db.py") == f"{quoted['action']} (Store.get)"
     named = {"action": "Pass every key to get at once", "symbol": "src/db.py::Store.get"}
     assert _perf_step_text(named, "src/db.py") == named["action"]
+
+
+def test_a_span_that_awaits_is_extracted_into_an_awaited_async_helper() -> None:
+    from repowise.core.analysis.health.fix_first import text
+
+    assert text.signature("load_rows", ["db"], ["rows"]) == "load_rows(db) -> rows"
+    assert text.signature("load_rows", ["db"], ["rows"], is_async=True) == (
+        "async load_rows(db) -> rows, awaited at the call site"
+    )
+    assert text.signature(None, ["db"], [], is_async=True) == (
+        "an async helper taking (db), awaited at the call site"
+    )

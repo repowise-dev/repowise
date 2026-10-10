@@ -335,11 +335,18 @@ def history_fact(marker: str, details: dict, function: str | None = None) -> str
     return None
 
 
-def signature(name: str | None, params: list[str], returns: list[str]) -> str:
-    """``compute_x(a, b) -> c``; a long parameter list is cut with its count."""
+def signature(
+    name: str | None, params: list[str], returns: list[str], *, is_async: bool = False
+) -> str:
+    """``compute_x(a, b) -> c``; a long parameter list is cut with its count.
+    A span that awaits becomes ``async compute_x(...)``, awaited where it was."""
     shown = ", ".join(params[:4]) + (f", +{len(params) - 4} more" if len(params) > 4 else "")
-    out = f"{name}({shown})" if name else "a helper" + (f" taking ({shown})" if params else "")
-    return out + (f" -> {', '.join(returns[:3])}" if returns else "")
+    helper = "an async helper" if is_async else "a helper"
+    out = f"{name}({shown})" if name else helper + (f" taking ({shown})" if params else "")
+    out += f" -> {', '.join(returns[:3])}" if returns else ""
+    if not is_async:
+        return out
+    return f"{'async ' if name else ''}{out}, awaited at the call site"
 
 
 def first_sentence(text: str) -> str:

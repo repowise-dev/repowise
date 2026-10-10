@@ -420,6 +420,7 @@ class _Files:
                 body.get("suggested_name"),
                 list(body.get("params") or []),
                 list(body.get("returns") or []),
+                is_async=bool(body.get("needs_async", False)),
             )
             return FixStep(1, f"Extract lines {start}-{end} of {tail} into {into}", path, start)
         shape = self.shape(path, function)
@@ -612,6 +613,7 @@ def _refactor_step(order: int, step: Mapping[str, Any], plan: Any) -> FixStep:
             body.get("suggested_name"),
             list(body.get("params") or []),
             list(body.get("returns") or []),
+            is_async=bool(body.get("needs_async", False)),
         )
         where = f"lines {start}-{end} of {sym}" if start and end else f"part of {sym}"
         line_text = f"Extract {where} into {into}"
