@@ -432,7 +432,9 @@ def test_explain_names_the_changed_file_and_the_route(repo) -> None:
     assert result.stdout.splitlines() == [
         "Selected: src/a.py changed (import-graph).",
         "Route: tests/test_a.py -> src/a.py",
-        "Order: 1 of 1 (reaches a changed file through other files).",
+        # tests/test_a.py imports src/a.py: one hop, a direct edge.
+        "Order: 1 of 1 (its calls, a fixture or a direct import reach a changed file; "
+        "1 hop(s)).",
     ]
     missed = _run(repo, "main...feat", "--explain", "./tests/test_b.py")
     assert missed.stdout.startswith("Not selected: no changed file reaches it")
@@ -447,18 +449,19 @@ def test_explain_joins_the_json_report(repo) -> None:
         "lines": [
             "Selected: src/a.py changed (import-graph).",
             "Route: tests/test_a.py -> src/a.py",
-            "Order: 1 of 1 (reaches a changed file through other files).",
+            "Order: 1 of 1 (its calls, a fixture or a direct import reach a changed file; "
+            "1 hop(s)).",
         ],
         "route": ["tests/test_a.py", "src/a.py"],
         "order": {
             "position": 1,
             "of": 1,
             "test": "tests/test_a.py",
-            "tier": "transitive",
-            "hops": None,
+            "tier": "direct",
+            "hops": 1,
             "co_change": 0,
             "failed_last_run": False,
-            "reason": "reaches a changed file through other files",
+            "reason": "its calls, a fixture or a direct import reach a changed file; 1 hop(s)",
         },
     }
     assert data["selected"]["why"] == {"tests/test_a.py": "src/a.py changed (import-graph)"}
@@ -515,7 +518,7 @@ def test_prioritize_lists_the_whole_suite_selected_first(repo) -> None:
     data = json.loads(_run(repo, "main...feat", "--format", "json", "--prioritize").stdout)
     assert data["run_all"] is False and data["selected"]["tests"] == ["tests/test_a.py"]
     assert [(o["test"], o["tier"], o["co_change"]) for o in data["order"]] == [
-        ("tests/test_a.py", "transitive", 0),
+        ("tests/test_a.py", "direct", 0),
         ("tests/test_c.py", "rest", 4),
         ("tests/test_b.py", "rest", 0),
     ]
@@ -542,7 +545,8 @@ def test_selected_tests_run_in_order_and_a_last_failure_breaks_a_tie(repo) -> No
     assert result.stdout == "tests/test_z.py tests/test_a.py\n"
     explained = _run(repo, "main...feat", "--explain", "tests/test_z.py")
     assert explained.stdout.splitlines()[-1] == (
-        "Order: 1 of 2 (reaches a changed file through other files; failed in the last run)."
+        "Order: 1 of 2 (its calls, a fixture or a direct import reach a changed file; "
+        "1 hop(s); failed in the last run)."
     )
 
 

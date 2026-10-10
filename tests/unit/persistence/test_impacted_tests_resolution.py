@@ -167,6 +167,7 @@ async def test_a_changed_test_file_is_its_own_candidate(async_session) -> None:
         }
     ]
     assert out["unknown"] == []
+    assert out["test_hops"] == {"tests/test_bar.py": 0}
 
 
 async def _graph(session, repo_id, tests: set[str], files: set[str], imports: list[tuple]):
@@ -220,6 +221,12 @@ async def test_the_import_graph_reaches_tests_through_modules_and_other_tests(
         "tests/test_child.py": "import-graph",
     }
     assert out["unknown"] == []
+    # Fewest dependency hops from the change, for ordering; 1 is a direct import.
+    assert out["test_hops"] == {
+        "tests/base.py": 1,
+        "tests/test_api.py": 2,
+        "tests/test_child.py": 2,
+    }
 
 
 async def test_graph_candidates_are_not_capped(async_session) -> None:
@@ -587,3 +594,41 @@ async def test_narrow_scopes_keeps_the_whole_scope_for_a_target_the_walk_does_no
     )
 
     assert out == {"src/unindexed.py": ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py"]}
+
+
+async def test_the_ranking_orders_by_the_hops_the_collection_measures(async_session) -> None:
+    """A test importing the changed file directly runs before one importing it through another."""
+    from repowise.core.analysis.changed_lines import ChangeSet, FileDiff
+    from repowise.core.analysis.test_ranking import rank_change
+    from repowise.core.analysis.test_selection import Selection
+
+    repo = await insert_repo(async_session)
+    await _graph(
+        async_session,
+        repo.id,
+        tests={"tests/test_far.py", "tests/test_near.py"},
+        files={"src/api.py", "src/core.py"},
+        imports=[
+            ("src/api.py", "src/core.py"),
+            ("tests/test_far.py", "src/api.py"),
+            ("tests/test_near.py", "src/core.py"),
+        ],
+    )
+    out = _empty_result(1)
+    await _resolve_impacted(async_session, repo.id, {"src/core.py": None}, set(), out)
+    assert out["test_hops"] == {"tests/test_near.py": 1, "tests/test_far.py": 2}
+
+    change = ChangeSet({"src/core.py": FileDiff(path="src/core.py")}, set(), "t", None, None)
+    tests = ("tests/test_far.py", "tests/test_near.py")
+    selection = Selection(
+        run_all=False,
+        reasons=(),
+        tests=tests,
+        test_files=tests,
+        basis={"src/core.py": "import-graph"},
+    )
+    ranked = await rank_change(None, repo.id, change, out, selection, lambda _p: None)
+    assert [(r.test, r.tier, r.hops) for r in ranked] == [
+        ("tests/test_near.py", "direct", 1),
+        ("tests/test_far.py", "transitive", 2),
+    ]

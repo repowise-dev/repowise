@@ -382,6 +382,12 @@ def plugin_loader(sources: Iterable[tuple[str, str]]) -> str | None:
 PACKAGE_INIT_REASON = "every import of the package runs it, and those are not all tracked"
 
 
+# Path predicates the selection asks hundreds of thousands of times on a large
+# change (once per test per changed file); each is pure in the path.
+_PATH_MEMO = 1 << 16
+
+
+@functools.lru_cache(maxsize=_PATH_MEMO)
 def scope_kind(path: str) -> str | None:
     """``test-package`` or ``conftest`` for a file every test under its directory runs.
 
@@ -418,12 +424,13 @@ def is_runnable_test(path: str, roots: PytestRoots | None = None) -> bool:
     With *roots*, a Python file pytest's config leaves out of collection
     (``core/test_paths.py``) is not one: the same rule that stamps ``is_test``.
     """
+    return _runnable_name(path) and (roots is None or is_test_path(path, roots=roots))
+
+
+@functools.lru_cache(maxsize=_PATH_MEMO)
+def _runnable_name(path: str) -> bool:
     p = PurePosixPath(path)
-    return (
-        p.suffix.lower() in _TEST_CODE_SUFFIXES
-        and is_test_path(p.name)
-        and (roots is None or is_test_path(path, roots=roots))
-    )
+    return p.suffix.lower() in _TEST_CODE_SUFFIXES and is_test_path(p.name)
 
 
 @functools.lru_cache(maxsize=8)
@@ -1141,7 +1148,13 @@ def _tests_under(inits: Collection[str], known_tests: Collection[str]) -> list[s
 
 
 def _under(dirs: Collection[str], files: Collection[str]) -> list[str]:
-    return [f for f in files if any(d == "." or f.startswith(f"{d}/") for d in dirs)]
+    # Asked once per changed file with the same few directories: memoized.
+    return list(_under_memo(frozenset(dirs), tuple(files))) if dirs else []
+
+
+@functools.lru_cache(maxsize=64)
+def _under_memo(dirs: frozenset[str], files: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(f for f in files if any(d == "." or f.startswith(f"{d}/") for d in dirs))
 
 
 def expand_test_scopes(tests: Iterable[str], test_files: Collection[str]) -> list[str]:

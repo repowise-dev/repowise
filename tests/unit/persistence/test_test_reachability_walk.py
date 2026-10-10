@@ -647,3 +647,53 @@ async def test_a_hub_import_the_graph_cannot_tie_to_a_symbol_still_counts(async_
         "tests/test_barrel.py",
     }
     assert lonely.prerequisite is None
+
+
+async def test_the_import_walk_from_memory_matches_the_walk_from_the_database(async_session):
+    """One bulk read answers the levels the per-level queries do, at any depth."""
+    import sys
+
+    from repowise.core.analysis.test_reachability import load_import_graph
+
+    repo = await insert_repo(async_session)
+    files = ["src/a.py", "src/b.py", "src/c.py", "src/d.py", "src/e.py"]
+    tests = ["tests/test_a.py", "tests/test_d.py", "tests/helper.py", "tests/test_h.py"]
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={**dict.fromkeys(files, False), **dict.fromkeys(tests, True)},
+        edges=[
+            # A diamond (d reaches a through b and c), a cycle (b <-> e) and a
+            # test importing a test helper.
+            ("src/b.py", "src/a.py", "imports"),
+            ("src/c.py", "src/a.py", "imports"),
+            ("src/d.py", "src/b.py", "imports"),
+            ("src/d.py", "src/c.py", "type_use"),
+            ("src/e.py", "src/b.py", "imports"),
+            ("src/b.py", "src/e.py", "imports"),
+            ("tests/test_a.py", "src/a.py", "imports"),
+            ("tests/test_d.py", "src/d.py", "imports"),
+            ("tests/helper.py", "src/e.py", "imports"),
+            ("tests/test_h.py", "tests/helper.py", "imports"),
+        ],
+    )
+    graph = await load_import_graph(async_session, repo.id)
+    test_files = set(tests)
+    for depth in (1, 2, sys.maxsize):
+        args = dict(call_depth=0, import_depth=depth, test_files=test_files)
+        stored = await by_tier(async_session, repo.id, ["src/a.py", "src/c.py"], **args)
+        held = await by_tier(
+            async_session, repo.id, ["src/a.py", "src/c.py"], import_graph=graph, **args
+        )
+        assert held == stored
+    assert graph.hops(["src/a.py"]) == {
+        "src/a.py": 0,
+        "src/b.py": 1,
+        "src/c.py": 1,
+        "tests/test_a.py": 1,
+        "src/d.py": 2,
+        "src/e.py": 2,
+        "tests/test_d.py": 3,
+        "tests/helper.py": 3,
+        "tests/test_h.py": 4,
+    }

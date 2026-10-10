@@ -527,21 +527,51 @@ async def scoped_candidates(
     a conftest's text. Every conftest on a route that this
     module cannot narrow keeps today's answer: every test under it.
     """
+    routes = _conftest_routes(found, entries, parents, parent_entries)
+    _judge_routes(routes, read, plugin_loader)
+    scope = await _load_scope(session, repo_id, routes, parents, test_files)
+    out: dict[str, list[tuple[str, str]]] = {}
+    notes: dict[tuple[str, str], list[str]] = {}
+    for target, picks in found.items():
+        out[target] = _narrow(target, dict(picks), routes.get(target, {}), scope, notes)
+    return out, [_note(key, targets) for key, targets in notes.items()]
+
+
+def _conftest_routes(
+    found: Mapping[str, dict[str, str]],
+    entries: Mapping[str, Mapping[str, Collection[str]]],
+    parents: Mapping[str, Collection[str]],
+    parent_entries: Mapping[str, Mapping[str, Collection[str]]],
+) -> dict[str, dict[str, _Route]]:
+    """``{target: {conftest: its route}}`` for every conftest a target's picks reach."""
+    # Test files each conftest imports, asked once per conftest per target.
+    imported: dict[str, list[str]] = {}
+    for test, importers in parents.items():
+        for importer in importers:
+            imported.setdefault(importer, []).append(test)
     routes: dict[str, dict[str, _Route]] = {}
     for target, picks in found.items():
         full = dict(picks)
         with_importers(full, parents)
         for conf in sorted(t for t in full if scope_kind(t) == "conftest" and t != target):
             via = set(entries.get(target, {}).get(conf, ()))
-            for h in full:
-                if h != conf and conf in parents.get(h, ()):
+            for h in imported.get(conf, ()):
+                if h != conf and h in full:
                     via |= set(parent_entries.get(h, {}).get(conf, ()))
             # A parent conftest is not an import: pytest links a nested
             # conftest to it, and that parent's own decision covers the route.
             own = frozenset(v for v in via if scope_kind(v) != "conftest")
             routes.setdefault(target, {})[conf] = _Route(own, conf in picks and not via)
+    return routes
 
-    # One parse per conftest; each distinct route through it is matched against it.
+
+def _judge_routes(
+    routes: Mapping[str, Mapping[str, _Route]],
+    read: Callable[[str], str | None],
+    plugin_loader: str | None,
+) -> None:
+    """Set each route's use and reason. One parse per conftest; each distinct route through
+    it is matched against it once."""
     facts: dict[str, ConftestFacts | None] = {}
     uses: dict[tuple[str, frozenset[str]], ConftestUse] = {}
     for by_conf in routes.values():
@@ -549,30 +579,43 @@ async def scoped_candidates(
             if conf not in facts:
                 source = read(conf)
                 facts[conf] = None if source is None else ConftestFacts.parse(source, conf)
-            parsed = facts[conf]
-            if plugin_loader:
-                route.reason = f"{plugin_loader} loads pytest plugins by name"
-            elif not route.entries:
-                route.reason = f"{conf} is reached by a call alone" if route.direct else None
-            elif parsed is None:
-                route.reason = f"{conf} could not be read"
-            else:
-                key = (conf, route.entries)
-                if key not in uses:
-                    uses[key] = parsed.use(route.entries)
-                route.use = uses[key]
-                route.reason = route.use.run_all
+            _judge(conf, route, facts[conf], plugin_loader, uses)
 
-    narrowable = {
-        conf
-        for by_conf in routes.values()
-        for conf, r in by_conf.items()
-        if r.use is not None and r.reason is None
-    }
+
+def _judge(
+    conf: str,
+    route: _Route,
+    parsed: ConftestFacts | None,
+    plugin_loader: str | None,
+    uses: dict[tuple[str, frozenset[str]], ConftestUse],
+) -> None:
+    if plugin_loader:
+        route.reason = f"{plugin_loader} loads pytest plugins by name"
+    elif not route.entries:
+        route.reason = f"{conf} is reached by a call alone" if route.direct else None
+    elif parsed is None:
+        route.reason = f"{conf} could not be read"
+    else:
+        key = (conf, route.entries)
+        if key not in uses:
+            uses[key] = parsed.use(route.entries)
+        route.use = uses[key]
+        route.reason = route.use.run_all
+
+
+async def _load_scope(
+    session: AsyncSession,
+    repo_id: str,
+    routes: Mapping[str, Mapping[str, _Route]],
+    parents: Mapping[str, Collection[str]],
+    test_files: Collection[str],
+) -> _Scope:
+    """The edges into every narrowable conftest and its fixtures, read once for all targets."""
+    judged = [(conf, r) for by_conf in routes.values() for conf, r in by_conf.items()]
+    narrowable = {conf for conf, r in judged if r.use is not None and r.reason is None}
     declared = {
         f"{conf}::{name}"
-        for by_conf in routes.values()
-        for conf, r in by_conf.items()
+        for conf, r in judged
         if conf in narrowable and r.use is not None
         for name in r.use.declared
     }
@@ -582,19 +625,12 @@ async def scoped_candidates(
         r.use is not None
         and r.use.fixtures
         and not any(f"{conf}::{n}" in stamped for n in r.use.declared)
-        for by_conf in routes.values()
-        for conf, r in by_conf.items()
+        for conf, r in judged
         if conf in narrowable
     )
     # Asked only when a conftest's fixtures show no recorded request at all.
     recorded = await _records_fixture_requests(session, repo_id) if unstamped else True
-    scope = _Scope(edges, parents, test_files, recorded)
-
-    out: dict[str, list[tuple[str, str]]] = {}
-    notes: dict[tuple[str, str], list[str]] = {}
-    for target, picks in found.items():
-        out[target] = _narrow(target, dict(picks), routes.get(target, {}), scope, notes)
-    return out, [_note(key, targets) for key, targets in notes.items()]
+    return _Scope(edges, parents, test_files, recorded)
 
 
 def _note(key: tuple[str, str], targets: list[str]) -> str:
@@ -612,9 +648,19 @@ class _Scope:
     test_files: Collection[str]
     # The index stamps fixture requests (see :func:`_records_fixture_requests`).
     recorded: bool
+    _first: dict[str, str | None] = field(default_factory=dict, compare=False)
 
     def unresolved_conftest_import(self) -> str | None:
         return next((e.source for e in self.edges if e.target.startswith("external:")), None)
+
+    def first_test_under(self, prefix: str) -> str | None:
+        """The first runnable test file by path under *prefix*, asked once per conftest."""
+        if prefix not in self._first:
+            self._first[prefix] = min(
+                (t for t in self.test_files if t.startswith(prefix) and is_runnable_test(t)),
+                default=None,
+            )
+        return self._first[prefix]
 
 
 def _narrow(
@@ -668,10 +714,7 @@ def _narrow(
         if any(t.startswith(prefix) and is_runnable_test(t) for t in result):
             check = None
         else:
-            check = min(
-                (t for t in scope.test_files if t.startswith(prefix) and is_runnable_test(t)),
-                default=None,
-            )
+            check = scope.first_test_under(prefix)
             if check:
                 result.setdefault(check, "conftest-import-check")
         _add_note(notes, _narrow_note(conf, routes[conf], check), target)
