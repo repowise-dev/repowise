@@ -295,9 +295,8 @@ async def test_loader_counts_dormant_causes_and_dead_code(async_session) -> None
                                        nloc=90, is_test=False))
     gated = _perf("perf3_gated", "x", actionability_state="expected", plan_state="no_safe_plan",
                   fix_strategy=None, intervention_symbol="src/repo.py::off")
-    # The writer's compact JSON, which the loader reads the reason from.
-    gated["details_json"] = json.dumps({"actionability_reason": "gated_off"}, separators=(",", ":"))
-    del gated["details"]
+    gated = _with_json(gated, "details")
+    gated["details_json"] = json.dumps({"actionability_reason": "gated_off"})
     live = _perf("perf3_live", "y")
     async_session.add_all([
         PerformanceOpportunity(repository_id=rid, **gated),
@@ -310,3 +309,14 @@ async def test_loader_counts_dormant_causes_and_dead_code(async_session) -> None
     assert queue.items == ()
     assert queue.totals.excluded["gated_off"] == 1 and queue.totals.dormant == 1
     assert queue.totals.excluded["unreachable"] == 1
+
+
+def test_json_text_renders_for_both_dialects() -> None:
+    from sqlalchemy import column, select
+    from sqlalchemy.dialects import postgresql, sqlite
+
+    from repowise.core.persistence.sql import json_text
+
+    query = select(json_text(column("details_json"), "actionability_reason"))
+    assert "json_extract(details_json" in str(query.compile(dialect=sqlite.dialect()))
+    assert "CAST(details_json AS JSON) ->>" in str(query.compile(dialect=postgresql.dialect()))

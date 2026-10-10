@@ -16,15 +16,22 @@ Three separate questions live here and must not collapse into one label:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
+
+from ..worth import dormant
 
 FixSafety = Literal["proven", "advisory"]
 OpportunityConfidence = Literal["high", "medium", "low"]
 # ``expected``: the repetition is real and there is nothing to change, either
-# by its nature or, with reason ``gated_off``, because a constant-false flag
-# switches the function that owns it off.
+# by its nature or for a reason :func:`expected_reason` reads off the group
+# (``gated_off``: a constant-false flag switches the function off).
 ActionabilityState = Literal["plan_ready", "advisory", "investigate", "expected"]
+
+#: Reasons :func:`expected_reason` gives, in precedence order. The default
+#: queue counts each under its own name rather than as ``expected``.
+EXPECTED_REASONS: tuple[str, ...] = ("gated_off",)
 
 # Refusals that are facts about the code, not missing proofs: nothing to investigate.
 _EXPECTED_REFUSALS = frozenset({"inherent_to_boundary", "loop_already_chunked"})
@@ -282,23 +289,36 @@ def assess_fix(
     return FixAssessment(None, ("supported_strategy_for_marker",))
 
 
+def expected_reason(members: Sequence[Any]) -> str | None:
+    """Why a group needs no change whatever its strategy, or ``None``.
+
+    ``gated_off``: every member sits in a function a constant-false flag in
+    its own file switches off. Reasons are checked in precedence order.
+    """
+    if members and all(dormant(facts.details) for facts in members):
+        return "gated_off"
+    return None
+
+
 def actionability(
     assessment: FixAssessment,
     evidence_confidence: OpportunityConfidence,
     *,
-    gated_off: bool = False,
+    expected_reason: str | None = None,
 ) -> Actionability:
     """What to do with this group next, and why not more.
 
     Deliberately not a restatement of fix safety. A proven strategy resting on
     a call path we could not resolve reliably is still only advisory, and the
     demotion names the fact that would promote it. A group with no strategy is
-    kept as investigation evidence rather than dropped. A group whose code a
-    constant-false flag switches off (*gated_off*) has nothing to change while
-    the flag is off.
+    kept as investigation evidence rather than dropped. A group with an
+    *expected_reason* (:func:`expected_reason`) has nothing to change, so it is
+    ``expected`` under that reason and carries no fix.
     """
-    if gated_off:
-        return Actionability("expected", "gated_off", "low", (), None)
+    # With or without a strategy: a group with none would otherwise be
+    # ``investigate``, and there is nothing to investigate either.
+    if expected_reason is not None:
+        return Actionability("expected", expected_reason, "low", (), None)
     fix = assessment.fix
     if fix is None:
         state: ActionabilityState = (

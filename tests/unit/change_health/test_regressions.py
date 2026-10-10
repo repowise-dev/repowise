@@ -253,3 +253,10 @@ def test_a_gated_cause_says_a_constant_flag_switches_it_off():
     )
     text = _suggestion(SimpleNamespace(), perf)
     assert "constant-False flag" in text and "inherent" not in text
+
+
+def test_an_unlisted_expected_reason_keeps_the_inherent_sentence():
+    perf = SimpleNamespace(
+        actionability_state="expected", actionability_reason="something_new", intervention_symbol=None
+    )
+    assert "inherent" in _suggestion(SimpleNamespace(), perf)

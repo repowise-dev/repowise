@@ -482,14 +482,22 @@ def _priority(finding: ChangeFinding) -> tuple:
     )
 
 
+#: What an ``expected`` cause says, by its actionability reason.
+_INHERENT = "Nothing to change: the repetition is inherent or already batched."
+_EXPECTED_TEXT: dict[str | None, str] = {
+    "inherent_to_boundary": _INHERENT,
+    "loop_already_chunked": _INHERENT,
+    "gated_off": "Nothing to change while a constant-False flag switches this function off.",
+    None: _INHERENT,
+}
+
+
 def _suggestion(finding: HealthFindingData, perf: PerfOpportunityView | None) -> str:
     if perf is not None:
         if perf.actionability_state == "plan_ready" and perf.intervention_symbol:
             return f"Hoist or batch the repeated call in {perf.intervention_symbol}."
-        if perf.actionability_state == "expected" and perf.actionability_reason == "gated_off":
-            return "Nothing to change while a constant-False flag switches this function off."
         if perf.actionability_state == "expected":
-            return "Nothing to change: the repetition is inherent or already batched."
+            return _EXPECTED_TEXT.get(perf.actionability_reason, _EXPECTED_TEXT[None])
         return perf.actionability_reason or "Confirm the cost before changing it."
     return finding.reason or f"Review the {finding.biomarker_type.replace('_', ' ')}."
 

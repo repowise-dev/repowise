@@ -19,7 +19,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..worth import dormant
 from .actionability import (
     ActionabilityState,
     FixSafety,
@@ -28,6 +27,7 @@ from .actionability import (
     PerformanceFix,
     actionability,
     assess_fix,
+    expected_reason,
     provenance_confidence,
 )
 from .causal import (
@@ -179,7 +179,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
     acted = actionability(
         assessment,
         evidence_confidence,
-        gated_off=bool(members) and all(dormant(facts.details) for facts in members),
+        expected_reason=expected_reason(members),
     )
     magnitude = loop_magnitude(marker, [facts.details for facts in members])
     factors = rank_factors(

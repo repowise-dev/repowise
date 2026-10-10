@@ -61,6 +61,7 @@ from ...models import (
     RefactoringOpportunity,
     RefactoringSuggestion,
 )
+from ...sql import json_text
 
 #: Files read for plan-less finding items, by open code-shape deduction.
 #: Ceiling: a file past this rank never becomes a finding item. The queue
@@ -281,12 +282,9 @@ async def _performance(session: AsyncSession, repo_id: str) -> list[Any]:
         p.plan_state == "available",
         p.fix_strategy.is_not(None),
     )
-    # The reason is no column; a dormant cause is told apart from other
-    # ``expected`` ones by the writer's compact JSON, with no decode.
-    gated = and_(
-        p.actionability_state == "expected",
-        p.details_json.contains('"actionability_reason":"gated_off"'),
-    )
+    # The reason is no column: read for ``expected`` rows only, in SQL, so
+    # the default queue counts each expected reason with no decode.
+    reason = json_text(p.details_json, "actionability_reason")
     return _plain(
         await session.execute(
             select(
@@ -306,7 +304,9 @@ async def _performance(session: AsyncSession, repo_id: str) -> list[Any]:
                 p.affected_call_sites_total,
                 p.affected_files_total,
                 p.status,
-                case((gated, "gated_off")).label("actionability_reason"),
+                case((p.actionability_state == "expected", reason)).label(
+                    "actionability_reason"
+                ),
                 case((ready, p.details_json)).label("details_json"),
             )
             .where(p.repository_id == repo_id, p.status == "open")
