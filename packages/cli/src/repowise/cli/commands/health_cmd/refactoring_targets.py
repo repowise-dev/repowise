@@ -120,6 +120,8 @@ def _render_stored_refactoring_targets(
     and the file table all come from rows the last ``init`` or ``update``
     wrote.
     """
+    from sqlalchemy.exc import SQLAlchemyError
+
     from repowise.cli.helpers import repo_index_session, run_async
     from repowise.core.analysis.health.refactoring.serving import parse_query
     from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
@@ -132,7 +134,7 @@ def _render_stored_refactoring_targets(
         return not (module_filter and not path.startswith(module_filter))
 
     async def _read() -> dict[str, Any] | None:
-        async with repo_index_session(Path(repo_path)) as opened:
+        async with repo_index_session(Path(repo_path), reconcile=False) as opened:
             if opened is None:
                 return None
             session, repo_id = opened
@@ -169,7 +171,10 @@ def _render_stored_refactoring_targets(
                 "findings": findings,
             }
 
-    stored = run_async(_read())
+    try:
+        stored = run_async(_read())
+    except SQLAlchemyError:
+        return False
     if stored is None:
         return False
 

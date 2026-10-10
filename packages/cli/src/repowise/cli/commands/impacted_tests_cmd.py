@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, NamedTuple
 import click
 import structlog
 from rich.table import Table
+from sqlalchemy.exc import SQLAlchemyError
 
 from repowise.cli.ci import (
     CannotEvaluateError,
@@ -145,17 +146,24 @@ def impacted_tests_command(
     checkout = _read_checkout(repo_path)
     plan = _plan_scopes(repo_path, change, config, checkout) if config is not None else None
     routes = plan.routes if plan else []
-    result = run_async(
-        _collect(
-            repo_path,
-            change,
-            checkout.roots,
-            config,
-            explain,
-            routes,
-            dict(checkout.pytest_texts),
+    try:
+        result = run_async(
+            _collect(
+                repo_path,
+                change,
+                checkout.roots,
+                config,
+                explain,
+                routes,
+                dict(checkout.pytest_texts),
+            )
         )
-    )
+    except SQLAlchemyError as exc:
+        cannot_evaluate(
+            fmt,
+            "index_unreadable",
+            f"Could not read the index: {exc}. Run `repowise update` to repair.",
+        )
     result["diff"] = change.label
     if plan is not None:
         result["selection"] = _select(repo_path, change, result, config, checkout, plan)
@@ -273,7 +281,7 @@ async def _collect(
     if not out["changed_files"]:
         return out
 
-    async with repo_index_session(Path(repo_path)) as opened:
+    async with repo_index_session(Path(repo_path), reconcile=False) as opened:
         if opened is None:
             out["no_index"] = True
             return out

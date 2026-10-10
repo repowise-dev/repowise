@@ -211,3 +211,24 @@ def test_both_sources_emit_one_row_schema(repo, monkeypatch):
 
     assert set(recomputed) == set(stored)
     assert set(recomputed["steps"][0]) == set(stored["steps"][0])
+
+
+def test_unreadable_store_yields_clean_message_without_traceback(repo, monkeypatch):
+    run_async(_store(repo))
+    _no_parse(monkeypatch)
+
+    db_file = repo / ".repowise" / "wiki.db"
+    subprocess.run(
+        ["sqlite3", str(db_file), "DROP TABLE health_file_metrics; DROP TABLE refactoring_opportunities;"],
+        check=True,
+    )
+
+    result = CliRunner().invoke(
+        health_command, [str(repo), "--refactoring-targets", "--no-workspace"]
+    )
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    assert "No stored refactoring analysis" in result.output
+    assert "repowise update" in result.output
+

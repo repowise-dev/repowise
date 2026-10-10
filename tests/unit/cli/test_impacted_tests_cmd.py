@@ -461,3 +461,24 @@ def test_a_runner_is_told_of_always_run_tests_for_another(repo) -> None:
     assert data["left_out"] == {"jest": ["web/app.test.ts"]}
     files = _run(repo, "main...feat", "--format", "args", "--runner", "files")
     assert files.stdout == "tests/test_a.py web/app.test.ts\n"
+
+
+def test_unreadable_store_cannot_evaluate(repo) -> None:
+    db = repo / ".repowise" / "wiki.db"
+    subprocess.run(
+        ["sqlite3", str(db), "DROP TABLE health_file_metrics;"],
+        check=True,
+    )
+    result = _run(repo, "main...feat")
+    assert result.exit_code == 2
+    assert "Traceback" not in result.output
+    assert "repowise update" in _err(result)
+    assert "Could not read the index" in _err(result)
+
+    # Format JSON stays well-formed
+    result_json = _run(repo, "main...feat", "--format", "json")
+    assert result_json.exit_code == 2
+    data = json.loads(result_json.stdout)
+    assert data["error"] == "index_unreadable"
+    assert "repowise update" in data["message"]
+
