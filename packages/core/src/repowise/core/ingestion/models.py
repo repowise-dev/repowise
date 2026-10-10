@@ -247,6 +247,11 @@ class NamedBinding:
     is_module_alias: bool = False  # True for "import x" / "import * as ns"
     is_global: bool = False  # C# `global using` — applies to every file in the project
     is_static_import: bool = False  # C# `using static` / Java static import — pulls members
+    # Position of the local name (1-based line, byte column), set where a
+    # binding can sit inside a function body (``require``, ``import()``), so
+    # it is not read as a shadowing local.
+    line: int | None = None
+    column: int | None = None
 
 
 @dataclass

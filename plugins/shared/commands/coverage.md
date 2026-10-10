@@ -1,7 +1,7 @@
 ---
 frontmatter: |
     description: Ingest or inspect test-coverage reports (LCOV, Cobertura, Clover, Go cover profiles, JaCoCo, repowise JSON, or coverage.py .coverage; builds the per-test map when contexts are present), or gate a change on its patch coverage in CI.
-    allowed-tools: Bash, Read
+    allowed-tools: Bash(repowise coverage:*), Read
 ---
 
 # Repowise Coverage

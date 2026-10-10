@@ -18,7 +18,10 @@ Rules of thumb baked into the hint generators:
 
 from __future__ import annotations
 
+import json
 import os
+import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -274,6 +277,197 @@ def targets_hit_by_changes(targets: list[str], changed: frozenset[str]) -> bool:
     return False
 
 
+# local_path -> (monotonic read time, dirty paths or None). Short-lived so a
+# burst of tool calls shares one ``git status`` while a fresh edit still shows;
+# a failed read is kept longer so a slow repo is not re-asked every call.
+_dirty_paths_cache: dict[str, tuple[float, frozenset[str] | None]] = {}
+_DIRTY_PATHS_TTL_S = 3.0
+_DIRTY_PATHS_FAILED_TTL_S = 60.0
+_DIRTY_PATHS_CACHE_MAX = 32
+# Runs inline on the event loop from build_meta, so the bound is tight; a slow
+# repo times out once and reads as "not evaluated" for the failed TTL.
+_DIRTY_PATHS_TIMEOUT_S = 0.5
+_UNTRACKED_DIR_FILE_CAP = 200
+
+
+def _working_tree_dirty_paths(local_path: str) -> frozenset[str] | None:
+    """Paths with staged, unstaged or untracked changes; ``None`` when unknown.
+
+    An untracked directory is reported once, with a trailing ``/``. Paths are
+    git-root relative; the ``.git`` gate below makes that root ``local_path``.
+    """
+    now = time.monotonic()
+    hit = _dirty_paths_cache.get(local_path)
+    if hit is not None:
+        ttl = _DIRTY_PATHS_TTL_S if hit[1] is not None else _DIRTY_PATHS_FAILED_TTL_S
+        if now - hit[0] < ttl:
+            return hit[1]
+    dirty: frozenset[str] | None = None
+    # Only at a repository root: ``git -C`` on a plain directory would answer
+    # for whatever repository happens to enclose it.
+    if (Path(local_path) / ".git").exists():
+        try:
+            import subprocess
+
+            res = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    local_path,
+                    "--no-pager",
+                    "status",
+                    "--porcelain",
+                    "-z",
+                    "--untracked-files=normal",
+                ],
+                capture_output=True,
+                timeout=_DIRTY_PATHS_TIMEOUT_S,
+                stdin=subprocess.DEVNULL,
+            )
+            if res.returncode == 0:
+                entries = res.stdout.decode("utf-8", errors="replace").split("\0")
+                paths: set[str] = set()
+                i = 0
+                while i < len(entries):
+                    entry = entries[i]
+                    i += 1
+                    if len(entry) < 4:
+                        continue
+                    paths.add(entry[3:])
+                    if entry[0] in "RC" and i < len(entries):
+                        # The rename or copy source follows; it is gone or
+                        # changed in the working tree too.
+                        paths.add(entries[i])
+                        i += 1
+                dirty = frozenset(paths)
+        except Exception:
+            dirty = None
+    if len(_dirty_paths_cache) >= _DIRTY_PATHS_CACHE_MAX:
+        _dirty_paths_cache.clear()
+    _dirty_paths_cache[local_path] = (now, dirty)
+    return dirty
+
+
+def _working_tree_record(local_path: str) -> tuple[frozenset[str], float] | None:
+    """Paths the last ``update --working-tree`` indexed, and when state.json was written."""
+    state_path = Path(local_path) / ".repowise" / "state.json"
+    try:
+        paths = json.loads(state_path.read_text(encoding="utf-8")).get("working_tree_paths")
+        written = state_path.stat().st_mtime
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(paths, list):
+        return None
+    return frozenset(_fold(p) for p in paths if isinstance(p, str)), written
+
+
+def _fold(path: str) -> str:
+    # Case-insensitive filesystems: a target and git's spelling may differ in case.
+    return path.casefold() if sys.platform in ("win32", "darwin") else path
+
+
+def _indexed_from_working_tree(
+    local_path: str, path: str, record: tuple[frozenset[str], float] | None
+) -> bool:
+    # Only paths are recorded, so the state.json write time stands in for the
+    # run's. Ceiling: a later commit-anchored update rewrites state.json and
+    # would cover a re-edit made in between; recording per-path stamps at
+    # update time lifts it.
+    if record is None:
+        return False
+    target = Path(local_path) / path
+    if path.endswith("/"):
+        # An untracked directory: its own mtime misses edits to files inside,
+        # so it is covered only when every file under it is.
+        from itertools import islice
+
+        from repowise.core.fs_walk import iter_glob
+
+        try:
+            files = [
+                f
+                for f in islice(iter_glob(target, "*"), _UNTRACKED_DIR_FILE_CAP + 1)
+                if f.is_file()
+            ]
+        except OSError:
+            return False
+        if len(files) > _UNTRACKED_DIR_FILE_CAP:
+            # Too large to check inline; stays marked rather than guessed covered.
+            return False
+        return bool(files) and all(
+            _indexed_from_working_tree(local_path, f.relative_to(local_path).as_posix(), record)
+            for f in files
+        )
+    if _fold(path) not in record[0]:
+        return False
+    # A deleted file has no mtime; its directory's changes when it goes.
+    probe = target if target.exists() else target.parent
+    try:
+        return probe.stat().st_mtime <= record[1]
+    except OSError:
+        return False
+
+
+def uncommitted_targets(local_path: str | None, targets: list[str] | None) -> list[str]:
+    """Served targets whose uncommitted edits the index has not seen.
+
+    Empty when git cannot answer: that is "not evaluated", never an error.
+    """
+    if not local_path or not targets:
+        return []
+    dirty = _working_tree_dirty_paths(local_path)
+    if not dirty:
+        return []
+    record = _working_tree_record(local_path)
+    folded = [(d, _fold(d)) for d in dirty]
+    out: list[str] = []
+    for raw in targets:
+        path = _normalize_target_path(raw)
+        if not path or path in out:
+            continue
+        key = _fold(path)
+        if any(
+            (fd == key or fd.startswith(key + "/") or (fd.endswith("/") and key.startswith(fd)))
+            and not _indexed_from_working_tree(local_path, d, record)
+            for d, fd in folded
+        ):
+            out.append(path)
+    return out
+
+
+def reverted_targets(local_path: str | None, targets: list[str] | None) -> list[str]:
+    """Served targets indexed from working-tree edits that are no longer there.
+
+    A reverted edit leaves git status clean while the index still holds it.
+    Only meaningful while HEAD equals the indexed commit; the caller checks.
+    """
+    if not local_path or not targets:
+        return []
+    record = _working_tree_record(local_path)
+    if not record or not record[0]:
+        return []
+    dirty = _working_tree_dirty_paths(local_path)
+    if dirty is None:
+        return []
+    dirty_keys = {_fold(d) for d in dirty}
+
+    def _still_dirty(rec: str) -> bool:
+        return rec in dirty_keys or any(d.endswith("/") and rec.startswith(d) for d in dirty_keys)
+
+    out: list[str] = []
+    for raw in targets:
+        path = _normalize_target_path(raw)
+        if not path or path in out:
+            continue
+        key = _fold(path)
+        if any(
+            (rec == key or rec.startswith(key + "/")) and not _still_dirty(rec)
+            for rec in record[0]
+        ):
+            out.append(path)
+    return out
+
+
 def freshness_from_repo(repository: Any | None, targets: list[str] | None = None) -> dict[str, Any]:
     """Return a minimal freshness dict for the given Repository row.
 
@@ -315,6 +509,10 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
         commit), so absence means "not evaluated", never "false". Emitting the
         false case matters downstream: a field that is only ever present as
         ``true`` makes every consumer-side rate read 100%.
+      * ``working_tree_dirty``: count of served targets with uncommitted edits
+        no ``repowise update --working-tree`` has indexed; those also set
+        ``stale_warning`` when nothing else has. A served file indexed from
+        uncommitted edits that were since reverted sets ``stale_warning`` alone.
 
     Defensive throughout: any missing piece is dropped rather than raised so
     an upstream change to the Repository model can never poison a tool result.
@@ -383,6 +581,25 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
             f"Index is {age_days} days old and live HEAD is unreachable — "
             "results may be stale. Run `repowise update`."
         )
+
+    # Freshness above is commit-anchored, so an uncommitted edit to a served
+    # file would otherwise read as current. Served targets only: a dirty tree
+    # elsewhere is no reason to warn.
+    if targets:
+        modified = uncommitted_targets(local_path, targets)
+        if modified:
+            out["working_tree_dirty"] = len(modified)
+            out.setdefault(
+                "stale_warning",
+                "A file this response serves has uncommitted edits: source reads are live, "
+                "but graph and index facts for it predate the edit. "
+                "Run `repowise update --working-tree`.",
+            )
+        elif live_full and live_full == indexed_full and reverted_targets(local_path, targets):
+            out["stale_warning"] = (
+                "A file this response serves was indexed from uncommitted edits that are "
+                "no longer in the working tree. Run `repowise update --working-tree`."
+            )
 
     return out
 

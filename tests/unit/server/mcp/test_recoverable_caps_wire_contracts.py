@@ -280,8 +280,9 @@ async def test_context_used_by_and_relations_recover_in_one_bounded_query_shape(
     assert "Type000" not in relation_recovered
     # The first call also pays the one aggregate behind the empty-callers basis
     # and the one layer read behind the scope hint. Both are cached per repo per
-    # index commit, so the second call pays neither.
-    assert relation_statements <= 22 and used_by_statements <= 20
+    # index commit, so the second call pays neither. The seeded caller is a
+    # two-line forwarder, so the wrapper hop adds its fixed three reads.
+    assert relation_statements <= 25 and used_by_statements <= 20
 
 
 @pytest.mark.asyncio
@@ -402,18 +403,18 @@ async def test_risk_real_adversarial_wire_recovers_each_directive_lane(
     monkeypatch.setattr(PRBlastRadiusAnalyzer, "analyze_files", sealed_analyze)
     changed = [f"src/gap_{i}.py" for i in range(6)]
     result = await tool_middleware(get_risk)(
-        ["src/auth/service.py"], changed_files=changed
+        ["src/auth/service.py"], changed_files=changed, include=["tests", "blast"]
     )
 
-    _assert_wire(result, "directive", DEFAULT_RESPONSE_CHARS)
+    _assert_wire(result, "directive", EXPANDED_RESPONSE_CHARS)
     directive = result["directive"]
     expected = {
         "may_break": 9,
-        "may_break_tests": 8,
         "missing_cochanges": 8,
         "missing_tests": 6,
         "tests_to_run": 14,
-        "test_recommendations": 15,
+        # 15 analyzer rows plus the 8 reached tests the measured list lacks.
+        "test_recommendations": 23,
         "files_without_measured_tests": 12,
         "test_unknown_files": 12,
     }
@@ -422,10 +423,9 @@ async def test_risk_real_adversarial_wire_recovers_each_directive_lane(
         assert directive[f"{key}_emitted"] < total
         assert directive[f"{key}_reduced_reason"].startswith("construction_cap")
     assert result["truncated"] is True
+    # The blast block sheds first, so the directive lists keep their cap.
     assert "pr_blast_radius" not in result
-    assert directive["test_recommendations_reduced_reason"] == (
-        "construction_cap_and_response_budget"
-    )
+    assert directive["test_recommendations_reduced_reason"] == "construction_cap"
     assert directive["test_recommendations_omitted"] == (
         directive["test_recommendations_total"]
         - directive["test_recommendations_emitted"]

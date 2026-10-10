@@ -436,13 +436,18 @@ session does not reset anything.
 
 What Lens does and does not do, as the code enforces it:
 
-- **Lens never denies, holds, rewrites or approves Claude's tool calls.** Every
-  tool call passes through Lens unchanged, and so does its result. The one
-  approval Lens gives is for its own read-only Repowise lookups: calls made by
-  Lens itself, to the plugin's own MCP server, for `get_context`,
-  `get_change_risk`, `get_why` and `get_answer`, with the reason
-  `Repowise Lens: its own read-only index lookup`. Every other permission
-  question keeps Claude Code's own answer.
+- **Lens never denies, holds, rewrites or approves a tool call.** Every tool
+  call passes through Lens unchanged, and so does its result. Lens registers
+  no `tool.check` hook, so every permission question, its own included, gets
+  Claude Code's own answer. Lens's lookups (`get_context`, `get_change_risk`,
+  `get_why` and `get_answer` on the plugin's MCP server) ask permission like
+  any MCP call. To let them run without a prompt, allow
+  `mcp__plugin_repowise_repowise__get_context`,
+  `mcp__plugin_repowise_repowise__get_change_risk`,
+  `mcp__plugin_repowise_repowise__get_why` and
+  `mcp__plugin_repowise_repowise__get_answer` once, with `/permissions` or in
+  `permissions.allow` in your settings. A refused lookup leaves that part of
+  Lens empty and the rest working.
 - **Flow only counts what passes.** It records each tool call's name, a few
   arguments, its timing and the size of its result, never the result itself
   (Repowise replies keep a short summary and their first 2 KB). What Flow

@@ -12,14 +12,12 @@ def test_get_change_risk_summary_is_not_generic_completed():
         {
             "ref": "HEAD",
             "score": 7.2,
-            "review_priority": "Elevated",
+            "review_priority": "high",
+            "classification": "Above-typical diff size",
             "risk_percentile": 82.0,
         },
     )
-    assert summary != "Completed"
-    assert "HEAD" in summary
-    assert "Elevated" in summary
-    assert "p82" in summary
+    assert summary == "Diff size for HEAD: Above-typical diff size (p82.0)"
 
 
 def test_every_chat_registry_tool_has_a_non_generic_summary_shape():

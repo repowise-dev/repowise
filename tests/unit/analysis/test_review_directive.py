@@ -110,6 +110,33 @@ def test_skipped_files_are_a_reason_not_a_clean_bill():
     assert any("not a clean bill" in reason for reason in directive.reasons)
 
 
+def test_skipped_docs_beside_analysed_code_ask_for_nothing():
+    delta = _delta()
+    delta.skipped = {"CHANGES.rst": "not_code", "package.json": "not_code"}
+    directive = review_directive(delta)
+    assert directive.status == "clear_in_analyzed_scope"
+    assert directive.reasons == ()
+    assert all(a.kind != "review_skipped_files" for a in directive.actions)
+
+
+def test_a_docs_only_change_says_there_is_no_code_rather_than_unknown():
+    delta = _delta(status="unavailable", explanation="Only documentation changed")
+    delta.skipped = {"README.md": "not_code"}
+    directive = review_directive(delta)
+    assert directive.status == "clear_in_analyzed_scope"
+    assert "No code changed" in directive.headline
+    assert "does not cover them" in directive.headline
+    assert not directive.actions
+
+
+def test_an_unsupported_code_file_still_leaves_the_verdict_unknown():
+    delta = _delta(status="unavailable", explanation="nothing compared")
+    delta.skipped = {"README.md": "not_code", "lib.ex": "not_health_analyzable"}
+    directive = review_directive(delta)
+    assert directive.status == "unknown"
+    assert [a.targets for a in directive.actions] == [("lib.ex",)]
+
+
 # ---------------------------------------------------------------------------
 # Actions carry targets, not rendered strings
 # ---------------------------------------------------------------------------

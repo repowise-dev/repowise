@@ -58,8 +58,11 @@ export function extractSources(
         // wherever those two rebuild it. Derive rather than skip: the previous
         // `const pageId = r.page_id` dropped the whole row — and its citation —
         // for any result without one. Same fallback the get_context branch uses.
+        // The tool also drops `target_path` where it equals `path`, so fall back
+        // to `path`, the same way the server builds the id it compares against.
         const pageType = r.page_type as string | undefined;
-        const targetPath = r.target_path as string | undefined;
+        const targetPath =
+          (r.target_path as string | undefined) || (r.path as string | undefined);
         const pageId =
           (r.page_id as string | undefined) ??
           (pageType && targetPath ? `${pageType}:${targetPath}` : "");
@@ -70,7 +73,7 @@ export function extractSources(
           pageId,
           title: (r.title as string) ?? pageId,
           pageType: (r.page_type as string) ?? "file_page",
-          targetPath: (r.target_path as string) ?? "",
+          targetPath: targetPath ?? "",
           confidence: r.confidence_score as number | undefined,
           toolName: tc.name,
         });
@@ -221,10 +224,10 @@ export function SourceCitations({
   if (sources.length === 0) return null;
 
   return (
-    <details className="group mt-5 border-t border-[var(--color-border-default)] pt-3">
+    <details className="group/cites mt-5 border-t border-[var(--color-border-default)] pt-3">
       <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] marker:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
         <span>Sources · {sources.length}</span>
-        <span aria-hidden className="transition-transform group-open:rotate-90">›</span>
+        <span aria-hidden className="transition-transform group-open/cites:rotate-90">›</span>
       </summary>
       {/* Links, not chips. Each one goes somewhere, so the accent is earned on
           hover; a border and a ground on every entry turned a list of eight

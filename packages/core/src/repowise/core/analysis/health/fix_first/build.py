@@ -280,6 +280,10 @@ def _risk(files_touched: int, dependents: int | None) -> FixRisk:
     return FixRisk(level, dependents, files_touched, "; ".join(parts).capitalize() + ".")
 
 
+#: Validation profile for a finding with no stored plan: (path, function, line start, line end).
+Validate = Callable[[str, Any, Any, Any], Mapping[str, Any] | None]
+
+
 def _verify(profile: Mapping[str, Any] | None) -> FixVerify:
     """The stored validation profile, shown short. Never recomputed here."""
     if not profile:
@@ -1094,7 +1098,7 @@ def _perf_unit(
 # --- findings with no plan ----------------------------------------------------------
 
 
-def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
+def _finding_unit(lead: Any, files: _Files, first: FixStep, validate: Validate | None) -> _Unit:
     path = field(lead, "file_path")
     marker = field(lead, "biomarker_type") or ""
     function = field(lead, "function_name")
@@ -1143,7 +1147,11 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep) -> _Unit:
             "confidence": FixConfidence(
                 "medium", "Measured from the code; no stored plan has checked a fix."
             ),
-            "verify": _verify(None),
+            "verify": _verify(
+                validate(path, function, field(lead, "line_start"), field(lead, "line_end"))
+                if validate
+                else None
+            ),
             "context": files.context(path),
             "source": FixSource(None, (), (public_id,) if public_id else ()),
             "next_call": ActionCommand.call(
@@ -1322,6 +1330,7 @@ def build_fix_first(
     item_id: str | None = None,
     hot_cuts: tuple[float, float] | None = None,
     symbol_lines: Mapping[str, int] | None = None,
+    validate: Validate | None = None,
 ) -> FixFirstQueue:
     """One ranked queue of what to fix, from stored rows (shapes in the module docstring).
 
@@ -1333,7 +1342,10 @@ def build_fix_first(
     caller measured them over more files than it passed in ``metrics``; see
     :func:`hot_cut` for the rule. ``symbol_lines`` maps a symbol id
     (``path::name``) to its first line, for a performance plan step that
-    names a function but stored no line.
+    names a function but stored no line. ``validate(path, function, start, end)``
+    is the validation profile (``basis``, ``via``, ``total``, ``tests``,
+    ``commands``) of a finding with no plan, read lazily for the items shown;
+    without it such an item's Verify stays unknown.
     """
     metrics = list(metrics)
     findings = list(findings)
@@ -1442,7 +1454,7 @@ def build_fix_first(
         if eligible is None:
             excluded[reasons[id(lead)] or next(r for r in reasons.values() if r)] += 1
             continue
-        units.append(_finding_unit(eligible, files, files.first_step(eligible)))
+        units.append(_finding_unit(eligible, files, files.first_step(eligible), validate))
 
     ordered = _order(units)
     if item_id is not None:

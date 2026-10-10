@@ -119,6 +119,7 @@ For a map of every layer and how they feed each other, read
 | Doc | What it covers |
 |-----|----------------|
 | [reference/CLI_REFERENCE.md](reference/CLI_REFERENCE.md) | Every command and flag |
+| [reference/API_REFERENCE.md](reference/API_REFERENCE.md) | The `repowise serve` HTTP API: what OpenAPI does not carry (spend, auth, errors, streaming) |
 | [reference/CONFIG.md](reference/CONFIG.md) | `.repowise/config.yaml`, `health-rules.json`, and environment variables |
 | [reference/MCP_RESPONSE_FIELDS.md](reference/MCP_RESPONSE_FIELDS.md) | The field dictionary for every MCP response, including the `_meta` envelope |
 | [reference/HOOKS_REFERENCE.md](reference/HOOKS_REFERENCE.md) | The exact settings entries each hook install writes |

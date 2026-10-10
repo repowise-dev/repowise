@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .calibration import load_telemetry_averages
 from .heuristics import HEURISTIC_VARIANCE, heuristic_tokens
-from .pricing import _lookup_cost
+from .pricing import lookup_cost
 from .types import CostEstimate, CostRange, PageTypePlan
 
 # Page types rendered from structure. They make no provider call, so they cost
@@ -64,7 +64,8 @@ def estimate_cost(
         total_input += inp * plan.count
         total_output += out * plan.count
 
-    input_rate, output_rate = _lookup_cost(model_name)
+    # An unpriced model is estimated as free; the CLI gate has always done so.
+    input_rate, output_rate = lookup_cost(model_name) or (0.0, 0.0)
     median_cost = (total_input / 1000) * input_rate + (total_output / 1000) * output_rate
 
     # Tighter variance when telemetry calibrated us; wider for cold-start.

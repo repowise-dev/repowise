@@ -14,6 +14,9 @@ Optional ``include`` parameter widens the response:
                             digest (questions, identifiers, git signals)
   - include=["callers"]   → who calls this symbol (symbol targets only)
   - include=["callees"]   → what this symbol calls (symbol targets only)
+  - include=["references"]→ every live edit site of a symbol (definition,
+                            imports, calls, other mentions) and whether
+                            the list is complete (symbol targets only)
   - include=["ownership"] → primary owner, bus factor, contributor count
   - include=["last_change"]→ last commit date and author
   - include=["metrics"]   → PageRank, betweenness, percentile ranks
@@ -25,6 +28,7 @@ Optional ``include`` parameter widens the response:
                             two appear only when non-empty, and are capped.
                             A dismissed record is in none of them.
   - include=["skeleton"]  → body-elided file rendering (signatures + top-PageRank bodies)
+  - include=["skeleton+"] → all non-function code kept, every function/method body elided
   - include=["health"]    → code-health scores and biomarkers for the target
   - include=["doc_drift"] → documents that name this file, and their drift
   - include=["symbols"]   → every symbol in a file card, not the ranked top 15
@@ -43,7 +47,10 @@ import asyncio
 import logging
 from typing import Any
 
+from sqlalchemy import func, select
+
 from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import GitMetadata
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
@@ -76,12 +83,14 @@ _INCLUDE_BLOCKS = frozenset(
         "full_doc",
         "callers",
         "callees",
+        "references",
         "ownership",
         "last_change",
         "metrics",
         "community",
         "decisions",
         "skeleton",
+        "skeleton+",
         "health",
         "doc_drift",
         "symbols",
@@ -120,6 +129,8 @@ async def get_context(
     Batch targets in one call. No source bytes by default: pass
     include=["skeleton"] for the whole file body-elided and line-verified in
     ONE call, or Read it. Do not call get_symbol per signature.
+    For a rename or update-all-callers task, include=["references"] is the
+    whole edit set when complete is true.
 
     Default responses fit 24,000 serialized chars; nonempty ``include`` uses
     32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
@@ -129,11 +140,9 @@ async def get_context(
     Args:
         targets: file paths, module paths, or "path::Symbol" ids.
         include: opt-in blocks: full_doc | ownership | last_change | callers
-            | callees | metrics | community | decisions | skeleton | health
-            | doc_drift (documents naming this file) | symbols (all of a
-            file's symbols; the default lists the top 15, classes and
-            functions first).
-            An unrecognised key is named in ignored_arguments.
+            | callees | references | metrics | community | decisions | skeleton
+            | skeleton+ | health | doc_drift (docs naming this file)
+            | symbols (all of a file's symbols, not the top 15).
         compact: default True; False adds structure+imports+docstrings.
         repo: usually omitted.
     """
@@ -168,6 +177,13 @@ async def get_context(
     _t0 = _time.perf_counter()
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
+        as_of_ts = (
+            await session.execute(
+                select(func.max(GitMetadata.last_commit_at)).where(
+                    GitMetadata.repository_id == repository.id
+                )
+            )
+        ).scalar()
 
         # return_exceptions=True isolates a single target's failure: one
         # target raising (e.g. a malformed lookup) must not sink the whole
@@ -185,6 +201,7 @@ async def get_context(
                     exclude_spec=exclude_spec,
                     repo_root=ctx.path,
                     collector=collector,
+                    as_of_ts=as_of_ts,
                 )
                 for t in targets
             ],

@@ -5,7 +5,7 @@ prompts — Anthropic's API caches prompts > 1024 tokens and charges ~10% of
 the normal input price on cache hits.
 
 Recommended models (as of 2026):
-    - claude-haiku-4-5   — fastest and cheapest (default; ample for doc pages)
+    - claude-haiku-5-5   — fastest and cheapest (default; ample for doc pages)
     - claude-sonnet-4-6  — best quality/cost ratio
     - claude-opus-4-6    — highest quality, most expensive
 """
@@ -109,7 +109,7 @@ class AnthropicProvider(SdkClientOwner, BaseProvider):
 
     Args:
         api_key:      Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
-        model:        Model identifier. Defaults to claude-haiku-4-5.
+        model:        Model identifier. Defaults to claude-haiku-5-5.
         base_url:     Optional custom API base URL (for proxies/self-hosted endpoints).
         rate_limiter: Optional pre-configured RateLimiter. If None, no rate limiting
                       is applied (useful when the caller manages concurrency via semaphore).
@@ -118,7 +118,7 @@ class AnthropicProvider(SdkClientOwner, BaseProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "claude-haiku-4-5",
+        model: str = "claude-haiku-5-5",
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,
@@ -286,6 +286,9 @@ class AnthropicProvider(SdkClientOwner, BaseProvider):
             async with self._client.messages.stream(**kwargs) as stream:
                 async for event in _iter_anthropic_stream_events(stream):
                     yield event
+                blocks = _thinking_turn_blocks(await stream.get_final_message())
+                if blocks:
+                    yield ChatStreamEvent(type="assistant_content", content_blocks=blocks)
 
 
 def _translate_anthropic_errors() -> AbstractContextManager[None]:
@@ -294,6 +297,19 @@ def _translate_anthropic_errors() -> AbstractContextManager[None]:
         rate_limit_error=_AnthropicRateLimitError,
         status_error=_AnthropicAPIStatusError,
     )
+
+
+def _thinking_turn_blocks(message: Any) -> list[dict[str, Any]] | None:
+    """The turn's content blocks as params, when it holds thinking to replay.
+
+    Models that think by default (Haiku 5.5 and later) lose their reasoning
+    mid tool loop unless the tool-calling turn is sent back unmodified, so
+    the whole turn is kept rather than rebuilt from its text and tool calls.
+    """
+    content = message.content
+    if not any(block.type in ("thinking", "redacted_thinking") for block in content):
+        return None
+    return [block.to_dict(exclude_none=True) for block in content]
 
 
 def _to_anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
@@ -432,6 +448,8 @@ def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
                     ],
                 }
             )
+        elif role == "assistant" and msg.get("provider_content"):
+            result.append({"role": "assistant", "content": msg["provider_content"]})
         elif role == "assistant":
             content_blocks: list[dict[str, Any]] = []
             # Text content

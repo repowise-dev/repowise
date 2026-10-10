@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.cost_estimator.pricing import _COST_TABLE_EXACT, _lookup_cost
+from repowise.core.cost_estimator.pricing import _COST_TABLE_EXACT, lookup_cost
 from repowise.core.generation.cost_tracker import _PRICING, get_model_pricing
 
 _SHARED_MODELS = sorted(set(_COST_TABLE_EXACT) & set(_PRICING))
@@ -59,7 +59,7 @@ def test_the_two_tables_actually_overlap() -> None:
 @pytest.mark.parametrize("model", [_param(m) for m in _SHARED_MODELS])
 def test_estimate_and_live_counter_price_a_model_identically(model: str) -> None:
     """Per-1K x 1000 must equal per-MTok, for both directions of the bill."""
-    est_input, est_output = _lookup_cost(model)
+    est_input, est_output = lookup_cost(model)
     live = get_model_pricing(model)
 
     assert est_input * 1000 == pytest.approx(live["input"]), (

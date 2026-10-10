@@ -169,12 +169,11 @@ def test_the_target_projection_drops_exactly_what_it_documents() -> None:
 
 
 def test_the_projection_keeps_the_blocks_a_caller_cannot_get_elsewhere() -> None:
-    """``pr_blast_radius`` survives because ``recommended_reviewers`` has no
-    substitute anywhere else in the response."""
+    """``pr_blast_radius`` survives the projection whole."""
     payload = {
         "directive": {"status": "review"},
         "targets": {},
-        "pr_blast_radius": {"recommended_reviewers": ["dev"]},
+        "pr_blast_radius": {"test_gaps": ["a.py"]},
         "global_hotspots": [{"path": "a.py"}],
         "risk_scales": [{"unit": "items"}],
         "omission_marker": "repowise#abc",

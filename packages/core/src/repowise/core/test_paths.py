@@ -99,11 +99,13 @@ _REPO_METADATA_DIR = ".github"
 _SEGMENT_WORD_SEPARATORS = re.compile(r"[-_.]+")
 
 # Tokens that also name non-test directories in the wild: "spec(s)" is as often
-# OpenAPI/language specifications as it is RSpec. These count only when the
+# OpenAPI/language specifications as it is RSpec, and "t" is a single letter
+# that shows up in real directory names. These count only when the
 # filename corroborates, or when the file's own language declares the token
 # (Ruby's spec/ needs no corroboration - a Ruby file under spec/ is RSpec
-# material whatever its name).
-_AMBIGUOUS_TEST_DIR_TOKENS: frozenset[str] = frozenset({"spec", "specs"})
+# material whatever its name; Python's t/ likewise - a Python file under t/
+# is test material whatever its name).
+_AMBIGUOUS_TEST_DIR_TOKENS: frozenset[str] = frozenset({"spec", "specs", "t"})
 
 # A whole module named for testing and nothing else: Django's per-app
 # ``myapp/tests.py`` and Rust's ``#[cfg(test)] mod tests;`` in ``tests.rs``,
@@ -122,7 +124,7 @@ _TEST_EXACT_STEMS: frozenset[str] = frozenset({"test", "tests"})
 # not. A test-shaped filename still wins over them, so
 # ``tests/helpers/test_builders.py`` stays a test.
 _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
-    {"fixtures", "factories", "support", "helpers", "mocks", "__mocks__"}
+    {"fixtures", "factories", "support", "helpers", "mocks"}
 )
 
 # Scaffolding directories whose names mean test material *wherever* they sit,
@@ -131,15 +133,18 @@ _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
 # product directories (a sports app's fixtures list), and on this repo plus its
 # two siblings 230 of 231 ``fixtures/`` files already sit inside a test tree, so
 # the tree requirement costs nothing and the widening would buy nothing.
-# ``__fixtures__`` is the same convention with the JS dunder wrapper that
-# ``__tests__``/``__mocks__`` use, and carries no other meaning. ``testdata`` is
-# the Go convention the toolchain itself reserves - ``go build`` ignores any
-# directory of that name - which is why it needs no Go file to corroborate it:
-# the golden files inside are JSON and YAML, and asking the file's own language
-# would never fire on them. ``__snapshots__`` is where Jest and Vitest write the
-# ``.snap`` output a snapshot test compares against; the ``.test.`` infix used to
-# catch those files by accident, and stopped once filename rules became source
-# rules.
+# ``__fixtures__`` and ``__mocks__`` are the same convention with the JS dunder
+# wrapper that ``__tests__`` uses, and carry no other meaning. Jest reads manual
+# mocks from a root ``__mocks__/`` beside ``node_modules`` and from a
+# ``__mocks__/`` beside the module it replaces, so neither sits in a test tree
+# (#2662); bare ``mocks`` stays above, because it names product code too.
+# ``testdata`` is the Go convention the toolchain itself reserves - ``go build``
+# ignores any directory of that name - which is why it needs no Go file to
+# corroborate it: the golden files inside are JSON and YAML, and asking the
+# file's own language would never fire on them. ``__snapshots__`` is where Jest
+# and Vitest write the ``.snap`` output a snapshot test compares against; the
+# ``.test.`` infix used to catch those files by accident, and stopped once
+# filename rules became source rules.
 #
 # Support rather than test, deliberately: golden data is what a test reads, not
 # a test. So the union counts it (#1103's reporter asked for exactly that) while
@@ -147,7 +152,7 @@ _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
 # Matched on the segment's words run together too, so ``test-data/`` and
 # ``test_data/`` are the same golden data rather than a test tree.
 _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
-    {"__fixtures__", "__snapshots__", "testdata"}
+    {"__fixtures__", "__mocks__", "__snapshots__", "testdata"}
 )
 
 
@@ -402,8 +407,9 @@ def is_test_path(path: str, language: str | None = None) -> bool:
 
     Test *support* (``conftest.py``, ``tests/factories/user.py``) is
     deliberately not a test here - see :func:`is_test_support_path`. Pass
-    *language* when it is known: it decides the ambiguous ``spec/`` case, which
-    is RSpec for Ruby and a specification folder for everything else.
+    *language* when it is known: it decides the ambiguous ``spec/``/``t/``
+    cases, which are RSpec for Ruby and a Perl-style test tree for Python,
+    and specification or miscellaneous folders for everything else.
     """
     return _classify(path, language) == "test"
 
@@ -462,6 +468,14 @@ def is_test_to_production_pair(
 
 _PASCAL_UNIT_SUFFIXES = frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"})
 
+# JVM and .NET tests are a PascalCase class named for the class under test.
+_CLASS_TEST_SUFFIXES: dict[str, tuple[str, ...]] = {
+    ".java": ("Test", "Tests"),
+    ".cs": ("Test", "Tests"),
+    ".kt": ("Test", "Tests", "Spec"),
+    ".scala": ("Spec", "Suite", "Test"),
+}
+
 
 def paired_test_names(rel_path: str) -> frozenset[str]:
     """Filenames a test for *rel_path* would conventionally carry, any directory."""
@@ -486,4 +500,6 @@ def paired_test_names(rel_path: str) -> frozenset[str]:
         # Delphi pairs ``uFoo.pas`` with a ``TestFoo.dpr`` program; only a
         # lowercase ``u`` is the unit prefix (``Utils.pas`` keeps its U).
         names.add(f"Test{stem[1:] if stem[:1] == 'u' else stem}.dpr")
+    for suffix in _CLASS_TEST_SUFFIXES.get(p.suffix, ()):
+        names.add(f"{stem}{suffix}{p.suffix}")
     return frozenset(names)

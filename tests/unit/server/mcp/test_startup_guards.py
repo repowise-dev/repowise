@@ -49,6 +49,36 @@ async def test_lifespan_names_the_path_when_the_store_cannot_be_opened(
     assert _state._lancedb_ready is None
 
 
+@pytest.mark.asyncio
+async def test_missing_store_directory_is_not_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An uninitialised repo fails startup instead of getting a stray .repowise/.
+
+    Creating the directory made any directory an MCP host spawned the server
+    from look initialised, and the empty wiki.db it seeded masked the state the
+    CLI's own warning is meant to report (#3163).
+    """
+    for name in ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+
+    async def _no_warm() -> None:
+        return None
+
+    monkeypatch.setattr(_server, "_warm_lancedb", _no_warm)
+    monkeypatch.setattr(_server, "_detect_workspace", lambda _p: (None, None, None))
+
+    with pytest.raises(StoreUnavailableError) as raised:
+        async with _server._lifespan(_server.mcp):
+            pass
+    message = str(raised.value)
+    assert str(tmp_path / ".repowise") in message
+    assert "repowise init" in message
+    assert not (tmp_path / ".repowise").exists()
+    assert _state._lancedb_ready is None
+
+
 def test_missing_tool_dependency_skips_that_tool_and_keeps_the_rest(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

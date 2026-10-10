@@ -62,6 +62,7 @@ def _workspace_update(
     concurrency: int = 10,
     no_cost_tracking: bool = False,
     progress: str = "rich",
+    include_working_tree: bool = False,
 ) -> None:
     """Update stale repos in a workspace.
 
@@ -78,6 +79,7 @@ def _workspace_update(
     """
     from repowise.cli.helpers import load_state
     from repowise.core.docs_mode import resolve_docs_mode
+    from repowise.core.ingestion.change_detector import has_working_tree_changes
     from repowise.core.repo_config import config_fingerprint
     from repowise.core.workspace import (
         check_repo_staleness,
@@ -125,10 +127,16 @@ def _workspace_update(
             )
         )
         is_stale = is_stale or config_stale
+        dirty = bool(
+            indexed and not is_stale and include_working_tree and has_working_tree_changes(abs_path)
+        )
+        is_stale = is_stale or dirty
         if not indexed:
             status = "[dim]not indexed[/dim]"
         elif config_stale and not behind:
             status = "[yellow]config changed[/yellow]"
+        elif dirty:
+            status = "[yellow]uncommitted changes[/yellow]"
         elif is_stale:
             status = f"[yellow]{behind} new commit(s)[/yellow]"
         else:
@@ -218,6 +226,7 @@ def _workspace_update(
             concurrency=concurrency,
             no_cost_tracking=no_cost_tracking,
             progress=progress,
+            include_working_tree=include_working_tree,
         )
         return
 
@@ -232,6 +241,7 @@ def _workspace_update(
             ws_config,
             repo_filter=repo_alias,
             dry_run=False,
+            include_working_tree=include_working_tree,
             on_repo_start=_on_start,
             on_repo_done=_print_repo_result,
         )
@@ -358,6 +368,7 @@ def _workspace_docs_update(
     concurrency: int,
     no_cost_tracking: bool,
     progress: str,
+    include_working_tree: bool = False,
 ) -> None:
     """Update a workspace where at least one stale repo wants docs.
 
@@ -407,6 +418,7 @@ def _workspace_docs_update(
                 only_aliases=core_aliases,
                 run_hooks=False,
                 dry_run=False,
+                include_working_tree=include_working_tree,
                 on_repo_start=_on_start,
                 on_repo_done=_print_repo_result,
             )
@@ -444,6 +456,7 @@ def _workspace_docs_update(
                 # corrupt it. The per-repo rich output goes to stderr there.
                 progress="rich",
                 skip_cross_repo_hooks=True,
+                include_working_tree=include_working_tree,
             )
         except Exception as exc:
             docs_failed += 1

@@ -1,11 +1,15 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { getTranslations } from "next-intl/server";
 import { BarChart3 } from "lucide-react";
 import { getStatsHighlights } from "@/lib/api/stats";
 import { PageShell } from "@repowise-dev/ui/shared";
 import { StatsView } from "@/components/stats/stats-view";
 
-export const metadata: Metadata = { title: "Stats" };
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("views.stats");
+  return { title: t("title") };
+}
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -13,6 +17,7 @@ interface Props {
 
 export default async function StatsPage({ params }: Props) {
   const { id } = await params;
+  const t = await getTranslations("views.stats");
 
   let data;
   try {
@@ -23,9 +28,9 @@ export default async function StatsPage({ params }: Props) {
 
   return (
     <PageShell
-      title="By the Numbers"
+      title={t("title")}
       icon={<BarChart3 className="h-5 w-5" />}
-      description="The things about this codebase you can't see anywhere else: how big it got, when it started, when the work happens, and the records it holds."
+      description={t("description")}
       maxWidth="wide"
     >
       <StatsView data={data} repoId={id} />

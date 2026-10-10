@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.server.mcp_server._basis import call_resolution_basis
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
+from repowise.server.mcp_server._edit_sites import reference_edit_set
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
     _decision_body,
@@ -53,8 +55,9 @@ from repowise.server.mcp_server._helpers import (
     read_repo_file_text,
 )
 from repowise.server.mcp_server._index_state import index_state_key
+from repowise.server.mcp_server._meta import uncommitted_targets
 from repowise.server.mcp_server._references import path_identity, symbol_identity
-from repowise.server.mcp_server._symbol_lookup import resolve_symbol_rows
+from repowise.server.mcp_server._symbol_lookup import resolve_symbol_rows, symbol_id_variants
 from repowise.server.mcp_server.tool_context.enrichment import (
     _DOC_DRIFT_PATH,
     _resolve_call_graph,
@@ -379,6 +382,7 @@ async def _resolve_one_target(
     exclude_spec: Any = None,
     repo_root: Any = None,
     collector: OmissionCollector | None = None,
+    as_of_ts: datetime | None = None,
 ) -> dict:
     """Resolve a single target and return its full context."""
     repo_id = repository.id
@@ -404,6 +408,9 @@ async def _resolve_one_target(
     # Set only when a symbol target resolved through the call graph rather than
     # the symbol index (index-only mode); carries the fields the node has.
     graph_symbol: GraphNode | None = None
+    # The resolved symbol's graph id. Graph queries key on it, never on the
+    # caller's spelling, so ``Class.method`` and ``Class::method`` agree.
+    symbol_node_id: str | None = None
 
     if page and page.repository_id == repo_id:
         target_type = "file"
@@ -490,6 +497,7 @@ async def _resolve_one_target(
             if sym_matches:
                 target_type = "symbol"
                 file_path_for_git = sym_matches[0].file_path
+                symbol_node_id = sym_matches[0].symbol_id
             else:
                 # 4. Try file page by target_path search
                 res = await session.execute(
@@ -507,18 +515,25 @@ async def _resolve_one_target(
     if target_type is None:
         # Fallback 1: index-only mode (no wiki pages). Return the graph node,
         # typed by what it is: a symbol node is a symbol target whose file is
-        # the node's file, not its id.
+        # the node's file, not its id. Every separator form is tried, as the
+        # symbol rung does. Among several, the verbatim id wins, then a symbol
+        # node, then the id order, so the pick never depends on row order.
         res = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repo_id,
-                GraphNode.node_id == target,
+                GraphNode.node_id.in_(symbol_id_variants(target)),
             )
         )
-        gnode = res.scalar_one_or_none()
+        gnode = min(
+            res.scalars().all(),
+            key=lambda g: (g.node_id != target, g.node_type != "symbol", g.node_id),
+            default=None,
+        )
         if gnode is not None and gnode.node_type == "symbol":
             target_type = "symbol"
             graph_symbol = gnode
             file_path_for_git = gnode.file_path
+            symbol_node_id = gnode.node_id
             page = None
         elif gnode is not None:
             target_type = "file"
@@ -597,6 +612,7 @@ async def _resolve_one_target(
                     exclude_spec=exclude_spec,
                     repo_root=repo_root,
                     collector=collector,
+                    as_of_ts=as_of_ts,
                 )
                 if "error" not in card:
                     card["target"] = target
@@ -695,7 +711,9 @@ async def _resolve_one_target(
                 "section": parent.section_number,
             }
 
-    want_skeleton = bool(include and "skeleton" in include)
+    # Asking for both skeleton and skeleton+ renders one block, the plus view.
+    skeleton_plus = bool(include and "skeleton+" in include)
+    want_skeleton = skeleton_plus or bool(include and "skeleton" in include)
     want_all_symbols = bool(include and "symbols" in include)
 
     # --- Docs ---
@@ -1004,7 +1022,7 @@ async def _resolve_one_target(
         if triage_meta is not None:
             # Row exposes the selected columns as attributes, which is exactly
             # the shape fix_annotation reads off a full ORM row.
-            fixes = fix_annotation(triage_meta)
+            fixes = fix_annotation(triage_meta, now=as_of_ts)
             if fixes is not None:
                 result_data["fix_history"] = fixes
 
@@ -1218,6 +1236,10 @@ async def _resolve_one_target(
             freshness["confidence_score"] = None
             freshness["freshness_status"] = None
             freshness["is_stale"] = None
+        if file_path_for_git and uncommitted_targets(
+            getattr(repository, "local_path", None), [file_path_for_git]
+        ):
+            freshness["working_tree"] = "modified"
         result_data["freshness"] = freshness
 
     # --- KG layer + tour context (Phase 9) ---
@@ -1261,23 +1283,48 @@ async def _resolve_one_target(
         await _resolve_call_graph(
             session,
             repository,
-            target,
+            symbol_node_id or target,
             target_type,
             result_data,
             want_callers=want_callers,
             want_callees=want_callees,
             exclude_spec=exclude_spec,
             collector=collector,
+            repo_root=repo_root or getattr(repository, "local_path", None),
         )
+
+    # --- Reference edit set: every live site naming the symbol ---
+    if include and "references" in include:
+        ref_node = graph_symbol
+        if ref_node is None and target_type == "symbol" and symbol_node_id:
+            res = await session.execute(
+                select(GraphNode).where(
+                    GraphNode.repository_id == repo_id,
+                    GraphNode.node_id.in_(symbol_id_variants(symbol_node_id)),
+                    GraphNode.node_type == "symbol",
+                )
+            )
+            ref_node = min(
+                res.scalars().all(),
+                key=lambda g: (g.node_id != symbol_node_id, g.node_id),
+                default=None,
+            )
+        root = repo_root or getattr(repository, "local_path", None)
+        if ref_node is not None and root:
+            result_data["references"] = await reference_edit_set(
+                session, repo_id, root, ref_node, collector
+            )
+        else:
+            result_data["references_note"] = "references require a symbol target in the graph"
 
     # --- Metrics (replaces get_graph_metrics) ---
     if include and "metrics" in include:
-        await _resolve_metrics(session, repository, target, result_data)
+        await _resolve_metrics(session, repository, symbol_node_id or target, result_data)
 
     # --- Community (replaces get_community) ---
     if include and "community" in include:
         await _resolve_community(
-            session, repository, target, result_data, exclude_spec=exclude_spec
+            session, repository, symbol_node_id or target, result_data, exclude_spec=exclude_spec
         )
 
     # --- Code health (Phase 2) ---
@@ -1294,7 +1341,13 @@ async def _resolve_one_target(
     # --- Skeleton (distill) — opt-in only, see the module note ---
     if want_skeleton:
         await _resolve_skeleton(
-            session, repository, target, target_type, result_data, repo_root=repo_root
+            session,
+            repository,
+            target,
+            target_type,
+            result_data,
+            repo_root=repo_root,
+            mode="plus" if skeleton_plus else "smart",
         )
 
     return result_data

@@ -204,7 +204,7 @@ def test_list_provider_status_surfaces_custom_model(clean_env, tmp_path):
 
     status = pc.list_provider_status(repo_id="r1", repo_path=str(repo))
 
-    assert status["active"] == {"provider": "openai", "model": "gemma4"}
+    assert (status["active"]["provider"], status["active"]["model"]) == ("openai", "gemma4")
     openai = next(p for p in status["providers"] if p["id"] == "openai")
     assert "gemma4" in openai["models"]  # custom model is selectable
     assert openai["configured"] is True  # key seen via repo .env
@@ -303,6 +303,51 @@ def test_config_path_defaults_to_home(monkeypatch, tmp_path):
     assert pc._config_path() == tmp_path / ".repowise" / "provider_config.json"
 
 
+def test_list_provider_status_carries_setup_facts_from_the_specs(clean_env, tmp_path):
+    """The settings UIs render these instead of keeping provider tables."""
+    status = pc.list_provider_status()
+    by_id = {p["id"]: p for p in status["providers"]}
+
+    assert by_id["gemini"]["requires_key"] is True
+    assert by_id["gemini"]["env_vars"] == ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+    assert by_id["ollama"]["requires_key"] is False
+    assert by_id["ollama"]["env_vars"] == ["OLLAMA_BASE_URL"]
+    assert by_id["codex_cli"]["requires_key"] is False
+    assert "codex login" in by_id["codex_cli"]["setup_hint"]
+    assert "mock" not in by_id
+    assert status["flag_only_providers"] == ["mock"]
+
+
+def test_list_provider_status_carries_the_embedder_registry(clean_env, tmp_path, monkeypatch):
+    from repowise.core.providers.embedding import registry
+
+    monkeypatch.setitem(registry._custom_embedders, "voyage", lambda **_kw: None)
+    clean_env["REPOWISE_EMBEDDER"] = "Gemini"
+    status = pc.list_provider_status()
+    by_id = {e["id"]: e for e in status["embedders"]}
+
+    assert set(by_id) == set(registry.list_embedders())
+    assert status["embedders"][0]["id"] == registry.DEFAULT_EMBEDDER
+    assert by_id["gemini"]["env_vars"] == ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+    assert by_id["mock"] == {"id": "mock", "env_vars": [], "semantic": False}
+    assert by_id["voyage"] == {"id": "voyage", "env_vars": [], "semantic": True}
+    assert status["active"]["embedder"] == "gemini"
+
+
+def test_list_provider_status_prices_the_active_model(clean_env, tmp_path):
+    from repowise.core.cost_estimator import lookup_cost
+
+    def rates(provider, model):
+        pc.set_active_provider(provider, model)
+        active = pc.list_provider_status()["active"]
+        return active["input_cost_per_1k"], active["output_cost_per_1k"]
+
+    assert rates("openai", "gpt-5.4-mini") == lookup_cost("gpt-5.4-mini")
+    # Unpriced is unknown, not free; a local model is free.
+    assert rates("openai", "gpt-4o") == (None, None)
+    assert rates("ollama", "qwen3.5:4b") == (0.0, 0.0)
+
+
 def test_list_provider_status_never_returns_key_material(clean_env, tmp_path):
     repo = _make_repo(
         tmp_path / "repo",
@@ -315,6 +360,15 @@ def test_list_provider_status_never_returns_key_material(clean_env, tmp_path):
     serialized = repr(status)
     assert "super-secret-key" not in serialized
     for provider in status["providers"]:
-        assert set(provider) == {"id", "name", "models", "default_model", "configured"}
+        assert set(provider) == {
+            "id",
+            "name",
+            "models",
+            "default_model",
+            "configured",
+            "requires_key",
+            "env_vars",
+            "setup_hint",
+        }
         assert "key" not in provider
         assert "api_key" not in provider

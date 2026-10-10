@@ -34,6 +34,15 @@ from repowise.core.test_paths import is_test_related_path
 
 logger = logging.getLogger(__name__)
 
+# Bump whenever a change alters what the scanner reports: a new/removed
+# pattern, a changed severity, a precision fix to an existing rule. ``update``
+# compares this against the value stamped in state.json and, on a mismatch,
+# rescans every tracked working-tree file instead of only the changed ones,
+# the same way ``HEALTH_ANALYZER_VERSION`` forces a full health re-score
+# (#3072). Without this, a scanner fix only ever reaches a file a user
+# happens to edit.
+SECURITY_SCANNER_VERSION = 1
+
 _CREDENTIAL_EXACT_PLACEHOLDERS: frozenset[str] = frozenset({"password", "changeit"})
 
 _CREDENTIAL_SUBSTRING_PLACEHOLDERS: tuple[str, ...] = (

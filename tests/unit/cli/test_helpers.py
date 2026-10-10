@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
@@ -295,6 +296,95 @@ class TestSaveConfigPartial:
         cfg = load_config(tmp_path)
         assert cfg["commit_limit"] == 500
         assert cfg["embedder"] == "minilm"
+
+
+class TestStaleEmbeddingModelIsNotCarriedOver:
+    """A re-init that resolves no model must not keep a previous one (#2627)."""
+
+    def test_save_config_drops_a_stale_pin_on_the_new_embedder(self, tmp_path):
+        from repowise.cli.helpers import load_config, save_config
+
+        save_config(
+            tmp_path,
+            "openai",
+            "gpt-5",
+            "openai",
+            embedding_model="text-embedding-3-large",
+            save_key=False,
+        )
+        save_config(
+            tmp_path, "gemini", "gemini-2.5-flash", "gemini", embedding_model=None, save_key=False
+        )
+
+        cfg = load_config(tmp_path)
+        assert cfg["embedder"] == "gemini"
+        assert "embedding_model" not in cfg
+
+    def test_save_config_partial_drops_a_stale_pin_on_the_new_embedder(self, tmp_path):
+        from repowise.cli.helpers import load_config, save_config_partial
+
+        rw_dir = tmp_path / ".repowise"
+        rw_dir.mkdir()
+        (rw_dir / "config.yaml").write_text(
+            "embedder: openai\nembedding_model: text-embedding-3-large\n", encoding="utf-8"
+        )
+
+        save_config_partial(tmp_path, embedder="gemini", embedding_model=None)
+
+        cfg = load_config(tmp_path)
+        assert cfg["embedder"] == "gemini"
+        assert "embedding_model" not in cfg
+
+    def test_serve_does_not_export_the_dropped_pin(self, tmp_path, monkeypatch):
+        from repowise.cli.commands import serve_cmd
+        from repowise.cli.helpers import save_config
+
+        save_config(
+            tmp_path,
+            "openai",
+            "gpt-5",
+            "openai",
+            embedding_model="text-embedding-3-large",
+            save_key=False,
+        )
+        save_config(
+            tmp_path, "gemini", "gemini-2.5-flash", "gemini", embedding_model=None, save_key=False
+        )
+
+        monkeypatch.chdir(tmp_path)
+        # _load_local_provider_config only sets these when unset, and it writes
+        # straight to os.environ, which monkeypatch cannot undo unless it made
+        # the write itself. Pre-set the ones this test does not care about so
+        # the function leaves them alone, and only clear the one under test.
+        monkeypatch.setenv("REPOWISE_PROVIDER", "unrelated")
+        monkeypatch.setenv("REPOWISE_MODEL", "unrelated")
+        monkeypatch.setenv("REPOWISE_EMBEDDER", "unrelated")
+        monkeypatch.delenv("REPOWISE_EMBEDDING_MODEL", raising=False)
+        serve_cmd._load_local_provider_config()
+
+        assert os.environ.get("REPOWISE_EMBEDDING_MODEL") is None
+
+    def test_embedder_alone_does_not_clear_a_pin_it_was_never_told_changed(self, tmp_path):
+        """Regression from review on #2654: reindex passes only ``embedder=`` every run.
+
+        The first cut of the fix cleared the pin whenever ``embedder`` was
+        passed without ``embedding_model``, which reads reindex's silence
+        (it has never had a model to pass) as "the model is gone" and wiped a
+        real pin on every routine reindex. Clearing now needs an explicit
+        ``embedding_model=None``, not merely the absence of the keyword.
+        """
+        from repowise.cli.helpers import load_config, save_config_partial
+
+        rw_dir = tmp_path / ".repowise"
+        rw_dir.mkdir()
+        (rw_dir / "config.yaml").write_text(
+            "embedder: openai\nembedding_model: text-embedding-3-large\n", encoding="utf-8"
+        )
+
+        save_config_partial(tmp_path, embedder="openai")
+
+        cfg = load_config(tmp_path)
+        assert cfg["embedding_model"] == "text-embedding-3-large"
 
 
 class TestConfigFingerprint:

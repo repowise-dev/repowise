@@ -745,7 +745,7 @@ async def get_health_summary(
         return {
             "file_count": 0,
             "unanalysed_file_count": unanalysed,
-            "average_health": None if unanalysed else 10.0,
+            "average_health": None,
             "worst_performer_path": None,
             "worst_performer_score": None,
             "worst_test_path": None,

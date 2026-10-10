@@ -5,6 +5,7 @@ import { ProviderSettings } from "@repowise-dev/ui/settings/provider-settings";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { useProviders } from "@/lib/hooks/use-providers";
+import { useTranslations } from "next-intl";
 
 /**
  * Web data wrapper around the shared `ProviderSettings` shell. Owns the fetch,
@@ -23,6 +24,8 @@ export function ProviderSettingsPanel({ repoId }: { repoId: string }) {
     validate,
   } = useProviders(repoId);
 
+  const t = useTranslations("settings");
+
   if (isLoading) {
     return (
       <div className="space-y-2.5">
@@ -36,20 +39,24 @@ export function ProviderSettingsPanel({ repoId }: { repoId: string }) {
   async function handleAddKey(providerId: string, key: string) {
     try {
       await saveKey(providerId, key);
-      toast.success("API key saved", {
-        description: "Written to this repo. Test it to confirm it works.",
+      toast.success(t("providerPanel.keySaved"), {
+        description: t("providerPanel.keySavedDescription"),
       });
     } catch (e) {
-      toast.error("Couldn't save the key", { description: toFriendlyMessage(e) });
+      toast.error(t("providerPanel.keySaveFailed"), {
+        description: toFriendlyMessage(e),
+      });
     }
   }
 
   async function handleRemoveKey(providerId: string) {
     try {
       await removeKey(providerId);
-      toast.info("API key removed");
+      toast.info(t("providerPanel.keyRemoved"));
     } catch (e) {
-      toast.error("Couldn't remove the key", { description: toFriendlyMessage(e) });
+      toast.error(t("providerPanel.keyRemoveFailed"), {
+        description: toFriendlyMessage(e),
+      });
     }
   }
 
@@ -57,7 +64,7 @@ export function ProviderSettingsPanel({ repoId }: { repoId: string }) {
     try {
       await activate(providerId, model);
     } catch (e) {
-      toast.error("Couldn't set the active provider", {
+      toast.error(t("providerPanel.activateFailed"), {
         description: toFriendlyMessage(e),
       });
     }

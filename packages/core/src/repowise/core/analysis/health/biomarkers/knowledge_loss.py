@@ -81,6 +81,15 @@ class KnowledgeLossDetector:
         if not primary:
             return []
 
+        # ``recent_owner_commit_pct`` is None when the file's only recent
+        # commits were pure renames: ``_Authors.tally`` skips a rename when
+        # tallying authorship, so there is no authored activity in the window
+        # to judge the owner against, even though ``commit_count_90d`` (which
+        # counts the rename) kept the file out of ``is_stable`` (#2957). A
+        # missing signal is not evidence the owner went quiet.
+        if meta.get("recent_owner_commit_pct") is None:
+            return []
+
         recent_share = _as_float(meta.get("recent_owner_commit_pct"))
         share = recent_share / 100.0 if recent_share > 1.0 else recent_share
 

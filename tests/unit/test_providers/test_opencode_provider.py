@@ -180,7 +180,7 @@ def test_invalid_model_name_raises(monkeypatch, tmp_path):
 def test_missing_cli_raises(monkeypatch, tmp_path):
     monkeypatch.setattr("shutil.which", lambda _cmd: None)
 
-    with pytest.raises(ProviderError, match="OpenCode CLI is not installed"):
+    with pytest.raises(ProviderError, match=r"OpenCode CLI not found.*opencode.ai/install"):
         OpenCodeProvider(repo_path=tmp_path)
 
 

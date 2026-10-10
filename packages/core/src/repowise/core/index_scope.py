@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
@@ -225,6 +226,17 @@ def resolve_index_scope(
 COMPACT_INDEX_SCOPE_PROJECTION = "compact"
 CANONICAL_INDEX_SCOPE_PROJECTION = "full"
 
+#: Degraded-analysis entries the compact scope names; the count stays exact and
+#: the full list rides on the canonical scope.
+_DEGRADED_ANALYSES_SHOWN = 3
+
+_ANALYSIS_ID_RE = re.compile(r"[a-z][a-z0-9_]*")
+
+
+def _free_text_last(entry: str) -> bool:
+    """Sort key putting bare analysis ids (``health``) ahead of free-text run warnings."""
+    return _ANALYSIS_ID_RE.fullmatch(entry) is None
+
 #: Set to ``full`` to serve the canonical scope everywhere, as builds before
 #: the compact projection did. The compatibility window for a reader that
 #: parses the whole object and cannot yet ask for it by name.
@@ -332,7 +344,8 @@ def compact_index_scope(
 
     The one exception is ``degraded_analyses``, carried only when non-empty:
     which analysis is missing changes what an answer means, and "health failed"
-    and "the graph failed" are not the same warning.
+    and "the graph failed" are not the same warning. A long list is sampled,
+    with its exact count.
     """
     if not isinstance(scope, Mapping):
         return None
@@ -348,7 +361,15 @@ def compact_index_scope(
     }
     unavailable = _section(scope, "analysis").get("unavailable")
     if unavailable:
-        compact["degraded_analyses"] = list(unavailable)
+        entries = list(unavailable)
+        if len(entries) > _DEGRADED_ANALYSES_SHOWN:
+            entries.sort(key=_free_text_last)
+        shown = entries[:_DEGRADED_ANALYSES_SHOWN]
+        compact["degraded_analyses"] = shown
+        if len(unavailable) > len(shown):
+            compact["degraded_analyses_total"] = len(unavailable)
+            compact["degraded_analyses_emitted"] = len(shown)
+            compact["degraded_analyses_reduced_reason"] = "compact_projection"
     return compact
 
 

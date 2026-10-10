@@ -198,6 +198,14 @@ describe("review card beneath the answer", () => {
     );
   });
 
+  it("a result with an explicit revspec carries no working_tree and gets the commit header", () => {
+    const commit = { ...risk("findings"), ref: "HEAD~1" };
+    delete commit.working_tree;
+    expect(segments({ phase: "done", risk: commit })?.[0]).toBe(
+      "Change review (HEAD~1 (no uncommitted changes), 1 changed file)",
+    );
+  });
+
   it("counts findings past the ones the server listed, and resolved ones beside new ones", () => {
     const base = risk("findings");
     const more = { ...base, health_delta: { ...base.health_delta!, findings_total: 5, resolved: 1 } };

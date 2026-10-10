@@ -134,7 +134,9 @@ Auto-generated from indexed data. Updates on every `repowise update`.
 
 **Static** — the same text for every repo. Hardcoded in `claude_md.j2`. Teaches
 Claude Code *when* to call each MCP tool using natural workflow framing rather than
-imperatives.
+imperatives. One exception: a keyless index (template prose, no semantic search)
+gets a bullet saying low-confidence answers and full-text-only hits are expected,
+and its tool table drops the clauses about `confidence: "high"` and `[fts]` hits.
 
 This is the most important part. The phrasing matters: "Starting a new task?
 Call `get_overview()` first" is more effective than "ALWAYS call `get_overview()`

@@ -26,7 +26,7 @@ For the exact settings entries each install writes, see the
 | **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / repowise MCP calls | Graph context on searches, read notices, edit-time decision and bug-history notices |
 | **Wrong-path rescue** | Claude Code | `repowise init` | a path tool call that failed on a path this tree does not have | Names the file when exactly one indexed file carries that basename; silent otherwise |
 | **Coverage re-ingest** (opt-in) | Claude Code | `hooks.coverage_reingest: true`, then the next `repowise coverage add` / `init` / `update` | `Bash` / `PowerShell` | Re-ingests a fresh full-suite coverage report in the background |
-| **Command rewrite (distill)** | Claude Code, Codex | `repowise hook rewrite install`, or Yes at the `repowise init` prompt | `Bash` / `PowerShell` | Rewrites noisy commands to `repowise distill <cmd>` |
+| **Command rewrite (distill)** | Claude Code, Codex, Cursor | `repowise hook rewrite install`, or Yes at the `repowise init` prompt | `Bash` / `PowerShell` (Cursor: `Shell`) | Rewrites noisy commands to `repowise distill <cmd>` |
 | **Codex context and staleness** | Codex | `repowise init --codex` | SessionStart, edits, shell | Reminds Codex to use the MCP tools and flags stale context after git operations |
 
 Each agent hook records what it said and whether the agent acted on it. See
@@ -260,6 +260,7 @@ Flags and the `--reset` upgrade step: [CLI reference](../reference/CLI_REFERENCE
 | Claude Code | `PostToolUse` and `PostToolUseFailure` (opt-in coverage re-ingest) | `Bash\|PowerShell` | the repo's `.claude/settings.local.json` |
 | Codex | `SessionStart` | `startup\|resume\|clear` | the repo's `.codex/hooks.json` |
 | Codex | `PostToolUse` | `Bash\|shell_command`, `apply_patch\|Edit\|Write` | the repo's `.codex/hooks.json` |
+| Cursor | `preToolUse` (opt-in rewrite) | `Shell` | `~/.cursor/hooks.json` |
 
 The coverage re-ingest entries are written by the next `repowise coverage add`,
 `init` or `update` once `hooks.coverage_reingest: true` is set, and removed when

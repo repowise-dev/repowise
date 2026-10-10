@@ -105,9 +105,11 @@ class LanguageSpec:
 
     # Single-segment test-dir tokens that are UNAMBIGUOUS for this
     # language's files. The generic table treats "spec(s)/" as ambiguous
-    # (OpenAPI specs, language specs) and demands a test-shaped filename —
-    # but a Ruby file under spec/ is RSpec material whatever its name
-    # (support helpers, vendored fixtures like okjson.rb included).
+    # (OpenAPI specs, language specs) and "t/" as ambiguous (a single
+    # letter) and demands a test-shaped filename — but a Ruby file under
+    # spec/ is RSpec material whatever its name (support helpers, vendored
+    # fixtures like okjson.rb included), and a Python file under t/ is test
+    # material whatever its name.
     test_dir_tokens: tuple[str, ...] = ()
 
     # Case-sensitive directory-segment suffixes that mark a test project

@@ -1,6 +1,6 @@
 ---
 description: Trigger an incremental Repowise update to sync documentation with recent code changes.
-allowed-tools: Bash, Read
+allowed-tools: Bash(repowise update:*), Read
 ---
 
 # Repowise Update

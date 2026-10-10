@@ -1,7 +1,7 @@
 ---
 frontmatter: |
     description: Print the tests whose coverage intersects a change's changed lines — for a commit, base..head range, or staged diff.
-    allowed-tools: Bash, Read
+    allowed-tools: Bash(repowise impacted-tests:*), Read
 ---
 
 # Repowise Impacted Tests

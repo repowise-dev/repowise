@@ -6,15 +6,17 @@ from pathlib import Path
 from typing import Any
 
 from repowise.cli.agent_targets.targets import vscode as vscode_target
+from repowise.cli.agent_targets.types import FileAction
 from repowise.cli.editor_setup import EditorSetupOptions
 
 
 class VSCodeSetup:
     """Project-local VS Code setup integration.
 
-    Writes the workspace MCP server config (.vscode/mcp.json) and recommends the
-    repowise extension (.vscode/extensions.json). Both are repo-shared files, so
-    they use the bare ``repowise`` command like the committed ``.mcp.json``.
+    Writes the workspace MCP server config (.vscode/mcp.json), recommends the
+    repowise extension (.vscode/extensions.json) and upserts the managed block
+    in .github/copilot-instructions.md. All are repo-shared files, so the MCP
+    entry uses the bare ``repowise`` command like the committed ``.mcp.json``.
     """
 
     #: Read from the descriptor rather than restated, so the ids have one home.
@@ -87,4 +89,18 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
             'contain comments). Add "repowise-dev.repowise" to "recommendations" '
             "manually.[/]"
         )
+
+    try:
+        instructions = vscode_target.write_instructions(repo_path)
+    except (OSError, ValueError) as exc:
+        console_obj.print(f"  [{WARN}].github/copilot-instructions.md not written ({exc}).[/]")
+    else:
+        if instructions.action is FileAction.KEPT:
+            console_obj.print(
+                f"  [{WARN}].github/copilot-instructions.md left unchanged: its Repowise "
+                "markers are unpaired or duplicated, or it could not be read.[/]"
+            )
+        else:
+            console_obj.print(f"  [{OK}]✓[/] Copilot instructions updated ({instructions.path})")
+            written.append(instructions.path)
     return written

@@ -13,6 +13,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 
+from ...support_paths import is_doc_or_config_path
 from ...test_paths import is_test_related_path
 from ..finding_registry import excluded_types
 from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
@@ -23,6 +24,7 @@ from .attribution import FindingAttributor, changed_symbols_for
 from .identity import change_finding_id, finding_key, severity_rank
 from .matcher import FindingMatcher, MatchedFinding
 from .models import (
+    NOT_CODE,
     AnalysisFingerprint,
     ChangeFinding,
     ChangeHealthDelta,
@@ -40,6 +42,10 @@ from .sources import (
 
 #: Changed files above this count are refused rather than analysed twice.
 MAX_CHANGED_FILES = 300
+
+#: Documentation and configuration languages. Anything else with no health
+#: dialect (HTML, schemas, shell) may carry logic, so it stays a gap.
+_NOT_CODE_LANGUAGES = frozenset({"json", "yaml", "toml", "markdown"})
 
 #: Comparisons kept in the process cache.
 _CACHE_CAPACITY = 32
@@ -209,14 +215,19 @@ class ChangeHealthDeltaService:
         basis = "both_sides_analyzed"
 
         if not eligible:
+            if not changes:
+                explanation = "This change touches no files."
+            elif all(r == NOT_CODE for r in skipped.values()):
+                explanation = (
+                    "Only documentation or configuration files changed; "
+                    "health analysis does not cover them."
+                )
+            else:
+                explanation = "No changed file is health-analyzable, so nothing was compared."
             delta = ChangeHealthDelta(
                 # Nothing was compared either way, so neither case is a clean bill.
                 status="unavailable",
-                explanation=(
-                    "No changed file is health-analyzable, so nothing was compared."
-                    if changes
-                    else "This change touches no files."
-                ),
+                explanation=explanation,
                 base=base_id,
                 head=head_id,
                 comparison_basis=basis,
@@ -388,7 +399,10 @@ def _skip_reason(change: FileChange) -> str:
     """Why a changed path never reached the analyzer."""
     if change.head_path is None:
         return "deleted"
-    if language_of(change.head_path) is None:
+    language = language_of(change.head_path)
+    if language in _NOT_CODE_LANGUAGES or is_doc_or_config_path(change.head_path):
+        return NOT_CODE
+    if language is None:
         return "unsupported_language"
     return "not_health_analyzable"
 
@@ -401,11 +415,13 @@ def _status_for(
             f"None of the {scope.changed} changed "
             f"{'file' if scope.changed == 1 else 'files'} could be analysed."
         )
-    if skipped or scope.failed:
+    # Docs, config and data hold no code, so skipping them leaves nothing unexamined.
+    code_skipped = sum(1 for r in skipped.values() if r != NOT_CODE)
+    if code_skipped or scope.failed:
         return (
             "partial",
             f"Compared {scope.analyzed} of {scope.changed} changed files; "
-            f"{len(skipped)} were not analysed.",
+            f"{code_skipped} that may hold code were not analysed.",
         )
     if not findings:
         return (

@@ -108,18 +108,17 @@ def detect_editor_setup_outcome(
         pass
 
     # The distill rewrite hook is per-agent. Treat it as present when any agent
-    # surface has it (Claude Code always, Codex only when detected), mirroring
+    # surface has it (Claude Code always, Codex and Cursor only when detected), mirroring
     # `repowise hook rewrite status`, so a Codex-only user who set it up on
     # Codex is never nagged to install it again.
     rewrite = False
     try:
         from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
         from repowise.cli.agent_adapters.codex import CodexAdapter
+        from repowise.cli.agent_adapters.cursor import CursorAdapter
 
         surfaces = [ClaudeCodeAdapter()]
-        codex = CodexAdapter()
-        if codex.detect():
-            surfaces.append(codex)
+        surfaces += [a for a in (CodexAdapter(), CursorAdapter()) if a.detect()]
         rewrite = any(surface.rewrite_hook_installed() for surface in surfaces)
     except Exception:
         pass

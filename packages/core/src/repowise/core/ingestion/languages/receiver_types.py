@@ -414,12 +414,10 @@ _TS_TARGET_LISTS = (
 _TS_CONDITION_HEADS = frozenset({"if", "for", "while", "switch", "with", "return", "await"})
 
 
-def _named_bindings(
-    patterns: Iterable[re.Pattern[str]], cleaned: str, starts: list[int]
-) -> set[tuple[int, str]]:
-    """``(line, name)`` for each pattern's ``name`` group."""
+def _named_bindings(patterns: Iterable[re.Pattern[str]], cleaned: str) -> set[tuple[int, str]]:
+    """``(offset, name)`` for each pattern's ``name`` group."""
     return {
-        (bisect_right(starts, match.start("name")), match.group("name"))
+        (match.start("name"), match.group("name"))
         for pattern in patterns
         for match in pattern.finditer(cleaned)
     }
@@ -453,9 +451,8 @@ def _listed_bindings(
     patterns: Iterable[re.Pattern[str]],
     identifier: re.Pattern[str],
     cleaned: str,
-    starts: list[int],
 ) -> set[tuple[int, str]]:
-    """``(line, name)`` for every identifier each pattern's ``lhs`` list binds."""
+    """``(offset, name)`` for every identifier each pattern's ``lhs`` list binds."""
     found: set[tuple[int, str]] = set()
     for pattern in patterns:
         for match in pattern.finditer(cleaned):
@@ -464,20 +461,19 @@ def _listed_bindings(
                 continue
             offset = match.start("lhs")
             for name in identifier.finditer(_without_annotations(match.group("lhs"))):
-                found.add((bisect_right(starts, offset + name.start()), name.group()))
+                found.add((offset + name.start(), name.group()))
     return found
 
 
-def _python_target_bindings(cleaned: str, starts: list[int]) -> set[tuple[int, str]]:
+def _python_target_bindings(cleaned: str) -> set[tuple[int, str]]:
     found: set[tuple[int, str]] = set()
     for pattern in _PY_TARGET_LISTS:
         for match in pattern.finditer(cleaned):
-            line = bisect_right(starts, match.start("lhs"))
             for target in match.group("lhs").split(","):
                 # `self.x = ...` and `d[k] = ...` bind no bare name.
                 name = target.strip()
                 if _PY_IDENTIFIER.match(name):
-                    found.add((line, name))
+                    found.add((match.start("lhs"), name))
     return found
 
 
@@ -489,19 +485,32 @@ _BINDING_SCAN_AS = {"javascript": "typescript"}
 
 def scan_bindings(text: str, language: str) -> tuple[tuple[int, str], ...]:
     """Every ``(line, name)`` *text* binds, in line order."""
+    return tuple(sorted({(line, name) for line, _, name in scan_binding_positions(text, language)}))
+
+
+def scan_binding_positions(text: str, language: str) -> tuple[tuple[int, int, str], ...]:
+    """Every ``(line, column, name)`` *text* binds, in order.
+
+    Ceiling: a block comment earlier on the same line shifts the column, since
+    comments are blanked without keeping their width.
+    """
     if language not in BINDING_LANGUAGES:
         return ()
     language = _BINDING_SCAN_AS.get(language, language)
     cleaned = _without_comments(text, language)
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
     if language == "typescript":
-        found = _named_bindings(_TS_BINDINGS, cleaned, starts)
-        found |= _listed_bindings(_TS_TARGET_LISTS, _TS_IDENTIFIER, cleaned, starts)
+        found = _named_bindings(_TS_BINDINGS, cleaned)
+        found |= _listed_bindings(_TS_TARGET_LISTS, _TS_IDENTIFIER, cleaned)
     else:
-        found = _python_target_bindings(cleaned, starts)
-        found |= _named_bindings(_PY_BINDINGS, cleaned, starts)
-        found |= _listed_bindings(_PY_PARAMETER_LISTS, _PY_NAME, cleaned, starts)
-    return tuple(sorted(found))
+        found = _python_target_bindings(cleaned)
+        found |= _named_bindings(_PY_BINDINGS, cleaned)
+        found |= _listed_bindings(_PY_PARAMETER_LISTS, _PY_NAME, cleaned)
+    positions = set()
+    for offset, name in found:
+        line = bisect_right(starts, offset)
+        positions.add((line, offset - starts[line - 1], name))
+    return tuple(sorted(positions))
 
 
 # What a scope binds beyond its positional bindings. A TypeScript/JavaScript

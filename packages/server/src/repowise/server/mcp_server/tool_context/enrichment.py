@@ -59,7 +59,12 @@ from repowise.core.persistence.models import (
     Repository,
 )
 from repowise.server.mcp_server._basis import call_resolution_basis
-from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
+from repowise.server.mcp_server._budget import (
+    DEFAULT_RESPONSE_CHARS,
+    OmissionCollector,
+    cap_collection,
+)
+from repowise.server.mcp_server._edit_sites import attach_call_text, first_call_line
 from repowise.server.mcp_server._graph_files import keep_projected_edge, node_to_file
 from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
@@ -68,6 +73,7 @@ from repowise.server.mcp_server._helpers import (
     is_missing_table,
 )
 from repowise.server.mcp_server._index_state import index_state_key
+from repowise.server.mcp_server._wrapper_callers import forwarding_wrapper_callers
 from repowise.server.schemas.intelligence import SYMBOL_RELATION_GROUP_OF
 
 #: Where a resolved target path waits between its card being built and the
@@ -187,8 +193,12 @@ async def _resolve_call_graph(
     want_callees: bool = False,
     exclude_spec: Any = None,
     collector: OmissionCollector | None = None,
+    repo_root: Any = None,
 ) -> None:
-    """Resolve callers/callees for a symbol and attach to result_data."""
+    """Resolve callers/callees for a symbol and attach to result_data.
+
+    Served call rows carry ``call_line`` and, read from *repo_root*, its ``text``.
+    """
     repo_id = repository.id
     # 99.56% of symbols have <=50 callers (p99=31); the rare hub gets an
     # explicit `*_truncated` + `*_total` signal below rather than a silent cut.
@@ -329,7 +339,11 @@ async def _resolve_call_graph(
                 continue
             is_call = edge_type == "calls"
             if e.target_node_id == node.node_id:
-                inbound.append(_entry(e, e.source_node_id, with_edge_type=is_call))
+                row = _entry(e, e.source_node_id, with_edge_type=is_call)
+                # ``line`` is where the caller is defined; this is where it calls.
+                if is_call and (call_line := first_call_line(e.call_lines_json)):
+                    row["call_line"] = call_line
+                inbound.append(row)
             if e.source_node_id == node.node_id:
                 outbound.append(_entry(e, e.target_node_id, with_edge_type=is_call))
 
@@ -365,6 +379,24 @@ async def _resolve_call_graph(
                         "repowise omission reference; grep remains useful when graph "
                         "coverage itself may be incomplete."
                     )
+                elif direction == "in":
+                    # Appended after the direct rows and only under the cap, so
+                    # the callers_* counts keep meaning direct callers.
+                    hop = await forwarding_wrapper_callers(
+                        session,
+                        repo_id,
+                        node,
+                        [r["symbol_id"] for r in visible],
+                        known_nodes=node_map,
+                    )
+                    hop = filter_dicts_by_key(hop, "file", exclude_spec)
+                    if hop:
+                        result_data[key] = visible + hop
+                if direction == "in":
+                    await attach_call_text(repo_root, result_data[key], node.node_id)
+                    # Unserved rows are never checked against the live file.
+                    for row in rows[len(visible) :]:
+                        row.pop("call_line", None)
                 continue
 
             if not total:
@@ -897,6 +929,10 @@ def _doc_reference_block(
     return block
 
 
+#: Same threshold get_symbol uses to outline a container instead of inlining it.
+_FOCUS_CONTAINER_MAX_CHARS = DEFAULT_RESPONSE_CHARS // 2
+
+
 async def _resolve_skeleton(
     session: AsyncSession,
     repository: Repository,
@@ -905,14 +941,16 @@ async def _resolve_skeleton(
     result_data: dict[str, Any],
     *,
     repo_root: Any = None,
+    mode: str = "smart",
 ) -> None:
     """Resolve ``include=["skeleton"]`` — a body-elided rendering of one file.
 
     Slices the on-disk source on the line bounds persisted at index time
     (zero parsing), keeping every signature and the bodies of the
-    highest-PageRank symbols under a token budget. File targets only —
-    a symbol's "skeleton" is just its signature, which the triage card
-    already carries.
+    highest-PageRank symbols under a token budget. ``include=["skeleton+"]``
+    passes ``mode="plus"``: all non-function code kept, every function and
+    method body elided. A ``file.py::Symbol`` target renders its file with
+    that symbol's whole body and every other symbol as its signature.
     """
     # A "file.py::Symbol" target still has a useful skeleton — the file that
     # defines the symbol. Strip the suffix and skeleton that file rather than
@@ -932,6 +970,7 @@ async def _resolve_skeleton(
 
     from repowise.core.distill.skeleton import SkeletonSymbol, build_skeleton
     from repowise.core.persistence.models import WikiSymbol
+    from repowise.server.mcp_server._symbol_lookup import symbol_id_variants
 
     repo_id = repository.id
     res = await session.execute(
@@ -973,11 +1012,19 @@ async def _resolve_skeleton(
     # hydrator / incremental update, which hold a writable session on their path.
     from repowise.server.mcp_server._verify import check_symbol_bounds
 
+    focus_ids = set(symbol_id_variants(target)) if is_symbol_target else set()
+    source_lines = source.splitlines()
     symbols = []
     for r in rows:
         check = check_symbol_bounds(r, source)
         if check.approximate:
             continue
+        focus = r.symbol_id in focus_ids
+        if focus and r.kind not in ("function", "method"):
+            # Ceiling: a container body over the get_symbol outline threshold is
+            # not inlined; the ranked skeleton shows its methods as signatures.
+            span = source_lines[check.start_line - 1 : check.end_line]
+            focus = sum(len(ln) + 1 for ln in span) <= _FOCUS_CONTAINER_MAX_CHARS
         symbols.append(
             SkeletonSymbol(
                 name=r.name,
@@ -986,12 +1033,13 @@ async def _resolve_skeleton(
                 end_line=check.end_line,
                 signature=r.signature,
                 importance=pagerank.get(r.name, 0.0),
+                focus=focus,
             )
         )
     result = build_skeleton(
         source,
         symbols,
-        mode="smart",
+        mode=mode,
         hotspot=bool(result_data.get("hotspot")),
     )
     result_data["skeleton"] = {
@@ -1006,22 +1054,31 @@ async def _resolve_skeleton(
         # a verified response never needs a follow-up Read.
         "verified": True,
     }
+    focused = any(sym.focus for sym in symbols)
     if is_symbol_target:
-        # The caller passed "file.py::Symbol"; tell them this is the whole
-        # file's skeleton, and how to get just the symbol's body.
+        name = target.split("::", 1)[1]
         result_data["skeleton"]["of_file"] = file_target
-        result_data["skeleton"]["symbol_hint"] = (
-            f"Skeleton of the file defining '{target.split('::', 1)[1]}'. For that "
-            f"symbol's full body call get_symbol('{target}')."
-        )
+        if focused:
+            result_data["skeleton"]["symbol_hint"] = (
+                f"Skeleton of the file defining '{name}': its full body, every "
+                "other symbol as its signature."
+            )
+        else:
+            # No row for the symbol passed the bounds check, or it is a container
+            # over the ceiling, so its body is not guaranteed here.
+            result_data["skeleton"]["symbol_hint"] = (
+                f"Skeleton of the file defining '{name}'. For that "
+                f"symbol's full body call get_symbol('{target}')."
+            )
     if result.mode == "raw":
         result_data["skeleton"]["note"] = (
             "No usable symbol bounds for this file — returned source as-is."
         )
-    elif result.pct_of_full > 40.0:
+    elif result.pct_of_full > 40.0 and not focused:
         # Small files skeletonize poorly: when the skeleton is already a
         # large fraction of the source, tell the agent a Read costs little
-        # more and carries everything.
+        # more and carries everything. A focused skeleton is already the
+        # symbol plus a file map, so a Read is not the cheaper answer.
         result_data["skeleton"]["mostly_full"] = True
         result_data["skeleton"]["note"] = (
             f"Skeleton is {round(result.pct_of_full, 1)}% of the full file — "

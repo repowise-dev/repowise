@@ -1,3 +1,4 @@
+import { getTranslations } from "next-intl/server";
 import { SkeletonRegion, Skeleton } from "@repowise-dev/ui/ui/skeleton";
 
 /**
@@ -6,11 +7,12 @@ import { SkeletonRegion, Skeleton } from "@repowise-dev/ui/ui/skeleton";
  * canvas filling the rest. Matching `h-full` / `flex-1` matters more here
  * than elsewhere, because the canvas below sizes itself from this box.
  */
-export default function ArchitectureLoading() {
+export default async function ArchitectureLoading() {
+  const t = await getTranslations("loading");
   return (
     <SkeletonRegion
       className="flex h-full flex-col"
-      label="Loading architecture"
+      label={t("architecture")}
     >
       <div className="shrink-0 px-4 pt-3 sm:px-6">
         <Skeleton className="h-9 w-80 max-w-full rounded-lg" />

@@ -69,7 +69,7 @@ from ..complexity.languages import get_language_map
 from ..dataflow import find_extractions
 from ..scoring import severity_deduction
 from .models import RefactoringContext, RefactoringSuggestion
-from .naming import identifier_slug
+from .naming import join_identifier, split_words
 from .registry import RefactoringDetector, effort_bucket, register
 
 if TYPE_CHECKING:
@@ -82,6 +82,24 @@ if TYPE_CHECKING:
 _UNINFORMATIVE_OUT = frozenset(
     {"out", "result", "results", "value", "values", "ret", "tmp", "temp", "data", "item"}
 )
+
+# How each language that reaches this detector joins the words of a helper
+# name. Only the languages the Extract Method slicer has a dialect for
+# (``dataflow/dialects/__init__.py``) can appear here. C++ is deliberately
+# absent: it has no single convention (the standard library is snake_case,
+# Google style is PascalCase, Qt is camelCase), so it keeps the snake_case
+# default rather than getting one answer that is wrong for most C++ repos.
+_NAME_CONVENTION: dict[str, str] = {
+    "go": "camelCase",
+    "java": "camelCase",
+    "typescript": "camelCase",
+    "tsx": "camelCase",
+    "javascript": "camelCase",
+    "jsx": "camelCase",
+    "svelte": "camelCase",
+    "vue": "camelCase",
+}
+_SNAKE_CASE = "snake_case"
 
 # The function-level structural biomarkers this detector answers. A function is
 # only offered an extraction when one of these flagged it, so the suggestion
@@ -154,7 +172,7 @@ class ExtractMethodDetector(RefactoringDetector):
                         "span": {"start": best.start_line, "end": best.end_line},
                         "params": list(best.params),
                         "returns": list(best.returns),
-                        "suggested_name": self._suggested_name(analysis, best),
+                        "suggested_name": self._suggested_name(analysis, best, ctx.language),
                     },
                     evidence={
                         "slice_nloc": best.slice_nloc,
@@ -205,8 +223,11 @@ class ExtractMethodDetector(RefactoringDetector):
         return best[0], best[1], best[3]
 
     @staticmethod
-    def _suggested_name(analysis: FunctionAnalysis, extraction: Extraction) -> str | None:
-        """A deterministic starting name for the lifted helper.
+    def _suggested_name(
+        analysis: FunctionAnalysis, extraction: Extraction, language: str | None = None
+    ) -> str | None:
+        """A deterministic starting name for the lifted helper, in *language*'s
+        identifier convention.
 
         Same posture as Extract Helper (see ``naming``): anchor the name to
         something the plan already knows rather than guess what the block does.
@@ -219,6 +240,14 @@ class ExtractMethodDetector(RefactoringDetector):
         repo's index, 545 (64%) come from the OUT value and 309 from the
         enclosing function.
 
+        Convention is per language: Python, Rust and C++ keep ``compute_average``;
+        Go, Java and the TypeScript/JavaScript family take ``computeAverage``.
+        C++ gets no convention because it has no single one -- the standard
+        library is snake_case and Google style is PascalCase, so a fixed answer
+        would be wrong for as many repos as it fixed. The out value's own casing
+        is kept as word boundaries rather than thrown away, so ``meanValue`` is
+        ``computeMeanValue`` in Java, not ``compute_meanvalue``.
+
         **Not unique within a file, by design.** Two functions in one file can
         each produce a value with the same name, and both spans then get the
         same ``compute_*``: 28 of those 854 plans, across 14 files, collide with
@@ -228,11 +257,17 @@ class ExtractMethodDetector(RefactoringDetector):
         every persisted row. The name is a starting point every surface frames
         as editable, so the surfaces say to rename on a clash instead.
         """
-        if len(extraction.returns) == 1:
-            slug = identifier_slug(extraction.returns[0])
-            if slug and slug not in _UNINFORMATIVE_OUT:
-                return f"compute_{slug}"
-        return None
+        if len(extraction.returns) != 1:
+            return None
+        out_words = split_words(extraction.returns[0])
+        if not out_words:
+            return None
+        # ``_UNINFORMATIVE_OUT`` is keyed on the single-word slug, matching the
+        # names it holds (``meanValue`` is a product, ``result`` is a role).
+        if "_".join(out_words) in _UNINFORMATIVE_OUT:
+            return None
+        convention = _NAME_CONVENTION.get(language or "", _SNAKE_CASE)
+        return join_identifier(["compute", *out_words], convention)
 
     @staticmethod
     def _confidence(extraction: Extraction, share: float) -> str:

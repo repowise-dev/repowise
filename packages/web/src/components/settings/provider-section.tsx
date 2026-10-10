@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { config } from "@/lib/config";
 import { getProviders } from "@/lib/api/providers";
+import type { EmbedderInfo, ProviderInfo } from "@/lib/api/types";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Input } from "@repowise-dev/ui/ui/input";
 import {
@@ -19,63 +20,7 @@ import {
   EnvVarLine,
   type SaveState,
 } from "@repowise-dev/ui/settings";
-
-/**
- * Fallback only, for a cold load and for an API that never answers. The server
- * owns the catalog; this is not a second source of truth. It had already
- * drifted -- `codex_cli` and `openrouter` are in the server catalog and were
- * never added here, so neither could be picked from this page.
- */
-const FALLBACK_PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "edenai", "claude_cli", "opencode", "ollama", "litellm", "mock"] as const;
-const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "edenai", "ollama"] as const;
-
-// Real, registerable providers the server catalog deliberately leaves out.
-// `mock` is a keyless test provider (`KEYLESS_PROVIDERS` in the registry) that
-// this page has always offered; it is flag-only, so it is absent from
-// PROVIDER_CATALOG and would otherwise vanish the moment the catalog loads.
-const FLAG_ONLY_PROVIDERS = ["mock"] as const;
-
-const MODEL_PLACEHOLDERS: Record<string, string> = {
-  gemini: "gemini-3.5-flash-lite",
-  openai: "gpt-5.6-luna",
-  anthropic: "claude-haiku-4-5",
-  deepseek: "deepseek-v4-flash",
-  kimi: "kimi-for-coding",
-  edenai: "mistral/mistral-small-latest",
-  claude_cli: "claude_cli/claude-haiku-4-5",
-  opencode: "opencode/default",
-  ollama: "qwen3.5:4b",
-  litellm: "groq/llama-3.1-70b-versatile",
-  mock: "mock",
-};
-
-const PROVIDER_ENV_VARS: Record<string, { vars: string[]; installHint: string }> = {
-  gemini: { vars: ["GEMINI_API_KEY"], installHint: "pip install google-genai" },
-  openai: { vars: ["OPENAI_API_KEY"], installHint: "pip install openai" },
-  anthropic: { vars: ["ANTHROPIC_API_KEY"], installHint: "pip install anthropic" },
-  ollama: { vars: ["OLLAMA_BASE_URL"], installHint: "https://ollama.ai" },
-  deepseek: { vars: ["DEEPSEEK_API_KEY"], installHint: "pip install openai" },
-  kimi: { vars: ["KIMI_API_KEY"], installHint: "pip install openai" },
-  edenai: { vars: ["EDENAI_API_KEY"], installHint: "pip install openai" },
-  litellm: { vars: ["LITELLM_*"], installHint: "pip install litellm" },
-  claude_cli: { vars: [], installHint: "https://claude.com/claude-code, then: claude login" },
-  opencode: { vars: [], installHint: "curl -fsSL https://opencode.ai/install | bash" },
-  codex_cli: {
-    vars: [],
-    installHint: "npm install -g @openai/codex, then: codex login",
-  },
-  openrouter: { vars: ["OPENROUTER_API_KEY"], installHint: "pip install openai" },
-  mock: { vars: [], installHint: "No key needed" },
-};
-
-const EMBEDDER_ENV_VARS: Record<string, string[]> = {
-  gemini: ["GEMINI_API_KEY"],
-  openai: ["OPENAI_API_KEY"],
-  openrouter: ["OPENROUTER_API_KEY"],
-  edenai: ["EDENAI_API_KEY"],
-  ollama: ["OLLAMA_BASE_URL"],
-  mock: [],
-};
+import { useTranslations } from "next-intl";
 
 /**
  * Model and embedder defaults for init/sync triggered from the UI.
@@ -88,12 +33,19 @@ const EMBEDDER_ENV_VARS: Record<string, string[]> = {
  * here where it belongs.
  */
 export function ProviderSection() {
-  const [provider, setProvider] = useState("gemini");
+  const t = useTranslations("settings");
+  // "" until a saved choice or the server's active one is known.
+  const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
-  const [embedder, setEmbedder] = useState("mock");
+  const [embedder, setEmbedder] = useState("");
   const [serverProvider, setServerProvider] = useState<string | null>(null);
-  const [providers, setProviders] = useState<readonly string[]>(FALLBACK_PROVIDERS);
-  const [catalogModels, setCatalogModels] = useState<Record<string, string>>({});
+  // The server owns the provider and embedder lists (derived from the core
+  // registries), so this page keeps no copy; until they load, only the saved
+  // choices are offered.
+  const [catalog, setCatalog] = useState<ProviderInfo[]>([]);
+  const [flagOnly, setFlagOnly] = useState<string[]>([]);
+  const [embedders, setEmbedders] = useState<EmbedderInfo[]>([]);
+  const [catalogFailed, setCatalogFailed] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
 
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -104,26 +56,19 @@ export function ProviderSection() {
     setEmbedder(config.getEmbedder());
     let cancelled = false;
     void getProviders()
-      .then(({ active, providers: catalog }) => {
+      .then(({ active, providers: catalog, flag_only_providers, embedders: embedderList }) => {
         if (cancelled) return;
         setServerProvider(active.provider);
-        // Same response already carries the catalog the server resolves
-        // against, so the picker can render it instead of a second copy
-        // compiled into this file. That copy is how `codex_cli` and
-        // `openrouter` came to be selectable everywhere except here.
-        const entries = catalog ?? [];
-        const ids = entries.map((entry) => entry.id).filter(Boolean);
-        if (ids.length) setProviders(ids);
-        setCatalogModels(
-          Object.fromEntries(
-            entries.flatMap((entry) =>
-              entry.default_model ? [[entry.id, entry.default_model]] : [],
-            ),
-          ),
-        );
+        setCatalog((catalog ?? []).filter((entry) => entry.id));
+        setFlagOnly(flag_only_providers ?? []);
+        setEmbedders(embedderList ?? []);
+        // Nothing saved: show what the server itself runs with.
+        setProvider((saved) => saved || active.provider || "");
+        setEmbedder((saved) => saved || active.embedder || "");
       })
       .catch((error: unknown) => {
         console.warn("[settings] Could not load the active server provider", error);
+        if (!cancelled) setCatalogFailed(true);
       });
     return () => {
       cancelled = true;
@@ -164,29 +109,37 @@ export function ProviderSection() {
   // verbatim silently takes options away: the flag-only providers never
   // appear in it, and a saved provider the server has since stopped
   // advertising would leave a blank trigger with nothing to recover with.
-  const providerOptions = [...new Set([...providers, ...FLAG_ONLY_PROVIDERS, provider])];
+  const providerOptions = [
+    ...new Set([...catalog.map((entry) => entry.id), ...flagOnly, provider]),
+  ].filter(Boolean);
+  const embedderOptions = [
+    ...new Set([...embedders.map((entry) => entry.id), embedder]),
+  ].filter(Boolean);
 
-  const providerInfo = PROVIDER_ENV_VARS[provider];
-  const embedderVars = EMBEDDER_ENV_VARS[embedder] ?? [];
+  const providerInfo = catalog.find((entry) => entry.id === provider);
+  const embedderInfo = embedders.find((entry) => entry.id === embedder);
 
   return (
     <OverviewSection
-      title="Model defaults"
+      title={t("provider.title")}
       description={
         serverProvider
-          ? `Used when you trigger init or sync from this dashboard. The server itself is currently configured with ${serverProvider}.`
-          : "Used when you trigger init or sync from this dashboard."
+          ? t("provider.descriptionWithServer", { provider: serverProvider })
+          : t("provider.description")
       }
       action={<SaveIndicator state={saveState} />}
     >
       <SettingsRows>
         <SettingsRow
-          label="Provider"
-          hint={providerInfo?.installHint}
+          label={t("provider.providerLabel")}
+          hint={providerInfo?.setup_hint || undefined}
         >
           <div className="space-y-2">
             <Select value={provider} onValueChange={handleProviderChange}>
-              <SelectTrigger aria-label="Provider" className="w-full sm:w-64">
+              <SelectTrigger
+                aria-label={t("provider.providerAria")}
+                className="w-full sm:w-64"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -197,21 +150,23 @@ export function ProviderSection() {
                 ))}
               </SelectContent>
             </Select>
-            {providerInfo && <EnvVarLine vars={providerInfo.vars} />}
+            {providerInfo && <EnvVarLine vars={providerInfo.env_vars ?? []} />}
+            {catalogFailed && (
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                {t("provider.catalogUnavailable")}
+              </p>
+            )}
           </div>
         </SettingsRow>
 
         <SettingsRow
-          label="Model"
+          label={t("provider.modelLabel")}
           htmlFor="model"
-          hint="Leave blank to use the provider's default."
+          hint={t("provider.modelHint")}
         >
           <Input
             id="model"
-            // Catalog first: it is what the server will actually default to.
-            // The local table is the cold-load stand-in, and a stale entry in
-            // it winning would reintroduce the drift this catalog read fixes.
-            placeholder={catalogModels[provider] ?? MODEL_PLACEHOLDERS[provider] ?? "model name"}
+            placeholder={providerInfo?.default_model || "model name"}
             value={model}
             onChange={(e) => setModel(e.target.value)}
             onBlur={handleModelBlur}
@@ -220,53 +175,41 @@ export function ProviderSection() {
         </SettingsRow>
 
         <SettingsRow
-          label="Embedder"
-          hint="What semantic search is built from. The mock embedder disables it."
+          label={t("provider.embedderLabel")}
+          hint={t("provider.embedderHint")}
         >
           <div className="space-y-2">
             <Select value={embedder} onValueChange={handleEmbedderChange}>
-              <SelectTrigger aria-label="Embedder" className="w-full sm:w-64">
+              <SelectTrigger
+                aria-label={t("provider.embedderAria")}
+                className="w-full sm:w-64"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {EMBEDDERS.map((e) => (
+                {embedderOptions.map((e) => (
                   <SelectItem key={e} value={e}>
                     {e}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            {embedder === "mock" ? (
+            {embedderInfo?.semantic === false ? (
               <EnvVarLine
                 vars={[]}
-                note={
-                  <>
-                    Semantic search is off. Set{" "}
-                    <code className="font-mono text-[var(--color-text-secondary)]">
-                      REPOWISE_EMBEDDER=gemini
-                    </code>{" "}
-                    or{" "}
-                    <code className="font-mono text-[var(--color-text-secondary)]">
-                      REPOWISE_EMBEDDER=openai
-                    </code>{" "}
-                    on the server for real retrieval.
-                  </>
-                }
+                note={t.rich("provider.embedderOffNote", {
+                  code: (chunks) => <code className="font-mono text-[var(--color-text-secondary)]">{chunks}</code>,
+                })}
               />
-            ) : (
+            ) : embedderInfo ? (
               <EnvVarLine
-                vars={embedderVars}
-                note={
-                  <>
-                    Set{" "}
-                    <code className="font-mono text-[var(--color-text-secondary)]">
-                      REPOWISE_EMBEDDER={embedder}
-                    </code>{" "}
-                    on the server.
-                  </>
-                }
+                vars={embedderInfo.env_vars ?? []}
+                note={t.rich("provider.embedderOnNote", {
+                  code: (chunks) => <code className="font-mono text-[var(--color-text-secondary)]">{chunks}</code>,
+                  env: `REPOWISE_EMBEDDER=${embedder}`,
+                })}
               />
-            )}
+            ) : null}
           </div>
         </SettingsRow>
       </SettingsRows>

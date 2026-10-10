@@ -151,16 +151,14 @@ def test_ollama_is_ready_when_the_endpoint_answers(monkeypatch: Any) -> None:
     """It takes no API key, so reachability is the only question worth asking."""
     monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
     monkeypatch.setattr(provider_selection, "_detect_ollama_status", lambda: True)
-    monkeypatch.setattr(provider_selection, "_detect_codex_cli_status", lambda: (False, False))
-    monkeypatch.setattr(provider_selection, "_detect_opencode_status", lambda: False)
+    monkeypatch.setattr(provider_selection, "_agent_cli_status", lambda _name: (False, False))
 
     assert provider_selection._detect_provider_status()["ollama"] == "http://localhost:11434"
 
 
 def test_ollama_is_not_ready_when_nothing_is_listening(monkeypatch: Any) -> None:
     monkeypatch.setattr(provider_selection, "_detect_ollama_status", lambda: False)
-    monkeypatch.setattr(provider_selection, "_detect_codex_cli_status", lambda: (False, False))
-    monkeypatch.setattr(provider_selection, "_detect_opencode_status", lambda: False)
+    monkeypatch.setattr(provider_selection, "_agent_cli_status", lambda _name: (False, False))
 
     assert "ollama" not in provider_selection._detect_provider_status()
 
@@ -259,8 +257,7 @@ def test_the_keyless_providers_get_setup_help_instead_of_a_key_prompt() -> None:
 def test_selecting_an_unreachable_ollama_never_prompts_for_a_key(monkeypatch: Any) -> None:
     console, buf = _console()
     monkeypatch.setattr(provider_selection, "_detect_ollama_status", lambda: False)
-    monkeypatch.setattr(provider_selection, "_detect_codex_cli_status", lambda: (False, False))
-    monkeypatch.setattr(provider_selection, "_detect_opencode_status", lambda: False)
+    monkeypatch.setattr(provider_selection, "_agent_cli_status", lambda _name: (False, False))
 
     def boom(*_args: object, **_kwargs: object) -> str:
         raise AssertionError("ollama has no API key to prompt for")
@@ -351,8 +348,7 @@ def test_explicit_openai_setup_prompts_for_url_when_key_is_already_set(
 def test_provider_status_separates_official_and_custom_openai(monkeypatch: Any) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "router-secret")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:20128/v1")
-    monkeypatch.setattr(provider_selection, "_detect_codex_cli_status", lambda: (False, False))
-    monkeypatch.setattr(provider_selection, "_detect_opencode_status", lambda: False)
+    monkeypatch.setattr(provider_selection, "_agent_cli_status", lambda _name: (False, False))
     monkeypatch.setattr(provider_selection, "_detect_ollama_status", lambda: False)
 
     custom_status = provider_selection._detect_provider_status()
@@ -370,8 +366,7 @@ def test_official_openai_reuses_key_from_previous_custom_setup(
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "existing-secret")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:20128/v1")
-    monkeypatch.setattr(provider_selection, "_detect_codex_cli_status", lambda: (False, False))
-    monkeypatch.setattr(provider_selection, "_detect_opencode_status", lambda: False)
+    monkeypatch.setattr(provider_selection, "_agent_cli_status", lambda _name: (False, False))
     monkeypatch.setattr(provider_selection, "_detect_ollama_status", lambda: False)
     openai_idx = str(provider_selection._PROVIDER_CHOICES.index("openai") + 1)
     monkeypatch.setattr(provider_selection.Prompt, "ask", lambda *_a, **_k: openai_idx)
@@ -507,3 +502,23 @@ def test_custom_gateway_no_save_key_still_persists_endpoint(
     env_text = (tmp_path / ".repowise" / ".env").read_text(encoding="utf-8")
     assert "OPENAI_BASE_URL=http://localhost:20128/v1" in env_text
     assert "OPENAI_API_KEY" not in env_text
+
+
+def test_picker_rows_keep_their_order() -> None:
+    """Row numbers and the pre-selected default (first ready row) follow this
+    order, so reordering the provider specs must not move them."""
+    assert provider_selection._PROVIDER_CHOICES == (
+        "gemini",
+        "openai",
+        "openai_compatible",
+        "anthropic",
+        "deepseek",
+        "kimi",
+        "edenai",
+        "codex_cli",
+        "claude_cli",
+        "opencode",
+        "ollama",
+        "openrouter",
+        "litellm",
+    )

@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.persistence.search import FullTextSearch, snippet_around
+from repowise.core.persistence.search import (
+    FullTextSearch,
+    snippet_around,
+    strip_leading_headings,
+)
 
 _OPENER = "## Overview\n\nThis module is part of the indexing pipeline. " + "Filler. " * 40
 _MATCH = "The walker refuses to descend into a nested git checkout."
@@ -88,6 +92,43 @@ class TestSnippetAround:
         """
         content = _OPENER + _MATCH + _TAIL
         assert snippet_around(content, "the").startswith("## Overview")
+
+
+class TestStripLeadingHeadings:
+    """A served snippet drops the heading that repeats its row's path."""
+
+    _BODY = "Loads persisted session history for reseeding."
+
+    @pytest.mark.parametrize(
+        "head",
+        [
+            "# src/agents/session_history.ts\n\n## Overview\n\n",
+            "# pkg/walker.go\n\n",
+            "## Overview\n",
+            "# Module: billing\r\n\r\n### Summary\r\n\r\n",
+            "\n\n# Decision: use one store\n  \n",
+        ],
+    )
+    def test_leading_headings_are_dropped(self, head):
+        assert strip_leading_headings(head + self._BODY) == self._BODY
+
+    def test_text_without_headings_is_unchanged(self):
+        assert strip_leading_headings(self._BODY) == self._BODY
+
+    def test_a_heading_after_text_is_kept(self):
+        text = "Intro prose.\n## Nested checkout\nTail."
+        assert strip_leading_headings(text) == text
+
+    def test_hash_without_a_space_is_not_a_heading(self):
+        text = "#include <walker.h>\nint main(void);"
+        assert strip_leading_headings(text) == text
+
+    def test_text_of_only_headings_is_returned_as_is(self):
+        text = "# src/empty.py\n\n## Overview\n"
+        assert strip_leading_headings(text) == text
+
+    def test_empty_text_stays_empty(self):
+        assert strip_leading_headings("") == ""
 
 
 class TestFullTextSnippet:

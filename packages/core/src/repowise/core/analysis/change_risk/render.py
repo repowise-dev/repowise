@@ -11,6 +11,7 @@ shared with every other CI gate.
 
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 from ...ci import github
@@ -90,6 +91,9 @@ def headline(result: ChangeRiskResult, threshold: float | None, *, markdown: boo
     if number is None:
         # True for --baseline 0 and for a history of fewer than the minimum.
         return f"{bold}Change risk: unranked{bold} · too few recent commits to rank it"
+    if "." not in number:
+        # "Larger than N%" is a lower bound: floor it, and never claim all 100%.
+        number = str(min(math.floor(result.percentile), 99))
     rank = f"larger and more spread out than {number}% of recent commits"
     gate = percentile_gate(result, threshold)
     if gate == "fail":

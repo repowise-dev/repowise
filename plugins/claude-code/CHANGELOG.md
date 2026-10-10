@@ -4,6 +4,23 @@ All notable changes to the Repowise Claude Code plugin are documented here.
 
 ## Unreleased
 
+### Changed
+- Lens no longer approves its own MCP lookups. It registers no `tool.check`
+  hook, so `get_context`, `get_change_risk`, `get_why` and `get_answer` calls
+  from Lens ask Claude Code's permission like any other MCP call. The README's
+  Permissions section lists the four allow rules that let them run without a
+  prompt.
+- Each command's `allowed-tools` now names the exact `repowise` commands it
+  runs (for example `Bash(repowise health:*)`) in place of any Bash command.
+  `/repowise:init` no longer pre-approves `Write`, and asks with
+  `AskUserQuestion`.
+- `/repowise:init` no longer reads provider key variables from the
+  environment; `repowise init` detects a configured key itself.
+- The plugin README lists what Lens runs, reads, fetches and submits, and the
+  manifest carries the directory listing fields and an icon.
+
+## 0.55.0
+
 ### Added
 - Lens, a Claude Code mod that ships in the plugin (`hooks/lens/lens.js`,
   registered through the `modules` entry in `hooks.json`). It shows the index
@@ -28,6 +45,21 @@ All notable changes to the Repowise Claude Code plugin are documented here.
   `get_answer`, which may use the model your repo configures. See
   [docs/agent/LENS.md](../../docs/agent/LENS.md) and its
   [footprint](../../docs/agent/LENS.md#footprint).
+
+### Changed
+- The `code-health` skill leads a "what should I refactor?" answer with the
+  `fix_first` queue and opens an item with `get_health(fix_id=...)` for its
+  steps and the tests to run.
+- The `ask` command follows the `candidate_files` that `get_answer` now
+  returns at every confidence. The `context` command and the
+  `codebase-exploration` skill note that a symbol row without a `symbol_id` is
+  addressed as `path::name`.
+- No MCP tool was added, removed or renamed, and `hooks.json` still mirrors the
+  augment matcher in `claude_config.py`.
+
+### Fixed
+- The `security` command passed `--output json` to history scans; the flag is
+  `--format json`.
 
 ## 0.54.0
 

@@ -244,6 +244,34 @@ async def test_an_unrelated_question_still_calls_tools_normally():
     execute.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_provider_content_is_replayed_on_the_tool_call_turn():
+    """Thinking blocks must reach the next call alongside the tool results."""
+    app = await _make_app()
+    blocks = [
+        {"type": "thinking", "thinking": "", "signature": "sig"},
+        {"type": "tool_use", "id": "t1", "name": "get_risk", "input": {"targets": ["src/b.py"]}},
+    ]
+    provider = _ScriptedProvider(
+        [
+            [
+                _tool("t1", "get_risk", {"targets": ["src/b.py"]}),
+                ChatStreamEvent(type="assistant_content", content_blocks=blocks),
+            ],
+            [_text("Risky.")],
+        ]
+    )
+    execute = AsyncMock(return_value={"targets": {}})
+
+    with patch(_PROVIDER, return_value=provider), patch(_EXECUTE, execute):
+        await _post(app, {"message": "Is b.py risky?"})
+
+    assistant = provider.calls[1]["messages"][-2]
+    assert assistant["role"] == "assistant"
+    assert assistant["tool_calls"][0]["id"] == "t1"
+    assert assistant["provider_content"] == blocks
+
+
 # ---------------------------------------------------------------------------
 # Loop exhaustion
 # ---------------------------------------------------------------------------

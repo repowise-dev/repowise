@@ -171,11 +171,12 @@ def test_save_vscode_extensions_config_rejects_jsonc_without_writing(tmp_path: P
 # ---------------------------------------------------------------------------
 
 
-def test_vscode_setup_writes_both_project_files(tmp_path: Path) -> None:
+def test_vscode_setup_writes_every_project_file(tmp_path: Path) -> None:
     VSCodeSetup().write_project_files(_silent_console(), tmp_path, EditorSetupOptions())
 
     assert (tmp_path / ".vscode" / "mcp.json").exists()
     assert (tmp_path / ".vscode" / "extensions.json").exists()
+    assert (tmp_path / ".github" / "copilot-instructions.md").exists()
 
 
 def test_vscode_setup_skips_when_project_file_disabled(tmp_path: Path) -> None:

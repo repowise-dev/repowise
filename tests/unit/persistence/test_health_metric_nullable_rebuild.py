@@ -113,8 +113,8 @@ async def test_the_badge_says_no_data_when_no_file_is_scored(async_session):
     from repowise.server.routers.code_health.badge import _badge_average_health
 
     repo = await insert_repo(async_session)
-    # No rows at all keeps the endpoint's historical 10.0.
-    assert await _badge_average_health(async_session, repo.id) == 10.0
+    # No rows at all is no data too: a repo of only data and config files has none.
+    assert await _badge_average_health(async_session, repo.id) is None
     await save_health_metrics(async_session, repo.id, [_row("Big.php", None)])
     assert await _badge_average_health(async_session, repo.id) is None
     await save_health_metrics(async_session, repo.id, [_row("Big.php", None), _row("a.py", 8.0)])

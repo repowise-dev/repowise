@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import structlog
-from sqlalchemy import event, inspect, literal
+from sqlalchemy import String, event, inspect, literal
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -478,6 +478,40 @@ def _relax_not_null(connection: object, table: object) -> None:
     log.info("schema_table_rebuilt_for_nullable", table=name)
 
 
+def _is_widened(model_type: object, live_type: object) -> bool:
+    """True when the model's string column is longer than the live one."""
+    if not isinstance(model_type, String) or not isinstance(live_type, String):
+        return False
+    live_length = live_type.length
+    if live_length is None:
+        return False
+    return model_type.length is None or model_type.length > live_length
+
+
+def _loosen_postgres_columns(table: object, live: dict[str, dict], dialect: object) -> list:
+    """``(label, ALTER)`` pairs bringing live PostgreSQL columns up to the model.
+
+    Only ever loosens: drops a NOT NULL the model no longer declares and widens
+    a VARCHAR the model made longer or unbounded. Both are catalog-only changes
+    on PostgreSQL and match what migrations 0062, 0064, 0086 and 0094 do, so a
+    database that never ran Alembic (the Docker image's path) still accepts
+    what the current code writes. Tightening stays an explicit migration.
+    """
+    statements = []
+    for column in table.columns:  # type: ignore[attr-defined]
+        found = live.get(column.name)
+        if found is None:
+            continue
+        what = f"{table.name}.{column.name}:loosen"  # type: ignore[attr-defined]
+        target = f'ALTER TABLE "{table.name}" ALTER COLUMN "{column.name}"'  # type: ignore[attr-defined]
+        if _is_widened(column.type, found["type"]):
+            kind = column.type.compile(dialect=dialect)
+            statements.append((what, text(f"{target} TYPE {kind}")))
+        if column.nullable and not found["nullable"]:
+            statements.append((what, text(f"{target} DROP NOT NULL")))
+    return statements
+
+
 def _reconcile_schema(connection: object) -> None:
     """Bring an existing database up to ``Base.metadata`` (additive only).
 
@@ -495,11 +529,16 @@ def _reconcile_schema(connection: object) -> None:
     that follows the additive-only convention is picked up automatically
     on the next ``init_db`` call — no per-migration code required here.
 
+    Existing columns are only ever loosened: on PostgreSQL a NOT NULL the
+    model dropped is dropped and a VARCHAR the model widened is widened in
+    place; on SQLite the tables in ``_SQLITE_REBUILD_FOR_NULLABLE`` are rebuilt
+    for nullability, and VARCHAR length is not enforced there.
+
     Limitations (intentional — these need explicit migrations):
-      * column **removals**, **renames**, or **type changes** are NOT
-        reconciled (SQLite can't ALTER COLUMN safely anyway);
-      * **constraint changes** (UNIQUE, CHECK, FK) on existing columns
-        are NOT reconciled;
+      * column **removals**, **renames**, and narrowing or cross-kind **type
+        changes** are NOT reconciled (SQLite can't ALTER COLUMN safely anyway);
+      * **constraint changes** (UNIQUE, CHECK, FK) and new NOT NULLs on
+        existing columns are NOT reconciled;
       * Postgres extensions / functions (e.g. pgvector) are NOT created
         here — those still belong in Alembic migrations.
 
@@ -566,7 +605,10 @@ def _reconcile_schema(connection: object) -> None:
         # nullability. We deliberately do NOT enforce FK constraints on
         # back-filled columns: SQLite can't add an enforced FK after the
         # fact, and write-time enforcement is sufficient for our purposes.
-        db_cols = {c["name"] for c in inspector.get_columns(table.name)}
+        db_cols = {c["name"]: c for c in inspector.get_columns(table.name)}
+        if dialect.name == "postgresql":  # type: ignore[attr-defined]
+            for what, statement in _loosen_postgres_columns(table, db_cols, dialect):
+                _run(what, lambda statement=statement: statement)
         for column in table.columns:
             if column.name in db_cols:
                 continue

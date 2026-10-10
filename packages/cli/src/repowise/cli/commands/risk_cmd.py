@@ -99,10 +99,8 @@ def project_risk(payload: dict) -> dict:
     timing half of ``_meta``, and the per-target keys named above.
 
     ``pr_blast_radius`` survives although ``directive`` summarises much of it,
-    because ``recommended_reviewers`` has no substitute anywhere else in the
-    response, and because the tool has *already* capped its four noisy lists
-    (15/10/10/5) before it gets here — so the block a caller would most want is
-    the one an allowlist would silently discard, at almost no size.
+    because the tool has *already* capped its four noisy lists (15/10/10/5)
+    before it gets here, so keeping it costs almost nothing.
     """
     out: dict = {}
     if payload.get("directive"):
@@ -142,8 +140,10 @@ def _target_risk(
         return get_risk(
             targets=list(targets),
             changed_files=list(changed_files) or None,
-            # _render_target_risk prints risk_type and change_magnitude.
-            include=["churn"],
+            # _render_target_risk prints risk_type, change_magnitude, owner share,
+            # bus factor, contributor count, and recent owner; --format json keeps
+            # the PR blast radius the tool serves only on request.
+            include=["churn", "owners", "blast"],
         )
 
     payload = _ta.run(repo, _factory, "get_risk")
@@ -171,7 +171,6 @@ def _render_target_risk(projected: dict, requested: tuple[str, ...]) -> None:
         console.print(f"\n[bold]Directive[/bold] {escape(str(directive.get('summary', '')))}")
         for label, key in (
             ("May break", "may_break"),
-            ("Tests that may break", "may_break_tests"),
             ("Missing co-changes", "missing_cochanges"),
             ("Files without tests", "missing_tests"),
             ("Tests to run", "tests_to_run"),
@@ -335,12 +334,10 @@ def _render_card(name: str, card: dict) -> None:
         console.print("  [bold]Co-changes with[/bold]")
         for p in partners[:8]:
             link = " [dim](also imports)[/dim]" if p.get("has_import_link") else ""
-            # A recency-decayed weight rather than a raw tally, so it is not an
-            # integer; ``:g`` keeps a whole number whole and trims the rest.
-            weight = p.get("weight", 0)
-            weight_text = f"{float(weight):.1f}".rstrip("0").rstrip(".") if weight else "0"
+            support = p.get("support")
+            support_text = f" [dim]x{support}[/dim]" if support is not None else ""
             console.print(
-                f"    {escape(str(p.get('file_path', '')))} [dim]x{weight_text}[/dim]{link}"
+                f"    {escape(str(p.get('file_path', '')))}{support_text}{link}"
             )
         if len(partners) > 8:
             console.print(f"    [dim]… and {len(partners) - 8} more (--format json).[/dim]")

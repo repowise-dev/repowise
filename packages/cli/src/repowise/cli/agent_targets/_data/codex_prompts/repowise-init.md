@@ -175,22 +175,13 @@ Then continue to Step 4 for the model-written wiki, or Step 5 otherwise.
 
 **Skip this entire step unless the user chose the model-written wiki.** A
 missing key is not a blocker: `init` renders the template wiki and exits 0
-without one. If you cannot find a key, do not stop and do not ask again. Run
+without one. If the user has no key, do not stop and do not ask again. Run
 `repowise init --yes` and tell the user their wiki is rendered from structure
 and can be upgraded per-page later with `repowise generate`.
 
-Check which API keys are already set by running:
-```bash
-echo "ANTHROPIC=${ANTHROPIC_API_KEY:+set}" "OPENAI=${OPENAI_API_KEY:+set}" "GEMINI=${GEMINI_API_KEY:+set}${GOOGLE_API_KEY:+set}" "OLLAMA=${OLLAMA_BASE_URL:+set}"
-```
-
-If one or more keys are detected, suggest the detected provider:
-- `ANTHROPIC_API_KEY` set → suggest `--provider anthropic`
-- `OPENAI_API_KEY` set → suggest `--provider openai`
-- `GEMINI_API_KEY` or `GOOGLE_API_KEY` set → suggest `--provider gemini`
-- `OLLAMA_BASE_URL` set → suggest `--provider ollama`
-
-If no key is detected, ask:
+Do not read, test or print the user's environment variables or key values
+yourself. `repowise init` picks up a provider key from the environment on its
+own, so a user who already has one set needs no `--provider`. Ask:
 
 "Which LLM provider do you want to use?"
 - **Anthropic** (Claude) — needs `ANTHROPIC_API_KEY`
@@ -199,7 +190,7 @@ If no key is detected, ask:
 - **Ollama** (fully local, no API key, slower) — needs Ollama running locally
 - **LiteLLM** (100+ providers) — needs LiteLLM config
 
-Then ask them to set the required environment variable. Show the exact export command:
+If they have not set that key yet, ask them to set it in their own shell. Show the exact export command:
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```

@@ -50,12 +50,10 @@ _DISABLE_ENV = "REPOWISE_MCP_NO_WATCHDOG"
 _POLL_INTERVAL_SECONDS = 5.0
 
 
-def _is_launcher(name: str | None) -> bool:
-    if not name:
-        # Unknown name: treat as a launcher so the walk continues to a
-        # nameable ancestor rather than anointing a mystery process as
-        # the client.
-        return True
+def _is_launcher(name: str) -> bool:
+    # Every caller of _is_launcher has already excluded an unresolved name:
+    # compute_watch_set stops the walk before reaching it (an unnamed
+    # ancestor is never appended, let alone tested for launcher-ness).
     normalized = name.lower()
     if normalized.endswith(".exe"):
         normalized = normalized[:-4]
@@ -68,9 +66,19 @@ def compute_watch_set() -> list[ProcInfo]:
     Stops at the client so unrelated higher ancestors (shell, terminal,
     desktop session) are never watched — those may die while the client
     legitimately keeps running. Returns ``[]`` when nothing was resolvable.
+
+    Also stops, without appending, at an ancestor whose name could not be
+    resolved or whose process is already gone: on Windows an unnamed entry
+    is always the chain's last one (``ancestor_chain`` resolves a parent's
+    name from the child's own snapshot entry, so a parent that had already
+    exited before the snapshot was taken comes back nameless), and a process
+    that is already dead at startup cannot later tell us the client left.
+    Watching either would treat a dead process's leftover PID as the client.
     """
     watch: list[ProcInfo] = []
     for info in ancestor_chain(os.getpid()):
+        if info.name is None or pid_alive(info.pid) is False:
+            break
         watch.append(info)
         if not _is_launcher(info.name):
             break

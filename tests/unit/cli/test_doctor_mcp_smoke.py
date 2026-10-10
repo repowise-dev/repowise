@@ -152,6 +152,7 @@ def test_the_registered_command_is_the_one_launched() -> None:
     assert check.ok is False
     assert "ModuleNotFoundError" in check.detail
 
+
 def test_the_server_is_launched_once_per_doctor_run() -> None:
     """Workspace mode runs the repo checks once per entry, but there is one
     global registration - so a ten-repo workspace must not launch ten servers.
@@ -169,7 +170,9 @@ def test_the_server_is_launched_once_per_doctor_run() -> None:
     settings_path = Path.home() / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(
-        json.dumps({"mcpServers": {"repowise": {"command": sys.executable, "args": ["-c", server]}}}),
+        json.dumps(
+            {"mcpServers": {"repowise": {"command": sys.executable, "args": ["-c", server]}}}
+        ),
         encoding="utf-8",
     )
 
@@ -219,10 +222,72 @@ def test_a_chatty_server_that_dies_still_reports_its_last_words() -> None:
 def test_an_unparseable_settings_file_says_so() -> None:
     """A hand-broken settings.json is not the same as no registration:
     telling that user to run init sends them at the same unreadable file."""
-    settings_path = Path.home() / '.claude' / 'settings.json'
+    settings_path = Path.home() / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text('{ not json', encoding='utf-8')
+    settings_path.write_text("{ not json", encoding="utf-8")
     check, wedged = _claude_registration_check()
     assert check.ok is True
     assert wedged is False
-    assert 'could not parse' in check.detail
+    assert "could not parse" in check.detail
+
+
+def test_a_slow_stderr_drain_still_reports_the_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The process exiting does not mean the reader thread has consumed the
+    pipe's last lines. On a busy runner the ring could still be empty when the
+    detail was built, and the crash-loop traceback - the whole reason this
+    check exists - was lost ("server exited with code 1", nothing more).
+
+    Simulates the loaded runner by making each ring append slow, which is the
+    interleaving the race needs: the child is dead and reaped while the reader
+    is still mid-line. The join on the reader makes the detail wait for the
+    drain, so the stderr tail still names the fault.
+    """
+    import time
+    from collections import deque
+
+    append_sleep = 0.5
+
+    class _SlowRing(deque):
+        def append(self, line: object) -> None:
+            time.sleep(append_sleep)
+            super().append(line)
+
+    monkeypatch.setattr(mcp_smoke.collections, "deque", _SlowRing)
+    monkeypatch.setattr(mcp_smoke, "_STDERR_DRAIN_GRACE_S", 10 * append_sleep)
+
+    check = mcp_smoke_check(sys.executable, ["-c", _DEAD_SERVER])
+    assert check.ok is False
+    assert "exited with code 1" in check.detail
+    assert "ModuleNotFoundError" in check.detail
+
+
+def test_a_grandchild_holding_the_pipe_cannot_stall_doctor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The join on the stderr reader is bounded: a reader that never finishes
+    (its pipe held open by a grandchild) delays the detail by the grace
+    period, not forever."""
+    import threading
+    import time
+
+    stuck = threading.Event()
+
+    def _never_drains(proc: object) -> tuple:
+        ring: list = []
+        thread = threading.Thread(target=lambda: stuck.wait(), daemon=True)
+        thread.start()
+        return ring, thread
+
+    monkeypatch.setattr(mcp_smoke, "_STDERR_DRAIN_GRACE_S", 0.2)
+    monkeypatch.setattr(mcp_smoke, "_drain_stderr", _never_drains)
+    try:
+        started = time.monotonic()
+        check = mcp_smoke_check(sys.executable, ["-c", _DEAD_SERVER])
+        elapsed = time.monotonic() - started
+    finally:
+        stuck.set()
+    assert check.ok is False
+    assert "exited with code 1" in check.detail
+    assert elapsed < 10, f"detail waited {elapsed:.1f}s on a stuck reader"

@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repowise"
-version = "0.54.0"
+version = "0.55.0"
 description = "The codebase intelligence layer for your AI coding agent — dependency graph, git history, dead code, decisions, and code health, exposed over MCP"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -121,6 +121,7 @@ dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.23,<1",
     "pytest-snapshot>=0.9,<1",
+    "pytest-xdist>=3.5,<4",
     "respx>=0.21,<1",
     "time-machine>=2.14,<3",
     "ruff>=0.6,<1",
@@ -183,6 +184,7 @@ dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.23,<1",
     "pytest-snapshot>=0.9,<1",
+    "pytest-xdist>=3.5,<4",
     "respx>=0.21,<1",
     "time-machine>=2.14,<3",
     "ruff>=0.6,<1",

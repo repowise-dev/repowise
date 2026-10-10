@@ -125,6 +125,12 @@ _SYMBOL_AGREEMENT_TOP_RANK_MAX = 0
 # The runner-up must trail by at least this many ranks in at least one source.
 _AGREEMENT_RANK_GAP = 1
 
+# A keyless answer whose lead file sits below this many files of the unreranked
+# hybrid retrieval grades "low". On 225 keyless questions over 11 repos, leads
+# in the top 4 were right 38-60% of the time per rank, leads below it 17%, under
+# the 27% the "low" tier already scored.
+_LEAD_HYBRID_TOP_K = 4
+
 # Phrases that mean the LLM declined to answer despite dominant retrieval.
 # A match downgrades confidence to "low" and drops the retrieval payload, since
 # a consumer told to read the source gains nothing from it in the cache.
@@ -272,7 +278,14 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # confined to them need no bump; a needless bump costs every keyed install a
 # round of provider spend.
 # 18: rows carry ``candidate_files``, the ranked paths-only list.
-_ANSWER_SCHEMA_VERSION = 18
+# 19: rows carry ``_candidate_file_facts``; low answers serve slim best_guesses rows.
+# 20: caller questions carry ``graph_callers`` and synthesise with them.
+# 21: impact questions carry ``graph_neighbors``, the users of the lead file.
+_ANSWER_SCHEMA_VERSION = 21
+
+# Above this a whole-file Read costs more than the answer, so the low-confidence
+# hint names a ranged Read or a skeleton instead.
+_LARGE_FILE_BYTES = 40_000
 
 # How many paths ``candidate_files`` serves: the knee of measured coverage
 # gained per extra file, past which each path mostly costs precision. A high
@@ -313,14 +326,15 @@ _MAX_RICH_SIG_LINES = 4
 
 # Synthesis sampling. Answers target 150-400 words, so for a non-reasoning model
 # the token cap is headroom. A reasoning model spends the budget on hidden
-# thinking first and can come back empty with a ``length`` finish_reason, so the
-# env override lets such a model be given room. Low temperature: the answer
-# must track the excerpts, not embellish.
+# thinking first and can come back empty with a ``length`` finish_reason, so it
+# gets a larger default, and the env override sets both. Low temperature: the
+# answer must track the excerpts, not embellish.
 _SYNTHESIS_MAX_TOKENS_ENV = "REPOWISE_SYNTHESIS_MAX_TOKENS"
 _SYNTHESIS_MAX_TOKENS_DEFAULT = 1024
+_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT = 4096
 
 
-def _synthesis_max_tokens() -> int:
+def _synthesis_max_tokens(default: int = _SYNTHESIS_MAX_TOKENS_DEFAULT) -> int:
     """The synthesis token budget, from env or the hosted-model default.
 
     An unparseable or non-positive value warns and keeps the default instead
@@ -328,18 +342,19 @@ def _synthesis_max_tokens() -> int:
     """
     raw = os.environ.get(_SYNTHESIS_MAX_TOKENS_ENV, "").strip()
     if not raw:
-        return _SYNTHESIS_MAX_TOKENS_DEFAULT
+        return default
     try:
         value = int(raw)
     except ValueError:
         value = 0
     if value <= 0:
         _log.warning("Ignoring unusable %s=%r", _SYNTHESIS_MAX_TOKENS_ENV, raw)
-        return _SYNTHESIS_MAX_TOKENS_DEFAULT
+        return default
     return value
 
 
 _SYNTHESIS_MAX_TOKENS = _synthesis_max_tokens()
+_SYNTHESIS_REASONING_MAX_TOKENS = _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT)
 _SYNTHESIS_TEMPERATURE = 0.2
 
 _SYSTEM_PROMPT = (

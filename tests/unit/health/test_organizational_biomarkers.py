@@ -167,6 +167,38 @@ def test_knowledge_loss_skips_without_owner_data():
     assert KnowledgeLossDetector().detect(_ctx({"commit_count_90d": 3})) == []
 
 
+def test_knowledge_loss_skips_a_pure_rename_with_no_authored_activity():
+    """A file whose only recent commit is a pure rename has no authored
+    activity in the window: ``recent_owner_commit_pct`` is None (#2957), not
+    a real 0% share, so the quiet-owner check must not fire. The rename
+    itself still counts toward ``commit_count_90d``, keeping the file out of
+    ``is_stable`` and past the activity gate."""
+    meta = {
+        "bus_factor": 1,
+        "primary_owner_name": "Alice",
+        "commit_count_90d": 1,
+        "is_hotspot": False,
+    }
+    assert KnowledgeLossDetector().detect(_ctx(meta)) == []
+
+
+def test_knowledge_loss_still_fires_when_someone_else_authored_the_recent_commits():
+    """Contrast with the rename-only case: real authored commits by another
+    person, even a genuine 0% share for the primary owner, still flags the
+    quiet owner."""
+    meta = {
+        "bus_factor": 1,
+        "primary_owner_name": "Alice",
+        "recent_owner_name": "Bob",
+        "recent_owner_commit_pct": 0.0,
+        "commit_count_90d": 2,
+        "is_hotspot": False,
+    }
+    out = KnowledgeLossDetector().detect(_ctx(meta))
+    assert len(out) == 1
+    assert out[0].details["primary_owner"] == "Alice"
+
+
 # ---- ownership_risk ------------------------------------------------------
 
 

@@ -16,6 +16,7 @@ import { getGraph } from "@/lib/api/graph";
 import { useCommunities } from "@/lib/hooks/use-graph";
 import type { GraphExportResponse } from "@/lib/api/types";
 import { PRODUCTION_ONLY, type GraphPopulation } from "@repowise-dev/types/graph";
+import { useTranslations } from "next-intl";
 
 type ViewMode = "full" | "architecture" | "dead" | "hotfiles" | "unified";
 type ColorMode = "language" | "community";
@@ -63,6 +64,7 @@ export function GraphView({
   scope: Scope;
   onScopeChange: (scope: Scope) => void;
 }) {
+  const t = useTranslations("architecture");
   const searchParams = useSearchParams();
   const initialNode = searchParams.get("node");
 
@@ -290,8 +292,8 @@ export function GraphView({
       // zoom you are at; the one line left is what to do with what you see.
       description={
         isCommunities
-          ? "Files that depend on each other more than on the rest of the repo, detected automatically. Circle size is how much code a group holds, and the nearer the centre, the nearer an entry point. Double-click a group to see the files inside it and what they depend on."
-          : "Every file, grouped into the communities it depends on most, with a band for each strong link between communities. Hover or select a file to see exactly what it imports and what imports it."
+          ? t("graph.communitiesDescription")
+          : t("graph.filesDescription")
       }
       headerActions={headerControls}
       banner={

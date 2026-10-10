@@ -354,18 +354,49 @@ def test_python_fixture_counts():
 
 
 @pytest.mark.parametrize(
-    "use_block,expected",
-    [
-        (b"use {std::fs, reqwest::Client};\n", "filesystem"),
-        (b"use {reqwest::Client, std::fs};\n", "network"),
-    ],
+    "use_block",
+    [b"use {std::fs, reqwest::Client};\n", b"use {reqwest::Client, std::fs};\n"],
 )
-def test_a_use_block_naming_two_io_modules_takes_the_first(use_block, expected):
-    # Picking from an unordered set made the kind follow PYTHONHASHSEED. Under
-    # any seed the old pick agreed for both orders, so one case failed.
+def test_a_use_block_naming_two_io_modules_keeps_each_members_own_kind(use_block):
+    # #2894: a grouped use statement no longer lets the first classifying
+    # module win the whole group. Each member keeps its own kind, in either
+    # source order.
     fc = walk_file("t.rs", "rust", use_block + b"fn f() {}\n")
-    assert fc.io_boundary_names
-    assert set(fc.io_boundary_names.values()) == {expected}
+    assert fc.io_boundary_names["fs"] == "filesystem"
+    assert fc.io_boundary_names["Client"] == "network"
+
+
+def test_a_use_block_naming_two_different_filesystem_and_collection_members():
+    # The in-group name a module resolves through (``fs``) never binds a
+    # sibling member's unrelated name (``collections``/``HashMap``).
+    fc = walk_file(
+        "t.rs", "rust", b"use std::{fs::File, collections::HashMap};\nfn f() {}\n"
+    )
+    assert fc.io_boundary_names["fs"] == "filesystem"
+    assert fc.io_boundary_names["File"] == "filesystem"
+    assert "collections" not in fc.io_boundary_names
+    assert "HashMap" not in fc.io_boundary_names
+
+
+def test_a_nested_use_group_classifies_each_leaf_on_its_own():
+    fc = walk_file(
+        "t.rs", "rust", b"use tokio::{fs, net::TcpStream};\nfn f() {}\n"
+    )
+    assert fc.io_boundary_names["fs"] == "filesystem"
+
+
+def test_a_use_alias_binds_only_the_local_alias_name():
+    fc = walk_file("t.rs", "rust", b"use reqwest::Client as C;\nfn f() {}\n")
+    assert fc.io_boundary_names == {"C": "network"}
+
+
+def test_io_in_loop_fires_regardless_of_grouped_use_order():
+    # The issue's own repro: a db execute sink must be found whichever order
+    # the grouped use's two modules are written in.
+    for use_block in (b"use {std::fs, sqlx::PgPool};\n", b"use {sqlx::PgPool, std::fs};\n"):
+        src = use_block + b"fn f(c: &PgPool, xs: &[i32]) { for i in xs { c.execute(i); } }\n"
+        fc = walk_file("t.rs", "rust", src)
+        assert ("io_in_loop", "db") in {(h.kind, h.detail) for h in fc.perf_hits}
 
 
 class _FakeImportNode:
@@ -531,3 +562,60 @@ def test_a_hit_is_named_for_its_enclosing_function(source: str, expected: str | 
     if not hits:
         pytest.skip("typescript grammar unavailable")
     assert {h.function for h in hits} == {expected}
+
+
+_BATCHED_CLEAR = (
+    b"from sqlalchemy import select\n"
+    b"async def clear(session, repository_id, paths):\n"
+    b"    for i in range(0, len(paths), _BATCH_SIZE):\n"
+    b"        rows = await session.execute(\n"
+    b"            select(Row).where(Row.path.in_(paths[i : i + _BATCH_SIZE]))\n"
+    b"        )\n"
+    b"        for row in rows.scalars().all():\n"
+    b"            row.score = None\n"
+)
+
+_N_PLUS_ONE = (
+    b"from sqlalchemy import select\n"
+    b"async def clear(session, repository_id, paths):\n"
+    b"    for path in paths:\n"
+    b"        rows = await session.execute(select(Row).where(Row.path == path))\n"
+    b"        for row in rows.scalars().all():\n"
+    b"            row.score = None\n"
+)
+
+
+def _loop_hits(source: bytes):
+    fc = walk_file("f.py", "python", source)
+    return [h for h in fc.perf_hits if h.kind == "io_in_loop"]
+
+
+def test_reading_a_result_inside_a_chunked_loop_is_already_batched():
+    """The chunk loop steps by a batch size and queries ``.in_`` over one slice; the
+    inner ``for row in rows.scalars().all()`` runs once per chunk, not once per row."""
+    hits = _loop_hits(_BATCHED_CLEAR)
+    assert {h.line for h in hits} == {4, 7}
+    assert all(h.loop is not None and h.loop.chunked for h in hits)
+    findings = IoInLoopDetector().detect(_ctx(hits))
+    assert findings and all(f.details.get("chunked_iteration") for f in findings)
+
+
+def test_a_per_item_query_still_reports_as_not_batched():
+    hits = _loop_hits(_N_PLUS_ONE)
+    assert {h.line for h in hits} == {4, 5}
+    assert not any(h.loop is not None and h.loop.chunked for h in hits)
+    findings = IoInLoopDetector().detect(_ctx(hits))
+    assert findings and not any(f.details.get("chunked_iteration") for f in findings)
+
+
+def test_a_query_in_the_header_of_an_inner_loop_belongs_to_the_outer_loop():
+    source = (
+        b"from sqlalchemy import select\n"
+        b"async def f(session, users):\n"
+        b"    for u in users:\n"
+        b"        for r in (await session.execute(select(T).where(T.id == u.id))).scalars().all():\n"
+        b"            r.x = 1\n"
+    )
+    hits = _loop_hits(source)
+    assert hits and all(h.loop_line == 3 for h in hits)
+    assert not any(h.loop is not None and h.loop.chunked for h in hits)

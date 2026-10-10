@@ -30,6 +30,7 @@ from .languages.receiver_types import (
     names_in_span,
     range_element_types,
     record_type,
+    scan_binding_positions,
     scan_bindings,
     scan_call_assignments,
     scan_declarations,
@@ -39,7 +40,7 @@ from .languages.receiver_types import (
     types_in_span,
     unwrapped_names_in_span,
 )
-from .models import CallSite, ParsedFile, Symbol, symbol_id_language
+from .models import CallSite, NamedBinding, ParsedFile, Symbol, symbol_id_language
 from .resolved_call import ResolvedCall
 from .return_types import declared_return_type, go_first_result
 from .symbol_identity import id_segment_name
@@ -155,6 +156,7 @@ class ReceiverTypingMixin:
         # {file: {type name: [type symbol ids]}}, built once on first use.
         self._type_ids: dict[str, dict[str, list[str]]] | None = None
         self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
+        self._binding_positions: dict[str, tuple[tuple[int, int, str], ...]] = {}
         self._bound_names: dict[tuple[str, str], frozenset[str]] = {}
         self._scope_chain_cache: dict[str, dict[str, tuple[_Scope, ...]]] = {}
         # {file: {name: type}} — module-level defs a framework decorator retyped.
@@ -439,15 +441,38 @@ class ReceiverTypingMixin:
         Scopes are asked innermost first, so a ``global`` stops the walk. When
         *through_line* is given only positional bindings at or before it count:
         a callback's parameter further down cannot shadow a use above, while a
-        hoisted declaration binds its whole scope.
+        hoisted declaration binds its whole scope. When the scope first binds
+        *name* on the line an in-body import binds it (``const { f } =
+        require(...)``), *name* is the import's unless another binding of it,
+        at any other position from that line through *through_line*, shadows it.
         """
+        binding = self._import_bindings.get(file_path, {}).get(name)
+        import_line = binding.line if binding is not None else None
         for scope in self._scope_chains(file_path, language).get(caller_id, ()):
             if name in scope.escaped:
                 return False
+            if name in scope.hoisted:
+                return True
             line = scope.first_bound.get(name)
-            if name in scope.hoisted or (
-                line is not None and (through_line is None or line <= through_line)
-            ):
+            if line is None or (through_line is not None and line > through_line):
+                continue
+            if binding is None or line != import_line or through_line is None:
+                return True
+            return self._rebinds_import(file_path, language, binding, through_line)
+        return False
+
+    def _rebinds_import(
+        self, file_path: str, language: str, binding: NamedBinding, through_line: int
+    ) -> bool:
+        """Is *binding*'s name bound anywhere but at the import itself, up to *through_line*?"""
+        line = binding.line or 0
+        line_text = self._text_of(file_path).split("\n", line)[line - 1]
+        positions = self._binding_positions_for(file_path, language)
+        for bound_line, column, bound in _in_lines(positions, line, through_line):
+            if bound != binding.local_name:
+                continue
+            # The scan counts characters, tree-sitter counts bytes.
+            if bound_line > line or len(line_text[:column].encode()) != binding.column:
                 return True
         return False
 
@@ -1105,6 +1130,16 @@ class ReceiverTypingMixin:
         if found is None:
             found = scan_bindings(self._text_of(file_path), language)
             _store_capped(self._bindings, file_path, found, _SOURCE_CACHE_FILES)
+        return found
+
+    def _binding_positions_for(
+        self, file_path: str, language: str
+    ) -> tuple[tuple[int, int, str], ...]:
+        """``_bindings_for`` with columns, scanned only for files that ask."""
+        found = self._binding_positions.get(file_path)
+        if found is None:
+            found = scan_binding_positions(self._text_of(file_path), language)
+            _store_capped(self._binding_positions, file_path, found, _SOURCE_CACHE_FILES)
         return found
 
     def _framework_names(self, language: str) -> frozenset[str]:
