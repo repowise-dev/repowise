@@ -11,11 +11,14 @@ load, and a malformed git config is not a reason to fail the Overview.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from repowise.server.routers.overview import _remote_url
+from repowise.server.schemas.repository import RepoResponse
 
 _ORIGIN = "https://github.com/repowise-dev/repowise.git"
 
@@ -126,3 +129,19 @@ def test_credentials_never_reach_the_ui(tmp_path: Path, remote: str, expected: s
     _write_config(tmp_path / ".git", f'[remote "origin"]\n\turl = {remote}\n')
     assert _remote_url("", str(tmp_path)) == expected
 
+
+def test_repo_response_url_is_stripped(tmp_path: Path) -> None:
+    """The repo list and detail echo the stored URL, which a client may have sent with a token."""
+    now = datetime.now(UTC)
+    row = SimpleNamespace(
+        id="r1",
+        name="p",
+        url="https://user:glpat-secret@gitlab.com/g/p.git",
+        local_path=str(tmp_path),
+        default_branch="main",
+        head_commit=None,
+        settings_json="{}",
+        created_at=now,
+        updated_at=now,
+    )
+    assert RepoResponse.from_orm(row).url == "https://gitlab.com/g/p.git"

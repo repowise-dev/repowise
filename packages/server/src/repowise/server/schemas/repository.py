@@ -136,7 +136,7 @@ class RepoResponse(BaseModel):
         return cls(
             id=obj.id,  # type: ignore[attr-defined]
             name=obj.name,  # type: ignore[attr-defined]
-            url=obj.url,  # type: ignore[attr-defined]
+            url=strip_credentials(obj.url) or "",  # type: ignore[attr-defined]
             local_path=local_path,
             default_branch=obj.default_branch,  # type: ignore[attr-defined]
             head_commit=obj.head_commit,  # type: ignore[attr-defined]
