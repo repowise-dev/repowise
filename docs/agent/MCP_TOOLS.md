@@ -324,7 +324,7 @@ Code-health scores and findings from the stored analysis, across defect risk, ma
 | `targets` | list[string] | none (dashboard) | File paths or `module:<name>`. Misses are named in `unresolved` |
 | `include` | list[string] | none | Blocks: `biomarkers`, `refactoring`, `trend`, `coverage`, `accuracy`, `signals`, `churn_complexity`, `doc_drift`, `semantics`, `unverified`. Dimension filters: `performance`, `defect`, `maintainability`, `advisory` |
 | `only` | list[string] | none | Keep just these top-level keys; identity, totals and recovery fields always survive. An unknown key is named in `unknown_only_keys` with `unknown_only_keys_hint` |
-| `limit` | int | `20` | Max rows in every ranked list, capped at 50; `0` for none. `fix_first` shows five on the bare dashboard and up to 25 when named in `only`; `refactoring_plans` up to 25 |
+| `limit` | int | `20` | Max rows in every ranked list, capped at 50; `0` for none. `fix_first` shows five unless `limit` is passed with `only=["fix_first"]`, which pages up to 25; `refactoring_plans` up to 25 |
 | `cursor` | int | `0` | Offset into a ranked list (and into `fix_first` when named in `only`); the `recovery` block names the next call |
 | `fix_id` | string | none | Open one `fix_first` item in full |
 | `finding_id`, `plan_id` | string | none | Open one finding or refactoring plan by id |

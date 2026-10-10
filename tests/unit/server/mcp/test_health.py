@@ -1602,6 +1602,65 @@ async def test_fix_first_named_page_honours_limit_and_cursor(setup_mcp, health_d
     assert second["lead"] == block["lead"] == dashboard["lead"]
 
 
+@pytest.mark.asyncio
+async def test_fix_first_page_grows_only_when_limit_is_passed(
+    setup_mcp, health_data, monkeypatch
+):
+    """``only=["fix_first"]`` with no ``limit`` costs what the dashboard block
+    does (five items, with the next page named); a passed ``limit`` pages up to 25."""
+    from dataclasses import replace
+
+    from repowise.server.mcp_server import get_health
+    from repowise.server.mcp_server.tool_health import loading
+
+    real = loading.load_fix_first
+
+    async def thirty(session, repository_id, **kwargs):
+        queue = await real(session, repository_id, **kwargs)
+        items = tuple(
+            replace(queue.items[0], id=f"fix1_{index:020d}", rank=index) for index in range(30)
+        )
+        return replace(queue, items=items, totals=replace(queue.totals, eligible=30, shown=30))
+
+    monkeypatch.setattr(loading, "load_fix_first", thirty)
+
+    default = await get_health(only=["fix_first"])
+    assert len(default["fix_first"]["items"]) == 5
+    assert default["recovery"]["fix_first"]["remaining"] == 25
+    call = default["recovery"]["fix_first"]["call"]
+    assert "limit=5," in call and call.endswith("cursor=5)")
+    asked = await get_health(only=["fix_first"], limit=25)
+    assert len(asked["fix_first"]["items"]) == 25
+    assert asked["recovery"]["fix_first"]["call"].endswith("cursor=25)")
+    assert len((await get_health(only=["fix_first"], limit=50))["fix_first"]["items"]) == 25
+    assert len((await get_health())["fix_first"]["items"]) == 5
+
+
+def test_limit_defaults_are_resolved_per_section():
+    from repowise.server.mcp_server.tool_health.request import DEFAULT_LIMIT, HealthRequest
+
+    def request(**kwargs):
+        args = {
+            name: None
+            for name in (
+                "targets", "include", "only", "repo", "limit", "refactoring_type",
+                "refactoring_confidence", "refactoring_effort", "refactoring_scope",
+                "performance_view", "performance_context", "performance_boundary",
+                "performance_confidence", "performance_actionability", "performance_sort",
+            )
+        }
+        args.update(cursor=0, refactoring_view="diversified", scope="all", counts="everything")
+        args.update(kwargs)
+        return HealthRequest(**args)
+
+    unasked = request(only=["fix_first"])
+    assert unasked.limit == DEFAULT_LIMIT and not unasked.limit_explicit
+    assert unasked.fix_first_cap == 5
+    assert request(only=["fix_first"], limit=25).fix_first_cap == 25
+    assert request(only=["fix_first"], limit=3).fix_first_cap == 3
+    assert request(limit=50).fix_first_cap == 5
+
+
 def test_fix_first_counts_split_scope_from_worth():
     from repowise.core.analysis.health.fix_first.model import FixFirstQueue, FixTotals
 

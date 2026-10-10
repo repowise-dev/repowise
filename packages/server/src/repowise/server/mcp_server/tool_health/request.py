@@ -22,6 +22,9 @@ _ONLY_ALIASES = {
     "refactoring": "refactoring_plans",
 }
 
+DEFAULT_LIMIT = 20
+"""Rows per ranked list when the caller passes no ``limit``."""
+
 PLANS_PAGE_CAP = 25
 """Refactoring plans one response emits; ``cursor`` pages on."""
 
@@ -30,8 +33,9 @@ FIX_FIRST_CAP = 5
 The rest are one ``only=["fix_first"]`` page or ``get_health(fix_id=...)`` away."""
 
 FIX_FIRST_PAGE_CAP = 25
-"""Items one ``only=["fix_first"]`` page emits: ``limit`` up to this, ``cursor``
-for the next page. Measured at about 16k chars for 25 items on a large
+"""Items one ``only=["fix_first"]`` page emits when ``limit`` is passed: up to
+this, ``cursor`` for the next page. With no ``limit`` a page is
+:data:`FIX_FIRST_CAP`, so the call costs what the dashboard block does. Measured at about 16k chars for 25 items on a large
 repository, inside the default 24k budget; the budget trims the tail beyond."""
 
 _RANKED_DIMENSIONS_DEFAULT = {"defect", "maintainability"}
@@ -71,7 +75,8 @@ class HealthRequest:
     include: list[str] | None
     only: list[str] | None
     repo: str | None
-    limit: int
+    #: ``None`` when the caller passed none; resolved to :data:`DEFAULT_LIMIT`.
+    limit: int | None
     cursor: int
     refactoring_view: str
     refactoring_type: str | None
@@ -96,10 +101,13 @@ class HealthRequest:
     module_targets: list[str] = field(init=False)
     file_targets: list[str] = field(init=False)
     withheld_types: frozenset[str] = field(init=False)
+    #: The caller passed ``limit``: a response grows past a default only when asked.
+    limit_explicit: bool = field(init=False)
 
     def __post_init__(self) -> None:
+        self.limit_explicit = self.limit is not None
         # ``0`` means totals and no rows, as on the REST coverage route.
-        self.limit = max(self.limit, 0)
+        self.limit = max(DEFAULT_LIMIT if self.limit is None else self.limit, 0)
         self.cursor = max(self.cursor, 0)
         if self.refactoring_view not in _REFACTORING_VIEWS:
             self.refactoring_view = _REFACTORING_VIEW_DEFAULT
@@ -140,8 +148,11 @@ class HealthRequest:
 
     @property
     def fix_first_cap(self) -> int:
-        """Fix-first items this response emits."""
-        return min(self.limit, FIX_FIRST_PAGE_CAP if self.pages_fix_first else FIX_FIRST_CAP)
+        """Fix-first items this response emits: a named page takes ``limit`` up
+        to :data:`FIX_FIRST_PAGE_CAP` when one was passed, else the dashboard's head."""
+        if self.pages_fix_first and self.limit_explicit:
+            return min(self.limit, FIX_FIRST_PAGE_CAP)
+        return min(self.limit, FIX_FIRST_CAP)
 
     @property
     def fix_first_cursor(self) -> int:

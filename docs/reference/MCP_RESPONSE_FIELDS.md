@@ -326,7 +326,7 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 | Field | Meaning |
 |-------|---------|
 | `lead` | The queue's first item, whatever page `items` is, with its `next_call` |
-| `items` | Up to five on the bare dashboard; with `only=["fix_first"]`, `limit` items (at most 25) from `cursor`, and `recovery.fix_first` names the next page. Each: `id`, `tier`, `kind`, `title`, `target`, `why`, `gain`, `effort`, `confidence`; `get_health(fix_id=...)` returns one in full, with its `next_call` |
+| `items` | Up to five. With `only=["fix_first"]` the list pages from `cursor` and `recovery.fix_first` names the next page; a passed `limit` sets the page size, up to 25. Each: `id`, `tier`, `kind`, `title`, `target`, `why`, `gain`, `effort`, `confidence`; `get_health(fix_id=...)` returns one in full, with its `next_call` |
 | `items_total`, `cursor` | The eligible items `items` was cut from, and where the page starts |
 | `counts` | `inventory` (every unit considered), `in_scope` (less units excluded for where the code lives: `test`, `tooling`, `generated`, `vendored`, `docs_example`), `eligible` (became an item), `due` (eligible items in tier `now` or `next`), `shown` (items in this response), `excluded` (every non-zero exclusion, by reason) |
 | `tier` | `now` (worth doing, safe to start), `next` (worth doing, needs judgment), `later` |

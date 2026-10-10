@@ -125,7 +125,7 @@ async def get_health(
     targets: list[str] | None = None,
     include: list[str] | None = None,
     repo: str | None = None,
-    limit: int = 20,
+    limit: int | None = None,
     only: list[str] | None = None,
     refactoring_view: str = _REFACTORING_VIEW_DEFAULT,
     refactoring_type: str | None = None,
@@ -164,7 +164,7 @@ async def get_health(
             ``performance``/``defect``/``maintainability``/``advisory``
             do not: they filter rows into ``unknown_only_keys``.
         repo: usually omitted.
-        limit: max rows per ranked list, ``0`` for none.
+        limit: max rows per ranked list (default 20), ``0`` for none.
         cursor: zero-based offset into a ranked list.
         fix_id/finding_id/plan_id: stable ``id`` of an item, finding or plan.
         opportunity_id: ``perf...``/``refop...``: the unit, its steps or
