@@ -244,3 +244,21 @@ async def test_prune_is_scoped_to_one_repo(async_session, repo_with_kept_file):
         STALE,
         KEPT,
     }
+
+
+async def test_function_facts_of_a_deleted_file_are_pruned(async_session, repo_with_kept_file):
+    """Keyed on the symbol, so the rows go with the deleted file's graph nodes."""
+    from repowise.core.persistence.crud import write_function_facts
+    from repowise.core.persistence.models import FunctionFact
+
+    repo = await insert_repo(async_session)
+    await _seed(async_session, repo.id)
+    await write_function_facts(
+        async_session, repo.id, [{"symbol_id": f"{KEPT}::main"}, {"symbol_id": f"{STALE}::gone"}]
+    )
+    await prune_deleted_file_rows(async_session, repo.id, repo_with_kept_file, live_hint={KEPT})
+    await async_session.commit()
+
+    assert await _paths(async_session, FunctionFact, FunctionFact.symbol_id, repo.id) == {
+        f"{KEPT}::main"
+    }

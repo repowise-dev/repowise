@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import delete, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ....analysis.execution_graph import file_of_symbol
 from ...models import FunctionFact
 
 if TYPE_CHECKING:
@@ -27,15 +28,22 @@ def _row(repository_id: str, row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "repository_id": repository_id,
         "symbol_id": row["symbol_id"],
-        "file_path": row["file_path"],
-        "start_line": row["start_line"],
-        "end_line": row["end_line"],
         "awaits": row.get("awaits"),
         "is_generator": row.get("is_generator"),
         "uses_receiver": row.get("uses_receiver"),
-        "receiver_assigns_json": None if assigns is None else json.dumps(list(assigns)),
+        "receiver_assigns_known": None if row.get("awaits") is None else assigns is not None,
+        "receiver_assigns_json": json.dumps(list(assigns)) if assigns else None,
         "early_exits": row.get("early_exits"),
     }
+
+
+def _file_rows(repository_id: str, path: str) -> Any:
+    """A file's rows as a key range: every symbol id there is ``path::...``."""
+    return (
+        FunctionFact.repository_id == repository_id,
+        FunctionFact.symbol_id >= f"{path}::",
+        FunctionFact.symbol_id < f"{path}:;",
+    )
 
 
 async def write_function_facts(
@@ -48,17 +56,15 @@ async def write_function_facts(
 ) -> int:
     """Replace the rows of *file_paths* (every row when ``None``) with *rows*,
     then restamp every row's role from *roles*. Returns the rows written."""
-    scope = FunctionFact.repository_id == repository_id
     if file_paths is None:
-        await session.execute(delete(FunctionFact).where(scope))
+        await session.execute(delete(FunctionFact).where(FunctionFact.repository_id == repository_id))
     else:
-        paths = sorted(set(file_paths))
-        for i in range(0, len(paths), _CHUNK):
-            await session.execute(
-                delete(FunctionFact).where(scope, FunctionFact.file_path.in_(paths[i : i + _CHUNK]))
-            )
-    # Two walked functions can resolve to one symbol; the first keeps it.
-    fresh = list({row["symbol_id"]: _row(repository_id, row) for row in reversed(list(rows))}.values())
+        for path in sorted(set(file_paths)):
+            await session.execute(delete(FunctionFact).where(*_file_rows(repository_id, path)))
+    # Two walked functions can resolve to one symbol; the first keeps it. Key
+    # order fills the clustered pages instead of splitting them half empty.
+    by_symbol = {row["symbol_id"]: _row(repository_id, row) for row in reversed(list(rows))}
+    fresh = [by_symbol[symbol] for symbol in sorted(by_symbol)]
     for i in range(0, len(fresh), _CHUNK):
         await session.execute(insert(FunctionFact), fresh[i : i + _CHUNK])
     if roles is not None:
@@ -68,14 +74,14 @@ async def write_function_facts(
 
 async def _restamp_roles(session: AsyncSession, repository_id: str, roles: ExecutionRoles) -> None:
     stored = await session.execute(
-        select(FunctionFact.symbol_id, FunctionFact.file_path, FunctionFact.execution_role).where(
+        select(FunctionFact.symbol_id, FunctionFact.execution_role).where(
             FunctionFact.repository_id == repository_id
         )
     )
     changed = [
         {"repository_id": repository_id, "symbol_id": symbol, "execution_role": role}
-        for symbol, path, current in stored.all()
-        if (role := roles.role_of(symbol, path)) != current
+        for symbol, current in stored.all()
+        if (role := roles.role_of(symbol, file_of_symbol(symbol))) != current
     ]
     for i in range(0, len(changed), _CHUNK):
         await session.execute(update(FunctionFact), changed[i : i + _CHUNK])

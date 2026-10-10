@@ -1,4 +1,4 @@
-"""The per-function store: facts read in the health walk, roles restamped every run."""
+"""The per-function store: facts counted on the complexity walk, roles restamped every run."""
 
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ class _File:
         self.file_info = type("FI", (), {"path": path})()
 
 
-def test_fact_rows_are_keyed_on_the_graph_symbol() -> None:
+def test_fact_rows_are_keyed_on_the_graph_symbol_and_skip_tests() -> None:
     fcx = walk_file("store.py", "python", _PY)
     graph = nx.DiGraph()
     for fc in fcx.functions:
@@ -83,7 +83,9 @@ def test_fact_rows_are_keyed_on_the_graph_symbol() -> None:
             start_line=fc.start_line,
             end_line=fc.end_line,
         )
-    rows = HealthAnalyzer(graph)._function_fact_rows([(_File("store.py"), fcx)])
+    analyzer = HealthAnalyzer(graph)
+    rows = analyzer._function_fact_rows([(_File("store.py"), fcx)])
+    assert analyzer._function_fact_rows([(_File("tests/test_store.py"), fcx)]) == []
     by_id = {row["symbol_id"]: row for row in rows}
     assert set(by_id) == {"store.py::save", "store.py::each", "store.py::plain"}
     assert by_id["store.py::save"]["receiver_assigns"] == ("cache", "count")
@@ -110,8 +112,8 @@ async def store(tmp_path: Path):
         await engine.dispose()
 
 
-def _row(symbol: str, path: str, **facts) -> dict:
-    return {"symbol_id": symbol, "file_path": path, "start_line": 1, "end_line": 9, **facts}
+def _row(symbol: str, **facts) -> dict:
+    return {"symbol_id": symbol, **facts}
 
 
 async def _stored(session, repository_id: str) -> dict[str, tuple]:
@@ -122,6 +124,7 @@ async def _stored(session, repository_id: str) -> dict[str, tuple]:
             FunctionFact.symbol_id,
             FunctionFact.execution_role,
             FunctionFact.awaits,
+            FunctionFact.receiver_assigns_known,
             FunctionFact.receiver_assigns_json,
         ).where(FunctionFact.repository_id == repository_id)
     )
@@ -137,17 +140,20 @@ async def test_facts_rewrite_walked_files_and_roles_restamp_every_row(store) -> 
         session,
         repo,
         [
-            _row("a.py::f", "a.py", awaits=True, receiver_assigns=("n",)),
-            _row("b.py::g", "b.py", awaits=False, receiver_assigns=None),
+            _row("a.py::f", awaits=True, receiver_assigns=("n",)),
+            _row("b.py::g", awaits=False, receiver_assigns=None),
+            _row("a.py::h", awaits=False, receiver_assigns=()),
             # A second walked function resolving to the same symbol: the first keeps it.
-            _row("b.py::g", "b.py", awaits=True),
+            _row("b.py::g", awaits=True),
         ],
         roles=roles,
     )
-    assert written == 2
+    assert written == 3
+    # Unknown and none both store no list; the flag tells them apart.
     assert await _stored(session, repo) == {
-        "a.py::f": ("request", True, json.dumps(["n"])),
-        "b.py::g": ("cli", False, None),
+        "a.py::f": ("request", True, True, json.dumps(["n"])),
+        "a.py::h": ("unknown", False, True, None),
+        "b.py::g": ("cli", False, False, None),
     }
 
     # An update that walked only a.py: b.py keeps its facts, and its role moves
@@ -155,14 +161,30 @@ async def test_facts_rewrite_walked_files_and_roles_restamp_every_row(store) -> 
     await write_function_facts(
         session,
         repo,
-        [_row("a.py::f", "a.py", awaits=False)],
+        [_row("a.py::f", awaits=False)],
         file_paths={"a.py"},
         roles=ExecutionRoles({"a.py::f": "request", "b.py::g": "request"}),
     )
     assert await _stored(session, repo) == {
-        "a.py::f": ("request", False, None),
-        "b.py::g": ("request", False, None),
+        "a.py::f": ("request", False, False, None),
+        "b.py::g": ("request", False, False, None),
     }
     # A walked file whose function is gone loses its row.
     await write_function_facts(session, repo, [], file_paths={"a.py"}, roles=None)
     assert set(await get_function_facts(session, repo, ["a.py::f", "b.py::g"])) == {"b.py::g"}
+
+
+def test_facts_ignore_what_a_lambda_or_nested_function_does() -> None:
+    source = b"""
+class C:
+    async def outer(self):
+        def inner():
+            yield 1
+        f = lambda: self.touch()
+        return [x async for x in y]
+"""
+    facts = _facts("nest.py", "python", source)["outer"]
+    assert facts is not None
+    assert (facts.is_generator, facts.early_exits) == (False, 0)
+    # A lambda shares the instance, so its receiver use counts.
+    assert facts.uses_receiver is True

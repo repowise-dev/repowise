@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple
 
 from ..complexity.ast_utils import member_object, self_member_name
+from ..complexity.cyclomatic import BodyTally
 from ..complexity.nloc import _code_line_numbers
 from .dialects.base import SUPER, mentions_receiver
 
@@ -109,8 +110,6 @@ class _Scan(NamedTuple):
     awaits: tuple[frozenset[str], frozenset[str]]
     lambdas: frozenset[str] = frozenset()
     receiver: Receiver | None = None
-    yields: frozenset[str] = frozenset()
-    exits: frozenset[str] = frozenset()
 
 
 class _Metrics(NamedTuple):
@@ -121,8 +120,6 @@ class _Metrics(NamedTuple):
     awaits: bool
     receiver_use: bool = False
     receiver_assigns: frozenset[str] = frozenset()
-    yields: int = 0
-    exits: int = 0
 
 
 class _Prefix(NamedTuple):
@@ -259,13 +256,13 @@ def find_extractions(
 
 @dataclass(frozen=True)
 class FunctionFacts:
-    """What a whole function does, read in the walk that measures it.
+    """What a whole function does, counted on the complexity walk's visits.
 
     ``awaits``: it suspends outside any nested scope. ``is_generator``: it
     yields. ``uses_receiver`` / ``receiver_assigns`` as on :class:`Extraction`,
     for the whole body; ``receiver_assigns`` is None where an implicit receiver
     (Java, C++) can write fields by bare name, which only def/use can tell.
-    ``early_exits``: returns and raises before the body's last statement.
+    ``early_exits``: returns and raises other than a final one.
     """
 
     awaits: bool
@@ -275,37 +272,73 @@ class FunctionFacts:
     early_exits: int
 
 
-def function_facts(fn_node: Node, lmap: LanguageNodeMap, receiver: Receiver | None) -> FunctionFacts:
-    """:class:`FunctionFacts` for *fn_node*, from one walk of its body."""
+class _ReceiverSink:
+    """``BodyTally.on_receiver``: whether the body names its receiver, and
+    which of its fields it assigns."""
+
+    __slots__ = ("assigns", "receiver", "uses")
+
+    def __init__(self, receiver: Receiver) -> None:
+        self.receiver = receiver
+        self.uses = False
+        self.assigns: set[str] = set()
+
+    def __call__(self, node: Node) -> None:
+        self.uses = _receiver_ref(node, self.receiver, self.assigns) or self.uses
+
+
+def body_tally(fn_node: Node, lmap: LanguageNodeMap, receiver: Receiver | None) -> BodyTally:
+    """An empty tally for *fn_node*, for the complexity walk to fill. The
+    receiver is watched only when the function's text names it."""
+    watched = receiver is not None and receiver.names and mentions_receiver(fn_node, receiver.names)
+    return BodyTally(
+        yield_kinds=lmap.yield_kinds,
+        exit_kinds=lmap.return_kinds | lmap.raise_kinds,
+        await_kinds=lmap.await_kinds,
+        await_scope_kinds=lmap.await_scope_kinds,
+        lambda_kinds=lmap.lambda_kinds,
+        on_receiver=_ReceiverSink(receiver) if watched else None,
+        # What ``_receiver_ref`` can answer for: a write, or a receiver leaf.
+        receiver_kinds=receiver.write_kinds | receiver.names | {SUPER, "identifier"}
+        if watched
+        else frozenset(),
+    )
+
+
+def function_facts(
+    fn_node: Node, lmap: LanguageNodeMap, receiver: Receiver | None, tally: BodyTally
+) -> FunctionFacts:
+    """:class:`FunctionFacts` from a filled :func:`body_tally`."""
     body = fn_node.child_by_field_name("body") or fn_node
     stmts = body.named_children
-    m = _span_metrics(stmts, _scan_for(lmap, receiver, fn_node))
+    exit_kinds = tally.exit_kinds
     tail = stmts[-1] if stmts else None
     ends_in_exit = tail is not None and (
-        tail.type in lmap.return_kinds | lmap.raise_kinds
-        or any(c.type in lmap.return_kinds | lmap.raise_kinds for c in tail.named_children[:1])
+        tail.type in exit_kinds or any(c.type in exit_kinds for c in tail.named_children[:1])
     )
-    uses, assigns = _whole_receiver_facts(receiver, m)
+    sink = tally.on_receiver if isinstance(tally.on_receiver, _ReceiverSink) else None
+    uses, assigns = _whole_receiver_facts(
+        receiver, sink.uses if sink else False, frozenset(sink.assigns) if sink else frozenset()
+    )
     return FunctionFacts(
-        awaits=m.awaits,
-        is_generator=m.yields > 0,
+        awaits=tally.awaits,
+        is_generator=tally.yields > 0,
         uses_receiver=uses,
         receiver_assigns=assigns,
-        early_exits=max(0, m.exits - ends_in_exit),
+        early_exits=max(0, tally.exits - ends_in_exit),
     )
 
 
 def _whole_receiver_facts(
-    receiver: Receiver | None, m: _Metrics
+    receiver: Receiver | None, uses: bool, assigned: frozenset[str]
 ) -> tuple[bool | None, tuple[str, ...] | None]:
     if receiver is None:
         return None, None
     if not receiver.names:
         return False, ()
-    fields = None if _UNREAD_TARGET in m.receiver_assigns else tuple(sorted(m.receiver_assigns))
     if receiver.implicit:
-        return (True if m.receiver_use else None), None
-    return m.receiver_use, fields
+        return (True if uses else None), None
+    return uses, None if _UNREAD_TARGET in assigned else tuple(sorted(assigned))
 
 
 def _scan_for(lmap: LanguageNodeMap, receiver: Receiver | None, fn_node: Node) -> _Scan:
@@ -314,18 +347,6 @@ def _scan_for(lmap: LanguageNodeMap, receiver: Receiver | None, fn_node: Node) -
     functions never mention it, and then no node needs the check."""
     if receiver is not None and not (receiver.names and mentions_receiver(fn_node, receiver.names)):
         receiver = None
-    base = _BASE_SCANS.get(id(lmap))
-    if base is None:
-        base = _BASE_SCANS[id(lmap)] = _base_scan(lmap)
-    return base if receiver is None else base._replace(receiver=receiver)
-
-
-# The kind unions per language map, built once: the walker asks for every
-# function of every file. Maps are module-level constants, so ``id`` is stable.
-_BASE_SCANS: dict[int, _Scan] = {}
-
-
-def _base_scan(lmap: LanguageNodeMap) -> _Scan:
     return _Scan(
         decisions=lmap.branch_kinds
         | lmap.loop_kinds
@@ -341,8 +362,7 @@ def _base_scan(lmap: LanguageNodeMap) -> _Scan:
         exit_macros=_exit_macros(lmap),
         awaits=_awaits(lmap),
         lambdas=lmap.lambda_kinds,
-        yields=lmap.yield_kinds,
-        exits=lmap.return_kinds | lmap.raise_kinds,
+        receiver=receiver,
     )
 
 
@@ -1186,7 +1206,7 @@ def _span_metrics(span: list[Node], scan: _Scan) -> _Metrics:
     function."""
     await_kinds, await_scope_kinds = scan.awaits
     receiver = scan.receiver
-    decisions = yields = exits = 0
+    decisions = 0
     has_jump = has_await = uses = False
     assigns: set[str] = set()
     for root in span:
@@ -1201,11 +1221,9 @@ def _span_metrics(span: list[Node], scan: _Scan) -> _Metrics:
                 has_jump = has_jump or _is_jump(node, scan.jumps, scan.exit_macros)
                 has_await = has_await or (counts_await and t in await_kinds)
                 decisions += t in scan.decisions
-                yields += t in scan.yields
-                exits += t in scan.exits
                 counts_await = counts_await and t not in await_scope_kinds
             _push_children(node, stack, counts_await, nested, scan)
-    return _Metrics(decisions, has_jump, has_await, uses, frozenset(assigns), yields, exits)
+    return _Metrics(decisions, has_jump, has_await, uses, frozenset(assigns))
 
 
 def _push_children(

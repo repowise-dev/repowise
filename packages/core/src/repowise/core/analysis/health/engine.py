@@ -39,7 +39,7 @@ from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from ...installed_components import is_installed_component
-from ...test_paths import paired_test_names
+from ...test_paths import is_test_path, paired_test_names
 from ..dead_code.file_reachability import file_dependency_neighbors
 from ..execution_roles import ExecutionRoles
 from ..graph_view import HasEdge, ImportEdgeView
@@ -1417,6 +1417,8 @@ class HealthAnalyzer:
         """One row per walked function the graph names, for the ``function_facts`` store.
 
         A function the graph holds no symbol for has no id to key on, and is left out.
+        Test files are left out too: no reader needs their functions yet (perf and
+        Extract Method serve production code). Drop the filter when one does.
         """
         index = self._execution_graph()
         if index is None:
@@ -1424,6 +1426,8 @@ class HealthAnalyzer:
         rows: list[dict] = []
         for pf, fcx in walked:
             path = pf.file_info.path
+            if is_test_path(path):
+                continue
             for fc in fcx.functions:
                 symbol = index.resolve_function(path, fc.start_line, func_end=fc.end_line)
                 if symbol is None:
@@ -1432,9 +1436,6 @@ class HealthAnalyzer:
                 rows.append(
                     {
                         "symbol_id": symbol,
-                        "file_path": path,
-                        "start_line": fc.start_line,
-                        "end_line": fc.end_line,
                         "awaits": facts.awaits if facts else None,
                         "is_generator": facts.is_generator if facts else None,
                         "uses_receiver": facts.uses_receiver if facts else None,

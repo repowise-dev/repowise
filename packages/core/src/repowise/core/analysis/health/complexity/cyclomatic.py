@@ -9,6 +9,8 @@ nodes and pull condition subtrees out for the boolean-operator tally.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .languages import LanguageNodeMap
@@ -297,10 +299,67 @@ def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> 
     return False
 
 
+@dataclass(slots=True)
+class BodyTally:
+    """Whole-function facts counted on the CCN walk's own node visits.
+
+    The CCN walk descends into lambdas and the facts must not: an ``await``,
+    ``yield`` or ``return`` inside a lambda is the lambda's. So each visit
+    carries a scope flag instead of a second walk. ``on_receiver`` sees every
+    node, lambdas included, since a lambda shares the instance; it is set only
+    when the function names its receiver. Read by ``dataflow.slice.function_facts``.
+    """
+
+    yield_kinds: frozenset[str]
+    exit_kinds: frozenset[str]
+    await_kinds: frozenset[str]
+    await_scope_kinds: frozenset[str]
+    lambda_kinds: frozenset[str]
+    on_receiver: Callable[[Node], object] | None = None
+    # The node kinds ``on_receiver`` reads; it sees no other.
+    receiver_kinds: frozenset[str] = frozenset()
+    awaits: bool = False
+    yields: int = 0
+    exits: int = 0
+    # Every kind above, so the walk skips the rest with one set lookup.
+    watched: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        self.watched = (
+            self.yield_kinds
+            | self.exit_kinds
+            | self.await_kinds
+            | self.await_scope_kinds
+            | self.lambda_kinds
+            | self.receiver_kinds
+        )
+
+
+_IN_LAMBDA = 1
+_AWAIT_BLOCKED = 2
+
+
+def _tally(tally: BodyTally, node: Node, scope: int) -> int:
+    """Count *node* into *tally*; the scope its children are visited in."""
+    t = node.type
+    if tally.on_receiver is not None and t in tally.receiver_kinds:
+        tally.on_receiver(node)
+    if t in tally.lambda_kinds:
+        scope |= _IN_LAMBDA
+    if scope & _IN_LAMBDA:
+        return scope
+    tally.yields += t in tally.yield_kinds
+    tally.exits += t in tally.exit_kinds
+    if not scope & _AWAIT_BLOCKED and t in tally.await_kinds:
+        tally.awaits = True
+    return scope | _AWAIT_BLOCKED if t in tally.await_scope_kinds else scope
+
+
 def _walk_function_body(
     body_node: Node,
     lmap: LanguageNodeMap,
     deepest: list[int] | None = None,
+    tally: BodyTally | None = None,
 ) -> tuple[int, int, int, int, list[ConditionComplexity]]:
     """Recursive AST walk. Returns (ccn, max_nesting, cognitive, bumps,
     complex_conditions).
@@ -323,6 +382,8 @@ def _walk_function_body(
     :data:`MIN_BLOCK_LINES` lines: where a reader starts flattening it. A
     one-line branch is too small to name as the place to start. Also a
     side-channel only.
+
+    ``tally``, when given, is filled on the same visits (see :class:`BodyTally`).
     """
 
     ccn = 1
@@ -337,14 +398,17 @@ def _walk_function_body(
     deepest_depth = 0
     deepest_node: list[Node] = []
 
-    def _recurse(node: Node, depth: int, in_markup: bool = False) -> None:
+    def _recurse(node: Node, depth: int, in_markup: bool = False, scope: int = 0) -> None:
         nonlocal ccn, max_nesting, cognitive, deepest_depth
 
         # Don't descend into nested function bodies — they're walked
         # separately at the top level. Lambdas / arrow functions DO
         # contribute to the enclosing function's complexity.
-        if node.type in lmap.function_kinds:
+        node_type = node.type
+        if node_type in lmap.function_kinds:
             return
+        if tally is not None and node_type in tally.watched:
+            scope = _tally(tally, node, scope)
 
         nesting_increment = 0
         ccn_increment = 0
@@ -447,7 +511,7 @@ def _walk_function_body(
             and node.type not in _MARKUP_VALUE_KINDS
         )
         for child in node.children:
-            _recurse(child, new_depth, child_markup)
+            _recurse(child, new_depth, child_markup, scope)
 
     for child in body_node.children:
         # Per-child peak depth: temporarily swap max_nesting out so we

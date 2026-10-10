@@ -2074,6 +2074,12 @@ class FunctionFact(Base):
     execution role for every row each run, since a role moves with seeds and
     calls in other files. One row per function, so later per-function
     measures are new columns here rather than a second table.
+
+    Lean on purpose: the file, name and lines are on ``graph_nodes`` under the
+    same ``symbol_id`` (``path::name``), so they are joined, not copied, and a
+    file's rows are a key range of ``symbol_id``. Booleans cost no body bytes
+    in SQLite (0 and 1 are header-only), and on SQLite the table is clustered
+    on its key, so the key is stored once.
     """
 
     __tablename__ = "function_facts"
@@ -2084,23 +2090,21 @@ class FunctionFact(Base):
         primary_key=True,
     )
     symbol_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    file_path: Mapped[str] = mapped_column(Text, nullable=False)
-    start_line: Mapped[int] = mapped_column(Integer, nullable=False)
-    end_line: Mapped[int] = mapped_column(Integer, nullable=False)
     # ``execution_roles.ExecutionRole``.
     execution_role: Mapped[str] = mapped_column(
         String(16), nullable=False, default="unknown", server_default="unknown"
     )
-    # ``dataflow.slice.FunctionFacts``; NULL where the language cannot tell.
+    # ``dataflow.slice.FunctionFacts``; NULL where the walk produced none.
     awaits: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     is_generator: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     uses_receiver: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    # JSON list of receiver fields assigned directly, or NULL when unknown.
+    # Whether ``receiver_assigns_json`` is the whole set of fields assigned:
+    # NULL in that column then means none, otherwise unknown.
+    receiver_assigns_known: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     receiver_assigns_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     early_exits: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # By file, for the partial rewrite. No role index until a reader filters on it.
-    __table_args__ = (Index("ix_function_facts_repo_path", "repository_id", "file_path"),)
+    __table_args__ = ({"sqlite_with_rowid": False},)
 
 
 class RefactoringOpportunity(QueueVerdict, Base):

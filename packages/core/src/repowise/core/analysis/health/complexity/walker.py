@@ -172,7 +172,10 @@ def walk_file(
     for fn_node in _collect_function_nodes(tree.root_node, lmap):
         body = fn_node.child_by_field_name("body") or fn_node
         deepest: list[int] = []
-        ccn, max_nest, cognitive, bumps, conditions = _walk_function_body(body, lmap, deepest)
+        start_facts, finish_facts = facts_of(fn_node)
+        ccn, max_nest, cognitive, bumps, conditions = _walk_function_body(
+            body, lmap, deepest, start_facts
+        )
         (
             assertion_blocks,
             assertion_count,
@@ -212,7 +215,7 @@ def walk_file(
             deprecated=is_deprecated(fn_node, body, name, lmap, source),
             gated_off=body is not fn_node and is_gated_off(body, flags),
             deepest_block=(deepest[0], deepest[1]) if deepest else None,
-            facts=facts_of(fn_node),
+            facts=finish_facts(),
         )
         functions.append(fc)
         fc_by_node_id[fn_node.id] = fc
@@ -237,23 +240,25 @@ def walk_file(
 
 
 def _facts_reader(language: str, lmap: Any) -> Any:
-    """``fn_node -> FunctionFacts | None`` for *language*, on the tree already parsed.
+    """``fn_node -> (tally, finish)``: an empty tally the CCN walk fills, and
+    the call that reads :class:`FunctionFacts` off it once it is filled.
 
     Deferred import: the dataflow package imports this one.
     """
-    from ..dataflow import function_facts, get_defuse_dialect
+    from ..dataflow import body_tally, function_facts, get_defuse_dialect
 
     dialect = get_defuse_dialect(language)
 
-    def read(fn_node: Any) -> Any:
+    def start(fn_node: Any) -> tuple[Any, Any]:
         try:
             receiver = dialect.receiver(fn_node, lmap) if dialect is not None else None
-            return function_facts(fn_node, lmap, receiver)
+            tally = body_tally(fn_node, lmap, receiver)
         except Exception as exc:
             log.debug("function_facts_failed", error=str(exc))
-            return None
+            return None, lambda: None
+        return tally, lambda: function_facts(fn_node, lmap, receiver, tally)
 
-    return read
+    return start
 
 
 def walk_file_complexity(
