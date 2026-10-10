@@ -61,6 +61,7 @@ def _build(root: Path) -> None:
             "logo.png": b"\x89PNG\r\n\x1a\n\x00\x00\x00binary",
             "yarn.lock": "# lock\n",
             "vendor/lib/notes.md": "vendored\n",
+            "dist/report.md": "built\n",
         },
         "feat: initial",
         1,
@@ -89,7 +90,7 @@ async def test_non_code_files_get_history_from_the_shared_walk(tmp_path, monkeyp
     _summary, rows = await GitIndexer(tmp_path, tier=GitIndexTier.FULL).index_repo("r")
     meta = {row["file_path"]: row for row in rows}
 
-    # Binary, lock and vendored files get no row at all.
+    # Binary, lock, vendored and build-output files get no row at all.
     assert set(meta) == {"a.py", "b.py", "README.md", ".github/workflows/ci.yml", "config.json"}
 
     for path in ("README.md", ".github/workflows/ci.yml", "config.json"):
@@ -157,3 +158,15 @@ async def test_follow_renames_mode_gives_non_code_files_no_rows(tmp_path, monkey
 
     assert "a.py" in paths
     assert not {"README.md", ".github/workflows/ci.yml", "config.json"} & paths
+
+
+def test_a_source_package_named_like_an_output_dir_keeps_its_history(tmp_path) -> None:
+    from repowise.core.ingestion.git_indexer.records import _history_tier_files
+
+    for rel in ("pkg/coverage/parsers.py", "pkg/coverage/README.md", "dist/notes.md"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x\n", encoding="utf-8")
+
+    kept = _history_tier_files(tmp_path, ["pkg/coverage/README.md", "dist/notes.md"])
+
+    assert kept == {"pkg/coverage/README.md"}

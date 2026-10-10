@@ -57,7 +57,7 @@ def _event_paths(event: object, repo_path: Path) -> set[str]:
             rel = str(Path(raw).relative_to(repo_path))
         except ValueError:
             continue
-        if is_watchable_path(rel):
+        if is_watchable_path(rel, repo_path):
             found.add(rel)
     return found
 
@@ -82,7 +82,7 @@ def _release_own_update_lock(repo_path: Path) -> None:
         release_update_lock(repo_path)
 
 
-def is_watchable_path(rel_path: str) -> bool:
+def is_watchable_path(rel_path: str, repo_path: Path | None = None) -> bool:
     """Whether a change to *rel_path* (repo-relative) should trigger an update.
 
     Two filters. The first is the traversal blocklist, so a write inside
@@ -97,7 +97,7 @@ def is_watchable_path(rel_path: str) -> bool:
         return False
     if posix.split("/", 1)[0] in _SELF_WRITTEN_DIRS:
         return False
-    return is_candidate_source_path(posix)
+    return is_candidate_source_path(posix, repo_path)
 
 
 # ---------------------------------------------------------------------------

@@ -265,3 +265,17 @@ class TestIsCandidateSourcePath:
 
     def test_empty_path(self) -> None:
         assert is_candidate_source_path("") is False
+
+    def test_output_named_dirs_are_listed_given_the_root(self, tmp_path: Path) -> None:
+        # A source package named like a report dir passes; a bundle dir does not.
+        (tmp_path / "pkg" / "coverage").mkdir(parents=True)
+        (tmp_path / "pkg" / "coverage" / "parsers.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "dist").mkdir()
+        (tmp_path / "dist" / "bundle.js").write_text("var a;\n", encoding="utf-8")
+
+        assert is_candidate_source_path("pkg/coverage/parsers.py", tmp_path) is True
+        assert is_candidate_source_path("dist/bundle.js", tmp_path) is False
+        # No root to list: the conservative answer.
+        assert is_candidate_source_path("pkg/coverage/parsers.py") is False
+        # A deleted package still surfaces its deletions.
+        assert is_candidate_source_path("gone/coverage/parsers.py", tmp_path) is True

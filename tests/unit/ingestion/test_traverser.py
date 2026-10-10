@@ -191,6 +191,46 @@ class TestFileTraverser:
         assert not any(p.startswith("Library/") for p in paths)
         assert not any(p.startswith("Temp/") for p in paths)
 
+    def test_source_packages_named_like_output_dirs_are_indexed(self, tmp_path: Path) -> None:
+        files = {
+            "src/pkg/analysis/coverage/__init__.py": "",
+            "src/pkg/analysis/coverage/parsers.py": "def parse(): ...\n",
+            "internal/build/build.go": "package build\n",
+            "app/(platform)/build/page.tsx": "export default function P() {}\n",
+            "coverage/__init__.py": "",  # a project's own root package
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+
+        assert set(files) <= paths
+
+    def test_output_trees_stay_pruned_without_gitignore(self, tmp_path: Path) -> None:
+        files = {
+            # Bundles and declarations a compiler writes, committed.
+            "packages/web/dist/index.js": "var a = 1;\n",
+            "packages/web/dist/index.d.ts": "export {};\n",
+            # Copied source sits a level below the output root.
+            "build/lib/pkg/__init__.py": "",
+            "build/lib/pkg/mod.py": "x = 1\n",
+            "target/generated-sources/Gen.java": "class Gen {}\n",
+            "coverage/lcov-report/prettify.js": "var p;\n",
+            # Generated C from a configure step, and generated stubs.
+            "build/config.h": "#define X 1\n",
+            "build/api_pb2.py": "x = 1\n",
+            "vendor/github.com/x/y/y.go": "package y\n",
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+        (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+
+        assert paths == {"app.py"}
+
     def test_traverses_e2e_specs(self, tmp_path: Path) -> None:
         """e2e spec files are indexed so they can get a file_page (#1497).
 
@@ -1441,8 +1481,8 @@ class TestPackageScanPruning:
         assert "pkg/index.html" in pruned
 
     def test_a_committed_build_dir_is_excluded_too(self, tmp_path: Path) -> None:
-        """Not just gitignored trees. ``dist`` is in ``_BLOCKED_DIRS``, so the
-        traverser never indexes it even when it is committed — and a directory
+        """Not just gitignored trees. A ``dist`` holding only bundles is an
+        output root, so the traverser never indexes it even when it is committed — and a directory
         nothing indexes must not name the package's language."""
         pkg = self._pkg(tmp_path, "node_modules/\n")  # dist/ deliberately tracked
         dist = pkg / "dist"
