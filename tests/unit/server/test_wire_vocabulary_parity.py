@@ -178,10 +178,17 @@ def test_refactoring_recipe_vocabularies_match_python() -> None:
     assert _union_members("RecipePreconditionKind", "refactoring.ts") == set(PRECONDITION_KINDS)
 
 
+<<<<<<< HEAD
 def test_refactoring_payoff_outcomes_match_python() -> None:
     from repowise.core.analysis.health.refactoring.payoff import PAYOFF_OUTCOMES
 
     assert _union_members("RefactoringPayoffOutcome", "refactoring.ts") == set(PAYOFF_OUTCOMES)
+=======
+def test_reuse_site_actions_match_python() -> None:
+    from repowise.core.analysis.health.refactoring.reuse import REUSE_SITE_ACTIONS
+
+    assert _union_members("ReuseSiteAction", "refactoring.ts") == set(REUSE_SITE_ACTIONS)
+>>>>>>> f5cd793f9 (fix(refactoring): refuse a reuse plan whenever the call could mean something else)
 
 
 def _interface_body(name: str, module: str) -> str:

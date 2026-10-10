@@ -224,6 +224,12 @@ def _extract_notes(
     return notes
 
 
+def _reused(d: Mapping[str, Any]) -> str | None:
+    """The existing function an Extract Helper plan calls, when it reuses one."""
+    reuse = _dict(_dict(d.get("plan")).get("reuse"))
+    return (_short(reuse.get("existing_symbol")) or None) if reuse else None
+
+
 def _reuse_steps(reuse: Mapping[str, Any]) -> list[Step]:
     """One step per site that calls the existing function, or deletes a copy of it."""
     name = _short(reuse.get("existing_symbol"))
@@ -451,8 +457,7 @@ def _summary(d: Mapping[str, Any], steps: list[Step]) -> str:
         span, name = steps[0]["span"], steps[0]["new_symbol"]["name"]
         host = _short(d.get("target_symbol"))
         return f"Extract lines {span['start']}-{span['end']} of `{host}` into `{name}`."
-    if kind == "extract_helper" and _dict(plan.get("reuse")):
-        name = _short(_dict(plan["reuse"]).get("existing_symbol"))
+    if kind == "extract_helper" and (name := _reused(d)):
         return f"Call the existing `{name}` at {len(steps)} site{_s(len(steps))} that repeat it."
     if kind == "extract_helper":
         return f"Replace the block duplicated at {len(steps) - 1} sites with one shared helper."
@@ -586,8 +591,7 @@ def _does_not(d: Mapping[str, Any], steps: list[Step]) -> list[dict[str, str | N
         out.append(
             {"constraint": f"touch anything outside lines {lines} and {added}", "reason": None}
         )
-    elif kind == "extract_helper" and _dict(_dict(d.get("plan")).get("reuse")):
-        name = _short(_dict(_dict(d.get("plan")).get("reuse")).get("existing_symbol"))
+    elif kind == "extract_helper" and (name := _reused(d)):
         out.append({"constraint": f"change `{name}` to fit a site", "reason": "its callers rely on it"})
     elif kind in _DOES_NOT:
         constraint, reason = _DOES_NOT[kind]

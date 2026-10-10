@@ -46,14 +46,19 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+import structlog
+
 from ....code_origin import is_migration_path, is_vendored_or_generated_path
 from ....test_paths import is_test_related_path
 from ..duplication.detector import clone_ranges, union_line_count
 from ..effort import effort_bucket
+from .graph_signals import defined_symbols
 from .language_family import same_language_family
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, register
 from .reuse import find_reuse
+
+log = structlog.get_logger(__name__)
 
 # The biomarker this detector answers — the recovered impact is read off it.
 _SOURCE_BIOMARKER = "dry_violation"
@@ -323,17 +328,7 @@ def _symbol_spans(graph: Any, file_path: str, cache: dict[str, list[tuple[int, i
     hit = cache.get(file_path)
     if hit is not None:
         return hit
-    spans: list[tuple[int, int]] = []
-    if graph is not None and file_path in graph:
-        for _u, target, data in graph.out_edges(file_path, data=True):
-            if data.get("edge_type") != "defines":
-                continue
-            node = graph.nodes[target]
-            if node.get("node_type") != "symbol" or node.get("kind") == "module":
-                continue
-            start, end = node.get("start_line"), node.get("end_line")
-            if isinstance(start, int) and isinstance(end, int) and end >= start:
-                spans.append((start, end))
+    spans = [(n["start_line"], n["end_line"]) for _id, n in defined_symbols(graph, file_path)]
     cache[file_path] = spans
     return spans
 
@@ -661,8 +656,11 @@ def _reuse_fields(
     if read is None:
         return {}
     sites = [(o["file"], o["line_start"], o["line_end"]) for o in occurrences]
-    reuse = find_reuse(ctx.graph, ctx.language, sites, read).plan
-    return {"reuse": reuse} if reuse else {}
+    verdict = find_reuse(ctx.graph, ctx.language, sites, read)
+    if verdict.refused:
+        # Counted in the log, not the plan: a refusal changes nothing it serves.
+        log.debug("extract_helper_reuse_refused", file=ctx.file_path, reason=verdict.refused)
+    return {"reuse": verdict.plan} if verdict.plan else {}
 
 
 def _cross_file_lines(ctx: RefactoringContext) -> int:

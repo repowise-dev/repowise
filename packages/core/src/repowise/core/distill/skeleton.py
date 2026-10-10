@@ -36,13 +36,13 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
+from repowise.core.callable_spans import body_span, signature_end
 from repowise.core.distill.budget import estimate_tokens
 
 __all__ = [
     "DEFAULT_TOKEN_BUDGET",
     "SkeletonResult",
     "SkeletonSymbol",
-    "body_span",
     "build_skeleton",
 ]
 
@@ -51,9 +51,6 @@ DEFAULT_TOKEN_BUDGET = 1800
 
 #: Hotspot files get proportionally more body context.
 _HOTSPOT_BUDGET_FACTOR = 1.25
-
-#: Max lines scanned past a symbol's start to find the end of its signature.
-_SIG_SCAN_MAX = 12
 
 #: Docstring lines kept directly under a signature before eliding the rest.
 #: One line = the summary; the elision marker right after it signals more.
@@ -86,10 +83,6 @@ _DOCSTRING_DELIMS = ('"""', "'''")
 
 #: Symbol kinds whose body plus mode elides; every other kind is kept whole.
 _CALLABLE_KINDS = frozenset({"function", "method"})
-
-#: A body's last line that only closes it (``}``, ``});``, ``end``) stays in
-#: plus mode, so the elision sits inside a well-formed block.
-_CLOSER_RE = re.compile(r"\s*(?:[})\];,]+|end)\s*")
 
 
 @dataclass(frozen=True)
@@ -187,7 +180,7 @@ def build_skeleton(
     sig_ends: dict[int, int] = {}  # symbol index -> 0-indexed signature end
     for idx, sym in enumerate(usable):
         s = sym.start_line - 1
-        e = _signature_end(lines, s, sym.end_line - 1)
+        e = signature_end(lines, s, sym.end_line - 1)
         sig_ends[idx] = e
         for i in range(s, e + 1):
             keep[i] = True
@@ -281,38 +274,6 @@ def _keep_preamble(lines: list[str], first_start: int, keep: list[bool]) -> None
             keep[j] = True
 
 
-def _signature_end(lines: list[str], start: int, end: int) -> int:
-    """Last 0-indexed line of the signature starting at *start*.
-
-    Bracket-balance scan, language-agnostic: the signature ends on the first
-    line where parens/brackets are balanced and the line closes with a body
-    opener (``:``/``{``), a terminator (``;``), or the param list itself.
-    Allman-style braces (``{`` alone on the next line) are folded in. Falls
-    back to the start line when nothing matches within the scan window.
-    """
-    depth = 0
-    last = min(start + _SIG_SCAN_MAX - 1, end)
-    for i in range(start, last + 1):
-        line = lines[i]
-        depth += line.count("(") - line.count(")")
-        depth += line.count("[") - line.count("]")
-        if depth > 0:
-            continue
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.endswith((":", "{", ";", "=>")):
-            return i
-        if stripped.startswith(("@", "#[")):
-            continue  # annotation/attribute line a symbol's bounds may start on
-        # Signature closed without a body opener — check for an Allman brace.
-        j = i + 1
-        if j <= end and lines[j].strip().startswith("{"):
-            return j
-        return i
-    return start
-
-
 def _elide_callable_bodies(
     lines: list[str], symbols: list[SkeletonSymbol], keep: list[bool]
 ) -> None:
@@ -329,15 +290,6 @@ def _elide_callable_bodies(
         body_start, body_end = body_span(lines, start, end)
         for i in range(body_start, body_end + 1):
             keep[i] = False
-
-
-def body_span(lines: list[str], start: int, end: int) -> tuple[int, int]:
-    """First and last 0-indexed line of the body of the callable on lines
-    *start*..*end*: below its signature, above a closing-brace line. Empty
-    (first > last) for a one-line callable."""
-    body_start = _signature_end(lines, start, end) + 1
-    body_end = end - 1 if end >= body_start and _CLOSER_RE.fullmatch(lines[end]) else end
-    return body_start, body_end
 
 
 def _docstring_lines(lines: list[str], start: int, end: int) -> list[int]:

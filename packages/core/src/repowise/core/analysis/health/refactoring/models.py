@@ -204,10 +204,8 @@ class RefactoringContext:
     # every other detector ignores it. ``None`` when the file was not read (no
     # clones) or the read failed; the detector then omits the snippet.
     source_lines: list[str] | None = None
-    # Another repo file's source lines by repo path (``None``: unreadable). The
-    # Extract Helper detector reads a clone partner's file only when one site
-    # may already be a whole function, to prove the others repeat it exactly
-    # (``reuse``). ``None`` (not provided): every clone keeps the new-helper plan.
+    # A clone partner's lines by repo path (None: unreadable), for Extract
+    # Helper's reuse check. ``None``: not provided, no plan reuses a function.
     read_lines: Callable[[str], list[str] | None] | None = None
 
 
