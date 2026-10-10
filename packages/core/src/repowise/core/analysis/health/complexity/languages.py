@@ -65,6 +65,10 @@ class LanguageNodeMap:
     # empty and we sniff operator text via this set of node types whose
     # text content equals ``&&`` or ``||``.
     boolean_operator_text_kinds: frozenset[str] = frozenset()
+    # Ternary node kind(s) that choose rather than nest: an arm of a chain
+    # (``a ? x : b ? y : z``, a dispatch) or a choice between markup (JSX).
+    # Still a CCN point; no nesting level. Empty keeps every ternary nesting.
+    flat_ternary_kinds: frozenset[str] = frozenset()
 
     # ------------------------------------------------------------------
     # Class-level analysis (LCOM4 / god-class). All three fields default
@@ -382,6 +386,7 @@ _TS = LanguageNodeMap(
     ),
     lambda_kinds=frozenset({"arrow_function"}),
     branch_kinds=frozenset({"if_statement", "ternary_expression"}),
+    flat_ternary_kinds=frozenset({"ternary_expression"}),
     loop_kinds=frozenset(
         {
             "for_statement",

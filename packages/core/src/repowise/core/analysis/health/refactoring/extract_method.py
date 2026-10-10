@@ -68,7 +68,7 @@ from typing import TYPE_CHECKING, Any
 from ..biomarkers.brain_method import BrainMethodDetector
 from ..biomarkers.complex_method import ComplexMethodDetector
 from ..biomarkers.large_method import LargeMethodDetector
-from ..complexity.cyclomatic import _is_boolean_operator
+from ..complexity.cyclomatic import _is_boolean_operator, is_markup
 from ..complexity.languages import get_language_map
 from ..complexity.nloc import is_string_stmt
 from ..dataflow import find_extractions
@@ -384,7 +384,7 @@ def jsx_plumbing_dominates(fn_node: Any, lmap: LanguageNodeMap) -> bool:
         node, inside = stack.pop()
         if node.type in lmap.function_kinds:
             continue
-        in_jsx = node.type.startswith("jsx_")
+        in_jsx = is_markup(node)
         has_jsx = has_jsx or in_jsx
         if (node.is_named and node.type in kinds) or _is_boolean_operator(node, lmap):
             total += 1
