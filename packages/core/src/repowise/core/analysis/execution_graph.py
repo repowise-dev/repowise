@@ -94,10 +94,10 @@ def _append_unique(
         adjacency.setdefault(source, []).append(target)
 
 
-def _line_values(attrs: Mapping[str, Any]) -> tuple[int, ...]:
-    raw = attrs.get("call_lines")
+def _line_values(attrs: Mapping[str, Any], key: str = "call_lines") -> tuple[int, ...]:
+    raw = attrs.get(key)
     if raw is None:
-        raw = (attrs.get("call_line"),)
+        raw = (attrs.get("call_line"),) if key == "call_lines" else ()
     elif isinstance(raw, int):
         raw = (raw,)
     return tuple(line for line in raw if isinstance(line, int) and line > 0)
@@ -125,6 +125,7 @@ class ExecutionGraphIndex:
         "name",
         "nodes",
         "reverse",
+        "spawn_only",
     )
 
     def __init__(
@@ -150,6 +151,7 @@ class ExecutionGraphIndex:
         call_only_seen: set[tuple[str, str]] = set()
         callers_with_site_metadata: set[str] = set()
         ranges: dict[str, list[tuple[int, int, str]]] = {}
+        spawn_only: dict[str, list[str]] = {}
 
         if graph is not None:
             try:
@@ -179,6 +181,14 @@ class ExecutionGraphIndex:
             for source, target, data in graph_edges:
                 attrs = data or {}
                 edge_type = attrs.get("edge_type")
+                lines = _line_values(attrs) if edge_type == "calls" else ()
+                # A spawned call (``create_task(f())``) is still an edge, but no call
+                # site of the caller runs it: it never resolves as one.
+                spawned = set(_line_values(attrs, "spawn_lines")) if lines else set()
+                if spawned:
+                    callers_with_site_metadata.add(source)
+                    if spawned.issuperset(lines):
+                        _append_unique(spawn_only, source, target)
                 self._ingest_edge(
                     declaration_map,
                     declaration_seen if deduplicate_graph else None,
@@ -195,7 +205,7 @@ class ExecutionGraphIndex:
                     target,
                     edge_type,
                     attrs.get("resolution_origin"),
-                    _line_values(attrs) if edge_type == "calls" else (),
+                    tuple(line for line in lines if line not in spawned),
                 )
 
         for source, targets in (declares or {}).items():
@@ -237,6 +247,8 @@ class ExecutionGraphIndex:
         self._ranges = {path: tuple(values) for path, values in ranges.items()}
         self._span_end = {node_id: end for values in ranges.values() for _, end, node_id in values}
         self.in_degree = {node: len(callers) for node, callers in self.reverse.items()}
+        #: Edges whose every call site hands the callee to a task scheduler.
+        self.spawn_only = {key: frozenset(values) for key, values in spawn_only.items()}
 
     @staticmethod
     def _ingest_edge(
@@ -381,20 +393,23 @@ class ExecutionGraphIndex:
         *,
         max_depth: int | None = None,
         stop_at: Container[str] = frozenset(),
+        skip: Mapping[str, Container[str]] | None = None,
     ) -> set[str]:
         """Reliable execution nodes reachable from all *seeds* in one BFS.
 
         A node in *stop_at* is never entered, so nothing past it is reached
-        through it.
+        through it. ``skip[node]`` names targets not followed from *node*.
         """
+        skip = skip or {}
         reached = set(seeds)
         queue: deque[tuple[str, int]] = deque((seed, 0) for seed in sorted(reached))
         while queue:
             node, depth = queue.popleft()
             if max_depth is not None and depth >= max_depth:
                 continue
+            skipped = skip.get(node, ())
             for target in self.forward.get(node, ()):
-                if target not in reached and target not in stop_at:
+                if target not in reached and target not in stop_at and target not in skipped:
                     reached.add(target)
                     queue.append((target, depth + 1))
         return reached

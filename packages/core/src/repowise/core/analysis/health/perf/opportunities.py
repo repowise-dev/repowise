@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...execution_roles import hottest_role
+from ..worth import dormant
 from .actionability import (
     ActionabilityState,
     FixSafety,
@@ -152,6 +153,12 @@ def _reachability(values: set[Any]) -> bool | None:
     return False if values == {False} else None
 
 
+def _inert(facts: Any) -> bool:
+    """A member that is no cost to fix: switched off by a constant-false flag,
+    or a loop that already walks its keys in chunks."""
+    return dormant(facts.details) or bool(facts.details.get("chunked_iteration"))
+
+
 def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
     """Read one group's answers off its owners. Decides nothing itself.
 
@@ -159,31 +166,40 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
     already agrees on them by construction. Taking them off the key keeps one
     owner for each instead of reclassifying a representative row. Sinks are
     members' facts, so they are listed rather than assumed shared.
+
+    Inert members (:func:`_inert`) are evidence, listed last, but decide
+    nothing while a live member exists. The loop size is read off the members
+    the group's role comes from, so a hot loop nobody measured never borrows
+    the growth of a cold one.
     """
     context = key_context(key)
     boundary = key_boundary(key)
-    markers = tuple(sorted({facts.marker for facts in members}))
+    live = [facts for facts in members if not _inert(facts)] or members
+    markers = tuple(sorted({facts.marker for facts in live}))
     marker = dominant_marker(markers)
-    sites = {facts.site for facts in members}
+    sites = {facts.site for facts in live}
     files = {site[0] for site in sites}
-    provenance = weakest_provenance({facts.provenance for facts in members})
+    provenance = weakest_provenance({facts.provenance for facts in live})
     evidence_confidence = provenance_confidence(provenance)
-    reachable = _reachability({facts.reliable_entry_reachability for facts in members})
-    role = hottest_role(facts.execution_role for facts in members)
-    sinks = tuple(sorted({facts.terminal_sink for facts in members if facts.terminal_sink}))
+    reachable = _reachability({facts.reliable_entry_reachability for facts in live})
+    role = hottest_role(facts.execution_role for facts in live)
+    sinks = tuple(sorted({facts.terminal_sink for facts in live if facts.terminal_sink}))
     assessment = assess_fix(
         marker,
         markers,
         boundary,
-        [facts.details for facts in members],
-        cross_function=any(facts.cross_function for facts in members),
+        [facts.details for facts in live],
+        cross_function=any(facts.cross_function for facts in live),
+    )
+    magnitude = loop_magnitude(
+        marker,
+        [f.details for f in live if hottest_role((f.execution_role,)) == role],
     )
     acted = actionability(
         assessment,
         evidence_confidence,
-        expected_reason=expected_reason(members),
+        expected_reason=expected_reason(members, magnitude),
     )
-    magnitude = loop_magnitude(marker, [facts.details for facts in members])
     factors = rank_factors(
         marker=marker,
         boundary=boundary,
@@ -210,7 +226,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
         boundary_kind=boundary,
         execution_context=context,
         terminal_sink=sinks[0] if len(sinks) == 1 else None,
-        shared_path_suffix=shared_path_suffix([facts.path for facts in members if facts.path]),
+        shared_path_suffix=shared_path_suffix([facts.path for facts in live if facts.path]),
         intervention_symbol=key_intervention_symbol(key),
         intervention_kind=key_intervention_kind(key),
         terminal_sinks=sinks,
@@ -220,7 +236,9 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
         affected_call_sites_total=len(sites),
         affected_files_total=len(files),
         observations_total=len(members),
-        evidence=tuple(evidence_row(facts) for facts in members[:cap]),
+        evidence=tuple(
+            evidence_row(facts) for facts in sorted(members, key=_inert)[:cap]
+        ),
         evidence_truncated=len(members) > cap,
         reliable_entry_reachability=reachable,
         provenance=provenance,
@@ -244,7 +262,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
             },
         ),
         fix=acted.fix,
-        may_lead=may_lead(marker, {facts.details.get("orm") for facts in members}, facets),
+        may_lead=may_lead(marker, {facts.details.get("orm") for facts in live}, facets),
     )
 
 

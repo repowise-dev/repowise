@@ -149,7 +149,8 @@ def test_linking_stamps_the_id_the_builder_derives() -> None:
         ("batch_form_equivalent", 1, {"batch_or_prefetch_io"}),
         ("batch_form_limited", 1, {"batch_or_prefetch_io"}),
         ("bounded_fan_out", 1, {"parallelize_independent_awaits"}),
-        ("retry_loop", 1, {"batch_or_prefetch_io"}),
+        # A bounded retry loop runs a fixed number of times: nothing to batch.
+        ("retry_loop", 1, {None}),
         # Execution context is an identity input: one shape, three contexts.
         ("context_split", 3, {"batch_or_prefetch_io"}),
         # io_in_loop and nested_loop_with_io share one cross-function identity
@@ -279,7 +280,6 @@ def test_reachability_aggregates_any_true_over_all_false() -> None:
         # The bulk form exists, but a per-key limit means it may not read the same rows.
         ("batch_form_limited", "advisory", ("result_equivalence",), '.in_("repo_id", keys)'),
         ("bounded_fan_out", "plan_ready", (), "self._sem"),
-        ("retry_loop", "advisory", ("batch_api_contract", "result_equivalence"), None),
     ],
 )
 def test_promotion_facts_clear_exactly_their_prerequisite(case, state, prerequisites, api) -> None:
@@ -287,6 +287,16 @@ def test_promotion_facts_clear_exactly_their_prerequisite(case, state, prerequis
     assert item.actionability_state == state
     assert item.prerequisites == prerequisites
     assert item.fix is not None and item.fix.api == api
+
+
+def test_a_bounded_loop_is_expected_and_leaves_the_default_queue() -> None:
+    (item,) = build_performance_opportunities(rows_for("retry_loop"))
+    assert (item.actionability_state, item.actionability_reason, item.fix) == (
+        "expected",
+        "bounded_loop",
+        None,
+    )
+    assert perf_queue_verdict(item).reason == "expected"
 
 
 def test_a_loop_that_grows_with_data_outranks_a_bounded_one() -> None:

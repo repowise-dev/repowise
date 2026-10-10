@@ -653,6 +653,7 @@ class ResolveMixin:
                             "edge_type": "calls",
                             "call_lines": [rc.line],
                             "supplied_props": rc.supplied_props,
+                            **({"spawn_lines": [rc.line]} if rc.spawned else {}),
                         }
                         if rc.edge_type == "calls"
                         else {"edge_type": "references"}
@@ -686,6 +687,10 @@ class ResolveMixin:
                 if rc.line not in lines:
                     lines.append(rc.line)
                     lines.sort()
+                spawned = existing.setdefault("spawn_lines", []) if rc.spawned else None
+                if spawned is not None and rc.line not in spawned:
+                    spawned.append(rc.line)
+                    spawned.sort()
                 if rc.confidence > existing.get("confidence", 0):
                     existing["confidence"] = rc.confidence
                     existing["resolution_origin"] = rc.origin

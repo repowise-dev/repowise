@@ -598,6 +598,23 @@ def _objc_call_target(
     return target_name
 
 
+#: Python calls that schedule the coroutine they are handed instead of awaiting it.
+_PY_TASK_SCHEDULERS = frozenset({"create_task", "ensure_future", "run_coroutine_threadsafe"})
+
+
+def _is_spawned_call(language: str, site_node: Node, src: str) -> bool:
+    """Whether the call at *site_node* is the coroutine a task scheduler is handed
+    (``asyncio.create_task(job())``, ``tg.create_task(job())``): Python only."""
+    args = site_node.parent
+    outer = args.parent if args is not None and args.type == "argument_list" else None
+    if language != "python" or outer is None or outer.type != "call":
+        return False
+    function = outer.child_by_field_name("function")
+    if function is not None and function.type == "attribute":
+        function = function.child_by_field_name("attribute")
+    return function is not None and _node_text(function, src) in _PY_TASK_SCHEDULERS
+
+
 def _jsx_supplied_props(site_node: Node, src: str) -> frozenset[str] | None:
     """Props written on a JSX element, or None when not JSX or a spread hides them."""
     if site_node.type not in ("jsx_self_closing_element", "jsx_opening_element"):
@@ -2065,6 +2082,7 @@ class ASTParser:
                             else "calls"
                         ),
                         supplied_props=_jsx_supplied_props(site_node, src),
+                        spawned=_is_spawned_call(file_info.language, site_node, src),
                     ),
                 )
             )
