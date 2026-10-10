@@ -648,8 +648,12 @@ def _stage_count(body: Mapping[str, Any]) -> int:
 
 
 def _has_span(stage: Any) -> bool:
+    """A stage with nonzero integer line bounds (a bool is not a line)."""
     span = stage.get("span") if isinstance(stage, dict) else None
-    return isinstance(span, dict) and bool(span.get("start") and span.get("end"))
+    if not isinstance(span, dict):
+        return False
+    start, end = span.get("start"), span.get("end")
+    return type(start) is int and type(end) is int and bool(start and end)
 
 
 def _stage_one(line_text: str, sym: str, body: Mapping[str, Any]) -> str:

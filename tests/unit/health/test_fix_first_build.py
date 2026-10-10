@@ -421,6 +421,9 @@ def test_a_finding_borrowing_a_staged_span_says_it_is_staged() -> None:
         ([{"span": {"start": 20}}, {"span": None}], {"ccn_before": 44}),
         ([{"span": {"start": 20, "end": 35}}, {"span": {"start": 36, "end": 40}}], "bad"),
         ([{"span": {"start": 20, "end": 35}}, {"span": {"start": 36, "end": 40}}], {"ccn_after": 9}),
+        ([{"span": {"start": "20", "end": "35"}}, {"span": {"start": "a", "end": "b"}}], {}),
+        ([{"span": {"start": True, "end": True}}, {"span": {"start": 36, "end": 40}}], {}),
+        ([{"span": {"start": 1.5, "end": 9.0}}, {"span": {"start": 36, "end": 40}}], {}),
     ],
 )
 def test_malformed_stages_never_crash_or_say_one_helper(stages, orchestrator) -> None:
