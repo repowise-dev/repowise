@@ -398,3 +398,13 @@ def test_a_staged_plan_without_its_complexity_figures_leaves_them_out() -> None:
         i for i in _build(plans=_staged_plans(2, orchestrator={})).items if i.kind == "refactor"
     )
     assert core.action.steps[0].text.endswith("(the plan splits run into 2 helpers)")
+
+
+def test_a_finding_borrowing_a_staged_span_says_it_is_staged() -> None:
+    plans = _staged_plans()
+    plans[0].update(file_path="src/core.py", target_symbol="src/core.py::run")
+    lone = _build(plans=plans, refactoring=[], performance=[]).lead
+    assert lone.action.steps[0].text == (
+        "Stage 1 of 3: Extract lines 20-35 of run into sum_rows(rows, limit) -> total "
+        "(the plan splits run into 3 helpers, CCN 44 -> 9)"
+    )
