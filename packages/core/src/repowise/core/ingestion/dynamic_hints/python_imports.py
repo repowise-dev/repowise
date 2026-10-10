@@ -55,6 +55,7 @@ from pathlib import Path
 from ...test_paths import is_test_related_path
 from ..languages.python_modules import build_python_module_index
 from ..languages.python_strings import PY_DYNAMIC_LOAD_MARKERS, defines_top_level, live_text
+from ..source_text import source_bytes
 from .base import DynamicEdge, DynamicHintExtractor
 
 # Dotted strings only produce edges from files that load modules at run time,
@@ -256,11 +257,11 @@ class PythonDynamicHints(DynamicHintExtractor):
             return []
 
         resolver = ModuleStringResolver(
-            module_index, lambda target: self._source_bytes(repo_root / target, target)
+            module_index, lambda target: source_bytes(target, repo_root / target, self._source_map)
         )
         edges: list[DynamicEdge] = []
         for abs_path, rel in rel_by_abs.items():
-            blob = self._source_bytes(abs_path, rel)
+            blob = source_bytes(rel, abs_path, self._source_map)
             if not blob:
                 continue
             refs = python_dynamic_refs(rel, blob, resolver)
