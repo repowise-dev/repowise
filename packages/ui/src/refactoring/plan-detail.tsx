@@ -14,6 +14,9 @@ import {
   extractHelperOccurrences,
   extractMethodPlan,
   extractMethodSignature,
+  extractMethodStages,
+  extractOrchestrator,
+  extractParameterObject,
   helperSite,
   moveTarget,
   performancePlanDetail,
@@ -23,6 +26,7 @@ import {
   splitResidual,
   splitShimRequired,
 } from "./types";
+import type { ExtractStage } from "./types";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 export interface PlanDetailProps {
@@ -103,6 +107,113 @@ export function CodeBlock({ code, startLine }: { code: string; startLine: number
           ))}
         </code>
       </pre>
+    </div>
+  );
+}
+
+/** A staged Extract Method plan: the shared object once, then each helper the
+ *  function will call, in order. Each stage folds to one line; the first is
+ *  open. Every text has the code block's own copy button. */
+function StagedExtract({
+  plan,
+  fileHref,
+  hideIntro,
+  stages,
+}: {
+  plan: RefactoringPlan;
+  fileHref: PlanDetailProps["fileHref"];
+  hideIntro: boolean;
+  stages: ExtractStage[];
+}) {
+  const language = getLanguageFromPath(plan.file_path);
+  const shared = extractParameterObject(plan);
+  const ccn = extractOrchestrator(plan);
+  return (
+    <div className="space-y-3">
+      {hideIntro ? null : (
+        <p className="text-xs text-[var(--color-text-tertiary)]">
+          Split <span className="font-mono">{plan.target_symbol}</span> into {stages.length} helpers
+          it calls in order
+          {ccn ? `, taking its complexity from ${ccn.before} to about ${ccn.after}` : ""}.
+        </p>
+      )}
+      {shared ? (
+        <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5">
+          {shared.declaration_text ? (
+            <HighlightedCodeBlock
+              code={shared.declaration_text}
+              language={language}
+              label={`Shared values: ${shared.name}`}
+              compact
+              className="my-0"
+            />
+          ) : null}
+          <HighlightedCodeBlock
+            code={shared.construct_text}
+            language={language}
+            label={shared.construct_before ? `Build it above line ${shared.construct_before}` : "Build it"}
+            compact
+            className="mb-0 mt-2"
+          />
+        </div>
+      ) : null}
+      <ol className="space-y-2">
+        {stages.map((stage, i) => (
+          <li
+            key={stage.span.start}
+            className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5"
+          >
+            <details open={i === 0} className="group">
+              <summary className="flex cursor-pointer items-center gap-2 text-xs">
+                <Scissors className="h-4 w-4 shrink-0" style={{ color: ACCENT }} aria-hidden />
+                <span className="font-mono text-[var(--color-text-primary)]">
+                  {stage.name ?? `Stage ${i + 1}`}
+                </span>
+                <FileRef path={plan.file_path} line={stage.span.start} fileHref={fileHref} />
+                <span className="ml-auto shrink-0 font-mono text-[var(--color-text-secondary)]">
+                  lines {stage.span.start}–{stage.span.end}
+                  {stage.ccn ? ` · CCN ${stage.ccn}` : ""}
+                </span>
+              </summary>
+              <div className="mt-2">
+                {stage.signature_text ? (
+                  <HighlightedCodeBlock
+                    code={stage.signature_text}
+                    language={language}
+                    label="New helper"
+                    compact
+                    className="my-0"
+                  />
+                ) : null}
+                {stage.return_text ? (
+                  <HighlightedCodeBlock
+                    code={stage.return_text}
+                    language={language}
+                    label="Ends with"
+                    compact
+                    className="mb-0 mt-2"
+                  />
+                ) : null}
+                {stage.call_text ? (
+                  <HighlightedCodeBlock
+                    code={stage.call_text}
+                    language={language}
+                    label={`Replaces lines ${stage.span.start}–${stage.span.end}`}
+                    compact
+                    className="mb-0 mt-2"
+                  />
+                ) : null}
+                <PlaceholderHint texts={[stage.signature_text ?? "", stage.call_text ?? ""]} />
+                {stage.notes.map((note) => (
+                  <p key={note} className="mt-2 text-2xs text-[var(--color-text-tertiary)]">
+                    {note}
+                  </p>
+                ))}
+              </div>
+            </details>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
@@ -430,6 +541,10 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
   }
 
   if (plan.refactoring_type === "extract_method") {
+    const stages = extractMethodStages(plan);
+    if (stages.length) {
+      return <StagedExtract plan={plan} fileHref={fileHref} hideIntro={hideIntro} stages={stages} />;
+    }
     const em = extractMethodPlan(plan);
     const lines = em.span ? em.span.end - em.span.start + 1 : 0;
     const ccn = Number(plan.evidence?.ccn_removed ?? 0);
