@@ -14,6 +14,7 @@ mirroring ``coverage_files``.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy import select
@@ -170,6 +171,56 @@ async def tests_covering_files(
                 "test_id": row.test_id,
                 "test_file": row.test_file,
                 "covered_lines": _decode_lines(row),
+                "source_format": row.source_format,
+            }
+        )
+    return out
+
+
+async def tests_covering_many(
+    session: AsyncSession,
+    repository_id: str,
+    source_files: Mapping[str, set[int] | None],
+) -> dict[str, list[dict[str, Any]]]:
+    """One query for many files, each with its own line filter.
+
+    The per-file :func:`tests_covering` in a loop is one round trip per file, and
+    the callers that walk a changed set (impact, missing-test signal, test
+    collection) pay that per file on every request. This performs the same
+    selection with one ``source_file IN (...)`` query and then applies each
+    file's filter in memory, so the answers are identical to calling
+    :func:`tests_covering` once per file.
+
+    ``source_files`` maps a path to its ``lines`` argument: the set of changed
+    lines to intersect with, or ``None`` for every test that touches the file.
+    Every requested path is present in the result, with an empty list when the
+    map has no rows for it, so a caller can tell "no rows" from "not asked".
+    Buckets keep the per-file ordering of :func:`tests_covering`.
+    """
+    out: dict[str, list[dict[str, Any]]] = {path: [] for path in source_files}
+    if not source_files:
+        return out
+    result = await session.execute(
+        select(TestCoverageEntry).where(
+            TestCoverageEntry.repository_id == repository_id,
+            TestCoverageEntry.source_file.in_(sorted(source_files)),
+        )
+    )
+    for row in result.scalars().all():
+        covered = _decode_lines(row)
+        lines = source_files.get(row.source_file)
+        if lines is not None:
+            hit = sorted(lines.intersection(covered))
+            if not hit:
+                continue
+            covered_out = hit
+        else:
+            covered_out = covered
+        out[row.source_file].append(
+            {
+                "test_id": row.test_id,
+                "test_file": row.test_file,
+                "covered_lines": covered_out,
                 "source_format": row.source_format,
             }
         )

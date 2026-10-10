@@ -484,11 +484,14 @@ async def _record_coverage(
     session, repo_id: str, changed: dict[str, set[int] | None], route_only: list[str], out: dict
 ) -> set[str]:
     """Fill ``out["covered"]`` from the per-test map; return the files it has rows for."""
-    from ..persistence.crud import tests_covering, tests_covering_files
+    from ..persistence.crud import tests_covering_files, tests_covering_many
 
     covered: dict[str, dict] = out["covered"]
     has_rows: set[str] = set()
-    by_file = {f: await tests_covering(session, repo_id, f, lines=ls) for f, ls in changed.items()}
+    # One query for every changed file rather than one round trip per file. The
+    # line filters differ per file, so they are passed through rather than applied
+    # here; tests_covering_files is for whole files with no line filter.
+    by_file = await tests_covering_many(session, repo_id, dict(changed))
     if route_only and not out.get("map_empty"):
         by_file.update(await tests_covering_files(session, repo_id, set(route_only)))
     for source_file, rows in sorted(by_file.items()):

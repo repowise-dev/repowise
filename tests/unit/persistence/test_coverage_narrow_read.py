@@ -1,8 +1,8 @@
-"""``load_coverage_for_repo(include_covered_lines=False)`` and the summary's
+﻿"""``load_coverage_for_repo(include_covered_lines=False)`` and the summary's
 ``rows=`` hand-off.
 
-``covered_lines_json`` is most of what the coverage table stores — 467 KB of
-549 KB on this codebase — and only the single-file detail view reads it. The
+``covered_lines_json`` is most of what the coverage table stores â€” 467 KB of
+549 KB on this codebase â€” and only the single-file detail view reads it. The
 narrow read exists so the repo-wide callers stop hydrating it, and the rows it
 returns have to stay attribute-compatible with the entities they replace,
 because the serializers and the summary read them by name either way.
@@ -12,13 +12,18 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.analysis.health.coverage import CoverageProvenance
+from repowise.core.analysis.health.coverage import CoverageProvenance, TestCoverage
 from repowise.core.persistence.crud import (
     get_coverage_summary,
     load_coverage_for_repo,
     save_coverage_files,
+    save_test_coverage,
     upsert_repository,
 )
+
+# Aliased: pytest would otherwise collect the imported names as tests.
+from repowise.core.persistence.crud import tests_covering as _tests_covering
+from repowise.core.persistence.crud import tests_covering_many as _tests_covering_many
 
 _FILES = [
     {"file_path": "src/a.py", "line_coverage_pct": 20.0, "covered_lines": [1, 2],
@@ -125,6 +130,72 @@ async def test_summary_defaults_mapping_partial_false_for_legacy_ingests(
     summary = await get_coverage_summary(async_session, repo.id)
 
     assert summary["mapping_partial"] is False
+
+
+async def _seed_per_test_map(session, repo_id: str) -> None:
+    """Two files, four tests, overlapping and non-overlapping lines.
+
+    ``src/a.py`` and ``src/b.py`` both have rows; ``src/none.py`` deliberately
+    does not, so the batched read's empty bucket is exercised rather than assumed.
+    """
+    await save_test_coverage(
+        session,
+        repo_id,
+        [
+            TestCoverage(test_id="t1", file_path="src/a.py", covered_lines=[1, 2, 3]),
+            TestCoverage(test_id="t2", file_path="src/a.py", covered_lines=[3, 4]),
+            TestCoverage(test_id="t3", file_path="src/b.py", covered_lines=[10]),
+            TestCoverage(test_id="t4", file_path="src/b.py", covered_lines=[11, 12]),
+        ],
+        source_format="coverage.py",
+    )
+    await session.commit()
+
+
+@pytest.fixture
+async def per_test_repo(async_session, tmp_path):
+    r = await upsert_repository(async_session, name="pertest", local_path=str(tmp_path))
+    await _seed_per_test_map(async_session, r.id)
+    return r
+
+
+async def test_batched_read_matches_one_call_per_file(async_session, per_test_repo):
+    """The point of ``tests_covering_many``: same answers, one query.
+
+    Three cases at once -- an unfiltered file, a line-filtered file, and a file
+    with no rows at all -- because those are the three the callers construct.
+    """
+    repo_id = per_test_repo.id
+    wanted = {"src/a.py": {2, 3}, "src/b.py": None, "src/none.py": {1}}
+
+    batched = await _tests_covering_many(async_session, repo_id, wanted)
+
+    for path, lines in wanted.items():
+        per_file = await _tests_covering(async_session, repo_id, path, lines=lines)
+        assert batched[path] == per_file, path
+
+
+async def test_batched_read_keeps_a_file_with_no_rows_as_empty(
+    async_session, per_test_repo
+) -> None:
+    """A missing file must be present and empty, not absent.
+
+    The callers read the bucket to tell "no rows" from "not asked", so an absent
+    key would be a different answer from ``tests_covering`` returning ``[]``.
+    """
+    batched = await _tests_covering_many(
+        async_session, per_test_repo.id, {"src/none.py": None, "src/a.py": None}
+    )
+
+    assert batched["src/none.py"] == []
+    assert "src/none.py" in batched
+    assert len(batched["src/a.py"]) == 2
+
+
+async def test_batched_read_on_an_empty_request_does_not_query(
+    async_session, per_test_repo
+) -> None:
+    assert await _tests_covering_many(async_session, per_test_repo.id, {}) == {}
 
 
 async def test_summary_reports_mapping_partial_when_ingest_was_fragment(

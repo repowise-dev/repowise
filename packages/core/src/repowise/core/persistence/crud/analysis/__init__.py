@@ -40,6 +40,7 @@ from .coverage_map import (
     save_test_coverage,
     tests_covering,
     tests_covering_files,
+    tests_covering_many,
 )
 from .dead_code import (
     finding_data_from_row,
@@ -219,6 +220,7 @@ __all__ = [
     "summarize_open_plans",
     "tests_covering",
     "tests_covering_files",
+    "tests_covering_many",
     "update_dead_code_status",
     "update_health_finding_status",
     "update_refactoring_opportunity_status",

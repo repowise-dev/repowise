@@ -84,7 +84,10 @@ async def detect_missing_tests(
     keys are also the set of files touched by the change - used to decide
     whether a covering test file was itself edited (sub-signal 2).
     """
-    from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
+    from repowise.core.persistence.crud import (
+        get_test_coverage_summary,
+        tests_covering_many,
+    )
 
     report = MissingTestReport()
     if not changed:
@@ -98,16 +101,26 @@ async def detect_missing_tests(
 
     changed_files = set(changed.keys())
 
+    # Two round trips per changed file before this: one unfiltered to prove the
+    # file is in the map, one filtered for the changed lines. Both reads are the
+    # same rows from the same table, so they are taken once for the whole set and
+    # both views are derived in memory. Interleaved: the pair per file exactly as
+    # the loop asked for, so nothing is reordered. The dict preserves insertion
+    # order in Python 3.7+ and the second view is the same rows with the filter
+    # applied, so it cannot contain anything the first view does not.
+    batch = await tests_covering_many(session, repository_id, dict.fromkeys(changed))
+    filtered = await tests_covering_many(session, repository_id, dict(changed))
+
     for source_file, lines in sorted(changed.items()):
         # Does the file appear in the map at all? (lines=None -> every test that
         # touches the file, regardless of which lines). Empty => no data.
-        all_rows = await tests_covering(session, repository_id, source_file, lines=None)
+        all_rows = batch.get(source_file, [])
         if not all_rows:
             report.no_data.append(source_file)
             continue
 
         # The file IS in the map. Do any tests cover the CHANGED lines?
-        hit_rows = await tests_covering(session, repository_id, source_file, lines=lines)
+        hit_rows = filtered.get(source_file, [])
         if not hit_rows:
             # Covered file, uncovered change: the strong signal.
             covered_here: set[int] = set()

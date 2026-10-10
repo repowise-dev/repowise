@@ -85,7 +85,7 @@ async def analyze_test_impact(
     hands both to :func:`assemble_test_impact`.
     """
     from repowise.core.analysis.test_reachability import load_test_files, tests_reaching_by_tier
-    from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
+    from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering_many
 
     changed = _changed_paths(changed_files, exclude_spec)
     fold = {
@@ -117,13 +117,14 @@ async def analyze_test_impact(
 
     measured: dict[str, list[Mapping[str, Any]]] = {}
     if summary.get("pair_count", 0) > 0:
-        for path in changed:
-            try:
-                measured[path] = await tests_covering(
-                    session, repository_id, path, lines=None
-                )
-            except Exception as exc:
-                coverage_error = type(exc).__name__
+        try:
+            # One query for the whole changed set; every file asks for every test
+            # that touches it, so no line filter applies here.
+            measured = await tests_covering_many(
+                session, repository_id, dict.fromkeys(changed)
+            )
+        except Exception as exc:
+            coverage_error = type(exc).__name__
 
     inference_error: str | None = None
     test_files: set[str] = set()
