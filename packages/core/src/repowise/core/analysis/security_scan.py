@@ -482,6 +482,13 @@ def _interpolates_sql_value(line: str, start: int, lines: list[str], lineno: int
     Only the literal is read, and the one opening the next line when the query
     runs on into it.
     """
+    triple = line[start + 1 : start + 4]
+    if triple in ('"""', "'''"):
+        # A triple-quoted query runs to its closing delimiter, often lines on.
+        text = "\n".join(lines[lineno - 1 : lineno + 29])
+        end = text.find(triple, start + 4)
+        query = text[text.find("SELECT", start) : end if end != -1 else len(text)]
+        return bool(_SQL_FROM.search(query) and _SQL_VALUE.search(query))
     body = start + 2  # past ``f`` and the opening quote
     query = line[line.find("SELECT", start) : _string_end(line, body)]
     following = lines[lineno] if lineno < len(lines) else ""
@@ -530,26 +537,30 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
             )
     return found
 
+
 # Python's own declaration that a digest is a checksum or a cache key, not a
 # security control (``hashlib.sha1(data, usedforsecurity=False)``).
 _NOT_FOR_SECURITY = re.compile(r"\busedforsecurity\s*=\s*False\b")
 
 
-def _call_text(lines: list[str], lineno: int, start: int, limit: int = 600) -> str:
-    """The text from *start* on line *lineno* through the first call's closing paren.
+def _call_text(masked: list[str], lineno: int, start: int, limit: int = 600) -> str:
+    """The code from *start* on line *lineno* through the first call's closing paren.
 
-    Bounded by *limit* characters; a parenthesis inside a string counts too.
+    Read from *masked* (strings and comments blanked, offsets kept), so a ``)``
+    or the keyword inside a string neither ends the call nor counts as code.
+    Bounded by *limit* characters.
     """
-    text = "\n".join(lines[lineno - 1 : lineno + 9])[start : start + limit]
+    code = "\n".join(masked[lineno - 1 : lineno + 9])[start : start + limit]
     depth = 0
-    for i, char in enumerate(text):
+    for i, char in enumerate(code):
         if char == "(":
             depth += 1
         elif char == ")":
             depth -= 1
             if depth <= 0:
-                return text[: i + 1]
-    return text
+                return code[: i + 1]
+    return code
+
 
 # Prose is documentation, not executable code. Only secret kinds scan it,
 # because a key pasted into a README is still a leak.
@@ -1078,7 +1089,9 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
             elif kind == "weak_hash":
                 # Written in code, and not declared a non-security use.
                 match = _match_starting_in(pattern, line, masked_line(lineno, line))
-                if match and _NOT_FOR_SECURITY.search(_call_text(lines, lineno, match.start())):
+                if match and _NOT_FOR_SECURITY.search(
+                    _call_text(mask()[1], lineno, match.start())
+                ):
                     match = None
             elif kind in _KEYWORD_KINDS:
                 # ``password = "..."`` in a comment or docstring is an example.

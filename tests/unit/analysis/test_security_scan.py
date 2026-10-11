@@ -627,6 +627,9 @@ class TestScanFile:
             ('q = f"SELECT {column}, COUNT(*) FROM episodes{where} GROUP BY {column}"\n', False),
             ('q = f"SELECT id FROM t WHERE id = :id", params={"id": 1}\n', False),
             ('q = f"SELECT a FROM t WHERE b = {{literal}}"\n', False),
+            ('q = f"""SELECT id FROM users WHERE id = {uid}"""\n', True),
+            ('q = f"""SELECT {cols}\n    FROM users\n    WHERE name = \'{name}\'\n"""\n', True),
+            ('q = f"""SELECT id FROM {table}"""\nx = {"a": 1}\n', False),
             # A message about SQL, with no query in it.
             ('reason = f"SELECT * inside a {kind}: the shape changes"\n', False),
             # Python source quoted inside a string, as a test fixture holds it.
@@ -675,6 +678,8 @@ class TestScanFile:
             # Declared a checksum, not a security control.
             ("a.py", "key = hashlib.sha1(text.encode(), usedforsecurity=False).hexdigest()\n", False),
             ("a.py", "key = hashlib.sha1(\n    text.encode(), usedforsecurity=False\n)\n", False),
+            ("a.py", 'key = hashlib.sha1(f"({a})".encode(), usedforsecurity=False)\n', False),
+            ("a.py", 'key = hashlib.sha1(b"usedforsecurity=False")\n', True),
             ("a.py", "key = hashlib.sha1(\n    text.encode()\n)\nok = sha256(b, usedforsecurity=False)\n", True),
         ],
     )
