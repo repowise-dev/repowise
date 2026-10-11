@@ -35,7 +35,8 @@ Row shapes (field names are the SQL columns):
     Plan rows named by a refactoring step: ``public_id``, ``evidence`` /
     ``evidence_json`` and ``plan`` / ``plan_json`` (an extract-method ``span``,
     ``params``, ``returns``, ``suggested_name``, ``anchors``; a move's destination; a
-    split's named groups; a helper's ``occurrences``). A plan row that also
+    split's named groups; a helper's ``occurrences``) and ``rank`` / ``rank_json``
+    (``leaves_above_bar``). A plan row that also
     carries ``refactoring_type`` ``extract_method``, ``file_path`` and
     ``target_symbol`` can give a finding with no plan of its own its first
     concrete step. Every Extract Helper plan's occurrences say where verified
@@ -403,7 +404,8 @@ class _Files:
         if best is not None:
             start, end = _span(best)
             body = _plan_body(best)
-            return FixStep(1, _extract_text(tail, body, start, end), path, start, **_helper_code(body))
+            step = _above_bar_note(_extract_text(tail, body, start, end), best)
+            return FixStep(1, step, path, start, **_helper_code(body))
         shape = self.shape(path, function)
         start, end = shape.get("deep_start"), shape.get("deep_end")
         if start and end:
@@ -606,6 +608,17 @@ def _plan_body(plan: Any) -> dict[str, Any]:
         return {}
     body = json_field(plan, "plan", None) or json_field(plan, "plan_json", {})
     return body if isinstance(body, dict) else {}
+
+
+def _above_bar_note(step: str, plan: Any) -> str:
+    """A finding's borrowed *step*, saying so when the plan, applied as
+    written, leaves the function above the break-up bar (its rank facts'
+    ``leaves_above_bar``, in the plan's own words)."""
+    rank = json_field(plan, "rank", None) or json_field(plan, "rank_json", {})
+    reason = rank.get("leaves_above_bar") if isinstance(rank, dict) else None
+    if not (isinstance(reason, str) and reason):
+        return step
+    return f"{step.removesuffix('.')}. This plan alone {reason}."
 
 
 def _evidence(plan: Any) -> dict[str, Any]:

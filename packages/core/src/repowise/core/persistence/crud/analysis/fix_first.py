@@ -390,6 +390,7 @@ async def _plans(
                 s.target_symbol,
                 s.evidence_json,
                 s.plan_json,
+                s.rank_json,
             ).where(s.repository_id == repo_id, or_(*wanted))
         )
     )

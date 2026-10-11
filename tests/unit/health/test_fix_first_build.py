@@ -522,3 +522,20 @@ def test_a_plan_that_leaves_its_function_above_the_bar_can_wait() -> None:
     ]
     # Without the reason the same plan is worth doing now.
     assert next(i for i in _build().items if i.kind == "refactor").tier == "now"
+
+
+def test_a_finding_borrowing_a_plan_that_leaves_it_above_the_bar_says_so() -> None:
+    plans = copy.deepcopy(PLANS)
+    plans[0].update(
+        file_path="src/core.py",
+        target_symbol="src/core.py::run",
+        rank_json='{"leaves_above_bar": "leaves run at CCN 41, still above the break-up bar; '
+        'more stages needed"}',
+    )
+    lone = _build(plans=plans, refactoring=[], performance=[]).lead
+    # The finding keeps its tier; only its step says the plan is not the whole fix.
+    assert lone.tier != "later"
+    assert lone.action.steps[0].text == (
+        "Extract lines 20-35 of run into sum_rows(rows, limit) -> total. This plan alone "
+        "leaves run at CCN 41, still above the break-up bar; more stages needed."
+    )
