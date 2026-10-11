@@ -151,36 +151,7 @@ export function EmptyState({
   const compact = (size ?? (tone === "filtered" ? "compact" : "default")) === "compact";
   const isError = tone === "error";
 
-  let mark: React.ReactNode = null;
-  if (tone === "positive") {
-    mark = <PositiveMark size={compact ? "sm" : "md"} />;
-  } else if (isError) {
-    mark = icon ? (
-      <span
-        aria-hidden
-        className={cn(
-          "inline-flex shrink-0 text-[var(--color-error)]",
-          compact ? "[&_svg]:h-4 [&_svg]:w-4" : "[&_svg]:h-5 [&_svg]:w-5",
-        )}
-      >
-        {icon}
-      </span>
-    ) : (
-      <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-error)]" />
-    );
-  } else if (icon && tone !== "filtered") {
-    mark = (
-      <span
-        aria-hidden
-        className={cn(
-          "inline-flex shrink-0 text-[var(--color-text-tertiary)]",
-          compact ? "[&_svg]:h-4 [&_svg]:w-4" : "[&_svg]:h-5 [&_svg]:w-5",
-        )}
-      >
-        {icon}
-      </span>
-    );
-  }
+  const mark = stateMark(tone, icon, compact);
 
   if (compact) {
     return (
@@ -228,14 +199,56 @@ export function EmptyState({
         )}
       </div>
       {children}
-      {(action || secondaryAction) && (
-        <div className="flex flex-wrap items-center justify-center gap-2">
-          {action && (
-            <ActionButton action={action} variant={tone === "neutral" ? "default" : "outline"} />
-          )}
-          {secondaryAction && <ActionButton action={secondaryAction} variant="ghost" />}
-        </div>
+      {(action || secondaryAction) && renderActions(action, secondaryAction, tone)}
+    </div>
+  );
+}
+
+/** The leading mark: a check for positive, a red icon or dot for error, else the tinted icon. */
+function stateMark(tone: EmptyStateTone, icon: React.ReactNode, compact: boolean): React.ReactNode {
+  if (tone === "positive") {
+    return <PositiveMark size={compact ? "sm" : "md"} />;
+  } else if (tone === "error") {
+    return icon ? (
+      <span
+        aria-hidden
+        className={cn(
+          "inline-flex shrink-0 text-[var(--color-error)]",
+          compact ? "[&_svg]:h-4 [&_svg]:w-4" : "[&_svg]:h-5 [&_svg]:w-5",
+        )}
+      >
+        {icon}
+      </span>
+    ) : (
+      <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-error)]" />
+    );
+  } else if (icon && tone !== "filtered") {
+    return (
+      <span
+        aria-hidden
+        className={cn(
+          "inline-flex shrink-0 text-[var(--color-text-tertiary)]",
+          compact ? "[&_svg]:h-4 [&_svg]:w-4" : "[&_svg]:h-5 [&_svg]:w-5",
+        )}
+      >
+        {icon}
+      </span>
+    );
+  }
+  return null;
+}
+
+function renderActions(
+  action: EmptyStateAction | undefined,
+  secondaryAction: EmptyStateAction | undefined,
+  tone: EmptyStateTone,
+) {
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-2">
+      {action && (
+        <ActionButton action={action} variant={tone === "neutral" ? "default" : "outline"} />
       )}
+      {secondaryAction && <ActionButton action={secondaryAction} variant="ghost" />}
     </div>
   );
 }

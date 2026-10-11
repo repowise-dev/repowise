@@ -19,6 +19,7 @@ import {
   type OverviewRoutes,
   type RepoIdentityMeta,
 } from "@repowise-dev/ui/overview";
+import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
 import {
   formatDateTime,
   formatLOC,
@@ -42,6 +43,29 @@ async function safeFetch<T>(fn: () => Promise<T>): Promise<T | null> {
 /** Rows shown in the activity section. Fetched server-side so the list is in
  *  the initial HTML instead of waterfalling in after paint. */
 const COMMIT_LIMIT = 6;
+
+/** The header's chips: language, branch, head commit, size and last sync. */
+function identityMeta(
+  summary: OverviewSummaryResponse,
+  totalNloc: number | null,
+  lastActivityAt: string | null | undefined,
+): RepoIdentityMeta[] {
+  const meta: RepoIdentityMeta[] = [];
+  const primaryLanguage = summary.languages[0]?.language;
+  if (primaryLanguage) meta.push({ label: primaryLanguage, dot: true });
+  meta.push({ label: summary.repo.default_branch, mono: true });
+  if (summary.repo.head_commit) meta.push({ label: summary.repo.head_commit.slice(0, 7), mono: true });
+  if (totalNloc != null) {
+    meta.push({ label: `${formatLOC(totalNloc)} lines`, mono: true });
+  }
+  if (lastActivityAt) {
+    meta.push({
+      label: `synced ${formatRelativeTime(lastActivityAt)}`,
+      title: formatDateTime(lastActivityAt),
+    });
+  }
+  return meta;
+}
 
 /**
  * The local dashboard's repo Overview.
@@ -80,20 +104,7 @@ export default async function OverviewPage({ params }: Props) {
   const lastActivityAt = sync.last_sync_at ?? sync.last_resync_at ?? health.last_indexed_at;
 
   // ── Identity ───────────────────────────────────────────────────────────
-  const meta: RepoIdentityMeta[] = [];
-  const primaryLanguage = summary.languages[0]?.language;
-  if (primaryLanguage) meta.push({ label: primaryLanguage, dot: true });
-  meta.push({ label: repo.default_branch, mono: true });
-  if (repo.head_commit) meta.push({ label: repo.head_commit.slice(0, 7), mono: true });
-  if (totalNloc != null) {
-    meta.push({ label: `${formatLOC(totalNloc)} lines`, mono: true });
-  }
-  if (lastActivityAt) {
-    meta.push({
-      label: `synced ${formatRelativeTime(lastActivityAt)}`,
-      title: formatDateTime(lastActivityAt),
-    });
-  }
+  const meta = identityMeta(summary, totalNloc, lastActivityAt);
 
   // Priced by the server; no rates means the dialog shows no estimate.
   const active = providers?.active;
