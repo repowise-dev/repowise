@@ -51,7 +51,7 @@ class _Repo:
 
     def symbol(self, path: str, name: str, start: int, end: int, signature: str, **attrs) -> _Repo:
         parent = attrs.get("parent_name")
-        sid = f"{path}::{parent}::{name}" if parent else f"{path}::{name}"
+        sid = attrs.get("sid") or (f"{path}::{parent}::{name}" if parent else f"{path}::{name}")
         module = path.removesuffix(".py").replace("/", ".")
         self.graph.add_node(
             sid,
@@ -218,8 +218,27 @@ def test_a_same_file_rebinding_of_the_name_is_refused() -> None:
 
     occurrences = [("pkg/util.py", 12, 17), ("pkg/util.py", 1, 8)]
     assert build([]).reuse(occurrences).plan is not None
-    for tail in (["normalize = str.lower"], ["from pkg.other import normalize"]):
+    guarded = ["try:", "    from fast import normalize", "except ImportError:", "    pass"]
+    typing_only = ["if TYPE_CHECKING:", "    from pkg.other import normalize"]
+    for tail in (["normalize = str.lower"], ["from pkg.other import normalize"], guarded):
         assert build(tail).reuse(occurrences).refused == "name_taken"
+    assert build(typing_only).reuse(occurrences).plan is not None
+
+
+def test_a_same_file_copy_under_the_same_name_is_still_deleted() -> None:
+    def build(tail: list[str]) -> _Repo:
+        lines = [*_fn("_normalize"), "", *_fn("_normalize"), *tail]
+        return (
+            _Repo()
+            .file("pkg/util.py", lines)
+            .symbol("pkg/util.py", "_normalize", 1, 8, "def _normalize(text, sep)")
+            .symbol("pkg/util.py", "_normalize", 10, 17, "def _normalize(text, sep)", sid="copy")
+        )
+
+    occurrences = [("pkg/util.py", 1, 8), ("pkg/util.py", 10, 17)]
+    (site,) = build([]).reuse(occurrences).plan["sites"]
+    assert site["action"] == "delete" and site["replaces"] == "copy"
+    assert build(["_normalize = str.lower"]).reuse(occurrences).refused == "name_taken"
 
 
 def test_scope_statements_and_walrus_targets_are_read() -> None:

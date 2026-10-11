@@ -135,9 +135,42 @@ def module_bindings(lines: list[str], path: str, language: str) -> dict[str, set
 
 def binding_count(lines: list[str], path: str, language: str, name: str) -> int:
     """How many module-level statements in *path* bind *name* (definitions,
-    assignments, imports): :func:`module_bindings` folds them into one set."""
-    scan = _py_bindings if language == "python" else _js_bindings
-    return sum(n == name for st in _top_level_statements(lines) for n, _b in scan(st, path))
+    assignments, imports): :func:`module_bindings` folds them into one set.
+    Python counts the module-level ``if`` / ``try`` / ``with`` blocks too."""
+    if language == "python":
+        statements, scan = _py_module_statements(lines), _py_bindings
+    else:
+        statements, scan = _top_level_statements(lines), _js_bindings
+    return sum(n == name for st in statements for n, _b in scan(st, path))
+
+
+def _py_module_statements(lines: list[str]) -> list[str]:
+    """Statements that run at module level, at any depth inside a compound
+    statement: a ``def`` / ``class`` body and an ``if TYPE_CHECKING:`` block
+    are skipped (neither binds at run time). A bracketed continuation is
+    joined onto its first line."""
+    out: list[str] = []
+    parts: list[str] = []
+    depth = 0
+    skip: int | None = None
+    for raw in lines:
+        text = raw.strip()
+        if depth > 0:
+            parts.append(text)
+        else:
+            if not text or text.startswith("#"):
+                continue
+            indent = len(raw) - len(raw.lstrip())
+            if skip is not None and indent > skip:
+                continue
+            skip = indent if _PY_DEF.match(text) or text.startswith("if TYPE_CHECKING") else None
+            parts = [text]
+        depth = max(0, depth + sum(raw.count(o) - raw.count(c) for o, c in ("()", "{}", "[]")))
+        if depth == 0:
+            out.append(" ".join(parts))
+        elif len(parts) > _MAX_CONTINUATION:
+            depth = 0
+    return out
 
 
 def _top_level_statements(lines: list[str]) -> list[str]:
