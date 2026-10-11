@@ -1822,6 +1822,91 @@ async def refresh_external_systems(
     return True
 
 
+async def prune_deleted_files(
+    session: Any,
+    repo_id: str,
+    repo_path: Any,
+    graph_builder: Any,
+    live_paths: Iterable[str],
+    *,
+    health_report: Any,
+    skip: Callable[[str, Exception], None],
+    log: LogFn,
+    degraded: list[str] | None,
+    timings: PhaseTimings | None,
+) -> None:
+    """Drop file-scoped rows for deleted files, then rebuild the queues built from them.
+
+    Shared by every update persist (index-only and docs mode), and called last
+    in the session: the steps before it upsert, and the git step indexes the
+    changed *paths*, deleted ones included, so pruning first left a fresh
+    git_metadata row for every file the run watched disappear.
+
+    Without it a deleted file's graph nodes, edges, metrics, symbols, health
+    rows, function facts and git metadata keep serving a file that is gone, and
+    its open refactoring plans never resolve as ``file_deleted``. Liveness is
+    asked of the filesystem and git, never of this run's parse, so a transient
+    read failure cannot masquerade as a deletion (see prune_deleted_file_rows).
+
+    *live_paths* is what this run parsed. Every file node the rebuilt graph
+    still holds is added to it, the only reliable way to know a node names no
+    file at all: framework and resolver passes mint file-shaped nodes for
+    things that were never on disk (`external:` imports, `framework:` anchors,
+    Spring's `META-INF/services/<iface>` SPI source, which carries no prefix to
+    recognise it by). All of them fail every liveness test, so a prune that
+    asked only about disk and git would delete them and their edges, and only
+    *changed* files' edges are rebuilt afterwards. Deliberately not guarded: a
+    run that cannot read its own graph has no business deciding what was
+    deleted, and the handler skips the prune entirely.
+    """
+    pruned = 0
+    try:
+        from repowise.core.pipeline.persist import prune_deleted_file_rows
+
+        live_hint = set(live_paths) | {
+            node
+            for node, data in graph_builder.graph().nodes(data=True)
+            if data.get("node_type", "file") == "file"
+        }
+        with timed(timings, "persist.prune"):
+            pruned, refusals = await prune_deleted_file_rows(
+                session, repo_id, repo_path, live_hint=live_hint
+            )
+        if pruned:
+            log(f"Pruned rows for [cyan]{pruned}[/cyan] deleted file(s)")
+        for refusal in refusals:
+            log(f"[yellow]{refusal}[/yellow]")
+            if degraded is not None:
+                degraded.append(refusal)
+    except Exception as exc:
+        skip("Deleted-file prune", exc)
+
+    # The performance and refactoring queues are materialized from the health
+    # findings the prune just deleted; without this they keep serving a cause
+    # whose evidence is gone, on a file the store no longer claims exists.
+    if not pruned:
+        return
+    try:
+        from repowise.core.persistence.crud import (
+            finalize_performance_opportunities,
+            finalize_refactoring_opportunities,
+        )
+        from repowise.core.pipeline.persist import _analyzed_commit
+
+        analyzed_commit = await _analyzed_commit(session, repo_id)
+        await finalize_performance_opportunities(
+            session,
+            repo_id,
+            analyzed_commit=analyzed_commit,
+            plan_policy=getattr(health_report, "performance_plan_policy", None),
+            execution_roles=getattr(health_report, "execution_roles", None),
+        )
+        await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
+    except Exception as exc:
+        skip("Queue rebuild after prune", exc)
+
+
+
 async def persist_incremental_index(
     repo_path: Any,
     graph_builder: Any,
@@ -2174,90 +2259,25 @@ async def persist_incremental_index(
             except Exception as exc:
                 _skip("Decision purge", exc)
 
-            pruned = 0
-            # Drop file-scoped rows for files that have actually been deleted.
-            # Without this an incremental update tombstones the deleted file's
-            # page and leaves everything else: graph nodes, edges, metrics,
-            # symbols, health rows and git metadata all keep serving a file
-            # that is gone. The liveness question is asked of the filesystem
-            # and git, never of this run's parse, so a transient read failure
-            # cannot masquerade as a deletion (see prune_deleted_file_rows).
-            #
-            # Last in the session on purpose. Everything above upserts rather
-            # than deleting, and the git step in particular indexes the changed
-            # *paths*, which includes the deleted ones: pruning first left a
-            # fresh git_metadata row for every file this run watched disappear.
-            # Running last means the prune has the final say on what the store
-            # claims exists.
-            try:
-                from repowise.core.pipeline.persist import prune_deleted_file_rows
-
-                live_hint = set(
+            # Last in the session on purpose: everything above upserts, and the
+            # git step indexes the changed *paths*, deleted ones included, so
+            # the prune has to have the final say on what the store claims.
+            await prune_deleted_files(
+                session,
+                repo_id,
+                repo_path,
+                graph_builder,
+                (
                     current_graph_file_paths
                     if current_graph_file_paths is not None
                     else {pf.file_info.path for pf in parsed_files or []}
-                )
-                # Plus every file node the rebuilt graph still holds, which is
-                # the only reliable way to know a node names no file at all.
-                # Framework and resolver passes mint file-shaped nodes for
-                # things that were never on disk: `external:` imports,
-                # `framework:` anchors, and Spring's `META-INF/services/<iface>`
-                # SPI source, which carries no prefix to recognise it by. All
-                # of them fail every liveness test there is, so a prune that
-                # asked only about disk and git would delete them and take
-                # their edges with them, and only *changed* files' edges are
-                # rebuilt afterwards. A node this run's graph build still
-                # contains is live by construction, whatever it names.
-                #
-                # Deliberately not guarded: a graph this run cannot read is a
-                # run that has no business deciding what was deleted, and the
-                # outer handler skips the prune entirely.
-                graph = graph_builder.graph()
-                live_hint |= {
-                    node
-                    for node, data in graph.nodes(data=True)
-                    if data.get("node_type", "file") == "file"
-                }
-                with timed(timings, "persist.prune"):
-                    pruned, refusals = await prune_deleted_file_rows(
-                        session, repo_id, repo_path, live_hint=live_hint
-                    )
-                if pruned:
-                    log(f"Pruned rows for [cyan]{pruned}[/cyan] deleted file(s)")
-                for refusal in refusals:
-                    log(f"[yellow]{refusal}[/yellow]")
-                    if degraded is not None:
-                        degraded.append(refusal)
-            except Exception as exc:
-                _skip("Deleted-file prune", exc)
-
-            # The prune deletes the health findings of files that are gone, and
-            # the performance and refactoring queues are materialized from those
-            # findings. Without this they keep serving a cause whose evidence was
-            # removed a moment ago, on a file the store no longer claims exists.
-            # After the prune for the same reason the prune runs last: only now
-            # is the surviving finding set final.
-            if pruned:
-                try:
-                    from repowise.core.persistence.crud import (
-                        finalize_performance_opportunities,
-                        finalize_refactoring_opportunities,
-                    )
-                    from repowise.core.pipeline.persist import _analyzed_commit
-
-                    analyzed_commit = await _analyzed_commit(session, repo_id)
-                    await finalize_performance_opportunities(
-                        session,
-                        repo_id,
-                        analyzed_commit=analyzed_commit,
-                        plan_policy=getattr(partial_health_report, "performance_plan_policy", None),
-                        execution_roles=getattr(partial_health_report, "execution_roles", None),
-                    )
-                    await finalize_refactoring_opportunities(
-                        session, repo_id, analyzed_commit=analyzed_commit
-                    )
-                except Exception as exc:
-                    _skip("Queue rebuild after prune", exc)
+                ),
+                health_report=partial_health_report,
+                skip=_skip,
+                log=log,
+                degraded=degraded,
+                timings=timings,
+            )
 
         # After the session closes: on SQLite the full-text index shares the
         # database file, so writing to it while the session holds a write lock

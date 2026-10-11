@@ -1262,9 +1262,7 @@ async def prune_deleted_file_rows(
     # documents it read, so a deleted one is never in scope and its rows would
     # outlive the file without this. ``_FileLiveness`` asks disk and
     # ``git ls-files`` rather than the parse, so a ``.md`` path is judged
-    # correctly here. Note the LLM-regenerating update path never reaches this
-    # function, so drift rows for a document deleted there wait for a reindex,
-    # as dead-code and health rows already do.
+    # correctly here.
     await _prune_table(DocDriftFinding, DocDriftFinding.file_path, "doc_drift_findings")
     # On the document only. A reference to a deleted *target* is drift, not a
     # dead row: the next pass re-resolves it into a finding, and pruning by

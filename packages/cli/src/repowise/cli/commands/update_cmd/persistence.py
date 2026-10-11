@@ -1311,6 +1311,23 @@ async def _persist_full_update_async(
             except Exception as exc:
                 _skip("External systems refresh", exc)
 
+            # Last of the store writes, for the reason the index-only path
+            # gives: the steps above upsert rows for deleted paths too.
+            from repowise.core.pipeline.incremental import prune_deleted_files
+
+            await prune_deleted_files(
+                session,
+                repo_id,
+                repo_path,
+                graph_builder,
+                {parsed.file_info.path for parsed in parsed_files or []},
+                health_report=partial_health_report,
+                skip=_skip,
+                log=console.print,
+                degraded=degraded,
+                timings=timings,
+            )
+
             # Record a GenerationJob so the web UI "last synced" timestamp updates.
             try:
                 from datetime import UTC as _UTC
@@ -1399,7 +1416,9 @@ async def _persist_full_update_async(
             if timings is not None:
                 timings.stop("persist.fts")
 
-        vector_cleanup_ids = load_cleanup_debt(Path(repo_path))["vectors"]
+        # Tombstoned pages included: a deleted file's embedding otherwise keeps
+        # answering semantic search, which the index-only path already prevents.
+        vector_cleanup_ids = set(tombstoned_page_ids) | load_cleanup_debt(Path(repo_path))["vectors"]
         if vector_cleanup_ids and decision_vector_store is not None:
             try:
                 await decision_vector_store.delete_many(sorted(vector_cleanup_ids))
