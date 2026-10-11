@@ -237,6 +237,7 @@ Most plans answer a health finding, so per-path marker rules in
   markup gets no extraction, and neither does a function that only fills one
   value field by field behind independent guards (summary rows, query
   parameters, optional settings), since splitting it simplifies neither half.
+  Its finding records why in `details.extract_method_refused`.
 - An Extract Method span must remove at least two decision points, hold at least
   8 code lines, cover at most 60% of the function's lines, and not start on the
   docstring. When the best span misses one of these, only a span that does not

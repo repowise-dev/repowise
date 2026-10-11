@@ -244,10 +244,12 @@ class RefactoringHealthService:
         items: list[dict[str, Any]] = []
         touched: set[str] = set()
         position = query.offset
+        # A page of splits standing for many plans costs a read or two more.
         while len(items) < query.limit:
             window = _plan_window(counts, position, query.limit - len(items))
             if not window:
                 break
+            before = position
             rows = await refactoring_opportunities_by_id(
                 self._session, self._repository_id, list(window), status=query.status
             )
@@ -259,6 +261,8 @@ class RefactoringHealthService:
                 items.extend({**step, "opportunity_id": opportunity_id} for step in shown)
                 position += end - start
                 touched.add(opportunity_id)
+            if position == before:
+                break
         return RefactoringPlanPage(
             items=items,
             total=sum(steps for _id, steps in counts),

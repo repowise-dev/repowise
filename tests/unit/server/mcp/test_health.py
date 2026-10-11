@@ -1584,6 +1584,16 @@ async def test_a_split_stands_for_the_plans_it_relocates(setup_mcp, health_data,
     assert [r["target_symbol"] for r in rest] == ["other_1"]
     detail = await get_health(plan_id=rows[0]["relocates"][0])
     assert detail["plan"]["target_symbol"].startswith("moved_")
+    # The REST plan list ranks plans one by one and folds nothing.
+    from repowise.server.services.refactoring_health import (
+        PlanListQuery,
+        RefactoringHealthService,
+    )
+
+    ranked = await RefactoringHealthService(session, health_data, "default").ranked_plans(
+        PlanListQuery()
+    )
+    assert {p["target_symbol"] for p in ranked["plans"]} >= {f"moved_{i}" for i in range(3)}
 
 
 @pytest.mark.asyncio

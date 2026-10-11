@@ -13,6 +13,7 @@ edit rather than a blank.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING, Any
 
 from ..complexity.ast_utils import _find_function_entry_name
@@ -123,35 +124,26 @@ def helper_names(
     lmap: LanguageNodeMap,
     language: str | None,
     modules: frozenset[str] = frozenset(),
-) -> list[str]:
+) -> Iterator[str]:
     """Starting names, best first: :func:`helper_name`, then the host function
-    qualified by each subject of the span (``render_card_directive``)."""
+    qualified by each subject of the span (``render_card_directive``). Lazy, so
+    the subjects are read only when the anchored name is missing or taken."""
     anchored = helper_name(analysis, extraction, lmap, language, modules)
+    if anchored:
+        yield anchored
     stmts = span_statements(analysis.fn_node, extraction.start_line, extraction.end_line, lmap)
     host = host_words(analysis.name)
-    names = [anchored] if anchored else []
     for subject in subjects(stmts, extraction.returns, lmap):
         # ``render_card`` about ``card`` is ``render_card``: the host's own name.
         rest = subject[_overlap(host, subject) :]
         if rest:
-            names.append(_qualified(analysis.name if host else "", rest, _convention(language)))
-    return names
+            yield join_identifier([*(host or ["handle"]), *rest], _convention(language))
 
 
 def _overlap(host: list[str], subject: list[str]) -> int:
     """How many of *subject*'s first words repeat the tail of *host*."""
     top = min(len(host), len(subject))
     return next((n for n in range(top, 0, -1) if host[-n:] == subject[:n]), 0)
-
-
-def _qualified(host: str, subject: list[str], convention: str) -> str:
-    """*host* as written (its own casing kept) followed by *subject*; an
-    anonymous host gives ``handle``."""
-    head = host.lstrip("_") or "handle"
-    if convention == "camelCase":
-        # A private helper of a component (``OverviewPage``) starts lowercase.
-        return head[0].lower() + head[1:] + "".join(w.capitalize() for w in subject)
-    return "_".join([head, *subject])
 
 
 def _anchored_words(stmts: list[Any], lmap: LanguageNodeMap) -> list[str]:
@@ -227,7 +219,7 @@ class ScopeNames:
         taken.add(key)
         return name
 
-    def claim_first(self, analysis: FunctionAnalysis, names: list[str]) -> str | None:
+    def claim_first(self, analysis: FunctionAnalysis, names: Iterable[str]) -> str | None:
         """The first of *names* free in the helper's scope, claimed; ``None``
         when every one is taken."""
         return next((name for name in names if self.claim(analysis, name)), None)

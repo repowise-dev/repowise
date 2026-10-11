@@ -103,8 +103,6 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-import structlog
-
 from ..biomarkers.brain_method import BrainMethodDetector
 from ..biomarkers.complex_method import ComplexMethodDetector
 from ..biomarkers.large_method import LargeMethodDetector
@@ -127,8 +125,6 @@ if TYPE_CHECKING:
     from ..dataflow import Definition, FunctionAnalysis
     from ..dataflow.dialects.base import BaseDefUseDialect, Receiver
     from ..models import Severity
-
-log = structlog.get_logger(__name__)
 
 # The function-level structural biomarkers this detector answers. A function is
 # only offered an extraction when one of these flagged it, so the suggestion
@@ -189,14 +185,10 @@ class ExtractMethodDetector(RefactoringDetector):
                 continue
             if jsx_plumbing_dominates(analysis.fn_node, lmap):
                 continue
-            if declarative_flat(analysis.fn_node, lmap):
-                # Counted in the log, as Extract Helper counts its refusals.
-                log.debug(
-                    "extract_method_refused",
-                    file=ctx.file_path,
-                    function=analysis.name,
-                    reason="declarative_flat",
-                )
+            if analysis.fn_node is not None and declarative_flat(
+                analysis.fn_node, lmap, {p.name for p in analysis.def_use.params}
+            ):
+                _mark_refused(matched, "declarative_flat")
                 continue
             markers = {getattr(f, "biomarker_type", "") for f in matched}
             fn_node = analysis.fn_node
@@ -345,6 +337,18 @@ class ExtractMethodDetector(RefactoringDetector):
         if len(extraction.params) <= 4 and share >= _HIGH_MIN_SHARE:
             return "high"
         return "medium"
+
+
+#: The finding detail naming why a flagged function got no Extract Method plan.
+#: Stored with the finding, so refusals are counted from the index.
+REFUSED_DETAIL = "extract_method_refused"
+
+
+def _mark_refused(findings: list[Any], reason: str) -> None:
+    for f in findings:
+        details = getattr(f, "details", None)
+        if isinstance(details, dict):
+            details[REFUSED_DETAIL] = reason
 
 
 def recovered_share(

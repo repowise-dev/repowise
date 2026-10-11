@@ -40,10 +40,10 @@ _GENERIC_CALLS = frozenset(
     | {"log", "info", "debug", "warning", "warn", "error", "emit"}
 )
 # Calls that pass their subject through: ``card.get("owner")`` is about
-# ``owner``, ``enumerate(groups)`` about ``groups``.
+# ``owner``, ``enumerate(groups)`` about ``groups``. ``_GENERIC_CALLS`` do too.
 _PASS_THROUGH = frozenset(
     {"get", "items", "keys", "values", "enumerate", "sorted", "reversed", "list", "tuple"}
-    | {"set", "len", "iter", "getattr", "isinstance", "bool", "str", "int", "Object", "Array"}
+    | {"len", "iter", "getattr", "isinstance", "bool", "str", "int", "object", "array"}
 )
 _MEMBER_FIELDS = ("attribute", "property", "field")
 _CALLEE_FIELDS = ("function", "callee")
@@ -100,60 +100,76 @@ def _statement_subject(stmt: Any, lmap: LanguageNodeMap) -> list[str]:
     if kind in lmap.loop_kinds:
         return _expr_words(_child(stmt, _LOOP_SOURCE_FIELDS), 0)
     if kind in lmap.try_kinds or kind in lmap.with_kinds:
-        # A wrapper is about what its body opens with.
-        body = stmt.child_by_field_name("body") or next(
-            (c for c in stmt.named_children if c.type in lmap.block_kinds), None
-        )
-        first = next((c for c in body.named_children if not is_comment(c)), None) if body else None
-        return _statement_subject(first, lmap) if first is not None else []
+        return _wrapper_subject(stmt, lmap)
     expr = stmt.named_children[0] if stmt.named_child_count == 1 else stmt
     if expr.type in lmap.await_kinds | {"await_expression"} and expr.named_child_count == 1:
         expr = expr.named_children[0]
-    targets = [binding_target(expr, lmap)] + [binding_target(c, lmap) for c in expr.named_children]
-    for target in (t for t in targets if t is not None):
-        # ``x = ...`` is about ``x``; ``state.registry = ...`` about ``registry``.
-        names = bound_names(target)
-        return _words(names[0]) if names else _expr_words(target, 0)
-    if expr.type not in lmap.call_kinds:
+    bound = _bound_subject(expr, lmap)
+    if bound is not None:
+        return bound
+    if expr.type not in lmap.call_kinds or _generic(_callee_words(expr, 0)):
+        # ``out.append(...)`` says nothing about what is added: read on.
         return []
-    words = _expr_words(expr, 0)
-    return [] if "_".join(words) in _GENERIC_CALLS else words
+    return _expr_words(expr, 0)
+
+
+def _wrapper_subject(stmt: Any, lmap: LanguageNodeMap) -> list[str]:
+    """A ``try`` or ``with`` is about what its body opens with."""
+    body = stmt.child_by_field_name("body") or next(
+        (c for c in stmt.named_children if c.type in lmap.block_kinds), None
+    )
+    first = next((c for c in body.named_children if not is_comment(c)), None) if body else None
+    return _statement_subject(first, lmap) if first is not None else []
+
+
+def _bound_subject(expr: Any, lmap: LanguageNodeMap) -> list[str] | None:
+    """``x = ...`` is about ``x``, ``state.registry = ...`` about ``registry``;
+    ``None`` when *expr* binds nothing."""
+    holders = [expr, *expr.named_children]
+    target = next((t for h in holders if (t := binding_target(h, lmap)) is not None), None)
+    if target is None:
+        return None
+    names = bound_names(target)
+    return _words(names[0]) if names else _expr_words(target, 0)
 
 
 def _expr_words(node: Any, depth: int) -> list[str]:
     """The name an expression is about (module docstring)."""
     if node is None or depth > _MAX_DEPTH:
         return []
-    kind = node.type
-    if "string" in kind:
+    if "string" in node.type:
         return _literal_words(node)
     if not node.named_children:
         text = (node.text or b"").decode("utf-8", "replace")
         return _words(text) if _PLAIN_NAME.fullmatch(text) else []
-    if kind in ("call", "call_expression"):
+    if node.type in ("call", "call_expression"):
         return _call_words(node, depth)
     member = _child(node, _MEMBER_FIELDS)
-    if member is not None:
-        return _expr_words(member, depth + 1)
-    literal = next((c for c in node.named_children if "string" in c.type), None)
-    if literal is not None and (words := _literal_words(literal)):
-        return words
-    return next((w for c in node.named_children if (w := _expr_words(c, depth + 1))), [])
+    # A member names its field; otherwise a compared key, then the first operand.
+    keys = [c for c in node.named_children if "string" in c.type]
+    parts = [member] if member is not None else [*keys, *node.named_children]
+    return next((w for c in parts if (w := _expr_words(c, depth + 1))), [])
+
+
+def _callee_words(call: Any, depth: int) -> list[str]:
+    return _expr_words(_child(call, _CALLEE_FIELDS), depth + 1)
+
+
+def _generic(words: list[str]) -> bool:
+    return "_".join(words) in _GENERIC_CALLS
 
 
 def _call_words(call: Any, depth: int) -> list[str]:
-    callee = _child(call, _CALLEE_FIELDS)
-    if callee is None:
-        return []
-    name = _expr_words(callee, depth + 1)
-    if name and "_".join(name) not in {w.lower() for w in _PASS_THROUGH}:
+    """A call is about its name, or, when the name only passes a value on
+    (``get``, ``len``, ``append``), its first argument, then its receiver."""
+    name = _callee_words(call, depth)
+    if name and not _generic(name) and "_".join(name) not in _PASS_THROUGH:
         return name
+    callee = _child(call, _CALLEE_FIELDS)
     args = call.child_by_field_name("arguments")
     first = next((a for a in args.named_children if not is_comment(a)), None) if args else None
-    if first is not None and (words := _expr_words(first, depth + 1)):
-        return words
-    receiver = callee.child_by_field_name("object") or callee.child_by_field_name("value")
-    return _expr_words(receiver, depth + 1)
+    receiver = _child(callee, ("object", "value")) if callee is not None else None
+    return next((w for c in (first, receiver) if (w := _expr_words(c, depth + 1))), [])
 
 
 def _child(node: Any, fields: tuple[str, ...]) -> Any:

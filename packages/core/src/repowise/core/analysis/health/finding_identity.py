@@ -82,6 +82,7 @@ _DERIVED_DETAIL_KEYS = frozenset(
         "gated_off",
         "loop_line",
         "deepest_block",
+        "extract_method_refused",
     }
 )
 """Keys version 1 left out of its hash; only :func:`legacy_finding_public_id` reads it."""

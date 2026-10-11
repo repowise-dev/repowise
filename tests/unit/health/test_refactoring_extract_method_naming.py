@@ -626,7 +626,7 @@ def _span_names(language, ext, src, start, end, returns=()):
     (fn,) = _functions(language, ext, src)
     first = fn.start_line - 1
     extraction = Extraction(first + start, first + end, (), tuple(returns), 8, 2, False)
-    return helper_names(fn, extraction, get_language_map(language), language)
+    return list(helper_names(fn, extraction, get_language_map(language), language))
 
 
 def test_a_branch_body_is_named_for_the_branch_it_handles():
@@ -674,3 +674,12 @@ def test_a_component_host_keeps_its_casing_and_starts_lowercase():
     """
     names = _span_names("typescript", "ts", src, 2, 4, ["costPer1k"])
     assert names[0] == "overviewPageCostPer1k"
+
+
+def test_a_camel_case_host_follows_the_files_convention():
+    src = """
+    def buildRows(rows, limit):
+        for row in rows:
+            print(row)
+    """
+    assert _span_names("python", "py", src, 2, 3) == ["build_rows_row"]

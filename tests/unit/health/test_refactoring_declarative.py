@@ -4,7 +4,7 @@ independent guard per field, and no helper makes either half simpler."""
 from __future__ import annotations
 
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 
@@ -12,7 +12,10 @@ from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import analyze_file
 from repowise.core.analysis.health.refactoring import extract_method
 from repowise.core.analysis.health.refactoring.declarative import declarative_flat
-from repowise.core.analysis.health.refactoring.extract_method import ExtractMethodDetector
+from repowise.core.analysis.health.refactoring.extract_method import (
+    REFUSED_DETAIL,
+    ExtractMethodDetector,
+)
 from repowise.core.analysis.health.refactoring.models import RefactoringContext
 
 
@@ -22,6 +25,7 @@ class _Finding:
     function_name: str
     line_start: int
     health_impact: float
+    details: dict = field(default_factory=dict)
 
 
 def _functions(language: str, ext: str, src: str):
@@ -148,6 +152,98 @@ def test_logic_beside_the_writes_is_not_declarative(change):
     assert not _flat(_SUMMARY.replace(old, new, 1))
 
 
+# Statement-level calls on module or imported names are steps, not fields:
+# a function that logs or responds as it goes decomposes.
+_LOGGING = """
+def build(job, verbose):
+    logger.info("start")
+    if verbose:
+        logger.debug("job %s", job.id)
+    if job.retries:
+        logger.warning("retrying %s", job.id)
+    if job.failed:
+        logger.error("failed %s", job.id)
+    logger.info("done")
+"""
+
+_HANDLER_TS = """
+function build(req: Request): void {
+  if (!req.user) {
+    res.status(401);
+  }
+  if (req.query.verbose) {
+    res.set("x-verbose", "1");
+  }
+  if (req.query.format === "csv") {
+    res.type("csv");
+  }
+  res.send(render(req));
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("src", "language", "ext"), [(_LOGGING, "python", "py"), (_HANDLER_TS, "typescript", "ts")]
+)
+def test_calls_on_names_the_function_does_not_bind_are_not_a_builder(src, language, ext):
+    assert not _flat(src, language, ext)
+
+
+_GO = """
+package m
+
+func build(cfg Config) Settings {
+	s := Settings{}
+	if cfg.Name != "" {
+		s.Name = cfg.Name
+	}
+	if cfg.Port > 0 {
+		s.Port = cfg.Port
+	}
+	if cfg.Debug {
+		s.Debug = true
+	}
+	return s
+}
+"""
+
+_GO_LOGIC = _GO.replace("s.Port = cfg.Port", "fmt.Println(cfg.Port)")
+
+_JAVA = """
+class M {
+    Map<String, String> build(Config cfg) {
+        Map<String, String> out = new HashMap<>();
+        if (cfg.name != null) {
+            out.put("name", cfg.name);
+        }
+        if (cfg.port > 0) {
+            out.put("port", String.valueOf(cfg.port));
+        }
+        if (cfg.debug) {
+            out.put("debug", "true");
+        }
+        return out;
+    }
+}
+"""
+
+_JAVA_LOGIC = _JAVA.replace('out.put("debug", "true");', 'System.out.println("debug");')
+
+
+@pytest.mark.parametrize(
+    ("src", "language", "ext", "flat"),
+    [
+        (_GO, "go", "go", True),
+        (_GO_LOGIC, "go", "go", False),
+        (_JAVA, "java", "java", True),
+        (_JAVA_LOGIC, "java", "java", False),
+    ],
+)
+def test_go_and_java_builders(src, language, ext, flat):
+    assert _GO_LOGIC != _GO and _JAVA_LOGIC != _JAVA
+    assert _flat(src, language, ext) is flat
+
+
 def test_the_detector_refuses_a_flat_builder_and_keeps_a_real_split(monkeypatch):
     src = _SUMMARY + textwrap.dedent(
         """
@@ -181,6 +277,9 @@ def test_the_detector_refuses_a_flat_builder_and_keeps_a_real_split(monkeypatch)
         function_analyses=fns,
     )
     assert [s.target_symbol for s in ExtractMethodDetector().detect(ctx)] == ["process"]
+    # The refusal is stored with the finding, so the index counts it.
+    refused = {f.function_name: f.details.get(REFUSED_DETAIL) for f in ctx.findings}
+    assert refused == {"build": "declarative_flat", "process": None}
     # The builder has a span the slicer would offer: the refusal is the shape.
     monkeypatch.setattr(extract_method, "declarative_flat", lambda *_: False)
     found = sorted(s.target_symbol for s in ExtractMethodDetector().detect(ctx))
