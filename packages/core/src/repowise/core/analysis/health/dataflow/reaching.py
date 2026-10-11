@@ -12,6 +12,10 @@ Per block ``b`` with predecessors ``pred(b)``::
     IN[b]   = union over p in pred(b) of OUT[p]
     OUT[b]  = GEN[b] union (IN[b] minus KILL[b])
 
+An exception can leave a protected block between any two of its statements, so
+along a ``raise_edges`` edge ``p -> b`` the contribution is IN[p] plus every
+definition written in p, not OUT[p].
+
 Definition sets are integer sets keyed by :attr:`defuse.Definition.index`, so
 the lattice is finite and the worklist always converges in a bounded number of
 rounds. A convergence guard caps the iterations anyway and reports
@@ -76,6 +80,7 @@ def compute_reaching(
 
     gen: dict[int, frozenset[int]] = {}
     kill: dict[int, frozenset[int]] = {}
+    every: dict[int, frozenset[int]] = {}
     for block in cfg.blocks:
         bdu = fdu.block(block.id)
         block_defs = bdu.defs if bdu is not None else []
@@ -88,6 +93,7 @@ def compute_reaching(
         for var in last_per_var:
             killed |= defs_by_var.get(var, set())
         gen[block.id] = gen_b
+        every[block.id] = frozenset(d.index for d in block_defs)
         kill[block.id] = frozenset(killed) - gen_b
 
     in_sets: dict[int, frozenset[int]] = {b.id: frozenset() for b in cfg.blocks}
@@ -113,10 +119,13 @@ def compute_reaching(
         in_b: frozenset[int] = frozenset()
         for pred in block.predecessors:
             in_b |= out_sets[pred]
+            if (pred, bid) in cfg.raise_edges:
+                in_b |= in_sets[pred] | every[pred]
+        in_changed = in_b != in_sets[bid]
         in_sets[bid] = in_b
 
         out_b = gen[bid] | (in_b - kill[bid])
-        if out_b != out_sets[bid]:
+        if out_b != out_sets[bid] or (in_changed and cfg.raise_edges):
             out_sets[bid] = out_b
             for succ in block.successors:
                 if succ not in queued:

@@ -338,6 +338,27 @@ def test_handler_assignment_reaches_finally_on_reraise():
     assert 7 in reaching_lines
 
 
+def test_a_write_overwritten_later_in_the_try_body_reaches_the_handler():
+    cfg, def_use, reaching = _analyze(
+        """
+        def f():
+            try:
+                x = 1
+                y = g()
+                x = 2
+            except Exception:
+                return x
+            return x + y
+        """
+    )
+    (handler,) = [b for b in cfg.blocks if b.kind == "handler"]
+    # g() can raise after x = 1 and before x = 2.
+    assert {d.line for d in reaching.reaching_in(handler.id) if d.var == "x"} == {4, 6}
+    # The normal path still sees only the last write.
+    after = next(bid for bid, bdu in def_use.blocks.items() if any(u.line == 9 for u in bdu.uses))
+    assert {d.line for d in reaching.reaching_in(after) if d.var == "x"} == {6}
+
+
 def test_redefinition_kills_earlier_def():
     cfg, _du, reaching = _analyze(
         """

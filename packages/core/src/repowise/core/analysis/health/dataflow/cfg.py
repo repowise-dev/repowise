@@ -36,12 +36,11 @@ children, while the C-family (Go / TS / Java / Rust) hangs the else arm off an
 silence), the same precision-first default as the def/use dialect.
 
 **Exceptions.** A ``try`` body, ``else`` clause or handler is joined to the
-handlers / ``finally`` it can raise into from the state before it and at the
-end of each of its blocks, not between two statements of one block: a write
-that a later statement of the same block overwrites never reaches the handler
-(a ``try`` body ``x = 1; y = g(); x = 2`` hides ``x = 1`` from an
-``except`` that reads ``x``). Splitting every protected statement into its own block would close
-that gap at the cost of a much larger graph.
+handlers / ``finally`` it can raise into from the state before it and from each
+of its blocks. A block's edge into a handler is recorded in ``raise_edges``,
+because an exception can leave it between two statements: reaching definitions
+carry every write of such a block across it, so in a ``try`` body
+``x = 1; y = g(); x = 2`` an ``except`` that reads ``x`` sees ``x = 1`` too.
 """
 
 from __future__ import annotations
@@ -145,6 +144,8 @@ class CFG:
     exit_id: int
     function_name: str = ""
     function_start_line: int = 0
+    # ``(src, dst)`` edges an exception can take from inside *src*, mid-block.
+    raise_edges: frozenset[tuple[int, int]] = frozenset()
 
     def __post_init__(self) -> None:
         self._by_id: dict[int, BasicBlock] = {b.id: b for b in self.blocks}
@@ -211,6 +212,7 @@ class _CFGBuilder:
         self._next_id = 0
         self._loops: list[_LoopCtx] = []
         self.exit_block: BasicBlock | None = None
+        self._raise_edges: set[tuple[int, int]] = set()
 
     # -- low-level graph ops --------------------------------------------------
 
@@ -234,6 +236,10 @@ class _CFGBuilder:
     def _edges_to(self, sources: list[BasicBlock], dst: BasicBlock) -> None:
         for src in sources:
             self._edge(src, dst)
+
+    def _raises_to(self, sources: list[BasicBlock], dst: BasicBlock) -> None:
+        self._edges_to(sources, dst)
+        self._raise_edges.update((src.id, dst.id) for src in sources)
 
     def _record_stmt(self, block: BasicBlock, node: Node) -> None:
         block.statements.append(
@@ -293,7 +299,12 @@ class _CFGBuilder:
         out = self._process_seq(self._body_stmts(body), first)
         if out is not None:
             self._edge(out, self.exit_block)
-        return CFG(blocks=self.blocks, entry_id=entry.id, exit_id=self.exit_block.id)
+        return CFG(
+            blocks=self.blocks,
+            entry_id=entry.id,
+            exit_id=self.exit_block.id,
+            raise_edges=frozenset(self._raise_edges),
+        )
 
     def _process_seq(self, stmts: list[Node], cur: BasicBlock | None) -> BasicBlock | None:
         """Thread *stmts* onto *cur*, returning the fall-through block.
@@ -504,9 +515,10 @@ class _CFGBuilder:
         body_out = self._process_seq(
             self._body_stmts(try_node.child_by_field_name("body")), body_entry
         )
-        protected = [cur, *self.blocks[first:]]
+        protected = self.blocks[first:]
         if finally_clause is not None:
-            self._edges_to(protected, normal_join)
+            self._edge(cur, normal_join)
+            self._raises_to(protected, normal_join)
 
         # ``else`` runs only when the body completed without an exception; one
         # raised inside it skips the handlers but still runs the ``finally``.
@@ -519,14 +531,15 @@ class _CFGBuilder:
             if else_out is not None:
                 self._edge(else_out, normal_join)
             if finally_clause is not None:
-                self._edges_to(self.blocks[first:], normal_join)
+                self._raises_to(self.blocks[first:], normal_join)
         elif body_out is not None:
             self._edge(body_out, normal_join)
 
         for handler in (c for c in try_node.children if c.type in self.lmap.catch_kinds):
             first = len(self.blocks)
             handler_entry = self._new("handler")
-            self._edges_to(protected, handler_entry)
+            self._edge(cur, handler_entry)
+            self._raises_to(protected, handler_entry)
             handler_out = self._process_seq(
                 self._body_stmts(self._block_of(handler)), handler_entry
             )
@@ -534,7 +547,7 @@ class _CFGBuilder:
                 self._edge(handler_out, normal_join)
             # A handler that returns or raises part-way still runs ``finally``.
             if finally_clause is not None:
-                self._edges_to(self.blocks[first:], normal_join)
+                self._raises_to(self.blocks[first:], normal_join)
 
         return join
 
