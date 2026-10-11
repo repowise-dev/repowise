@@ -118,6 +118,7 @@ from . import render
 from .declarative import declarative_flat
 from .helper_naming import ScopeNames, helper_names, out_value_name
 from .models import RefactoringContext, RefactoringSuggestion
+from .narrowing import narrowed, narrowings
 from .registry import RefactoringDetector, register
 
 if TYPE_CHECKING:
@@ -158,6 +159,8 @@ _HIGH_MIN_SHARE = 0.1
 
 # Above this no single helper of a stage's size brings the function under it.
 _STAGE_MIN_CCN = 2 * STAGE_MAX_CCN + 1
+# Languages whose types a guard narrows (``narrowing``).
+_NARROWING_LANGUAGES = frozenset({"typescript", "tsx"})
 # Keys a stage carries that the plan's own (stage 1) keys do not.
 _STAGE_ONLY_KEYS = ("ccn", "nloc", "context_params")
 
@@ -415,7 +418,9 @@ def _staged_fields(
     for x, reimports in zip(staged.stages, staged.imports, strict=True):
         name = render.private_name(
             language,
-            names.claim_first(analysis, helper_names(analysis, x, lmap, language, imports)),
+            names.claim_first(
+                analysis, helper_names(analysis, x, lmap, language, imports, sections=True)
+            ),
         )
         carried = [p for p in x.params if p in context]
         own = replace(x, params=tuple(p for p in x.params if p not in context))
@@ -492,9 +497,10 @@ def _parameter_object(
     if not staged.context:
         return None
     first = staged.stages[0].start_line
-    probe = Extraction(first, first, staged.context, (), 0, 0)
+    probe = Extraction(first, staged.stages[0].end_line, staged.context, (), 0, 0)
     types = _declared_types(analysis, probe, dialect)
-    fields = tuple(render.Slot(n, types.get(n)) for n in staged.context)
+    narrowed_at = _narrow(analysis, probe, language, types)
+    fields = tuple(render.Slot(n, types.get(n), narrowed_at=narrowed_at.get(n)) for n in staged.context)
     # Every name the function writes or reads (a module global ``ctx`` too).
     def_use = analysis.def_use
     taken = {d.var for d in def_use.definitions}
@@ -580,12 +586,15 @@ def _render_fields(
     *leading* slots come first (a staged plan's parameter object)."""
     new_symbol = symbol["new_symbol"]
     types = _declared_types(analysis, extraction, dialect)
+    narrowed_at = _narrow(analysis, extraction, language, types)
     # Only a Rust value moves when passed, so only Rust asks what is read later.
     after = _read_after(analysis, extraction) if language == "rust" else set()
     # A method reaches its instance through the receiver, not an argument.
     own = new_symbol["receiver"] if new_symbol["kind"] == "method" else None
     params = leading + tuple(
-        render.Slot(p, types.get(p), p in after) for p in extraction.params if p != own
+        render.Slot(p, types.get(p), p in after, narrowed_at.get(p))
+        for p in extraction.params
+        if p != own
     )
     returns = tuple(render.Slot(r, types.get(r)) for r in extraction.returns)
     declared, before, rebound = _out_binding(analysis, extraction, get_language_map(language or ""))
@@ -654,6 +663,38 @@ def _declared_types(
             if typ:
                 found[d.var] = typ
     return found
+
+
+def _narrow(
+    analysis: FunctionAnalysis, extraction: Extraction, language: str | None, types: dict[str, str]
+) -> dict[str, int]:
+    """Apply the guards above a TypeScript span to its inputs' *types*
+    (``narrowing``): a narrower type the declaration proves replaces it, and
+    a name narrowed to one it does not loses its type and comes back with the
+    guard's line, for the plan's note."""
+    if language not in _NARROWING_LANGUAGES or not extraction.params:
+        return {}
+    def_lines: dict[str, list[int]] = {}
+    for d in analysis.def_use.definitions:
+        def_lines.setdefault(d.var, []).append(d.line)
+    found = narrowings(
+        analysis.fn_node,
+        get_language_map(language),
+        extraction.start_line,
+        extraction.end_line,
+        set(extraction.params),
+        def_lines,
+    )
+    unknown: dict[str, int] = {}
+    for name, guard in found.items():
+        declared = types.get(name)
+        exact = narrowed(declared, guard.drops) if declared and guard.drops is not None else None
+        if exact:
+            types[name] = exact
+        else:
+            types.pop(name, None)
+            unknown[name] = guard.line
+    return unknown
 
 
 def _read_after(analysis: FunctionAnalysis, extraction: Extraction) -> set[str]:

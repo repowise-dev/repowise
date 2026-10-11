@@ -62,6 +62,9 @@ _SNAKE_CASE = "snake_case"
 # outside itself names it the way an OUT name would, wrongly.
 _VALUE_VERBS = frozenset({"compute", "calculate", "calc", "derive", "get", "build", "make"})
 
+# Past this a name joining several sections reads as a sentence, not a name.
+_MAX_JOINED_WORDS = 6
+
 # How far below a scope a sibling definition can sit: ``export const f = () =>``
 # is four levels under a TS module, a decorated Python method three under its
 # class. Deeper nodes are expressions, which a scan for names need not visit.
@@ -99,14 +102,18 @@ def helper_name(
     lmap: LanguageNodeMap,
     language: str | None,
     modules: frozenset[str] = frozenset(),
+    *,
+    sections: bool = False,
 ) -> str | None:
     """A deterministic starting name for the helper, before the collision
     check, or ``None`` when nothing in the code anchors one. *modules* are the
-    file's imported names (:func:`dataflow.effects.imported_names`)."""
+    file's imported names (:func:`dataflow.effects.imported_names`). With
+    *sections* (a staged plan's stage), a span running across several named
+    sections is named after all of them (:func:`_joined`)."""
     stmts = span_statements(analysis.fn_node, extraction.start_line, extraction.end_line, lmap)
     if not stmts:
         return None
-    words = _anchored_words(stmts, lmap)
+    words = _anchored_words(stmts, lmap, sections=sections)
     own = Ownership(
         owned=owned_names(stmts, lmap),
         declared=declared_names(analysis.fn_node, analysis.def_use, lmap),
@@ -124,11 +131,14 @@ def helper_names(
     lmap: LanguageNodeMap,
     language: str | None,
     modules: frozenset[str] = frozenset(),
+    *,
+    sections: bool = False,
 ) -> Iterator[str]:
     """Starting names, best first: :func:`helper_name`, then the host function
     qualified by each subject of the span (``render_card_directive``). Lazy, so
-    the subjects are read only when the anchored name is missing or taken."""
-    anchored = helper_name(analysis, extraction, lmap, language, modules)
+    the subjects are read only when the anchored name is missing or taken.
+    *sections* as for :func:`helper_name`."""
+    anchored = helper_name(analysis, extraction, lmap, language, modules, sections=sections)
     if anchored:
         yield anchored
     stmts = span_statements(analysis.fn_node, extraction.start_line, extraction.end_line, lmap)
@@ -148,20 +158,43 @@ def _overlap(host: list[str], subject: list[str]) -> int:
     return next((n for n in range(top, 0, -1) if host[-n:] == subject[:n]), 0)
 
 
-def _anchored_words(stmts: list[Any], lmap: LanguageNodeMap) -> list[str]:
+def _anchored_words(stmts: list[Any], lmap: LanguageNodeMap, *, sections: bool = False) -> list[str]:
     """The words of the label or banner naming the span, ``[]`` without one.
 
     The span may be the whole body of ``with timed(...)``; else the label or
     banner heads its first statement. A label or banner names only its own
     section, so one heading a later top-level statement means the span runs
-    across sections, and neither names it.
+    across sections, and neither names it alone: with *sections* the name
+    joins them when the first statement opens a section too, else it is ``[]``.
     """
     wrapper = enclosing_with(stmts, lmap)
     if wrapper is not None and (label := _label(wrapper)):
         return label
     heads = [_label(stmt) or banner_words(comment) for stmt, comment in section_heads(stmts)]
     # A later head means a second section starts inside the span.
-    return heads[0] if heads and not any(heads[1:]) else []
+    if heads and not any(heads[1:]):
+        return heads[0]
+    return _joined([h for h in heads if h]) if sections and heads and heads[0] else []
+
+
+def _joined(heads: list[list[str]]) -> list[str]:
+    """One name for the sections *heads* name: their shared leading words,
+    then each one's own words, the last after ``and`` (``persist_kg_and_git``).
+    ``[]`` when a section adds no words of its own or the name would run past
+    ``_MAX_JOINED_WORDS``."""
+    common = 0
+    while all(len(h) > common and h[common] == heads[0][common] for h in heads):
+        common += 1
+    tails: list[list[str]] = []
+    for head in heads:
+        if head[common:] not in tails:
+            tails.append(head[common:])
+    if any(not tail for tail in tails):
+        return []
+    words = list(heads[0][:common])
+    for n, tail in enumerate(tails):
+        words.extend(["and", *tail] if n and n == len(tails) - 1 else tail)
+    return words if len(words) <= _MAX_JOINED_WORDS else []
 
 
 def _label(stmt: Any) -> list[str]:

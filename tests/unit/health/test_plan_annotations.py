@@ -217,3 +217,25 @@ def test_composition_not_told_about_decisions_leaves_governance_unknown() -> Non
     step = live.steps[0].applicability
     assert "governed_by_decision" in step.unknowns
     assert "governed_by_decision" not in step.reasons
+
+
+def test_a_test_reading_the_split_function_source_is_a_risk(tmp_path: Path) -> None:
+    from repowise.core.analysis.health.refactoring.annotations import _sources_read
+
+    # ours ``test_full_upgrade_progress.py`` asserts on ``inspect.getsource(_run_upgrade)``.
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_flow.py").write_text(
+        "import inspect\nsrc = inspect.getsource(upgrade_flow.handle)\nlines = inspect.getsourcelines(other)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_plain.py").write_text("def test_x():\n    assert handle()\n", encoding="utf-8")
+    read = _sources_read(tmp_path, ["tests/test_flow.py", "tests/test_plain.py", "tests/missing.py"])
+    assert read == {"tests/test_flow.py": frozenset({"handle", "other"})}
+    facts = AnnotationFacts(sources_read=read)
+    notes = annotate(plan(), facts, ["tests/test_flow.py::test_a", "tests/test_plain.py::test_x"])
+    assert kinds(notes) == ["source_text"]
+    assert notes.risks[0].ref == "tests/test_flow.py"
+    assert "`handle`" in notes.risks[0].text
+    # Only a test the plan runs, and only for a plan that rewrites the body.
+    assert annotate(plan(), facts, ["tests/test_plain.py::test_x"]).risks == ()
+    assert annotate(plan("split_file"), facts, ["tests/test_flow.py::test_a"]).risks == ()

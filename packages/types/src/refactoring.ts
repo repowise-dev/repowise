@@ -59,9 +59,9 @@ export interface StepVerify {
 }
 
 /** What another layer says to check before applying a plan: a decision that
- *  governs its file, consumers of what it moves, dead code it touches, or
- *  recent commits on its lines. */
-export type PlanRiskKind = "decision" | "public_api" | "active_edit" | "dead_code";
+ *  governs its file, consumers of what it moves, dead code it touches, recent
+ *  commits on its lines, or a test that reads the function's source text. */
+export type PlanRiskKind = "decision" | "public_api" | "active_edit" | "dead_code" | "source_text";
 
 /** One sentence to read before applying the plan. `ref` is the decision id or
  *  the newest commit sha, when the risk has one. */
@@ -207,6 +207,7 @@ export type RecipePreconditionKind =
   | "public_api"
   | "active_edit"
   | "dead_code"
+  | "source_text"
   | "unchecked"
   | "kind_unaudited";
 

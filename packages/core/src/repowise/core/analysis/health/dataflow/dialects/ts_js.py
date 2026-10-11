@@ -60,6 +60,25 @@ _SCOPE_BOUNDARIES = frozenset(
 _THIS = frozenset({"this"})
 
 
+_OPENERS, _CLOSERS = "([{<", ")]}>"
+
+
+def union_arms(typ: str) -> list[str]:
+    """The arms of a TypeScript union type written as *typ*, split on ``|``
+    outside brackets (``Map<string, A | B> | undefined`` has two)."""
+    arms, depth, start = [], 0, 0
+    for n, ch in enumerate(typ):
+        if ch in _OPENERS:
+            depth += 1
+        elif ch in _CLOSERS and typ[n - 1 : n + 1] != "=>":
+            depth -= 1
+        elif ch == "|" and depth == 0:
+            arms.append(typ[start:n].strip())
+            start = n + 1
+    arms.append(typ[start:].strip())
+    return [a for a in arms if a]
+
+
 def _is_static(method: Node) -> bool:
     return any(c.type == "static" for c in method.children)
 
@@ -99,6 +118,17 @@ class TsJsDefUseDialect(BaseDefUseDialect):
         else:
             self._process(node, defs, uses)
         return StatementDefUse(defs=tuple(defs), uses=tuple(uses))
+
+    def declared_type(self, name: Node) -> str | None:
+        """The base rule, plus ``| undefined`` for an optional parameter
+        (``x?: T`` holds ``T | undefined`` until something narrows it)."""
+        typ = super().declared_type(name)
+        if typ is None or name.parent is None or name.parent.type != "optional_parameter":
+            return typ
+        arms = union_arms(typ)
+        if "undefined" in arms:
+            return typ
+        return f"({typ}) | undefined" if len(arms) == 1 and "=>" in typ else f"{typ} | undefined"
 
     def parameter_defs(self, fn_node: Node) -> tuple[Occurrence, ...]:
         params_node = fn_node.child_by_field_name("parameters")

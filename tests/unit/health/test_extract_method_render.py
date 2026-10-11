@@ -286,7 +286,8 @@ _TYPED_SOURCES = {
 }
 _EXPECTED_TYPES = {
     "python": {"a": "int", "b": None, "c": "list[str]", "x": "dict[str, int]"},
-    "typescript": {"a": "number", "b": "string", "c": None, "x": "Map<string, number>"},
+    # An optional parameter holds `undefined` until something narrows it.
+    "typescript": {"a": "number", "b": "string | undefined", "c": None, "x": "Map<string, number>"},
     "go": {"a": "int", "b": "int", "c": "string", "x": "[]string", "y": None},
     "java": {"a": "int", "b": "String[]", "c": "int", "x": "int", "y": None},
     "rust": {"a": "i32", "b": "&mut Vec<u8>", "c": None, "d": None, "x": "u64"},
