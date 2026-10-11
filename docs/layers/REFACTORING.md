@@ -279,6 +279,10 @@ Most plans answer a health finding, so per-path marker rules in
   plan asks for each stage as a direct edit to the file, one at a time, never a
   script that rewrites it. A staged plan whose stages cannot all be pinned down
   that way falls back to a single helper, and a function with neither gets no plan.
+- A staged plan with more than five stages comes in batches of at most five.
+  Each batch names the tests to run before the next one, and a batch whose
+  tests fail stops the plan there. The code runs after every batch, so a
+  failure points at the stages just applied.
 - Move Method never targets a class the method only instantiates, or an ancestor of
   its own class.
 - Split File works on any language with call resolution and suggests a split only
