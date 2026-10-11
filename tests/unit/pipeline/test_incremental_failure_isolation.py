@@ -141,6 +141,7 @@ def test_the_range_scoped_set_is_exactly_these_steps():
         "Dead-code persist",
         "Health persist",
         "Symbol persist",
+        "Security persist",
         "Graph edges persist",
         "External systems refresh",
         "Tombstone full-text removal",

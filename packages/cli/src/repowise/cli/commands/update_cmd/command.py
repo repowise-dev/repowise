@@ -1830,6 +1830,7 @@ def run_update(
                 file_diffs=file_diffs,
                 knowledge_graph_result=knowledge_graph_result,
                 parsed_files=parsed_files,
+                source_map=source_map,
                 degraded=degraded,
                 # The repo's docs mode, not this run's page count: a commit
                 # that touched no source file re-renders nothing, and that is
@@ -2494,6 +2495,7 @@ def run_update(
                 doc_drift_report=doc_drift_report,
                 decay_paths=affected.decay_only,
                 parsed_files=parsed_files,
+                source_map=source_map,
                 git_decay_map=git_decay_map,
                 full_git_summary=(full_git_summaries[0] if full_git_summaries else None),
                 reconcile_full_scope=traversal_config_changed,

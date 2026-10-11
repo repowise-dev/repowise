@@ -1919,6 +1919,7 @@ async def persist_incremental_index(
     file_diffs: list[Any] | None = None,
     knowledge_graph_result: Any | None = None,
     parsed_files: list[Any] | None = None,
+    source_map: dict[str, Any] | None = None,
     git_decay_map: dict | None = None,
     full_git_summary: Any | None = None,
     history_window_changed: bool = False,
@@ -2184,6 +2185,16 @@ async def persist_incremental_index(
                     await persist_incremental_symbols(session, repo_id, parsed_files, changed_paths)
             except Exception as exc:
                 _skip("Symbol persist", exc, range_scoped=True)
+
+            try:
+                from repowise.core.pipeline.persist import persist_incremental_security_findings
+
+                with timed(timings, "persist.security"):
+                    await persist_incremental_security_findings(
+                        session, repo_id, parsed_files, source_map, changed_paths
+                    )
+            except Exception as exc:
+                _skip("Security persist", exc, range_scoped=True)
 
             # Refresh graph_edges for the changed files. The full-init path was
             # historically the only writer of edges, so adjacency froze at the

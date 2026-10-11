@@ -425,6 +425,7 @@ def _persist_index_only_update(
     file_diffs: list | None = None,
     knowledge_graph_result: Any | None = None,
     parsed_files: list | None = None,
+    source_map: dict | None = None,
     degraded: list[str] | None = None,
     pages_rendered: int = 0,
     template_wiki: bool = False,
@@ -477,6 +478,7 @@ def _persist_index_only_update(
             file_diffs=file_diffs,
             knowledge_graph_result=knowledge_graph_result,
             parsed_files=parsed_files,
+            source_map=source_map,
             git_decay_map=git_decay_map,
             full_git_summary=full_git_summary,
             history_window_changed=history_window_changed,
@@ -716,6 +718,7 @@ def _persist_full_update(
     doc_drift_report: Any | None = None,
     decay_paths: list[str] | None = None,
     parsed_files: list | None = None,
+    source_map: dict | None = None,
     git_decay_map: dict | None = None,
     full_git_summary: Any | None = None,
     reconcile_full_scope: bool = False,
@@ -758,6 +761,7 @@ def _persist_full_update(
             doc_drift_report=doc_drift_report,
             decay_paths=decay_paths,
             parsed_files=parsed_files,
+            source_map=source_map,
             git_decay_map=git_decay_map,
             full_git_summary=full_git_summary,
             reconcile_full_scope=reconcile_full_scope,
@@ -788,6 +792,7 @@ async def _persist_full_update_async(
     doc_drift_report: Any | None = None,
     decay_paths: list[str] | None = None,
     parsed_files: list | None = None,
+    source_map: dict | None = None,
     git_decay_map: dict | None = None,
     full_git_summary: Any | None = None,
     reconcile_full_scope: bool = False,
@@ -1279,6 +1284,24 @@ async def _persist_full_update_async(
                     )
             except Exception as exc:
                 _skip("Symbol persist", exc)
+
+            try:
+                from repowise.core.pipeline.persist import persist_incremental_security_findings
+
+                with timed(timings, "persist.security"):
+                    await persist_incremental_security_findings(
+                        session,
+                        repo_id,
+                        parsed_files,
+                        source_map,
+                        (
+                            [parsed.file_info.path for parsed in parsed_files or []]
+                            if reconcile_full_scope
+                            else [fd.path for fd in file_diffs]
+                        ),
+                    )
+            except Exception as exc:
+                _skip("Security persist", exc)
 
             # Refresh graph_edges for the changed files (delete-then-insert of
             # each file's outgoing edges). Without this, adjacency fossilizes at
