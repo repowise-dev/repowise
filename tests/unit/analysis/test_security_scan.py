@@ -75,6 +75,18 @@ async def _rows(sf) -> list[tuple]:
 
 
 class TestScanFile:
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("obj = pickle.loads(request.body)\n", True),
+            ("obj = pickle.loads(blob); copy = pickle.dumps(obj)\n", True),
+            ("assert pickle.loads(pickle.dumps(config)) == config\n", False),
+            ("gb2 = pickle.loads(pickle.dumps(gb, protocol=pickle.HIGHEST_PROTOCOL))\n", False),
+        ],
+    )
+    def test_pickle_round_trip_is_not_a_load(self, source: str, expected: bool) -> None:
+        assert bool([f for f in scan_source("a.py", source) if f["kind"] == "pickle_loads"]) is expected
+
     def test_line_patterns_fire_on_real_source(self) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("a.py", SNIPPY.decode(), symbols=[]))

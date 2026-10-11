@@ -205,7 +205,9 @@ def _child_process_exec_calls(source: str, masked: str) -> list[int]:
 
 _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     *_CALL_PATTERNS,
-    (re.compile(r"pickle\.loads"), "pickle_loads", "high"),
+    # Not ``pickle.loads(pickle.dumps(x))``: a round trip of the program's own
+    # object, which is how a copy or a picklability test is written.
+    (re.compile(r"pickle\.loads(?!\s*\(\s*pickle\.dumps\s*\()"), "pickle_loads", "high"),
     (re.compile(r"subprocess\..*shell\s*=\s*True"), "subprocess_shell_true", "high"),
     (re.compile(r"os\.system"), "os_system", "high"),
     # Case-insensitive: a credential pinned in source is usually written as a

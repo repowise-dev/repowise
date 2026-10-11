@@ -50,7 +50,7 @@ material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 |------|----------|---------|
 | `eval_call` | high | `eval(...)`, including a receiver chain (`vm.eval(`) |
 | `exec_call` | high | `exec(...)`. Outside Python, only a call through a name bound to `child_process` (`exec`, `execSync`). `execFile` runs no shell and does not fire |
-| `pickle_loads` | high | `pickle.loads` |
+| `pickle_loads` | high | `pickle.loads`, except a round trip of an own object (`pickle.loads(pickle.dumps(x))`) |
 | `subprocess_shell_true` | high | `subprocess.*` with `shell=True`, also across lines |
 | `os_system` | high | `os.system` |
 | `hardcoded_password` | high | a quoted literal assigned to a name containing `password`, any case |
