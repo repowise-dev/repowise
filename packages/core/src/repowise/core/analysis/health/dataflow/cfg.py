@@ -362,9 +362,8 @@ class _CFGBuilder:
         # then-branch
         then_entry = self._new()
         self._edge(cur, then_entry)
-        then_out = self._process_seq(
-            self._body_stmts(if_node.child_by_field_name("consequence")), then_entry
-        )
+        then_block = if_node.child_by_field_name("consequence") or if_node.child_by_field_name("body")
+        then_out = self._process_seq(self._body_stmts(then_block), then_entry)
         if then_out is not None:
             self._edge(then_out, join)
 

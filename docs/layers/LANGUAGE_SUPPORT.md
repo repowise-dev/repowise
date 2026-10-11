@@ -303,7 +303,7 @@ This table is why a language is Full and not Good.
 | Dart | ✅ | n/a | ✅ | no | no | no | ✅ |
 | Object Pascal | ✅ | n/a | ✅ | n/a | n/a | no | ✅ |
 | Razor | ✅ | n/a | n/a | n/a | n/a | no | ✅ |
-| PHP | ✅ | ✅ | ✅ | no | no | no | no |
+| PHP | ✅ | ✅ | ✅ | no | no | ✅ | no |
 | C | ✅ | no | no | no | no | ✅ | no |
 | F# · Objective-C | ✅ | no | no | no | no | no | no |
 | Shell | ✅ | n/a | n/a | n/a | n/a | n/a | n/a |

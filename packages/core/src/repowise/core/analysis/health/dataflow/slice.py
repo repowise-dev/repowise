@@ -1238,10 +1238,11 @@ def _identifiers(node: Node) -> set[str]:
     stack = [node]
     while stack:
         cur = stack.pop()
-        if not cur.children and cur.type.endswith("identifier"):
+        if not cur.children and (cur.type.endswith("identifier") or cur.type == "name"):
             text = cur.text
             if text:
-                out.add(text.decode("utf-8", "replace"))
+                s = text.decode("utf-8", "replace")
+                out.add(s[1:] if s.startswith("$") else s)
         stack.extend(cur.children)
     return out
 

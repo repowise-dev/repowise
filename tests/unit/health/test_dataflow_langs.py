@@ -1678,6 +1678,301 @@ def test_c_extraction_never_spans_a_goto_label():
         assert not (e.start_line <= label_line <= e.end_line)
 
 
+# == PHP =========================================================================
+
+# Every PHP write shape in one function: plain assignment, compound assign,
+# update (++/--), static declaration, foreach binders (key => value), list
+# and array destructuring -- plus the target shapes that bind NO local (properties,
+# array elements, method calls, static member calls).
+_PHP_SHAPES = """<?php
+function processShapes(array $input, int $base, $cfg) {
+    $acc = $base;
+    $a = 1;
+    $b = 2;
+    $errors = 0;
+    $errors += 1;
+    $errors .= "suffix";
+    $val ??= 2;
+    $acc++;
+    --$acc;
+    static $cache = 0;
+    foreach ($input as $k => $item) {
+        $acc += $item;
+    }
+    list($x, $y) = [$a, $b];
+    [$u, $v] = [$x, $y];
+    ["key" => $z] = ["key" => $u];
+    $cfg->count = $acc;
+    $obj->field = $acc;
+    $arr[$a] = $b;
+    $lam = function($elem) use ($base) { return $elem + $base; };
+    return $acc;
+}
+"""
+
+
+def test_php_def_use_classification():
+    fn = _first("php", _PHP_SHAPES)
+    defs = _def_names(fn)
+    assert {"input", "base", "cfg"} <= defs  # parameters seeded as entry defs
+    assert {
+        "acc",
+        "a",
+        "b",
+        "errors",
+        "val",
+        "cache",
+        "k",
+        "item",
+        "x",
+        "y",
+        "u",
+        "v",
+        "z",
+        "lam",
+    } <= defs
+    assert "count" not in defs
+    assert "field" not in defs
+
+    uses = _use_names(fn)
+    assert {"base", "acc", "input", "a", "b", "cfg", "obj", "arr", "item", "x", "y", "u"} <= uses
+    assert "array" not in uses
+    assert "processShapes" not in uses
+
+
+def test_php_reads_a_member_callee_receiver_but_not_the_method():
+    fn = _first(
+        "php",
+        """<?php
+        function run($db, $id) {
+            $n = 0;
+            $n += $db->execute($id);
+            $n += helper($id);
+            return $n;
+        }
+        """,
+    )
+    uses = _use_names(fn)
+    assert "db" in uses  # the receiver is a real read
+    assert "execute" not in uses  # the method name is not a variable
+    assert "helper" not in uses  # global function name is not a variable read
+
+
+def test_php_delegate_call_is_a_variable_read():
+    fn = _first(
+        "php",
+        """<?php
+        function executeDelegate($fn, $arg) {
+            $n = 0;
+            $n += $fn($arg);
+            return $n;
+        }
+        """,
+    )
+    uses = _use_names(fn)
+    assert "fn" in uses  # delegate variable is a read
+    assert "arg" in uses
+
+
+def test_php_lambda_body_is_a_separate_scope():
+    fn = _first(
+        "php",
+        """<?php
+        function run($items, $base) {
+            $total = $base;
+            $lam = function($x) use ($total) {
+                $inner = $x * 2;
+                return $inner + $total;
+            };
+            return $total;
+        }
+        """,
+    )
+    defs = _def_names(fn)
+    assert "inner" not in defs  # scoped inside the closure
+    assert "x" not in defs  # closure parameter
+    captured = {u.name for u in fn.def_use.captured.reads}
+    assert "total" in captured
+    assert "x" not in captured
+
+
+def test_php_extract_method_fires():
+    fn = _first(
+        "php",
+        """<?php
+        function process($records, $threshold) {
+            $results = [];
+            $errors = 0;
+            foreach ($records as $r) {
+                if ($r === null) {
+                    $errors += 1;
+                    continue;
+                }
+                $results[] = $r;
+            }
+            $total = 0;
+            $count = 0;
+            foreach ($results as $v) {
+                if ($v > $threshold) {
+                    $total += $v;
+                    $count += 1;
+                } else {
+                    $total -= $v;
+                }
+            }
+            $average = $count ? $total / $count : 0;
+            return $average;
+        }
+        """,
+    )
+    lmap = get_language_map("php")
+    assert lmap is not None
+    extractions = find_extractions(fn, lmap)
+    assert extractions
+    best = extractions[0]
+    assert "average" in best.returns
+    assert "results" in best.params
+    assert "threshold" in best.params
+    assert len(best.returns) <= 1
+    assert best.ccn_removed >= 1
+    assert best.slice_nloc >= 6
+    # Deterministic ordering: re-running yields identical candidates
+    assert [(e.start_line, e.end_line) for e in find_extractions(fn, lmap)] == [
+        (e.start_line, e.end_line) for e in extractions
+    ]
+
+
+def test_php_flagged_only_gate_skips_small_functions():
+    _require("php")
+    src = b"""<?php
+    function small($a, $b) {
+        if ($a > $b) {
+            return $a;
+        }
+        return $b;
+    }
+    """
+    res = analyze_file("small.php", "php", src, flagged_only=True)
+    assert res.stats.functions_seen == 1
+    assert len(res.functions) == 0  # not flagged (low complexity)
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "yield $v;",
+        "$$v = 1;",
+        "global $cfg;",
+        "static $s = 0;",
+        "$alias = &$total;",
+    ],
+)
+def test_php_spans_holding_disallowed_constructs_are_refused(stmt: str):
+    code = f"""<?php
+    function process($records, $threshold) {{
+        $results = [];
+        $errors = 0;
+        foreach ($records as $r) {{
+            if ($r === null) {{
+                $errors += 1;
+                continue;
+            }}
+            $results[] = $r;
+        }}
+        $total = 0;
+        $count = 0;
+        {stmt}
+        foreach ($results as $v) {{
+            if ($v > $threshold) {{
+                $total += $v;
+                $count += 1;
+            }} else {{
+                $total -= $v;
+            }}
+        }}
+        $average = $count ? $total / $count : 0;
+        return $average;
+    }}
+    """
+    fn = _first("php", code)
+    lmap = get_language_map("php")
+    assert lmap is not None
+    spans = find_extractions(fn, lmap)
+    # The statement at line 14 should not be included in any offered extraction span
+    assert not any(e.start_line <= 14 <= e.end_line for e in spans)
+
+
+def test_php_byref_parameter_mutation_refuses_when_returning_another():
+    code_byref = """<?php
+    function process(array &$out, $records, $threshold) {
+        $results = [];
+        $errors = 0;
+        foreach ($records as $r) {
+            if ($r === null) {
+                $errors += 1;
+                continue;
+            }
+            $results[] = $r;
+        }
+        $total = 0;
+        $count = 0;
+        foreach ($results as $v) {
+            if ($v > $threshold) {
+                $total += $v;
+                $count += 1;
+                $out = [$v];
+            } else {
+                $total -= $v;
+            }
+        }
+        $average = $count ? $total / $count : 0;
+        return $average;
+    }
+    """
+    code_byval = code_byref.replace("&$out", "$out")
+    lmap = get_language_map("php")
+    assert lmap is not None
+
+    fn_byval = _first("php", code_byval)
+    assert len(find_extractions(fn_byval, lmap)) > 0
+
+    fn_byref = _first("php", code_byref)
+    assert len(find_extractions(fn_byref, lmap)) == 0
+
+
+def test_php_byref_foreach_is_refused():
+    code = """<?php
+    function process($records, $threshold) {
+        $results = [];
+        $errors = 0;
+        foreach ($records as $r) {
+            if ($r === null) {
+                $errors += 1;
+                continue;
+            }
+            $results[] = $r;
+        }
+        $total = 0;
+        $count = 0;
+        foreach ($results as &$v) {
+            if ($v > $threshold) {
+                $total += $v;
+                $count += 1;
+            } else {
+                $total -= $v;
+            }
+        }
+        $average = $count ? $total / $count : 0;
+        return $average;
+    }
+    """
+    fn = _first("php", code)
+    lmap = get_language_map("php")
+    assert lmap is not None
+    # By-reference foreach makes the loop disqualified from extraction
+    assert len(find_extractions(fn, lmap)) == 0
+
+
 # ---------------------------------------------------------------------------
 # Nested scopes that bind a name in the enclosing scope (and the ones that do not)
 # ---------------------------------------------------------------------------
@@ -2259,6 +2554,18 @@ def test_ts_closure_parameter_is_not_a_read_of_the_outer_name():
             """,
             {"total", "k", "rows"},
             {"v", "w"},
+        ),
+        (
+            "php",
+            """<?php
+            function f($rows, $k) {
+                $total = 1;
+                $fn = function($v) use ($total, $k) { return $v + $total + $k; };
+                return array_map($fn, $rows);
+            }
+            """,
+            {"total", "k"},
+            {"v"},
         ),
     ],
 )
