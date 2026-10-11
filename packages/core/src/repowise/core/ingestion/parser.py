@@ -123,8 +123,9 @@ from .parser_helpers import (
     _ts_nested_object_method_owner,
     import_load_kind,
 )
-from .python_local_refs import extract_python_local_refs
+from .python_local_refs import local_refs_from_tree, parse_python_module
 from .python_overload import is_python_overload as _is_python_overload
+from .python_registrars import registering_functions
 from .python_tasks import is_fire_and_forget
 from .sfc_source import component_call_sites, prepare_source
 from .special_handlers import SPECIAL_HANDLER_LANGUAGES, parse_special
@@ -1521,13 +1522,9 @@ class ASTParser:
         # (callable passed as an arg, type annotation, decorator, default)
         # carry no graph edge, so the dead-code unused-export pass would flag
         # them. Stamp the referenced names so the analyzer can rescue them.
-        local_refs: frozenset[str] = frozenset()
-        if lang == "python":
-            top_level_names = {s.name for s in symbols if s.name and not s.parent_name}
-            nested_classes = {
-                (s.parent_name, s.name) for s in symbols if s.kind == "class" and s.parent_name
-            }
-            local_refs = extract_python_local_refs(src, top_level_names, nested_classes)
+        local_refs, registrars = (
+            _python_module_facts(src, symbols) if lang == "python" else (frozenset(), frozenset())
+        )
 
         if len(symbols) > _SYMBOL_COUNT_WARN_THRESHOLD:
             log.warning(
@@ -1551,6 +1548,7 @@ class ASTParser:
             content_hash=content_hash,
             type_refs=type_refs,
             local_refs=local_refs,
+            registrars=registrars,
             references=references,
         )
 
@@ -2260,6 +2258,26 @@ class ASTParser:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_PARSER: ASTParser | None = None
+
+
+def _python_module_facts(
+    src: str, symbols: list[Symbol]
+) -> tuple[frozenset[str], frozenset[str]]:
+    """``(local_refs, registrars)`` for a Python module, from one ``ast`` parse.
+
+    See ``python_local_refs`` and ``python_registrars``.
+    """
+    top_level_names = {s.name for s in symbols if s.name and not s.parent_name}
+    tree = parse_python_module(src) if top_level_names else None
+    if tree is None:
+        return frozenset(), frozenset()
+    nested_classes = {
+        (s.parent_name, s.name) for s in symbols if s.kind == "class" and s.parent_name
+    }
+    return (
+        local_refs_from_tree(tree, top_level_names, nested_classes),
+        registering_functions(tree),
+    )
 
 
 def parse_file(file_info: FileInfo, source: bytes) -> ParsedFile:

@@ -12,6 +12,7 @@ from typing import Any
 import structlog
 
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
+from ..models import CallSite
 
 log = structlog.get_logger(__name__)
 
@@ -713,6 +714,7 @@ class ResolveMixin:
         )
 
         self._add_reference_edges(resolver)
+        self._add_registration_edges(resolver)
 
     def _add_reference_edges(self, resolver: Any) -> None:
         """Emit ``references`` edges for functions named but never called.
@@ -767,14 +769,76 @@ class ResolveMixin:
                         continue
                     if self._graph.nodes[rc.callee_id].get("kind") not in allowed_kinds:
                         continue
-                    if self._graph.has_edge(rc.caller_id, rc.callee_id):
-                        continue
-                    self._graph.add_edge(
-                        rc.caller_id,
-                        rc.callee_id,
-                        edge_type="references",
-                        confidence=rc.confidence,
-                        resolution_origin=rc.origin,
-                    )
-                    total += 1
+                    total += self._add_reference_edge(rc.caller_id, rc.callee_id, rc)
         log.info("Reference edges resolved", total=total)
+
+    def _add_reference_edge(self, source: str, target: str, rc: Any) -> int:
+        """Add a ``references`` edge unless the pair already has one; 1 when added."""
+        if self._graph.has_edge(source, target):
+            return 0
+        self._graph.add_edge(
+            source,
+            target,
+            edge_type="references",
+            confidence=rc.confidence,
+            resolution_origin=rc.origin,
+        )
+        return 1
+
+    def _add_registration_edges(self, resolver: Any) -> None:
+        """Link each registering decorator to the functions it decorates.
+
+        ``@rule`` over ``def _check`` where ``rule`` appends its argument to a
+        module list: ``_check`` is reached through that list, never by name, so
+        without an edge it reads as unused. The edge runs decorator -> decorated
+        as a ``references`` edge, a mention rather than a call, because running
+        the decorator does not run the function. Which functions register is
+        decided by ``python_registrars``; the decorator name is resolved by the
+        same resolver the calls used, so an imported decorator counts too.
+        """
+        registrar_ids = {
+            f"{path}::{name}"
+            for path, parsed in self._parsed_files.items()
+            for name in parsed.registrars
+        }
+        if not registrar_ids:
+            return
+        names = {node_id.rsplit("::", 1)[1] for node_id in registrar_ids}
+        total = 0
+        for path, parsed in self._parsed_files.items():
+            sites = _decorator_sites(parsed, names)
+            if not sites:
+                continue
+            for rc in resolver.resolve_file(path, sites):
+                if rc.confidence < _MIN_REFERENCE_CONFIDENCE or rc.callee_id not in registrar_ids:
+                    continue
+                if rc.caller_id in self._graph:
+                    total += self._add_reference_edge(rc.callee_id, rc.caller_id, rc)
+        log.info("Registration edges resolved", total=total)
+
+
+def _decorator_sites(parsed: Any, names: set[str]) -> list[CallSite]:
+    """One site per decorator of a Python symbol whose name may be a registrar.
+
+    The site's caller is the decorated symbol, so a resolved site names both
+    ends of the registration edge.
+    """
+    if parsed.file_info.language != "python":
+        return []
+    sites: list[CallSite] = []
+    for sym in parsed.symbols:
+        for text in sym.decorators:
+            path = text.lstrip("@").split("(", 1)[0].strip()
+            receiver, _, name = path.rpartition(".")
+            if name in names:
+                sites.append(
+                    CallSite(
+                        target_name=name,
+                        receiver_name=receiver or None,
+                        caller_symbol_id=sym.id,
+                        line=sym.start_line,
+                        argument_count=None,
+                        edge_type="references",
+                    )
+                )
+    return sites

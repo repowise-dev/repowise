@@ -711,6 +711,9 @@ class ParsedFile:
     # Python only; lets the dead-code unused-export pass rescue symbols whose
     # only use is intra-module. See ``python_local_refs``.
     local_refs: frozenset[str] = field(default_factory=frozenset)
+    # Top-level functions that store and return the function they decorate
+    # (Python only); see ``python_registrars``.
+    registrars: frozenset[str] = field(default_factory=frozenset)
     # C/C++ sites that name a function without calling it: a dispatch table
     # entry, a callback field, an argument to a registration macro. Reuses
     # ``CallSite`` because resolving one is the identical problem — a name, the
