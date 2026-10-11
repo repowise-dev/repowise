@@ -304,7 +304,8 @@ This table is why a language is Full and not Good.
 | Object Pascal | ✅ | n/a | ✅ | n/a | n/a | no | ✅ |
 | Razor | ✅ | n/a | n/a | n/a | n/a | no | ✅ |
 | PHP | ✅ | ✅ | ✅ | no | no | no | no |
-| C · F# · Objective-C | ✅ | no | no | no | no | no | no |
+| C | ✅ | no | no | no | no | ✅ | no |
+| F# · Objective-C | ✅ | no | no | no | no | no | no |
 | Shell | ✅ | n/a | n/a | n/a | n/a | n/a | n/a |
 
 ✅ supported, "no" not available yet, n/a the language cannot carry that metric.
@@ -332,8 +333,9 @@ Per-marker detail is in [CODE_HEALTH.md](CODE_HEALTH.md).
 - **GDScript string dispatch is unresolved**, and a script without `class_name`
   gets no class symbol.
 - **VB.NET leaves a few constructs unparsed**, XML and tuple literals among them.
-- **C has complexity markers only.** It has no performance or Extract Method
-  support.
+- **C has no performance risk support.** Extract Method reuses the C++
+  def/use dialect; C carries none of the C++-only nodes, so the same plan
+  fires for both.
 - **Scala import resolution is partial**, and ScalaTest's infix DSL
   (`x shouldBe y`) is not counted as an assertion.
 

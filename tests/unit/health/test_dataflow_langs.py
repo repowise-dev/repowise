@@ -1246,6 +1246,115 @@ def test_cpp_extraction_never_spans_a_jump():
     assert "throw_statement" in lmap.raise_kinds
 
 
+def test_c_extract_method_fires():
+    # Same shape as the C++ repro: two accumulation loops, a ``continue``, and
+    # an ``average`` tail. C reuses the C++ dialect, so the same plan fires.
+    fn = _first(
+        "c",
+        """
+        double report(const int *xs, const int *ys, int n, int threshold) {
+            int results = 0;
+            int total = 0;
+            for (int i = 0; i < n; i++) {
+                if (xs[i] > threshold) { total += xs[i]; results++; }
+                else if (xs[i] < -threshold) { continue; }
+                else { results--; }
+            }
+            for (int i = 0; i < n; i++) {
+                if (ys[i] > threshold) { total += ys[i]; results++; }
+                else if (ys[i] == 0) { results--; }
+            }
+            double average = results > 0 ? (double)total / results : 0.0;
+            return average;
+        }
+        """,
+    )
+    lmap = get_language_map("c")
+    assert lmap is not None
+    extractions = find_extractions(fn, lmap)
+    assert extractions
+    best = extractions[0]
+    assert "average" in best.returns
+    assert "results" in best.params
+
+
+def test_c_specific_write_shapes_bind_locals():
+    # Array / pointer declarators, comma declarators, and selector / subscript
+    # targets (``x->f = v``, ``a[i] = v``) bind no local of their own.
+    fn = _first(
+        "c",
+        """
+        int mix(int *a, struct point *p, int i, int v) {
+            int arr[8];
+            int *q = &v;
+            int x = 1, y = 2;
+            struct point s = {0};
+            p->f = v;
+            a[i] = v;
+            arr[0] = x + y + *q + s.f;
+            return arr[0];
+        }
+        """,
+    )
+    defs = _def_names(fn)
+    assert {"arr", "q", "x", "y", "s"} <= defs
+    # A field or subscript write is not a definition of a local.
+    assert "f" not in defs
+
+
+def test_c_function_pointer_parameter_is_a_def():
+    # A function-pointer parameter binds a local. Note: calling it through a
+    # bare identifier (``fp(x)``) does not register a read of ``fp`` — the C++
+    # dialect intentionally skips identifier callees (they are free-function
+    # names in C++, ``cpp.py: _CALLEE_NAME_KINDS``), and telling the two apart
+    # needs scope-aware callee analysis, which is out of scope here.
+    fn = _first(
+        "c",
+        """
+        int apply(int (*fp)(int), int x) {
+            return (*fp)(x);
+        }
+        """,
+    )
+    assert "fp" in _def_names(fn)
+    assert "x" in _use_names(fn)
+
+
+def test_c_extraction_never_spans_a_goto_label():
+    # A ``goto`` target can be jumped into from anywhere in the function, so a
+    # span that contains the label must be refused.
+    fn = _first(
+        "c",
+        """
+        int scan(const int *xs, int n) {
+            int total = 0;
+            for (int i = 0; i < n; i++) {
+                if (xs[i] < 0) goto skip;
+                total += xs[i];
+                skip:;
+            }
+            return total;
+        }
+        """,
+    )
+    lmap = get_language_map("c")
+    assert lmap is not None
+    # The label sits on the source line of ``skip:``; no offered span may
+    # cover it.
+    label_line = textwrap.dedent(
+        """
+        int scan(const int *xs, int n) {
+            int total = 0;
+            for (int i = 0; i < n; i++) {
+                if (xs[i] < 0) goto skip;
+                total += xs[i];
+                skip:;
+        """
+    ).count("\n") + 1
+    for e in find_extractions(fn, lmap):
+        assert not (e.start_line <= label_line <= e.end_line)
+
+
 # ---------------------------------------------------------------------------
 # Nested scopes that bind a name in the enclosing scope (and the ones that do not)
 # ---------------------------------------------------------------------------

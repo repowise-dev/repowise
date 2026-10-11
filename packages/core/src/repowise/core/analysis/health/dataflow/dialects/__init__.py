@@ -44,6 +44,9 @@ _REGISTER: tuple[tuple[str, BaseDefUseDialect], ...] = (
     ("java", _java.DIALECT),
     ("rust", _rust.DIALECT),
     ("cpp", _cpp.DIALECT),
+    # A C parse tree carries no C++-only node (``for_range_loop``, lambdas,
+    # ``co_await``), so the C++ dialect reads it whole.
+    ("c", _cpp.DIALECT),
 )
 
 for _tag, _dialect in _REGISTER:
