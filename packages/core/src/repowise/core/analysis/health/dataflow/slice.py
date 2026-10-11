@@ -37,6 +37,7 @@ from ..complexity.ast_utils import member_object, self_member_name
 from ..complexity.body_facts import BodyTally, FactKinds, is_exit, step
 from ..complexity.nloc import _code_line_numbers
 from .dialects.base import SUPER, mentions_receiver
+from .raises import exception_flow_refusal
 from .reaching import definitions_at, observed_definitions
 
 if TYPE_CHECKING:
@@ -151,6 +152,7 @@ def find_extractions(
     lmap: LanguageNodeMap,
     receiver: Receiver | None = None,
     prefixes: dict[int, _Prefix] | None = None,
+    refused: set[str] | None = None,
 ) -> list[Extraction]:
     """Return safe Extract Method candidates for *analysis*, best first.
 
@@ -160,6 +162,9 @@ def find_extractions(
     the function's instance (``DefUseDialect.receiver``), None when unknown.
     *prefixes*, when given, receives each walked block's :class:`_Prefix` by
     block id, so a staged plan reads them instead of walking again.
+    *refused*, when given, receives why a span that cleared every other gate
+    was dropped because lifting it would change exception flow
+    (:func:`raises.exception_flow_refusal`).
     """
     fn_node = analysis.fn_node
     if fn_node is None:
@@ -265,6 +270,11 @@ def find_extractions(
                 if loop is not None and not _loop_carry_free(
                     span, loop, s, e, carry_defs, use_lines, lmap
                 ):
+                    continue
+                reason = exception_flow_refusal(analysis.cfg, s, e, reads, def_lines)
+                if reason is not None:
+                    if refused is not None:
+                        refused.add(reason)
                     continue
                 uses, assigns = _receiver_facts(receiver, pre, i, j, _count_in(free_writes, s, e))
                 out.append(

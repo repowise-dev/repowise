@@ -23,7 +23,9 @@ into K contiguous stages, each a helper the function then calls in sequence.
   at the call. A name a stage declares in a nested block (a loop's ``const``)
   is the stage's own, never an output. A guard (``if not x: raise``) whose
   names the code after the stage reads stays in the function: type checkers
-  narrow ``x`` from it.
+  narrow ``x`` from it. A stage may not change exception flow
+  (:func:`raises.exception_flow_refusal`): inside a ``try`` body it may not
+  write a value a handler or ``finally`` reads.
 - **Cuts.** A small dynamic program over the statement boundaries: lift as many
   decision points as possible, then prefer narrow interfaces (fewest names
   crossing a cut), cuts at a banner comment, a ``timed()`` label or a blank
@@ -55,6 +57,7 @@ from typing import TYPE_CHECKING
 from ..complexity.nloc import is_string_stmt
 from .assigned import DefiniteAssignment
 from .loop_cut import carried, escapes
+from .raises import exception_flow_refusal
 from .reaching import observed_definitions
 from .slice import (
     _MIN_SLICE_NLOC,
@@ -125,7 +128,8 @@ class StagePlan:
     ``moved_imports`` are those nothing left in the function reads.
     ``reason`` says why there are no stages; None when there are.
     ``refused`` names why a stage that cleared every other check was not
-    offered (:data:`OUTER_WRITE`, :data:`SWITCH_ARM_WRITE`)."""
+    offered (:data:`OUTER_WRITE`, :data:`SWITCH_ARM_WRITE`, and the
+    exception-flow reasons of :mod:`raises`)."""
 
     stages: tuple[Extraction, ...] = ()
     context: tuple[str, ...] = ()
@@ -357,6 +361,7 @@ class _Cutter:
         self.arm_writes = facts.arm_writes
         self.refused = facts.refused
         self.reads = facts.reads
+        self.cfg = facts.analysis.cfg
         self.pre = pre
         self._assigns: dict[tuple[int, str], bool] = {}
         self.cut_cost = _cut_costs(code)
@@ -509,9 +514,10 @@ class _Cutter:
     ) -> bool:
         """The single-span slicer's own refusals: a hoisted binding, a
         declaration the code after the stage still needs, a local a closure
-        shares across the stage's edge. Then the two a stage names in
+        shares across the stage's edge. Then those a stage names in
         ``refused``: a ``global`` write that cannot take its declaration
-        along, a ``switch`` / ``match`` arm write the interface depends on."""
+        along, a cut that changes exception flow (:mod:`raises`), a
+        ``switch`` / ``match`` arm write the interface depends on."""
         if any(s <= first_def <= e and first_use < s for first_def, first_use in self.hoisted):
             return False
         if _declaration_escapes(
@@ -532,6 +538,9 @@ class _Cutter:
     ) -> str | None:
         if _outer_write_escapes(s, e, self.outer, self.def_lines):
             return OUTER_WRITE
+        reason = exception_flow_refusal(self.cfg, s, e, self.reads, self.def_lines)
+        if reason is not None:
+            return reason
         if self._arm_write_crosses(s, e, params, returns):
             return SWITCH_ARM_WRITE
         return None

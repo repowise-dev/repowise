@@ -235,7 +235,10 @@ Most plans answer a health finding, so per-path marker rules in
   (every returned value written on every path, no state carried across loop
   iterations, no local a closure shares across the span's edge, no write to a
   `global` name without its declaration). A staged plan also leaves out a stage
-  whose inputs or outputs depend on a `switch` or `match` arm's write. Spans it
+  whose inputs or outputs depend on a `switch` or `match` arm's write. A span or
+  stage never changes which handler catches an error or what it sees: it is not
+  offered when it would split a `try` from its handlers, write a value a handler
+  or `finally` reads, or move a Go `defer`. Spans it
   cannot prove are dropped, so it under-reports by design. A value the span writes
   is returned whenever any path can carry it to a later read, including past a
   later write in an `else` arm or a `try` body that may raise first.

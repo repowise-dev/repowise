@@ -207,7 +207,9 @@ class ExtractMethodDetector(RefactoringDetector):
             receiver = dialect.receiver(fn_node, lmap) if dialect and fn_node else None
             # The slicer's per-block walk, read again by a staged plan.
             prefixes: dict[int, Any] = {}
-            candidates = find_extractions(analysis, lmap, receiver, prefixes)
+            refused: set[str] = set()
+            candidates = find_extractions(analysis, lmap, receiver, prefixes, refused)
+            _mark_stage_refused(matched, frozenset(refused))
             best = _choose(analysis, candidates, markers)
             staged = _staged(analysis, best, lmap, receiver, ctx.language, matched, prefixes)
             scope = _scope(fn_node, files) if staged is not None or best is not None else None
@@ -363,8 +365,9 @@ class ExtractMethodDetector(RefactoringDetector):
 REFUSED_DETAIL = "extract_method_refused"
 
 
-#: The finding detail naming why a stage that cleared every other check was
-#: not offered (``StagePlan.refused``), sorted.
+#: The finding detail naming why a stage or span that cleared every other
+#: check was not offered (``StagePlan.refused``, the slicer's ``refused``),
+#: sorted.
 STAGE_REFUSED_DETAIL = "extract_method_stage_refused"
 
 
@@ -374,7 +377,8 @@ def _mark_stage_refused(findings: list[Any], reasons: frozenset[str]) -> None:
     for f in findings:
         details = getattr(f, "details", None)
         if isinstance(details, dict):
-            details[STAGE_REFUSED_DETAIL] = sorted(reasons)
+            held = set(details.get(STAGE_REFUSED_DETAIL, ()))
+            details[STAGE_REFUSED_DETAIL] = sorted(held | reasons)
 
 
 def _mark_refused(findings: list[Any], reason: str) -> None:

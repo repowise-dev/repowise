@@ -482,3 +482,41 @@ def test_a_handler_rebinding_a_name_in_a_loop_carries_nothing():
         return results
     """
     assert any(x.start_line == 8 for x in _spans(src, "install"))
+
+
+_TRY_FN = """
+def run(items, a, b, {opts}):
+    seen = []
+    last = None
+    done = 0
+    try:
+        for item in items:
+{body}
+            last = item
+    except Exception:
+        report(done)
+        raise
+    return seen, last
+"""
+
+
+def test_a_stage_writing_what_a_handler_reads_is_refused_and_counted():
+    # A helper that raises loses its writes, so the handler would see the
+    # count from before the stage instead of the one the original reached.
+    def src(extra: str) -> str:
+        body = "".join(_item_section(n, extra=extra if n == 3 else "") for n in range(8))
+        return _TRY_FN.format(
+            opts=", ".join(f"opt_{n}" for n in range(8)),
+            body=textwrap.indent(textwrap.dedent(body), " " * 12),
+        )
+
+    hazard = src("\n                done = done + 1")
+    assert "exception_state" in _refused(hazard)["run"]
+    stages = _plans(hazard)["run"].plan["stages"]
+    lines = textwrap.dedent(hazard).splitlines()
+    write = next(i for i, ln in enumerate(lines, 1) if "done = done + 1" in ln)
+    after = next(i for i, ln in enumerate(lines, 1) if 'item.kind == "k4"' in ln)
+    assert len(stages) >= 2
+    # A stage may end on the write (nothing after it can raise), not run past it.
+    assert not any(s["span"]["start"] <= write and after <= s["span"]["end"] for s in stages)
+    assert _refused(src(""))["run"] == []

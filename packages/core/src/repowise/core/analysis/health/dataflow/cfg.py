@@ -39,14 +39,24 @@ silence), the same precision-first default as the def/use dialect.
 handlers / ``finally`` it can raise into from the state before it and from each
 of its blocks. Those block edges are ``raise_edges``, since an exception can
 leave a block mid-way: in ``x = 1; y = g(); x = 2`` the handler sees ``x = 1``.
+The same walk records each ``try``'s clauses and each error exit with the
+handler that catches it (:mod:`raises`).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from ..complexity.languages import LanguageNodeMap
+from .raises import (
+    Handler,
+    RaiseSite,
+    TryRegion,
+    catches,
+    error_exit,
+    handler_head,
+)
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -144,9 +154,14 @@ class CFG:
     function_start_line: int = 0
     # ``(src, dst)`` edges an exception can take from inside *src*, mid-block.
     raise_edges: frozenset[tuple[int, int]] = frozenset()
+    # Error exits, ``try`` statements and Go ``defer`` lines, in source order.
+    raises: tuple[RaiseSite, ...] = ()
+    try_regions: tuple[TryRegion, ...] = ()
+    defers: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         self._by_id: dict[int, BasicBlock] = {b.id: b for b in self.blocks}
+        self._at: dict[int, tuple[int, int]] | None = None
 
     @property
     def entry(self) -> BasicBlock:
@@ -158,6 +173,20 @@ class CFG:
 
     def block(self, block_id: int) -> BasicBlock:
         return self._by_id[block_id]
+
+    def statement_at(self, line: int) -> tuple[int, int] | None:
+        """``(block id, index)`` of the narrowest statement holding *line*;
+        None when no statement does. Built on first use."""
+        if self._at is None:
+            best: dict[int, tuple[int, int, int]] = {}
+            for b in self.blocks:
+                for k, st in enumerate(b.statements):
+                    width = st.end_line - st.start_line
+                    for ln in range(st.start_line, st.end_line + 1):
+                        if ln not in best or width < best[ln][0]:
+                            best[ln] = (width, b.id, k)
+            self._at = {ln: (bid, k) for ln, (_w, bid, k) in best.items()}
+        return self._at.get(line)
 
     def successors(self, block: BasicBlock) -> list[BasicBlock]:
         return [self._by_id[s] for s in block.successors]
@@ -211,6 +240,16 @@ class _CFGBuilder:
         self._loops: list[_LoopCtx] = []
         self.exit_block: BasicBlock | None = None
         self._raise_edges: set[tuple[int, int]] = set()
+        # Handlers of each ``try`` whose body is being built, innermost last,
+        # and the handler clauses being built: what a raise there meets.
+        self._guards: list[tuple[Handler, ...]] = []
+        self._handling: list[Handler] = []
+        self._raises: list[RaiseSite] = []
+        self._regions: list[TryRegion] = []
+        self._defers: list[int] = []
+        self._jump_kinds = (
+            lmap.return_kinds | lmap.raise_kinds | lmap.break_kinds | lmap.continue_kinds
+        )
 
     # -- low-level graph ops --------------------------------------------------
 
@@ -286,6 +325,10 @@ class _CFGBuilder:
         ``doc_comment``), the same idiom nloc counting uses."""
         if block is None:
             return []
+        # A C-family arm without braces is the statement itself
+        # (``if (x) throw e;``): its children are not statements.
+        if block.type in self._jump_kinds:
+            return [block]
         kids = [c for c in block.named_children if "comment" not in c.type]
         while len(kids) == 1 and kids[0].type in self.lmap.block_kinds:
             kids = [c for c in kids[0].named_children if "comment" not in c.type]
@@ -307,6 +350,9 @@ class _CFGBuilder:
             entry_id=entry.id,
             exit_id=self.exit_block.id,
             raise_edges=frozenset(self._raise_edges),
+            raises=tuple(sorted(self._raises, key=lambda r: r.line)),
+            try_regions=tuple(sorted(self._regions, key=lambda r: r.start_line)),
+            defers=tuple(self._defers),
         )
 
     def _process_seq(self, stmts: list[Node], cur: BasicBlock | None) -> BasicBlock | None:
@@ -337,6 +383,7 @@ class _CFGBuilder:
             elif t in self.lmap.with_kinds:
                 cur = self._build_with(st, cur)
             elif t in self.lmap.return_kinds or t in self.lmap.raise_kinds:
+                self._record_exit(st)
                 self._record_stmt(cur, st)
                 self._edge(cur, self.exit_block)
                 cur = None
@@ -351,8 +398,40 @@ class _CFGBuilder:
                     self._edge(cur, self._loops[-1].continue_target)
                 cur = None
             else:
+                self._record_exit(st)
                 self._record_stmt(cur, st)
         return cur
+
+    # -- error exits ----------------------------------------------------------
+
+    def _record_exit(self, st: Node) -> None:
+        """Record *st* as an error exit (or a ``defer``) when it is one."""
+        if st.type == "defer_statement":
+            self._defers.append(st.start_point[0] + 1)
+            return
+        if st.type in self.lmap.switch_kinds:
+            self._record_arm_raises(st)
+            return
+        found = error_exit(st, self.lmap, self._handling[-1] if self._handling else None)
+        if found is None:
+            return
+        kind, exc, raised = found
+        caught = None
+        if kind in ("raise", "rethrow"):
+            guards = (h for hs in reversed(self._guards) for h in hs)
+            caught = next((h.start_line for h in guards if catches(h.types, raised)), None)
+        self._raises.append(RaiseSite(st.start_point[0] + 1, kind, exc, caught))
+
+    def _record_arm_raises(self, switch: Node) -> None:
+        """The raises in a ``switch`` / ``match`` the graph keeps whole."""
+        scopes = self.lmap.function_kinds | self.lmap.lambda_kinds
+        stack = list(reversed(switch.named_children))
+        while stack:
+            node = stack.pop()
+            if node.type in self.lmap.raise_kinds:
+                self._record_exit(node)
+            elif node.type not in scopes:
+                stack.extend(reversed(node.named_children))
 
     def _build_if(self, if_node: Node, cur: BasicBlock) -> BasicBlock:
         cur.kind = "branch"
@@ -524,12 +603,15 @@ class _CFGBuilder:
         # handlers and the ``finally`` (which also runs on a body ``return``).
         # Blocks are numbered in creation order: a region's blocks are the
         # ones created from its first id on.
+        clauses = [c for c in try_node.children if c.type in self.lmap.catch_kinds]
+        heads = [self._handler(c) for c in clauses]
         first = len(self.blocks)
         body_entry = self._new()
         self._edge(cur, body_entry)
-        body_out = self._process_seq(
-            self._body_stmts(try_node.child_by_field_name("body")), body_entry
-        )
+        body = try_node.child_by_field_name("body")
+        self._guards.append(tuple(heads))
+        body_out = self._process_seq(self._body_stmts(body), body_entry)
+        self._guards.pop()
         protected = self.blocks[first:]
         if finally_clause is not None:
             self._protect(cur, protected, normal_join)
@@ -549,23 +631,47 @@ class _CFGBuilder:
         elif body_out is not None:
             self._edge(body_out, normal_join)
 
-        for handler in (c for c in try_node.children if c.type in self.lmap.catch_kinds):
+        handlers = []
+        for handler, head in zip(clauses, heads, strict=True):
             first = len(self.blocks)
             handler_entry = self._new("handler")
             # The clause head (``except E as e:``) reads the exception type and
             # binds its name; the dialect says which (``handler_def_use``).
             self._record_head(handler_entry, handler)
             self._protect(cur, protected, handler_entry)
+            self._handling.append(head)
             handler_out = self._process_seq(
                 self._body_stmts(self._block_of(handler)), handler_entry
             )
+            self._handling.pop()
+            handlers.append(replace(head, completes=handler_out is not None))
             if handler_out is not None:
                 self._edge(handler_out, normal_join)
             # A handler that returns or raises part-way still runs ``finally``.
             if finally_clause is not None:
                 self._raises_to(self.blocks[first:], normal_join)
 
+        parts = [body, else_clause, *clauses, finally_clause]
+        self._regions.append(
+            TryRegion(
+                try_node.start_point[0] + 1,
+                try_node.end_point[0] + 1,
+                _lines(body) or (0, 0),
+                tuple(x for x in map(_lines, parts) if x is not None),
+                tuple(handlers),
+                _lines(finally_clause),
+            )
+        )
         return join
+
+    @staticmethod
+    def _handler(clause: Node) -> Handler:
+        types, name = handler_head(clause)
+        return Handler(clause.start_point[0] + 1, clause.end_point[0] + 1, types, name)
+
+
+def _lines(node: Node | None) -> tuple[int, int] | None:
+    return (node.start_point[0] + 1, node.end_point[0] + 1) if node is not None else None
 
 
 def build_cfg(
