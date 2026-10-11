@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .commands import commands_for_tests, js_packages_in
+from .commands import commands_for_tests
 
 #: The most stages one batch holds.
 BATCH_MAX_STAGES = 5
@@ -74,9 +74,11 @@ def stage_batches(
         return None
     lead = [s["n"] for s in steps if s["n"] < numbers[0]]
     tests, total = _batch_tests(detail)
-    # Each JS/TS test runs from the package the plan's own command runs it from.
-    plan_commands = [str(c) for c in _validation(detail).get("commands") or []]
-    commands = commands_for_tests(tests, total=total, packages=js_packages_in(plan_commands, tests))
+    # Each JS/TS test runs from the package the plan stored for it.
+    packages = _validation(detail).get("js_packages")
+    commands = commands_for_tests(
+        tests, total=total, packages=packages if isinstance(packages, Mapping) else None
+    )
     check = _check(tests, detail)
     sizes = _sizes(len(numbers))
     out: list[dict[str, Any]] = []

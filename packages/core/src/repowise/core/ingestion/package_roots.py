@@ -26,7 +26,7 @@ Closing that needs glob support in the manifest list, which is its own change.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from ..fs_walk import walk_repo
@@ -147,6 +147,28 @@ def module_for(rel_path: str, package_roots: set[str]) -> str | None:
                 return candidate
     head = norm.split("/", 1)[0]
     return head or None
+
+
+def owning_package(
+    rel_path: str,
+    manifests: Mapping[str, frozenset[str]],
+    manifest_name: str,
+    accepts: Callable[[str], bool],
+) -> str | None:
+    """The deepest package root above *rel_path* holding *manifest_name* that
+    *accepts* takes, else the repository root (``""``) when it does, else None.
+
+    *manifests* is :func:`scan_package_manifests`'s map, which leaves the root
+    out; *accepts* gets a root directory and reads whatever its language needs
+    from that manifest (a JS test script, say). One lookup for any ecosystem.
+    """
+    roots = {root for root, names in manifests.items() if manifest_name in names}
+    current = rel_path.replace("\\", "/")
+    while (owner := module_for(current, roots)) in roots:
+        if accepts(owner):
+            return owner
+        current = owner
+    return "" if accepts("") else None
 
 
 def package_roots_from_paths(all_paths: set[str]) -> set[str]:

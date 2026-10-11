@@ -26,7 +26,7 @@ from ....co_change import parse_partners
 from ....persistence.crud.analysis.dead_code import get_dead_code_findings
 from ....persistence.crud.authority import governing_decisions_by_file
 from ....persistence.crud.git import get_git_metadata_bulk
-from ....persistence.models import GitCommit, GitFunctionBlame, GraphNode, Repository
+from ....persistence.models import GitCommit, GitFunctionBlame, GraphNode
 from ..queue.eligibility import DeadSpan, dead_spans, dead_target
 from .extract_helper import ACTIVE_CO_CHANGE
 from .models import RefactoringSuggestion
@@ -373,13 +373,13 @@ async def load_annotation_facts(
     repository_id: str,
     suggestions: Sequence[RefactoringSuggestion],
     tests: Iterable[str] = (),
+    *,
+    root: str | None = None,
 ) -> AnnotationFacts:
     """Every fact :func:`annotate` reads, for the whole plan set at once;
-    *tests* are the ones the Extract Method plans run."""
+    *tests* are the ones the Extract Method plans run, and *root* is the
+    checkout the caller already looked up (None reads no test sources)."""
     files = sorted({item.file_path for item in suggestions if item.file_path})
-    root = await session.scalar(
-        select(Repository.local_path).where(Repository.id == repository_id)
-    )
     metadata = await get_git_metadata_bulk(session, repository_id, files)
     dead = await get_dead_code_findings(session, repository_id)
     recent = await _recent_commits(session, repository_id)

@@ -41,7 +41,7 @@ from repowise.core.code_origin import ship_rank
 from repowise.core.test_paths import is_test_support_path, names_test_for, paired_test_names
 
 from .annotations import PlanAnnotations, partner_rows
-from .commands import JsPackages, commands_for_tests
+from .commands import JsPackages, commands_for_tests, plan_packages
 from .models import RefactoringSuggestion
 from .render import list_plan
 
@@ -309,6 +309,9 @@ class ValidationPlan:
     # differs from the plan's, else ``None``; empty when none differs. Kept out
     # of :meth:`as_dict`, which every list serves; plan detail reads it.
     step_verify: list[dict[str, Any] | None] = field(default_factory=list)
+    # The package each shown JS/TS test runs from (``commands.JsPackages``),
+    # so a later read builds the same commands without a checkout.
+    js_packages: dict[str, str | None] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -323,6 +326,7 @@ class ValidationPlan:
             "targets": [target.as_dict() for target in self.targets],
             "reasons": self.reasons,
             "prerequisite": self.prerequisite,
+            **({"js_packages": self.js_packages} if self.js_packages else {}),
         }
 
 
@@ -917,6 +921,7 @@ def build_validation_plan(
         commands=commands,
         targets=target_rows,
         reasons=reasons if order_tests else {},
+        js_packages=plan_packages(shown, facts.js_packages),
         # Also when tests reach the file but none reaches a function it changes.
         prerequisite=(
             _characterization_step(suggestion)

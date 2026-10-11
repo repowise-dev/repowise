@@ -8,6 +8,7 @@ never adds SQL statements.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -47,6 +48,7 @@ from repowise.core.analysis.test_reachability import (
     tests_matching_by_name,
     tests_reaching_by_tier,
 )
+from repowise.core.ingestion.package_roots import scan_package_manifests
 
 from ...models import GraphMetric, GraphNode, HealthFileMetric, Repository
 from ..graph import get_graph_metrics
@@ -65,6 +67,7 @@ async def hydrate_recommendations(
     test_limit: int = DEFAULT_TEST_LIMIT,
     step_verify: bool = False,
     findings: Sequence[Any] | None = None,
+    checkout: Checkout | None = None,
 ) -> list[Recommendation]:
     """Hydrate, enrich, validate, rank, and serialize-ready all *rows*.
 
@@ -76,7 +79,8 @@ async def hydrate_recommendations(
     (:func:`with_step_verify`). Finalize asks, so it is stored once; a live
     read never rebuilds it and serves the plan-level answer. Finalize also
     passes the repository's *findings*, so a plan that leaves a function at
-    the break-up bar is marked and ranked after the rest.
+    the break-up bar is marked and ranked after the rest. Index-time callers
+    pass the *checkout*, so each JS/TS test's command runs from its package.
     """
     if not rows:
         return []
@@ -97,6 +101,7 @@ async def hydrate_recommendations(
         test_limit=test_limit,
         in_degree=centrality,
         step_verify=step_verify,
+        checkout=checkout,
     )
     recommendations = build_recommendations(
         suggestions,
@@ -116,13 +121,14 @@ async def _validation_plans(
     test_limit: int,
     in_degree: Mapping[str, float] | None = None,
     step_verify: bool = False,
+    checkout: Checkout | None = None,
 ) -> list[ValidationPlan]:
     """One validation plan per suggestion, every read batched across the set."""
     target_files = sorted(
         {path for suggestion in suggestions for path in affected_files(suggestion)}
     )
     inputs = await validation_inputs(
-        session, repository_id, suggestions, target_files, in_degree=in_degree
+        session, repository_id, suggestions, target_files, in_degree=in_degree, checkout=checkout
     )
     evidence = await _validation_evidence(
         session, repository_id, suggestions, target_files, inputs.test_files, inputs.evidence
@@ -159,10 +165,13 @@ async def validation_inputs(
     target_files: Sequence[str],
     *,
     in_degree: Mapping[str, float] | None = None,
+    checkout: Checkout | None = None,
 ) -> ValidationInputs:
     """Measured coverage and the tiered reachability walk for every plan's files.
 
     *in_degree* is the stored fan-in a caller already read; without it, read here.
+    With the *checkout*, each JS/TS test's package is read, for the plans to
+    store; without it, commands run from the repository root.
     """
     measured = await tests_covering_files(session, repository_id, set(target_files))
 
@@ -212,7 +221,7 @@ async def validation_inputs(
             siblings=_siblings(in_degree),
             symbols=await _symbol_spans(session, repository_id, target_files),
             function_tests=await tests_in_files(session, repository_id, target_files),
-            js_packages=await _js_packages(session, repository_id, test_files),
+            js_packages=await _js_packages(checkout, test_files),
         ),
     )
     return ValidationInputs(
@@ -253,16 +262,40 @@ async def _validation_evidence(
     )
 
 
-async def _js_packages(
-    session: AsyncSession, repository_id: str, test_files: set[str]
-) -> JsPackages | None:
-    """The package each JS/TS test runs from, read from the checkout's
-    package.json files; None without a checkout, so commands run from the root."""
-    repo = await session.get(Repository, repository_id)
-    root = Path(repo.local_path) if repo is not None and repo.local_path else None
-    if root is None or not root.is_dir():
+#: A checkout as finalize sees it: its path and the commit it was indexed at.
+Checkout = tuple[str | None, str | None]
+
+#: The last package scan per checkout path and the commit it was taken at: the
+#: refactoring and performance finalizers and Fix first all ask in one update.
+#: Ceiling: a manifest edited without a new commit keeps the cached scan.
+_SCANS: dict[str, tuple[str, dict[str, frozenset[str]]]] = {}
+
+
+async def repository_checkout(session: AsyncSession, repository_id: str) -> Checkout:
+    """The repository's checkout path and indexed commit, in one read."""
+    row = (
+        await session.execute(
+            select(Repository.local_path, Repository.head_commit).where(
+                Repository.id == repository_id
+            )
+        )
+    ).first()
+    return (row[0], row[1]) if row is not None else (None, None)
+
+
+async def _js_packages(checkout: Checkout | None, test_files: set[str]) -> JsPackages | None:
+    root, commit = checkout or (None, None)
+    path = Path(root) if root else None
+    if root is None or path is None or not path.is_dir():
         return None
-    return js_test_packages(root, test_files)
+    cached = _SCANS.get(root)
+    if cached is None or commit is None or cached[0] != commit:
+        manifests = await asyncio.to_thread(scan_package_manifests, path)
+        if commit is not None:
+            _SCANS[root] = (commit, manifests)
+    else:
+        manifests = cached[1]
+    return await asyncio.to_thread(js_test_packages, path, manifests, test_files)
 
 
 async def _symbol_spans(

@@ -43,6 +43,10 @@ export interface RecommendationValidation {
   /** Set when no test reaches the change: the step to take before the edit.
    *  Absent on a payload from an older server. */
   prerequisite?: string | null;
+  /** The package directory each shown JS/TS test runs from ("" is the root,
+   *  null when none can run it). Absent when the plan was validated without
+   *  a checkout or names no JS/TS test. */
+  js_packages?: Record<string, string | null>;
 }
 
 /** How a step's tests were found: coverage runs its lines, the graph reaches

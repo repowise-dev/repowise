@@ -72,7 +72,7 @@ from ...models import (
 from ...read_snapshots import decode_or_none, read_snapshot, refresh_snapshot, snapshot_key
 from ...sql import json_text
 from .plain_rows import plain_rows, row_shape
-from .refactoring_recommendations import validation_inputs
+from .refactoring_recommendations import repository_checkout, validation_inputs
 
 #: Files read for plan-less finding items, by open code-shape deduction.
 #: Ceiling: a file past this rank never becomes a finding item. The queue
@@ -460,8 +460,13 @@ async def _finding_validator(
     if not spans:
         return lambda *_: None
     suggestions = [_span_suggestion(p, f.function_name, s, e) for (p, s, e), f in spans.items()]
+    # Built once per store write, so the checkout's package.json reads are too.
     inputs = await validation_inputs(
-        session, repo_id, suggestions, sorted({s.file_path for s in suggestions})
+        session,
+        repo_id,
+        suggestions,
+        sorted({s.file_path for s in suggestions}),
+        checkout=await repository_checkout(session, repo_id),
     )
 
     def validate(path: str, function: Any, start: Any, end: Any) -> dict[str, Any] | None:

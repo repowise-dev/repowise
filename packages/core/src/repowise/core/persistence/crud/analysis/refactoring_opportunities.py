@@ -293,7 +293,7 @@ async def _rank_live_plans(
 
     from ....analysis.health.refactoring.annotations import annotate, load_annotation_facts
     from .refactoring import shown_plan_predicate, store_plan_ranks
-    from .refactoring_recommendations import hydrate_recommendations
+    from .refactoring_recommendations import hydrate_recommendations, repository_checkout
 
     rows = (
         await session.execute(
@@ -304,8 +304,9 @@ async def _rank_live_plans(
             )
         )
     ).scalars()
+    checkout = await repository_checkout(session, repository_id)
     ranked = await hydrate_recommendations(
-        session, repository_id, list(rows), step_verify=True, findings=findings
+        session, repository_id, list(rows), step_verify=True, findings=findings, checkout=checkout
     )
     facts = await load_annotation_facts(
         session,
@@ -317,6 +318,7 @@ async def _rank_live_plans(
             if item.suggestion.refactoring_type == "extract_method"
             for test in item.validation.tests
         ],
+        root=checkout[0],
     )
     ranked = [
         dataclasses.replace(
