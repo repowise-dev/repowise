@@ -12,6 +12,7 @@ import {
   extractClassGroups,
   extractHelperDetail,
   extractHelperOccurrences,
+  extractHelperReuse,
   extractMethodPlan,
   extractMethodSignature,
   extractMethodStages,
@@ -27,7 +28,7 @@ import {
   splitShimRequired,
 } from "./types";
 import type { ExtractStage } from "./types";
-import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
+import type { ExtractHelperReuse, RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 export interface PlanDetailProps {
   plan: RefactoringPlan;
@@ -226,6 +227,73 @@ function StagedExtract({
 /** One accent for every type. See the note in `plan-before.tsx`. */
 const ACCENT = "var(--color-accent-fill)";
 
+/** Extract Helper when one site already is a function: name it, and say what
+ *  each other site does (call it, or delete a copy of it). */
+function ReuseDetail({
+  reuse,
+  fileHref,
+  hideIntro,
+}: {
+  reuse: ExtractHelperReuse;
+  fileHref: PlanDetailProps["fileHref"];
+  hideIntro: boolean;
+}) {
+  const name = reuse.existing_symbol.split("::").pop() ?? reuse.existing_symbol;
+  return (
+    <div className="space-y-3">
+      {hideIntro ? null : (
+        <p className="text-xs text-[var(--color-text-tertiary)]">{reuse.reason}</p>
+      )}
+      <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5">
+        <div className="text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
+          Existing function
+        </div>
+        <FileRef
+          path={reuse.file}
+          line={reuse.span.start || null}
+          fileHref={fileHref}
+          label={`${name}()`}
+          className="mt-1 block break-all font-semibold"
+        />
+      </div>
+      <div className="space-y-1.5">
+        <div className="text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
+          Change at {reuse.sites.length} site{reuse.sites.length === 1 ? "" : "s"}
+        </div>
+        <ul className="divide-y divide-[var(--color-border-default)] overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
+          {reuse.sites.map((s, i) => (
+            <li key={i} className="space-y-1.5 px-3.5 py-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <span className="min-w-0 flex-1">
+                  <FileRef
+                    path={s.file}
+                    line={s.span.start || null}
+                    fileHref={fileHref}
+                    className="block truncate"
+                  />
+                </span>
+                <span className="shrink-0 text-2xs tabular-nums text-[var(--color-text-tertiary)]">
+                  {s.action === "delete" ? "Delete copy" : "Replace"}, lines {s.span.start}–
+                  {s.span.end}
+                </span>
+              </div>
+              {s.action === "delete" ? (
+                <p className="text-2xs text-[var(--color-text-secondary)]">
+                  Import <code>{name}</code> from <code>{reuse.file}</code> in its place.
+                </p>
+              ) : s.new_text ? (
+                <code className="block whitespace-pre-wrap break-all rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-2xs text-[var(--color-text-secondary)]">
+                  {s.new_text}
+                </code>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProps) {
   const accent = ACCENT;
 
@@ -365,6 +433,8 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
   }
 
   if (plan.refactoring_type === "extract_helper") {
+    const reuse = extractHelperReuse(plan);
+    if (reuse) return <ReuseDetail reuse={reuse} fileHref={fileHref} hideIntro={hideIntro} />;
     const occ = extractHelperOccurrences(plan);
     const site = helperSite(plan);
     const detail = extractHelperDetail(plan);

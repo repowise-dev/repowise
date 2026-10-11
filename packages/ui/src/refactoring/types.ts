@@ -9,6 +9,7 @@
 
 import type {
   ExtractCallSite,
+  ExtractHelperReuse,
   ExtractSlot,
   GeneratedCode,
   RefactoringPlan,
@@ -74,6 +75,38 @@ export function extractHelperOccurrences(plan: RefactoringPlan): ExtractHelperOc
       line_end: Number(rec.line_end ?? 0),
     };
   });
+}
+
+/** The existing function an Extract Helper plan calls instead of a new
+ *  helper, and what happens at each other site; `null` when the plan adds a
+ *  new helper. Sites with an unknown action are dropped. */
+export function extractHelperReuse(plan: RefactoringPlan): ExtractHelperReuse | null {
+  const r = plan.plan?.reuse as Record<string, unknown> | undefined;
+  if (!r || typeof r.existing_symbol !== "string" || !Array.isArray(r.sites)) return null;
+  const span = (v: unknown) => {
+    const s = (v ?? {}) as Record<string, unknown>;
+    return { start: Number(s.start ?? 0), end: Number(s.end ?? 0) };
+  };
+  const sites = r.sites.flatMap((raw): ExtractHelperReuse["sites"] => {
+    const s = (raw ?? {}) as Record<string, unknown>;
+    if (s.action !== "replace_with_call" && s.action !== "delete") return [];
+    return [
+      {
+        file: String(s.file ?? ""),
+        span: span(s.span),
+        action: s.action,
+        new_text: typeof s.new_text === "string" ? s.new_text : null,
+        replaces: typeof s.replaces === "string" ? s.replaces : null,
+      },
+    ];
+  });
+  return {
+    existing_symbol: r.existing_symbol,
+    file: String(r.file ?? ""),
+    span: span(r.span),
+    reason: typeof r.reason === "string" ? r.reason : "",
+    sites,
+  };
 }
 
 /** Where the shared helper should live — a directory.
