@@ -90,3 +90,18 @@ def test_pascal_bare_system_prefix_is_not_seeded() -> None:
     seeding the short prefixes by accident."""
     assert classify_io_kind("system") is None
     assert classify_io_kind("system.net") is None
+
+
+@pytest.mark.parametrize(
+    ("name", "kind"),
+    [
+        ("isomorphic-ws", "network"),
+        ("cross-fetch", "network"),
+        ("pg-promise", "db"),
+        ("redis-om", "db"),
+        ("node:http", "network"),
+        ("node:child_process", "subprocess"),
+    ],
+)
+def test_compound_and_node_scheme_names_classify_whole(name: str, kind: str) -> None:
+    assert classify_io_kind(name) == kind

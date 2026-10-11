@@ -424,20 +424,35 @@ def test_a_hyphenated_ts_module_path_names_no_library():
 
 
 @pytest.mark.parametrize(
-    ("source", "name", "kind"),
+    ("source", "expected"),
     [
-        (b'import http from "node:http";\n', "http", "network"),
-        (b'import x = require("axios");\n', "x", "network"),
-        (b'import * as fs from "node:fs/promises";\n', "fs", "filesystem"),
+        (b'import http from "node:http";\n', {"http": "network"}),
+        (b'import x = require("axios");\n', {"x": "network"}),
+        (b'import * as fs from "node:fs/promises";\n', {"fs": "filesystem"}),
+        (b'import { PrismaClient } from "@prisma/client";\n', {"PrismaClient": "db"}),
+        (b'import type { Pool } from "pg";\n', {"Pool": "db"}),
+        (b'import ws from "ws";\n', {"ws": "network"}),
+        (b'import "ws";\n', {}),
     ],
 )
-def test_a_ts_import_binds_its_clause_names(source: bytes, name: str, kind: str):
-    assert walk_file("t.ts", "typescript", source).io_boundary_names == {name: kind}
+def test_a_ts_import_binds_only_its_clause_names(source: bytes, expected: dict[str, str]):
+    assert walk_file("t.ts", "typescript", source).io_boundary_names == expected
 
 
-def test_a_go_import_still_binds_its_package_name_from_the_path():
-    fc = walk_file("t.go", "go", b'package p\nimport "net/http"\n')
-    assert fc.io_boundary_names.get("http") == "network"
+@pytest.mark.parametrize(
+    ("path", "language", "source", "expected"),
+    [
+        (
+            "t.go",
+            "go",
+            b'package p\nimport h "net/http"\n',
+            {"h": "network", "net": "network", "http": "network"},
+        ),
+        ("t.rb", "ruby", b'require "net/http"\n', {"net": "network", "http": "network"}),
+    ],
+)
+def test_go_and_ruby_still_bind_through_the_quoted_path(path, language, source, expected):
+    assert walk_file(path, language, source).io_boundary_names == expected
 
 
 class _FakeImportNode:

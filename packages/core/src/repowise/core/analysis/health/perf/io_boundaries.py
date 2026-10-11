@@ -98,8 +98,7 @@ def _candidate_variants(tok: str) -> set[str]:
       keys on), not just the leaf ``Files`` or the root ``java``.
     """
     out: set[str] = {tok}
-    # ``node:http`` is Node's spelling of the ``http`` builtin.
-    parts = [p for p in tok.removeprefix("node:").split("/") if p]
+    parts = [p for p in tok.split("/") if p]
     out.update(parts)
     for seg in parts:
         # Rust scoped paths use ``::`` (``std::fs::read`` / ``sqlx::query``).
