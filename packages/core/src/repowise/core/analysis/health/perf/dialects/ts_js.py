@@ -472,8 +472,9 @@ class TsJsPerfDialect(TsJsMarkerHooks, IterableSources):
         if method == "slice":
             return "bounded" if _slice_is_bounded(call) else None
         if probe(call) in ("db", "network"):
-            # A read capped in the query (``take: n``) is as large as its cap.
-            capped = any(_pair_key_is(n, b"take") for n in self._walk(call))
+            # A read capped in the query (``take: n``) is as large as its cap, and
+            # one filtered to a set of keys (``id: { in: ids }``) as large as the keys.
+            capped = any(_pair_key_is(n, k) for n in self._walk(call) for k in (b"take", b"in"))
             return None if capped else "grows_with_data"
         if method == "json":
             # ``fetch(url).json()`` / ``(await sink()).json()`` — a

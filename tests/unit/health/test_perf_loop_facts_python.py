@@ -644,6 +644,42 @@ def test_a_read_filtered_to_a_chunk_loops_element_does_not_grow():
     assert facts.magnitude != "grows_with_data"
 
 
+def test_a_read_filtered_to_a_set_of_keys_does_not_grow():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, paths):\n"
+        b"    result = await session.execute(select(G).where(G.path.in_(paths)))\n"
+        b"    for g in result.scalars().all():\n"
+        b"        await session.execute(select(H).where(H.id == g.id))\n"
+    )
+    assert facts.magnitude != "grows_with_data"
+
+
+@pytest.mark.parametrize("values", ['("a", "b")', "SOURCES", "sources"])
+def test_a_fixed_set_of_values_is_a_state_filter_that_grows(values):
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session):\n"
+        b"    sources = ('a', 'b')\n"
+        b"    result = await session.execute(select(G).where(G.source.in_(" + values.encode() + b")))\n"
+        b"    for g in result.scalars().all():\n"
+        b"        await session.execute(select(H).where(H.id == g.id))\n"
+    )
+    assert facts.magnitude == "grows_with_data"
+
+
+def test_keys_a_subquery_yields_still_grow():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session):\n"
+        b"    ids = select(R.id).subquery()\n"
+        b"    result = await session.execute(select(G).where(G.repo_id.in_(ids)))\n"
+        b"    for g in result.scalars().all():\n"
+        b"        await session.execute(select(H).where(H.id == g.id))\n"
+    )
+    assert facts.magnitude == "grows_with_data"
+
+
 def test_a_limit_on_a_statement_built_before_the_loop_caps_the_read():
     facts = _loop(
         b"from sqlalchemy import select\n"

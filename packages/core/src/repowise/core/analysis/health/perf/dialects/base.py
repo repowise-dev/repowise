@@ -891,6 +891,13 @@ class BasePerfDialect:
         """
         return frozenset()
 
+    def read_key_column(self, call: Node, anchor: Node) -> str | None:
+        """The column *call* filters a read to a set of input keys on
+        (``Model.col.in_(ids)``), so the read scales with the keys, not the
+        table. Values a name holds are read as bound before *anchor*.
+        Default ``None``: a language that names no key filter."""
+        return None
+
     # Functions that ARE a lock acquisition, and the header of an unbounded
     # retry loop in this language. A spin loop inside such a function is how the
     # lock gets taken (tryLock retry, CAS spin): there is nothing to hoist. Both
