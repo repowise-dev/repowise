@@ -48,11 +48,11 @@ from __future__ import annotations
 import posixpath
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath
 
-from ...ingestion.languages.js_config_values import call_argument_literals, value_spans
+from ...ingestion.languages.js_config_values import plugin_path_arguments, value_spans
 from ...ingestion.languages.registry import REGISTRY
 from .constants import (
     _BARE_NAME_USE_LANGUAGES,
@@ -619,7 +619,8 @@ def clamp_path_mentions(
         return findings
 
     named_in = _files_naming({f.file_path for f in in_scope}, source_map)
-    run = {id(f) for f in in_scope if _loaded(f, named_in.get(f.file_path, ()), source_map)}
+    loads = _ConfigLoads(source_map)
+    run = {id(f) for f in in_scope if _loaded(f, named_in.get(f.file_path, ()), loads)}
     kept = [f for f in findings if id(f) not in run]
     for finding in kept:
         if finding.kind is DeadCodeKind.UNREACHABLE_FILE:
@@ -627,33 +628,47 @@ def clamp_path_mentions(
     return kept
 
 
-def _loaded(
-    finding: DeadCodeFindingData, namers: Iterable[str], source_map: dict[str, bytes]
-) -> bool:
+def _loaded(finding: DeadCodeFindingData, namers: Iterable[str], loads: _ConfigLoads) -> bool:
     """Whether *namers* load the file of *finding* in the way the finding denies.
 
-    A tool config is read only through its load keys, even when it is also a
+    A tool config is read only through its load keys and plugin path
+    arguments, even when it is also a
     runner by name (a bundler config is a build file): a path it mentions in a
     comment or an ignore list is not loaded.
     """
     path = finding.file_path
     configs = [n for n in namers if is_tool_config(n)]
-    loaders = [n for n in configs if _config_loads(n, path, source_map)]
+    loaders = [n for n in configs if loads.loads(n, path)]
     if finding.kind is DeadCodeKind.UNREACHABLE_FILE:
         others = (n for n in namers if n not in configs)
         return bool(loaders) or any(map(is_runner_file, others))
-    return bool(loaders) and "default" in export_shape(path, frozenset(), source_map.get(path))
+    source = loads.source_map.get(path)
+    return bool(loaders) and "default" in export_shape(path, frozenset(), source)
 
 
-def _config_loads(config: str, target: str, source_map: dict[str, bytes]) -> bool:
-    """Whether *config* names *target* under one of its load keys or as a path argument."""
-    text = source_map.get(config, b"")
-    # A bare word argument is a name, not a file, so a call argument needs a "/".
-    paths = [f'"{s}"'.encode() for s in call_argument_literals(text) if "/" in s]
-    values = b"\n".join([*value_spans(text, _TOOL_CONFIG_LOAD_KEYS), *paths])
-    wanted = {key: {target} for key in _path_keys(target)}
-    tails = {key.rpartition("/")[2] for key in wanted}
-    return target in _targets_in(values, wanted, tails, config.rpartition("/")[0])
+@dataclass
+class _ConfigLoads:
+    """What each tool config loads, read once per config for the whole pass."""
+
+    source_map: dict[str, bytes]
+    _values: dict[str, bytes] = field(default_factory=dict)
+
+    def loads(self, config: str, target: str) -> bool:
+        """Whether *config* names *target* under a load key or as a plugin's path."""
+        wanted = {key: {target} for key in _path_keys(target)}
+        tails = {key.rpartition("/")[2] for key in wanted}
+        base = config.rpartition("/")[0]
+        return target in _targets_in(self._load_values(config), wanted, tails, base)
+
+    def _load_values(self, config: str) -> bytes:
+        if config not in self._values:
+            text = self.source_map.get(config, b"")
+            # Re-quoted so _targets_in reads each as the one path token it is;
+            # a bare word argument is a name, not a file, so it needs a "/".
+            paths = [f'"{s}"'.encode() for s in plugin_path_arguments(text) if "/" in s]
+            spans = value_spans(text, _TOOL_CONFIG_LOAD_KEYS)
+            self._values[config] = b"\n".join([*spans, *paths])
+        return self._values[config]
 
 
 def _cap_named_by_path(finding: DeadCodeFindingData, namers: list[str] | None) -> None:

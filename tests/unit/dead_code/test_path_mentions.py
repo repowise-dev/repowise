@@ -9,6 +9,8 @@ keeps its confidence.
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
 from repowise.core.analysis.dead_code.models import DeadCodeFindingData
 from repowise.core.analysis.dead_code.name_occurrences import clamp_path_mentions
@@ -221,11 +223,39 @@ def test_a_config_passing_a_file_path_to_a_plugin_loads_it():
     assert _dropped("packages/web/src/i18n/request.ts", {"packages/web/next.config.ts": config})
 
 
-def test_a_config_call_argument_needs_a_path_not_a_bare_word():
+def test_a_plugin_path_argument_needs_a_path_not_a_bare_word():
     config = 'const plugin = makePlugin("request.ts");\n'
     assert not _dropped("request.ts", {"next.config.ts": config})
 
 
-def test_a_call_argument_inside_an_ignore_list_does_not_load_a_file():
-    config = "export default defineConfig({ ignores: [resolve('./src/old.ts')] });\n"
-    assert not _dropped("src/old.ts", {"eslint.config.js": config})
+@pytest.mark.parametrize(
+    "config",
+    [
+        # A path computed into a variable the ignore list then uses.
+        'const legacy = path.resolve(__dirname, "src/old.ts");\n'
+        "export default [{ ignores: [legacy] }];\n",
+        'const files = glob.sync("src/old.ts");\n',
+        'const text = fs.readFileSync("src/old.ts", "utf8");\n',
+        'console.log("src/old.ts");\n',
+        'export default [globalIgnores(["src/old.ts"]), globalIgnores("src/old.ts")];\n',
+        # Nested: only the outer call is a config factory, neither is a plugin.
+        'export default defineConfig(resolve("src/old.ts"));\n',
+        "export default defineConfig({ ignores: [resolve('./src/old.ts')] });\n",
+        # A plugin's second argument, or a path it computes with, is not its file.
+        'export default somePlugin({}, "src/old.ts");\n',
+        'export default somePlugin(resolve("src/old.ts"));\n',
+        # Imported by require: an import edge answers that, not this rule.
+        'const old = require("./src/old.ts");\n',
+    ],
+)
+def test_a_path_a_config_only_computes_with_is_not_loaded(config):
+    for name in ("eslint.config.js", "next.config.ts"):
+        assert not _dropped("src/old.ts", {name: config})
+        finding = _export("src/old.ts", "default")
+        source = {name: config, "src/old.ts": "export default 1;\n"}
+        assert clamp_path_mentions([finding], {p: s.encode() for p, s in source.items()})
+
+
+def test_a_plugin_in_a_plugins_array_loads_its_path():
+    config = 'export default { plugins: [mdxPlugin("./src/mdx-components.tsx")] };\n'
+    assert _dropped("src/mdx-components.tsx", {"vite.config.ts": config})

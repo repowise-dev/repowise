@@ -50,6 +50,14 @@ def test_a_usage_line_for_another_script_is_not_a_program():
     assert files == {"scripts/hero.py"}
 
 
+def test_a_usage_line_for_a_same_named_script_elsewhere_is_not_a_program():
+    body = b'"""Wraps it.\n\n    python pkg/b/run.py\n"""\nX = 1\n'
+    files = _unreachable({"pkg/a/run.py": {"symbols": []}}, {"pkg/a/run.py": body})
+    assert files == {"pkg/a/run.py"}
+    own = b'"""Usage: python ./pkg/a/run.py or python a/run.py"""\nX = 1\n'
+    assert _unreachable({"pkg/a/run.py": {"symbols": []}}, {"pkg/a/run.py": own}) == set()
+
+
 def test_a_script_a_ci_workflow_runs_is_not_unreachable():
     workflow = b"jobs:\n  check:\n    steps:\n      - run: python scripts/emit_sample_dsl.py\n"
     files = _unreachable(

@@ -109,14 +109,21 @@ def _program_reason(path: str, blob: bytes) -> str | None:
 def _runs_itself(path: str, blob: bytes) -> bool:
     """Whether a Python file writes a ``python <its own path>`` usage line.
 
-    Only the file's own name counts: a usage line for another script says
-    nothing about this one.
+    Only the file's own path counts, written whole or as a tail of it
+    (``run.py``, ``a/run.py``): a usage line for another script, even one of
+    the same name in another directory, says nothing about this one.
     """
     if not path.endswith(".py"):
         return False
     name = re.escape(path.rpartition("/")[2].encode())
-    command = rb"\bpython[\d.]*[ \t]+(?:-\S+[ \t]+)*(?:[\w.\\/-]*[\\/])?" + name + rb"(?![\w.])"
-    return re.search(command, blob) is not None
+    command = rb"\bpython[\d.]*[ \t]+(?:-\S+[ \t]+)*((?:[\w.\\/-]*[\\/])?" + name + rb")(?![\w.])"
+    return any(_names_path(m.group(1), path) for m in re.finditer(command, blob))
+
+
+def _names_path(written: bytes, path: str) -> bool:
+    """Whether *written*, a path as a command line spells it, is *path* or a tail of it."""
+    tail = written.decode("ascii", "ignore").replace("\\", "/").removeprefix("./")
+    return f"/{path}".endswith(f"/{tail}")
 
 
 def is_program(path: str, blob: bytes) -> bool:
