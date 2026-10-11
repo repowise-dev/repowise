@@ -78,6 +78,8 @@ _FLAT_BRANCH_KINDS = frozenset(
     {
         "if_clause",
         "guard",
+        # Swift ``for x in xs where c`` / ``catch E where c``.
+        "where_clause",
         "if_modifier",
         "unless_modifier",
         "while_modifier",

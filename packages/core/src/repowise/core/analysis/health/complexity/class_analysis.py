@@ -293,6 +293,10 @@ def _foreign_member_id(node: Node, lmap: LanguageNodeMap) -> int | None:
     obj, prop = member_object(node), member_name(node)
     if obj is None or prop is None or obj.id == prop.id:
         return None  # a bare call (``id()``) has no receiver
+    # The child of *node* that holds the name: the name itself, or the
+    # wrapper around it (Swift's ``navigation_suffix``).
+    while prop.parent is not None and prop.parent.id != node.id:
+        prop = prop.parent
     return prop.id
 
 

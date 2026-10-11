@@ -550,6 +550,44 @@ def test_kotlin_assertion_blocks():
     assert few is not None and few.assertion_blocks == []
 
 
+def test_swift_nesting_and_ccn():
+    results = _walk("swift/nested.swift", "swift")
+    deep = _find(results, "deeplyNested")
+    assert deep is not None
+    assert deep.max_nesting >= 4, f"expected ≥4 nesting, got {deep.max_nesting}"
+    many = _find(results, "manyBranches")
+    assert many is not None
+    # 6 ifs + 2 boolean operators over the base path.
+    assert many.ccn >= 9, f"expected CCN ≥ 9, got {many.ccn}"
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0
+
+
+def test_swift_scores_the_kotlin_fixture_s_twin_the_same():
+    """``swift/nested.swift`` is ``kotlin/nested.kt`` line for line: the two
+    maps must agree on every number the control flow gives."""
+    swift = {r.name: (r.ccn, r.max_nesting, r.cognitive) for r in _walk("swift/nested.swift", "swift")}
+    kotlin = {r.name: (r.ccn, r.max_nesting, r.cognitive) for r in _walk("kotlin/nested.kt", "kotlin")}
+    assert swift == kotlin
+    assert swift["deeplyNested"] == (5, 4, 10)
+
+
+def test_swift_class_cohesion():
+    classes = _walk_classes("swift/classes.swift", "swift")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    assert cohesive is not None and splintered is not None
+    assert (cohesive.lcom4, cohesive.method_count, cohesive.field_count) == (1, 4, 2)
+    # A struct is a class kind too. Each cluster is an accessor pair over one
+    # field and the loner touches none, as in the Kotlin fixture.
+    assert (splintered.lcom4, splintered.method_count, splintered.field_count) == (1, 5, 2)
+    # ``self.total`` is read as a use of the field: every pair of Cohesive's
+    # methods shares one, and few of Splintered's do. Kotlin's twin agrees.
+    kotlin = _walk_classes("kotlin/classes.kt", "kotlin")
+    assert cohesive.tcc == kotlin["Cohesive"].tcc == 1.0
+    assert splintered.tcc == kotlin["Splintered"].tcc < 0.5
+
+
 def test_cpp_nesting_and_ccn():
     results = _walk("cpp/nested.cpp", "cpp")
     deep = _find(results, "deeplyNested")
