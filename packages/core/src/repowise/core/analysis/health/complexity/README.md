@@ -10,7 +10,7 @@ Tree-sitter AST walker. Single AST pass per file computes:
 > | `walker.py` | Orchestration (`walk_file` / `walk_file_complexity`) + public re-exports |
 > | `models.py` | Output dataclasses (`FunctionComplexity`, `ClassComplexity`, `PerfHit`, ...) |
 > | `ast_utils.py` | Name/text helpers, callee-name reading, function-node collection, parameter counting |
-> | `file_scan.py` | The one descent the whole-file passes share (NLOC index, error handling, class nodes, Rust test spans, perf import names) |
+> | `file_scan.py` | The one descent the whole-file passes share (NLOC index, error handling, class nodes, function nodes at any depth, Rust test spans, perf import names) |
 > | `nloc.py` | Non-blank / non-comment line counting (`CodeLineIndex`) |
 > | `cyclomatic.py` | The CCN / cognitive / max-nesting engine (`_walk_function_body`) |
 > | `assertions.py` | Assertion-block detection (test-quality smells) |
@@ -29,7 +29,9 @@ Tree-sitter AST walker. Single AST pass per file computes:
   (`&&`, `||`).
 - **max nesting depth** — deepest nested control-flow block per function.
   `else if` arms and, in TS/JS, ternary chain arms and ternaries choosing
-  JSX (`flat_ternary_kinds`) add CCN and a flat +1 cognitive but no level.
+  JSX (`flat_ternary_kinds`), plus Python conditional-expression chains
+  (`1 if a else 2 if b else 3`), add CCN and a flat +1 cognitive but no
+  level.
 - **cognitive complexity** — SonarSource-style weighted nesting cost
   (each level adds an incrementing penalty, plus +1 for each break in
   control flow).
@@ -131,7 +133,10 @@ Consumed by `low_cohesion` and `god_class`.
 ## Outputs
 
 One `FunctionComplexity` per function/method symbol detected. Caller maps
-back to ingestion `Symbol` objects by overlapping line ranges.
+back to ingestion `Symbol` objects by overlapping line ranges. A function or
+method defined inside another function has its own entry, listed before the
+entries of the file's own level; a lambda has none and counts toward the
+function that holds it.
 
 ## Extension points
 

@@ -110,7 +110,8 @@ rows of their own.
 Plan detail also lists `risks`, one sentence each, to read before applying the
 plan: an accepted decision that governs the file, callers or importers of what
 the plan moves, a target nothing reaches (delete it instead), and recent commits
-on the same lines. A governed plan's steps are `judgment`, and its
+on the same lines, and a test the plan runs that asserts on the function's own
+source text. A governed plan's steps are `judgment`, and its
 `blast_radius.co_change_partners` names the files that usually change with it.
 A newly accepted decision shows here after the next index or update.
 
@@ -256,14 +257,20 @@ Most plans answer a health finding, so per-path marker rules in
   (`receiver_unbound`, `receiver_copy_written`).
 - An Extract Method plan writes out the new helper's header and the line that
   replaces the span, in the file's language, with parameter types where the code
-  declares them. Plan detail shows both with a copy button. Where the code names
-  no helper or type, the text reads `<name>` or `<type>` for you to fill in.
+  declares them. In TypeScript, an optional parameter is written `T | undefined`,
+  and a type an earlier guard narrows (`if (!x) return;`) is written narrowed, or
+  a note asks for the narrowed type. Plan detail shows both with a copy button.
+  Where the code names no helper or type, the text reads `<name>` or `<type>` for
+  you to fill in.
 - A Python, TypeScript or JavaScript function too complex for one helper can
   get a staged plan instead: several helpers the function calls in order, each
   small enough to leave the finding behind. Plan detail lists them as steps,
   with a shared parameter object when many values pass between them, and the
   plan's estimated gain is the whole drop in the function's complexity. The
-  plan's own span, header and call are its first stage. When a function moves
+  plan's own span, header and call are its first stage. When the work sits
+  inside one loop or `if`, the stages are cut from its body and the function
+  keeps the loop and calls them each time round. A stage running across several
+  labelled sections is named after them. When a function moves
   between a single helper and a staged plan, or its stages change, the plan
   gets a new id.
 - Move Method never targets a class the method only instantiates, or an ancestor of

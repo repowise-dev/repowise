@@ -8,7 +8,8 @@ increment / decrement (``x++`` is a read-modify-write), and the loop variables o
 a ``range`` clause. Selector targets (``obj.field = ...``) and index targets
 (``arr[i] = ...``) bind no *local*, so their base identifiers are reads -- the
 precision-first choice that keeps reaching definitions sound for the locals they
-actually track. The method ``receiver`` (``func (s *Server) m()``) is seeded as a
+actually track. The base is a write as well where the variable holds the value
+itself, a struct or an array, which Go copies (:func:`written_value`). The method ``receiver`` (``func (s *Server) m()``) is seeded as a
 parameter so a span that reads it infers it as an IN.
 
 A Go ``block`` nests its statements in a ``statement_list``; the CFG builder
@@ -27,6 +28,7 @@ from .base import (
     StatementDefUse,
     node_text,
 )
+from .go_values import written_value
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -204,6 +206,9 @@ class GoDefUseDialect(BaseDefUseDialect):
             return
         if t in (_SELECTOR, _INDEX):  # ``obj.f = ...`` / ``a[i] = ...``: base is a read
             self.collect_reads(node, uses)
+            base = written_value(node)
+            if base is not None:  # ... and a write too, where the variable holds the value
+                defs.append(self._occ(base))
             return
         for child in node.named_children:
             self._targets(child, defs, uses)

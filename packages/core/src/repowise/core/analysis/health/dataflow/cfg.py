@@ -453,7 +453,6 @@ class _CFGBuilder:
 
         body_entry = self._new()
         self._edge(header, body_entry)  # enter the loop body
-        self._edge(header, after)  # skip / exhaust the loop
 
         self._loops.append(_LoopCtx(continue_target=header, break_target=after))
         body_out = self._process_seq(
@@ -463,6 +462,19 @@ class _CFGBuilder:
 
         if body_out is not None:
             self._edge(body_out, header)  # back-edge
+
+        # Python's for/while else runs on exhaustion, but not on break. Keep
+        # break targeting ``after`` while routing the header's exhaustion edge
+        # through the else body. Loops without an alternative keep their direct edge.
+        alternative = loop_node.child_by_field_name("alternative")
+        if alternative is None:
+            self._edge(header, after)
+        else:
+            else_entry = self._new()
+            self._edge(header, else_entry)
+            else_out = self._process_seq(self._body_stmts(self._block_of(alternative)), else_entry)
+            if else_out is not None:
+                self._edge(else_out, after)
         return after
 
     def _build_with(self, with_node: Node, cur: BasicBlock) -> BasicBlock | None:

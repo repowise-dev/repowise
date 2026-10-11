@@ -44,12 +44,14 @@ def _render_plans(
     _merge_ignored(result, data.refactoring_plans_ignored)
     if req.wants("refactoring_plans"):
         scoped = data.pop.scoped
+        eligible = bool(data.metric_rows if scoped else data.pop.all_metrics)
         result["refactoring_plans_status"] = _refactoring_plans_status(
             available_plans_total=total,
             plans_emitted=len(rows),
             scoped=scoped,
-            has_eligible_metrics=bool(data.metric_rows if scoped else data.pop.all_metrics),
-            finding=next(iter(data.findings.emitted), None),
+            has_eligible_metrics=eligible,
+            # Read only when no plan exists: ranking the open set costs a full pass.
+            finding=data.findings.head() if eligible and not total else None,
             repo=req.repo,
         )
     # Prose suggestions for biomarkers without a structured plan ship once per

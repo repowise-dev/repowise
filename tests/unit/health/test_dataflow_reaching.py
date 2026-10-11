@@ -17,6 +17,7 @@ from repowise.core.analysis.health.dataflow import (
     analyze_function,
     compute_def_use,
     compute_reaching,
+    find_extractions,
 )
 from repowise.core.analysis.health.dataflow.dialects.base import get_defuse_dialect
 
@@ -72,6 +73,61 @@ def test_simple_assignment():
     )
     assert "x" in defs
     assert "a" in uses
+
+
+@pytest.mark.parametrize("loop_head", ["for item in items:", "while items:"])
+def test_python_loop_else_body_contributes_to_dataflow(loop_head):
+    cfg, def_use, reaching = _analyze(
+        f"""
+        def f(items):
+            {loop_head}
+                consume(items)
+            else:
+                done = flush()
+            return done
+        """
+    )
+    assert "done" in {definition.var for definition in def_use.definitions}
+    assert "flush" in {use.name for block in def_use.blocks.values() for use in block.uses}
+    return_block = next(
+        block
+        for block in cfg.blocks
+        if any(statement.kind == "return_statement" for statement in block.statements)
+    )
+    assert "done" in {definition.var for definition in reaching.reaching_in(return_block.id)}
+
+
+def test_loop_else_read_is_returned_by_extract_method():
+    source = """def pick(items, limit, extra):
+    bound = 0
+    for it in extra:
+        if it > limit:
+            bound += 1
+        if it < 0:
+            bound -= 1
+        if it == 0:
+            bound += 2
+        elif it == 1:
+            bound += 3
+    if bound > 3:
+        bound = 3
+    if bound < 0:
+        bound = 0
+    for x in items:
+        if x > limit:
+            break
+    else:
+        use(bound)
+"""
+    result = analyze_file("m.py", "python", source.encode(), flagged_only=False)
+    assert result.functions
+    candidates = [
+        candidate
+        for candidate in find_extractions(result.functions[0], get_language_map("python"))
+        if candidate.end_line == 15
+    ]
+    assert candidates
+    assert all("bound" in candidate.returns for candidate in candidates)
 
 
 def test_augmented_assignment_is_def_and_use():

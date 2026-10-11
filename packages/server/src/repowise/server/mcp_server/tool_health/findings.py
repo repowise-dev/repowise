@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, finding_priorities
+from repowise.core.persistence.crud.analysis.plain_rows import plain_rows
 from repowise.core.persistence.models import HealthFinding
 from repowise.server.mcp_server.tool_health.population import Population
 from repowise.server.mcp_server.tool_health.request import HealthRequest
@@ -56,6 +57,15 @@ class FindingSets:
     test_findings_total: int = 0
     #: Row id -> why the finding can wait, for each lower-priority row.
     lower_priority: dict[Any, str] = field(default_factory=dict)
+    #: Set when the call prints no finding: ``emitted`` is then unranked and
+    #: this is the set :meth:`head` measures shapes over, on demand.
+    unranked_over: list[Any] | None = None
+
+    def head(self) -> Any | None:
+        """The first ranked finding, ranking now if the call skipped it."""
+        if self.unranked_over is None:
+            return next(iter(self.emitted), None)
+        return next(iter(_tiered(self.emitted, self.unranked_over)[0]), None)
 
 
 def _tiered(rows: list[Any], measured_over: list[Any]) -> tuple[list[Any], dict[Any, str]]:
@@ -121,9 +131,10 @@ async def load_dashboard_findings(
     )
     # ``lead_rows`` stays unfiltered: the leads and performance KPI must not
     # change because the caller asked to see one dimension.
-    emitted, labels = _tiered(
-        [r for r in lead_rows if _in_dimensions(r, req.ranked_dimensions)], lead_rows
-    )
+    dimensioned = [r for r in lead_rows if _in_dimensions(r, req.ranked_dimensions)]
+    ranked = req.ranks_findings
+    # Tiering measures every open finding; a call that only counts them skips it.
+    emitted, labels = _tiered(dimensioned, lead_rows) if ranked else (dimensioned, {})
     # Test findings get their own bucket instead of crowding the headline
     # list. Split before the cap, so each list is the top ``limit`` of its
     # own population.
@@ -132,8 +143,10 @@ async def load_dashboard_findings(
     limit = req.limit
     # Fetch the head by id: exactly ``limit`` rows whatever the exclusions,
     # where an over-fetch margin on the ranked query could approach a full read.
-    head_ids = [r.id for r in prod_emitted[:limit]] if req.wants_findings else []
-    test_head_ids = [r.id for r in test_emitted[:limit]] if req.wants_test_findings else []
+    head_ids = [r.id for r in prod_emitted[:limit]] if ranked and req.wants_findings else []
+    test_head_ids = (
+        [r.id for r in test_emitted[:limit]] if ranked and req.wants_test_findings else []
+    )
     by_id = await _read_findings_by_id(session, head_ids + test_head_ids)
     return FindingSets(
         # Re-imposed from the id lists; ``IN`` does not preserve order.
@@ -147,7 +160,23 @@ async def load_dashboard_findings(
         test_finding_rows=[by_id[i] for i in test_head_ids if i in by_id],
         test_findings_total=len(test_emitted),
         lower_priority=labels,
+        unranked_over=None if ranked else lead_rows,
     )
+
+
+_LITE_COLUMNS = (
+    HealthFinding.id,
+    HealthFinding.file_path,
+    HealthFinding.health_impact,
+    HealthFinding.biomarker_type,
+    HealthFinding.reason,
+    HealthFinding.dimension,
+    HealthFinding.severity,
+    HealthFinding.details_json,
+    HealthFinding.function_name,
+    HealthFinding.line_start,
+    HealthFinding.line_end,
+)
 
 
 async def _read_lite_findings(session: Any, repository: Any, req: HealthRequest) -> list[Any]:
@@ -155,32 +184,18 @@ async def _read_lite_findings(session: Any, repository: Any, req: HealthRequest)
 
     The columns ``_leads_by_file`` reads, plus ``dimension`` and ``id``, and
     what the worth tier measures a function by (``function_name``, the span,
-    ``severity``, ``details_json``). A SQLAlchemy ``Row`` exposes them as
-    attributes, so the reduction and the exclude filter run against it
+    ``severity``, ``details_json``). The tuple each row is copied into exposes
+    them as attributes, so the reduction and the exclude filter run against it
     unchanged. Ceiling: ``details_json`` is read for every open finding, for
     the tier; storing the tier on the row would make this read narrow again.
     """
-    lite_cols = [
-        HealthFinding.id,
-        HealthFinding.file_path,
-        HealthFinding.health_impact,
-        HealthFinding.biomarker_type,
-        HealthFinding.reason,
-        HealthFinding.dimension,
-        HealthFinding.severity,
-        HealthFinding.details_json,
-        HealthFinding.function_name,
-        HealthFinding.line_start,
-        HealthFinding.line_end,
-    ]
-    return list(
-        (
-            await session.execute(
-                select(*lite_cols)
-                .where(*_open_findings(repository, req))
-                .order_by(HealthFinding.health_impact.desc())
-            )
-        ).all()
+    # Plain tuples: the tier reads every row's fields several times.
+    return plain_rows(
+        await session.execute(
+            select(*_LITE_COLUMNS)
+            .where(*_open_findings(repository, req))
+            .order_by(HealthFinding.health_impact.desc())
+        )
     )
 
 

@@ -348,14 +348,15 @@ def declared_names(
     return frozenset(names)
 
 
-def imported_names(root: Node) -> frozenset[str]:
-    """Names a file's top-level imports bring in, plus built-in namespaces.
+def imported_names(root: Node, *, namespaces: bool = True) -> frozenset[str]:
+    """Names a file's top-level imports bring in, plus built-in namespaces
+    unless *namespaces* is False.
 
     Every name leaf of an import counts (``os`` and ``path`` of ``os.path``),
     and a quoted path counts by its last segment (Go ``"net/http"`` is
     ``http``); an extra name only exempts a module-style call, never a write.
     """
-    names = set(_BUILTIN_NAMESPACES)
+    names = set(_BUILTIN_NAMESPACES) if namespaces else set()
     for node in root.named_children:
         if "import" not in node.type and node.type != "use_declaration":
             continue

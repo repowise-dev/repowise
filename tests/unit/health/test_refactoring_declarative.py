@@ -39,12 +39,13 @@ def _functions(language: str, ext: str, src: str):
 
 def _flat(src: str, language: str = "python", ext: str = "py") -> bool:
     (fn,) = [f for f in _functions(language, ext, src) if f.name == "build"]
-    return declarative_flat(fn.fn_node, get_language_map(language))
+    params = {p.name for p in fn.def_use.params}
+    return declarative_flat(fn.fn_node, get_language_map(language), params, language)
 
 
 # The configuration-summary shape: rows added behind one guard each.
 _SUMMARY = """
-def build(result, patterns, allow_fast, generate_docs=True):
+def build(result: dict[str, Any], patterns, allow_fast, generate_docs=True):
     \"\"\"The summary rows.\"\"\"
     summary = []
 
@@ -78,7 +79,9 @@ def build(result, patterns, allow_fast, generate_docs=True):
 
 # Query parameters set when given, then one request.
 _QUERY_TS = """
-export async function build(opts: Opts): Promise<Result> {
+export async function build(
+  opts: { format?: string; limit?: number; selector?: string; labels?: boolean },
+): Promise<Result> {
   const q = new URLSearchParams();
   if (opts.format) {
     q.set("format", opts.format);
@@ -150,6 +153,50 @@ def test_logic_beside_the_writes_is_not_declarative(change):
     old, new = change
     assert old in _SUMMARY
     assert not _flat(_SUMMARY.replace(old, new, 1))
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "prepare_record(result)",  # a call made for what it does
+        "logger.enabled()",  # a call on an imported name
+        '(cap := result.get("x"))',  # a write in the condition
+    ],
+)
+def test_a_guard_that_calls_or_writes_is_not_flat(condition):
+    old = "    if allow_fast:\n"
+    assert old in _SUMMARY
+    assert not _flat(_SUMMARY.replace(old, f"    if {condition}:\n", 1))
+
+
+@pytest.mark.parametrize(
+    ("prefix", "condition"),
+    [
+        # ``get`` on a receiver with no declared type may do anything.
+        ("", 'patterns.get("x")'),
+        # A builtin the file rebinds is the file's own function.
+        ("from helpers import len\n", "len(patterns)"),
+        ("def isinstance(x, y):\n    return True\n", "isinstance(result, dict)"),
+    ],
+)
+def test_an_unresolved_or_rebound_call_is_not_a_guard(prefix, condition):
+    src = prefix + _SUMMARY.replace("    if allow_fast:\n", f"    if {condition}:\n", 1)
+    assert not _flat(src)
+
+
+def test_a_namespace_read_is_a_guard_and_a_java_method_call_is_not():
+    ts = _QUERY_TS.replace("opts.labels === true", "Number.isFinite(opts.limit)")
+    assert _flat(ts, "typescript", "ts")
+    # A file's own ``Number`` is not the global one.
+    assert not _flat('import { Number } from "./num";\n' + ts, "typescript", "ts")
+    java = _JAVA.replace("cfg.name != null", "cfg.name.isEmpty()")
+    assert not _flat(java, "java", "java")
+
+
+def test_a_guard_reading_keys_lengths_and_types_stays_flat():
+    # ``result.get``, ``len`` and ``isinstance`` only read.
+    new = "    if isinstance(result, dict) and len(patterns) > 1:\n"
+    assert _flat(_SUMMARY.replace("    if allow_fast:\n", new, 1))
 
 
 # Statement-level calls on module or imported names are steps, not fields:

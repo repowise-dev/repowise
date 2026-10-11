@@ -626,7 +626,13 @@ def _span_names(language, ext, src, start, end, returns=()):
     (fn,) = _functions(language, ext, src)
     first = fn.start_line - 1
     extraction = Extraction(first + start, first + end, (), tuple(returns), 8, 2, False)
-    return list(helper_names(fn, extraction, get_language_map(language), language))
+    names = []
+    # The candidates never run out; read through the first unnumbered block name.
+    for name in helper_names(fn, extraction, get_language_map(language), language):
+        names.append(name)
+        if name.lower().endswith("block"):
+            return names
+    return names
 
 
 def test_a_branch_body_is_named_for_the_branch_it_handles():
@@ -700,3 +706,30 @@ def test_a_span_with_no_subject_is_a_block_of_its_host():
     """
     # An unnamed function expression has no host name to qualify.
     assert _span_names("typescript", "ts", anonymous, 2, 3) == ["handleBlock"]
+
+
+def test_a_numbered_block_name_follows_when_every_candidate_is_taken():
+    from repowise.core.analysis.health.refactoring.helper_naming import ScopeNames
+
+    src = """
+    def report(job):
+        logger.info("start")
+        logger.info("done")
+
+
+    def report_block():
+        return 0
+    """
+    fns = _functions("python", "py", src)
+    (fn,) = [f for f in fns if f.name == "report"]
+    lmap = get_language_map("python")
+    first = fn.start_line - 1
+    extraction = Extraction(first + 2, first + 3, (), (), 8, 2, False)
+    names = ScopeNames(lmap)
+    assert names.claim_first(fn, helper_names(fn, extraction, lmap, "python")) == (
+        "report_block_2"
+    )
+    # The next plan in the same scope takes the next number.
+    assert names.claim_first(fn, helper_names(fn, extraction, lmap, "python")) == (
+        "report_block_3"
+    )

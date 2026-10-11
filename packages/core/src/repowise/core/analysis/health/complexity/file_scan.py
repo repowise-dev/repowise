@@ -42,6 +42,9 @@ class FileScan:
     lines: CodeLineIndex
     error_handling_hits: list[ErrorHandlingHit]
     class_nodes: list[Node]
+    #: Every ``function_kinds`` node in the file, at any depth: the ones
+    #: ``_collect_function_nodes`` returns and the ones nested below them.
+    function_nodes: list[Node]
     #: 1-indexed ``(start_line, end_line)`` spans of Rust test-only code.
     rust_test_line_ranges: tuple[tuple[int, int], ...]
     #: ``perf.io_boundaries.collect_io_names`` for the file, or ``{}`` when
@@ -95,12 +98,14 @@ def scan_file(
     excluded: list[tuple[int, int]] = []
     hits: list[ErrorHandlingHit] = []
     class_nodes: list[Node] = []
+    function_nodes: list[Node] = []
     rust_ranges: list[tuple[int, int]] = []
     io_bound: dict[str, str] = {}
     io_rebound: set[str] = set()
 
     eh_kinds = _eh_node_kinds(language, lmap)
     class_kinds = lmap.class_kinds
+    function_kinds = lmap.function_kinds
     is_rust = language == "rust"
 
     stack: list[tuple[Node, int]] = [(root, 0)]
@@ -115,6 +120,8 @@ def scan_file(
             _eh_visit(node, language, lmap, hits)
         if class_kinds and t in class_kinds and node.is_named:
             class_nodes.append(node)
+        if t in function_kinds:
+            function_nodes.append(node)
         if (
             is_rust
             and not ctx & _IN_RUST_TEST
@@ -168,6 +175,7 @@ def scan_file(
         lines=CodeLineIndex(nonblank, file_rows, code_rows, leaves, excluded),
         error_handling_hits=hits,
         class_nodes=class_nodes,
+        function_nodes=function_nodes,
         rust_test_line_ranges=tuple(rust_ranges),
         io_names=_finish_io_names(io_bound, io_rebound),
     )

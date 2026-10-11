@@ -265,7 +265,10 @@ A single pass over the parsed file list. For each file the analyzer:
    `FileComplexity` of functions and classes. Each `FunctionComplexity` carries
    name, line range, nloc, ccn, max nesting, cognitive complexity, bumps, and
    param count; each `ClassComplexity` carries method count, total nloc, the
-   method list, LCOM4, max method ccn, and field count.
+   method list, LCOM4, max method ccn, and field count. A function or method
+   defined inside another function has a `FunctionComplexity` of its own: its
+   branches are counted there and not in the function around it. A lambda has
+   none and counts toward the function that holds it.
 2. **Populates symbol complexity** (`_populate_symbol_complexity`): writes
    `max(ccn)` into `Symbol.complexity_estimate` as a side effect, so the
    `ContextAssembler` symbol ranker benefits even when a caller never touches
@@ -746,6 +749,11 @@ prerequisite. A loop already walking chunks is `loop_already_chunked`. When
 call site and loop, however many markers saw it, each naming the call it repeats
 (`details.sink_call`, or the helper a cross-function path enters). A step that adds
 a bulk form to the sink comes first only when every site reaches that one sink.
+Building a buffer or a set is one edit however many lines of the loop grow the
+string or probe the list, so `buffer_string_accumulation` and
+`replace_membership_collection` list one step per loop and variable, on the loop's
+line, naming the variable (`details.subject`) where the walk could read it as a
+plain name, and effort counts those steps.
 Plans also list validation tests (coverage, call graph, import graph, then
 `via: "name-match"`). An opportunity links to a `performance_fix` refactoring
 plan only by exact `opportunity_id`.

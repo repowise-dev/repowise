@@ -12,6 +12,7 @@ from repowise.core.analysis.health.counts import project as project_counts
 from repowise.core.analysis.health.models import split_by_origin
 from repowise.core.analysis.health.rows import scored_rows
 from repowise.core.analysis.health.scope import parse_scope
+from repowise.core.persistence.crud.analysis.plain_rows import plain_rows
 from repowise.core.persistence.models import HealthFileMetric
 from repowise.server.mcp_server._helpers import _get_exclude_spec, filter_rows_by_attr
 from repowise.server.mcp_server.tool_health.request import HealthRequest
@@ -67,11 +68,13 @@ async def load_population(
     session: Any, repository: Any, repo_path: Any, req: HealthRequest
 ) -> Population:
     """Read the metric rows and narrow them the way every block will see them."""
-    all_metrics_q = select(HealthFileMetric).where(
+    # Plain rows, not entities: every block only reads them, and an entity per
+    # file costs most of a call's fixed time on a large repository.
+    all_metrics_q = select(*HealthFileMetric.__table__.columns).where(
         HealthFileMetric.repository_id == repository.id
     )
     exclude_spec = _get_exclude_spec(repo_path)
-    indexed_rows = list((await session.execute(all_metrics_q)).scalars().all())
+    indexed_rows = plain_rows(await session.execute(all_metrics_q))
     all_metrics = filter_rows_by_attr(indexed_rows, "file_path", exclude_spec)
     # Lets an unresolved target report "excluded" rather than "no_such_path".
     # Computed before ``scope`` narrows, or test files would count as excluded.

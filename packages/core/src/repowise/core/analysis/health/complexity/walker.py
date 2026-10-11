@@ -53,6 +53,7 @@ from .ast_utils import (
     _collect_function_nodes,
     _count_parameters,
     _find_function_entry_name,
+    _nested_function_nodes,
     _parameter_list,
 )
 from .class_analysis import _collect_classes
@@ -177,7 +178,15 @@ def walk_file(
     scan = scan_file(tree.root_node, language, lmap, source, io_names=run_perf)
     flags = module_false_constants(tree.root_node, source, language)
     facts_of = _facts_reader(abs_path, language, lmap)
-    for fn_node in _collect_function_nodes(tree.root_node, lmap):
+    fn_nodes = _collect_function_nodes(tree.root_node, lmap)
+    # Nested functions go first, and the rows there have always been follow in
+    # the order they had. Symbol complexity, the stored blame row and the
+    # commit spans key a file's rows by name and keep the last one, so a
+    # nested function must not come after a function of the file's own level
+    # that shares its name.
+    nested = _nested_function_nodes(fn_nodes, scan.function_nodes, lmap)
+    first_top_level = len(nested)
+    for index, fn_node in enumerate(nested + fn_nodes):
         body = fn_node.child_by_field_name("body") or fn_node
         deepest: list[int] = []
         start_facts, finish_facts = facts_of(fn_node)
@@ -216,7 +225,8 @@ def walk_file(
             verification_count=verifications,
             raise_count=raises,
             mock_setup_count=_count_mock_setup(fn_node, body, lmap, mock_dialect, asserts),
-            is_test_case=is_test_case(fn_node, name, language),
+            # No runner collects a function defined inside another one.
+            is_test_case=index >= first_top_level and is_test_case(fn_node, name, language),
             called_names=called,
             bare_called_names=bare_called,
             dispatch_share=dispatch_share(dispatch.points, ccn),

@@ -297,10 +297,20 @@ async def _rank_live_plans(session: AsyncSession, repository_id: str) -> list[An
     ).scalars()
     ranked = await hydrate_recommendations(session, repository_id, list(rows), step_verify=True)
     facts = await load_annotation_facts(
-        session, repository_id, [item.suggestion for item in ranked]
+        session,
+        repository_id,
+        [item.suggestion for item in ranked],
+        tests=[
+            test
+            for item in ranked
+            if item.suggestion.refactoring_type == "extract_method"
+            for test in item.validation.tests
+        ],
     )
     ranked = [
-        dataclasses.replace(item, annotations=annotate(item.suggestion, facts))
+        dataclasses.replace(
+            item, annotations=annotate(item.suggestion, facts, item.validation.tests)
+        )
         for item in ranked
     ]
     await store_plan_ranks(session, repository_id, ranked)

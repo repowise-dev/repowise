@@ -12,8 +12,9 @@ can wait and never reads as the next thing to do.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Literal
 
 from .complexity.dispatch import DISPATCH_SHARE
@@ -114,7 +115,9 @@ def dormant(facts: Mapping[str, Any]) -> bool:
     return bool(facts.get("gated_off"))
 
 
-def measure(findings: Iterable[Any]) -> dict[str, int]:
+def measure(
+    findings: Iterable[Any], details_of: Callable[[Any], Mapping[str, Any]] = detail_map
+) -> dict[str, int]:
     """A function's largest measured CCN, size and nesting across its findings.
 
     ``severe`` is set when any of them is critical or a brain method,
@@ -124,12 +127,13 @@ def measure(findings: Iterable[Any]) -> dict[str, int]:
     ``terminal_pct`` the largest stored terminal share (``complexity/terminal.py``),
     ``start`` / ``end`` span the function as its size findings place it, and
     ``deep_start`` / ``deep_end`` are its deepest nested block's lines.
+    ``details_of`` reads a finding's details, for a caller that parsed them once.
     """
     shape: dict[str, int] = {}
     for f in findings:
         if field(f, "severity") == "critical" or field(f, "biomarker_type") == "brain_method":
             shape["severe"] = 1
-        details = detail_map(f)
+        details = details_of(f)
         if details.get("deprecated"):
             shape["deprecated"] = 1
         if dormant(details):
@@ -156,10 +160,11 @@ def measure(findings: Iterable[Any]) -> dict[str, int]:
 
 def magnitude(shape: Mapping[str, int]) -> int:
     """How far the measured CCN, size or nesting sits past its bar, 0 to 4."""
+    # Each bar tuple is ascending, so the bars a value reaches are a bisection.
     return max(
-        sum(shape.get("ccn", 0) >= c for c in SIZE_CCN),
-        sum(shape.get("nloc", 0) >= c for c in SIZE_NLOC),
-        sum(shape.get("max_nesting", 0) >= c for c in SIZE_NESTING),
+        bisect_right(SIZE_CCN, shape.get("ccn", 0)),
+        bisect_right(SIZE_NLOC, shape.get("nloc", 0)),
+        bisect_right(SIZE_NESTING, shape.get("max_nesting", 0)),
     )
 
 
@@ -274,18 +279,26 @@ def finding_priorities(findings: Sequence[Any]) -> list[LowPriority | None]:
     for f in findings:
         if field(f, "function_name"):
             by_function[(field(f, "file_path"), field(f, "function_name"))].append(f)
+    # Measured once per function, not once per finding on it, and each row's
+    # details parsed once: every list tiers a repository's whole open set.
+    parsed: dict[int, Mapping[str, Any]] = {}
+
+    def details_of(f: Any) -> Mapping[str, Any]:
+        found = parsed.get(id(f))
+        if found is None:
+            found = parsed[id(f)] = detail_map(f)
+        return found
+
+    shapes = {key: measure(rows, details_of) for key, rows in by_function.items()}
     out: list[LowPriority | None] = []
     for f in findings:
         if id(f) in history:
             out.append("history")
             continue
         key = (field(f, "file_path"), field(f, "function_name"))
+        shape = shapes[key] if key in shapes else measure([f], details_of)
         out.append(
-            low_priority(
-                field(f, "biomarker_type"),
-                measure(by_function.get(key, [f])),
-                error_kind=detail_map(f).get("kind"),
-            )
+            low_priority(field(f, "biomarker_type"), shape, error_kind=details_of(f).get("kind"))
         )
     return out
 

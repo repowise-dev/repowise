@@ -116,6 +116,12 @@ _OWN_HEADER = (
         ("buildSrc/src/main/kotlin/Versions.kt", "tooling"),
         ("build-logic/src/main/kotlin/Plugin.kt", "tooling"),
         ("packages/build-tools/src/index.ts", "production"),  # a shipped package
+        # a bundler's output, by name; a module about bundles is hand-written
+        ("apps/kit/Resources/CanvasA2UI/a2ui.bundle.js", "generated"),
+        ("dist/main.bundle.mjs", "generated"),
+        ("dist/Main.Bundle.JS", "generated"),
+        ("src/Forms/Main.designer.cs", "generated"),
+        ("src/logging/diagnostic-support-bundle.ts", "production"),
     ],
 )
 def test_path_rules(path: str, expected: str) -> None:

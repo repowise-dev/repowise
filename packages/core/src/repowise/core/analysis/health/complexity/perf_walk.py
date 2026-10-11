@@ -20,6 +20,7 @@ registered.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -30,6 +31,7 @@ from .ast_utils import (
     _dart_signature_sibling,
     _find_function_entry_name,
     _find_name,
+    _node_text,
     is_function_node,
 )
 from .languages import LanguageNodeMap
@@ -365,8 +367,52 @@ def _strip_call_args(text: str) -> str:
     return "".join(kept)
 
 
+_MEMBERSHIP = "membership_test_against_list_in_loop"
+# A name a plan step can quote: ``out``, ``self.buf``, ``@buf``, ``$acc``.
+_SUBJECT_NAME = re.compile(r"[@$]{0,2}[A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*")
+
+
+def _subject_text(node: Node | None) -> str:
+    """*node* as written when it is a plain name or member path, else empty."""
+    text = "".join(_node_text(node).split()) if node is not None else ""
+    return text if len(text) <= _SINK_CALL_MAX and _SUBJECT_NAME.fullmatch(text) else ""
+
+
+def _concat_target(node: Node) -> str:
+    """The string a ``+=`` statement grows: its left side."""
+    left = node.child_by_field_name("left")
+    return _subject_text(left if left is not None else next(iter(node.named_children), None))
+
+
 def _quotable(callee: str) -> bool:
     return bool(callee) and not callee.startswith("(") and len(callee) <= _SINK_CALL_MAX
+
+
+def _quotable_chain(text: str) -> bool:
+    """A chain's text names its links only when it kept the callee: a chain
+    that opens with a parenthesis quotes as its last method alone."""
+    return "." in text
+
+
+def _receiver_chain_calls(
+    call: Node, call_kinds: frozenset[str], access_kinds: frozenset[str]
+) -> Iterator[Node]:
+    """The calls *call* is chained onto, nearest first.
+
+    ``(await session.execute(q)).scalars().all()`` is the ``.all()`` call on the
+    ``.scalars()`` call on the ``session.execute`` call: each receiver is the
+    first named child of the node above it, through member access,
+    parentheses and ``await``. An argument is never on that path, so a call
+    passed to a chained call is not one of its links.
+    """
+    node = call.named_children[0] if call.named_children else None
+    while node is not None:
+        t = node.type
+        if t in call_kinds:
+            yield node
+        elif not (t in access_kinds or "parenthesized" in t or "await" in t):
+            return
+        node = node.named_children[0] if node.named_children else None
 
 
 def _key_unused(hit: PerfHit) -> bool:
@@ -522,6 +568,11 @@ def _collect_perf_hits(
         return facts if facts != LoopFacts() else None
 
     hits: list[PerfHit] = []
+    # One query written as a chain is several sink calls. The innermost is the
+    # one that leaves the process and is the hit; each outer link, met first,
+    # leaves here the chain's outermost call and whether any link is awaited.
+    chain_of: dict[int, tuple[Node, bool]] = {}
+    access_kinds = lmap.member_access_kinds
     # Per-enclosing-function accumulators keyed by the function's start line
     # (0 = module scope): ``(name, loop_targets{name->line}, lock_targets{...},
     # [bare_sink], misc)``. loop/lock targets feed the cross-function
@@ -673,17 +724,44 @@ def _collect_perf_hits(
             kind = dialect.call_sink_kind(
                 call_node, awaited=awaited, io_names=io_names, has_db_import=has_db_import
             )
+            chain_top = call_node
+            chain_awaited = awaited
+            is_link = False
             if kind is not None:
+                inner = None
+                for link in _receiver_chain_calls(call_node, call_kinds, access_kinds):
+                    if probe(link) is not None:
+                        inner = link
+                if inner is not None:
+                    # A link: the innermost sink below it is the hit. The
+                    # outermost link is met first and stays the chain's top.
+                    top, link_awaited = chain_of.get(inner.id, (call_node, False))
+                    chain_of[inner.id] = (top, link_awaited or awaited)
+                    is_link = True
+                else:
+                    chain_top, link_awaited = chain_of.pop(call_node.id, (call_node, False))
+                    chain_awaited = awaited or link_awaited
+            if is_link:
+                # Neither a hit nor a helper the loop calls: its chain's sink
+                # speaks for it.
+                pass
+            elif kind is not None:
                 if loop_depth >= 1:
-                    facts = loop_facts(call_node, sink=True, per_call=True)
-                    call = _sink_call_text(call_node, method, dialect)
+                    # The loop's key may feed any link, so the chain's facts are
+                    # read off its outermost call, which holds them all.
+                    facts = loop_facts(chain_top, sink=True, per_call=True)
+                    call = _sink_call_text(
+                        chain_top, dialect.callee_method_name(chain_top) or "", dialect
+                    )
+                    if chain_top is not call_node and not _quotable_chain(call):
+                        call = _sink_call_text(call_node, method, dialect)
                     hits.append(
                         PerfHit(
                             "io_in_loop", line, next_func, kind,
                             func_start=next_start, loop=facts, sink_call=call,
                         )
                     )
-                    if do_serial_await and awaited:
+                    if do_serial_await and chain_awaited:
                         # An *awaited* sink in a loop body is additionally a
                         # missed-concurrency candidate (a serial round-trip that
                         # a ``gather`` / ``Promise.all`` could fan out). Advisory
@@ -759,6 +837,8 @@ def _collect_perf_hits(
                             PerfHit(
                                 marker, line, next_func, "", func_start=next_start,
                                 loop=loop_facts(call_node, sink=False),
+                                # ``arr.includes(x)``: the list is the receiver.
+                                subject=root_name if marker == _MEMBERSHIP else "",
                             )
                         )
                     elif method:
@@ -811,6 +891,7 @@ def _collect_perf_hits(
                             "",
                             func_start=next_start,
                             loop=loop_facts(node, sink=False),
+                            subject=_concat_target(node),
                         )
                     )
                 elif do_loop_stmt_marker:
@@ -828,6 +909,12 @@ def _collect_perf_hits(
                                 "",
                                 func_start=next_start,
                                 loop=loop_facts(node, sink=False),
+                                # ``x in big``: the list is the last operand.
+                                subject=(
+                                    _subject_text(next(iter(reversed(node.named_children)), None))
+                                    if sm == _MEMBERSHIP
+                                    else ""
+                                ),
                             )
                         )
 
@@ -915,10 +1002,11 @@ def _collect_perf_hits(
                     )
                 )
 
-    # Dedup chained sinks: ``result.scalars().all()`` parses as two call nodes
-    # on one line (the ``.scalars()`` sink and the ``.all()`` materializer) —
-    # one logical query, one finding. Collapse per (kind, line, function),
-    # keeping a call the loop's key reaches when one of them does.
+    # One finding per (kind, line, function), keeping a call the loop's key
+    # reaches when one of them does. A chain of sinks is one hit already
+    # (``chain_of`` above); what is left to collapse here is two hits of one
+    # kind that share a line without being one chain, such as two membership
+    # tests in one condition.
     kept: dict[tuple[str, int, str | None], int] = {}
     deduped: list[PerfHit] = []
     for h in _name_lambda_hits(hits, lambda_spans):

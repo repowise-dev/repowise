@@ -183,6 +183,7 @@ def find_extractions(
     max_slice_nloc = _MAX_BODY_SHARE * _stmts_nloc(body_container.named_children, lines)
 
     def_lines, use_lines = _var_lines(analysis.def_use)
+    import_reads = _import_reads(analysis)
     declared_first = _declared_before_read(analysis.def_use)
     # Built on the first span that clears the cheap gates.
     reads: dict[str, list[tuple[int, frozenset[int]]]] | None = None
@@ -238,6 +239,8 @@ def find_extractions(
                 span = stmts[i : j + 1]
                 s = span[0].start_point[0] + 1
                 e = span[-1].end_point[0] + 1
+                if any(import_line < s <= use_line <= e for import_line, use_line in import_reads):
+                    continue
                 if reads is None:
                     reads = _reads_observing(analysis, def_lines)
                 params, returns = _infer_in_out(
@@ -577,6 +580,27 @@ def _var_lines(def_use: FunctionDefUse) -> tuple[dict[str, list[int]], dict[str,
     for lines in use_lines.values():
         lines.sort()
     return def_lines, use_lines
+
+
+def _import_reads(analysis: FunctionAnalysis) -> tuple[tuple[int, int], ...]:
+    """Function-local import lines paired with the reads they reach."""
+    imports = {
+        (definition.var, definition.line)
+        for definition in analysis.reaching.definitions
+        if definition.imports
+    }
+    if not imports:
+        return ()
+    import_lines: dict[str, list[int]] = defaultdict(list)
+    for name, line in sorted(imports):
+        import_lines[name].append(line)
+    return tuple(
+        (definition_line, use_line)
+        for name, reads in _reads_observing(analysis, import_lines).items()
+        for use_line, seen in reads
+        for definition_line in seen
+        if (name, definition_line) in imports
+    )
 
 
 def _declared_before_read(def_use: FunctionDefUse) -> dict[str, frozenset[int]]:

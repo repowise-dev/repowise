@@ -11,6 +11,11 @@ import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+#: Types already found to be read by attribute, so a row of one skips both
+#: ``isinstance`` checks on every later read. Bounded by the distinct row
+#: classes a process reads.
+_ATTRIBUTE_TYPES: set[type] = set()
+
 
 def field(row: Any, name: str, default: Any = None) -> Any:
     """Read one attribute from a dataclass, an ORM row, or a mapping."""
@@ -19,10 +24,11 @@ def field(row: Any, name: str, default: Any = None) -> Any:
     kind = type(row)
     if kind is dict:
         return row.get(name, default)
-    if isinstance(row, tuple):
+    if kind in _ATTRIBUTE_TYPES:
         return getattr(row, name, default)
-    if isinstance(row, Mapping):
+    if isinstance(row, Mapping) and not isinstance(row, tuple):
         return row.get(name, default)
+    _ATTRIBUTE_TYPES.add(kind)
     return getattr(row, name, default)
 
 
