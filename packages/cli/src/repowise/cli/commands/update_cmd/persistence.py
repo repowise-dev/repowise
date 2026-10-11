@@ -1416,9 +1416,11 @@ async def _persist_full_update_async(
             if timings is not None:
                 timings.stop("persist.fts")
 
-        # Tombstoned pages included: a deleted file's embedding otherwise keeps
-        # answering semantic search, which the index-only path already prevents.
-        vector_cleanup_ids = set(tombstoned_page_ids) | load_cleanup_debt(Path(repo_path))["vectors"]
+        # The union closes the mark_tombstone_pages path: the scope branches
+        # above already drop their ids, but a deleted file's embedding did not.
+        vector_cleanup_ids = (
+            set(tombstoned_page_ids) | load_cleanup_debt(Path(repo_path))["vectors"]
+        )
         if vector_cleanup_ids and decision_vector_store is not None:
             try:
                 await decision_vector_store.delete_many(sorted(vector_cleanup_ids))

@@ -1837,27 +1837,16 @@ async def prune_deleted_files(
 ) -> None:
     """Drop file-scoped rows for deleted files, then rebuild the queues built from them.
 
-    Shared by every update persist (index-only and docs mode), and called last
-    in the session: the steps before it upsert, and the git step indexes the
-    changed *paths*, deleted ones included, so pruning first left a fresh
-    git_metadata row for every file the run watched disappear.
+    Shared by every update writer. Liveness is asked of disk and git, never of
+    this run's parse (see prune_deleted_file_rows).
 
-    Without it a deleted file's graph nodes, edges, metrics, symbols, health
-    rows, function facts and git metadata keep serving a file that is gone, and
-    its open refactoring plans never resolve as ``file_deleted``. Liveness is
-    asked of the filesystem and git, never of this run's parse, so a transient
-    read failure cannot masquerade as a deletion (see prune_deleted_file_rows).
+    Call it last in the session: the steps before it upsert, and the git step
+    indexes deleted paths too, so an earlier prune would be undone.
 
-    *live_paths* is what this run parsed. Every file node the rebuilt graph
-    still holds is added to it, the only reliable way to know a node names no
-    file at all: framework and resolver passes mint file-shaped nodes for
-    things that were never on disk (`external:` imports, `framework:` anchors,
-    Spring's `META-INF/services/<iface>` SPI source, which carries no prefix to
-    recognise it by). All of them fail every liveness test, so a prune that
-    asked only about disk and git would delete them and their edges, and only
-    *changed* files' edges are rebuilt afterwards. Deliberately not guarded: a
-    run that cannot read its own graph has no business deciding what was
-    deleted, and the handler skips the prune entirely.
+    The graph's file nodes join *live_paths* because resolver passes mint
+    file-shaped nodes that name no file (`external:`, `framework:`, Spring SPI
+    sources); they fail every liveness test, and only changed files' edges are
+    rebuilt afterwards. A graph that cannot be read skips the prune.
     """
     pruned = 0
     try:
@@ -1904,7 +1893,6 @@ async def prune_deleted_files(
         await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
     except Exception as exc:
         skip("Queue rebuild after prune", exc)
-
 
 
 async def persist_incremental_index(
