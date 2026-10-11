@@ -68,6 +68,10 @@ repowise decision source set session --on
 
 **Your first `update` re-scores the whole repository.** The health analyzer version moved from 11 to 21 over this cycle, because new test-quality markers, a per-language assertion vocabulary, a `.tsx` grammar fix and re-ranked history gates all change how a stored health number is computed. Rather than wait out the decay timer, the first update after upgrading re-scores every file, so it takes longer than usual. On a 171-file repository that was 10.2 seconds against a 5.8 second baseline, with the next update back to normal. Nothing needs re-indexing: the store format and parser schema are unchanged.
 
+### Git history is re-read once when its rules change
+
+When a release changes how git history becomes stored rows (change numbers, author identity), the first `update` re-reads the full history once instead of only the changed files. It regenerates no pages and makes no model calls. See [GIT_HOSTS.md](../start/GIT_HOSTS.md#upgrading).
+
 ### `health-rules.json` globs now match like `.gitignore`
 
 Per-path rules in `.repowise/health-rules.json` used to be matched with

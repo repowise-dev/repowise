@@ -127,6 +127,10 @@ With `REPOWISE_GITLAB_WEBHOOK_TOKEN` set, the server compares it with the
 `401 Unauthorized`. Without the token, only local callers are accepted and every
 other caller gets `403 Forbidden`, as with GitHub.
 
+Both endpoints match the payload's repository to a registered one by a
+canonical key, so clone, ssh and web URLs of the same repository match, case
+aside. Other hosts are listed in [GIT_HOSTS.md](../start/GIT_HOSTS.md).
+
 ---
 
 ## 5. Polling Fallback

@@ -55,7 +55,8 @@ target branch from the CI's own variables (`GITHUB_BASE_REF`,
 does so with `--fail-above-percentile` or `--format markdown` / `github`;
 otherwise an omitted range still means your uncommitted work, else `HEAD`. Doc
 drift has no range: it checks the whole working tree, and a baseline limits it
-to new findings.
+to new findings. The variables each CI is detected by and read from, Azure
+Pipelines included, are in [GIT_HOSTS.md](GIT_HOSTS.md#ci-systems).
 
 **History.** CI checkouts are usually shallow, which leaves no merge-base.
 Fetch full history (`fetch-depth: 0` on GitHub Actions, `GIT_DEPTH: 0` on

@@ -81,6 +81,12 @@ For a map of every layer and how they feed each other, read
 |-----|----------------|
 | [layers/DECISIONS.md](layers/DECISIONS.md) | Architectural decisions mined from your repo and your agent sessions |
 
+### Use GitLab, Azure DevOps or Bitbucket
+
+| Doc | What it covers |
+|-----|----------------|
+| [start/GIT_HOSTS.md](start/GIT_HOSTS.md) | What works on each git host and CI, and how to name a self-managed host |
+
 ### Run across many repos
 
 | Doc | What it covers |
