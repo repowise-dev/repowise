@@ -42,6 +42,9 @@ class DeadCodeFindingData:
     # only; file/package-kind findings leave both None).
     start_line: int | None = None
     end_line: int | None = None
+    # An unused export its own file uses: only the ``export`` is unneeded, so
+    # no line of it is deletable. Dead-line totals skip these rows.
+    export_only: bool = False
 
     @property
     def is_spanned_symbol(self) -> bool:

@@ -132,6 +132,11 @@ def _string_prefix(text: str, quote_idx: int) -> str:
     return text[k:quote_idx]
 
 
+def can_mask(suffix: str) -> bool:
+    """Whether :func:`mask_source` reads files with *suffix* (else returns them as-is)."""
+    return suffix.lower() == ".py" or suffix.lower() in _JS_LIKE
+
+
 def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
     """Blank out comments — and optionally string bodies — preserving offsets.
 
@@ -147,7 +152,7 @@ def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
     reappearing through the back door. The call-site scanner masks comments
     only, since it still has to read the URL literal it is looking for.
     """
-    if suffix.lower() != ".py" and suffix.lower() not in _JS_LIKE:
+    if not can_mask(suffix):
         return text
 
     if suffix.lower() == ".py":

@@ -77,6 +77,7 @@ from .name_occurrences import (
     clamp_named_types,
     clamp_path_mentions,
     clamp_unverified_absence,
+    demote_exports_used_in_own_code,
     demote_used_in_own_file,
     drop_bare_name_uses,
     drop_internals_used_in_own_file,
@@ -1013,6 +1014,9 @@ class DeadCodeAnalyzer:
         # version of the same question â€” not "could an unread file explain
         # this" but "did we look anywhere except the import graph".
         findings = drop_bare_name_uses(findings, self._source_map)
+        # Before the clamp, which would otherwise read a same-file use as
+        # "named elsewhere" and leave the row in the default view.
+        findings = demote_exports_used_in_own_code(findings, self._source_map)
         findings = clamp_unverified_absence(findings, self._source_map)
         findings = drop_internals_used_in_own_file(findings, self._source_map)
         findings = clamp_path_mentions(findings, self._source_map)
