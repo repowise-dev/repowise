@@ -149,6 +149,10 @@ def mentions_receiver(node: Node, names: frozenset[str]) -> bool:
     return re.search(rf"(?<![\w$])(?:{words})(?![\w$])", text) is not None
 
 
+#: ``(types, bound name)`` of an exception handler (:meth:`handler_head`).
+HandlerHead = tuple[tuple[str, ...] | None, str | None]
+
+
 @runtime_checkable
 class DefUseDialect(Protocol):
     """The contract a per-language def/use dialect satisfies."""
@@ -160,6 +164,8 @@ class DefUseDialect(Protocol):
     ) -> StatementDefUse: ...
 
     def parameter_defs(self, fn_node: Node) -> tuple[Occurrence, ...]: ...
+
+    def handler_head(self, handler: Node) -> HandlerHead: ...
 
 
 class BaseDefUseDialect:
@@ -471,6 +477,12 @@ class BaseDefUseDialect:
         it as the handler block's first statement). Default: nothing, the
         reading every language had before handler heads were recorded."""
         return StatementDefUse(defs=(), uses=())
+
+    def handler_head(self, handler: Node) -> HandlerHead:
+        """The exception types a handler clause names, as written (None: it
+        catches everything), and the name it binds. Default: types no raise
+        can be matched against, so nothing is counted as caught."""
+        return (), None
 
     def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """The instance *fn_node* runs on (:class:`Receiver`), ``NO_RECEIVER``

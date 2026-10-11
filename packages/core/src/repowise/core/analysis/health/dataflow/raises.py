@@ -9,10 +9,13 @@ per error exit its line, kind, exception and the handler that catches it
 (Rust ``?``, ``return Err(...)``, ``bail!``). Go's ``return ..., err`` is
 not one: nothing in the syntax marks the value as an error.
 
-A handler catches a raise when it names no type, names the raised type (by
-last name segment), or names a root type that catches every ordinary
-exception. Subclass relations are not known, so a handler naming a base class
-of the raised type is missed and the raise reads as propagating.
+``caught_by`` is best effort. A handler catches a raise when it names no
+type, names the raised type (by last name segment), or names a root type that
+catches every ordinary exception. Subclass relations are not known, so a
+handler naming a base class of the raised type is missed and the raise reads
+as propagating; a filtered handler (C# ``catch (E) when (...)``) may decline,
+so it is never counted as catching. What a handler names comes from the
+language's dialect (``handler_head``).
 
 :func:`exception_flow_refusal` is the Extract Method precondition built on
 these facts: a span may not change which handler sees an exception or what
@@ -23,6 +26,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from ..complexity.error_handling import PY_CATCH_ALL, RUST_PANIC_MACROS
+from .dialects.base import node_text
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -35,11 +41,11 @@ TRY_SPLIT = "try_split"
 EXCEPTION_STATE = "exception_state"
 DEFER_MOVED = "defer_moved"
 
-# Handler types that catch every ordinary exception. Python's ``Exception``
-# does not catch the interpreter's exit signals, ``BaseException`` does.
-_ROOTS = frozenset({"Exception", "Throwable", "exception"})
+# Handler types that catch every ordinary exception (Python / C# ``Exception``,
+# Java ``Throwable``, C++ ``std::exception``). Python's ``Exception`` does not
+# catch the interpreter's exit signals; ``BaseException`` catches everything.
+_ROOTS = frozenset({PY_CATCH_ALL[0], "Throwable", "exception"})
 _EXIT_SIGNALS = frozenset({"SystemExit", "KeyboardInterrupt", "GeneratorExit"})
-_PANIC_MACROS = frozenset({"panic", "unreachable", "todo", "unimplemented"})
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,21 @@ class TryRegion:
     handlers: tuple[Handler, ...]
     finally_lines: tuple[int, int] | None = None
 
+    def exposed_to(self, s: int, e: int) -> tuple[list[tuple[int, int]], bool] | None:
+        """Where an exception raised in lines *s*..*e* is handled inside this
+        ``try``: the clauses that run next, and whether a handler that
+        swallows it lets the code after the ``try`` run. None when the lines
+        are not inside one clause of it. From the body: the handlers, the
+        ``finally``, and past a swallowing handler. From a handler or
+        ``else``: the ``finally``. From the ``finally``: nothing here."""
+        clause = next(((lo, hi) for lo, hi in self.clauses if lo <= s and e <= hi), None)
+        if clause is None:
+            return None
+        after_finally = [self.finally_lines] if self.finally_lines is not None else []
+        if clause == self.body:
+            return [(h.start_line, h.end_line) for h in self.handlers] + after_finally, True
+        return ([] if clause == self.finally_lines else after_finally), False
+
 
 @dataclass(frozen=True)
 class RaiseSite:
@@ -79,50 +100,19 @@ class RaiseSite:
     caught_by: int | None
 
 
-def _text(node: Node | None) -> str | None:
-    return (node.text or b"").decode("utf-8", "replace") if node is not None else None
-
-
 def _segment(name: str) -> str:
     """``errors.NotFound`` / ``std::runtime_error`` / ``List<X>`` -> last name."""
     return name.split("<", 1)[0].replace("::", ".").rsplit(".", 1)[-1].strip(" &*")
 
 
-def handler_head(node: Node) -> tuple[tuple[str, ...] | None, str | None]:
-    """The types a handler clause names (None: all) and the name it binds."""
-    value = node.child_by_field_name("value")  # Python ``except T as e``
-    if value is not None:
-        alias = value.child_by_field_name("alias") if value.type == "as_pattern" else None
-        if value.type == "as_pattern":
-            value = value.named_children[0]
-        grouped = value.type in ("tuple", "parenthesized_expression")
-        names = value.named_children if grouped else [value]
-        return tuple(_text(n) or "" for n in names), _text(alias)
-    for child in node.named_children:
-        if child.type == "catch_formal_parameter":  # Java
-            kinds = next((c for c in child.named_children if c.type == "catch_type"), None)
-            types = tuple(_text(t) or "" for t in kinds.named_children) if kinds else None
-            return types, _text(child.child_by_field_name("name"))
-        if child.type == "catch_declaration":  # C#
-            t = child.child_by_field_name("type")
-            return ((_text(t) or "",) if t else None), _text(child.child_by_field_name("name"))
-        if child.type == "parameter_list":  # C++ (``...`` names no declaration)
-            decl = next(
-                (c for c in child.named_children if c.type == "parameter_declaration"), None
-            )
-            t = decl.child_by_field_name("type") if decl is not None else None
-            return ((_text(t) or "",) if t else None), None
-    param = node.child_by_field_name("parameter")  # TS / JS: catches everything
-    return None, _text(param) if param is not None and param.type == "identifier" else None
-
-
 def catches(types: tuple[str, ...] | None, raised: tuple[str, ...] | None) -> bool:
     """Whether a handler naming *types* catches an exception of *raised*
-    (None: unknown, a value rather than a class)."""
+    (None: unknown, a value rather than a class). Best effort: no subclass
+    relations, and a filtered handler (``types == ()``) never catches."""
     if types is None:
         return True
     names = {_segment(t) for t in types}
-    if "BaseException" in names:
+    if PY_CATCH_ALL[1] in names:
         return True
     if raised is None:
         return bool(names & _ROOTS)
@@ -139,27 +129,34 @@ def raised_exception(node: Node) -> str | None:
     for field in ("constructor", "type", "function"):
         inner = value.child_by_field_name(field)
         if inner is not None:
-            return _text(inner)
-    return _text(value)
+            return node_text(inner)
+    return node_text(value)
 
 
-def exit_kind(node: Node, lmap_returns: frozenset[str]) -> str | None:
+def exit_kind(node: Node, lmap: LanguageNodeMap) -> str | None:
     """The error-exit kind of a statement that is not a ``raise``: a panic or
-    an explicit error return; None for any other statement."""
-    if node.type in lmap_returns:
+    an explicit error return (``return Err(...)``); None for any other."""
+    if node.type in lmap.return_kinds:
         value = next(iter(node.named_children), None)
         fn = value.child_by_field_name("function") if value is not None else None
-        return "error_return" if fn is not None and _text(fn) == "Err" else None
+        return "error_return" if fn is not None and node_text(fn) == "Err" else None
     if node.type == "expression_statement" and node.named_child_count == 1:
         node = node.named_children[0]
-    if node.type == "call_expression":
+    if node.type == "call_expression":  # Go ``panic(...)``
         fn = node.child_by_field_name("function")
-        named = fn is not None and fn.type == "identifier" and _text(fn) == "panic"
-        return "panic" if named else None
-    if node.type == "macro_invocation":
-        name = _segment(_text(node.child_by_field_name("macro")) or "")
-        return "panic" if name in _PANIC_MACROS else "error_return" if name == "bail" else None
+        return "panic" if fn is not None and node_text(fn) == "panic" else None
+    if node.type in lmap.exit_macro_kinds:
+        return _macro_exit(node, lmap)
     return None
+
+
+def _macro_exit(node: Node, lmap: LanguageNodeMap) -> str | None:
+    """Rust: a panic-family macro, or one that returns an error (``bail!``)."""
+    macro = node.child_by_field_name("macro")
+    name = _segment(node_text(macro)) if macro is not None else ""
+    if name in RUST_PANIC_MACROS:
+        return "panic"
+    return "error_return" if name in lmap.exit_macro_names else None
 
 
 def error_exit(
@@ -171,7 +168,7 @@ def error_exit(
     if st.type == "try_expression":
         return "error_return", None, None
     if st.type not in lmap.raise_kinds:
-        kind = exit_kind(st, lmap.return_kinds)
+        kind = exit_kind(st, lmap)
         return (kind, None, None) if kind is not None else None
     exc = raised_exception(st)
     if exc is None or (handler is not None and exc == handler.name):
@@ -194,31 +191,42 @@ def exception_flow_refusal(
     def_lines: dict[str, list[int]],
 ) -> str | None:
     """Why lifting lines *s*..*e* into a helper would change exception flow,
-    or None. :data:`TRY_SPLIT`: the span cuts a ``try`` apart from a handler
-    or ``finally``, or re-raises outside the handler it sits in.
-    :data:`EXCEPTION_STATE`: the span sits in a ``try`` body and writes a
-    value that a handler or ``finally`` of that ``try`` (or code after it,
-    past a handler that swallows the error) may read; when the helper raises,
-    its writes are lost, so that code would see the value from before. A
-    raise that only propagates is unchanged: the helper re-raises it.
-    :data:`DEFER_MOVED`: the span holds a Go ``defer``, which in a helper runs
-    when the helper returns and recovers only the helper's panics."""
+    or None. :data:`DEFER_MOVED`: the lines hold a Go ``defer``, which in a
+    helper runs when the helper returns and recovers only its panics.
+    :data:`TRY_SPLIT`: they cut a ``try`` apart from a handler or ``finally``,
+    or re-raise outside the handler they sit in. :data:`EXCEPTION_STATE`: they
+    write a value that code an exception from them reaches may read (a
+    handler, a ``finally``, or the code after a ``try`` whose handler swallows
+    it, at any nesting depth); a helper that raises loses its writes, so that
+    code would see the value from before. A raise that only propagates is
+    unchanged: the helper re-raises it."""
     if any(s <= line <= e for line in cfg.defers):
         return DEFER_MOVED
-    rethrows = [r.line for r in raises_in(cfg, s, e) if r.kind == "rethrow"]
-    if any(not _inside(_handler_of(cfg, line), s, e) for line in rethrows):
+    if _splits_a_try(cfg, s, e):
         return TRY_SPLIT
     for region in cfg.try_regions:
-        if region.end_line < s or e < region.start_line:
+        if not region.start_line <= s <= e <= region.end_line or (
+            s == region.start_line and e == region.end_line
+        ):
             continue
-        if s <= region.start_line and region.end_line <= e:
-            continue
-        if not any(lo <= s and e <= hi for lo, hi in region.clauses):
-            return TRY_SPLIT
-        lo, hi = region.body
-        if lo <= s and e <= hi and _state_seen(cfg, region, s, e, reads, def_lines):
+        exposed = region.exposed_to(s, e)
+        if exposed is not None and _state_seen(cfg, region, exposed, s, e, reads, def_lines):
             return EXCEPTION_STATE
     return None
+
+
+def _splits_a_try(cfg: CFG, s: int, e: int) -> bool:
+    """Whether lines *s*..*e* re-raise outside their handler, or hold part of
+    a ``try`` but not one whole clause of it."""
+    rethrows = [r.line for r in raises_in(cfg, s, e) if r.kind == "rethrow"]
+    if any(not _inside(_handler_of(cfg, line), s, e) for line in rethrows):
+        return True
+    return any(
+        not (region.end_line < s or e < region.start_line)
+        and not (s <= region.start_line and region.end_line <= e)
+        and region.exposed_to(s, e) is None
+        for region in cfg.try_regions
+    )
 
 
 def _handler_of(cfg: CFG, line: int) -> tuple[int, int] | None:
@@ -239,22 +247,22 @@ def _inside(lines: tuple[int, int] | None, s: int, e: int) -> bool:
 def _state_seen(
     cfg: CFG,
     region: TryRegion,
+    exposed: tuple[list[tuple[int, int]], bool],
     s: int,
     e: int,
     reads: dict[str, list[tuple[int, frozenset[int]]]],
     def_lines: dict[str, list[int]],
 ) -> bool:
-    """Whether a write on lines *s*..*e* that code in the span may follow
-    (and so raise after) is read on *region*'s exception path."""
-    clauses = [(h.start_line, h.end_line) for h in region.handlers]
-    if region.finally_lines is not None:
-        clauses.append(region.finally_lines)
+    """Whether a write on lines *s*..*e* that code in them may follow (and so
+    raise after) is read where *exposed* (:meth:`TryRegion.exposed_to`) says
+    an exception from them is handled in *region*."""
+    clauses, past = exposed
     for var, entries in reads.items():
         for line, seen in entries:
-            exposed = any(lo <= line <= hi for lo, hi in clauses) or (
-                line > region.end_line and _swallowed(region, def_lines.get(var, ()))
+            hit = any(lo <= line <= hi for lo, hi in clauses) or (
+                past and line > region.end_line and _swallowed(region, def_lines.get(var, ()))
             )
-            if exposed and any(s <= d <= e and _followed(cfg, d, s, e) for d in seen):
+            if hit and any(s <= d <= e and _followed(cfg, d, s, e) for d in seen):
                 return True
     return False
 
@@ -301,6 +309,5 @@ __all__ = [
     "TryRegion",
     "catches",
     "exception_flow_refusal",
-    "handler_head",
     "raises_in",
 ]

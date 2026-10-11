@@ -19,7 +19,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BaseDefUseDialect, Occurrence, Receiver, StatementDefUse
+from .base import (
+    BaseDefUseDialect,
+    HandlerHead,
+    Occurrence,
+    Receiver,
+    StatementDefUse,
+    node_text,
+)
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -130,6 +137,12 @@ class TsJsDefUseDialect(BaseDefUseDialect):
         if param is not None:
             self._declare(defs, 0, param)
         return StatementDefUse(defs=tuple(defs), uses=())
+
+    def handler_head(self, handler: Node) -> HandlerHead:
+        """A ``catch`` catches everything; it binds a plain parameter's name."""
+        param = handler.child_by_field_name("parameter")
+        named = param is not None and param.type == "identifier"
+        return None, node_text(param) if named else None
 
     def declared_type(self, name: Node) -> str | None:
         """The base rule, plus ``| undefined`` for an optional parameter

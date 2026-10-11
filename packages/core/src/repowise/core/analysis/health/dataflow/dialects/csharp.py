@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BaseDefUseDialect, Occurrence, StatementDefUse
+from .base import BaseDefUseDialect, HandlerHead, Occurrence, StatementDefUse, node_text
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -78,6 +78,18 @@ class CSharpDefUseDialect(BaseDefUseDialect):
 
     def _is_scope_boundary(self, node: Node) -> bool:
         return node.type in _SCOPE_BOUNDARIES
+
+    def handler_head(self, handler: Node) -> HandlerHead:
+        """``catch (E e)`` names ``E`` and binds ``e``; a bare ``catch``
+        catches everything. A ``when`` filter may decline, so a filtered
+        clause names no type a raise is matched against."""
+        decl = next((c for c in handler.named_children if c.type == "catch_declaration"), None)
+        name = decl.child_by_field_name("name") if decl is not None else None
+        bound = node_text(name) if name is not None else None
+        if any(c.type == "catch_filter_clause" for c in handler.named_children):
+            return (), bound
+        kind = decl.child_by_field_name("type") if decl is not None else None
+        return ((node_text(kind),) if kind is not None else None), bound
 
     def collect_reads(self, node: Node | None, out: list[Occurrence]) -> None:
         """Collect variable reads under *node*.

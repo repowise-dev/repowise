@@ -24,9 +24,11 @@ from .base import (
     NO_RECEIVER,
     BaseDefUseDialect,
     Captured,
+    HandlerHead,
     Occurrence,
     Receiver,
     StatementDefUse,
+    node_text,
 )
 
 if TYPE_CHECKING:
@@ -107,6 +109,20 @@ class PythonDefUseDialect(BaseDefUseDialect):
         uses: list[Occurrence] = []
         self._with_item(handler, defs, uses)
         return StatementDefUse(defs=tuple(defs), uses=tuple(uses))
+
+    def handler_head(self, handler: Node) -> HandlerHead:
+        """``except (A, b.C) as e:`` names ``A`` and ``b.C`` and binds ``e``;
+        a bare ``except:`` catches everything."""
+        value = handler.child_by_field_name("value")
+        if value is None:
+            return None, None
+        alias = None
+        if value.type == "as_pattern":
+            alias = value.child_by_field_name("alias")
+            value = value.named_children[0]
+        grouped = value.type in ("tuple", "parenthesized_expression")
+        names = value.named_children if grouped else [value]
+        return tuple(node_text(n) for n in names), node_text(alias) if alias else None
 
     def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """A method's first parameter when it is ``self`` / ``cls`` and the

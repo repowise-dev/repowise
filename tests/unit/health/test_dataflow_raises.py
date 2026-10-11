@@ -260,3 +260,99 @@ def test_a_go_span_holding_defer_is_refused_and_counted():
     spans = find_extractions(res.functions[0], get_language_map("go"), refused=refused)
     assert not [x for x in spans if x.start_line <= 6 <= x.end_line]
     assert refused == {DEFER_MOVED}
+
+
+def test_python_handler_types_come_from_the_dialect():
+    src = """
+    def f():
+        try:
+            g()
+        except Foo:
+            pass
+        except:
+            pass
+    """
+    (region,) = _cfg("python", src).try_regions
+    assert [h.types for h in region.handlers] == [("Foo",), None]
+
+
+def test_a_csharp_filtered_catch_is_not_counted_as_catching():
+    src = """
+    class A { void F() {
+      try { throw new InvalidOperationException("x"); }
+      catch (InvalidOperationException e) when (e.Message == "y") { }
+    } }
+    """
+    assert _facts("csharp", src) == [(3, "raise", "InvalidOperationException", None)]
+
+
+@pytest.mark.parametrize("language", ["typescript", "java", "csharp", "cpp"])
+def test_a_braceless_return_leaves_the_if_without_reaching_its_join(language):
+    src = {
+        "typescript": "function f(x) {\n  if (x) return;\n  g();\n}\n",
+        "java": "class A { void f(int x) {\n  if (x > 0) return;\n  g();\n} }\n",
+        "csharp": "class A { void F(int x) {\n  if (x > 0) return;\n  G();\n} }\n",
+        "cpp": "void f(int x) {\n  if (x) return;\n  g();\n}\n",
+    }[language]
+    cfg = _cfg(language, src)
+    (arm,) = [b for b in cfg.blocks if any(s.start_line == 2 and not s.is_head for s in b.statements)]
+    assert arm.statements[-1].kind == "return_statement"
+    assert arm.successors == [cfg.exit_id]
+
+
+_NESTED = """
+def f(a, b):
+    x = 0
+    try:
+        try:
+            g(a)
+        except ValueError:
+            x = b + 1
+            log(a)
+            log(b)
+    finally:
+        log(x)
+    return x
+"""
+
+
+def test_a_span_in_an_inner_handler_keeps_a_write_the_outer_finally_reads():
+    # The span sits in the inner handler, not a ``try`` body: a raise from
+    # ``log`` after the write would leave the outer ``finally`` the old ``x``.
+    assert _refusal(_NESTED, 8, 10) == EXCEPTION_STATE
+    assert _refusal(_NESTED, 9, 10) is None
+
+
+def test_a_span_in_an_else_clause_keeps_a_write_its_finally_reads():
+    src = """
+    def f(a, b):
+        x = 0
+        try:
+            g(a)
+        except ValueError:
+            return 0
+        else:
+            x = b + 1
+            log(a)
+        finally:
+            log(x)
+        return x
+    """
+    assert _refusal(src, 9, 10) == EXCEPTION_STATE
+
+
+def test_a_span_in_a_handler_nested_in_a_swallowing_try_keeps_a_write_read_after():
+    src = """
+    def f(a, b):
+        x = 0
+        try:
+            try:
+                g(a)
+            except ValueError:
+                x = b + 1
+                log(a)
+        except Exception:
+            pass
+        return x
+    """
+    assert _refusal(src, 8, 9) == EXCEPTION_STATE

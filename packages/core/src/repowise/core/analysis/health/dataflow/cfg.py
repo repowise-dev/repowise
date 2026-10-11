@@ -55,11 +55,12 @@ from .raises import (
     TryRegion,
     catches,
     error_exit,
-    handler_head,
 )
 
 if TYPE_CHECKING:
     from tree_sitter import Node
+
+    from .dialects.base import DefUseDialect
 
 # Upper bound on basic blocks per function. A structured CFG has roughly one
 # block per branch/loop arm, so a few hundred is already an extreme function;
@@ -181,10 +182,7 @@ class CFG:
             best: dict[int, tuple[int, int, int]] = {}
             for b in self.blocks:
                 for k, st in enumerate(b.statements):
-                    width = st.end_line - st.start_line
-                    for ln in range(st.start_line, st.end_line + 1):
-                        if ln not in best or width < best[ln][0]:
-                            best[ln] = (width, b.id, k)
+                    _narrowest(best, st, b.id, k)
             self._at = {ln: (bid, k) for ln, (_w, bid, k) in best.items()}
         return self._at.get(line)
 
@@ -217,6 +215,15 @@ class CFG:
         return out
 
 
+def _narrowest(best: dict[int, tuple[int, int, int]], st: Statement, bid: int, k: int) -> None:
+    """Keep *st* (statement *k* of block *bid*) on each of its lines where it
+    is narrower than what *best* holds."""
+    width = st.end_line - st.start_line
+    for ln in range(st.start_line, st.end_line + 1):
+        if ln not in best or width < best[ln][0]:
+            best[ln] = (width, bid, k)
+
+
 @dataclass
 class _LoopCtx:
     """Jump targets for ``break`` / ``continue`` within the enclosing loop."""
@@ -232,8 +239,11 @@ class _CFGBuilder:
     mutable state (the block list, the id counter, and the loop-target stack).
     """
 
-    def __init__(self, lmap: LanguageNodeMap, *, max_blocks: int) -> None:
+    def __init__(
+        self, lmap: LanguageNodeMap, *, max_blocks: int, dialect: DefUseDialect | None = None
+    ) -> None:
         self.lmap = lmap
+        self.dialect = dialect
         self.max_blocks = max_blocks
         self.blocks: list[BasicBlock] = []
         self._next_id = 0
@@ -284,6 +294,7 @@ class _CFGBuilder:
         self._raises_to(region, dst)
 
     def _record_stmt(self, block: BasicBlock, node: Node) -> None:
+        self._record_exit(node)
         block.statements.append(
             Statement(node.type, node.start_point[0] + 1, node.end_point[0] + 1, node=node)
         )
@@ -383,7 +394,6 @@ class _CFGBuilder:
             elif t in self.lmap.with_kinds:
                 cur = self._build_with(st, cur)
             elif t in self.lmap.return_kinds or t in self.lmap.raise_kinds:
-                self._record_exit(st)
                 self._record_stmt(cur, st)
                 self._edge(cur, self.exit_block)
                 cur = None
@@ -398,7 +408,6 @@ class _CFGBuilder:
                     self._edge(cur, self._loops[-1].continue_target)
                 cur = None
             else:
-                self._record_exit(st)
                 self._record_stmt(cur, st)
         return cur
 
@@ -423,7 +432,9 @@ class _CFGBuilder:
         self._raises.append(RaiseSite(st.start_point[0] + 1, kind, exc, caught))
 
     def _record_arm_raises(self, switch: Node) -> None:
-        """The raises in a ``switch`` / ``match`` the graph keeps whole."""
+        """The raises in a ``switch`` / ``match`` the graph keeps whole. The
+        statement is one graph node, so its arms are walked here, once, and
+        only within it: nested functions and lambdas are not entered."""
         scopes = self.lmap.function_kinds | self.lmap.lambda_kinds
         stack = list(reversed(switch.named_children))
         while stack:
@@ -631,6 +642,22 @@ class _CFGBuilder:
         elif body_out is not None:
             self._edge(body_out, normal_join)
 
+        handlers = self._build_handlers(clauses, heads, cur, protected, normal_join, finally_clause)
+        parts = (body, else_clause, clauses, finally_clause)
+        self._regions.append(_try_region(try_node, parts, handlers))
+        return join
+
+    def _build_handlers(
+        self,
+        clauses: list[Node],
+        heads: list[Handler],
+        cur: BasicBlock,
+        protected: list[BasicBlock],
+        normal_join: BasicBlock,
+        finally_clause: Node | None,
+    ) -> tuple[Handler, ...]:
+        """Each handler clause of a ``try``, reached from its *protected*
+        body; returns them with whether each can complete normally."""
         handlers = []
         for handler, head in zip(clauses, heads, strict=True):
             first = len(self.blocks)
@@ -650,24 +677,32 @@ class _CFGBuilder:
             # A handler that returns or raises part-way still runs ``finally``.
             if finally_clause is not None:
                 self._raises_to(self.blocks[first:], normal_join)
+        return tuple(handlers)
 
-        parts = [body, else_clause, *clauses, finally_clause]
-        self._regions.append(
-            TryRegion(
-                try_node.start_point[0] + 1,
-                try_node.end_point[0] + 1,
-                _lines(body) or (0, 0),
-                tuple(x for x in map(_lines, parts) if x is not None),
-                tuple(handlers),
-                _lines(finally_clause),
-            )
-        )
-        return join
-
-    @staticmethod
-    def _handler(clause: Node) -> Handler:
-        types, name = handler_head(clause)
+    def _handler(self, clause: Node) -> Handler:
+        """What *clause* names and binds, from the language's dialect; with
+        none, a handler whose types match no raise."""
+        types, name = self.dialect.handler_head(clause) if self.dialect else ((), None)
         return Handler(clause.start_point[0] + 1, clause.end_point[0] + 1, types, name)
+
+
+def _try_region(
+    try_node: Node,
+    parts: tuple[Node | None, Node | None, list[Node], Node | None],
+    handlers: tuple[Handler, ...],
+) -> TryRegion:
+    """*try_node*'s lines and its clauses': *parts* is its body, ``else``,
+    handler clauses and ``finally``."""
+    body, else_clause, clauses, finally_clause = parts
+    nodes = [body, else_clause, *clauses, finally_clause]
+    return TryRegion(
+        try_node.start_point[0] + 1,
+        try_node.end_point[0] + 1,
+        _lines(body) or (0, 0),
+        tuple(x for x in map(_lines, nodes) if x is not None),
+        handlers,
+        _lines(finally_clause),
+    )
 
 
 def _lines(node: Node | None) -> tuple[int, int] | None:
@@ -679,6 +714,7 @@ def build_cfg(
     lmap: LanguageNodeMap,
     *,
     max_blocks: int = _DEFAULT_MAX_BLOCKS,
+    dialect: DefUseDialect | None = None,
 ) -> CFG:
     """Build the control-flow graph for one function AST node.
 
@@ -686,6 +722,8 @@ def build_cfg(
     ``_collect_function_nodes`` yields); *lmap* is its language's
     ``LanguageNodeMap``. Raises :class:`CFGGuardTrippedError` if the function
     exceeds *max_blocks* -- callers building over a corpus should catch it and
-    skip the function (the :mod:`gating` harness does).
+    skip the function (the :mod:`gating` harness does). *dialect* says what
+    each exception handler names (``handler_head``); without it no raise is
+    counted as caught.
     """
-    return _CFGBuilder(lmap, max_blocks=max_blocks).build(fn_node)
+    return _CFGBuilder(lmap, max_blocks=max_blocks, dialect=dialect).build(fn_node)

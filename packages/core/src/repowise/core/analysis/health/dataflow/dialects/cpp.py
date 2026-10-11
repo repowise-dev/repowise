@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING
 from .base import (
     NO_RECEIVER,
     BaseDefUseDialect,
+    HandlerHead,
     Occurrence,
     Receiver,
     StatementDefUse,
@@ -98,6 +99,16 @@ class CppDefUseDialect(BaseDefUseDialect):
 
     def _is_scope_boundary(self, node: Node) -> bool:
         return node.type in _SCOPE_BOUNDARIES
+
+    def handler_head(self, handler: Node) -> HandlerHead:
+        """``catch (const E& e)`` names ``E``; ``catch (...)`` catches
+        everything. The bound name is not needed: C++ re-raises with ``throw;``."""
+        params = handler.child_by_field_name("parameters")
+        decl = next(
+            (c for c in params.named_children if c.type == "parameter_declaration"), None
+        ) if params is not None else None
+        kind = decl.child_by_field_name("type") if decl is not None else None
+        return ((node_text(kind),) if kind is not None else None), None
 
     def collect_reads(self, node: Node | None, out: list[Occurrence]) -> None:
         """Like the base collector, but a ``call_expression`` contributes only
