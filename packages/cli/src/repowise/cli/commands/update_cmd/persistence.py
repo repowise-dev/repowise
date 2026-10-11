@@ -414,6 +414,95 @@ def resolve_repair_base(
     return from_commit, None
 
 
+def _rescore_stale_findings(
+    repo_path: Any,
+    graph_builder: Any,
+    state: dict,
+    *,
+    head_ts: float | None,
+    parsed_files: list | None,
+    exclude_patterns: list[str] | None,
+    force_full_rescore: bool,
+    timings: PhaseTimings | None,
+) -> tuple[Any, Any, Any]:
+    """Re-score health and rescan security repo-wide when they are stale.
+
+    Returns the ``last_full_rescore_at``, ``health_analyzer_version`` and
+    ``security_scanner_version`` stamps the new state should carry.
+    """
+    # Periodic idle-file health re-score (#728): git_metadata is now fresh in the
+    # DB, so re-score every file's findings against the decayed inputs. Gated to
+    # ~weekly since only the findings (not their cheap git inputs) lag here.
+    # ``force_full_rescore`` is the config-changed caller: a config edit
+    # invalidates every persisted score, and the partial health update above
+    # only reached the changed files.
+    last_full_rescore_at = state.get("last_full_rescore_at")
+    health_analyzer_version = state.get("health_analyzer_version")
+    rescored = False
+    if force_full_rescore or full_rescore_due(state, head_ts):
+        with timed(timings, "rescore"):
+            rescored = run_decay_health_rescore(
+                repo_path, graph_builder, parsed_files or [], exclude_patterns or []
+            )
+    if rescored:
+        # Only the time gate reads this, and it treats a non-numeric value as
+        # "never re-scored", so leave a real stamp alone rather than writing
+        # None over it when git gave us no timestamp.
+        if head_ts is not None:
+            last_full_rescore_at = head_ts
+        health_analyzer_version = HEALTH_ANALYZER_VERSION
+    if force_full_rescore and not rescored:
+        raise RuntimeError(
+            "Configuration-triggered health re-score failed; the previous "
+            "fingerprint was retained so the next update retries."
+        )
+
+    # Same drift check for the security scanner (#3072): a version bump means
+    # every unchanged file's stored findings may be stale, since the normal
+    # persist above only rescanned the changed files.
+    security_scanner_version = state.get("security_scanner_version")
+    if security_scanner_changed(state):
+        with timed(timings, "security_rescan"):
+            if run_full_security_rescan(repo_path, exclude_patterns or []):
+                security_scanner_version = SECURITY_SCANNER_VERSION
+    return last_full_rescore_at, health_analyzer_version, security_scanner_version
+
+
+def _stamp_git_history(
+    new_state: dict, full_git_summary: Any | None, failed_steps: list[str]
+) -> None:
+    """Record git history coverage and version when this run walked full history."""
+    if full_git_summary is None:
+        return
+    coverage = getattr(full_git_summary, "history_coverage", None)
+    if coverage is not None:
+        new_state["git_history_coverage"] = coverage.to_dict()
+    else:
+        new_state.pop("git_history_coverage", None)
+    # Every row was rewritten under the current rules, unless they never
+    # reached the store; then the next update walks again.
+    if "Git persist" not in failed_steps:
+        new_state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
+
+
+def _stamp_scope(repo_path: Any, new_state: dict, failed_steps: list[str]) -> None:
+    """Stamp the index scope, counting this run's failed steps as unavailable."""
+    from repowise.core.index_scope import resolve_index_scope, stamp_index_scope
+
+    scope = resolve_index_scope(new_state, load_config(repo_path))
+    unavailable = set(scope["analysis"]["unavailable"])
+    unavailable.update(str(step) for step in failed_steps)
+    stamp_index_scope(
+        new_state,
+        load_config(repo_path),
+        git_history_coverage=new_state.get("git_history_coverage"),
+        analysis={
+            "unavailable": sorted(unavailable),
+            "skipped": scope["analysis"]["skipped"],
+        },
+    )
+
+
 def _persist_index_only_update(
     repo_path: Any,
     graph_builder: Any,
@@ -504,41 +593,18 @@ def _persist_index_only_update(
 
     from .command import _current_renderer_fingerprint
 
-    # Periodic idle-file health re-score (#728): git_metadata is now fresh in the
-    # DB, so re-score every file's findings against the decayed inputs. Gated to
-    # ~weekly since only the findings (not their cheap git inputs) lag here.
-    # ``force_full_rescore`` is the config-changed caller: a config edit
-    # invalidates every persisted score, and the partial health update above
-    # only reached the changed files.
-    last_full_rescore_at = state.get("last_full_rescore_at")
-    health_analyzer_version = state.get("health_analyzer_version")
-    rescored = False
-    if force_full_rescore or full_rescore_due(state, head_ts):
-        with timed(timings, "rescore"):
-            rescored = run_decay_health_rescore(
-                repo_path, graph_builder, parsed_files or [], exclude_patterns or []
-            )
-    if rescored:
-        # Only the time gate reads this, and it treats a non-numeric value as
-        # "never re-scored", so leave a real stamp alone rather than writing
-        # None over it when git gave us no timestamp.
-        if head_ts is not None:
-            last_full_rescore_at = head_ts
-        health_analyzer_version = HEALTH_ANALYZER_VERSION
-    if force_full_rescore and not rescored:
-        raise RuntimeError(
-            "Configuration-triggered health re-score failed; the previous "
-            "fingerprint was retained so the next update retries."
+    last_full_rescore_at, health_analyzer_version, security_scanner_version = (
+        _rescore_stale_findings(
+            repo_path,
+            graph_builder,
+            state,
+            head_ts=head_ts,
+            parsed_files=parsed_files,
+            exclude_patterns=exclude_patterns,
+            force_full_rescore=force_full_rescore,
+            timings=timings,
         )
-
-    # Same drift check for the security scanner (#3072): a version bump means
-    # every unchanged file's stored findings may be stale, since the normal
-    # persist above only rescanned the changed files.
-    security_scanner_version = state.get("security_scanner_version")
-    if security_scanner_changed(state):
-        with timed(timings, "security_rescan"):
-            if run_full_security_rescan(repo_path, exclude_patterns or []):
-                security_scanner_version = SECURITY_SCANNER_VERSION
+    )
     new_state = {
         **state,
         "last_sync_commit": head,
@@ -559,16 +625,7 @@ def _persist_index_only_update(
         # here is exactly the cost the mode exists to avoid.
         "renderer_fingerprint": _current_renderer_fingerprint(repo_path),
     }
-    if full_git_summary is not None:
-        coverage = getattr(full_git_summary, "history_coverage", None)
-        if coverage is not None:
-            new_state["git_history_coverage"] = coverage.to_dict()
-        else:
-            new_state.pop("git_history_coverage", None)
-        # Every row was rewritten under the current rules, unless they never
-        # reached the store; then the next update walks again.
-        if "Git persist" not in failed_steps:
-            new_state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
+    _stamp_git_history(new_state, full_git_summary, failed_steps)
     # Before save_state, and reading ``state`` (the pre-update dict) for the old
     # pointer: this is what keeps a degraded run recoverable now that the
     # pointer below advances to head regardless.
@@ -591,20 +648,7 @@ def _persist_index_only_update(
     if timings is not None:
         timings.stop("run")
         new_state["phase_timings"] = timings.totals
-    from repowise.core.index_scope import resolve_index_scope, stamp_index_scope
-
-    scope = resolve_index_scope(new_state, load_config(repo_path))
-    unavailable = set(scope["analysis"]["unavailable"])
-    unavailable.update(str(step) for step in failed_steps)
-    stamp_index_scope(
-        new_state,
-        load_config(repo_path),
-        git_history_coverage=new_state.get("git_history_coverage"),
-        analysis={
-            "unavailable": sorted(unavailable),
-            "skipped": scope["analysis"]["skipped"],
-        },
-    )
+    _stamp_scope(repo_path, new_state, failed_steps)
     save_state(repo_path, new_state)
     elapsed = time.monotonic() - start
     from .reporting import show_index_only_completion

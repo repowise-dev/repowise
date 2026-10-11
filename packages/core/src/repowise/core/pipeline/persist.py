@@ -433,6 +433,55 @@ def _betweenness_commits(graph_builder: Any) -> dict[str, str | None]:
         return {"file": None, "symbol": None}
 
 
+def _stamp_betweenness_commit(
+    node_dict: dict[str, Any],
+    node_type: str,
+    bc: dict[str, float],
+    sym_bc: dict[str, float],
+    bt_commits: dict[str, str | None],
+) -> None:
+    """Set ``betweenness_commit`` on a graph-node row when its scoring is known."""
+    node_id = node_dict["node_id"]
+    # Scored → its commit; in no scoring → NULL, the unscored marker;
+    # provenance unknown → key omitted, so the stored stamp survives.
+    if node_id in bc:
+        kind, scored = "file", True
+    elif node_id in sym_bc:
+        kind, scored = "symbol", True
+    else:
+        kind, scored = ("file" if node_type == "file" else "symbol"), False
+    if bt_commits[kind] is not None:
+        node_dict["betweenness_commit"] = bt_commits[kind] if scored else None
+
+
+def _community_meta(
+    node_id: str,
+    node_type: str,
+    cd: dict[str, Any],
+    sc: dict[str, Any],
+    ci: dict[Any, Any],
+    ep_scores: dict[str, float],
+) -> dict[str, Any]:
+    """The ``community_meta_json`` payload of one graph node."""
+    community_meta: dict[str, Any] = {}
+    if node_type == "file":
+        cid = cd.get(node_id, 0)
+        comm_info = ci.get(cid)
+        if comm_info:
+            community_meta = {
+                "label": comm_info.label,
+                "cohesion": comm_info.cohesion,
+                "conductance": comm_info.conductance,
+            }
+    elif node_type == "symbol":
+        sym_cid = sc.get(node_id)
+        if sym_cid is not None:
+            community_meta = {"symbol_community_id": sym_cid}
+        if node_id in ep_scores:
+            community_meta["entry_point_score"] = ep_scores[node_id]
+    return community_meta
+
+
 async def persist_graph_nodes(
     session: Any,
     repo_id: str,
@@ -500,33 +549,9 @@ async def persist_graph_nodes(
             "community_id": stored_community_id(cd, node_id),
         }
 
-        # Scored → its commit; in no scoring → NULL, the unscored marker;
-        # provenance unknown → key omitted, so the stored stamp survives.
-        if node_id in bc:
-            kind, scored = "file", True
-        elif node_id in sym_bc:
-            kind, scored = "symbol", True
-        else:
-            kind, scored = ("file" if node_type == "file" else "symbol"), False
-        if bt_commits[kind] is not None:
-            node_dict["betweenness_commit"] = bt_commits[kind] if scored else None
+        _stamp_betweenness_commit(node_dict, node_type, bc, sym_bc, bt_commits)
 
-        community_meta: dict[str, Any] = {}
-        if node_type == "file":
-            cid = cd.get(node_id, 0)
-            comm_info = ci.get(cid)
-            if comm_info:
-                community_meta = {
-                    "label": comm_info.label,
-                    "cohesion": comm_info.cohesion,
-                    "conductance": comm_info.conductance,
-                }
-        elif node_type == "symbol":
-            sym_cid = sc.get(node_id)
-            if sym_cid is not None:
-                community_meta = {"symbol_community_id": sym_cid}
-            if node_id in ep_scores:
-                community_meta["entry_point_score"] = ep_scores[node_id]
+        community_meta = _community_meta(node_id, node_type, cd, sc, ci, ep_scores)
         node_dict["community_meta_json"] = json.dumps(community_meta)
 
         if node_type == "symbol":

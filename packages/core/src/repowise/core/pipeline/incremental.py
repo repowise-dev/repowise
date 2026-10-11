@@ -50,117 +50,27 @@ def build_filtered_changed_paths(file_diffs: list, exclude_patterns: list[str]) 
     return [p for p in paths if not spec.match_file(p)]
 
 
-def build_repo_graph(
-    repo_path: Any,
-    exclude_patterns: list[str],
-    *,
-    collect_sources: bool = False,
-    include_submodules: bool = False,
-    include_nested_repos: bool = False,
-    log: LogFn | None = None,
-    timings: PhaseTimings | None = None,
-    read_only: bool = False,
-) -> tuple[list, dict[str, bytes], Any, Any, int]:
-    """Traverse + parse the repo and build the graph (+ framework-aware edges).
+def _record_structural_episodes(repo_path: Any, traverser: Any) -> None:
+    """Best-effort structural episodes from the walk, without the formatter check."""
+    try:
+        from repowise.core.precedent.structural import record_structural_episodes
 
-    Shared by the incremental rebuild path (:func:`rebuild_graph_and_git`),
-    the config-triggered re-score path and the commands that analyze the
-    working tree live, so all of them build the same graph from the same
-    parser and the same synthetic edge steps.
+        record_structural_episodes(repo_path, traverser, allow_formatter_check=False)
+    except Exception:
+        pass
 
-    ``read_only`` is for those live commands: the parse cache is read but
-    never written, and no structural episodes or centrality cache are kept.
 
-    Files that fail to read/parse are skipped and reported as a count rather than
-    swallowed silently. ``source_map`` is populated only when ``collect_sources``
-    is set; every path that persists the graph sets it, since the framework-edge
-pass reads the sources.
-
-    ``timings`` is the run's shared :class:`PhaseTimings` table; each step
-    below records into it under a ``rebuild.*`` name. ``None`` records nothing.
-
-    Returns ``(parsed_files, source_map, graph_builder, repo_structure,
-    file_count)``.
-    """
-    import os
-    from concurrent.futures import ThreadPoolExecutor
-
-    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
-
-    log = log or _noop_log
-
-    traverser = FileTraverser(
-        repo_path,
-        extra_exclude_patterns=exclude_patterns or None,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-    )
-    # Parallel stat + header sniffing, mirroring the init ingestion phase.
-    # A serial traverse() pays per-file I/O latency sequentially; on a cold
-    # OS file cache that was ~50s of every PowerToys-scale update. Passing
-    # the file_infos into get_repo_structure also avoids its re-walk.
-    with timed(timings, "rebuild.traverse"):
-        all_paths = list(traverser._walk())
-        io_workers = min(32, max(4, (os.cpu_count() or 4) * 2))
-        with ThreadPoolExecutor(max_workers=io_workers) as io_pool:
-            maybe_infos = list(io_pool.map(traverser._build_file_info, all_paths))
-        file_infos = [fi for fi in maybe_infos if fi is not None]
-        repo_structure = traverser.get_repo_structure(file_infos)
-
-    # Structural episodes, minus the formatter check: this path is the hot one
-    # (every update, plus the config-triggered re-score), so it derives only
-    # what the walk has already paid for and never spawns a subprocess.
-    if not read_only:
-        try:
-            from repowise.core.precedent.structural import record_structural_episodes
-
-            record_structural_episodes(repo_path, traverser, allow_formatter_check=False)
-        except Exception:
-            pass
-
-    # Thread-pool source reads + content-hash parse cache split, shared with
-    # the init parse phase: only changed files need a tree-sitter parse.
-    # Cache failures degrade to all-miss (full parse), as before.
-    from repowise.core.pipeline.phases.ingestion import (
-        _cache_parsed,
-        _read_sources,
-        _split_cached,
-    )
-    from repowise.core.workspace.update import get_head_commit
-
-    with timed(timings, "rebuild.read"):
-        fi_and_bytes = _read_sources(file_infos, None)
-        parse_cache, cached_hits, to_parse = _split_cached(Path(repo_path), fi_and_bytes, None)
-    if read_only:
-        parse_cache = None  # hits above still count; misses are not stored
+def _parse_misses(
+    cached_hits: dict[int, Any],
+    to_parse: list,
+    parse_cache: Any,
+    timings: PhaseTimings | None,
+) -> dict[int, Any]:
+    """Parse the parse-cache misses and merge them over the cached hits by index."""
+    from repowise.core.ingestion import ASTParser
+    from repowise.core.pipeline.phases.ingestion import _cache_parsed
 
     parser: Any = None  # constructed lazily — every-file-cached updates skip query compilation
-    parsed_files: list = []
-    source_map: dict[str, bytes] = {}
-    graph_builder = GraphBuilder(
-        repo_path,
-        exclude_patterns=exclude_patterns,
-        centrality_cache_dir=None if read_only else Path(repo_path) / ".repowise",
-        head_commit=get_head_commit(Path(repo_path)),
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-    )
-    graph_builder.console_scripts = traverser.console_script_names
-    # Carry the walk's skip record to the dead-code analyzer. This report is
-    # persisted repo-wide, so an update that could not see the skipped source
-    # files would re-derive and write back the verdicts init had clamped.
-    graph_builder.traversal_stats = traverser.stats
-    # Reconciliation authority is the successful traversal, not the successful
-    # parse set. A transient read/parser failure must not make an existing
-    # in-scope file look deleted and prune its persisted rows.
-    graph_builder.traversed_file_paths = {
-        file_info.path for file_info in file_infos
-    }
-
-    # Parse the misses in process and serially: on the update path they are
-    # change-sized. (Ceiling: a wiped/stale cache re-parses everything on one
-    # core; routing large miss counts through init's process pool would lift
-    # it, at the cost of Windows spawn overhead on every routine update.)
     merged: dict[int, Any] = dict(cached_hits)
     with timed(timings, "rebuild.parse"):
         for idx, (fi, source), content_hash in to_parse:
@@ -173,47 +83,44 @@ pass reads the sources.
             merged[idx] = parsed
             if content_hash:
                 _cache_parsed(parse_cache, parsed, content_hash)
+    return merged
 
-    skipped = len(file_infos) - len(fi_and_bytes)  # unreadable files
-    # Opened here and closed after build(): graph construction is the add_file
-    # loop plus the resolver, and the tsconfig wiring sits between them.
-    if timings is not None:
-        timings.start("rebuild.graph")
+
+def _add_parsed_files(
+    graph_builder: Any,
+    fi_and_bytes: list,
+    merged: dict[int, Any],
+    collect_sources: bool,
+) -> tuple[list, dict[str, bytes], int]:
+    """Add every parsed file to the graph, in read order.
+
+    Returns ``(parsed_files, source_map, unparsed)``, where ``unparsed`` counts
+    the read files that have no parse result.
+    """
+    parsed_files: list = []
+    source_map: dict[str, bytes] = {}
+    unparsed = 0
     for idx, (fi, source) in enumerate(fi_and_bytes):
         parsed = merged.get(idx)
         if parsed is None:
-            skipped += 1
+            unparsed += 1
             continue
         parsed_files.append(parsed)
         if collect_sources:
             source_map[fi.path] = source
         graph_builder.add_file(parsed)
+    return parsed_files, source_map, unparsed
 
-    # TS/JS path aliases (``@/components/...``) resolve only when the
-    # tsconfig resolver is attached before build(); without it the alias
-    # targets read as external nodes and every aliased file looks
-    # unreachable to the dead-code analyzer (#648 — this rebuild path was
-    # missed when the CLI commands were wired).
-    from repowise.core.ingestion import wire_tsconfig_resolver
 
-    wire_tsconfig_resolver(
-        graph_builder,
-        repo_path,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-    )
-    graph_builder.set_source_map(source_map)
-    graph_builder.set_pytest_roots(traverser.pytest_roots)
-    graph_builder.build()
-    if timings is not None:
-        timings.stop("rebuild.graph")
-    if parse_cache is not None:
-        with timed(timings, "rebuild.cache_save"):
-            parse_cache.save()
-
-    if skipped:
-        log(f"[yellow]Skipped {skipped} file(s) that failed to parse.[/yellow]")
-
+def _add_synthetic_edges(
+    repo_path: Any,
+    graph_builder: Any,
+    file_infos: list,
+    source_map: dict[str, bytes],
+    log: LogFn,
+    timings: PhaseTimings | None,
+) -> None:
+    """Add the framework-aware and dynamic-hint edges to a built graph."""
     # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask).
     # Best-effort, but not silent: the update path has to report the failure the
     # init path reports, or an index degrades differently depending on how it
@@ -257,6 +164,148 @@ pass reads the sources.
             f"[yellow]Dynamic hint extraction failed: {exc}. Dynamic edges"
             "will be missing from this update.[/yellow]"
         )
+
+
+def build_repo_graph(
+    repo_path: Any,
+    exclude_patterns: list[str],
+    *,
+    collect_sources: bool = False,
+    include_submodules: bool = False,
+    include_nested_repos: bool = False,
+    log: LogFn | None = None,
+    timings: PhaseTimings | None = None,
+    read_only: bool = False,
+) -> tuple[list, dict[str, bytes], Any, Any, int]:
+    """Traverse + parse the repo and build the graph (+ framework-aware edges).
+
+    Shared by the incremental rebuild path (:func:`rebuild_graph_and_git`),
+    the config-triggered re-score path and the commands that analyze the
+    working tree live, so all of them build the same graph from the same
+    parser and the same synthetic edge steps.
+
+    ``read_only`` is for those live commands: the parse cache is read but
+    never written, and no structural episodes or centrality cache are kept.
+
+    Files that fail to read/parse are skipped and reported as a count rather than
+    swallowed silently. ``source_map`` is populated only when ``collect_sources``
+    is set; every path that persists the graph sets it, since the framework-edge
+pass reads the sources.
+
+    ``timings`` is the run's shared :class:`PhaseTimings` table; each step
+    below records into it under a ``rebuild.*`` name. ``None`` records nothing.
+
+    Returns ``(parsed_files, source_map, graph_builder, repo_structure,
+    file_count)``.
+    """
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    from repowise.core.ingestion import FileTraverser, GraphBuilder
+
+    log = log or _noop_log
+
+    traverser = FileTraverser(
+        repo_path,
+        extra_exclude_patterns=exclude_patterns or None,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
+    # Parallel stat + header sniffing, mirroring the init ingestion phase.
+    # A serial traverse() pays per-file I/O latency sequentially; on a cold
+    # OS file cache that was ~50s of every PowerToys-scale update. Passing
+    # the file_infos into get_repo_structure also avoids its re-walk.
+    with timed(timings, "rebuild.traverse"):
+        all_paths = list(traverser._walk())
+        io_workers = min(32, max(4, (os.cpu_count() or 4) * 2))
+        with ThreadPoolExecutor(max_workers=io_workers) as io_pool:
+            maybe_infos = list(io_pool.map(traverser._build_file_info, all_paths))
+        file_infos = [fi for fi in maybe_infos if fi is not None]
+        repo_structure = traverser.get_repo_structure(file_infos)
+
+    # Structural episodes, minus the formatter check: this path is the hot one
+    # (every update, plus the config-triggered re-score), so it derives only
+    # what the walk has already paid for and never spawns a subprocess.
+    if not read_only:
+        _record_structural_episodes(repo_path, traverser)
+
+    # Thread-pool source reads + content-hash parse cache split, shared with
+    # the init parse phase: only changed files need a tree-sitter parse.
+    # Cache failures degrade to all-miss (full parse), as before.
+    from repowise.core.pipeline.phases.ingestion import (
+        _read_sources,
+        _split_cached,
+    )
+    from repowise.core.workspace.update import get_head_commit
+
+    with timed(timings, "rebuild.read"):
+        fi_and_bytes = _read_sources(file_infos, None)
+        parse_cache, cached_hits, to_parse = _split_cached(Path(repo_path), fi_and_bytes, None)
+    if read_only:
+        parse_cache = None  # hits above still count; misses are not stored
+
+    graph_builder = GraphBuilder(
+        repo_path,
+        exclude_patterns=exclude_patterns,
+        centrality_cache_dir=None if read_only else Path(repo_path) / ".repowise",
+        head_commit=get_head_commit(Path(repo_path)),
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
+    graph_builder.console_scripts = traverser.console_script_names
+    # Carry the walk's skip record to the dead-code analyzer. This report is
+    # persisted repo-wide, so an update that could not see the skipped source
+    # files would re-derive and write back the verdicts init had clamped.
+    graph_builder.traversal_stats = traverser.stats
+    # Reconciliation authority is the successful traversal, not the successful
+    # parse set. A transient read/parser failure must not make an existing
+    # in-scope file look deleted and prune its persisted rows.
+    graph_builder.traversed_file_paths = {
+        file_info.path for file_info in file_infos
+    }
+
+    # Parse the misses in process and serially: on the update path they are
+    # change-sized. (Ceiling: a wiped/stale cache re-parses everything on one
+    # core; routing large miss counts through init's process pool would lift
+    # it, at the cost of Windows spawn overhead on every routine update.)
+    merged = _parse_misses(cached_hits, to_parse, parse_cache, timings)
+
+    skipped = len(file_infos) - len(fi_and_bytes)  # unreadable files
+    # Opened here and closed after build(): graph construction is the add_file
+    # loop plus the resolver, and the tsconfig wiring sits between them.
+    if timings is not None:
+        timings.start("rebuild.graph")
+    parsed_files, source_map, unparsed = _add_parsed_files(
+        graph_builder, fi_and_bytes, merged, collect_sources
+    )
+    skipped += unparsed
+
+    # TS/JS path aliases (``@/components/...``) resolve only when the
+    # tsconfig resolver is attached before build(); without it the alias
+    # targets read as external nodes and every aliased file looks
+    # unreachable to the dead-code analyzer (#648 — this rebuild path was
+    # missed when the CLI commands were wired).
+    from repowise.core.ingestion import wire_tsconfig_resolver
+
+    wire_tsconfig_resolver(
+        graph_builder,
+        repo_path,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
+    graph_builder.set_source_map(source_map)
+    graph_builder.set_pytest_roots(traverser.pytest_roots)
+    graph_builder.build()
+    if timings is not None:
+        timings.stop("rebuild.graph")
+    if parse_cache is not None:
+        with timed(timings, "rebuild.cache_save"):
+            parse_cache.save()
+
+    if skipped:
+        log(f"[yellow]Skipped {skipped} file(s) that failed to parse.[/yellow]")
+
+    _add_synthetic_edges(repo_path, graph_builder, file_infos, source_map, log, timings)
 
     return parsed_files, source_map, graph_builder, repo_structure, len(file_infos)
 

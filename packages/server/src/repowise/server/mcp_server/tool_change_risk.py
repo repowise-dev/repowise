@@ -148,6 +148,133 @@ _DIFF_SIZE_LABELS = {
 }
 
 
+async def _score_change(
+    repo_path: Any,
+    revspec: str | None,
+    extensions: list[str] | None,
+    exclude_patterns: list[str] | None,
+    baseline: int,
+) -> tuple[Any, dict | None]:
+    """Score the live change: ``(result, None)``, or ``(None, error reply)``."""
+    try:
+        result = await asyncio.to_thread(
+            score_live_change,
+            repo_path,
+            revspec,
+            extensions=tuple(extensions or ()),
+            exclude_patterns=tuple(exclude_patterns or ()),
+            baseline=baseline,
+        )
+    except ValueError as exc:
+        return None, {"error": str(exc)}
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or str(exc)
+        return None, {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
+    except subprocess.TimeoutExpired:
+        return None, {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
+    return result, None
+
+
+async def _attach_change_blocks(
+    ctx: Any,
+    payload: dict,
+    result: Any,
+    revspec: str | None,
+    extensions: list[str] | None,
+    changed_read: tuple[Any, Any],
+    collector: OmissionCollector,
+) -> None:
+    """Attach the tests, patch coverage, prior fixes and cross-repo blocks, in that order."""
+    changed, changed_error = changed_read
+    payload["impacted_tests"] = await _impacted_tests_block(
+        ctx,
+        changed,
+        changed_error,
+        collector,
+        revspec=revspec,
+        working_tree=result.working_tree,
+    )
+    patch_changed, patch_error, patch_label, patch_revspec = await _push_change(
+        str(ctx.path),
+        revspec,
+        result.working_tree,
+        normalize_extensions(tuple(extensions or ())),
+        result.riskignore_excludes + result.request_excludes,
+        (changed, changed_error),
+    )
+    patch = await _patch_coverage_block(
+        ctx, patch_changed, patch_error, patch_revspec, result, collector, label=patch_label
+    )
+    if patch is not None:
+        payload["patch_coverage"] = patch
+    prior_fixes = await _prior_fixes_block(ctx, changed)
+    if prior_fixes is not None:
+        # One fix record, not two. The blocks answered the same question
+        # with different arithmetic (decayed pressure vs raw count) and a
+        # reader had to work out which was which.
+        payload.setdefault("fix_history", {})["overlap"] = prior_fixes
+    alias = getattr(ctx, "alias", "")
+    # The join needs an open index per consumer repo, so it runs once for
+    # the whole change and the block distributes its rows.
+    impact = await cross_repo_tests(alias, sorted(changed))
+    cross_repo = _cross_repo_block(alias, sorted(changed), impact, collector)
+    if cross_repo is not None:
+        payload["cross_repo"] = cross_repo
+
+
+def _include_blocks(include: list[str] | None, ignored: list[dict]) -> set[str]:
+    """The valid ``include`` blocks; unknown ones are recorded in ``ignored``."""
+    return {
+        block
+        for block in (include or [])
+        if resolve_enum_argument(block, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
+    }
+
+
+async def _attach_branch_blocks(
+    ctx: Any,
+    payload: dict,
+    changed: Any,
+    collector: OmissionCollector,
+    revspec: str | None,
+    finding_id: str | None,
+) -> Any:
+    """Attach ``branch_overlap`` and return the independent-changes block, or None."""
+    # A drill-down returns one finding and nothing else, so neither block
+    # would reach the caller; both are pure cost on that path.
+    if finding_id is not None:
+        return None
+    overlap = await _branch_overlap_block(ctx, changed, collector)
+    if overlap is not None:
+        payload["branch_overlap"] = overlap
+    return await _independent_changes_block(ctx, changed, collector, revspec)
+
+
+def _shape_payload(result: Any, include_set: set[str], revspec: str | None) -> tuple[dict, dict]:
+    """The score's payload trimmed to what the request asked for.
+
+    Returns ``(payload, diagnostics)``; ``diagnostics`` holds the fields moved
+    out of the payload when the caller did not ask for them.
+    """
+    payload = change_risk_payload(result, scales="scales" in include_set)
+    if payload.get("review_priority") in _DIFF_SIZE_LABELS:
+        payload["classification"] = _DIFF_SIZE_LABELS[payload["review_priority"]]
+    if "diagnostics" not in include_set:
+        diagnostics = {f: payload.pop(f) for f in _DIAGNOSTIC_FIELDS if f in payload}
+        payload["fix_history"].pop("density", None)
+    else:
+        diagnostics = {}
+    # Fields that only repeat the request or say nothing: an empty exclude list,
+    # a working-tree flag after an explicit revspec, a false ``is_fix``.
+    if not payload["exclude_patterns"]:
+        del payload["exclude_patterns"]
+    if revspec is not None:
+        del payload["working_tree"]
+    if not payload["is_fix"]:
+        del payload["is_fix"]
+    return payload, diagnostics
+
+
 @mcp.tool(
     surface_order=60,
     artifact_type="change_risk",
@@ -199,44 +326,12 @@ async def get_change_risk(
         return _unsupported_repo_all("get_change_risk")
     ctx = await _resolve_repo_context(repo)
     started = time.perf_counter()
-    try:
-        result = await asyncio.to_thread(
-            score_live_change,
-            ctx.path,
-            revspec,
-            extensions=tuple(extensions or ()),
-            exclude_patterns=tuple(exclude_patterns or ()),
-            baseline=baseline,
-        )
-    except ValueError as exc:
-        return {"error": str(exc)}
-    except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or "").strip() or str(exc)
-        return {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
-    except subprocess.TimeoutExpired:
-        return {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
+    result, error = await _score_change(ctx.path, revspec, extensions, exclude_patterns, baseline)
+    if error is not None:
+        return error
     ignored: list[dict] = []
-    include_set = {
-        block
-        for block in (include or [])
-        if resolve_enum_argument(block, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
-    }
-    payload = change_risk_payload(result, scales="scales" in include_set)
-    if payload.get("review_priority") in _DIFF_SIZE_LABELS:
-        payload["classification"] = _DIFF_SIZE_LABELS[payload["review_priority"]]
-    if "diagnostics" not in include_set:
-        diagnostics = {f: payload.pop(f) for f in _DIAGNOSTIC_FIELDS if f in payload}
-        payload["fix_history"].pop("density", None)
-    else:
-        diagnostics = {}
-    # Fields that only repeat the request or say nothing: an empty exclude list,
-    # a working-tree flag after an explicit revspec, a false ``is_fix``.
-    if not payload["exclude_patterns"]:
-        del payload["exclude_patterns"]
-    if revspec is not None:
-        del payload["working_tree"]
-    if not payload["is_fix"]:
-        del payload["is_fix"]
+    include_set = _include_blocks(include, ignored)
+    payload, diagnostics = _shape_payload(result, include_set, revspec)
     if result.features.nf == 0:
         return await _nothing_to_score(ctx, payload["ref"], started)
     # Changed lines over the SAME file universe the score counted (its
@@ -267,48 +362,12 @@ async def get_change_risk(
         )
     )
     try:
-        payload["impacted_tests"] = await _impacted_tests_block(
-            ctx,
-            changed,
-            changed_error,
-            collector,
-            revspec=revspec,
-            working_tree=result.working_tree,
+        await _attach_change_blocks(
+            ctx, payload, result, revspec, extensions, (changed, changed_error), collector
         )
-        patch_changed, patch_error, patch_label, patch_revspec = await _push_change(
-            str(ctx.path),
-            revspec,
-            result.working_tree,
-            normalize_extensions(tuple(extensions or ())),
-            result.riskignore_excludes + result.request_excludes,
-            (changed, changed_error),
+        independent = await _attach_branch_blocks(
+            ctx, payload, changed, collector, revspec, finding_id
         )
-        patch = await _patch_coverage_block(
-            ctx, patch_changed, patch_error, patch_revspec, result, collector, label=patch_label
-        )
-        if patch is not None:
-            payload["patch_coverage"] = patch
-        prior_fixes = await _prior_fixes_block(ctx, changed)
-        if prior_fixes is not None:
-            # One fix record, not two. The blocks answered the same question
-            # with different arithmetic (decayed pressure vs raw count) and a
-            # reader had to work out which was which.
-            payload.setdefault("fix_history", {})["overlap"] = prior_fixes
-        alias = getattr(ctx, "alias", "")
-        # The join needs an open index per consumer repo, so it runs once for
-        # the whole change and the block distributes its rows.
-        impact = await cross_repo_tests(alias, sorted(changed))
-        cross_repo = _cross_repo_block(alias, sorted(changed), impact, collector)
-        if cross_repo is not None:
-            payload["cross_repo"] = cross_repo
-        # A drill-down returns one finding and nothing else, so neither block
-        # would reach the caller; both are pure cost on that path.
-        overlap = independent = None
-        if finding_id is None:
-            overlap = await _branch_overlap_block(ctx, changed, collector)
-            if overlap is not None:
-                payload["branch_overlap"] = overlap
-            independent = await _independent_changes_block(ctx, changed, collector, revspec)
     except BaseException:
         # Never leave the comparison running for a request that is already over.
         delta_task.cancel()
