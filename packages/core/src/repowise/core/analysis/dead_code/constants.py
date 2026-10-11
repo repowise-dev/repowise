@@ -998,9 +998,9 @@ _PURE_WRAPPER_DECORATOR_ATTRS: frozenset[str] = frozenset(
 )
 
 # Languages whose idiom is a static holder class the call site never names,
-# because it names only the member (C# extension methods). A set so widening it
-# is a deliberate act.
-_CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp"})
+# because it names only the member (C# extension methods, VB.NET Modules). A
+# set so widening it is a deliberate act.
+_CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp", "vbnet"})
 
 # Languages whose files are run, never imported: a directory holding only these
 # (a ``docker/`` folder of Dockerfiles and an entrypoint script) is not a package
