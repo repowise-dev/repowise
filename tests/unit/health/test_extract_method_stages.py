@@ -737,7 +737,7 @@ def apply(cfg, a, b, seen, last, {", ".join(f"opt_{n}" for n in range(8))}):
     ],
 )
 def test_a_jump_leaves_a_statement_only_when_nothing_in_it_holds_it(language, ext, src, expected):
-    from repowise.core.analysis.health.dataflow.stages import _escapes
+    from repowise.core.analysis.health.dataflow.loop_cut import escapes as _escapes
 
     wrapped = (
         f"def f(rows, r, k, items):\n    while True:\n{textwrap.indent(src, ' ' * 8)}\n"
@@ -793,3 +793,106 @@ def test_an_input_only_another_stage_writes_refuses_the_plan():
     assert not _inputs_held((one, two), {"a": [1], "x": [15]})
     assert _inputs_held((one, two), {"a": [1], "x": [15, 25]})
     assert _inputs_held((replace(one, returns=("x",)), two), {"a": [1], "x": [15]})
+
+
+def _stage_writing(stages, lines, text):
+    line = next(i for i, ln in enumerate(lines, 1) if ln.strip() == text)
+    return next(s for s in stages if s["span"]["start"] <= line <= s["span"]["end"])
+
+
+def test_a_counter_only_its_own_stage_reads_comes_back_out():
+    # ``count`` is read and bumped by one stage and never after the loop: the
+    # next iteration's call must still see the bumped value.
+    src = _loop_fn(extras={3: "\n            count += 1"}, tail="seen.sort()")
+    src = src.replace("    last = None\n", "    last = None\n    count = 0\n")
+    stages = _plans(src)["run"].plan["stages"]
+    writer = _stage_writing(stages, textwrap.dedent(src).splitlines(), "count += 1")
+    assert "count" in writer["returns"] and "count" in writer["params"]
+
+
+def test_a_value_the_while_header_reads_comes_back_out():
+    body = "".join(_item_section(n) for n in range(8))
+    src = f"""
+def run(items, a, b, last, {", ".join(f"opt_{n}" for n in range(8))}):
+    seen = []
+    pos = 0
+    while pos < len(items):
+        item = items[pos]
+{textwrap.indent(textwrap.dedent(body), " " * 8)}
+        if item.skip and item.far:
+            pos += 2
+        elif item.step or a:
+            pos += 1
+        else:
+            pos = len(items)
+    return seen
+"""
+    stages = _plans(src)["run"].plan["stages"]
+    writer = _stage_writing(stages, textwrap.dedent(src).splitlines(), "pos += 2")
+    assert "pos" in writer["returns"]
+
+
+def test_an_async_loop_body_gets_awaited_stages():
+    src = _loop_fn().replace("def run(", "async def run(").replace("for item in items:", "async for item in items:")
+    src = src.replace("handle_", "await handle_")
+    stages = _plans(src)["run"].plan["stages"]
+    assert len(stages) >= 2
+    assert all(s["new_symbol"]["async"] and "await " in s["call_site"]["new_text"] for s in stages)
+
+
+def test_an_import_whose_handler_only_passes_is_not_bound_by_it():
+    fallback = """
+        try:
+            from reg import registry as hooks
+            hooks = wrap(hooks)
+        except ImportError:
+            pass
+"""
+    body = "".join(_item_section(n) + (fallback if n == 7 else "") for n in range(8))
+    src = f"""
+def run(items, a, b, last, {", ".join(f"opt_{n}" for n in range(8))}):
+    seen = []
+    hooks = None
+    for item in items:
+{textwrap.indent(textwrap.dedent(body), " " * 8)}
+    return seen, hooks
+"""
+    stages = _plans(src)["run"].plan["stages"]
+    writer = next(s for s in stages if "hooks" in s["returns"])
+    assert "hooks" in writer["params"]
+
+
+def _ts_section(n: int) -> str:
+    return f"""
+    // Handle {_WORDS[n]}
+    if (item.kind === "k{n}" && item.ready) {{
+      handle{n}(item, a, seen, opt{n});
+    }} else if (item.other{n} || b) {{
+      skip{n}(item);
+    }}
+"""
+
+
+@pytest.mark.parametrize("shape", ["labelled", "do_while"])
+def test_typescript_loop_bodies_are_cut(shape):
+    body = textwrap.indent(textwrap.dedent("".join(_ts_section(n) for n in range(8))), "    ")
+    opts = ", ".join(f"opt{n}" for n in range(8))
+    if shape == "labelled":
+        loop = f"  outer: for (const item of items) {{\n{body}\n  }}\n"
+    else:
+        loop = (
+            f"  let item = items[0];\n  do {{\n{body}\n"
+            "    if (item.next && item.ok) { item = item.next; } else if (item.done || a) { item = null; }\n"
+            "  } while (item);\n"
+        )
+    src = f"function run(items, a, b, seen, {opts}) {{\n{loop}  return seen;\n}}\n"
+    plan = _plans(src, "typescript", "ts")["run"]
+    if shape == "labelled":
+        # The flow graph keeps a labelled statement whole, so nothing in it
+        # is known to be bound: no stage is cut there.
+        assert "stages" not in plan.plan
+        return
+    assert len(plan.plan["stages"]) >= 2
+    if shape == "do_while":
+        writer = _stage_writing(plan.plan["stages"], src.splitlines(), "if (item.next && item.ok) { item = item.next; } else if (item.done || a) { item = null; }")
+        assert writer["returns"] == ["item"]

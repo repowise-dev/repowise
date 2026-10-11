@@ -257,10 +257,11 @@ Most plans answer a health finding, so per-path marker rules in
   (`receiver_unbound`, `receiver_copy_written`).
 - An Extract Method plan writes out the new helper's header and the line that
   replaces the span, in the file's language, with parameter types where the code
-  declares them. In TypeScript, a type an earlier guard narrows (`if (!x)
-  return;`) is written narrowed, or a note asks for the narrowed type. Plan
-  detail shows both with a copy button. Where the code names
-  no helper or type, the text reads `<name>` or `<type>` for you to fill in.
+  declares them. In TypeScript, an optional parameter is written `T | undefined`,
+  and a type an earlier guard narrows (`if (!x) return;`) is written narrowed, or
+  a note asks for the narrowed type. Plan detail shows both with a copy button.
+  Where the code names no helper or type, the text reads `<name>` or `<type>` for
+  you to fill in.
 - A Python, TypeScript or JavaScript function too complex for one helper can
   get a staged plan instead: several helpers the function calls in order, each
   small enough to leave the finding behind. Plan detail lists them as steps,

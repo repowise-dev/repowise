@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..dataflow.dialects.ts_js import union_arms
-from ..dataflow.span import is_comment, span_statements
+from ..dataflow.span import exiting_guard, span_statements
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -82,15 +82,8 @@ def narrowed(declared: str, drops: frozenset[str]) -> str | None:
 
 def _guard_tests(st: Node, lmap: LanguageNodeMap) -> dict[str, frozenset[str] | None]:
     """What an exiting ``if`` with no ``else`` proves false about each name."""
-    if st.type not in lmap.if_kinds or st.child_by_field_name("alternative") is not None:
-        return {}
-    body = st.child_by_field_name("consequence")
-    stmts = [c for c in body.named_children if not is_comment(c)] if body is not None else []
-    last = body if body is not None and body.type in _EXITS else (stmts[-1] if stmts else None)
-    condition = st.child_by_field_name("condition")
-    if last is None or last.type not in _EXITS or condition is None:
-        return {}
-    return _false_means(condition)
+    condition = exiting_guard(st, lmap, _EXITS)
+    return _false_means(condition) if condition is not None else {}
 
 
 def _false_means(expr: Node) -> dict[str, frozenset[str] | None]:
@@ -98,8 +91,10 @@ def _false_means(expr: Node) -> dict[str, frozenset[str] | None]:
     expr = _peel(expr)
     op = _operator(expr)
     if expr.type == "binary_expression" and op == "||":
-        left = _false_means(expr.child_by_field_name("left"))
-        return {**_false_means(expr.child_by_field_name("right")), **left}
+        return _merged(
+            _false_means(expr.child_by_field_name("left")),
+            _false_means(expr.child_by_field_name("right")),
+        )
     if expr.type == "unary_expression" and op == "!":
         arg = _peel(expr.child_by_field_name("argument"))
         if arg.type == "identifier":
@@ -109,6 +104,22 @@ def _false_means(expr: Node) -> dict[str, frozenset[str] | None]:
         return _equality(expr, op)
     # ``a && b`` being false proves neither side false.
     return {} if op == "&&" else dict.fromkeys(_typed_names(expr))
+
+
+def _merged(
+    a: dict[str, frozenset[str] | None], b: dict[str, frozenset[str] | None]
+) -> dict[str, frozenset[str] | None]:
+    """Both sides of ``||`` false: a name tested on both loses both sides'
+    arms (``a === null || a === undefined``); an unknown narrowing stays one."""
+    out = dict(a)
+    for name, drops in b.items():
+        if name not in out:
+            out[name] = drops
+        elif out[name] is not None and drops is not None:
+            out[name] = out[name] | drops
+        else:
+            out[name] = None
+    return out
 
 
 def _equality(expr: Node, op: str) -> dict[str, frozenset[str] | None]:

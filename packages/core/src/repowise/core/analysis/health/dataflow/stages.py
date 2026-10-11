@@ -54,7 +54,8 @@ from typing import TYPE_CHECKING
 
 from ..complexity.nloc import is_string_stmt
 from .assigned import DefiniteAssignment
-from .reaching import definitions_at, observed_definitions
+from .loop_cut import carried, escapes
+from .reaching import observed_definitions
 from .slice import (
     _MIN_SLICE_NLOC,
     Extraction,
@@ -72,12 +73,11 @@ from .slice import (
     _reads_observing,
     _receiver_facts,
     _scan_for,
-    _statements_by_line,
     _stmt_assigns,
     _unwrap_container,
     _var_lines,
 )
-from .span import is_comment, section_heads
+from .span import exiting_guard, is_comment, section_heads
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -96,6 +96,8 @@ _STAGE_MIN_DECISIONS = 2
 _CONTEXT_OVER = 5
 # A wrapper holding this share of a block's decision points is unwrapped.
 _WRAPPER_SHARE = 0.6
+# Loop bodies and ``if`` arms looked into below the outermost cut.
+_MAX_DEPTH = 6
 
 # Cut costs, in one integer scale. A decision point left in the function
 # outweighs everything else; then the interface, the cut hints, the count.
@@ -105,9 +107,6 @@ _PER_NAME = 6
 _UNHINTED_CUT = 8
 _BLANK_LINE_CUT = 4
 _CROSSED_BANNER = 6
-
-# The switch a C-family ``break`` leaves (a Python ``match`` holds no break).
-_BREAK_SWITCHES = frozenset({"switch_statement"})
 
 # A timer's start and stop by label, in any language's call syntax.
 _TIMER_START = re.compile(r"""\.start\(\s*["']([^"'\n]+)["']""")
@@ -161,6 +160,9 @@ def find_stages(
     first: StagePlan | None = None
     best: StagePlan | None = None
     for block, loops in _descent(_unwrap_container(body, lmap.block_kinds), blocks, lmap):
+        # A block cannot lift more decision points than it holds.
+        if best is not None and blocks.code(block)[1].decisions[-1] <= best.ccn_removed:
+            break
         plan = _plan_block(analysis, lmap, receiver, blocks, facts, block, loops, max_returns)
         first = first or plan
         # A deeper level wins only by lifting more: ties keep the outer cut.
@@ -252,7 +254,7 @@ def _descent(
     chain: list[tuple[Node, tuple[Node, ...]]] = [(block, ())]
     loops: tuple[Node, ...] = ()
     nested = wrappers | lmap.loop_kinds | lmap.if_kinds
-    while (step := _dominant_arm(block, blocks, lmap, nested)) is not None:
+    while len(chain) <= _MAX_DEPTH and (step := _dominant_arm(block, blocks, lmap, nested)):
         block, holder = step
         if holder.type in lmap.loop_kinds:
             loops = (*loops, holder)
@@ -354,8 +356,8 @@ class _Cutter:
         # In a loop body: a break / continue leaving a stage would leave the
         # helper instead, and a value carried to the next iteration must come
         # back out of the stage that writes it.
-        self.escapes = [_escapes(st, lmap) for st in code] if loops else [False] * len(code)
-        self.carried = _carried(facts, loops) if loops else frozenset()
+        self.escapes = [escapes(st, lmap) for st in code] if loops else [False] * len(code)
+        self.carried = carried(facts.analysis, loops, facts.def_lines) if loops else frozenset()
 
     def _sum(self, series: list[int], i: int, j: int) -> int:
         return series[j + 1] - series[i]
@@ -513,18 +515,17 @@ class _Cutter:
             extra.append(var)
         return tuple(sorted((*params, *extra))) if extra else params
 
-
     def _import_fallback(self, var: str, i: int, j: int) -> bool:
-        """Whether one of statements ``i..j`` is a ``try`` importing *var* that
-        also assigns it: ``try: from m import x`` / ``except ImportError:
-        x = None`` binds it on every path the stage completes."""
+        """Whether one of statements ``i..j`` is a ``try`` whose body imports
+        *var* and whose every handler assigns it (``try: from m import x`` /
+        ``except ImportError: x = None``): bound on every path the stage
+        completes. A handler that only passes leaves it unbound."""
         for st in self.code[i : j + 1]:
-            if st.type not in self.lmap.try_kinds:
+            body = st.child_by_field_name("body") if st.type in self.lmap.try_kinds else None
+            handlers = [c for c in st.children if c.type in self.lmap.catch_kinds]
+            if body is None or not handlers or not _holds_line(body, self.import_lines.get(var, ())):
                 continue
-            lo, hi = st.start_point[0] + 1, st.end_point[0] + 1
-            if any(lo <= ln <= hi for ln in self.import_lines.get(var, ())) and any(
-                lo <= ln <= hi for ln in self.def_lines.get(var, ())
-            ):
+            if all(_holds_line(h, self.def_lines.get(var, ())) for h in handlers):
                 return True
         return False
 
@@ -537,31 +538,6 @@ class _Cutter:
             defs = self.def_lines.get(var, [])
             self._assigns[key] = _stmt_assigns(self.code[k], var, defs, self.lmap)
         return self._assigns[key]
-
-
-def _escapes(st: Node, lmap: LanguageNodeMap) -> bool:
-    """Whether *st* holds a ``break`` / ``continue`` that leaves it: a labelled
-    one, or one no loop body (for ``break``, no C-style ``switch``) inside
-    *st* encloses. A Python ``for`` / ``while`` ``else`` clause is not the
-    loop's body: a ``break`` there leaves the enclosing loop."""
-    breaks, continues = lmap.break_kinds, lmap.continue_kinds
-    scopes = lmap.function_kinds | lmap.lambda_kinds
-    stack: list[tuple[Node, bool, bool]] = [(st, False, False)]
-    while stack:
-        node, in_loop, in_switch = stack.pop()
-        if node.type in breaks or node.type in continues:
-            labelled = any(c.type.endswith("identifier") for c in node.named_children)
-            held = in_loop or (in_switch and node.type in breaks)
-            if labelled or not held:
-                return True
-            continue
-        body = node.child_by_field_name("body") if node.type in lmap.loop_kinds else None
-        switch = in_switch or node.type in _BREAK_SWITCHES
-        for child in node.children:
-            if child.type not in scopes:
-                looped = in_loop or (body is not None and child.id == body.id)
-                stack.append((child, looped, switch))
-    return False
 
 
 def _rereads(analysis: FunctionAnalysis) -> frozenset[str]:
@@ -586,36 +562,9 @@ def _rereads(analysis: FunctionAnalysis) -> frozenset[str]:
     return frozenset(out)
 
 
-def _carried(facts: _FunctionFacts, loops: tuple[Node, ...]) -> frozenset[str]:
-    """Names some loop in *loops* carries into its next iteration: written in
-    its body by a definition that reaches the body's first statement, and read
-    in the loop where a value from outside it may still arrive, so on a later
-    iteration that read sees the earlier iteration's write. The stage writing
-    one hands it back to the function, which holds it across iterations."""
-    analysis = facts.analysis
-    defs = analysis.reaching.definitions
-    statements = _statements_by_line(analysis.cfg)
-    out: set[str] = set()
-    for loop in loops:
-        body = loop.child_by_field_name("body")
-        code = [c for c in body.named_children if not is_comment(c)] if body is not None else []
-        at = statements.get(code[0].start_point[0] + 1) if code else None
-        if at is None:
-            continue
-        lo, hi = loop.start_point[0] + 1, loop.end_point[0] + 1
-        b_lo, b_hi = body.start_point[0] + 1, body.end_point[0] + 1
-        for var, lines in facts.def_lines.items():
-            if var in out or not any(b_lo <= ln <= b_hi for ln in lines):
-                continue
-            entering = definitions_at(analysis.def_use, analysis.reaching, at[0], var, at[1])
-            if not any(b_lo <= defs[i].line <= b_hi for i in entering):
-                continue
-            if any(
-                lo <= ln <= hi and any(d < lo or d > hi for d in seen)
-                for ln, seen in facts.reads.get(var, ())
-            ):
-                out.add(var)
-    return frozenset(out)
+def _holds_line(node: Node, lines: list[int]) -> bool:
+    lo, hi = node.start_point[0] + 1, node.end_point[0] + 1
+    return any(lo <= ln <= hi for ln in lines)
 
 
 def _timer_pairs(code: list[Node]) -> list[tuple[int, int]]:
@@ -648,24 +597,10 @@ def _cut_costs(code: list[Node]) -> list[int]:
 
 
 def _guard_names(st: Node, lmap: LanguageNodeMap) -> frozenset[str]:
-    """The names a guard statement tests: an ``if`` with no else arm whose
-    last statement is itself a raise (Python ``if not x: raise E``) or throw
-    (TS / JS ``if (!x) throw e;`` or ``{ ...; throw e; }``). Type checkers
-    narrow ``x`` after such a guard, which a helper holding it would undo.
-    Empty for anything else, a raise nested deeper included."""
-    if st.type not in lmap.if_kinds or st.child_by_field_name("alternative") is not None:
-        return frozenset()
-    if any(c.type in ("else_clause", "elif_clause") for c in st.children):
-        return frozenset()
-    body = st.child_by_field_name("consequence")
-    if body is None:
-        return frozenset()
-    stmts = [c for c in body.named_children if not is_comment(c)]
-    # ``if (!x) throw e;`` has the throw itself as its consequence.
-    last = body if body.type in lmap.raise_kinds or not stmts else stmts[-1]
-    if last.type not in lmap.raise_kinds:
-        return frozenset()
-    condition = st.child_by_field_name("condition")
+    """The names a guard that raises tests (Python ``if not x: raise E``, TS /
+    JS ``if (!x) throw e;``). Type checkers narrow ``x`` after it, which a
+    helper holding it would undo."""
+    condition = exiting_guard(st, lmap, lmap.raise_kinds)
     return frozenset(_identifiers(condition)) if condition is not None else frozenset()
 
 

@@ -118,8 +118,8 @@ class AnnotationFacts:
     (committed_at, author)``; ``None`` when history is too shallow to tell
     recent from all, which is no signal rather than a quiet target. ``dead``
     is the sure dead-code spans by file (:func:`..queue.eligibility.dead_spans`).
-    ``sources_read`` is, per test file the plans run, the function names whose
-    source text it reads (:data:`_GETSOURCE`).
+    ``sources_read`` is, per test file the plans run, the ``getsource``
+    arguments it passes (:data:`_GETSOURCE`).
     """
 
     decisions: Mapping[str, list[tuple[str, str]]] = field(default_factory=dict)
@@ -231,21 +231,39 @@ def _source_text_risk(
     tests: Sequence[str],
     sources_read: Mapping[str, frozenset[str]],
 ) -> PlanRisk | None:
-    """A test the plan runs that reads the split function's own source text."""
+    """A test the plan runs that may read the split function's own source text."""
     if suggestion.refactoring_type != "extract_method" or not suggestion.target_symbol:
         return None
+    owners = _owners(suggestion)
     name = suggestion.target_symbol.rsplit(".", 1)[-1]
-    readers = sorted({path for path in _test_files(tests) if name in sources_read.get(path, ())})
+    readers = sorted(
+        path
+        for path in _test_files(tests)
+        if any(_names_target(read, name, owners) for read in sources_read.get(path, ()))
+    )
     if not readers:
         return None
     who = readers[0] if len(readers) == 1 else f"{len(readers)} test files"
-    verb = "reads" if len(readers) == 1 else "read"
     return PlanRisk(
         "source_text",
-        f"{who} {verb} the source text of `{name}`; update what it asserts about "
-        "that text after the split.",
+        f"{who} may read the source text of `{name}`; check what it asserts about that "
+        "text after the split.",
         readers[0],
     )
+
+
+def _owners(suggestion: RefactoringSuggestion) -> frozenset[str]:
+    """What may qualify the target in a test: its module's path parts and the
+    classes in its symbol (``CredentialPool`` of ``CredentialPool.refresh``)."""
+    module = Path(suggestion.file_path).with_suffix("").parts
+    return frozenset((*module, *suggestion.target_symbol.split(".")[:-1]))
+
+
+def _names_target(read: str, name: str, owners: frozenset[str]) -> bool:
+    """Whether a ``getsource`` argument (``flow._run_upgrade``) names the
+    target: the same last name, qualified by nothing or by one of *owners*."""
+    *qualifier, last = read.split(".")
+    return last == name and (not qualifier or qualifier[-1] in owners)
 
 
 def _test_files(tests: Iterable[str]) -> list[str]:
@@ -254,22 +272,34 @@ def _test_files(tests: Iterable[str]) -> list[str]:
 
 
 def _sources_read(root: Path, files: Iterable[str]) -> dict[str, frozenset[str]]:
-    """Per test file under *root* that reads any, the names whose source it
-    reads; a file that is missing (a hosted index has no checkout) or too
-    large says nothing."""
+    """Per test file under *root* that reads any, the ``getsource``
+    arguments it passes. Read once at finalize; a file outside *root*,
+    missing (a hosted index has no checkout) or too large says nothing."""
+    base = root.resolve()
     out: dict[str, frozenset[str]] = {}
     for rel in files:
-        path = root / rel
+        path = (root / rel).resolve()
         try:
-            if path.stat().st_size > _MAX_TEST_BYTES:
+            if not path.is_relative_to(base) or path.stat().st_size > _MAX_TEST_BYTES:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        names = frozenset(m.rsplit(".", 1)[-1] for m in _GETSOURCE.findall(text))
-        if names:
-            out[rel] = names
+        reads = frozenset(_unaliased(m, text) for m in _GETSOURCE.findall(text))
+        if reads:
+            out[rel] = reads
     return out
+
+
+def _unaliased(read: str, text: str) -> str:
+    """*read* with a leading import alias replaced by the name it stands for
+    (``cl.run`` after ``import agent.conversation_loop as cl`` reads
+    ``conversation_loop.run``)."""
+    head, dot, rest = read.partition(".")
+    if not dot:
+        return read
+    found = re.search(rf"\bimport\s+([\w.]+)\s+as\s+{re.escape(head)}\b", text)
+    return f"{found.group(1).rsplit('.', 1)[-1]}.{rest}" if found else read
 
 
 def _target_functions(

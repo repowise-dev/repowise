@@ -89,3 +89,12 @@ def test_a_narrowed_parameter_without_a_type_gets_its_own_note():
         "Write the types of reply: the code declares none for them.",
         "Type model as the guard on line 7 narrows it: a wider type undoes that narrowing.",
     )
+
+
+def test_a_name_tested_twice_in_one_guard_loses_both_arms():
+    from repowise.core.analysis.health.refactoring.narrowing import _merged
+
+    assert _merged({"a": frozenset({"null"})}, {"a": frozenset({"undefined"})}) == {
+        "a": frozenset({"null", "undefined"})
+    }
+    assert _merged({"a": frozenset({"null"})}, {"a": None, "b": None}) == {"a": None, "b": None}
