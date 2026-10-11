@@ -506,3 +506,19 @@ def test_malformed_anchors_fall_back_to_lines() -> None:
     plans = _anchored_plans({"first": "a = 1", "last": None})
     core = next(i for i in _build(plans=plans).items if i.kind == "refactor")
     assert core.action.steps[0].text == "Extract lines 20-35 of run into sum_rows(rows, limit) -> total"
+
+
+def test_a_plan_that_leaves_its_function_above_the_bar_can_wait() -> None:
+    from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL
+
+    rows = copy.deepcopy(REFACTORING)
+    rows[0]["details"]["leaves_above_bar"] = (
+        "leaves run at CCN 41, still above the break-up bar; more stages needed"
+    )
+    core = next(i for i in _build(refactoring=rows).items if i.kind == "refactor")
+    assert core.tier == "later"
+    assert ("tier", LOW_PRIORITY_LABEL["above_bar_after"]) in [
+        (f.factor, f.value) for f in core.why_ranked
+    ]
+    # Without the reason the same plan is worth doing now.
+    assert next(i for i in _build().items if i.kind == "refactor").tier == "now"

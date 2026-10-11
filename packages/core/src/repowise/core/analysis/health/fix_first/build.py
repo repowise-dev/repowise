@@ -99,6 +99,7 @@ from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.health.worth import (
     SIZE_MARKERS,
     WORTH_MAGNITUDE,
+    by_function,
     execution_role,
     low_priority,
     magnitude,
@@ -884,7 +885,9 @@ class _RefactorPlan:
             central,
             files.churning(path),
             cloned=function_size and files.cloned(path, shape),
-            low=low_priority(marker, shape, function_size=function_size),
+            low=low_priority(marker, shape, function_size=function_size)
+            # A plan that still leaves the function at the bar is half a fix.
+            or ("above_bar_after" if details.get("leaves_above_bar") else None),
             gain=gain,
             ccn_removed=sum(_extraction_worth(plans.get(s.get("plan_id")))[0] for s in steps),
             dependents=deps,
@@ -1431,15 +1434,6 @@ def _clone_spans(plans: Iterable[Any]) -> dict[str, list[tuple[int, int]]]:
     return dict(out)
 
 
-def _by_function(findings: Iterable[Any]) -> dict[tuple[str, str], list[Any]]:
-    out: dict[tuple[str, str], list[Any]] = defaultdict(list)
-    for f in findings:
-        name = field(f, "function_name")
-        if name:
-            out[(field(f, "file_path"), name)].append(f)
-    return dict(out)
-
-
 def _basis(metrics: Rows) -> dict[str, str | None]:
     stamped = [(str(at), at, m) for m in metrics if (at := field(m, "updated_at"))]
     if not stamped:
@@ -1478,7 +1472,7 @@ def _prepare(
     files = _Files(
         metrics,
         {p: hist for p, (_shape, hist) in split.items() if hist},
-        _by_function(f for shape, _hist in split.values() for f in shape),
+        by_function(f for shape, _hist in split.values() for f in shape),
         hot_cuts,
         _clone_spans(plans),
         _extractions(plans),
