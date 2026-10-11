@@ -793,6 +793,12 @@ def test_an_input_only_another_stage_writes_refuses_the_plan():
     assert not _inputs_held((one, two), {"a": [1], "x": [15]})
     assert _inputs_held((one, two), {"a": [1], "x": [15, 25]})
     assert _inputs_held((replace(one, returns=("x",)), two), {"a": [1], "x": [15]})
+    # Only a later stage hands ``p`` back: unbound at the first stage's call.
+    three = Extraction(50, 60, (), ("p",), 5, 3)
+    first = Extraction(10, 20, ("p",), (), 5, 3)
+    assert not _inputs_held((first, two, three), {"p": [55], "x": [1]})
+    # Written before the stages too (a loop-carried value): held.
+    assert _inputs_held((first, two, three), {"p": [2, 55], "x": [1]})
 
 
 def _stage_writing(stages, lines, text):

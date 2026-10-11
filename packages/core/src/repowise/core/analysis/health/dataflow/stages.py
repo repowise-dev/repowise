@@ -635,19 +635,21 @@ def _context(
 
 
 def _inputs_held(stages: tuple[Extraction, ...], def_lines: dict[str, list[int]]) -> bool:
-    """Whether the function still holds every stage input once the stages are
-    helpers: written outside every stage, or handed back by one. An input
-    written only inside another stage's lines would be unbound at the call."""
+    """Whether the function holds every stage input at that stage's call:
+    written outside every stage, or handed back by an earlier one. An input
+    only a later stage hands back (or none) would be unbound at the call; a
+    loop-carried one is also written before the loop, outside every stage."""
 
     def inside(line: int) -> bool:
         return any(x.start_line <= line <= x.end_line for x in stages)
 
-    outs = {r for x in stages for r in x.returns}
-    return all(
-        p in outs or any(not inside(ln) for ln in def_lines.get(p, ()))
-        for x in stages
-        for p in x.params
-    )
+    earlier: set[str] = set()
+    for x in stages:
+        for p in x.params:
+            if p not in earlier and all(inside(ln) for ln in def_lines.get(p, ())):
+                return False
+        earlier.update(x.returns)
+    return True
 
 
 def _composes(
