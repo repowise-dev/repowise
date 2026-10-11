@@ -219,6 +219,7 @@ describe("PerformanceView drawer", () => {
     const first = await openFirstRow();
     expect(within(first).getByText("1")).toBeTruthy();
     const panel = await screen.findByRole("dialog");
+    expand(panel, "Why it ranks here");
     expect(within(panel).getByText(/Position/).textContent).toMatch(/^Position 1 in the queue/);
   });
 
