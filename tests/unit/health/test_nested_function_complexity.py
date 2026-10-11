@@ -325,7 +325,9 @@ _LAMBDAS = [
         "python-lambda",
         "a.py",
         "python",
-        "def outer():\n    return lambda x: 1 if x else (2 if a else (3 if b else 4))\n",
+        # Each condition sits in the one before's taken arm: a chain through
+        # the else arms is flat, like an elif (#3338), and would not be 3 deep.
+        "def outer():\n    return lambda x: ((1 if c else 2) if b else 3) if a else 4\n",
         "outer",
     ),
     (
