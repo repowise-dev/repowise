@@ -374,3 +374,32 @@ def test_fix_first_and_refactoring_totals_count_a_refusal_alike(monkeypatch, anc
     total = summarize_plans(plans)["total"]
     assert total == (1 if anchored else 0)
     assert _fix_first_plan_leads(ctx, plans) == total
+
+
+def _opportunity(kind: str, plan: dict | None) -> dict:
+    import json
+
+    fixture = json.loads(
+        (_ROOT / "tests/fixtures/agent_prompts/refactoring.json").read_text(encoding="utf-8")
+    )
+    detail = dict(fixture["opportunities"][0]["detail"])
+    step = {**detail["steps"][0], "refactoring_type": kind, "plan_id": "p1"}
+    detail["steps"] = [step]
+    detail["plans"] = [{**_detail(plan or {}), "id": "p1", "refactoring_type": kind}]
+    return detail
+
+
+@pytest.mark.parametrize(
+    ("kind", "plan", "rules"),
+    [
+        ("move_method", {"method": "m", "from_class": "A", "to_class": "B"}, ()),
+        ("extract_method", {"span": {"start": 3, "end": 9}}, (SCRIPT_RULE,)),
+        ("extract_method", _stage("    a = 1", "    b = 2"), (SCRIPT_RULE, LINE_RULE)),
+    ],
+)
+def test_an_opportunity_states_only_the_rules_its_steps_need(kind, plan, rules):
+    from repowise.core.agent_prompts import render_opportunity
+
+    text = render_opportunity(_opportunity(kind, plan)).replace("**", "")
+    for rule in (SCRIPT_RULE, LINE_RULE):
+        assert (f"Do not {rule['constraint']}." in text) == (rule in rules)

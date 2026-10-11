@@ -407,14 +407,28 @@ def _opportunity_handoff(o: Mapping[str, Any], flavor: str) -> str:
     )
 
 
-_OPPORTUNITY_CONSTRAINTS = (
+_OPPORTUNITY_ORDER = (
     "**Apply the steps in the order given.** It is dependency-safe; reordering it is not.",
     "**Read a judgment step's code before applying it.** Its obligation is unproven.",
-    _rule(SCRIPT_RULE),
-    _rule(LINE_RULE),
+)
+_OPPORTUNITY_CONSTRAINTS = (
     "**Keep behaviour.** Run the tests (and type-checker / linter) before and after.",
     *_CONSTRAINTS,
 )
+
+
+def _edit_rules(steps: list[Any], plans: Mapping[Any, Any]) -> list[str]:
+    """Extract Method's apply rules, only for an opportunity holding such a
+    step: no script always, find-by-text only when a step's plan is anchored."""
+    extracts = [
+        plans.get(s.get("plan_id")) or {}
+        for s in steps
+        if s.get("refactoring_type") == "extract_method"
+    ]
+    if not extracts:
+        return []
+    anchored = any((p.get("plan") or {}).get("anchors") for p in extracts)
+    return [_rule(SCRIPT_RULE), *([_rule(LINE_RULE)] if anchored else [])]
 
 
 def render_opportunity(
@@ -449,7 +463,10 @@ def render_opportunity(
             "",
             _opportunity_evidence(detail),
             _opportunity_verify(detail),
-            *closing_sections(_OPPORTUNITY_CONSTRAINTS, expected),
+            *closing_sections(
+                [*_OPPORTUNITY_ORDER, *_edit_rules(steps, plans), *_OPPORTUNITY_CONSTRAINTS],
+                expected,
+            ),
             _opportunity_handoff(detail, flavor),
         ]
     )
