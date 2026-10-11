@@ -2098,6 +2098,7 @@ def test_php_compact_and_extract_refuse_spans(fn_name: str):
 
 def test_identifiers_preserves_dollar_in_ts_js():
     from tree_sitter import Parser
+
     from repowise.core.analysis.health.dataflow.slice import _identifiers
     from repowise.core.ingestion.parser import _get_language
 
