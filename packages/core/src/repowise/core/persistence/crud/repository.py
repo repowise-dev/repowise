@@ -38,6 +38,7 @@ async def upsert_repository(
     default_branch: str = "main",
     settings: dict | None = None,
     head_commit: str | None = None,
+    stamp_head: bool = False,
     repo_id: str | None = None,
 ) -> Repository:
     """Create or update a repository record.
@@ -51,17 +52,20 @@ async def upsert_repository(
     when a row for ``local_path`` already exists (the existing id wins).
 
     ``head_commit`` records the git commit the index was built against — the
-    value the MCP ``_meta`` freshness check compares to the live HEAD. Callers
-    that already know the synced commit may pass it; otherwise it is read from
-    ``local_path``'s git HEAD via plain file I/O (no ``git`` subprocess). This
-    runs at the start of every index/update, so the stored commit tracks each
-    sync and the MCP staleness signal stays calibrated instead of being NULL
-    forever (which silently disabled the preferred HEAD-vs-index comparison).
+    value the MCP ``_meta`` freshness check compares to the live HEAD. A new
+    row always gets one: the passed value, else ``local_path``'s git HEAD read
+    via plain file I/O (no ``git`` subprocess). An existing row's commit moves
+    only when the caller records a sync, by passing ``head_commit`` or
+    ``stamp_head=True`` (read HEAD). Callers that only need the row, such as
+    decisions, scans and server registration, leave it alone: moving it there
+    made the database claim an index at HEAD while ``state.json`` still named
+    the last real sync.
     """
     result = await session.execute(select(Repository).where(Repository.local_path == local_path))
     repo = result.scalar_one_or_none()
 
-    resolved_head = head_commit or _read_head_commit(local_path)
+    stamping = repo is None or stamp_head or head_commit is not None
+    resolved_head = (head_commit or _read_head_commit(local_path)) if stamping else None
 
     if repo is None:
         repo = Repository(

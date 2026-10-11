@@ -90,7 +90,9 @@ async def _run_restyle(
     sf = create_session_factory(engine)
 
     async with get_session(sf) as session:
-        repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+        repo = await upsert_repository(
+            session, name=repo_path.name, local_path=str(repo_path), stamp_head=True
+        )
         repo_id = repo.id
 
     # Rehydrate the graph + git signals from SQL — no parse, no resolve, no blame.

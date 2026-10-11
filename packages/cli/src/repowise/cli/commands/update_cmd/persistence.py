@@ -835,7 +835,9 @@ async def _persist_full_update_async(
 
         async with get_session(sf) as session:
             with timed(timings, "persist.open"):
-                repo = await upsert_repository(session, name=repo_name, local_path=str(repo_path))
+                repo = await upsert_repository(
+                    session, name=repo_name, local_path=str(repo_path), stamp_head=True
+                )
             repo_id = repo.id
 
             if reconcile_full_scope:

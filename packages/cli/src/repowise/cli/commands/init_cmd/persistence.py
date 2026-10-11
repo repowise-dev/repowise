@@ -171,6 +171,7 @@ async def persist_result(
             session,
             name=result.repo_name,
             local_path=str(repo_path),
+            stamp_head=True,
         )
         # Persist the detected tech stack into the repository's settings
         # blob. Merge into any pre-existing settings so we don't clobber

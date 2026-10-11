@@ -1514,12 +1514,8 @@ def run_update(
             timings.stop("run")
             updated_state["phase_timings"] = timings.totals
             save_state(repo_path, updated_state)
-        # No stamp_head_commit here, which is the behaviour this branch has
-        # always had: the re-score's `upsert_repository` re-reads HEAD from
-        # disk and advances the row itself. The re-read follows a worktree
-        # `.git` pointer (the same helper the MCP reader uses). A path that
-        # is not a checkout still leaves a stored commit untouched, because a
-        # missed read never blanks one.
+        # Both branches advanced state.json to head; keep the DB stamp with it.
+        stamp_head_commit(repo_path, head)
         _finish_outcome(repo_path, agents_md)
         consume_update_pending(repo_path, head)
         if emitter is not None:

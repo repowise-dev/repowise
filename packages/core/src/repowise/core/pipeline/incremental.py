@@ -2002,7 +2002,7 @@ async def persist_incremental_index(
         async with get_session(sf) as session:
             with timed(timings, "persist.open"):
                 repo = await upsert_repository(
-                    session, name=repo_path.name, local_path=str(repo_path)
+                    session, name=repo_path.name, local_path=str(repo_path), stamp_head=True
                 )
             repo_id = repo.id
 
