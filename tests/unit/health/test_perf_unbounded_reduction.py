@@ -167,6 +167,26 @@ def test_bare_one_to_one_projection_does_not_fire(tmp_path: Path):
     assert hits == []
 
 
+def test_filter_makes_keep_all_append_a_reduction(tmp_path: Path):
+    hits = _hits(
+        tmp_path,
+        "mixed.py",
+        """
+        def filtered(supabase):
+            for build in supabase.table("builds").select("*").execute().data:
+                if not build.active: continue
+                by_name.setdefault(build.name, build)
+                by_file.setdefault(build.path, []).append(build)
+        def unfiltered(supabase):
+            for build in supabase.table("builds").select("*").execute().data:
+                for item in build.items: continue
+                by_name.setdefault(build.name, build)
+                by_file.setdefault(build.path, []).append(build)
+        """,
+    )
+    assert {hit.function for hit in hits} == {"filtered"}
+
+
 def test_query_inside_a_loop_does_not_fire(tmp_path: Path):
     hits = _hits(
         tmp_path,
