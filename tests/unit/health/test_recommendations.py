@@ -18,6 +18,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     build_validation_plan,
     detector_native_benefit,
     hub_files,
+    listed_steps,
     rehydrate_suggestion,
     steps_with_verify,
     stored_recommendation,
@@ -890,3 +891,21 @@ def test_a_stored_row_without_usable_step_verify_serves_no_step_verify() -> None
     assert stored is not None
     steps = stored.detail_dict()["plan"]["steps"]
     assert ["verify" in step for step in steps] == [True, False, False]
+
+
+def test_a_split_stands_for_the_steps_after_it():
+    steps = [
+        {"plan_id": "a", "refactoring_type": "break_cycle"},
+        {"plan_id": "s", "refactoring_type": "split_file"},
+        {"plan_id": "m1", "refactoring_type": "extract_method", "relocated_by": "s"},
+        {"plan_id": "m2", "refactoring_type": "extract_method", "relocated_by": "s"},
+    ]
+    rows, end = listed_steps(steps, 0, 2)
+    assert [r["plan_id"] for r in rows] == ["a", "s"]
+    assert rows[1]["relocates"] == ["m1", "m2"] and end == 4
+    # A page opening inside the folded steps lists nothing and moves past them.
+    assert listed_steps(steps, 2, 4) == ([], 4)
+    # Without a split, or before it, steps list one by one.
+    assert listed_steps(steps, 0, 1) == ([steps[0]], 1)
+    plain = [{"plan_id": "x", "refactoring_type": "extract_method"}] * 2
+    assert listed_steps(plain, 0, 2) == (plain, 2)

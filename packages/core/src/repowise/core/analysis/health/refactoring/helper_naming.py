@@ -5,9 +5,10 @@ comment over it (the author's own name for the block), and the span's single
 OUT value as ``compute_<out>``. An OUT name describes a value, not an action,
 so it is never given to a span that acts outside itself (``dataflow.effects``);
 nor is a banner that opens with a value verb (``_VALUE_VERBS``). Whatever the
-source, a name a symbol in the helper's scope already uses is dropped. ``None``
-is the honest answer when nothing anchors a name, and every surface asks the
-reader to name the helper then.
+source, a name a symbol in the helper's scope already uses is dropped. Without
+any of them, or when each is taken, the helper is named for its host function
+and the span's subject (:mod:`.span_subject`), so every plan carries a name to
+edit rather than a blank.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from ..dataflow.effects import (
 )
 from ..dataflow.span import enclosing_with, section_heads, span_statements
 from .naming import banner_words, join_identifier, label_words, split_words
+from .span_subject import host_words, subjects
 
 if TYPE_CHECKING:
     from ..complexity.languages import LanguageNodeMap
@@ -115,6 +117,43 @@ def helper_name(
     return None if effects else out_value_name(analysis, extraction, language)
 
 
+def helper_names(
+    analysis: FunctionAnalysis,
+    extraction: Extraction,
+    lmap: LanguageNodeMap,
+    language: str | None,
+    modules: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Starting names, best first: :func:`helper_name`, then the host function
+    qualified by each subject of the span (``render_card_directive``)."""
+    anchored = helper_name(analysis, extraction, lmap, language, modules)
+    stmts = span_statements(analysis.fn_node, extraction.start_line, extraction.end_line, lmap)
+    host = host_words(analysis.name)
+    names = [anchored] if anchored else []
+    for subject in subjects(stmts, extraction.returns, lmap):
+        # ``render_card`` about ``card`` is ``render_card``: the host's own name.
+        rest = subject[_overlap(host, subject) :]
+        if rest:
+            names.append(_qualified(analysis.name if host else "", rest, _convention(language)))
+    return names
+
+
+def _overlap(host: list[str], subject: list[str]) -> int:
+    """How many of *subject*'s first words repeat the tail of *host*."""
+    top = min(len(host), len(subject))
+    return next((n for n in range(top, 0, -1) if host[-n:] == subject[:n]), 0)
+
+
+def _qualified(host: str, subject: list[str], convention: str) -> str:
+    """*host* as written (its own casing kept) followed by *subject*; an
+    anonymous host gives ``handle``."""
+    head = host.lstrip("_") or "handle"
+    if convention == "camelCase":
+        # A private helper of a component (``OverviewPage``) starts lowercase.
+        return head[0].lower() + head[1:] + "".join(w.capitalize() for w in subject)
+    return "_".join([head, *subject])
+
+
 def _anchored_words(stmts: list[Any], lmap: LanguageNodeMap) -> list[str]:
     """The words of the label or banner naming the span, ``[]`` without one.
 
@@ -187,6 +226,11 @@ class ScopeNames:
             return None
         taken.add(key)
         return name
+
+    def claim_first(self, analysis: FunctionAnalysis, names: list[str]) -> str | None:
+        """The first of *names* free in the helper's scope, claimed; ``None``
+        when every one is taken."""
+        return next((name for name in names if self.claim(analysis, name)), None)
 
     def _scope_names(self, scope: Any) -> set[str]:
         names = {_key(n) for n in _defined_names(scope, self._lmap)}

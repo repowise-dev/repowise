@@ -135,10 +135,10 @@ def test_persistence_shape_yields_a_staged_plan():
 
 def test_stage_names_come_from_timed_labels_and_banners():
     stages = _plans(_persist(sections=8, extend=()))["persist"].plan["stages"]
-    # A stage covering one section takes its label; one spanning two has none.
+    # A stage covering one section takes its label; one spanning two is named
+    # for the host and its subject.
     for stage in stages:
-        name = stage["suggested_name"]
-        assert name is None or name.startswith("_persist_part")
+        assert stage["suggested_name"].startswith("_persist_")
 
 
 def test_shared_values_travel_on_a_parameter_object():

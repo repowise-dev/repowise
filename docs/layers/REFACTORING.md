@@ -103,7 +103,9 @@ On an opportunity, each step carries `applicability`: `mechanical` (only
 extractions qualify) or `judgment`, with the facts behind the call. When an
 earlier step moves a symbol to another file, the later step carries
 `relocated_by`: its stored location is where the symbol was before, so find it
-again before applying.
+again before applying. In the plan list a Split File plan stands for the plans
+after it in the same file: its row lists them as `relocates`, and they take no
+rows of their own.
 
 Plan detail also lists `risks`, one sentence each, to read before applying the
 plan: an accepted decision that governs the file, callers or importers of what
@@ -145,8 +147,9 @@ Fix first item leaves it out and says how many steps it held back; the full plan
 keeps them. Code only moves within a language family,
 so Java, Kotlin and Scala are separate. A callback is named after the call it is
 passed to. An Extract Method helper is named from a stage label, a banner comment,
-or `compute_<value>` when the span has no outside effects. A name already taken
-where the helper lands is dropped, so a `null` name means you name the helper.
+or `compute_<value>` when the span has no outside effects; otherwise it is the host
+function's name plus what the span handles, such as `render_card_directive`. A
+name already taken where the helper lands is skipped for the next candidate.
 
 An empty list means no detector found work that clears its gates. It does not mean
 the code needs no attention: check the findings in
@@ -231,7 +234,9 @@ Most plans answer a health finding, so per-path marker rules in
   write in an `else` arm or a `try` body that may raise first.
 - Extract Method skips spans too small to matter and spans that would carry the
   original finding into the helper. A component whose branching is mostly in its
-  markup gets no extraction.
+  markup gets no extraction, and neither does a function that only fills one
+  value field by field behind independent guards (summary rows, query
+  parameters, optional settings), since splitting it simplifies neither half.
 - An Extract Method span must remove at least two decision points, hold at least
   8 code lines, cover at most 60% of the function's lines, and not start on the
   docstring. When the best span misses one of these, only a span that does not

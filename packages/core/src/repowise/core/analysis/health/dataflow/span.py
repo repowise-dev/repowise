@@ -41,11 +41,18 @@ def span_statements(
 def enclosing_with(stmts: list[Node], lmap: LanguageNodeMap) -> Node | None:
     """The ``with`` statement whose whole body *stmts* is, else ``None``: a span
     lifted out of ``with timed(...):`` is the block that header labels."""
+    holder = body_holder(stmts)
+    return holder if holder is not None and holder.type in lmap.with_kinds else None
+
+
+def body_holder(stmts: list[Node]) -> Node | None:
+    """The statement whose whole body *stmts* is (a ``with``, an ``if`` arm, a
+    loop), else ``None``."""
     if not stmts:
         return None
     block = stmts[0].parent
     holder = block.parent if block is not None else None
-    if holder is None or holder.type not in lmap.with_kinds:
+    if holder is None:
         return None
     code = [c for c in block.named_children if not is_comment(c)]
     inside = [s for s in stmts if not is_comment(s)]

@@ -1273,6 +1273,30 @@ def apply_view(
     return spread
 
 
+def listed_steps(
+    steps: Sequence[Mapping[str, Any]], start: int, stop: int
+) -> tuple[list[dict[str, Any]], int]:
+    """Steps ``[start, stop)`` of one opportunity as the plan list shows them,
+    and the step index the list resumes at.
+
+    Every step after a ``split_file`` step works on code the split moves
+    (``relocated_by``), so the split stands for them: it lists their plan ids
+    as ``relocates``, they get no rows of their own, and the list resumes after
+    the opportunity. Listed one by one, a single file filled the top of the list.
+    """
+    split = next(
+        (i for i, step in enumerate(steps) if step.get("refactoring_type") == "split_file"),
+        None,
+    )
+    if split is None or split >= stop:
+        return [dict(step) for step in steps[start:stop]], stop
+    rows = [dict(step) for step in steps[start:split]]
+    if split >= start:
+        relocates = [str(step.get("plan_id")) for step in steps[split + 1 :]]
+        rows.append({**steps[split], **({"relocates": relocates} if relocates else {})})
+    return rows, len(steps)
+
+
 def _expand_scopes(path: str, reached: ReachedBy, expanded: list[str]) -> ReachedBy:
     """*reached* with a conftest or test package it stopped at replaced by *expanded*.
 
@@ -1329,6 +1353,7 @@ __all__ = [
     "detector_native_benefit",
     "enrich_blast_radius",
     "hub_files",
+    "listed_steps",
     "plan_types",
     "priority_score",
     "rehydrate_suggestion",
