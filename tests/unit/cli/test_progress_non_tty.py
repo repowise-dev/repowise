@@ -246,7 +246,7 @@ def test_a_key_quoted_back_by_a_provider_is_not_written_to_disk() -> None:
         ("register: GR1348941" + "0123456789abcdefghij", "register: [redacted]"),
         ("pat " + "0123456789ABCDEFGHIJ" * 3 + "0123456789abcdef" + "AZDO0123", "pat [redacted]"),
         (
-            "fatal: could not read https://ci:Zq8vT2mLw9@git.internal/r.git",
+            "fatal: could not read https://ci:Zq8vT2mLw9@git.internal/r.git",  # pragma: allowlist secret
             "fatal: could not read https://***@git.internal/r.git",
         ),
         # Nothing to hide: a username alone, an scp-style remote, a plain URL.

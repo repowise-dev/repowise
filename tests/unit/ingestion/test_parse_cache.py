@@ -134,7 +134,7 @@ def test_corrupt_cache_falls_back_to_full_parse(repo):
 def test_fingerprint_mismatch_invalidates(repo, tmp_path):
     _build(repo)
     cache_file = _cache_path(repo)
-    payload = pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))
+    payload = pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))  # repowise-security-ignore: pickle_loads
     assert payload["fingerprint"] == parser_fingerprint()
     payload["fingerprint"] = "stale-fingerprint"
     cache_file.write_bytes(seal(pickle.dumps(payload), domain=_CACHE_DOMAIN))
@@ -162,7 +162,7 @@ def test_dataclass_schema_change_invalidates_cache(repo, monkeypatch):
     _build(repo)  # populate the cache under the current fingerprint
     cache_file = _cache_path(repo)
     assert (
-        pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))["fingerprint"]
+        pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))["fingerprint"]  # repowise-security-ignore: pickle_loads
         == parser_fingerprint()
     )
 
@@ -177,7 +177,7 @@ def test_dataclass_schema_change_invalidates_cache(repo, monkeypatch):
     try:
         assert (
             parser_fingerprint()
-            != pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))[
+            != pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))[  # repowise-security-ignore: pickle_loads
                 "fingerprint"
             ]
         )
@@ -240,7 +240,7 @@ def test_deleted_files_age_out_of_cache(repo):
     _build(repo)
     (repo / "other.py").unlink()
     _build(repo)  # rewrite keeps only entries touched this run
-    payload = pickle.loads(unseal(_cache_path(repo).read_bytes(), domain=_CACHE_DOMAIN))
+    payload = pickle.loads(unseal(_cache_path(repo).read_bytes(), domain=_CACHE_DOMAIN))  # repowise-security-ignore: pickle_loads
     cached_paths = {path for path, _hash in payload["files"]}
     assert "other.py" not in cached_paths
     assert "main.py" in cached_paths

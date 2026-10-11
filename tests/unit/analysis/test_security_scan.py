@@ -319,13 +319,13 @@ class TestScanFile:
     @pytest.mark.parametrize(
         ("source", "expected_kind"),
         [
-            ('AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n', "aws_access_key"),
+            ('AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n', "aws_access_key"),  # pragma: allowlist secret
             (
-                'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n',
+                'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n',  # pragma: allowlist secret
                 "github_token",
             ),
             (
-                "GH_APP_TOKEN = 'ghu_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ'\n",
+                "GH_APP_TOKEN = 'ghu_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ'\n",  # pragma: allowlist secret
                 "github_token",
             ),
             (
@@ -334,9 +334,9 @@ class TestScanFile:
                 + '"\n',
                 "github_token",
             ),
-            ('SLACK_BOT_TOKEN = "xoxb-4721609583-T5Rk9mPz2Qa"\n', "slack_token"),
+            ('SLACK_BOT_TOKEN = "xoxb-4721609583-T5Rk9mPz2Qa"\n', "slack_token"),  # pragma: allowlist secret
             (
-                'GOOGLE_MAPS_API_KEY = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9aX"\n',
+                'GOOGLE_MAPS_API_KEY = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9aX"\n',  # pragma: allowlist secret
                 "google_api_key",
             ),
             (
@@ -371,7 +371,7 @@ class TestScanFile:
         """A vendor key is invisible to the keyword list under a name like
         ``client_id``, so it must be caught by the value shape alone."""
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
-        source = 'client_id = "AKIAQZXNRTVYWMPKLBHG"\n'
+        source = 'client_id = "AKIAQZXNRTVYWMPKLBHG"\n'  # pragma: allowlist secret
         findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
         assert any(f["kind"] == "aws_access_key" for f in findings)
 
@@ -402,7 +402,7 @@ class TestScanFile:
         """#2121's value gate must apply to the new vendor kinds too: a
         low-severity path downgrades severity, same as the keyword kinds."""
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
-        source = 'AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n'
+        source = 'AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n'  # pragma: allowlist secret
         findings = asyncio.run(scanner.scan_file("tests/fixtures/keys.py", source, symbols=[]))
         hits = [f for f in findings if f["kind"] == "aws_access_key"]
         assert len(hits) == 1
@@ -822,7 +822,7 @@ class TestScanSource:
     @pytest.mark.parametrize(
         ("source", "raw"),
         [
-            ("NEXT_PUBLIC_STRIPE_SECRET_KEY=sk_live_0123456789abcdef\n", "sk_live_0123456789abcdef"),
+            ("NEXT_PUBLIC_STRIPE_SECRET_KEY=sk_live_0123456789abcdef\n", "sk_live_0123456789abcdef"),  # pragma: allowlist secret
             ('  "VITE_API_KEY": "abcdef0123456789",\n', "abcdef0123456789"),
             ("export const NEXT_PUBLIC_AUTH_TOKEN = 'tok_9876543210';\n", "tok_9876543210"),
         ],
@@ -1034,7 +1034,7 @@ class TestVendorShapeEdges:
         assert "hardcoded_secret" not in self._kinds(source)
 
     def test_vendor_shape_and_keyword_report_one_finding(self) -> None:
-        source = 'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n'
+        source = 'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n'  # pragma: allowlist secret
         assert self._kinds(source) == ["github_token"]
 
     def test_pem_key_with_escaped_newline_is_flagged(self) -> None:
@@ -1045,11 +1045,11 @@ class TestVendorShapeEdges:
         assert "private_key_pem" in self._kinds(source, ".env")
 
     def test_google_key_ending_in_a_dash_is_flagged(self) -> None:
-        source = 'MAPS_KEY = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9a-"\n'
+        source = 'MAPS_KEY = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9a-"\n'  # pragma: allowlist secret
         assert "google_api_key" in self._kinds(source)
 
     def test_google_shape_inside_an_integrity_hash_is_ignored(self) -> None:
-        run = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9aX"
+        run = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9aX"  # pragma: allowlist secret
         for integrity in (f"sha512-{run}+Q==", f"sha512-Zm9v/{run}/b2=="):
             source = f'      "integrity": "{integrity}",\n'
             assert "google_api_key" not in self._kinds(source, "package-lock.json")
@@ -1114,14 +1114,14 @@ class TestForgeSecretShapes:
     @pytest.mark.parametrize(
         "url",
         [
-            "https://deploy:S3cr3t-Pa55w0rd@gitlab.internal/group/repo.git",
-            "https://ci:Zq8vT2mLw9@github.com/owner/repo",
-            "https://ci:Zq8vT2mLw9@GitLab.com:443/o/r",
-            "git+https://ci:Zq8vT2mLw9@bitbucket.org/o/r",
-            "https://org:Zq8vT2mLw9@dev.azure.com/org/p/_git/r",
-            "https://org:Zq8vT2mLw9@org.visualstudio.com/p/_git/r",
-            "ssh://ci:Zq8vT2mLw9@git.internal:2222/o/r.git",
-            "http://ci:Zq8vT2mLw9@10.0.0.5/o/r.git/info/refs",
+            "https://deploy:S3cr3t-Pa55w0rd@gitlab.internal/group/repo.git",  # pragma: allowlist secret
+            "https://ci:Zq8vT2mLw9@github.com/owner/repo",  # pragma: allowlist secret
+            "https://ci:Zq8vT2mLw9@GitLab.com:443/o/r",  # pragma: allowlist secret
+            "git+https://ci:Zq8vT2mLw9@bitbucket.org/o/r",  # pragma: allowlist secret
+            "https://org:Zq8vT2mLw9@dev.azure.com/org/p/_git/r",  # pragma: allowlist secret
+            "https://org:Zq8vT2mLw9@org.visualstudio.com/p/_git/r",  # pragma: allowlist secret
+            "ssh://ci:Zq8vT2mLw9@git.internal:2222/o/r.git",  # pragma: allowlist secret
+            "http://ci:Zq8vT2mLw9@10.0.0.5/o/r.git/info/refs",  # pragma: allowlist secret
         ],
     )
     def test_git_remote_credentials_fire(self, url: str) -> None:
@@ -1179,8 +1179,8 @@ class TestForgeSecretShapes:
     @pytest.mark.parametrize(
         ("source", "kind"),
         [
-            ('password = "https://ci:Xk29fjQ81z@gitlab.com/o/r.git"\n', "hardcoded_password"),
-            ('API_KEY = "https://svc:Xk29fjQ81z@github.com/o/r"\n', "hardcoded_secret"),
+            ('password = "https://ci:Xk29fjQ81z@gitlab.com/o/r.git"\n', "hardcoded_password"),  # pragma: allowlist secret
+            ('API_KEY = "https://svc:Xk29fjQ81z@github.com/o/r"\n', "hardcoded_secret"),  # pragma: allowlist secret
         ],
     )
     def test_keyword_named_url_credential_keeps_its_kind(self, source: str, kind: str) -> None:
@@ -1188,7 +1188,7 @@ class TestForgeSecretShapes:
         assert self._kinds(source) == [kind]
 
     def test_url_credentials_in_prose_fire(self) -> None:
-        source = "Clone with `git clone https://ci:Zq8vT2mLw9@git.internal/r.git`.\n"
+        source = "Clone with `git clone https://ci:Zq8vT2mLw9@git.internal/r.git`.\n"  # pragma: allowlist secret
         assert self._kinds(source, "README.md") == ["git_url_credentials"]
 
 
@@ -1218,7 +1218,7 @@ class TestCallKindsIgnoreProseAndText:
         assert self._hits(source, "docs/CHANGELOG.md") == []
 
     def test_secret_in_markdown_is_still_flagged(self) -> None:
-        source = 'AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n'
+        source = 'AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n'  # pragma: allowlist secret
         kinds = [f["kind"] for f in scan_source("README.md", source)]
         assert "aws_access_key" in kinds
 
@@ -1339,5 +1339,5 @@ class TestSecretPrecision:
         assert self._kinds(source) == {"hardcoded_password"}
 
     def test_vendor_key_in_a_comment_still_fires(self) -> None:
-        kinds = {f["kind"] for f in scan_source("src/app.py", "# AKIAQZXNRTVYWMPKLBHG\n")}
+        kinds = {f["kind"] for f in scan_source("src/app.py", "# AKIAQZXNRTVYWMPKLBHG\n")}  # pragma: allowlist secret
         assert kinds == {"aws_access_key"}
