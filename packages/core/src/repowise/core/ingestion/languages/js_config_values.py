@@ -77,10 +77,27 @@ def plugin_path_arguments(text: bytes) -> list[str]:
     """
     text = strip_comments(text)
     out: list[str] = []
-    for call in _PLUGIN_CALL_RE.finditer(text):
+    for call in _code_matches(text, _PLUGIN_CALL_RE):
         arg = text[call.end() : _value_end(text, call.end())].strip()
         if arg[:1] in _QUOTES and _string_end(arg, 0) == len(arg) - 1:
             out.extend(string_literals(arg))
+    return out
+
+
+def _code_matches(text: bytes, pattern: re.Pattern[bytes]) -> list[re.Match[bytes]]:
+    """Where *pattern* matches *text* outside any string or template literal.
+
+    A plugin call written inside a literal (``"somePlugin('./x')"``) is text,
+    not a call. Ceiling: a call inside a template literal's ``${...}`` hole is
+    skipped too.
+    """
+    out: list[re.Match[bytes]] = []
+    i = 0
+    for match in pattern.finditer(text):
+        while i < match.start():
+            i = _string_end(text, i) + 1 if text[i] in _QUOTES else i + 1
+        if i == match.start():
+            out.append(match)
     return out
 
 

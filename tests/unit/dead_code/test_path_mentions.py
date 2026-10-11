@@ -259,3 +259,17 @@ def test_a_path_a_config_only_computes_with_is_not_loaded(config):
 def test_a_plugin_in_a_plugins_array_loads_its_path():
     config = 'export default { plugins: [mdxPlugin("./src/mdx-components.tsx")] };\n'
     assert _dropped("src/mdx-components.tsx", {"vite.config.ts": config})
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        "const note = \"somePlugin('./src/old.ts')\";\n",
+        "const note = 'somePlugin(\"./src/old.ts\")';\n",
+        "const note = `somePlugin('./src/old.ts')`;\n",
+    ],
+)
+def test_plugin_call_text_inside_a_string_is_not_a_load(config):
+    assert not _dropped("src/old.ts", {"next.config.ts": config})
+    # A real call after the literal still loads its file.
+    assert _dropped("src/old.ts", {"next.config.ts": config + 'somePlugin("./src/old.ts");\n'})
