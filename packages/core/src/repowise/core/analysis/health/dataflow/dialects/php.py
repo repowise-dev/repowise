@@ -51,6 +51,34 @@ _MEMBER_ACCESS = frozenset(
 )
 _SUBSCRIPT_ACCESS = frozenset({"subscript_expression"})
 
+# Built-in functions that mutate an argument in-place by reference
+_BYREF_INOUT_BUILTINS = frozenset(
+    {
+        "sort",
+        "rsort",
+        "asort",
+        "arsort",
+        "ksort",
+        "krsort",
+        "usort",
+        "uasort",
+        "uksort",
+        "natsort",
+        "natcasesort",
+        "shuffle",
+        "array_push",
+        "array_pop",
+        "array_shift",
+        "array_unshift",
+        "array_splice",
+        "reset",
+        "end",
+        "next",
+        "prev",
+    }
+)
+_BYREF_OUT_BUILTINS = frozenset({"preg_match", "preg_match_all"})
+
 # Nested scopes whose identifiers belong to a different function
 _SCOPE_BOUNDARIES = frozenset(
     {
@@ -372,7 +400,12 @@ class PhpDefUseDialect(BaseDefUseDialect):
                 node.named_children[-1] if len(node.named_children) > 1 else None
             )
             if args is not None:
-                self._process(args, defs, uses)
+                if fn_text in _BYREF_INOUT_BUILTINS:
+                    self._process_byref_inout_call(args, defs, uses)
+                elif fn_text in _BYREF_OUT_BUILTINS:
+                    self._process_byref_out_call(args, defs, uses)
+                else:
+                    self._process(args, defs, uses)
             return
         if t in self.member_access_kinds:
             self.collect_reads(node, uses)
@@ -399,8 +432,17 @@ class PhpDefUseDialect(BaseDefUseDialect):
             if not self._is_this(node):
                 defs.append(self._occ(node))
             return
-        if t in _MEMBER_ACCESS or t in _SUBSCRIPT_ACCESS:
-            # $this->f = ... or $a[$i] = ... binds no local; receiver/indices are reads
+        if t in _MEMBER_ACCESS:
+            # $this->f = ... or $obj->f = ... binds no local; receiver is a read
+            self.collect_reads(node, uses)
+            return
+        if t in _SUBSCRIPT_ACCESS:
+            # PHP arrays are values: $out[] = ... or $out['k'] = ... mutates the local array.
+            root = node
+            while root is not None and root.type in _SUBSCRIPT_ACCESS:
+                root = root.named_children[0] if root.named_children else None
+            if root is not None and root.type in self.identifier_kinds and not self._is_this(root):
+                defs.append(self._occ(root))
             self.collect_reads(node, uses)
             return
         if t == "list_literal" or t == "array_creation_expression":
@@ -427,6 +469,35 @@ class PhpDefUseDialect(BaseDefUseDialect):
             return
         for child in node.named_children:
             self._targets(child, defs, uses)
+
+    def _arg_nodes(self, args_node: Node) -> list[Node]:
+        return [c for c in args_node.named_children if c.type == "argument" or c.is_named]
+
+    def _process_byref_inout_call(
+        self, args_node: Node, defs: list[Occurrence], uses: list[Occurrence]
+    ) -> None:
+        """First argument is modified in-place (def + read). Remaining arguments are reads."""
+        arg_list = self._arg_nodes(args_node)
+        if not arg_list:
+            return
+        arg0 = arg_list[0]
+        expr0 = arg0.named_children[0] if arg0.type == "argument" and arg0.named_children else arg0
+        self._targets(expr0, defs, uses)
+        self.collect_reads(expr0, uses)
+        for a in arg_list[1:]:
+            self._process(a, defs, uses)
+
+    def _process_byref_out_call(
+        self, args_node: Node, defs: list[Occurrence], uses: list[Occurrence]
+    ) -> None:
+        """Third argument (index 2) is written to (def). Other arguments are reads."""
+        arg_list = self._arg_nodes(args_node)
+        for idx, a in enumerate(arg_list):
+            if idx == 2:
+                expr = a.named_children[0] if a.type == "argument" and a.named_children else a
+                self._targets(expr, defs, uses)
+            else:
+                self._process(a, defs, uses)
 
 
 DIALECT = PhpDefUseDialect()

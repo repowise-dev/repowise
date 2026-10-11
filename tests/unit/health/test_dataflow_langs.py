@@ -1973,6 +1973,145 @@ def test_php_byref_foreach_is_refused():
     assert len(find_extractions(fn, lmap)) == 0
 
 
+def test_php_subscript_writes_are_defs():
+    code = """<?php
+    function f($items, $limit) {
+        $out = [];
+        $n = count($items);
+        if ($n > $limit) {
+            $out[] = $items[0];
+            $n = $n - 1;
+        }
+        $total = $n + 1;
+        echo $total;
+        return $out;
+    }
+    """
+    fn = _first("php", code)
+    lmap = get_language_map("php")
+    assert lmap is not None
+    spans = find_extractions(fn, lmap)
+    # No offered span passes $out in without returning it
+    assert not any(
+        e.start_line <= 6 <= e.end_line and "out" in e.params and "out" not in e.returns
+        for e in spans
+    )
+    # Span 4-8 defines both $n and $out with both live-out -> multiple returns -> refused
+    assert not any(e.start_line == 4 and e.end_line == 8 for e in spans)
+
+
+def test_php_byref_builtins_mutate_arguments():
+    # sort($out) modifies $out in-place
+    code_sort = """<?php
+    function g($items, $limit) {
+        $out = [];
+        $n = count($items);
+        if ($n > $limit) {
+            sort($out);
+            $n = $n - 1;
+        }
+        $total = $n + 1;
+        echo $total;
+        return $out;
+    }
+    """
+    fn_sort = _first("php", code_sort)
+    lmap = get_language_map("php")
+    assert lmap is not None
+    spans = find_extractions(fn_sort, lmap)
+    assert not any(
+        e.start_line <= 6 <= e.end_line and "out" in e.params and "out" not in e.returns
+        for e in spans
+    )
+    assert not any(e.start_line == 4 and e.end_line == 8 for e in spans)
+
+    # preg_match writes the matches array (arg 2)
+    code_preg = """<?php
+    function h($re, $s) {
+        $m = [];
+        if (strlen($s) > 0) {
+            preg_match($re, $s, $m);
+        }
+        return $m;
+    }
+    """
+    fn_preg = _first("php", code_preg)
+    assert "m" in _def_names(fn_preg)
+
+
+def test_php_elseif_chain_cfg_and_defs():
+    code = """<?php
+    function test_branches($a, $b, $c) {
+        if ($a) {
+            $m = 1;
+        } elseif ($b) {
+            $m = 2;
+        } elseif ($c) {
+            $m = 3;
+        } else {
+            $m = 4;
+        }
+        return $m;
+    }
+    """
+    fn = _first("php", code)
+    defs = [(d.var, d.line) for d in fn.def_use.definitions]
+    # Defs from all arms (line 4, 6, 8, 10) must reach the CFG
+    m_lines = {line for var, line in defs if var == "m"}
+    assert m_lines == {4, 6, 8, 10}
+
+
+@pytest.mark.parametrize("fn_name", ["compact", "extract"])
+def test_php_compact_and_extract_refuse_spans(fn_name: str):
+    code = f"""<?php
+    function process($records, $threshold) {{
+        $results = [];
+        $errors = 0;
+        foreach ($records as $r) {{
+            if ($r === null) {{
+                $errors += 1;
+                continue;
+            }}
+            $results[] = $r;
+        }}
+        $total = 0;
+        $count = 0;
+        {fn_name}($records);
+        foreach ($results as $v) {{
+            if ($v > $threshold) {{
+                $total += $v;
+                $count += 1;
+            }} else {{
+                $total -= $v;
+            }}
+        }}
+        $average = $count ? $total / $count : 0;
+        return $average;
+    }}
+    """
+    fn = _first("php", code)
+    lmap = get_language_map("php")
+    assert lmap is not None
+    spans = find_extractions(fn, lmap)
+    assert not any(e.start_line <= 14 <= e.end_line for e in spans)
+
+
+def test_identifiers_preserves_dollar_in_ts_js():
+    from tree_sitter import Parser
+    from repowise.core.analysis.health.dataflow.slice import _identifiers
+    from repowise.core.ingestion.parser import _get_language
+
+    parser_ts = Parser(_get_language("typescript"))
+    tree_ts = parser_ts.parse(b"let $items = 1;")
+    names_ts = _identifiers(tree_ts.root_node)
+    assert "$items" in names_ts
+
+    parser_php = Parser(_get_language("php"))
+    tree_php = parser_php.parse(b"<?php $items = 1;")
+    names_php = _identifiers(tree_php.root_node)
+    assert "items" in names_php and "$items" not in names_php
+
+
 # ---------------------------------------------------------------------------
 # Nested scopes that bind a name in the enclosing scope (and the ones that do not)
 # ---------------------------------------------------------------------------
