@@ -12,7 +12,7 @@ import dataclasses
 import functools
 import json
 import math
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -21,6 +21,8 @@ from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.perf.ranking import _percentile_threshold
 from repowise.core.analysis.health.queue_rules import FilterRule
 from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES
+from repowise.core.analysis.health.rows import field as row_field
+from repowise.core.analysis.health.worth import SIZE_MARKERS, above_bar_after, measure, worst_after
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
@@ -1045,6 +1047,9 @@ class Recommendation:
     # What other layers say about the target (:mod:`.annotations`), stored at
     # finalize and served on plan detail only; ``None`` when never checked.
     annotations: PlanAnnotations | None = field(default=None, repr=False, compare=False)
+    # Set when the plan leaves a function at the break-up bar
+    # (:func:`leaves_above_bar`): it ranks after the plans that do not.
+    leaves_above_bar: str | None = None
 
     @property
     def id(self) -> str:
@@ -1076,6 +1081,7 @@ class Recommendation:
             "file_nloc": self.file_nloc,
             "file_weighted_deficit": self.file_weighted_deficit,
             "validation": self.validation.as_dict(),
+            **({"leaves_above_bar": self.leaves_above_bar} if self.leaves_above_bar else {}),
         }
 
     def detail_dict(self) -> dict[str, Any]:
@@ -1124,6 +1130,7 @@ class Recommendation:
                 if self.annotations is not None
                 else {}
             ),
+            **({"leaves_above_bar": self.leaves_above_bar} if self.leaves_above_bar else {}),
         }
 
 
@@ -1166,6 +1173,7 @@ def stored_recommendation(row: Any) -> Recommendation | None:
         suggestion=suggestion,
         validation=validation,
         annotations=PlanAnnotations.from_dict(facts.get("annotations")),
+        leaves_above_bar=facts.get("leaves_above_bar"),
         **{name: facts[name] for name in _RANK_FACTS},
     )
 
@@ -1232,11 +1240,17 @@ def build_recommendations(
     metric_by_path: Mapping[str, Any] | None = None,
     centrality: Mapping[str, float] | None = None,
     validations: Mapping[int, ValidationPlan] | None = None,
+    findings: Sequence[Any] | None = None,
 ) -> list[Recommendation]:
-    """Pure recommendation construction used by every surface and tests."""
+    """Pure recommendation construction used by every surface and tests.
+
+    *findings* (the repository's health findings) give each Extract Method
+    target its measured size, which :func:`leaves_above_bar` reads; without
+    them no plan is marked."""
     metrics = metric_by_path or {}
     centrality = centrality or {}
     validations = validations or {}
+    findings_by_file = findings_by_path(findings or ())
     out: list[Recommendation] = []
     for index, row in enumerate(rows):
         suggestion = rehydrate_suggestion(row)
@@ -1267,18 +1281,62 @@ def build_recommendations(
                 file_nloc=nloc,
                 file_weighted_deficit=deficit,
                 validation=validation,
+                leaves_above_bar=leaves_above_bar(
+                    suggestion, findings_by_file.get(suggestion.file_path, ())
+                ),
             )
         )
     return canonical_order(out)
 
 
+def findings_by_path(findings: Iterable[Any]) -> dict[str, list[Any]]:
+    """Health findings grouped by file, for :func:`leaves_above_bar`."""
+    out: dict[str, list[Any]] = {}
+    for finding in findings:
+        out.setdefault(row_field(finding, "file_path"), []).append(finding)
+    return out
+
+
+def leaves_above_bar(suggestion: RefactoringSuggestion, findings: Sequence[Any]) -> str | None:
+    """Why an Extract Method plan, applied as written, still leaves a function
+    at the break-up bar (:func:`..worth.above_bar_after`), or ``None``.
+
+    *findings* are the file's; the size findings on the target give its
+    measured CCN and lines before the plan."""
+    if suggestion.refactoring_type != "extract_method":
+        return None
+    own = [
+        f
+        for f in findings
+        if row_field(f, "biomarker_type") in SIZE_MARKERS
+        and row_field(f, "function_name") == suggestion.target_symbol
+        and _on_target(suggestion, f)
+    ]
+    after = worst_after(
+        suggestion.evidence or {}, suggestion.plan or {}, suggestion.target_symbol, measure(own)
+    )
+    return above_bar_after(after)
+
+
+def _on_target(suggestion: RefactoringSuggestion, finding: Any) -> bool:
+    """Whether *finding*'s lines overlap the target's; a side without lines
+    cannot tell two same-named functions apart, so it matches."""
+    start = row_field(finding, "line_start")
+    if not (start and suggestion.line_start and suggestion.line_end):
+        return True
+    end = row_field(finding, "line_end") or start
+    return start <= suggestion.line_end and end >= suggestion.line_start
+
+
 def canonical_order(recommendations: Sequence[Recommendation]) -> list[Recommendation]:
     """Rank order, production files first: a plan on a build script, a tool or
-    copied code comes after them, and a test plan last."""
+    copied code comes after them, and a test plan last. Within each, a plan
+    that leaves a function at the break-up bar ranks after those that do not."""
     return sorted(
         recommendations,
         key=lambda recommendation: (
             ship_rank(recommendation.suggestion.file_path),
+            bool(recommendation.leaves_above_bar),
             -recommendation.rank_score,
             recommendation.suggestion.refactoring_type,
             recommendation.suggestion.file_path,
@@ -1389,7 +1447,9 @@ __all__ = [
     "canonical_order",
     "detector_native_benefit",
     "enrich_blast_radius",
+    "findings_by_path",
     "hub_files",
+    "leaves_above_bar",
     "listed_steps",
     "plan_types",
     "priority_score",

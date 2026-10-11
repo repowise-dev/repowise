@@ -76,22 +76,23 @@ def _diversified_order(opportunities: list[OpportunityModel]) -> list[int]:
 
     Only opportunities that recover health are interleaved. The rest (rank
     order already puts them last) follow in rank order, so a zero-credit cycle
-    never takes a head slot from real work.
+    never takes a head slot from real work. Credited work that leaves a
+    function at the break-up bar follows the interleaved head, in rank order.
 
     Test files are round-robined apart and queue after every production file,
     as they rank, so the lead is never a test.
     """
-    from ....analysis.health.refactoring.opportunity_rank import has_credit
+    from ....analysis.health.refactoring.opportunity_rank import leads_queue
 
     order: list[int] = []
     for is_test in (False, True):
         groups: dict[tuple[str, str, str], list[int]] = {}
-        uncredited: list[int] = []
+        trailing: list[int] = []
         for position, item in enumerate(opportunities):
             if is_test_related_path(item.file_path) is not is_test:
                 continue
-            if not has_credit(item):
-                uncredited.append(position)
+            if not leads_queue(item):
+                trailing.append(position)
                 continue
             parent = item.file_path.rsplit("/", 1)[0] if "/" in item.file_path else ""
             area = "/".join(parent.split("/")[:2])
@@ -99,7 +100,7 @@ def _diversified_order(opportunities: list[OpportunityModel]) -> list[int]:
                 (item.lead_biomarker or "", item.lead_refactoring_type, area), []
             ).append(position)
         order.extend(_round_robin(list(groups.values())))
-        order.extend(uncredited)
+        order.extend(trailing)
     return order
 
 
@@ -161,6 +162,12 @@ def _details_payload(
         **(
             {"lead_finding_ids": finding_ids.get(opportunity.lead_biomarker or "", [])}
             if finding_ids
+            else {}
+        ),
+        # Why it ranks after the rest; Fix first reads the same field.
+        **(
+            {"leaves_above_bar": opportunity.leaves_above_bar}
+            if opportunity.leaves_above_bar
             else {}
         ),
     }
@@ -271,7 +278,9 @@ def _open_items(
     return [o for o in opportunities if statuses.get(o.opportunity_id, "open") == "open"]
 
 
-async def _rank_live_plans(session: AsyncSession, repository_id: str) -> list[Any]:
+async def _rank_live_plans(
+    session: AsyncSession, repository_id: str, findings: list[Any]
+) -> list[Any]:
     """Rank, validate and annotate every live plan the lists can show, and store it.
 
     Performance plans are not composed here, but they share the plan lists, so
@@ -295,7 +304,9 @@ async def _rank_live_plans(session: AsyncSession, repository_id: str) -> list[An
             )
         )
     ).scalars()
-    ranked = await hydrate_recommendations(session, repository_id, list(rows), step_verify=True)
+    ranked = await hydrate_recommendations(
+        session, repository_id, list(rows), step_verify=True, findings=findings
+    )
     facts = await load_annotation_facts(
         session,
         repository_id,
@@ -380,7 +391,7 @@ async def finalize_refactoring_opportunities(
     # Rank and validation are resolved once, here, for every live plan. They
     # used to be rebuilt on every request for every open plan, which is the
     # single largest cost the serving path used to carry.
-    ranked = await _rank_live_plans(session, repository_id)
+    ranked = await _rank_live_plans(session, repository_id, findings)
     # Every ranked non-performance plan is a live plan, so the lookup is total;
     # a miss raises rather than leaving a governed step mechanical.
     public_of = {row.id: row.public_id for row in live_plans}

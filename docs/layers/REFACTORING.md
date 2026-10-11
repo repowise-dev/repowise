@@ -289,6 +289,10 @@ Most plans answer a health finding, so per-path marker rules in
   Each batch names the tests to run before the next one, and a batch whose
   tests fail stops the plan there. The code runs after every batch, so a
   failure points at the stages just applied.
+- An Extract Method plan that would still leave the function, or one of its new
+  helpers, above the break-up bar says so, for example "leaves build_from_json
+  at CCN 83, still above the break-up bar; more stages needed". The plan and
+  its file's opportunity rank after the work that finishes the job.
 - Move Method never targets a class the method only instantiates, or an ancestor of
   its own class.
 - Split File works on any language with call resolution and suggests a split only

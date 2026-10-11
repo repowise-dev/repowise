@@ -62,6 +62,7 @@ async def hydrate_recommendations(
     view: RecommendationView = "canonical",
     test_limit: int = DEFAULT_TEST_LIMIT,
     step_verify: bool = False,
+    findings: Sequence[Any] | None = None,
 ) -> list[Recommendation]:
     """Hydrate, enrich, validate, rank, and serialize-ready all *rows*.
 
@@ -71,7 +72,9 @@ async def hydrate_recommendations(
 
     *step_verify* also validates each step of a multi-step plan
     (:func:`with_step_verify`). Finalize asks, so it is stored once; a live
-    read never rebuilds it and serves the plan-level answer.
+    read never rebuilds it and serves the plan-level answer. Finalize also
+    passes the repository's *findings*, so a plan that leaves a function at
+    the break-up bar is marked and ranked after the rest.
     """
     if not rows:
         return []
@@ -98,6 +101,7 @@ async def hydrate_recommendations(
         metric_by_path={metric.file_path: metric for metric in metrics},
         centrality=centrality,
         validations=dict(enumerate(plans)),
+        findings=findings,
     )
     return apply_view(recommendations, view)
 

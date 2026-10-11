@@ -442,6 +442,8 @@ def serialize(
     for key in ("file_nloc", "dependents"):
         if isinstance(details.get(key), int):
             payload[key] = details[key]
+    if details.get("leaves_above_bar"):
+        payload["leaves_above_bar"] = details["leaves_above_bar"]
     if steps_limit is not None:
         kept = steps[: max(steps_limit, 0)]
         payload["steps"] = kept
