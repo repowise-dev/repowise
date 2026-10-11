@@ -103,11 +103,22 @@ describe("PerformanceView queue", () => {
     render(<PerformanceView adapter={adapter()} />);
     const items = await rows();
     expect(items).toHaveLength(3);
-    expect(screen.getByText(/1 in the repository/)).toBeTruthy();
+    expect(screen.getAllByText("1 matching").length).toBeGreaterThan(0);
     const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent ?? "");
     expect(headings[0]).toContain("Plan ready");
     expect(headings[1]).toContain("Advisory");
     expect(headings[2]).toContain("Needs investigation");
+  });
+
+  it("keeps the green mark for a plan proven safe", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    const items = await rows();
+    const dot = (li: HTMLElement) =>
+      (li.querySelector("[aria-hidden='true'].rounded-full") as HTMLElement | null)?.style
+        .backgroundColor;
+    expect(dot(items[0]!)).toBe("var(--color-success)");
+    // Advisory with a stored plan: not proven safe, so not green.
+    expect(dot(items[1]!)).toBe("var(--color-text-tertiary)");
   });
 
   it("shows the cause in words, where in mono, and the sink as separate evidence", async () => {

@@ -653,6 +653,7 @@ function StepCode({
   const range = stepExcerptRange(step, plan);
   const extraction = range?.extraction ?? null;
   const slice = extraction?.span ?? null;
+  const stages = range?.stages ?? [];
   const canRead = Boolean(readSource && range);
   if (!stored?.snippet && !canRead && !plan) return null;
   return (
@@ -667,6 +668,15 @@ function StepCode({
       </button>
       {open ? (
         <div className="mt-2 space-y-3">
+          {stages.length > 0 ? (
+            <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
+              Lines{" "}
+              <span className="font-mono tabular-nums text-[var(--color-text-secondary)]">
+                {stages.map((st) => `${st.span.start}–${st.span.end}`).join(", ")}
+              </span>{" "}
+              become {stages.length} helpers the function calls in order.
+            </p>
+          ) : null}
           {extraction && slice ? (
             <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
               Lines {slice.start} to {slice.end} become{" "}

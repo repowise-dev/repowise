@@ -362,11 +362,17 @@ export function extractMethodSignature(em: ExtractMethodPlan): string {
 export function stepExcerptRange(
   step: { line_start: number | null; line_end: number | null },
   plan: RefactoringPlan | undefined,
-): { start: number; end: number; extraction: ExtractMethodPlan | null } | null {
-  const extraction = plan?.refactoring_type === "extract_method" ? extractMethodPlan(plan) : null;
-  if (extraction?.span) return { ...extraction.span, extraction };
+): { start: number; end: number; extraction: ExtractMethodPlan | null; stages: ExtractStage[] } | null {
+  const isExtract = plan?.refactoring_type === "extract_method";
+  // A staged plan's top-level span is only its first stage: cover them all.
+  const stages = isExtract ? extractMethodStages(plan!) : [];
+  if (stages.length >= 2) {
+    return { start: stages[0]!.span.start, end: stages[stages.length - 1]!.span.end, extraction: null, stages };
+  }
+  const extraction = isExtract ? extractMethodPlan(plan!) : null;
+  if (extraction?.span) return { ...extraction.span, extraction, stages: [] };
   if (!step.line_start) return null;
-  return { start: step.line_start, end: step.line_end ?? step.line_start, extraction };
+  return { start: step.line_start, end: step.line_end ?? step.line_start, extraction, stages: [] };
 }
 
 export interface SplitGroup {
@@ -687,7 +693,8 @@ export function planWins(plan: RefactoringPlan): PlanWin[] {
     case "extract_helper": {
       const occ = extractHelperOccurrences(plan).length;
       const lines = Number(plan.evidence?.duplicated_lines ?? 0);
-      const name = extractHelperDetail(plan).suggestedName;
+      const existing = extractHelperReuse(plan)?.existing_symbol.split("::").pop();
+      const name = existing ?? extractHelperDetail(plan).suggestedName;
       if (occ)
         wins.push({
           label: name
@@ -700,7 +707,14 @@ export function planWins(plan: RefactoringPlan): PlanWin[] {
     case "extract_method": {
       const em = extractMethodPlan(plan);
       const ccn = Number(plan.evidence?.ccn_removed ?? 0);
-      if (em.span) {
+      const stages = extractMethodStages(plan);
+      if (stages.length >= 2) {
+        // Every stage moves, not only the first span the plan's top level carries.
+        const lines =
+          Number(plan.evidence?.slice_nloc ?? 0) ||
+          stages.reduce((n, st) => n + st.span.end - st.span.start + 1, 0);
+        wins.push({ label: `${lines} lines lifted into ${stages.length} helpers` });
+      } else if (em.span) {
         const lines = em.span.end - em.span.start + 1;
         wins.push({
           label: `${lines} line${lines === 1 ? "" : "s"} lifted into a focused helper`,

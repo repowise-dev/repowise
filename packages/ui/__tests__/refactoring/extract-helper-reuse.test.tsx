@@ -8,6 +8,8 @@ import { describe, expect, it } from "vitest";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 import { PlanDetail } from "../../src/refactoring/plan-detail";
+import { RefactoringDrawer } from "../../src/refactoring/refactoring-drawer";
+import { planWins } from "../../src/refactoring/types";
 
 const plan = {
   id: "plan-reuse",
@@ -62,5 +64,14 @@ describe("Extract Helper reuse detail", () => {
     expect(screen.getByText(/Delete copy, lines 3–9/)).toBeTruthy();
     expect(screen.queryByText(/normalize_helper/)).toBeNull();
     expect(screen.queryByText(/Extract it once/)).toBeNull();
+  });
+});
+
+describe("Extract Helper reuse in the drawer", () => {
+  it("says the existing function is called, not a new helper", () => {
+    render(<RefactoringDrawer plan={plan} open onOpenChange={() => {}} />);
+    expect(screen.getByText(/Call the function that already holds this block/)).toBeTruthy();
+    expect(screen.queryByText(/into one shared helper/)).toBeNull();
+    expect(planWins(plan).map((w) => w.label)).toContain("2 duplicate copies collapsed into normalize()");
   });
 });

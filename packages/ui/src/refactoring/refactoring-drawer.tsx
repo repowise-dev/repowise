@@ -32,7 +32,14 @@ import { RefactoringModelToggle, type RefactoringModelToggleProps } from "./refa
 import { PriorityExplanation } from "./priority-explanation";
 import { ValidationSummary } from "./validation-summary";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, typeMeta } from "./meta";
-import { blastCount, blastFiles, evidenceRows, planWins } from "./types";
+import {
+  blastCount,
+  blastFiles,
+  evidenceRows,
+  extractHelperReuse,
+  extractMethodStages,
+  planWins,
+} from "./types";
 import type {
   Confidence,
   EffortBucket,
@@ -133,6 +140,15 @@ function DrawerBody({
   contextSlot?: ReactNode;
 }) {
   const meta = typeMeta(plan.refactoring_type);
+  // The type's blurb promises one new helper; a reuse plan adds none and a
+  // staged plan adds several.
+  const reuse = plan.refactoring_type === "extract_helper" ? extractHelperReuse(plan) : null;
+  const staged = plan.refactoring_type === "extract_method" && extractMethodStages(plan).length >= 2;
+  const blurb = reuse
+    ? "Call the function that already holds this block instead of keeping a copy of it."
+    : staged
+      ? "Split a long function into helpers it calls in order."
+      : meta.blurb;
   const effort = (plan.effort_bucket || "M") as EffortBucket;
   const confidence = (plan.confidence || "medium") as Confidence;
   const evidence = evidenceRows(plan);
@@ -178,7 +194,7 @@ function DrawerBody({
 
       <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
         {contextSlot}
-        <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">{meta.blurb}</p>
+        <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">{blurb}</p>
 
         {plan.risks && plan.risks.length > 0 ? (
           <section>

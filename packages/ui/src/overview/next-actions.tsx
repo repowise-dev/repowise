@@ -245,14 +245,13 @@ export function actionLocation(action: NextAction): string | null {
   return line ? `${path}:${line}` : path;
 }
 
-function groupByTier(actions: NextAction[]): [ActionTier, NextAction[]][] {
-  const out: [ActionTier, NextAction[]][] = [];
-  for (const a of actions) {
-    const last = out[out.length - 1];
-    if (last && last[0] === a.tier) last[1].push(a);
-    else out.push([a.tier, [a]]);
-  }
-  return out;
+/** One heading per tier in the tiers' fixed order, rank order kept inside
+ *  each, as the CLI groups them; consecutive runs alone would repeat a heading. */
+export function groupByTier(actions: NextAction[]): [ActionTier, NextAction[]][] {
+  return (Object.keys(ACTION_TIER_LABELS) as ActionTier[]).flatMap((tier) => {
+    const items = actions.filter((a) => a.tier === tier);
+    return items.length ? [[tier, items] as [ActionTier, NextAction[]]] : [];
+  });
 }
 
 export function ActionRow({
