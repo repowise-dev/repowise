@@ -9,6 +9,21 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _ceiling_workspace_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Keep the workspace walk inside each test's tmp_path.
+
+    ``find_workspace_root`` walks up to the filesystem root, so a tmp_path
+    that sits below a directory holding ``.repowise-workspace.yaml`` (say
+    ``~/work/.tmp``) makes unit tests find the developer's real workspace
+    instead of none. Ceiling the walk at tmp_path: the directory itself is
+    still checked, so workspaces a test creates inside it keep working.
+    """
+    from repowise.core.workspace.config import WORKSPACE_CEILING_ENV_VAR
+
+    monkeypatch.setenv(WORKSPACE_CEILING_ENV_VAR, str(tmp_path))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _no_telemetry_network(tmp_path_factory: pytest.TempPathFactory):
     """Guarantee no test emits telemetry over the network or into real state.

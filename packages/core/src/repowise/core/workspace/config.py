@@ -7,6 +7,7 @@ Pure data module with no CLI or DB dependencies. Handles the
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,11 @@ _log = logging.getLogger("repowise.workspace.config")
 # ---------------------------------------------------------------------------
 
 WORKSPACE_CONFIG_FILENAME = ".repowise-workspace.yaml"
+
+# Upper bound for the workspace walk in find_workspace_root, set by the test
+# suite so unit tests never discover the developer's real workspace above
+# their tmp_path (GIT_CEILING_DIRECTORIES-style).
+WORKSPACE_CEILING_ENV_VAR = "REPOWISE_WORKSPACE_CEILING"
 WORKSPACE_DATA_DIR = ".repowise-workspace"
 CURRENT_VERSION = 1
 
@@ -399,12 +405,18 @@ def find_workspace_root(start: Path | None = None) -> Path | None:
     """Walk up from *start* (default: cwd) looking for ``.repowise-workspace.yaml``.
 
     Returns the directory containing the file, or ``None`` if not found.
-    Stops at the filesystem root.
+    Stops at the filesystem root, or at the directory named by the
+    ``REPOWISE_WORKSPACE_CEILING`` environment variable: the ceiling
+    directory itself is still checked, but the walk does not ascend past it.
     """
+    ceiling = os.environ.get(WORKSPACE_CEILING_ENV_VAR)
+    ceiling_dir = Path(ceiling).resolve() if ceiling else None
     current = (start or Path.cwd()).resolve()
     while True:
         if (current / WORKSPACE_CONFIG_FILENAME).is_file():
             return current
+        if ceiling_dir is not None and current == ceiling_dir:
+            return None  # ceiling: the directory itself was checked
         parent = current.parent
         if parent == current:
             return None  # reached filesystem root
