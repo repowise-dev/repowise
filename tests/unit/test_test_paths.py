@@ -259,6 +259,18 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("Foo.IntegrationTests/Sql/Db.cs", None, "test"),
     ("Foo.IntegrationTests/Helpers/Db.cs", None, "support"),
     ("src/Polly.Testing/ResiliencePipelineExtensions.cs", None, ""),
+    # A name ending in "test" and a scaffolding word is the support for some
+    # module's tests, wherever it sits (openclaw keeps them beside the module).
+    ("extensions/telegram/src/bot.create-telegram-bot.test-harness.ts", None, "support"),
+    ("scripts/test-projects.test-support.mjs", None, "support"),
+    ("extensions/feishu/src/card-test-helpers.ts", None, "support"),
+    ("src/media-understanding/runner.test-mocks.ts", None, "support"),
+    ("extensions/comfy/test-helpers.ts", None, "support"),
+    ("src/cron/isolated-agent.test-setup.ts", None, "support"),
+    ("tests/unit/cli/test_helpers.py", None, "test"),  # a test name stays a test
+    ("src/foo.test-d.ts", None, "test"),  # a type test, not a scaffolding word
+    ("docs/test-helpers.md", None, ""),  # filename rules are source rules
+    ("src/logging/diagnostic-support-bundle.ts", None, ""),
 )
 
 

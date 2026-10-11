@@ -228,8 +228,18 @@ def _deps_suffixes() -> tuple[str, ...]:
     return tuple(sorted(REGISTRY.extensions_for(_DEPS_LANGUAGES)))
 
 
+# A bundler's output (webpack's ``[name].bundle.js``, an esbuild ``a2ui.bundle.js``).
+# Kept out of the registry's generated suffixes, which ingestion skips: the file
+# stays in the graph and only leaves the fix lists.
+_BUNDLE_SUFFIXES = (".bundle.js", ".bundle.mjs", ".bundle.cjs")
+
+
 def _is_generated_name(name: str) -> bool:
-    return ".generated." in name or name.endswith(_generated_suffixes())
+    return (
+        ".generated." in name
+        or name.endswith(_generated_suffixes())
+        or name.lower().endswith(_BUNDLE_SUFFIXES)
+    )
 
 
 # --------------------------------------------------------------------------

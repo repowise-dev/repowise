@@ -175,6 +175,17 @@ _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
 )
 
 
+# A source file whose name ends in "test" and a scaffolding word is the support
+# for some module's tests: ``bot.test-harness.ts``, ``card-test-helpers.ts``,
+# ``test-support.mjs``. Words split as directory segments do. Not ``spec``,
+# which ``spec_utils.py`` uses for OpenAPI tooling. Ceiling: a published
+# test-helper entry (``react-dom/test-utils.js``) reads as support too.
+_SUPPORT_NAME_WORDS: frozenset[str] = frozenset(
+    {"harness", "support", "helper", "helpers", "util", "utils", "mock", "mocks"}
+    | {"fixture", "fixtures", "setup"}
+)
+
+
 @dataclass(frozen=True, slots=True)
 class _Conventions:
     """The registry-declared halves of the rules, resolved once."""
@@ -293,10 +304,23 @@ def _is_support_name(filename: str) -> bool:
         return False
     rules = _conventions()
     lowered = filename.lower()
-    if PurePosixPath(lowered).stem in rules.support_stems:
+    if PurePosixPath(lowered).stem in rules.support_stems or _is_support_compound(filename):
         return True
     camel_re = rules.support_camel_res.get(PurePosixPath(lowered).suffix)
     return camel_re is not None and camel_re.search(PurePosixPath(filename).stem) is not None
+
+
+def _is_support_compound(filename: str) -> bool:
+    """``x.test-harness.ts``: a test name (``test_utils.py``) stays a test."""
+    lowered = PurePosixPath(filename.lower())
+    words = _words(lowered.stem)
+    return (
+        len(words) >= 2
+        and words[-2] == "test"
+        and words[-1] in _SUPPORT_NAME_WORDS
+        and lowered.suffix in _conventions().source_exts
+        and not _is_test_name(filename)
+    )
 
 
 def _is_test_dir(

@@ -153,9 +153,8 @@ def path_verdict(
 
     The stored ``code_origin`` decides first: it read the file's head, so it
     knows a vendored library or a docs tutorial the path alone does not.
-    Then the same classifier on the path (an index stored before the origin
-    column, or a build file classed before build files were), then the path
-    context. Code-shape work reads :func:`code_context`, where a CLI ships. A
+    Only with no stored origin (an index stored before the column) does the
+    same classifier run on the path; then the path context. Code-shape work reads :func:`code_context`, where a CLI ships. A
     performance fix passes ``production``: its stored execution context is
     judged by the performance ladder. The stored ``is_test`` flag also marks a
     test. ``keep_tests`` keeps test code in scope (Fix first's ``scope="all"``).
@@ -171,11 +170,16 @@ def _path_reason(
 ) -> Reason | None:
     if origin in ORIGIN_EXCLUSION:
         return ORIGIN_EXCLUSION[origin]
-    ctx = context or _code_context(path)
-    if is_test or ctx == "test":
+    if is_test:
         return "test"
-    if reason := ORIGIN_EXCLUSION.get(path_origin(path)):
-        return reason
+    ctx = context or _code_context(path)
+    # A stored origin already saw pytest's config, which the path alone cannot:
+    # ``core/test_selection.py`` is production there and a test by name here.
+    if origin is None:
+        if ctx == "test":
+            return "test"
+        if reason := ORIGIN_EXCLUSION.get(path_origin(path)):
+            return reason
     # ``unknown`` under a directory is docs, examples or demos at any depth:
     # code that may not ship. A root-level file stays eligible.
     if ctx == "tooling" or (ctx == "unknown" and "/" in path):
