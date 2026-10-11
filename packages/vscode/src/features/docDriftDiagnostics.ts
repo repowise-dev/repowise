@@ -15,6 +15,9 @@ function isMarkdown(doc: vscode.TextDocument): boolean {
   return doc.languageId === "markdown" || MARKDOWN_EXT.test(doc.uri.path);
 }
 
+/** Tracks the last resolved 0-based line for findings across live document edits. */
+const lastKnownLines = new Map<string, number>();
+
 /** The finding's line, narrowed to the reference as written (else the target), relocated in live buffer. */
 export function rangeFor(doc: vscode.TextDocument, f: DocDriftFinding): vscode.Range | null {
   if (doc.lineCount === 0) return null;
@@ -23,8 +26,17 @@ export function rangeFor(doc: vscode.TextDocument, f: DocDriftFinding): vscode.R
     lines.push(doc.lineAt(i).text);
   }
   const recordedLine = Math.max(0, f.line_number - 1);
-  const loc = locateReference(lines, f.raw, f.target, recordedLine);
-  if (!loc) return null;
+  const key = `${doc.uri.toString()}::${f.id}`;
+  const startLine = lastKnownLines.get(key) ?? recordedLine;
+  let loc = locateReference(lines, f.raw, f.target, startLine);
+  if (!loc && startLine !== recordedLine) {
+    loc = locateReference(lines, f.raw, f.target, recordedLine);
+  }
+  if (!loc) {
+    lastKnownLines.delete(key);
+    return null;
+  }
+  lastKnownLines.set(key, loc.line);
   return new vscode.Range(loc.line, loc.start, loc.line, loc.end);
 }
 

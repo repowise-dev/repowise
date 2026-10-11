@@ -178,5 +178,27 @@ describe("locateReference", () => {
     const resEmptyRaw = locateReference(lines, "", "docs/new_guide.md", 0);
     assert.deepStrictEqual(resEmptyRaw, { line: 0, start: 9, end: 26 });
   });
+
+  it("tracks reference location when searching from updated position across large cumulative inserts", () => {
+    // Initial state: recorded line 5
+    const lines = new Array(50).fill("line");
+    lines[5] = "See docs/guide.md";
+
+    const initial = locateReference(lines, "docs/guide.md", "docs/guide.md", 5);
+    assert.strictEqual(initial?.line, 5);
+
+    // First edit: insert 15 lines above (shifted from 5 to 20)
+    lines.splice(0, 0, ...new Array(15).fill("inserted line"));
+    const firstShift = locateReference(lines, "docs/guide.md", "docs/guide.md", initial!.line);
+    assert.strictEqual(firstShift?.line, 20);
+
+    // Second edit: insert another 15 lines above (shifted from 20 to 35, cumulative shift +30 > 20)
+    lines.splice(0, 0, ...new Array(15).fill("more lines"));
+    // Searching from original recorded line 5 would return null:
+    assert.strictEqual(locateReference(lines, "docs/guide.md", "docs/guide.md", 5), null);
+    // But searching from the last known line (20) successfully relocates to line 35:
+    const secondShift = locateReference(lines, "docs/guide.md", "docs/guide.md", firstShift!.line);
+    assert.strictEqual(secondShift?.line, 35);
+  });
 });
 
