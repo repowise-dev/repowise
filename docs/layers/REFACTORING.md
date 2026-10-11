@@ -70,6 +70,9 @@ selectors (`tests/test_orders.py::test_total`), and its command runs only the
 files they live in. When no test reaches the change, the plan has no command and
 asks for a characterization test first; it also asks when tests reach the file
 but none reaches the changed function.
+A JavaScript or TypeScript test runs from the package whose `package.json`
+declares its `test` script (`npm --prefix ui-tui test -- src/a.test.ts`), and a
+test that no package can run gets no command.
 
 In a plan with several steps, such as a performance fix at several call sites,
 plan detail adds a `verify` to each step whose tests differ from the plan's: the

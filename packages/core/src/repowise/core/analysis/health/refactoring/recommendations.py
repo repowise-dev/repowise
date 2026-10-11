@@ -41,7 +41,7 @@ from repowise.core.code_origin import ship_rank
 from repowise.core.test_paths import is_test_support_path, names_test_for, paired_test_names
 
 from .annotations import PlanAnnotations, partner_rows
-from .commands import commands_for_tests
+from .commands import JsPackages, commands_for_tests
 from .models import RefactoringSuggestion
 from .render import list_plan
 
@@ -340,6 +340,7 @@ class ValidationEvidence:
     (``function_facts.tests_json``); an absent id was never mapped.
     ``hubs`` are the files no reach walk passes through (:func:`hub_files`), and
     ``siblings`` each directory's files, which decide whose test a name is.
+    ``js_packages`` is the package each JS/TS test runs from; absent, from the root.
     """
 
     symbols: Mapping[str, Sequence[SymbolSpan]] = field(default_factory=dict)
@@ -348,6 +349,7 @@ class ValidationEvidence:
     function_tests: Mapping[str, tuple[MappedTest, ...]] = field(default_factory=dict)
     hubs: frozenset[str] = frozenset()
     siblings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    js_packages: JsPackages | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -896,11 +898,13 @@ def build_validation_plan(
         reasons = {test.selector: _runs_reason(test, symbol) for test, symbol in direct[:cap]}
         # Each quoted test's file, whole: shorter than naming every function,
         # and it runs at least the tests the plan quotes.
-        commands = commands_for_tests(sorted({test.split("::", 1)[0] for test in shown}))
+        commands = commands_for_tests(
+            sorted({test.split("::", 1)[0] for test in shown}), packages=facts.js_packages
+        )
     else:
         shown = ordered_tests[:cap]
         reasons = {test: best[test][1] for test in shown}
-        commands = commands_for_tests(shown, total=aggregate_total)
+        commands = commands_for_tests(shown, total=aggregate_total, packages=facts.js_packages)
     files = affected_files(suggestion)
     return ValidationPlan(
         basis=aggregate_basis,

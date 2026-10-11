@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.refactoring.commands import JsPackages, js_test_packages
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.analysis.health.refactoring.recommendations import (
     DEFAULT_TEST_LIMIT,
@@ -46,7 +48,7 @@ from repowise.core.analysis.test_reachability import (
     tests_reaching_by_tier,
 )
 
-from ...models import GraphMetric, GraphNode, HealthFileMetric
+from ...models import GraphMetric, GraphNode, HealthFileMetric, Repository
 from ..graph import get_graph_metrics
 from .coverage_map import tests_covering_files
 from .function_facts import tests_in_files
@@ -210,6 +212,7 @@ async def validation_inputs(
             siblings=_siblings(in_degree),
             symbols=await _symbol_spans(session, repository_id, target_files),
             function_tests=await tests_in_files(session, repository_id, target_files),
+            js_packages=await _js_packages(session, repository_id, test_files),
         ),
     )
     return ValidationInputs(
@@ -248,6 +251,18 @@ async def _validation_evidence(
         ),
         imports=await imported_names_by_test(session, repository_id, target_files, test_files),
     )
+
+
+async def _js_packages(
+    session: AsyncSession, repository_id: str, test_files: set[str]
+) -> JsPackages | None:
+    """The package each JS/TS test runs from, read from the checkout's
+    package.json files; None without a checkout, so commands run from the root."""
+    repo = await session.get(Repository, repository_id)
+    root = Path(repo.local_path) if repo is not None and repo.local_path else None
+    if root is None or not root.is_dir():
+        return None
+    return js_test_packages(root, test_files)
 
 
 async def _symbol_spans(
