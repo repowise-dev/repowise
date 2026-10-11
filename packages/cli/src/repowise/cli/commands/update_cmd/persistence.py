@@ -528,6 +528,7 @@ def _persist_index_only_update(
     full_git_summary: Any | None = None,
     reconcile_full_scope: bool = False,
     full_generation_page_ids: set[str] | None = None,
+    stamp_renderer: bool = True,
     dependency_fingerprints: dict[str, str] | None = None,
     vector_store: Any | None = None,
     require_config_rebuild_success: bool = False,
@@ -541,6 +542,9 @@ def _persist_index_only_update(
     periodic gate. Set by the config-changed caller, which relies on this path
     rather than re-scoring separately and returning — doing that advanced
     ``last_sync_commit`` past commits it never indexed.
+
+    ``stamp_renderer`` False keeps the stored renderer fingerprint: the full
+    re-render a renderer change asked for failed, so the next run retries it.
 
     ``timings`` is the run's phase table. Its ``run`` row is closed here, at
     the state write, and the whole table lands in ``state.json`` as
@@ -623,7 +627,11 @@ def _persist_index_only_update(
         # update pays a full reparse forever even though nothing is stale. This
         # is the keyless hot path (the post-commit hook), so a lingering reparse
         # here is exactly the cost the mode exists to avoid.
-        "renderer_fingerprint": _current_renderer_fingerprint(repo_path),
+        "renderer_fingerprint": (
+            _current_renderer_fingerprint(repo_path)
+            if stamp_renderer
+            else state.get("renderer_fingerprint")
+        ),
     }
     _stamp_git_history(new_state, full_git_summary, failed_steps)
     # Before save_state, and reading ``state`` (the pre-update dict) for the old
