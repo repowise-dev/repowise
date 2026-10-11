@@ -157,37 +157,44 @@ def _advisory_heading(recipe: Mapping[str, Any]) -> str:
     return _ADVISORY_HEADING.get(recipe["kind"] or "", "Advisory: one way to do it")
 
 
-def _batch_check(batch: Mapping[str, Any], pad: str) -> list[str]:
+def _batch_check(batch: Mapping[str, Any]) -> list[str]:
     """What closes a batch: run its tests, and stop the plan if they fail."""
-    out = [f"{pad}{batch['text']}"]
+    out = [batch["text"]]
     if batch.get("tests"):
-        out.append(f"{pad}Tests: " + ", ".join(f"`{t}`" for t in batch["tests"]))
-    out.extend(f"{pad}Run: `{c}`" for c in batch.get("commands") or [])
+        out.append("Tests: " + ", ".join(f"`{t}`" for t in batch["tests"]))
+    out.extend(f"Run: `{c}`" for c in batch.get("commands") or [])
     return out
 
 
-def _batched_entries(recipe: Mapping[str, Any], numbered: bool, pad: str) -> str:
-    """The steps grouped by batch, each batch closed by its check (``refactoring.batches``)."""
+def _batched_entries(
+    recipe: Mapping[str, Any], numbered: bool, pad: str, *, runnable: bool = True
+) -> str:
+    """The steps grouped by batch (``refactoring.batches``), each closed by its
+    check when the reader can run tests. Under an opportunity step (*pad*) the
+    batch lines are bullets with no blank line, so they stay inside the step."""
     steps = {s["n"]: s for s in recipe["steps"]}
     batches = recipe["batches"]
+    lead = f"{pad}- " if pad else ""
     blocks: list[str] = []
     for batch in batches:
         first, last = batch["stages"]["first"], batch["stages"]["last"]
         entries = [_step_entry(steps[n], f"{n}." if numbered else "-", pad) for n in batch["steps"]]
         blocks += [
-            f"{pad}**Batch {batch['n']} of {len(batches)}: stages {first}-{last}**",
+            f"{lead}**Batch {batch['n']} of {len(batches)}: stages {first}-{last}**",
             "\n".join(entries),
-            "\n".join(_batch_check(batch, pad)),
         ]
-    return "\n\n".join(blocks)
+        if runnable:
+            blocks.append("\n".join(f"{lead}{line}" for line in _batch_check(batch)))
+    return ("\n" if pad else "\n\n").join(blocks)
 
 
-def _steps_section(recipe: Mapping[str, Any]) -> list[str]:
+def _steps_section(recipe: Mapping[str, Any], *, runnable: bool = True) -> list[str]:
     if recipe["advisory"]:
         body = "\n".join(_step_entry(s, "-", "") for s in recipe["steps"])
         return [f"## {_advisory_heading(recipe)}", "", body, ""]
     if recipe.get("batches"):
-        return ["## Steps, in order, in batches", "", _batched_entries(recipe, True, ""), ""]
+        body = _batched_entries(recipe, True, "", runnable=runnable)
+        return ["## Steps, in order, in batches", "", body, ""]
     body = "\n".join(_step_entry(s, f"{s['n']}.", "") for s in recipe["steps"])
     return ["## Steps, in order", "", body, ""]
 
@@ -248,7 +255,7 @@ def _plan_sections(
         bullet_list(facts),
         "",
         _before_section(recipe),
-        *_steps_section(recipe),
+        *_steps_section(recipe, runnable=runnable),
         _verify_section(recipe, runnable=runnable),
     ]
 

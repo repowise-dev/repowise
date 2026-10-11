@@ -53,13 +53,10 @@ def _check(tests: list[str], detail: Mapping[str, Any]) -> str:
     return "run the tests under Verify"
 
 
-def _text(n: int, total: int, first: int, last: int, check: str) -> str:
-    stages = f"stage {first}" if first == last else f"stages {first}-{last}"
+def _text(n: int, total: int, check: str) -> str:
+    """The batch's closing rule; its number and stages are fields of their own."""
     stop = f"do not start batch {n + 1}" if n < total else "the plan is not done"
-    return (
-        f"Batch {n} of {total}: apply {stages}, then {check}. "
-        f"If any fails, stop here and report it; {stop}."
-    )
+    return f"With these stages in, {check}. If any fails, stop here and report it; {stop}."
 
 
 def stage_batches(
@@ -91,7 +88,7 @@ def stage_batches(
                 "stages": {"first": first, "last": last},
                 "tests": tests,
                 "commands": commands,
-                "text": _text(n, len(sizes), first, last, check),
+                "text": _text(n, len(sizes), check),
             }
         )
         first = last + 1
