@@ -101,6 +101,25 @@ def test_header_after_an_attribute_line_is_read():
     assert vbnet_module_names([_sym("Tools", 1, 3)], source) == {"Tools"}
 
 
+def test_crlf_source_is_read():
+    source = b"Public Class Used\r\nEnd Class\r\nPublic Module Tools\r\nEnd Module\r\n"
+    syms = [_sym("Used", 1, 2), _sym("Tools", 3, 4)]
+    assert vbnet_module_names(syms, source) == {"Tools"}
+
+
+def test_module_nested_in_a_namespace_is_read():
+    """The Namespace block is the Module's parent; it is still a Module."""
+    source = b"Namespace Downloads\n    Public Module Tools\n    End Module\nEnd Namespace\n"
+    sym = dict(_sym("Tools", 2, 3), parent_name="Downloads")
+    assert vbnet_module_names([sym], source) == {"Tools"}
+
+
+@pytest.mark.parametrize("comment", ["' Module Tools was split out", "REM Module Tools"])
+def test_a_comment_naming_the_module_is_not_its_header(comment):
+    source = f"<Serializable>\n{comment}\nPublic Class Tools\nEnd Class\n".encode()
+    assert vbnet_module_names([_sym("Tools", 1, 4)], source) == frozenset()
+
+
 def test_unreadable_header_counts_as_a_module():
     """Unknown lowers a confidence; it never keeps a deletion-ready claim."""
     assert vbnet_module_names([_sym("Tools", 1, 3)], None) == {"Tools"}

@@ -19,6 +19,9 @@ from collections.abc import Iterable
 #: leading attribute list, which may wrap over a few lines.
 _HEADER_LOOKAHEAD = 6
 
+#: A comment line that mentions ``Module X`` is not a header.
+_COMMENT_RE = re.compile(rb"\s*(?:'|REM\b)", re.IGNORECASE)
+
 _KEYWORD_RE = re.compile(rb"\b(Module|Class|Structure|Interface|Enum)\s+(\w+)", re.IGNORECASE)
 
 
@@ -33,6 +36,8 @@ def _is_module(lines: list[bytes] | None, sym: dict) -> bool:
         return True
     name = sym.get("name", "").lower().encode("utf-8", "ignore")
     for line in lines[start - 1 : start - 1 + _HEADER_LOOKAHEAD]:
+        if _COMMENT_RE.match(line):
+            continue
         for match in _KEYWORD_RE.finditer(line):
             if match.group(2).lower() == name:
                 return match.group(1).lower() == b"module"
