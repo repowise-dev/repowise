@@ -30,6 +30,7 @@ from .ast_utils import (
     _dart_signature_sibling,
     _find_function_entry_name,
     _find_name,
+    _node_text,
     is_function_node,
 )
 from .languages import LanguageNodeMap
@@ -363,6 +364,23 @@ def _strip_call_args(text: str) -> str:
         elif depth == 0 and not char.isspace():
             kept.append(char)
     return "".join(kept)
+
+
+_MEMBERSHIP = "membership_test_against_list_in_loop"
+# A name a plan step can quote: ``out``, ``self.buf``, ``@buf``, ``$acc``.
+_SUBJECT_NAME = re.compile(r"[@$]{0,2}[A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*")
+
+
+def _subject_text(node: Node | None) -> str:
+    """*node* as written when it is a plain name or member path, else empty."""
+    text = "".join(_node_text(node).split()) if node is not None else ""
+    return text if len(text) <= _SINK_CALL_MAX and _SUBJECT_NAME.fullmatch(text) else ""
+
+
+def _concat_target(node: Node) -> str:
+    """The string a ``+=`` statement grows: its left side."""
+    left = node.child_by_field_name("left")
+    return _subject_text(left if left is not None else next(iter(node.named_children), None))
 
 
 def _quotable(callee: str) -> bool:
@@ -759,6 +777,8 @@ def _collect_perf_hits(
                             PerfHit(
                                 marker, line, next_func, "", func_start=next_start,
                                 loop=loop_facts(call_node, sink=False),
+                                # ``arr.includes(x)``: the list is the receiver.
+                                subject=root_name if marker == _MEMBERSHIP else "",
                             )
                         )
                     elif method:
@@ -811,6 +831,7 @@ def _collect_perf_hits(
                             "",
                             func_start=next_start,
                             loop=loop_facts(node, sink=False),
+                            subject=_concat_target(node),
                         )
                     )
                 elif do_loop_stmt_marker:
@@ -828,6 +849,12 @@ def _collect_perf_hits(
                                 "",
                                 func_start=next_start,
                                 loop=loop_facts(node, sink=False),
+                                # ``x in big``: the list is the last operand.
+                                subject=(
+                                    _subject_text(next(iter(reversed(node.named_children)), None))
+                                    if sm == _MEMBERSHIP
+                                    else ""
+                                ),
                             )
                         )
 

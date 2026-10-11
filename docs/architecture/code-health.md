@@ -746,6 +746,11 @@ prerequisite. A loop already walking chunks is `loop_already_chunked`. When
 call site and loop, however many markers saw it, each naming the call it repeats
 (`details.sink_call`, or the helper a cross-function path enters). A step that adds
 a bulk form to the sink comes first only when every site reaches that one sink.
+Building a buffer or a set is one edit however many lines of the loop grow the
+string or probe the list, so `buffer_string_accumulation` and
+`replace_membership_collection` list one step per loop and variable, on the loop's
+line, naming the variable (`details.subject`) where the walk could read it as a
+plain name, and effort counts those steps.
 Plans also list validation tests (coverage, call graph, import graph, then
 `via: "name-match"`). An opportunity links to a `performance_fix` refactoring
 plan only by exact `opportunity_id`.

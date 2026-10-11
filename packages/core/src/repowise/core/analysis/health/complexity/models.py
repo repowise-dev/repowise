@@ -343,9 +343,15 @@ class PerfHit:
     # The per-iteration call as written at ``line`` (``session.get``), so a plan
     # can name what to batch; empty where the detector kept no call text.
     sink_call: str = ""
+    # The variable the hit is about, as written: the string a ``+=`` grows
+    # (``string_concat_in_loop``), the list a membership test probes
+    # (``membership_test_against_list_in_loop``). One loop's hits on one
+    # variable are one edit, and the plan names it. Empty for every other
+    # kind and for a target that is not a plain name (``buf[0] += ...``).
+    subject: str = ""
 
     def loop_facts(self) -> dict[str, Any]:
-        """Loop facts and the call text for ``details``.
+        """Loop facts, the call text and the subject for ``details``.
 
         Each key is absent when unset, so old findings are unchanged.
         """
@@ -354,6 +360,8 @@ class PerfHit:
             facts["loop_line"] = self.loop_line
         if self.sink_call:
             facts["sink_call"] = self.sink_call
+        if self.subject:
+            facts["subject"] = self.subject
         return facts
 
 
