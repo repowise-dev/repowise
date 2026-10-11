@@ -178,11 +178,10 @@ _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
 # A source file whose name ends in "test" and a scaffolding word is the support
 # for some module's tests: ``bot.test-harness.ts``, ``card-test-helpers.ts``,
 # ``test-support.mjs``. Words split as directory segments do. Not ``spec``,
-# which ``spec_utils.py`` uses for OpenAPI tooling. Ceiling: a published
-# test-helper entry (``react-dom/test-utils.js``) reads as support too.
+# which ``spec_utils.py`` uses for OpenAPI tooling, and not ``utils``: React
+# and Preact publish ``test-utils.js`` as a package entry.
 _SUPPORT_NAME_WORDS: frozenset[str] = frozenset(
-    {"harness", "support", "helper", "helpers", "util", "utils", "mock", "mocks"}
-    | {"fixture", "fixtures", "setup"}
+    {"harness", "support", "helper", "helpers", "mock", "mocks", "fixture", "fixtures", "setup"}
 )
 
 
@@ -509,6 +508,21 @@ def is_test_related_path(
     search should prefer :func:`is_test_path`, so fixtures stay findable.
     """
     return _classify(path, language, roots) != ""
+
+
+def in_test_tree(path: str, language: str | None = None) -> bool:
+    """Whether a directory alone makes *path* test material, whatever its name.
+
+    ``tests/x.py`` and ``src/__mocks__/api.ts`` are; ``core/test_selection.py``
+    is test-shaped only by name. ``.github/`` makes no test tree.
+    """
+    original, lowered = _parts(path)
+    segments = lowered[:-1]
+    if not segments or _REPO_METADATA_DIR in segments:
+        return False
+    return any(_is_support_anywhere_dir(seg) for seg in segments) or _is_test_dir(
+        segments, original[:-1], "", language
+    )
 
 
 def is_unambiguous_test_path(path: str, language: str | None = None) -> bool:

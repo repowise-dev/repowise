@@ -133,6 +133,10 @@ def test_a_stored_origin_overrules_a_test_shaped_name() -> None:
     # With no stored origin the path decides.
     assert path_verdict(path, None).reason == "test"
     assert path_verdict("src/bot.test-harness.ts", None).reason == "test"
+    # A test directory still wins over a stored production origin.
+    assert path_verdict("tests/x.py", False, origin="production").reason == "test"
+    assert path_verdict("src/__mocks__/api.ts", False, origin="production").reason == "test"
+    assert path_verdict("src/app.py", False, origin="test").reason == "test"
 
 
 def test_unit_verdict_ladder_order() -> None:

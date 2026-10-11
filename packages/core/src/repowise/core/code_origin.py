@@ -218,7 +218,7 @@ def _code_suffixes() -> tuple[str, ...]:
 def _generated_suffixes() -> tuple[str, ...]:
     from .ingestion.languages.registry import REGISTRY
 
-    return tuple(sorted(REGISTRY.generated_suffixes()))
+    return tuple(sorted({s.lower() for s in REGISTRY.generated_suffixes()}))
 
 
 @cache
@@ -235,10 +235,11 @@ _BUNDLE_SUFFIXES = (".bundle.js", ".bundle.mjs", ".bundle.cjs")
 
 
 def _is_generated_name(name: str) -> bool:
+    lowered = name.lower()
     return (
-        ".generated." in name
-        or name.endswith(_generated_suffixes())
-        or name.lower().endswith(_BUNDLE_SUFFIXES)
+        ".generated." in lowered
+        or lowered.endswith(_generated_suffixes())
+        or lowered.endswith(_BUNDLE_SUFFIXES)
     )
 
 

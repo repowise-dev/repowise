@@ -16,6 +16,8 @@ from repowise.server.mcp_server.tool_health.serialize import _serialize_finding,
 from repowise.server.mcp_server.tool_health.summary import _compute_kpis, _gap_analysis
 from repowise.server.mcp_server.tool_health.targeted import ModeTotals
 
+_RANKED_FILE_LISTS = frozenset({"worst_files", "high_leverage_files", "test_worst_files"})
+
 
 def build_dashboard(
     data: HealthData, req: HealthRequest, pager: Pager
@@ -77,12 +79,15 @@ def _dashboard_blocks(data: HealthData, req: HealthRequest, pager: Pager) -> dic
         # KPIs keep test files unless ``scope`` narrows them. Tests score better
         # than production code, so narrowing lowers the number with no new defect
         # found: a caller should ask for it knowingly.
-        "kpis": lambda: _compute_kpis(
-            all_metrics,
-            hotspot_paths=data.hotspot_paths,
-            performance_findings=data.perf_findings_count,
-            coverage=data.perf_coverage,
-            unanalysed=len(pop.unanalysed_paths),
+        "kpis": lambda: _name_listed_worst(
+            _compute_kpis(
+                all_metrics,
+                hotspot_paths=data.hotspot_paths,
+                performance_findings=data.perf_findings_count,
+                coverage=data.perf_coverage,
+                unanalysed=len(pop.unanalysed_paths),
+            ),
+            data,
         ),
         "distribution": lambda: health_distribution(all_metrics),
         # Where the gap to the target concentrates: a short list of files.
@@ -97,6 +102,13 @@ def _dashboard_blocks(data: HealthData, req: HealthRequest, pager: Pager) -> dic
             [_metric_row(data, m) for m in data.test_metric_rows], "test_worst_files"
         ),
         "test_worst_files_total": len(data.test_metric_rows),
+        # Scripts, generated and vendored files: in the KPIs, in neither list.
+        # Said when a list is asked for by name, so the default stays its size.
+        **(
+            {"worst_files_hidden": data.worst_files_hidden}
+            if data.worst_files_hidden and req.only_set & _RANKED_FILE_LISTS
+            else {}
+        ),
         "high_leverage_files": lambda: pager.bound(
             _high_leverage_rows(data, gap()), "high_leverage_files"
         ),
@@ -156,6 +168,18 @@ def _fix_first_block(data: HealthData, req: HealthRequest, pager: Pager) -> dict
 def _finding_rows(data: HealthData, rows: list[Any]) -> list[dict[str, Any]]:
     labels = data.findings.lower_priority
     return [_serialize_finding(f, data.reference_repository, labels.get(f.id)) for f in rows]
+
+
+def _name_listed_worst(kpis: dict[str, Any], data: HealthData) -> dict[str, Any]:
+    """The worst file and worst test the KPIs name are the heads of the lists,
+    so a script left out of ``worst_files`` is not named worst either."""
+    if not kpis.get("file_count"):
+        return kpis
+    for prefix, rows in (("worst_performer", data.metric_rows), ("worst_test", data.test_metric_rows)):
+        head = rows[0] if rows else None
+        kpis[f"{prefix}_path"] = head.file_path if head else None
+        kpis[f"{prefix}_score"] = round(head.score, 2) if head else None
+    return kpis
 
 
 def _metric_row(data: HealthData, m: Any) -> dict[str, Any]:

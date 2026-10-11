@@ -119,6 +119,8 @@ _OWN_HEADER = (
         # a bundler's output, by name; a module about bundles is hand-written
         ("apps/kit/Resources/CanvasA2UI/a2ui.bundle.js", "generated"),
         ("dist/main.bundle.mjs", "generated"),
+        ("dist/Main.Bundle.JS", "generated"),
+        ("src/Forms/Main.designer.cs", "generated"),
         ("src/logging/diagnostic-support-bundle.ts", "production"),
     ],
 )

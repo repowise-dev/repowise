@@ -106,7 +106,8 @@ Left out, and counted with a reason:
 
 Test helpers named for a module's tests (`bot.test-harness.ts`, `card-test-helpers.ts`,
 `test-support.mjs`) count as test support, and bundler output (`*.bundle.js`) as
-generated code, so neither leads Fix first or the refactoring list.
+generated code, so neither leads Fix first, the refactoring list or the dashboard's
+worst-file lists, which say how many files they left out and why.
 
 A function is dormant when its body opens with `if not FLAG: return ...` (or is one
 `if FLAG:` block) and `FLAG` is a module-level `False`, `0` or `None` (`const FLAG =
