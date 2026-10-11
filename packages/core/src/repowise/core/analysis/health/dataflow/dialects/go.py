@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 _ASSIGN_KINDS = frozenset({"assignment_statement"})
 _SHORT_VAR = "short_var_declaration"
 _VAR_DECL_KINDS = frozenset({"var_declaration", "const_declaration"})
+# A grouped ``var ( ... )`` holds its specs in a list; a grouped ``const`` does not.
+_VAR_SPEC_LIST = "var_spec_list"
 _INC_DEC_KINDS = frozenset({"inc_statement", "dec_statement"})
 _EXPRESSION_LIST = "expression_list"
 _RANGE_CLAUSE = "range_clause"
@@ -161,7 +163,9 @@ class GoDefUseDialect(BaseDefUseDialect):
             return
         if t in _VAR_DECL_KINDS:  # ``var x int = ...`` / ``const c = ...``
             for spec in node.named_children:
-                self._var_spec(spec, defs, uses)
+                grouped = spec.named_children if spec.type == _VAR_SPEC_LIST else (spec,)
+                for one in grouped:
+                    self._var_spec(one, defs, uses)
             return
         if t in _INC_DEC_KINDS:  # ``x++`` / ``x--`` -- read-modify-write
             for child in node.named_children:
