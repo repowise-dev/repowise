@@ -6,6 +6,23 @@ recognising the remote URL, reading the CI job's target branch, finding the
 pull or merge request number in commit history, telling bots from people, and
 matching a webhook to a registered repository. This page says what works where.
 
+<p>
+  <strong>Hosts &nbsp;</strong>
+  <img src="https://img.shields.io/badge/GitHub-181717?style=flat-square&logo=github&logoColor=white" alt="GitHub" />
+  <img src="https://img.shields.io/badge/GitLab-FC6D26?style=flat-square&logo=gitlab&logoColor=white" alt="GitLab" />
+  <img src="https://img.shields.io/badge/Azure%20DevOps-0078D7?style=flat-square" alt="Azure DevOps" />
+  <img src="https://img.shields.io/badge/Bitbucket-0052CC?style=flat-square&logo=bitbucket&logoColor=white" alt="Bitbucket" />
+  <img src="https://img.shields.io/badge/Any%20git%20host-F05032?style=flat-square&logo=git&logoColor=white" alt="Any git host" />
+</p>
+<p>
+  <strong>CI &nbsp;</strong>
+  <img src="https://img.shields.io/badge/GitHub%20Actions-2088FF?style=flat-square&logo=githubactions&logoColor=white" alt="GitHub Actions" />
+  <img src="https://img.shields.io/badge/GitLab%20CI-FC6D26?style=flat-square&logo=gitlab&logoColor=white" alt="GitLab CI" />
+  <img src="https://img.shields.io/badge/Azure%20Pipelines-2560E0?style=flat-square" alt="Azure Pipelines" />
+  <img src="https://img.shields.io/badge/Bitbucket%20Pipelines-0052CC?style=flat-square&logo=bitbucket&logoColor=white" alt="Bitbucket Pipelines" />
+  <img src="https://img.shields.io/badge/Jenkins-D24939?style=flat-square&logo=jenkins&logoColor=white" alt="Jenkins" />
+</p>
+
 ## Support
 
 | Host | Remote recognised | CI detected | PR / MR numbers from history | Webhook auto-sync |
@@ -28,7 +45,7 @@ server have their credentials removed.
 
 Repowise never probes a host over the network, so a self-managed host with a
 neutral name (`git.corp.com`) reads as a generic host until you name its forge.
-Commit the mapping in `.repowise/config.yaml`:
+Add the mapping to `.repowise/config.yaml`:
 
 ```yaml
 forges:
@@ -39,7 +56,8 @@ forges:
     bitbucket.corp.com: bitbucket
 ```
 
-Or set it in the environment, where no config is committed (CI):
+`.repowise/` is local and gitignored, so for CI runners and teammates set it in
+the environment instead:
 
 ```bash
 REPOWISE_FORGE_HOSTS="git.corp.com=gitlab,tfs.corp.com=azure"
@@ -60,7 +78,7 @@ remote's host is still unknown, the CI running the job decides: a GitLab runner
 | Azure Pipelines | `TF_BUILD` or `SYSTEM_TEAMFOUNDATIONCOLLECTIONURI` | `SYSTEM_PULLREQUEST_TARGETBRANCHNAME`, else `SYSTEM_PULLREQUEST_TARGETBRANCH` | `SYSTEM_PULLREQUEST_PULLREQUESTNUMBER`, else `SYSTEM_PULLREQUEST_PULLREQUESTID` |
 | Bitbucket Pipelines | `BITBUCKET_BUILD_NUMBER` | `BITBUCKET_PR_DESTINATION_BRANCH` | `BITBUCKET_PR_ID` |
 | Jenkins | `JENKINS_URL` | `CHANGE_TARGET` (multibranch) | `CHANGE_ID` |
-| Buildkite, TeamCity, any CI setting `CI` | `BUILDKITE`, `TEAMCITY_VERSION`, `CI` | none: pass a range | none |
+| Buildkite, TeamCity, any CI setting `CI` | `BUILDKITE`, `TEAMCITY_VERSION`, `CI` (known as CI only) | none: pass a range | none |
 
 The CI gates diff `origin/<base branch>...HEAD` when you pass no range, with
 `refs/heads/` removed from the branch. Azure Pipelines building a repository
@@ -83,8 +101,8 @@ Every host's forms are read on every repository, the repository's own host
 first. A bare `#12` never sets a number: it names an issue as often as a pull
 request, and a wrong number is worse than none. Azure Boards links (`AB#12`)
 and links to a pull request name some other change, so they do not count
-either. Revert matching does read mentions, a bare `#12` included, and links a
-revert only when exactly one commit's merge message is that change.
+either. A `revert:` commit that names a change (`#12`, a pull URL or `!12`) is
+linked to it only when exactly one commit's merge message is that change.
 
 Authors fold and bots drop out the same way on every host:
 

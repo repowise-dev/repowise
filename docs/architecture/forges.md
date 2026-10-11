@@ -29,8 +29,8 @@ the overview remote and repository responses (`strip_credentials`),
 ## Invariants
 
 - **Every forge fact lives in its forge's module.** A host name, URL shape,
-  noreply domain, bot name or merge convention elsewhere is a bug. No host
-  regexes outside this package.
+  noreply domain, bot name or merge convention elsewhere is a bug. New host
+  regexes go in this package, not in their callers.
 - **Parsers do no I/O.** `remote.py`, `changes.py`, `identity.py` and `ci.py`
   read strings and env mappings only. `detect.py` reads `.git/config` directly
   instead of spawning git; `forge_hosts` reads the repo config.
@@ -44,8 +44,9 @@ the overview remote and repository responses (`strip_credentials`),
   Bitbucket Data Center keys as `host/PROJ/repo`.
 - **Precision over recall.** A wrong change number is worse than none, so only
   a merge or squash form sets one; a bare `#N`, `AB#N` or a link never does.
-  Every merge form needs a literal lead and exactly one capture group of at most
-  nine digits (`lead_of` raises otherwise). For identity, a missed fold beats
+  Every merge form needs a literal lead, exactly one capture group and no
+  `IGNORECASE` flag (`lead_of` raises otherwise); write the number as
+  `\d{1,9}`. For identity, a missed fold beats
   joining two people: only a forge's provable noreply form folds, and a bot
   name matches as an explicit marker or a full service name, never a substring.
 - **Identity reads every forge.** An address keeps its minting forge's shape
