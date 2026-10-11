@@ -173,7 +173,6 @@ _PY_NONLIST_BUILTINS: frozenset[str] = frozenset({"set", "dict", "frozenset"})
 _PY_RESULT_PROJECTIONS: frozenset[str] = frozenset(
     {"all", "scalars", "fetchall", "json", "data", "rows"}
 )
-_PY_BOUND_NAME_RE = re.compile(r"(?i)retr|attempt")
 # Raw SQL capped in its own text: ``sa.text("... LIMIT 1000")``.
 _PY_SQL_LIMIT_RE = re.compile(rb"(?is)\bselect\b.*\blimit\s+\d+\b")
 _PY_SQL_COMMENT_RE = re.compile(rb"--[^\n]*|/\*.*?\*/", re.S)
@@ -1011,7 +1010,8 @@ class PythonPerfDialect(BasePerfDialect):
     def _range_magnitude(
         self, call: Node, loop: Node, probe: SinkProbe, *, hop: bool
     ) -> LoopMagnitude | None:
-        """``range(len(rows))`` grows with ``rows``; ``range(MAX_RETRIES)`` is bounded."""
+        """``range(len(rows))`` grows with ``rows``; ``range(3)`` and ``range(MAX)``
+        with ``MAX = 3`` bound once in the module are bounded."""
         args = [c for c in call.child_by_field_name("arguments").children if c.is_named]
         if not args:
             return None
@@ -1021,11 +1021,8 @@ class PythonPerfDialect(BasePerfDialect):
             if len(inner) == 1:
                 return self._grows(self._magnitude(inner[0], loop, probe, hop=hop))
             return None
-        path = self._dotted_path(stop) if stop.type in ("identifier", "attribute") else None
-        last = path.rsplit(".", 1)[-1] if path else ""
-        if _module_int_constant(stop) or (last and _PY_BOUND_NAME_RE.search(last)):
-            return "bounded"
-        return None
+        # A name alone (``MAX_RETRIES``, ``self.max_attempts``) proves nothing.
+        return "bounded" if stop.type == "integer" or _module_int_constant(stop) else None
 
     def _slice_magnitude(self, subscript: Node) -> LoopMagnitude | None:
         """``xs[:5]`` / ``xs[:LIMIT]`` / ``xs[i:i + 4]``: a constant-width slice."""

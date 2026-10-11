@@ -86,23 +86,41 @@ def test_a_read_capped_in_the_query_does_not_grow():
     assert facts.magnitude == "unknown"
 
 
-def test_magnitude_range_all_caps_constant_bounded():
-    """B1: ``range(N)`` where N is an ALL_CAPS identifier."""
+def test_magnitude_range_all_caps_parameter_is_unknown():
+    """``range(N)`` where N is an ALL_CAPS parameter: no literal proves it."""
     facts = _loop(
         b"from sqlalchemy import select\n"
         b"async def f(session, MAX_RETRIES):\n"
         b"    for i in range(MAX_RETRIES):\n"
         b"        await session.execute(select(i))\n"
     )
-    assert facts.magnitude == "bounded"
+    assert facts is None or facts.magnitude == "unknown"
 
 
-def test_magnitude_range_attempts_name_bounded():
-    """B1: the last dotted segment matches ``retr|attempt`` (case-insensitive)."""
+@pytest.mark.parametrize(
+    "src",
+    [
+        b"async def f(session, cfg):\n    for i in range(cfg.max_attempts):\n",
+        b"from config import MAX_RETRIES\nasync def f(session):\n"
+        b"    for i in range(MAX_RETRIES):\n",
+        b"class C:\n    async def f(self, session):\n        for i in range(self.max_retries):\n"
+        b"    ",
+    ],
+)
+def test_a_retry_name_alone_never_proves_a_loop_bounded(src):
+    """A bounded loop is hidden as expected, so the name needs the proof a number has."""
+    facts = _loop(
+        b"from sqlalchemy import select\n" + src + b"        await session.execute(select(i))\n"
+    )
+    assert facts is None or facts.magnitude == "unknown"
+
+
+def test_magnitude_range_retry_constant_bound_to_a_literal_bounded():
     facts = _loop(
         b"from sqlalchemy import select\n"
-        b"async def f(session, cfg):\n"
-        b"    for i in range(cfg.max_attempts):\n"
+        b"MAX_RETRIES = 3\n"
+        b"async def f(session):\n"
+        b"    for i in range(MAX_RETRIES):\n"
         b"        await session.execute(select(i))\n"
     )
     assert facts.magnitude == "bounded"
