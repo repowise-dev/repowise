@@ -509,6 +509,7 @@ async def persist_graph_nodes(
                     "visibility": data.get("visibility"),
                     "signature": data.get("signature"),
                     "parent_symbol_id": data.get("parent_name"),
+                    "public_api": data.get("public_api"),
                 }
             )
         nodes.append(node_dict)

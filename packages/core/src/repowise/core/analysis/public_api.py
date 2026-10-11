@@ -1,4 +1,4 @@
-"""The Public API of a page's files, computed from manifests and re-exports.
+"""The Public API of a package, computed from manifests and re-exports.
 
 A package's public surface is what a consumer can import from it: whatever its
 manifest names as the start (``package.json`` ``bin``/``main``/``exports["."]``,
@@ -6,6 +6,9 @@ manifest names as the start (``package.json`` ``bin``/``main``/``exports["."]``,
 ``FileInfo.is_manifest_entry``) declares or re-exports through barrels. It is
 read off the parsed imports, never guessed by a model, so a class that nothing
 in the repo imports still appears when the package's front door publishes it.
+
+Two readers share it: a wiki page's Public API section, and the per-symbol
+``public_api`` flag the graph carries (:func:`stamp_public_api`).
 """
 
 from __future__ import annotations
@@ -187,3 +190,49 @@ def compute_public_api(
             first = first_name.setdefault(key, name)
             api.append(_entry(name, sym, path, "" if first == name else first))
     return api
+
+
+def _is_export_root(pf: Any) -> bool:
+    """A barrel, or a non-Python manifest entry; never a test file.
+
+    A Python manifest entry that is not an ``__init__.py`` is a console
+    script's module: the command runs it, nothing imports from it.
+    """
+    info = pf.file_info
+    if info.is_test:
+        return False
+    if PurePosixPath(info.path).name in BARREL_FILENAMES:
+        return True
+    return bool(getattr(info, "is_manifest_entry", False)) and info.language != "python"
+
+
+def public_symbols(parsed: Mapping[str, Any]) -> dict[str, str]:
+    """``{symbol id: the file that exports it}`` for every symbol consumers can import.
+
+    Exported means a barrel or a package entry publishes it (re-exports and
+    ``__all__`` followed as for :func:`compute_public_api`); a public method
+    of an exported class is exported with it. Ceiling: ``exports`` subpaths
+    of a ``package.json`` other than ``"."`` are not roots.
+    """
+    resolver = _Resolver(parsed)
+    out: dict[str, str] = {}
+    for root in sorted(path for path, pf in parsed.items() if _is_export_root(pf)):
+        for _name, sym, declared_in in resolver.exported(root):
+            if sym is not None and not parsed[declared_in].file_info.is_test:
+                out.setdefault(sym.id, root)
+    for path, pf in parsed.items():
+        for sym in pf.symbols:
+            owner = out.get(f"{path}::{sym.parent_name}") if sym.parent_name else None
+            if owner is not None and sym.visibility == "public":
+                out.setdefault(sym.id, owner)
+    return out
+
+
+def stamp_public_api(graph: Any, parsed: Mapping[str, Any]) -> None:
+    """Set ``public_api`` on every symbol node: the exporting file, or ``""``."""
+    exported = public_symbols(parsed)
+    for pf in parsed.values():
+        for sym in pf.symbols:
+            node = graph.nodes.get(sym.id)
+            if node is not None:
+                node["public_api"] = exported.get(sym.id, "")

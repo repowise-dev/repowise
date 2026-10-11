@@ -295,6 +295,10 @@ class GraphNode(Base):
     # or runs the project in a child process). "" on a test checked and found
     # ordinary; NULL on a test never checked (an older index) and on non-tests.
     always_run_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # On a symbol a package exports, the barrel or entry file exporting it
+    # (``analysis.public_api``); "" on one checked and not exported; NULL on
+    # file nodes and on symbols never checked (an older index).
+    public_api: Mapped[str | None] = mapped_column(Text, nullable=True)
     pagerank: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     betweenness: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     # The commit ``betweenness`` was last actually computed at. Betweenness is

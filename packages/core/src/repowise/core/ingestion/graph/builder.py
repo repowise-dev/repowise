@@ -649,6 +649,14 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # Post-pass: needs heritage resolved and reads only the graph.
         self._resolve_override_dispatch(progress=progress)
 
+        # Which symbols a package exports, read off the imports just resolved.
+        from ...analysis.public_api import stamp_public_api
+
+        try:
+            stamp_public_api(self._graph, self._parsed_files)
+        except Exception as exc:  # a reader bug must not fail the index
+            log.warning("public_api_stamp_failed", error=str(exc))
+
         self._built = True
 
         # Keep the resolver-built DotNetProjectIndex reachable after the

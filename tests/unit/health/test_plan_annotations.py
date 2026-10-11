@@ -247,3 +247,19 @@ def test_a_test_reading_the_split_function_source_is_a_risk(tmp_path: Path) -> N
     assert annotate(plan(), other, ["tests/test_flow.py::test_a"]).risks == ()
     assert annotate(plan(), facts, ["tests/test_plain.py::test_x"]).risks == ()
     assert annotate(plan("split_file"), facts, ["tests/test_flow.py::test_a"]).risks == ()
+
+
+def test_changing_an_exported_symbol_warns_about_outside_callers() -> None:
+    exported = {"svc/orders.py": {"svc/orders.py::Orders::handle": "svc/__init__.py"}}
+    facts = AnnotationFacts(exported=exported)
+    notes = annotate(plan(target_symbol="Orders.handle"), facts)
+    assert notes.risks == (
+        PlanRisk(
+            "public_api",
+            "`Orders.handle` is exported from `svc/__init__.py`; changing its signature "
+            "breaks consumers outside the repo.",
+        ),
+    )
+    # Only the exported symbol, never a neighbour in the same file.
+    assert not annotate_any(plan(target_symbol="_helper"), facts)
+    assert not annotate_any(plan(file_path="svc/other.py", target_symbol="handle"), facts)

@@ -115,7 +115,10 @@ Plan detail also lists `risks`, one sentence each, to read before applying the
 plan: an accepted decision that governs the file, callers or importers of what
 the plan moves, a target nothing reaches (delete it instead), and recent commits
 on the same lines, and a test the plan runs that asserts on the function's own
-source text. A governed plan's steps are `judgment`, and its
+source text. When the plan changes a symbol a package exports (re-exported from
+an `__init__.py` or `index.ts`, listed in `__all__`, or published by a package
+entry), a risk names the file exporting it, since changing its signature breaks
+consumers outside the repo. A governed plan's steps are `judgment`, and its
 `blast_radius.co_change_partners` names the files that usually change with it.
 A newly accepted decision shows here after the next index or update.
 

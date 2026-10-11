@@ -2139,6 +2139,21 @@ async def persist_incremental_index(
                     # run, so a skipped write heals itself on the next update.
                     _skip("Doc-drift persist", exc)
 
+            # Re-persist graph_nodes so symbol-level PageRank /
+            # betweenness / community ids stay in sync with the
+            # current graph build. Without this, ``repowise update``
+            # leaves stale per-symbol metrics from the original init
+            # and the UI shows "Not indexed in graph" for every
+            # symbol on existing repos. Before health, whose plan
+            # annotations read each symbol's ``public_api`` from here.
+            try:
+                from repowise.core.pipeline.persist import persist_graph_nodes
+
+                with timed(timings, "persist.graph_nodes"):
+                    await persist_graph_nodes(session, repo_id, graph_builder, timings=timings)
+            except Exception as exc:
+                _skip("Graph nodes persist", exc)
+
             if partial_health_report is not None:
                 try:
                     with timed(timings, "persist.health"):
@@ -2147,20 +2162,6 @@ async def persist_incremental_index(
                         )
                 except Exception as exc:
                     _skip("Health persist", exc, range_scoped=True)
-
-            # Re-persist graph_nodes so symbol-level PageRank /
-            # betweenness / community ids stay in sync with the
-            # current graph build. Without this, ``repowise update``
-            # leaves stale per-symbol metrics from the original init
-            # and the UI shows "Not indexed in graph" for every
-            # symbol on existing repos.
-            try:
-                from repowise.core.pipeline.persist import persist_graph_nodes
-
-                with timed(timings, "persist.graph_nodes"):
-                    await persist_graph_nodes(session, repo_id, graph_builder, timings=timings)
-            except Exception as exc:
-                _skip("Graph nodes persist", exc)
 
             # Refresh wiki_symbols for the changed files. Historically the
             # incremental path re-parsed but never persisted symbols, so their

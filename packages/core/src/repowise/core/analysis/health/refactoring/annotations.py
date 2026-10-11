@@ -26,7 +26,7 @@ from ....co_change import parse_partners
 from ....persistence.crud.analysis.dead_code import get_dead_code_findings
 from ....persistence.crud.authority import governing_decisions_by_file
 from ....persistence.crud.git import get_git_metadata_bulk
-from ....persistence.models import GitCommit, GitFunctionBlame, Repository
+from ....persistence.models import GitCommit, GitFunctionBlame, GraphNode, Repository
 from ..queue.eligibility import DeadSpan, dead_spans, dead_target
 from .extract_helper import ACTIVE_CO_CHANGE
 from .models import RefactoringSuggestion
@@ -119,7 +119,9 @@ class AnnotationFacts:
     recent from all, which is no signal rather than a quiet target. ``dead``
     is the sure dead-code spans by file (:func:`..queue.eligibility.dead_spans`).
     ``sources_read`` is, per test file the plans run, the ``getsource``
-    arguments it passes (:data:`_GETSOURCE`).
+    arguments it passes (:data:`_GETSOURCE`). ``exported`` is, per file, its
+    symbols a package exports and the file exporting each
+    (``graph_nodes.public_api``).
     """
 
     decisions: Mapping[str, list[tuple[str, str]]] = field(default_factory=dict)
@@ -128,6 +130,7 @@ class AnnotationFacts:
     recent: Mapping[str, tuple[datetime, str]] | None = None
     dead: Mapping[str, list[DeadSpan]] = field(default_factory=dict)
     sources_read: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    exported: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
 
 def annotate(
@@ -147,6 +150,7 @@ def annotate(
     for risk in (
         _dead_code_risk(suggestion, facts.dead),
         _public_api_risk(suggestion),
+        _exported_signature_risk(suggestion, facts.exported),
         _active_edit_risk(suggestion, facts),
         _source_text_risk(suggestion, tests, facts.sources_read),
     ):
@@ -199,6 +203,27 @@ def _public_api_risk(suggestion: RefactoringSuggestion) -> PlanRisk | None:
         verb = "depends" if dependents == 1 else "depend"
         text = f"{files} {verb} on this file; the class they use changes shape."
     return PlanRisk("public_api", text)
+
+
+def _exported_signature_risk(
+    suggestion: RefactoringSuggestion, exported: Mapping[str, Mapping[str, str]]
+) -> PlanRisk | None:
+    """A symbol the plan changes that a package exports, so code outside the
+    repository may call it."""
+    # Deferred: recommendations imports this module.
+    from .recommendations import target_symbol_ids
+
+    in_file = exported.get(suggestion.file_path) or {}
+    spans = [(symbol_id, 0, 0) for symbol_id in in_file]
+    hits = target_symbol_ids(suggestion, suggestion.file_path, None, spans)
+    if not hits:
+        return None
+    name = hits[0].split("::", 1)[1].replace("::", ".")
+    return PlanRisk(
+        "public_api",
+        f"`{name}` is exported from `{in_file[hits[0]]}`; changing its signature breaks "
+        "consumers outside the repo.",
+    )
 
 
 def _active_edit_risk(suggestion: RefactoringSuggestion, facts: AnnotationFacts) -> PlanRisk | None:
@@ -346,7 +371,27 @@ async def load_annotation_facts(
         recent=recent,
         dead=dead_spans(dead),
         sources_read=_sources_read(Path(root), _test_files(tests)) if root else {},
+        exported=await _exported_symbols(session, repository_id, files),
     )
+
+
+async def _exported_symbols(
+    session: AsyncSession, repository_id: str, files: Sequence[str]
+) -> dict[str, dict[str, str]]:
+    """Per plan file, its exported symbols and the file exporting each."""
+    out: dict[str, dict[str, str]] = {}
+    for index in range(0, len(files), _BATCH):
+        rows = await session.execute(
+            select(GraphNode.file_path, GraphNode.node_id, GraphNode.public_api).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.file_path.in_(list(files[index : index + _BATCH])),
+                GraphNode.public_api.is_not(None),
+                GraphNode.public_api != "",
+            )
+        )
+        for path, node_id, root in rows:
+            out.setdefault(path, {})[node_id] = root
+    return out
 
 
 def _partners(meta: Any) -> tuple[tuple[str, int], ...]:
