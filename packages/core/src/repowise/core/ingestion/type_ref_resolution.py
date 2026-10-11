@@ -779,19 +779,24 @@ def _ambient_declaration_names(
         if node.type == "ambient_declaration":
             prefix = encoded[node.start_byte : min(node.end_byte, node.start_byte + 40)]
             if re.match(rb"declare\s+global\b", prefix):
-                nested = [node]
-                while nested:
-                    declaration = nested.pop()
-                    name = declaration.child_by_field_name("name")
-                    if name is not None:
-                        type_name = encoded[name.start_byte : name.end_byte].decode(
-                            "utf-8", errors="replace"
-                        )
-                        if type_name in defined_names:
-                            global_names.add(type_name)
-                    nested.extend(declaration.children)
+                global_names |= _declared_names_under(node, encoded, defined_names)
         stack.extend(node.children)
     return global_names
+
+
+def _declared_names_under(node: Any, encoded: bytes, defined_names: set[str]) -> set[str]:
+    """Names in ``defined_names`` declared anywhere under ``node``."""
+    found: set[str] = set()
+    nested = [node]
+    while nested:
+        declaration = nested.pop()
+        name = declaration.child_by_field_name("name")
+        if name is not None:
+            type_name = encoded[name.start_byte : name.end_byte].decode("utf-8", errors="replace")
+            if type_name in defined_names:
+                found.add(type_name)
+        nested.extend(declaration.children)
+    return found
 
 
 def _find_ts_type_in_stem_map(

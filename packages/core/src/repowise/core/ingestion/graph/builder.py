@@ -503,38 +503,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                     imp.resolved_file = targets[0]
                 for target in targets:
                     file_imports.add(target)
-                    # Aggregate imported_names on parallel edges
-                    if self._graph.has_edge(path, target):
-                        existing = self._graph[path][target].get("imported_names", [])
-                        merged = list(set(existing + imp.imported_names))
-                        self._graph[path][target]["imported_names"] = merged
-                        if not imp.is_module_declaration:
-                            withdraw_declaration_hint(self._graph[path][target])
-                        _merge_load_kind(self._graph[path][target], imp)
-                    else:
-                        edge_attrs: dict[str, Any] = {
-                            "edge_type": "imports",
-                            "imported_names": list(imp.imported_names),
-                            "type_only": imp.type_only,
-                        }
-                        if imp.deferred:
-                            edge_attrs["deferred"] = True
-                        # ``external:`` targets are excluded before the
-                        # directory test, not after: an external node id has no
-                        # directory, and a single-segment one such as
-                        # ``external:strings`` yields parent ``"."`` — which is
-                        # exactly _own_dir for any root-level file, so every
-                        # dot-free stdlib import from the repo root would
-                        # otherwise be stamped a same-package sibling.
-                        if (
-                            _unit_fanout
-                            and not target.startswith("external:")
-                            and PurePosixPath(target).parent.as_posix() == _own_dir
-                        ):
-                            edge_attrs["hint_source"] = SAME_PACKAGE_HINT
-                        elif imp.is_module_declaration:
-                            edge_attrs["hint_source"] = MODULE_DECLARATION_HINT
-                        self._graph.add_edge(path, target, **edge_attrs)
+                    self._add_import_edge(path, target, imp, _unit_fanout, _own_dir)
             import_targets[path] = file_imports
             lang_import_time[_lang] = lang_import_time.get(_lang, 0.0) + (_t.monotonic() - _t0)
             if progress:
@@ -554,36 +523,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # edges feed into heritage's import_targets propagation if a
         # future language emits them, and so dead-code reachability
         # sees every edge before any analysis pass runs.
-        if progress:
-            progress.on_phase_start("graph.type_refs", len(self._parsed_files))
-        type_use_counts = resolve_type_refs(self._parsed_files, ctx, self._graph)
-        for path in self._parsed_files:
-            for _, target, data in self._graph.out_edges(path, data=True):
-                # Treat both real ``using`` imports and synthesised
-                # type-use edges as import-like for downstream heritage
-                # / call resolution. Without this, type-use edges would
-                # only contribute to file-reachability — not to
-                # ``import_targets`` which gates cross-file call /
-                # heritage lookups.
-                # ``no_scope_widening`` marks a type-use edge whose target was
-                # inferred (the repo declares that type name in exactly one
-                # file) rather than read off an import the file actually
-                # writes. Such an edge is real evidence the target is used, so
-                # it still counts for file reachability and the unused-export
-                # pass, but it is not evidence that this file's bare names
-                # resolve into the target — feeding it to ``import_targets``
-                # let unrelated same-named symbols match and minted false call
-                # edges (measured on goose: 25% precision on the edges it
-                # gained).
-                if data.get("edge_type") in ("imports", "type_use") and not data.get(
-                    "no_scope_widening"
-                ):
-                    import_targets.setdefault(path, set()).add(target)
-        if progress:
-            _phase_done = getattr(progress, "on_phase_done", None)
-            if _phase_done is not None:
-                _phase_done("graph.type_refs")
-        del type_use_counts  # used only for logging inside resolve_type_refs
+        self._resolve_type_ref_edges(ctx, import_targets, progress=progress)
 
         # --- Phase 1c: Resolve C# member-access reads ---
         # Bind `var x = new T(...); ... x.Prop` style property reads
@@ -686,6 +626,81 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             edge_types=edge_counts,
         )
         return self._graph
+
+    def _add_import_edge(
+        self, path: str, target: str, imp: Any, unit_fanout: bool, own_dir: str
+    ) -> None:
+        """Add or merge the ``imports`` edge ``path -> target`` for *imp*."""
+        # Aggregate imported_names on parallel edges
+        if self._graph.has_edge(path, target):
+            existing = self._graph[path][target].get("imported_names", [])
+            merged = list(set(existing + imp.imported_names))
+            self._graph[path][target]["imported_names"] = merged
+            if not imp.is_module_declaration:
+                withdraw_declaration_hint(self._graph[path][target])
+            _merge_load_kind(self._graph[path][target], imp)
+            return
+        edge_attrs: dict[str, Any] = {
+            "edge_type": "imports",
+            "imported_names": list(imp.imported_names),
+            "type_only": imp.type_only,
+        }
+        if imp.deferred:
+            edge_attrs["deferred"] = True
+        # ``external:`` targets are excluded before the
+        # directory test, not after: an external node id has no
+        # directory, and a single-segment one such as
+        # ``external:strings`` yields parent ``"."`` — which is
+        # exactly own_dir for any root-level file, so every
+        # dot-free stdlib import from the repo root would
+        # otherwise be stamped a same-package sibling.
+        if (
+            unit_fanout
+            and not target.startswith("external:")
+            and PurePosixPath(target).parent.as_posix() == own_dir
+        ):
+            edge_attrs["hint_source"] = SAME_PACKAGE_HINT
+        elif imp.is_module_declaration:
+            edge_attrs["hint_source"] = MODULE_DECLARATION_HINT
+        self._graph.add_edge(path, target, **edge_attrs)
+
+    def _resolve_type_ref_edges(
+        self,
+        ctx: ResolverContext,
+        import_targets: dict[str, set[str]],
+        progress: Any | None = None,
+    ) -> None:
+        """Add type-use edges and widen ``import_targets`` with import-like out-edges."""
+        if progress:
+            progress.on_phase_start("graph.type_refs", len(self._parsed_files))
+        type_use_counts = resolve_type_refs(self._parsed_files, ctx, self._graph)
+        for path in self._parsed_files:
+            for _, target, data in self._graph.out_edges(path, data=True):
+                # Treat both real ``using`` imports and synthesised
+                # type-use edges as import-like for downstream heritage
+                # / call resolution. Without this, type-use edges would
+                # only contribute to file-reachability — not to
+                # ``import_targets`` which gates cross-file call /
+                # heritage lookups.
+                # ``no_scope_widening`` marks a type-use edge whose target was
+                # inferred (the repo declares that type name in exactly one
+                # file) rather than read off an import the file actually
+                # writes. Such an edge is real evidence the target is used, so
+                # it still counts for file reachability and the unused-export
+                # pass, but it is not evidence that this file's bare names
+                # resolve into the target — feeding it to ``import_targets``
+                # let unrelated same-named symbols match and minted false call
+                # edges (measured on goose: 25% precision on the edges it
+                # gained).
+                if data.get("edge_type") in ("imports", "type_use") and not data.get(
+                    "no_scope_widening"
+                ):
+                    import_targets.setdefault(path, set()).add(target)
+        if progress:
+            _phase_done = getattr(progress, "on_phase_done", None)
+            if _phase_done is not None:
+                _phase_done("graph.type_refs")
+        del type_use_counts  # used only for logging inside resolve_type_refs
 
     def graph(self) -> nx.DiGraph:
         """Return the graph (building it first if necessary)."""
