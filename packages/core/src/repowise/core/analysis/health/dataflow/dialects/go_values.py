@@ -163,6 +163,10 @@ def _declared_type(ident: Node, depth: int) -> Node | str | None:
             if any(c.type == "identifier" and c.text == name for c in node.named_children):
                 typ = node.child_by_field_name("type")
                 found.append(typ if typ is not None else _bound_type(node, name, depth))
+        elif t == "variadic_parameter_declaration":
+            # ``p ...T`` is a ``[]T`` inside the function; its ``type`` is ``T``.
+            if any(c.type == "identifier" and c.text == name for c in node.named_children):
+                found.append(_REF)
         elif t == _SHORT_VAR and _binds(node, name):
             found.append(_bound_type(node, name, depth))
         elif t == _RANGE_CLAUSE and _binds(node, name):

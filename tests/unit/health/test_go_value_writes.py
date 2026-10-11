@@ -78,6 +78,10 @@ def _is_read(signature: str, statement: str, before: str = "") -> bool:
 
 def _kind(signature: str, statement: str, before: str = "") -> str:
     """What the dialect makes of the target of the last assignment in ``f``."""
+    return _storage(signature, statement, before)[1]
+
+
+def _storage(signature: str, statement: str, before: str = ""):
     from tree_sitter import Parser
 
     from repowise.core.analysis.health.dataflow.dialects.go_values import storage
@@ -93,7 +97,7 @@ def _kind(signature: str, statement: str, before: str = "") -> str:
         if node.type == "assignment_statement":
             targets.append(node.child_by_field_name("left").named_children[0])
     last = max(targets, key=lambda n: n.start_byte)
-    return storage(last)[1]
+    return storage(last)
 
 
 # (id, parameters, statements before, the write)
@@ -178,6 +182,25 @@ def test_a_write_through_a_reference_is_not(signature, before, statement):
     assert _is_read(signature, "    " + statement, before)
     if not statement.endswith("++"):
         assert _kind(signature, "    " + statement, before) == "reference"
+
+
+@pytest.mark.parametrize(
+    ("signature", "statement"),
+    [
+        pytest.param("v int, p ...P", "p[0].x = 1", id="field-of-an-element"),
+        pytest.param("v int, p ...int", "p[0] = 1", id="element"),
+        pytest.param("p ...[2]Q", "p[0][1].x = 1", id="array-element"),
+    ],
+)
+def test_a_variadic_parameter_is_a_slice(signature, statement):
+    """``p ...T`` is ``[]T`` in the body: the callee and the helper share its
+    backing array. It is a local of the function all the same, and read."""
+    base, kind = _storage(signature, "    " + statement)
+
+    assert kind == "reference"
+    assert base is not None and base.text == b"p"
+    assert not _is_write(signature, "    " + statement)
+    assert _is_read(signature, "    " + statement)
 
 
 _UNKNOWN = [
