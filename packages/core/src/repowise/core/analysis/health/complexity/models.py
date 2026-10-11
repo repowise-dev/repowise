@@ -95,9 +95,10 @@ class FunctionComplexity:
     is_test_case: bool = False
     # Every name called in this function's body, lowercased, **including**
     # nested function bodies -- where it parts company with the counts above,
-    # which stop at one. A function nested inside an already-collected one is
-    # never collected as an entry of its own, so stopping would attribute its
-    # calls to nobody. Empty for a language with no assertion
+    # which stop at one. A nested function has an entry of its own, but a test
+    # that hands an inline helper to something else never calls it by name, so
+    # stopping would put the helper's calls out of the test's reach. Empty for
+    # a language with no assertion
     # vocabulary row, because it rides on that traversal. It answers one
     # question: did this function hand its work to something else in the file?
     called_names: frozenset[str] = frozenset()

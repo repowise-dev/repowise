@@ -265,7 +265,10 @@ A single pass over the parsed file list. For each file the analyzer:
    `FileComplexity` of functions and classes. Each `FunctionComplexity` carries
    name, line range, nloc, ccn, max nesting, cognitive complexity, bumps, and
    param count; each `ClassComplexity` carries method count, total nloc, the
-   method list, LCOM4, max method ccn, and field count.
+   method list, LCOM4, max method ccn, and field count. A function or method
+   defined inside another function has a `FunctionComplexity` of its own: its
+   branches are counted there and not in the function around it. A lambda has
+   none and counts toward the function that holds it.
 2. **Populates symbol complexity** (`_populate_symbol_complexity`): writes
    `max(ccn)` into `Symbol.complexity_estimate` as a side effect, so the
    `ContextAssembler` symbol ranker benefits even when a caller never touches

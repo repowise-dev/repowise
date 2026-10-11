@@ -327,6 +327,15 @@ class LanguageNodeMap:
     #     function's body never meet one.
     misread_scope: Callable[[Node], object] | None = None
 
+    # -- Local bindings ------------------------------------------------------
+    #   * ``local_value`` -- truthy for a ``function_kinds`` node that binds a
+    #     value and not a function (F#: ``let v = ...`` shares its node type
+    #     with ``let f x = ...``). Inside a function such a node is no unit of
+    #     its own, so it gets no entry there. None means every function-kind
+    #     node is a function. Checked only for nodes inside a collected
+    #     function; at module level the node keeps the entry it always had.
+    local_value: Callable[[Node], object] | None = None
+
 
 
 # Scalar type names C and C++ share, Win32's typedefs included because C/C++ on
@@ -1146,12 +1155,25 @@ _PASCAL = LanguageNodeMap(
 # until function kinds can carry a text predicate, no entry and no rows.
 
 
+def _fsharp_binds_a_value(node: Node) -> bool:
+    """``let v = ...`` as opposed to ``let f x = ...``: no parameter list."""
+    return node.type == "function_or_value_defn" and not any(
+        child.type == "function_declaration_left" for child in node.children
+    )
+
+
 # Known undercount, in the walker rather than this map: ``walk_file`` walks the
 # body node's children, so a body that IS one expression loses it and
 # ``let f x = if x > 0 then 1 else 2`` scores 1.
+#
+# A second one: a value bound inside a function (``let v = if a then 1 else
+# 2``) is a ``function_or_value_defn`` like a function, so the enclosing
+# function's walk stops at it, and ``local_value`` keeps it from getting an
+# entry of its own. Its branches are counted nowhere.
 _FSHARP = LanguageNodeMap(
     function_kinds=frozenset({"function_or_value_defn", "member_defn"}),
     lambda_kinds=frozenset(),
+    local_value=_fsharp_binds_a_value,
     branch_kinds=frozenset({"if_expression"}),
     loop_kinds=frozenset({"for_expression", "while_expression"}),
     try_kinds=frozenset({"try_expression"}),

@@ -113,7 +113,15 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp (v39): a Python module named like a test outside every test
+# Current stamp (v40): a function or method defined inside another function has
+# an entry of its own: a nested ``def``, a function expression, a local
+# function, a method of a local or anonymous class. A cached v39 walk has no
+# row for one and counts its branches nowhere, so wherever such a function
+# exists the file's ``max_ccn`` and ``max_nesting``, the function-level findings
+# and a local class's methods (it was stored with none) change. The enclosing
+# function's own row does not, and neither does a file with no nested function.
+#
+# v39: a Python module named like a test outside every test
 # directory is production code when the nearest pytest config's ``testpaths``
 # or ``python_files`` leaves it out (``core/test_selection.py``). Its
 # ``is_test`` flag flips, and the biomarkers and ``has_test_file`` now read that
@@ -394,7 +402,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 39
+HEALTH_ANALYZER_VERSION = 40
 
 
 #: Function facts a finding inside the function carries in its details.
