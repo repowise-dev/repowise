@@ -79,8 +79,9 @@ Plan shape (open dict, no migration):
 - ``plan.anchors`` = ``{"first": str, "last": str}`` -- the exact text the
   span starts and ends with, each unique in the function (``anchors``), so an
   agent finds it by text once earlier edits have moved its lines; every stage
-  carries its own. A plan with a span that cannot be anchored is refused
-  (``span_unanchored``).
+  carries its own. A staged split that cannot be anchored falls back to the
+  function's best single span; when that cannot be either, the function is
+  refused (``span_unanchored``).
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` -- the size and
   complexity (code lines, decision points) the residual method sheds.
 - ``plan.stages`` -- only on a staged plan (``dataflow.stages``): a function
@@ -120,7 +121,7 @@ from ..effort import effort_bucket
 from ..perf.dialects import PERF_DIALECTS
 from ..scoring import severity_deduction
 from . import render
-from .anchors import anchor_plan
+from .anchors import Scope, anchor_plan, file_source, function_scope
 from .declarative import declarative_flat
 from .helper_naming import ScopeNames, helper_names, out_value_name
 from .models import RefactoringContext, RefactoringSuggestion
@@ -186,6 +187,8 @@ class ExtractMethodDetector(RefactoringDetector):
         out: list[RefactoringSuggestion] = []
         names = ScopeNames(lmap)
         dialect = get_defuse_dialect(ctx.language or "")
+        # The file's text, read off the tree once, when the first plan needs it.
+        files: dict[str, Any] = {}
         # Source order, so the first of two colliding plans keeps the name.
         for analysis in sorted(analyses, key=lambda a: (a.start_line, a.end_line)):
             matched = self._findings_for(analysis, ctx.findings)
@@ -207,15 +210,16 @@ class ExtractMethodDetector(RefactoringDetector):
             candidates = find_extractions(analysis, lmap, receiver, prefixes)
             best = _choose(analysis, candidates, markers)
             staged = _staged(analysis, best, lmap, receiver, ctx.language, markers, prefixes)
+            scope = _scope(fn_node, files) if staged is not None or best is not None else None
             if staged is not None:
-                _serve_anchored(
-                    out,
-                    self._staged_suggestion(ctx, analysis, staged, matched, names, receiver),
-                    matched,
-                    fn_node,
-                )
-                continue
+                split = self._staged_suggestion(ctx, analysis, staged, matched, names, receiver)
+                if anchor_plan(split.plan, scope):
+                    out.append(split)
+                    continue
             if best is None:
+                # Nothing to fall back to from a split no text anchors.
+                if staged is not None:
+                    _mark_refused(matched, "span_unanchored")
                 continue
             impact, share, source = self._impact_for(analysis, best, matched)
             name = render.private_name(
@@ -262,7 +266,7 @@ class ExtractMethodDetector(RefactoringDetector):
                     source_biomarker=source,
                 ),
                 matched,
-                fn_node,
+                scope,
             )
 
         # Stable order: biggest recovery first, then symbol, then span start.
@@ -366,15 +370,22 @@ def _mark_refused(findings: list[Any], reason: str) -> None:
             details[REFUSED_DETAIL] = reason
 
 
+def _scope(fn_node: Any, files: dict[str, Any]) -> Scope | None:
+    """*fn_node*'s lines in its file, the file read once per detect call."""
+    if "source" not in files and fn_node is not None:
+        files["source"] = file_source(fn_node)
+    return function_scope(fn_node, files.get("source"))
+
+
 def _serve_anchored(
     out: list[RefactoringSuggestion],
     suggestion: RefactoringSuggestion,
     findings: list[Any],
-    fn_node: Any,
+    scope: Scope | None,
 ) -> None:
     """Serve *suggestion* only when every span in it is anchored by its text
     (``anchors``); one that is not is refused, never served by line alone."""
-    if anchor_plan(suggestion.plan, fn_node):
+    if anchor_plan(suggestion.plan, scope):
         out.append(suggestion)
     else:
         _mark_refused(findings, "span_unanchored")

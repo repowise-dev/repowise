@@ -5,40 +5,74 @@ number, stage after stage, moves every later span. An anchor is the exact
 text the span starts with and the text it ends with, so a string-matching
 edit finds the span wherever it has moved to; the line numbers stay as a hint.
 
-``first`` is the span's first line, ``last`` its last, each without its line
-ending (a CRLF file's ``\\r`` dropped) and with its indentation as written.
-When that line also occurs elsewhere in the function, the anchor grows by the
-next line in (``first``) or the line before (``last``) until it occurs exactly
-once in the function, within :data:`MAX_ANCHOR_LINES` lines that hold a word
-(a run of closing brackets or a blank line does not count); lines are joined
-with ``\\n``. Occurrences are counted as substrings, the way a
-string-matching edit sees them. A span that no snippet that short anchors
-gets none, and its plan is refused (``extract_method``): a stage served with
-line numbers alone is the one that gets scripted over the file.
+``first`` is the span's first line, ``last`` its last, with indentation as
+written and no trailing line ending. When that line also occurs elsewhere,
+the anchor grows by the next line in (``first``) or the line before
+(``last``), within :data:`MAX_ANCHOR_LINES` lines that hold a word (a run of
+closing brackets or a blank line does not count). A multi-line anchor keeps
+the file's own line endings, so it matches the bytes on disk, CRLF included.
+Occurrences are counted as substrings, the way a string-matching edit sees
+them.
+
+An anchor unique in the whole file is preferred (``unique_in: "file"``); one
+unique only inside the function (``"function"``) is kept, and the plan says
+the edit must stay inside its host. A span with no anchor unique even in the
+function gets none, and its plan is refused (``extract_method``): a stage
+served with line numbers alone is the one that gets scripted over the file.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, NamedTuple, get_args
 
 #: The longest anchor, in lines holding a word. A span whose ends repeat for
 #: longer is a copied block, which a text match cannot tell apart from its twin.
 MAX_ANCHOR_LINES = 4
 
+AnchorScope = Literal["file", "function"]
+#: Where an anchor is unique (``unique_in``), mirrored in ``packages/types``.
+ANCHOR_SCOPES: tuple[str, ...] = get_args(AnchorScope)
 
-def function_lines(fn_node: Any) -> tuple[int, list[str]] | None:
-    """The function's whole lines (its first line from column 0) and the line
-    number of the first, or None without the parsed source."""
+
+class Source(NamedTuple):
+    """One file's text as written and its lines, each still ending in ``\\r``
+    in a CRLF file, so joining them with ``\\n`` gives the text back."""
+
+    text: str
+    rows: list[str]
+
+
+class Scope(NamedTuple):
+    """The function a span lives in: its file, first and last line, and text."""
+
+    source: Source
+    start: int
+    end: int
+    text: str
+
+
+def file_source(fn_node: Any) -> Source | None:
+    """The file *fn_node* was parsed from, or None without its source."""
     root = fn_node
     while root.parent is not None:
         root = root.parent
     src = root.text
     if not src:
         return None
-    lo = src.rfind(b"\n", 0, fn_node.start_byte) + 1
-    hi = src.find(b"\n", fn_node.end_byte)
-    region = src[lo : len(src) if hi < 0 else hi].decode("utf-8", errors="replace")
-    return fn_node.start_point[0] + 1, [line.removesuffix("\r") for line in region.split("\n")]
+    # The root starts at the first token: put back the blank lines above it so
+    # rows line up with line numbers (what it skipped is whitespace only).
+    row, column = root.start_point
+    text = "\n" * row + " " * column + src.decode("utf-8", errors="replace")
+    return Source(text, text.split("\n"))
+
+
+def function_scope(fn_node: Any, source: Source | None) -> Scope | None:
+    """The function's whole lines (its first from column 0) in *source*, or
+    None without a parsed function or its source."""
+    if fn_node is None or source is None:
+        return None
+    start, end = fn_node.start_point[0] + 1, fn_node.end_point[0] + 1
+    return Scope(source, start, end, "\n".join(source.rows[start - 1 : end]))
 
 
 def occurrences(text: str, snippet: str) -> int:
@@ -62,36 +96,45 @@ def _grown(rows: list[str]) -> list[list[str]]:
     return out
 
 
-def _unique(body: str, snippets: list[str]) -> str | None:
-    return next((s for s in snippets if s.strip() and occurrences(body, s) == 1), None)
+def _snippet(run: list[str]) -> str:
+    # The rows keep a CRLF file's ``\r``; only the snippet's own end drops it.
+    return "\n".join(run).removesuffix("\r")
 
 
-def span_anchors(lines: tuple[int, list[str]], start: int, end: int) -> dict[str, str] | None:
-    """``{"first", "last"}`` for lines *start*..*end* of the function *lines*
-    (:func:`function_lines`), or None when either end has no unique anchor."""
-    base, rows = lines
-    s, e = start - base, end - base
-    if not 0 <= s <= e < len(rows):
+def _pick(scope: Scope, snippets: list[str]) -> tuple[str, str] | None:
+    """The shortest snippet unique in the file, else in the function, with
+    where it is unique; None when none is."""
+    snippets = [s for s in snippets if s.strip()]
+    for where, text in (("file", scope.source.text), ("function", scope.text)):
+        found = next((s for s in snippets if occurrences(text, s) == 1), None)
+        if found is not None:
+            return found, where
+    return None
+
+
+def span_anchors(scope: Scope, start: int, end: int) -> dict[str, str] | None:
+    """``{"first", "last", "unique_in"}`` for lines *start*..*end* of *scope*,
+    or None when either end has no anchor unique in the function."""
+    if not scope.start <= start <= end <= scope.end:
         return None
-    body = "\n".join(rows)
-    span = rows[s : e + 1]
-    first = _unique(body, ["\n".join(run) for run in _grown(span)])
+    span = scope.source.rows[start - 1 : end]
+    first = _pick(scope, [_snippet(run) for run in _grown(span)])
     # The last anchor grows upward: grow the reversed span, then restore the order.
-    last = _unique(body, ["\n".join(reversed(run)) for run in _grown(span[::-1])])
+    last = _pick(scope, [_snippet(run[::-1]) for run in _grown(span[::-1])])
     if first is None or last is None:
         return None
-    return {"first": first, "last": last}
+    unique_in = "file" if first[1] == last[1] == "file" else "function"
+    return {"first": first[0], "last": last[0], "unique_in": unique_in}
 
 
-def anchor_plan(plan: dict[str, Any], fn_node: Any) -> bool:
+def anchor_plan(plan: dict[str, Any], scope: Scope | None) -> bool:
     """Give *plan*'s span and every stage's their ``anchors``, in place.
     False, with *plan* left as it was, when any of them cannot be anchored."""
-    lines = function_lines(fn_node) if fn_node is not None else None
     targets = [plan, *(plan.get("stages") or [])]
     found = []
     for target in targets:
         span = target.get("span") or {}
-        anchors = span_anchors(lines, span["start"], span["end"]) if lines and span else None
+        anchors = span_anchors(scope, span["start"], span["end"]) if scope and span else None
         if anchors is None:
             return False
         found.append(anchors)
@@ -100,4 +143,15 @@ def anchor_plan(plan: dict[str, Any], fn_node: Any) -> bool:
     return True
 
 
-__all__ = ["MAX_ANCHOR_LINES", "anchor_plan", "function_lines", "occurrences", "span_anchors"]
+__all__ = [
+    "ANCHOR_SCOPES",
+    "MAX_ANCHOR_LINES",
+    "AnchorScope",
+    "Scope",
+    "Source",
+    "anchor_plan",
+    "file_source",
+    "function_scope",
+    "occurrences",
+    "span_anchors",
+]

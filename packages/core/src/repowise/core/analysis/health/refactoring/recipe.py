@@ -209,10 +209,15 @@ def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
 
 
 def _anchors(value: Any) -> dict[str, str] | None:
-    """A span's text anchors (``refactoring.anchors``), None on an older row."""
+    """A span's text anchors (``refactoring.anchors``), None on an older row.
+    ``unique_in`` is ``"function"`` when the text also occurs elsewhere in the
+    file, so a text match must stay inside the host."""
     anchors = _dict(value)
     first, last = anchors.get("first"), anchors.get("last")
-    return {"first": first, "last": last} if isinstance(first, str) and isinstance(last, str) else None
+    if not (isinstance(first, str) and isinstance(last, str)):
+        return None
+    unique_in = "function" if anchors.get("unique_in") == "function" else "file"
+    return {"first": first, "last": last, "unique_in": unique_in}
 
 
 def _extract_notes(
@@ -575,6 +580,23 @@ def _postconditions(d: Mapping[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+#: How an Extract Method edit is made, read after "Do not" like ``does_not``.
+#: The UI's fallback renderers repeat these words (a parity test holds them).
+SCRIPT_RULE: dict[str, str | None] = {
+    "constraint": "generate a script that rewrites the file",
+    "reason": "make each edit directly in the file, one at a time, re-reading the span after each",
+}
+#: Said under a step whose anchors are unique only inside its function.
+ELSEWHERE_NOTE = (
+    "This text also appears elsewhere in the file: keep the edit inside the function this "
+    "step names."
+)
+LINE_RULE: dict[str, str | None] = {
+    "constraint": "find a span by its line numbers",
+    "reason": "they are where it was when planned and move with every edit; match its first "
+    "and last lines",
+}
+
 #: Per type, what the edit must not do and, when it is not obvious, why.
 _DOES_NOT: dict[str, tuple[str, str | None]] = {
     "extract_helper": ("merge sites that differ", "a difference between them becomes a parameter"),
@@ -625,24 +647,12 @@ def _extract_does_not(
     )
     anchored = any(s.get("anchors") for s in steps)
     where = f"the lines the steps move (lines {lines} when planned)" if anchored else f"lines {lines}"
-    edit = (
-        "make each stage as a direct edit to the file, one stage at a time, and re-read the "
-        "span after each stage"
-        if staged
-        else "make the edit directly in the file and re-read the span after it"
-    )
     out: list[dict[str, str | None]] = [
         {"constraint": f"touch anything outside {where} and {added}", "reason": None},
-        {"constraint": "generate a script that rewrites the file", "reason": edit},
+        dict(SCRIPT_RULE),
     ]
     if anchored:
-        out.append(
-            {
-                "constraint": "find a span by its line numbers",
-                "reason": "they are where it was when planned and move with every edit; match "
-                "its first and last lines",
-            }
-        )
+        out.append(dict(LINE_RULE))
     return out
 
 
@@ -671,8 +681,11 @@ def build_recipe(detail: Mapping[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "ELSEWHERE_NOTE",
+    "LINE_RULE",
     "PRECONDITION_KINDS",
     "RECIPE_ACTIONS",
+    "SCRIPT_RULE",
     "TYPE_LABEL",
     "RecipeAction",
     "build_recipe",

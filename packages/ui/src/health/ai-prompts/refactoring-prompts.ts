@@ -9,8 +9,10 @@ import type {
 import { planBlurb, typeMeta } from "../../refactoring/meta";
 import { blastFiles } from "../../refactoring/types";
 import {
+  LINE_RULE_TEXT,
   planSourceLink,
   refactoringPlanSteps,
+  SCRIPT_RULE_TEXT,
   verifySubject,
 } from "./refactoring-plan-steps";
 import {
@@ -383,7 +385,8 @@ export function buildRefactoringOpportunityPrompt({
       ? "Where a step says to locate its symbol again, do that before touching it: an earlier step moves it, so the recorded path and lines go stale mid-run."
       : null,
     "A step marked Judgment has an unproven obligation. Read the real code and decide before applying it; do not treat it like a mechanical one.",
-    "Make each step a direct edit to the file, one at a time, and re-read what it changed before the next; do not generate a script that rewrites the file. Where a step shows its span's first and last lines, find the span by them, not by its line numbers.",
+    SCRIPT_RULE_TEXT,
+    LINE_RULE_TEXT,
     "Run the project's tests (and type-checker/linter) after the change; the suite must stay green.",
     "If, after reading the real code, a step looks wrong or unsafe, stop and explain why instead of forcing it — the detection is static and can be a false positive.",
     others.length > 0 ? `Keep these co-affected files consistent: ${codeList(others)}.` : null,

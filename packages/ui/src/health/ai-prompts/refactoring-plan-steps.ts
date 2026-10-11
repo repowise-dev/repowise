@@ -62,16 +62,35 @@ function extractHelperSteps(plan: RefactoringPlan): string {
   ].join("\n");
 }
 
+/** How an Extract Method edit is made. Core's recipe says the same words
+ *  (`recipe.SCRIPT_RULE`, `LINE_RULE`, `ELSEWHERE_NOTE`; a parity test holds them). */
+export const SCRIPT_RULE_TEXT =
+  "Do not generate a script that rewrites the file. Make each edit directly in the file, one at a time, re-reading the span after each.";
+export const LINE_RULE_TEXT =
+  "Do not find a span by its line numbers. They are where it was when planned and move with every edit; match its first and last lines.";
+const ELSEWHERE_NOTE =
+  "This text also appears elsewhere in the file: keep the edit inside the function this step names.";
+
+interface SpanAnchors {
+  first: string;
+  last: string;
+  /** "function": the text also occurs elsewhere in the file. */
+  unique_in: "file" | "function";
+}
+
 /** The span's first and last lines as core serves them (`plan.anchors`), or
  *  null on a plan stored before them. Never computed here. */
-function spanAnchors(plan: RefactoringPlan): { first: string; last: string } | null {
+function spanAnchors(plan: RefactoringPlan): SpanAnchors | null {
   const raw = ((plan.plan ?? {}) as Record<string, unknown>).anchors as
     | Record<string, unknown>
     | null
     | undefined;
-  return raw && typeof raw.first === "string" && typeof raw.last === "string"
-    ? { first: raw.first, last: raw.last }
-    : null;
+  if (!raw || typeof raw.first !== "string" || typeof raw.last !== "string") return null;
+  return {
+    first: raw.first,
+    last: raw.last,
+    unique_in: raw.unique_in === "function" ? "function" : "file",
+  };
 }
 
 /** *text* fenced at column 0, so its indentation reads exactly as the file has it. */
@@ -96,6 +115,7 @@ function extractMethodSteps(plan: RefactoringPlan): string {
           ...fenced(anchors.first),
           "- **The span ends with:**",
           ...fenced(anchors.last),
+          ...(anchors.unique_in === "function" ? [`- ${ELSEWHERE_NOTE}`] : []),
         ]
       : []),
     ...(em.signature_text ? [`- **New helper:** \`${em.signature_text}\``] : []),
@@ -122,9 +142,7 @@ function extractMethodSteps(plan: RefactoringPlan): string {
       : []),
     "",
     "Move exactly those lines into the new helper in the same scope, pass the parameters above, return the value(s) above, and replace the original lines with a single call to it. Preserve behavior exactly: change nothing outside the span and that one call site.",
-    anchors
-      ? "Make the edit directly in the file and re-read the span after it; do not generate a script that rewrites the file. Find the span by its first and last lines, not its line numbers, which move with every edit."
-      : "Make the edit directly in the file and re-read the span after it; do not generate a script that rewrites the file.",
+    anchors ? `${SCRIPT_RULE_TEXT} ${LINE_RULE_TEXT}` : SCRIPT_RULE_TEXT,
   ].join("\n");
 }
 

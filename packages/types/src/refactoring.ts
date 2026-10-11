@@ -211,6 +211,10 @@ export type RecipePreconditionKind =
   | "unchecked"
   | "kind_unaudited";
 
+/** Where an Extract Method anchor is unique: the whole file, or only inside
+ *  its function (a text match must then stay inside the host). */
+export type AnchorScope = "file" | "function";
+
 export interface RecipeStep {
   n: number;
   action: RecipeAction;
@@ -232,9 +236,9 @@ export interface RecipeStep {
     notes: string[];
   };
   call_site?: ExtractCallSite;
-  /** Extract Method: the exact text the span starts and ends with, each
-   *  unique in the function, so the step is found by text, not line. */
-  anchors?: { first: string; last: string };
+  /** Extract Method: the exact text the span starts and ends with, so the
+   *  step is found by text, not line. */
+  anchors?: { first: string; last: string; unique_in: AnchorScope };
   symbols?: string[];
   to_file?: string | null;
   /** Extract Helper: the directory the shared helper belongs in. */

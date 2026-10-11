@@ -7,11 +7,18 @@ read. Takes the wire dicts the REST and MCP detail calls already serve.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from typing import Any
 
-from repowise.core.analysis.health.refactoring.recipe import build_recipe, label, verify_check
+from repowise.core.analysis.health.refactoring.recipe import (
+    ELSEWHERE_NOTE,
+    LINE_RULE,
+    SCRIPT_RULE,
+    build_recipe,
+    label,
+    verify_check,
+)
+from repowise.core.ci.markdown import longest_backtick_run
 
 from .preamble import preamble
 from .sections import bullet_list, closing_sections, join_sections, repo_suffix
@@ -75,9 +82,10 @@ def _anchor_lines(step: Mapping[str, Any], pad: str) -> list[str]:
         return []
     out = []
     for edge, text in (("starts", anchors["first"]), ("ends", anchors["last"])):
-        ticks = max((len(run) for run in re.findall(r"`+", text)), default=0)
-        fence = "`" * max(3, ticks + 1)
+        fence = "`" * max(3, longest_backtick_run(text) + 1)
         out += [f"{pad}   - The span {edge} with:", fence, text, fence]
+    if anchors.get("unique_in") == "function":
+        out.append(f"{pad}   - {ELSEWHERE_NOTE}")
     return out
 
 
@@ -131,13 +139,14 @@ def _before_section(recipe: Mapping[str, Any]) -> str:
     return join_sections(["## Before you edit", "", bullet_list(pre), ""])
 
 
+def _rule(item: Mapping[str, Any]) -> str:
+    reason = item.get("reason")
+    tail = f" {reason[0].upper()}{reason[1:]}." if reason else ""
+    return f"**Do not {item['constraint']}.**{tail}"
+
+
 def _does_not(recipe: Mapping[str, Any]) -> list[str]:
-    out = []
-    for item in recipe["does_not"]:
-        reason = item.get("reason")
-        tail = f" {reason[0].upper()}{reason[1:]}." if reason else ""
-        out.append(f"**Do not {item['constraint']}.**{tail}")
-    return out
+    return [_rule(item) for item in recipe["does_not"]]
 
 
 #: The heading an advisory plan's steps sit under, unnumbered.
@@ -401,9 +410,8 @@ def _opportunity_handoff(o: Mapping[str, Any], flavor: str) -> str:
 _OPPORTUNITY_CONSTRAINTS = (
     "**Apply the steps in the order given.** It is dependency-safe; reordering it is not.",
     "**Read a judgment step's code before applying it.** Its obligation is unproven.",
-    "**Make each step a direct edit to the file, one at a time.** Re-read what it changed "
-    "before the next; do not generate a script that rewrites the file. Where a step shows "
-    "its span's first and last lines, find the span by them, not by its line numbers.",
+    _rule(SCRIPT_RULE),
+    _rule(LINE_RULE),
     "**Keep behaviour.** Run the tests (and type-checker / linter) before and after.",
     *_CONSTRAINTS,
 )

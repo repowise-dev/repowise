@@ -7,6 +7,10 @@ import { describe, expect, it } from "vitest";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 import { buildRefactoringPlanPrompt } from "../../src/health/ai-prompt-builder";
+import {
+  LINE_RULE_TEXT,
+  SCRIPT_RULE_TEXT,
+} from "../../src/health/ai-prompts/refactoring-plan-steps";
 
 const TOOLS = /\b(Read|Grep|Glob|Edit|Write|TodoWrite|Bash|str_replace)\b/;
 
@@ -53,8 +57,17 @@ describe("Extract Method anchors", () => {
     );
     expect(prompt).toContain("- **Replace the span with:** `total = _sum_rows(rows)`");
     expect(prompt).not.toContain("Replace lines");
-    expect(prompt).toContain("do not generate a script that rewrites the file");
-    expect(prompt).toContain("not its line numbers");
+    expect(prompt).toContain(`${SCRIPT_RULE_TEXT} ${LINE_RULE_TEXT}`);
+    expect(prompt).not.toContain("appears elsewhere in the file");
+  });
+
+  it("says when the anchor text also appears elsewhere in the file", () => {
+    const prompt = buildRefactoringPlanPrompt({
+      plan: plan({ anchors: { first: "    a = 1", last: "    b = 2", unique_in: "function" } }),
+    });
+    expect(prompt).toContain(
+      "```\n    b = 2\n```\n- This text also appears elsewhere in the file: keep the edit inside the function this step names.",
+    );
   });
 
   it("widens the fence past a backtick run in the anchor", () => {
@@ -68,7 +81,8 @@ describe("Extract Method anchors", () => {
     const prompt = buildRefactoringPlanPrompt({ plan: plan() });
     expect(prompt).toContain("Extract lines 120–140 of `walk_file`");
     expect(prompt).toContain("- **Replace lines 120–140 with:** `total = _sum_rows(rows)`");
-    expect(prompt).toContain("do not generate a script that rewrites the file");
+    expect(prompt).toContain(SCRIPT_RULE_TEXT);
+    expect(prompt).not.toContain(LINE_RULE_TEXT);
   });
 
   it("names no harness tool in the steps it renders", () => {
