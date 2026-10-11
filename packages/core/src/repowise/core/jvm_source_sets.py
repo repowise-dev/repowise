@@ -234,19 +234,35 @@ def jvm_source_sets(
 ) -> JvmSourceSets:
     """Build from (config path, rule) pairs.
 
-    The highest-precedence build file in each directory wins.
-    unreadable are the paths of build files that failed to parse.
+    The highest-precedence build file in each directory wins. If an unreadable or
+    dynamic build file has higher or equal precedence than any parsed build file
+    in the same directory, that directory fails closed (marked unreadable).
     """
     chosen: dict[str, tuple[int, _SourceSetRule]] = {}
     for path, rule in configs:
         p = PurePosixPath(path)
-        key = "" if str(p.parent) == "." else str(p.parent)
+        key = _dir_key(p)
         rank = _PRECEDENCE.get(p.name, len(_PRECEDENCE))
         if key not in chosen or rank < chosen[key][0]:
             chosen[key] = (rank, rule)
+
+    unreadable_ranks: dict[str, int] = {}
+    for path in unreadable:
+        p = PurePosixPath(path)
+        key = _dir_key(p)
+        rank = _PRECEDENCE.get(p.name, len(_PRECEDENCE))
+        if key not in unreadable_ranks or rank < unreadable_ranks[key]:
+            unreadable_ranks[key] = rank
+
+    unreadable_dirs: set[str] = set()
+    for key, unreadable_rank in unreadable_ranks.items():
+        if key not in chosen or unreadable_rank <= chosen[key][0]:
+            unreadable_dirs.add(key)
+            chosen.pop(key, None)
+
     return JvmSourceSets(
         by_dir={key: rule for key, (_, rule) in chosen.items()},
-        unreadable=frozenset(_dir_key(PurePosixPath(u)) for u in unreadable),
+        unreadable=frozenset(unreadable_dirs),
     )
 
 

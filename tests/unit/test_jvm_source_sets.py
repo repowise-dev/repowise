@@ -148,3 +148,37 @@ def test_nearest_governing_build_file_precedence() -> None:
     # Other modules governed by root build.gradle.kts follow standard conventions
     assert roots.collects("util/src/main/java/com/example/MyTest.java") is False
     assert roots.collects("util/src/test/java/com/example/MyTest.java") is True
+
+
+def test_valid_higher_precedence_shadows_unreadable_lower_precedence() -> None:
+    valid_gradle_kts = "// standard gradle build\n"
+    unreadable_pom = "<project><build><sourceDirectory>${dynamic.dir}</sourceDirectory></build></project>"
+
+    roots = read_jvm_source_sets([
+        ("build.gradle.kts", valid_gradle_kts),
+        ("pom.xml", unreadable_pom),
+    ])
+
+    # The higher-precedence valid build.gradle.kts wins; unreadable pom.xml is shadowed
+    assert roots.collects("src/main/kotlin/com/example/App.kt") is False
+    assert roots.collects("src/test/kotlin/com/example/AppTest.kt") is True
+
+
+def test_unreadable_higher_precedence_invalidates_directory() -> None:
+    dynamic_gradle_kts = """
+    sourceSets {
+        main {
+            java { srcDir layout.buildDirectory.dir("generated") }
+        }
+    }
+    """
+    valid_pom = "<project></project>"
+
+    roots = read_jvm_source_sets([
+        ("build.gradle.kts", dynamic_gradle_kts),
+        ("pom.xml", valid_pom),
+    ])
+
+    # The higher-precedence build.gradle.kts is unreadable, so directory fails closed
+    assert roots.collects("src/main/java/com/example/App.java") is None
+
