@@ -65,6 +65,9 @@ _MAX_CANDIDATES = 4000
 # nearly all of those at 0.8 or more left only such a shell. The span offered
 # instead may be the same block minus a statement, just under the cut.
 _MAX_BODY_SHARE = 0.75
+# Python's declarations that a name in the function is the module's or an
+# enclosing function's, not a local.
+_OUTER_DECL_KINDS = frozenset({"global_statement", "nonlocal_statement"})
 
 
 @dataclass(frozen=True)
@@ -190,6 +193,7 @@ def find_extractions(
     hoisted = _hoisted_bindings(def_lines, use_lines)
     decl_lines = _declaration_lines(analysis.def_use)
     shared = _closure_state(analysis.def_use, def_lines, use_lines)
+    outer = _outer_bindings(fn_node, lmap)
     scan = _scan_for(lmap, receiver, fn_node)
     scope_kinds = scan.scopes
     free_writes = _free_write_lines(analysis.def_use) if receiver and receiver.implicit else []
@@ -257,6 +261,8 @@ def find_extractions(
                 ):
                     continue
                 if pre.nested[j + 1] > pre.nested[i]:
+                    continue
+                if outer and _outer_write_escapes(s, e, outer, def_lines):
                     continue
                 if shared is not None and _closure_state_crosses(shared, span, s, e, block, lmap):
                     continue
@@ -963,6 +969,42 @@ def _declaration_escapes(
         and _needed_after(var, e, declared, def_lines, use_lines, declared_first)
         for var, declared in decl_lines.items()
     )
+
+
+def _outer_bindings(fn_node: Node, lmap: LanguageNodeMap) -> dict[str, frozenset[int]]:
+    """Per name the function declares ``global`` / ``nonlocal`` in its own
+    scope, the declaring lines. A text test first: most functions have none."""
+    text = fn_node.text or b""
+    if b"global" not in text and b"nonlocal" not in text:
+        return {}
+    body = fn_node.child_by_field_name("body")
+    nested = lmap.function_kinds | lmap.lambda_kinds | lmap.class_kinds
+    lines: dict[str, set[int]] = defaultdict(set)
+    stack = [body] if body is not None else []
+    while stack:
+        node = stack.pop()
+        if node.type in _OUTER_DECL_KINDS:
+            for name in node.named_children:
+                lines[(name.text or b"").decode("utf-8", "replace")].add(node.start_point[0] + 1)
+        elif node.type not in nested:
+            stack.extend(node.named_children)
+    return {var: frozenset(found) for var, found in lines.items()}
+
+
+def _outer_write_escapes(
+    s: int, e: int, outer: dict[str, frozenset[int]], def_lines: dict[str, list[int]]
+) -> bool:
+    """True when the span writes a ``global`` / ``nonlocal`` name it cannot
+    take its declaration along for: one declared outside the span, or also
+    written outside it. In a helper without the declaration the write binds a
+    local and the module value never changes."""
+    for var, declared in outer.items():
+        writes = def_lines.get(var, ())
+        if not any(s <= ln <= e for ln in writes):
+            continue
+        if any(not s <= ln <= e for ln in (*declared, *writes)):
+            return True
+    return False
 
 
 def _needed_after(

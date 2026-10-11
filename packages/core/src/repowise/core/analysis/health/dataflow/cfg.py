@@ -552,6 +552,9 @@ class _CFGBuilder:
         for handler in (c for c in try_node.children if c.type in self.lmap.catch_kinds):
             first = len(self.blocks)
             handler_entry = self._new("handler")
+            # The clause head (``except E as e:``) reads the exception type and
+            # binds its name; the dialect says which (``handler_def_use``).
+            self._record_head(handler_entry, handler)
             self._protect(cur, protected, handler_entry)
             handler_out = self._process_seq(
                 self._body_stmts(self._block_of(handler)), handler_entry

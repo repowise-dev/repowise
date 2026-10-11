@@ -69,6 +69,8 @@ from .slice import (
     _hoisted_bindings,
     _identifiers,
     _infer_in_out,
+    _outer_bindings,
+    _outer_write_escapes,
     _Prefix,
     _reads_observing,
     _receiver_facts,
@@ -156,7 +158,7 @@ def find_stages(
     if body is None:
         return StagePlan(reason="no_tree")
     blocks = _Blocks(analysis, lmap, receiver, prefixes if prefixes is not None else {})
-    facts = _FunctionFacts(analysis)
+    facts = _FunctionFacts(analysis, lmap)
     first: StagePlan | None = None
     best: StagePlan | None = None
     for block, loops in _descent(_unwrap_container(body, lmap.block_kinds), blocks, lmap):
@@ -304,7 +306,7 @@ def _arms(st: Node, lmap: LanguageNodeMap) -> list[Node]:
 class _FunctionFacts:
     """The per-function facts every block's cut reads, built once."""
 
-    def __init__(self, analysis: FunctionAnalysis) -> None:
+    def __init__(self, analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> None:
         self.analysis = analysis
         def_use = analysis.def_use
         self.def_lines, self.use_lines = _var_lines(def_use)
@@ -312,6 +314,8 @@ class _FunctionFacts:
         self.hoisted = _hoisted_bindings(self.def_lines, self.use_lines)
         self.decl_lines = _declaration_lines(def_use)
         self.shared = _closure_state(def_use, self.def_lines, self.use_lines)
+        self.outer = _outer_bindings(analysis.fn_node, lmap)
+        self.arm_writes = _arm_writes(analysis, lmap)
         self.reads = _reads_observing(analysis, self.def_lines)
         self.assigned = DefiniteAssignment(analysis)
         self.inner_bindings = _inner_bindings(def_use)
@@ -342,7 +346,7 @@ class _Cutter:
         self.declared_first = facts.declared_first
         self.hoisted = facts.hoisted
         self.decl_lines = facts.decl_lines
-        self.shared = facts.shared
+        self.shared, self.outer, self.arm_writes = facts.shared, facts.outer, facts.arm_writes
         self.reads = facts.reads
         self.pre = pre
         self._assigns: dict[tuple[int, str], bool] = {}
@@ -428,6 +432,8 @@ class _Cutter:
             return None
         if not self._signature_holds(span, s, e, returns) or self._guard_needed_after(i, j, e):
             return None
+        if self.arm_writes and self._arm_write_crosses(s, e, params):
+            return None
         pre = self.pre
         uses, assigns = _receiver_facts(self.receiver, pre, i, j, 0)
         return Extraction(
@@ -486,9 +492,12 @@ class _Cutter:
 
     def _signature_holds(self, span: list[Node], s: int, e: int, returns: tuple[str, ...]) -> bool:
         """The single-span slicer's own refusals: a hoisted binding, a
-        declaration the code after the stage still needs, a local a closure
-        shares across the stage's edge."""
+        declaration the code after the stage still needs, a ``global`` write
+        that cannot take its declaration along, a local a closure shares
+        across the stage's edge."""
         if any(s <= first_def <= e and first_use < s for first_def, first_use in self.hoisted):
+            return False
+        if self.outer and _outer_write_escapes(s, e, self.outer, self.def_lines):
             return False
         if _declaration_escapes(
             s, e, returns, self.decl_lines, self.def_lines, self.use_lines, self.declared_first
@@ -497,6 +506,23 @@ class _Cutter:
         return self.shared is None or not _closure_state_crosses(
             self.shared, span, s, e, self.block, self.lmap
         )
+
+    def _arm_write_crosses(self, s: int, e: int, params: tuple[str, ...]) -> bool:
+        """Whether a ``switch`` / ``match`` arm's write can decide the
+        stage's interface. The CFG does not split arms, so liveness takes the
+        write as certain: a read after it would miss the value from before
+        it. Refused when the arm sits in the stage and the stage reads the
+        name after it, or sits outside and the stage takes or writes it."""
+        for lo, hi, names in self.arm_writes:
+            if s <= lo and hi <= e:
+                reads = (ln for v in names for ln in self.use_lines.get(v, ()))
+                if any(hi < ln <= e for ln in reads):
+                    return True
+            elif names & set(params) or any(
+                s <= ln <= e for v in names for ln in self.def_lines.get(v, ())
+            ):
+                return True
+        return False
 
     def _with_inouts(
         self, i: int, j: int, s: int, params: tuple[str, ...], returns: tuple[str, ...]
@@ -560,6 +586,35 @@ def _rereads(analysis: FunctionAnalysis) -> frozenset[str]:
                 ):
                     out.add(d.var)
     return frozenset(out)
+
+
+def _arm_writes(
+    analysis: FunctionAnalysis, lmap: LanguageNodeMap
+) -> tuple[tuple[int, int, frozenset[str]], ...]:
+    """Per ``switch`` / ``match`` statement in the function's own scope, its
+    lines and the names an arm writes without declaring them. A text test
+    first: most functions hold none."""
+    fn = analysis.fn_node
+    text = (fn.text if fn is not None else None) or b""
+    if not lmap.switch_kinds or (b"switch" not in text and b"match" not in text):
+        return ()
+    nested = lmap.function_kinds | lmap.lambda_kinds | lmap.class_kinds
+    found: list[tuple[int, int]] = []
+    stack = [fn.child_by_field_name("body")]
+    while stack:
+        node = stack.pop()
+        if node is None or node.type in nested:
+            continue
+        if node.type in lmap.switch_kinds:
+            found.append((node.start_point[0] + 1, node.end_point[0] + 1))
+        stack.extend(node.named_children)
+    defs = analysis.def_use.definitions
+    out = []
+    for lo, hi in found:
+        names = frozenset(d.var for d in defs if lo <= d.line <= hi and not d.declares)
+        if names:
+            out.append((lo, hi, names))
+    return tuple(out)
 
 
 def _holds_line(node: Node, lines: list[int]) -> bool:

@@ -453,6 +453,12 @@ class BaseDefUseDialect:
         Default: none (a language with no override seeds no parameters)."""
         return ()
 
+    def handler_def_use(self, handler: Node) -> StatementDefUse:
+        """What an exception handler's head reads and binds (the CFG records
+        it as the handler block's first statement). Default: nothing, the
+        reading every language had before handler heads were recorded."""
+        return StatementDefUse(defs=(), uses=())
+
     def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """The instance *fn_node* runs on (:class:`Receiver`), ``NO_RECEIVER``
         for a plain function, None when this language cannot tell.

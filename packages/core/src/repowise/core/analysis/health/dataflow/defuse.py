@@ -128,7 +128,10 @@ def compute_def_use(
         for stmt in block.statements:
             if stmt.node is None:
                 continue
-            sdu = dialect.statement_def_use(stmt.node, lmap, head_only=stmt.is_head)
+            if stmt.is_head and stmt.node.type in lmap.catch_kinds:
+                sdu = dialect.handler_def_use(stmt.node)
+            else:
+                sdu = dialect.statement_def_use(stmt.node, lmap, head_only=stmt.is_head)
             for occ in sdu.defs:
                 _add_def(occ, block.id)
             bdu.uses.extend(sdu.uses)

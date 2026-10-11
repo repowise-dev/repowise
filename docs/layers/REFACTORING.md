@@ -229,8 +229,10 @@ Most plans answer a health finding, so per-path marker rules in
   generated code comes back as a diff.
 - Extract Method offers a span only when it can show the extraction keeps behavior
   (every returned value written on every path, no state carried across loop
-  iterations, no local a closure shares across the span's edge). Spans it cannot
-  prove are dropped, so it under-reports by design. A value the span writes is
+  iterations, no local a closure shares across the span's edge, no write to a
+  `global` name without its declaration). A staged plan also leaves out a stage
+  whose inputs or outputs depend on a `switch` or `match` arm's write. Spans it
+  cannot prove are dropped, so it under-reports by design. A value the span writes is
   returned whenever any path can carry it to a later read, including past a later
   write in an `else` arm or a `try` body that may raise first.
 - Extract Method skips spans too small to matter and spans that would carry the
