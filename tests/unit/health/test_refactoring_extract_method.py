@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from repowise.core.ingestion.parser import _get_language
 from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import analyze_file, find_extractions
 from repowise.core.analysis.health.refactoring import detect_refactorings
@@ -128,6 +129,54 @@ def test_a_comment_opening_the_else_arm_still_yields_the_same_extraction():
     assert len(best.returns) <= 1
     assert best.ccn_removed >= 1
     assert best.slice_nloc >= 5
+
+
+_JAVA_SWITCH_RULE_YIELD = """
+class A {
+    int pick(int[] xs, int k) {
+        int total = 0;
+        for (int x : xs) {
+            total += x;
+        }
+        int r = switch (k) {
+            case 1 -> {
+                int t = 0;
+                for (int x : xs) {
+                    if (x > 0) {
+                        t += x;
+                    }
+                    if (x > 10) {
+                        t -= 1;
+                    }
+                }
+                yield t;
+            }
+            default -> 0;
+        };
+        return r + total;
+    }
+}
+"""
+
+
+def test_a_java_switch_rule_yield_refuses_spans_that_hold_it():
+    # Lifting a span that contains a switch-rule `yield` into a helper would
+    # move the yield out of the switch rule it belongs to, so the plan cannot
+    # compile. Spans that stop before the yield stay offered.
+    if _get_language("java") is None:
+        pytest.skip("tree-sitter language pack missing for java")
+    res = analyze_file("m.java", "java", _JAVA_SWITCH_RULE_YIELD.encode(), flagged_only=False)
+    if res.stats.functions_seen == 0:
+        pytest.skip("tree-sitter language pack missing for java")
+    fn = res.functions[0]
+    lmap = get_language_map("java")
+    extractions = find_extractions(fn, lmap)
+    assert extractions, "expected at least one extraction"
+    # The yield is on line 19; no offered span may end on it, and the span
+    # that stops just before it stays the best one.
+    assert all(extraction.end_line != 19 for extraction in extractions)
+    best = extractions[0]
+    assert (best.start_line, best.end_line) == (10, 18)
 
 
 def test_no_extraction_when_every_span_has_a_jump():

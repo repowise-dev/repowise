@@ -506,6 +506,8 @@ _JAVA = LanguageNodeMap(
     catch_kinds=frozenset({"catch_clause"}),
     switch_kinds=frozenset({"switch_expression", "switch_statement"}),
     case_kinds=frozenset({"switch_block_statement_group", "switch_rule"}),
+    # A switch-rule ``yield t;`` parses as ``yield_statement`` (tree-sitter-java).
+    yield_kinds=frozenset({"yield_statement"}),
     boolean_operator_kinds=frozenset(),
     boolean_operator_text_kinds=frozenset({"binary_expression"}),
     class_kinds=frozenset({"class_declaration"}),
