@@ -189,7 +189,7 @@ class ExtractMethodDetector(RefactoringDetector):
             if jsx_plumbing_dominates(analysis.fn_node, lmap):
                 continue
             if analysis.fn_node is not None and declarative_flat(
-                analysis.fn_node, lmap, {p.name for p in analysis.def_use.params}
+                analysis.fn_node, lmap, {p.name for p in analysis.def_use.params}, ctx.language
             ):
                 _mark_refused(matched, "declarative_flat")
                 continue

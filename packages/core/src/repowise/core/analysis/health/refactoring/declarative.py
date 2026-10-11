@@ -21,12 +21,13 @@ logic the statement only registers), a ``break`` / ``continue`` or a
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..complexity.ast_utils import _find_function_entry_name
 from ..complexity.nloc import is_string_stmt
-from ..dataflow.effects import binding_target, bound_names
+from ..dataflow.effects import binding_target, bound_names, imported_names
 from ..dataflow.span import is_comment
+from .helper_naming import defined_names
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -44,12 +45,28 @@ _ACCESS_FIELDS = ("object", "value", "operand", "argument", "array", "function")
 _CALLEE_FIELDS = ("function", "object")
 _CALL_KINDS = frozenset({"call", "call_expression", "method_invocation"})
 _NAME_TARGETS = frozenset({"identifier", "pattern_list", "tuple_pattern"})
-# Calls a guard may make: reads with no effect on what they are called on.
-_PURE_CALLS = frozenset(
-    {"get", "len", "isinstance", "hasattr", "bool", "str", "int", "trim", "strip", "lower"}
-    | {"isFinite", "isArray", "isInteger", "includes", "has", "startswith", "endswith"}
-    | {"startsWith", "endsWith", "hasOwnProperty", "Boolean", "Number", "String"}
+# Calls a guard may make, only where nothing in the file rebinds the name:
+# the language's own read-only builtins, and read-only methods of its global
+# namespaces. A method on any other receiver is unresolved, so it is a step.
+_BUILTIN_CALLS: dict[str, frozenset[str]] = {
+    "python": frozenset({"len", "isinstance", "issubclass"}),
+    **dict.fromkeys(("typescript", "tsx", "javascript", "jsx"), frozenset({"isFinite", "isNaN"})),
+}
+_NAMESPACE_CALLS = frozenset(
+    {("Number", "isFinite"), ("Number", "isInteger"), ("Number", "isNaN"), ("Array", "isArray")}
 )
+# Read-only methods of a string or list literal: ``["a", "b"].includes(x)``.
+_LITERAL_METHODS = frozenset({"includes", "startsWith", "endsWith", "startswith", "endswith"})
+# Read-only methods by a parameter's declared type (``result: dict[str, Any]``,
+# ``opts: { selector?: string }``): the one receiver whose type is written down.
+_STR_READS = frozenset(
+    {"strip", "lower", "upper", "isdigit", "trim", "toLowerCase", "toUpperCase"} | _LITERAL_METHODS
+)
+_TYPED_READS: dict[str, frozenset[str]] = {
+    "str": _STR_READS,
+    "string": _STR_READS,
+    **dict.fromkeys(("dict", "Dict", "Mapping"), frozenset({"get", "keys", "values", "items"})),
+}
 # A write or a wait inside a condition: ``if (x := f())``, ``if (n++)``.
 _WRITE_KINDS = frozenset(
     {"named_expression", "assignment_expression", "augmented_assignment_expression"}
@@ -62,6 +79,11 @@ _MIN_WRITES = 3
 @dataclass(slots=True)
 class _Census:
     lmap: LanguageNodeMap
+    language: str = ""
+    params: frozenset[str] = frozenset()
+    fn_node: Any = None
+    file_names: frozenset[str] | set[str] | None = None
+    param_types: dict[str, Any] | None = None
     roots: set[str] = field(default_factory=set)
     call_roots: set[str] = field(default_factory=set)
     writes: int = 0
@@ -77,22 +99,32 @@ class _Census:
 
 
 def declarative_flat(
-    fn_node: Node | None, lmap: LanguageNodeMap, params: Collection[str] = ()
+    fn_node: Node | None,
+    lmap: LanguageNodeMap,
+    params: Collection[str] = (),
+    language: str | None = None,
 ) -> bool:
     """True when *fn_node*'s body is a flat record builder (module docstring).
-    *params* are its parameter names, the receivers a call may write through."""
+    *params* are its parameter names, the receivers a call may write through;
+    *language* names the builtins a guard may call."""
     body = fn_node.child_by_field_name("body") if fn_node is not None else None
     if body is None or body.type not in lmap.block_kinds:
         return False
-    census = _Census(lmap)
+    census = _Census(lmap, language or "", frozenset(params), fn_node)
     stmts = _statements(body)
     if stmts and stmts[-1].type in lmap.return_kinds:
         stmts = stmts[:-1]
     if not all(_flat(s, census, top=True) for s in stmts):
         return False
     writes = census.writes
-    owned = census.call_roots <= census.bound | set(params)
+    owned = census.call_roots <= census.bound | census.params
     return owned and len(census.roots) == 1 and writes >= max(_MIN_WRITES, len(census.bound) + 1)
+
+
+def _file_root(node: Node) -> Node:
+    while node.parent is not None:
+        node = node.parent
+    return node
 
 
 def _statements(block: Node) -> list[Node]:
@@ -156,39 +188,120 @@ def _flat_decl(stmt: Node, census: _Census) -> bool:
 def _flat_branches(stmt: Node, census: _Census) -> bool:
     """Every arm of an ``if`` chain is flat, or only returns, behind a pure guard."""
     condition = stmt.child_by_field_name("condition")
-    if condition is not None and not _pure_guard(condition, census.lmap):
+    if condition is not None and not _pure_guard(condition, census):
         return False
     arms = [c for c in stmt.named_children if c != condition and not is_comment(c)]
     return all(_guard_exit(arm, census.lmap) or _flat(arm, census) for arm in arms)
 
 
-def _pure_guard(condition: Node, lmap: LanguageNodeMap) -> bool:
+def _pure_guard(condition: Node, census: _Census) -> bool:
     """Whether *condition* only reads: comparisons and truthiness of names,
-    fields and keys, with no call but a read (``_PURE_CALLS``) and no write.
-    ``if prepare_record():`` or ``if logger.enabled():`` is a step, not a guard."""
+    fields and keys, no write, and no call but a builtin read (``_BUILTIN_CALLS``
+    and the rest). ``if prepare_record():``, ``if logger.enabled():`` and an
+    ``obj.get()`` nobody can resolve are steps, not guards."""
+    lmap = census.lmap
     stack = [condition]
     while stack:
         node = stack.pop()
         if node.type in _WRITE_KINDS or node.type in lmap.lambda_kinds:
             return False
-        if node.type in lmap.call_kinds and _callee_name(node) not in _PURE_CALLS:
+        if node.type in lmap.call_kinds and not _builtin_read(node, census):
             return False
         stack.extend(node.named_children)
     return True
 
 
-def _callee_name(call: Node) -> str:
-    """The called name: ``get`` in ``result.get(...)``, ``len`` in ``len(x)``."""
+def _builtin_read(call: Node, census: _Census) -> bool:
+    if call.type == "method_invocation":
+        # Java: the method is ``name``, ``object`` the receiver; none is resolved.
+        return False
     callee = _field(call, _CALLEE_FIELDS)
-    name = callee.child_by_field_name("name") if call.type == "method_invocation" else None
-    for _ in range(8):
-        if callee is None or name is not None:
-            break
-        member = _field(callee, ("attribute", "property", "field"))
-        if member is None:
-            name = callee
-        callee = member
-    return (name.text or b"").decode("utf-8", "replace") if name is not None else ""
+    if callee is None:
+        return False
+    if callee.type == "identifier":
+        name = _text(callee)
+        return name in _BUILTIN_CALLS.get(census.language, ()) and not _rebound(name, census)
+    receiver = _field(callee, ("object", "value", "operand"))
+    method = _field(callee, ("attribute", "property", "field"))
+    if receiver is None or method is None:
+        return False
+    if "string" in receiver.type or receiver.type in ("array", "list"):
+        return _text(method) in _LITERAL_METHODS
+    pair = (_text(receiver), _text(method))
+    if pair in _NAMESPACE_CALLS and not _rebound(pair[0], census):
+        return True
+    return _text(method) in _TYPED_READS.get(_declared_type(receiver, census), ())
+
+
+def _declared_type(receiver: Node, census: _Census) -> str:
+    """The declared type of a parameter (``result``) or of a field of a
+    parameter's inline object type (``opts.selector``), as its head word."""
+    if census.param_types is None:
+        census.param_types = _param_types(census.fn_node)
+    if receiver.type == "identifier":
+        return _type_head(census.param_types.get(_text(receiver)))
+    owner = _field(receiver, ("object",))
+    prop = _field(receiver, ("property",))
+    if owner is None or prop is None or owner.type != "identifier":
+        return ""
+    shape = _type_node(census.param_types.get(_text(owner)))
+    if shape is None or shape.type != "object_type":
+        return ""
+    member = next(
+        (
+            c
+            for c in shape.named_children
+            if c.type == "property_signature" and _text(_field(c, ("name",))) == _text(prop)
+        ),
+        None,
+    )
+    return _type_head(member.child_by_field_name("type")) if member is not None else ""
+
+
+def _param_types(fn_node: Node) -> dict[str, Any]:
+    params = fn_node.child_by_field_name("parameters")
+    out: dict[str, Any] = {}
+    for param in params.named_children if params is not None else ():
+        name = _field(param, ("pattern", "name")) or next(
+            (c for c in param.named_children if c.type == "identifier"), None
+        )
+        kind = param.child_by_field_name("type")
+        if name is not None and kind is not None and name.type == "identifier":
+            out[_text(name)] = kind
+    return out
+
+
+def _type_node(kind: Node | None) -> Node | None:
+    """A written type without its ``: `` / ``type`` wrapper."""
+    while kind is not None and kind.type in ("type_annotation", "type") and kind.named_children:
+        kind = kind.named_children[0]
+    return kind
+
+
+def _type_head(kind: Node | None) -> str:
+    """``dict`` for ``dict[str, Any]``, ``string`` for ``string``."""
+    kind = _type_node(kind)
+    if kind is not None and kind.type == "generic_type" and kind.named_children:
+        kind = kind.named_children[0]
+    return _text(kind) if kind is not None and not kind.named_children else ""
+
+
+def _rebound(name: str, census: _Census) -> bool:
+    """Whether the function or its file binds *name* itself (a parameter, a
+    local, an import or a top-level definition), hiding the builtin."""
+    if name in census.params or name in census.bound:
+        return True
+    if census.file_names is None:
+        root = _file_root(census.fn_node)
+        # ``imported_names`` counts the global namespaces too; only a file's own
+        # definition can rebind those.
+        imports = imported_names(root) - {ns for ns, _ in _NAMESPACE_CALLS}
+        census.file_names = imports | defined_names(root, census.lmap)
+    return name in census.file_names
+
+
+def _text(node: Node | None) -> str:
+    return (node.text or b"").decode("utf-8", "replace") if node is not None else ""
 
 
 def _guard_exit(arm: Node, lmap: LanguageNodeMap) -> bool:

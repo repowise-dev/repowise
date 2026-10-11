@@ -264,7 +264,7 @@ class ScopeNames:
         return next((name for name in names if self.claim(analysis, name)), None)
 
     def _scope_names(self, scope: Any) -> set[str]:
-        names = {_key(n) for n in _defined_names(scope, self._lmap)}
+        names = {_key(n) for n in defined_names(scope, self._lmap)}
         if scope.parent is None:
             names |= {_key(n) for n in self.imports(scope)}
         return names
@@ -284,7 +284,7 @@ def _enclosing_scope(fn_node: Any, lmap: LanguageNodeMap) -> Any:
     return node if node is not None else fn_node
 
 
-def _defined_names(scope: Any, lmap: LanguageNodeMap) -> set[str]:
+def defined_names(scope: Any, lmap: LanguageNodeMap) -> set[str]:
     """Functions defined and names assigned directly in *scope* (not in nested
     functions or classes)."""
     fn_kinds = lmap.function_kinds | lmap.lambda_kinds
