@@ -302,7 +302,7 @@ The `candidates` and `history` lanes shed first under budget pressure, so an abs
 | `entry_points` | Detected entry points |
 | `architecture` | Layer names and file counts in stack order, test layer left out |
 | `code_health`, `git_health` | Repo-level health and history summaries |
-| `next_actions` | Per horizon (week, quarter): the first three stored actions (`id`, `tier`, `title`, `impact`, `done_when`, `target`) with `total` and `by_tier` |
+| `next_actions` | Per horizon (week, quarter): the first three stored actions (`id`, `tier`, `title`, `impact`, `done_when`, `target`) with `total` and `by_tier`. `get_health(fix_id="act_...")` opens one in full |
 | `more` | Names the opt-in blocks |
 | `workspace` | Workspace mode footer |
 
@@ -314,7 +314,7 @@ Opt-in blocks: `outline` (wiki page tree, two levels), `tour` (`guided_tour`, `r
 
 ### Modes and identity
 
-`mode` is `dashboard` (no targets), `targeted`, `fix_item` (`fix_id`), or `conflict` (two selectors passed). `unresolved` names targets that matched nothing, with a reason: `not_indexed`, `no_such_path`, `excluded`, `not_measured`, `no_such_module` (which also returns `known_modules`). A `no_such_path` entry adds `removed_by_commit` and `moved_to` (the file or files that replaced it) when git history explains the miss. `mode`, `_meta`, `unresolved`, `known_modules` and every kept list's `*_total` survive any `only` projection. `scope` and `counts` are echoed on the response.
+`mode` is `dashboard` (no targets), `targeted`, `fix_item` (`fix_id`), `action` (an `act_` `fix_id`: the Do next action with its `details` and `commands`), or `conflict` (two selectors passed). `unresolved` names targets that matched nothing, with a reason: `not_indexed`, `no_such_path`, `excluded`, `not_measured`, `no_such_module` (which also returns `known_modules`). A `no_such_path` entry adds `removed_by_commit` and `moved_to` (the file or files that replaced it) when git history explains the miss. `mode`, `_meta`, `unresolved`, `known_modules` and every kept list's `*_total` survive any `only` projection. `scope` and `counts` are echoed on the response.
 
 `_meta.health_analysis` labels the result as stored analysis that this call did not recompute. Its `status` is `available`, `provenance_unknown` (metrics exist but no row recorded their commit) or `unavailable`. `_meta.health_analyzed_at` and `_meta.health_analyzed_commit` date the health pass, which can lag indexing; `_meta.health_analyzed_commits_distinct` appears when rows come from several passes.
 

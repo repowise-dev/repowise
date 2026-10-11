@@ -497,6 +497,7 @@ async def test_get_health_dashboard_leads_with_fix_first(setup_mcp, health_data)
     assert full["item"]["id"] == lead["id"] and full["item"]["action"]["steps"]
     missing = await get_health(fix_id="fix1_00000000000000000000")
     assert missing["found"] is False and missing["item"] is None
+    assert "fix1_" in missing["next_action"] and "act_" in missing["next_action"]
 
 
 @pytest.mark.asyncio
