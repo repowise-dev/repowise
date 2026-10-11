@@ -41,7 +41,7 @@ import {
   RefactoringModelToggle,
   type RefactoringModelToggleProps,
 } from "./refactoring-settings-card";
-import { extractHelperDetail, extractMethodSignature, stepExcerptRange } from "./types";
+import { extractHelperDetail, extractMethodSignature, formatSpans, stepExcerptRange } from "./types";
 import {
   ORDERING_NOTE,
   STATUS_LABEL,
@@ -672,7 +672,7 @@ function StepCode({
             <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
               Lines{" "}
               <span className="font-mono tabular-nums text-[var(--color-text-secondary)]">
-                {stages.map((st) => `${st.span.start}–${st.span.end}`).join(", ")}
+                {formatSpans(stages.map((st) => st.span))}
               </span>{" "}
               become {stages.length} helpers the function calls in order.
             </p>

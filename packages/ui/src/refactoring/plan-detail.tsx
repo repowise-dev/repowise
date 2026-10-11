@@ -172,7 +172,12 @@ function StagedExtract({
                 <span className="whitespace-nowrap font-mono text-[var(--color-text-primary)]">
                   {stage.name ?? `Stage ${i + 1}`}
                 </span>
-                <FileRef path={plan.file_path} line={stage.span.start} fileHref={fileHref} className="min-w-0 break-all" />
+                <FileRef
+                  path={plan.file_path}
+                  line={stage.span.start}
+                  fileHref={fileHref}
+                  className="min-w-0 break-all"
+                />
                 <span className="ml-auto whitespace-nowrap font-mono text-[var(--color-text-secondary)]">
                   lines {stage.span.start}–{stage.span.end}
                   {stage.ccn ? ` · CCN ${stage.ccn}` : ""}

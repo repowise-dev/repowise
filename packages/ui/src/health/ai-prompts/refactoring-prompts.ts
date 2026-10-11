@@ -6,7 +6,7 @@ import type {
   RefactoringPlan,
 } from "@repowise-dev/types/refactoring";
 
-import { typeMeta } from "../../refactoring/meta";
+import { planBlurb, typeMeta } from "../../refactoring/meta";
 import { blastFiles } from "../../refactoring/types";
 import {
   planSourceLink,
@@ -177,7 +177,7 @@ export function buildRefactoringPlanPrompt({
     "",
     `## ${meta.label}${repoSuffix(repoName)}`,
     "",
-    planFacts(plan, meta.blurb),
+    planFacts(plan, planBlurb(plan)),
     "",
     "## The plan",
     "",

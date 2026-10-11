@@ -4,7 +4,13 @@ import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 import { PlanDetail } from "../../src/refactoring/plan-detail";
 import { PlanBefore } from "../../src/refactoring/plan-before";
-import { extractMethodStages, planWins, stepExcerptRange } from "../../src/refactoring/types";
+import { planBlurb } from "../../src/refactoring/meta";
+import {
+  extractMethodStages,
+  planWins,
+  stagedLineCount,
+  stepExcerptRange,
+} from "../../src/refactoring/types";
 
 function stage(start: number, end: number, name: string | null, out: string[]) {
   return {
@@ -141,11 +147,22 @@ describe("A staged Extract Method plan outside the after view", () => {
     expect(labels.some((l) => l.includes("focused helper"))).toBe(false);
   });
 
+  it("prints no line count when the stored figure is missing", () => {
+    const bare = { ...plan, evidence: { ccn_removed: 28 } } satisfies RefactoringPlan;
+    expect(stagedLineCount(bare)).toBeNull();
+    expect(planWins(bare).some((w) => w.label.includes("lines lifted"))).toBe(false);
+  });
+
+  it("describes the plan as a split into several helpers", () => {
+    expect(planBlurb(plan)).toBe("Split a long function into helpers it calls in order.");
+  });
+
   it("states the function and every stage's lines under Today", () => {
     render(<PlanBefore plan={plan} />);
     expect(screen.getByText("persist")).toBeTruthy();
     expect(screen.getByText(/lines 5–90 · CCN 40/)).toBeTruthy();
     expect(screen.getByText("10–30, 34–60")).toBeTruthy();
+    expect(screen.getByText(/2 blocks .* 40 lines in all/)).toBeTruthy();
   });
 
   it("covers every stage when a step shows its code", () => {

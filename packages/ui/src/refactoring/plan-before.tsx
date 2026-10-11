@@ -5,15 +5,13 @@ import {
   cycleMembers,
   extractClassGroups,
   extractHelperOccurrences,
-  extractMethodPlan,
-  extractMethodStages,
-  extractOrchestrator,
   moveTarget,
   performancePlanDetail,
   splitGroups,
   splitResidual,
 } from "./types";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
+import { ExtractMethodBefore } from "./extract-method-before";
 
 export interface PlanBeforeProps {
   plan: RefactoringPlan;
@@ -162,40 +160,7 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
     );
   }
 
-  if (plan.refactoring_type === "extract_method") {
-    // The drawer's "after" hides its intro, so the function, its range and
-    // which of its lines move are stated here; without this "Today" was empty.
-    const stages = extractMethodStages(plan);
-    const em = extractMethodPlan(plan);
-    const spans = stages.length >= 2 ? stages.map((s) => s.span) : em.span ? [em.span] : [];
-    const orchestrator = extractOrchestrator(plan);
-    return (
-      <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5">
-        <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
-          <code className="min-w-0 break-all text-xs font-semibold text-[var(--color-text-primary)]">
-            {plan.target_symbol || baseName(plan.file_path)}
-          </code>
-          {plan.line_start && plan.line_end ? (
-            <span className="shrink-0 font-mono text-2xs tabular-nums text-[var(--color-text-tertiary)]">
-              lines {plan.line_start}–{plan.line_end}
-              {orchestrator ? ` · CCN ${orchestrator.before}` : ""}
-            </span>
-          ) : null}
-        </div>
-        {spans.length > 0 ? (
-          <p className="text-2xs leading-relaxed text-[var(--color-text-tertiary)]">
-            {spans.length === 1
-              ? "One block inside it does a separable job: "
-              : `${spans.length} blocks inside it each do a separable job: `}
-            <span className="font-mono tabular-nums text-[var(--color-text-secondary)]">
-              {spans.map((sp) => `${sp.start}–${sp.end}`).join(", ")}
-            </span>
-            .
-          </p>
-        ) : null}
-      </div>
-    );
-  }
+  if (plan.refactoring_type === "extract_method") return <ExtractMethodBefore plan={plan} />;
 
   if (plan.refactoring_type === "move_method") {
     const mv = moveTarget(plan);

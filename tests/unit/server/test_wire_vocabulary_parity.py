@@ -92,6 +92,9 @@ def test_action_tier_labels_match_python() -> None:
     match = re.search(r"export const ACTION_TIER_LABELS[^=]*= \{(.*?)\};", text, re.DOTALL)
     assert match, "ACTION_TIER_LABELS is not declared in actions.ts"
     assert dict(re.findall(r'(\w+): "([^"]+)"', match.group(1))) == TIER_LABELS
+    order = re.search(r"export const ACTION_TIER_ORDER[^=]*= \[(.*?)\];", text, re.DOTALL)
+    assert order, "ACTION_TIER_ORDER is not declared in actions.ts"
+    assert re.findall(r'"(\w+)"', order.group(1)) == list(TIER_LABELS)
 
 
 def test_fix_first_vocabularies_match_python() -> None:

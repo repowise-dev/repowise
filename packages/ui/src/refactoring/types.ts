@@ -346,6 +346,20 @@ export function extractOrchestrator(plan: RefactoringPlan): { before: number; af
   return { before: raw.ccn_before, after: raw.ccn_after };
 }
 
+/** Line spans as every staged surface prints them: `10–30, 34–60`. */
+export function formatSpans(spans: ReadonlyArray<{ start: number; end: number }>): string {
+  return spans.map((sp) => `${sp.start}–${sp.end}`).join(", ");
+}
+
+/** The lines a staged plan lifts, as the CLI reports them (`evidence.slice_nloc`).
+ *  Null for a single-span plan or when the figure was not stored, so no surface
+ *  prints a sum of spans as if it were that number. */
+export function stagedLineCount(plan: RefactoringPlan): number | null {
+  if (extractMethodStages(plan).length < 2) return null;
+  const n = Number(plan.evidence?.slice_nloc ?? 0);
+  return n > 0 ? n : null;
+}
+
 /** The helper an extraction proposes, as one line: `async name(a, b) -> c`.
  *  For a plan stored before the server rendered `signature_text`. */
 export function extractMethodSignature(em: ExtractMethodPlan): string {
@@ -710,10 +724,8 @@ export function planWins(plan: RefactoringPlan): PlanWin[] {
       const stages = extractMethodStages(plan);
       if (stages.length >= 2) {
         // Every stage moves, not only the first span the plan's top level carries.
-        const lines =
-          Number(plan.evidence?.slice_nloc ?? 0) ||
-          stages.reduce((n, st) => n + st.span.end - st.span.start + 1, 0);
-        wins.push({ label: `${lines} lines lifted into ${stages.length} helpers` });
+        const lines = stagedLineCount(plan);
+        if (lines) wins.push({ label: `${lines} lines lifted into ${stages.length} helpers` });
       } else if (em.span) {
         const lines = em.span.end - em.span.start + 1;
         wins.push({

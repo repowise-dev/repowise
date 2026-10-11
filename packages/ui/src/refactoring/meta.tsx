@@ -2,7 +2,8 @@
 
 import * as React from "react";
 import { ArrowRightLeft, CopyMinus, FileStack, Gauge, Scissors, Split, Unlink } from "lucide-react";
-import type { Confidence, RefactoringType } from "@repowise-dev/types/refactoring";
+import type { Confidence, RefactoringPlan, RefactoringType } from "@repowise-dev/types/refactoring";
+import { extractHelperReuse, extractMethodStages } from "./types";
 
 export interface RefactoringTypeMeta {
   label: string;
@@ -71,6 +72,18 @@ const FALLBACK: RefactoringTypeMeta = {
 
 export function typeMeta(type: RefactoringType | string): RefactoringTypeMeta {
   return TYPE_META[type] ?? FALLBACK;
+}
+
+/** One plan's blurb. The type's promises one new helper; a reuse plan adds
+ *  none and a staged plan adds several. */
+export function planBlurb(plan: RefactoringPlan): string {
+  if (plan.refactoring_type === "extract_helper" && extractHelperReuse(plan)) {
+    return "Call the function that already holds this block instead of keeping a copy of it.";
+  }
+  if (plan.refactoring_type === "extract_method" && extractMethodStages(plan).length >= 2) {
+    return "Split a long function into helpers it calls in order.";
+  }
+  return typeMeta(plan.refactoring_type).blurb;
 }
 
 export function typeAccent(type: RefactoringType | string): string {

@@ -347,4 +347,15 @@ describe("groupByTier", () => {
       ["plan", ["p1", "p2"]],
     ]);
   });
+
+  it("keeps rows of a tier it does not know, in a trailing group", () => {
+    const rows = [
+      action({ id: "x1", tier: "someday" as NextAction["tier"] }),
+      action({ id: "p1", tier: "plan" }),
+    ];
+    expect(groupByTier(rows).map(([tier, items]) => [tier, items.map((a) => a.id)])).toEqual([
+      ["plan", ["p1"]],
+      ["someday", ["x1"]],
+    ]);
+  });
 });
