@@ -4,7 +4,6 @@ import type { ZoomMap } from "@repowise-dev/ui/zoom";
 import useSWR from "swr";
 import {
   getArchitecture,
-  getArchitectureGraph,
   getCallersCallees,
   getCommunities,
   getCommunityDetail,
@@ -78,15 +77,6 @@ export function useArchitectureCommunityGraph(
   const { data, error, isLoading } = useSWR<ArchitectureGraphResponse>(
     repoId ? `arch-community:${repoId}:${populationKey(population)}` : null,
     () => getArchitecture(repoId!, 2, populationParams(population)),
-    SWR_OPTS,
-  );
-  return { graph: data, error, isLoading };
-}
-
-export function useArchitectureGraph(repoId: string | null) {
-  const { data, error, isLoading } = useSWR<GraphExportResponse>(
-    repoId ? `arch-graph:${repoId}` : null,
-    () => getArchitectureGraph(repoId!),
     SWR_OPTS,
   );
   return { graph: data, error, isLoading };

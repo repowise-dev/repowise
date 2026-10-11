@@ -39,12 +39,6 @@ from repowise.core.persistence.models import (
 top_level_module = module_label
 
 
-def _under_module(file_path: str, module_path: str) -> bool:
-    if module_path in ("", "root"):
-        return "/" not in file_path
-    return file_path == module_path or file_path.startswith(module_path + "/")
-
-
 async def aggregate_modules(session: AsyncSession, repo_id: str) -> dict[str, ModuleAccumulator]:
     """Fetch the four inputs for *repo_id* and fold them by top-level module."""
 
