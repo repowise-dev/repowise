@@ -412,7 +412,13 @@ export function OpportunityDrawer({
   // The row is the fallback body: a host without the detail call still reads
   // every field the queue carried, and simply learns nothing extra.
   const resolved = detail && detail.found ? detail : null;
-  const current: PerformanceOpportunity | null = resolved ?? opportunity;
+  const unresolved = detail && !detail.found ? detail : null;
+  const current: PerformanceOpportunity | null = resolved
+    ? {
+        ...resolved,
+        rank_position: resolved.rank_position ?? opportunity?.rank_position,
+      }
+    : opportunity;
   const plan = useVerifiedPlan(current, adapter, planEnabled);
 
   return (
@@ -767,7 +773,10 @@ function WhyRankedSection({ current }: { current: PerformanceOpportunity }) {
   return (
     <CollapsibleSection title="Why it ranks here">
       <p className="text-sm text-[var(--color-text-secondary)]">
-        Position <span className="tabular-nums">{(current.rank_position + 1).toLocaleString()}</span>{" "}
+        Position{" "}
+        <span className="tabular-nums">
+          {current.rank_position != null ? (current.rank_position + 1).toLocaleString() : "—"}
+        </span>{" "}
         in the queue.
       </p>
       {current.why_ranked.length > 0 ? (

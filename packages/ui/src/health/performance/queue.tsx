@@ -171,7 +171,9 @@ const OpportunityRow = memo(function OpportunityRow({
       {...clickableRowProps(() => onInspect(opportunity))}
     >
       <span className="mt-0.5 w-7 shrink-0 text-right font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">
-        {(opportunity.rank_position + 1).toLocaleString()}
+        {opportunity.rank_position != null
+          ? (opportunity.rank_position + 1).toLocaleString()
+          : "—"}
       </span>
 
       <div className="min-w-0 flex-1">
