@@ -10,7 +10,14 @@ template literal's ``${NAME}`` is.
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
+from repowise.core.analysis.dead_code.models import DeadCodeFindingData
+from repowise.core.analysis.dead_code.name_occurrences import (
+    demote_exports_used_in_own_code,
+    demote_used_in_own_file,
+)
 from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
 from tests.unit.dead_code._helpers import _build_graph
 
@@ -124,3 +131,62 @@ def test_python_name_listed_only_in_all_is_not_a_use():
     # A use the graph missed (a callable passed as a value) is still a use.
     assert found["fmt"].export_only is True
     assert found["fmt"].safe_to_delete is False
+
+
+@pytest.mark.parametrize(
+    "clause",
+    [
+        "export { LIMIT };",
+        "export { LIMIT as MAX };",
+        "export {\n  LIMIT,\n};",
+        "export default LIMIT;",
+    ],
+)
+def test_an_export_clause_naming_it_is_not_a_use(clause: str):
+    source = f"const LIMIT = 5;\n{clause}\n"
+    found = _exports_over("src/a.ts", source, [_const("LIMIT", 1)], "typescript")
+    assert found["LIMIT"].export_only is False
+    assert found["LIMIT"].confidence >= RISK_CAP_CONFIDENCE
+
+
+def test_a_function_that_only_calls_itself_stays_dead():
+    source = (
+        "export function walk(n: number): number {\n"  # 1
+        "  return n > 0 ? walk(n - 1) : 0;\n"  # 2
+        "}\n"  # 3
+    )
+    found = _exports_over(
+        "src/walk.ts",
+        source,
+        [{"name": "walk", "kind": "function", "start_line": 1, "end_line": 3}],
+        "typescript",
+    )
+    assert found["walk"].export_only is False
+    assert found["walk"].confidence >= RISK_CAP_CONFIDENCE
+
+
+def test_a_row_marked_twice_carries_one_evidence_line():
+    path = "src/a.ts"
+    source = {path: b"export const LIMIT = 5;\nexport const two = LIMIT * 2;\n"}
+    finding = DeadCodeFindingData(
+        kind=DeadCodeKind.UNUSED_EXPORT,
+        file_path=path,
+        symbol_name="LIMIT",
+        symbol_kind="variable",
+        confidence=1.0,
+        reason="test",
+        last_commit_at=None,
+        commit_count_90d=0,
+        lines=1,
+        evidence=[],
+        safe_to_delete=True,
+        primary_owner=None,
+        age_days=None,
+        start_line=1,
+        end_line=1,
+    )
+    demote_used_in_own_file([finding], source)
+    demote_exports_used_in_own_code([finding], source)
+    assert finding.export_only is True
+    assert finding.safe_to_delete is False
+    assert len(finding.evidence) == 1

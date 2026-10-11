@@ -52,6 +52,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath
 
+from ...ingestion.extractors.visibility import (
+    _TS_EXPORT_ASSIGN_RE,
+    _TS_EXPORT_DEFAULT_NAME_RE,
+    _TS_EXPORT_LIST_SOURCE_RE,
+)
 from ...ingestion.languages.js_config_values import plugin_path_arguments, value_spans
 from ...ingestion.languages.registry import REGISTRY
 from ...ingestion.source_mask import can_mask, mask_source
@@ -209,7 +214,8 @@ def demote_used_in_own_file(
     """
     by_file: dict[str, list[DeadCodeFindingData]] = {}
     for finding in findings:
-        if finding.symbol_name and finding.file_path in source_map:
+        # Already marked by another reading of the same file: one verdict, one line.
+        if finding.symbol_name and finding.file_path in source_map and not finding.export_only:
             by_file.setdefault(finding.file_path, []).append(finding)
     for path, pending in by_file.items():
         verdicts = _uses_in_own_file(source_map, path, pending)
@@ -234,8 +240,10 @@ def demote_exports_used_in_own_code(
 
     Read with comments and string bodies blanked, so a name listed in
     ``__all__`` or mentioned in a docstring is not a use, while a template
-    literal's ``${NAME}`` still is. Ceiling: a Python f-string's ``{NAME}`` is
-    blanked too, so such a use is missed and the finding stays as it was.
+    literal's ``${NAME}`` still is. A JS/TS export clause (``export { X }``,
+    ``export default X``) only publishes the name, so it is blanked too.
+    Ceiling: a Python f-string's ``{NAME}`` is blanked as well, so such a use
+    is missed and the finding stays as it was.
     Other languages are left to :func:`clamp_unverified_absence`. Each file is
     masked once. Returns the same list.
     """
@@ -246,14 +254,33 @@ def demote_exports_used_in_own_code(
         and f.file_path in source_map
         and can_mask(PurePosixPath(f.file_path).suffix)
     ]
-    masked = {
-        path: mask_source(
-            source_map[path].decode("utf-8", "replace"), PurePosixPath(path).suffix, strings=True
-        ).encode("utf-8")
-        for path in {f.file_path for f in exports}
-    }
+    masked = {path: _own_code(path, source_map[path]) for path in {f.file_path for f in exports}}
     demote_used_in_own_file(exports, masked)
     return findings
+
+
+#: Statements that only publish a name the file declares, never use it.
+_EXPORT_CLAUSES = (_TS_EXPORT_LIST_SOURCE_RE, _TS_EXPORT_DEFAULT_NAME_RE, _TS_EXPORT_ASSIGN_RE)
+
+
+def _own_code(path: str, blob: bytes) -> bytes:
+    """*blob*'s code with comments, string bodies and JS/TS export clauses blanked.
+
+    Lines are kept, so a match still reports its real line number.
+    """
+    suffix = PurePosixPath(path).suffix
+    text = mask_source(blob.decode("utf-8", "replace"), suffix, strings=True)
+    if suffix.lower() != ".py":
+        for clause in _EXPORT_CLAUSES:
+            text = clause.sub(_blank, text)
+    return text.encode("utf-8")
+
+
+def _blank(match: re.Match[str]) -> str:
+    return _NOT_NEWLINE.sub(" ", match.group())
+
+
+_NOT_NEWLINE = re.compile(r"[^\n]")
 
 
 def searchable_token(name: str) -> bytes:
