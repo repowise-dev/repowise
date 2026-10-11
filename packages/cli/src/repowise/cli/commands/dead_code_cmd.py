@@ -352,8 +352,7 @@ def dead_code_command(
                     "risk_factors": f.risk_factors,
                     "lines": f.lines,
                     "primary_owner": f.primary_owner,
-                    # Only when set: such a row has no deletable line.
-                    **({"export_only": True} if f.export_only else {}),
+                    "export_only": f.export_only,
                 }
             )
         click.echo(json.dumps(output, indent=2))
