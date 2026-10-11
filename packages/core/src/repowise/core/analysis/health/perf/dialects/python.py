@@ -334,6 +334,33 @@ def _value_refs(expr: Node) -> list[Node]:
     return refs
 
 
+def _string_value(node: Node) -> str | None:
+    return _text(node).strip("\"'") if node.type == "string" else None
+
+
+def _in_filter(call: Node, args: list[Node]) -> tuple[str, Node] | None:
+    """``(column, keys)`` of ``Model.col.in_(keys)`` or PostgREST ``.in_("col", keys)``."""
+    if len(args) == 2:
+        column = _string_value(args[0])
+        return (column, args[1]) if column else None
+    fn = call.child_by_field_name("function")
+    receiver = fn.child_by_field_name("object") if fn is not None else None
+    if len(args) != 1 or receiver is None or receiver.type != "attribute":
+        return None
+    column = _field_text(receiver, "attribute")
+    return (column, args[0]) if column else None
+
+
+def _fixed_set(value: Node | None) -> bool:
+    """A non-empty literal of scalars; an empty one is a container filled later."""
+    return (
+        value is not None
+        and value.type in _PY_CONSTANT_RHS
+        and bool(value.named_children)
+        and all(_scalar_literal(item) for item in value.named_children)
+    )
+
+
 _PY_SCALARS = frozenset({"string", "concatenated_string", "integer", "float", "true", "false", "none"})
 
 
@@ -1259,45 +1286,33 @@ class PythonPerfDialect(IterableSources):
         ``filter_by(id=k)`` and ``.eq("id", k)`` -> ``id``. Keys a query yields
         (``.in_(select(...))``, or a name bound to one) grow with that table."""
         method = self.callee_method_name(call)
-        fn = call.child_by_field_name("function")
         arg_list = call.child_by_field_name("arguments")
         args = arg_list.named_children if arg_list is not None else []
         if method == "filter_by":
             named = {_field_text(a, "name") for a in args if a.type == "keyword_argument"}
             return "id" if "id" in named else None
-        literal = args[0].type == "string" if args else False
-        if method == "eq" and len(args) == 2 and literal and _text(args[0]).strip("\"'") == "id":
-            return "id"
-        if method != "in_" or fn is None or fn.type != "attribute":
+        if method == "eq":
+            return "id" if len(args) == 2 and _string_value(args[0]) == "id" else None
+        found = _in_filter(call, args) if method == "in_" else None
+        if found is None or not self._handed_in(found[1], anchor):
             return None
-        receiver = fn.child_by_field_name("object")
-        if len(args) == 2 and literal:
-            column, keys = _text(args[0]).strip("\"'"), args[1]
-        elif len(args) == 1 and receiver is not None and receiver.type == "attribute":
-            column, keys = _field_text(receiver, "attribute"), args[0]
-        else:
-            return None
-        handed_in = []
-        parts = [keys]
-        for ref in _value_refs(keys):
-            value = self.reaching_value(anchor, ref.text or b"") if ref.type == "identifier" else None
-            parts.extend([value] if value is not None else [])
-            # A fixed set of values (``in_(("a", "b"))``, ``in_(SOURCES)``) filters on
-            # a state, not on keys handed in: its rows grow with the table.
-            # An empty literal is a container filled later, not a fixed set.
-            fixed = (
-                value is not None
-                and value.type in _PY_CONSTANT_RHS
-                and bool(value.named_children)
-                and all(_scalar_literal(item) for item in value.named_children)
-            )
-            handed_in.append(not fixed)
-        from_a_read = any(
+        return found[0]
+
+    def _handed_in(self, keys: Node, anchor: Node) -> bool:
+        """*keys* holds values given to the code, not ones a query yields or a fixed
+        set of states (``in_(("a", "b"))``, ``in_(SOURCES)``) whose rows grow."""
+        values = [
+            self.reaching_value(anchor, ref.text or b"") if ref.type == "identifier" else None
+            for ref in _value_refs(keys)
+        ]
+        if all(_fixed_set(value) for value in values):
+            return False
+        parts = [keys, *filter(None, values)]
+        return not any(
             n.type == "call" and self.callee_method_name(n) in _PY_KEY_READS
             for part in parts
             for n in self._walk(part)
         )
-        return column if column and any(handed_in) and not from_a_read else None
 
     def _range_magnitude(
         self, call: Node, loop: Node, probe: SinkProbe, *, hop: bool

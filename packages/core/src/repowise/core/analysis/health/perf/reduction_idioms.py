@@ -191,14 +191,7 @@ def key_fields(for_stmt: Node, key: Node) -> frozenset[str]:
     ``row.get("repo_id")``, also through one local (``rid = row["repo_id"]``).
     A name unpacked from the row (``for path, name in rows``) is its own field."""
     rows = _row_names(for_stmt)
-    body = for_stmt.child_by_field_name("body")
-    local: dict[str, Node] = {}
-    for stmt in body.named_children if body is not None else ():
-        node = next((c for c in stmt.children if c.is_named), stmt)
-        name = ident(node.child_by_field_name("left")) if node.type == "assignment" else None
-        right = node.child_by_field_name("right") if name else None
-        if name and right is not None:
-            local.setdefault(name, right)
+    local = _locals(for_stmt)
     fields: set[str] = set()
     pending, hopped = [key], False
     while pending:
@@ -215,6 +208,20 @@ def key_fields(for_stmt: Node, key: Node) -> frozenset[str]:
                 pending.append(local[name])
         hopped = True
     return frozenset(fields)
+
+
+def _locals(for_stmt: Node) -> dict[str, Node]:
+    """Each name the loop body assigns, to its first value."""
+    body = for_stmt.child_by_field_name("body")
+    local: dict[str, Node] = {}
+    for stmt in body.named_children if body is not None else ():
+        node = next((c for c in stmt.children if c.is_named), stmt)
+        if node.type != "assignment":
+            continue
+        name, right = ident(node.child_by_field_name("left")), node.child_by_field_name("right")
+        if name and right is not None:
+            local.setdefault(name, right)
+    return local
 
 
 def _field_of(row: Node, parent: Node) -> str | None:
