@@ -183,3 +183,52 @@ def test_a_config_that_does_not_parse_is_recorded_as_unknown() -> None:
     assert phpunit_options("<phpunit><testsuites>") is None
     roots = read_phpunit_roots([("phpunit.xml", "<phpunit><testsuites>")])
     assert roots.collects("src/UnitTest.php") is None
+
+
+def test_malformed_primary_config_does_not_fall_back_to_dist() -> None:
+    """A broken phpunit.xml does not fall back to phpunit.xml.dist (fail-closed)."""
+    roots = read_phpunit_roots(
+        [
+            ("phpunit.xml", "malformed <xml"),
+            ("phpunit.xml.dist", _LARAVEL_CONFIG),
+        ]
+    )
+    assert roots.collects("src/UnitTest.php") is None
+    assert roots.collects("tests/RouterTest.php") is None
+
+
+def test_no_testsuites_primary_config_does_not_fall_back_to_dist() -> None:
+    """A phpunit.xml without testsuites does not fall back to phpunit.xml.dist."""
+    roots = read_phpunit_roots(
+        [
+            ("phpunit.xml", "<phpunit></phpunit>"),
+            ("phpunit.xml.dist", _LARAVEL_CONFIG),
+        ]
+    )
+    assert roots.collects("src/UnitTest.php") is None
+    assert roots.collects("tests/RouterTest.php") is None
+
+
+def test_valid_primary_config_ignores_malformed_dist() -> None:
+    """A valid phpunit.xml wins precedence over a malformed phpunit.xml.dist."""
+    roots = read_phpunit_roots(
+        [
+            ("phpunit.xml", _LARAVEL_CONFIG),
+            ("phpunit.xml.dist", "malformed <xml"),
+        ]
+    )
+    assert roots.collects("tests/RouterTest.php") is True
+    assert roots.collects("src/UnitTest.php") is False
+
+
+def test_unreadable_primary_config_in_subdirectory_does_not_fall_back() -> None:
+    roots = read_phpunit_roots(
+        [
+            ("phpunit.xml", _LARAVEL_CONFIG),
+            ("packages/api/phpunit.xml", "malformed <xml"),
+            ("packages/api/phpunit.xml.dist", _LARAVEL_CONFIG),
+        ]
+    )
+    assert roots.collects("packages/api/src/ApiTest.php") is None
+    assert roots.collects("tests/RouterTest.php") is True
+

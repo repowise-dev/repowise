@@ -238,7 +238,9 @@ def phpunit_roots(
 ) -> PhpunitRoots:
     """Build from ``(config path, collection)`` pairs.
 
-    The highest-precedence config in each directory wins.
+    The highest-precedence config in each directory wins. If an unreadable or
+    unknown config has higher or equal precedence than any parsed config in the
+    same directory, that directory fails closed (marked unreadable).
     """
     chosen: dict[str, tuple[int, _PhpunitCollection]] = {}
     for path, collection in configs:
@@ -247,10 +249,24 @@ def phpunit_roots(
         rank = _PRECEDENCE.get(p.name, len(_PRECEDENCE))
         if key not in chosen or rank < chosen[key][0]:
             chosen[key] = (rank, collection)
-    unreadable_dirs = frozenset(_dir_key(PurePosixPath(u)) for u in unreadable) - set(chosen)
+
+    unreadable_ranks: dict[str, int] = {}
+    for path in unreadable:
+        p = PurePosixPath(path)
+        key = _dir_key(p)
+        rank = _PRECEDENCE.get(p.name, len(_PRECEDENCE))
+        if key not in unreadable_ranks or rank < unreadable_ranks[key]:
+            unreadable_ranks[key] = rank
+
+    unreadable_dirs: set[str] = set()
+    for key, unreadable_rank in unreadable_ranks.items():
+        if key not in chosen or unreadable_rank <= chosen[key][0]:
+            unreadable_dirs.add(key)
+            chosen.pop(key, None)
+
     return PhpunitRoots(
         by_dir={key: col for key, (_, col) in chosen.items()},
-        unreadable=unreadable_dirs,
+        unreadable=frozenset(unreadable_dirs),
     )
 
 
@@ -263,6 +279,8 @@ def read_phpunit_roots(texts: Iterable[tuple[str, str]]) -> PhpunitRoots:
             options = parse_phpunit_options(text)
             if options is not None:
                 configs.append((path, options))
+            else:
+                unreadable.append(path)
         except PhpunitConfigUnreadableError:
             unreadable.append(path)
     return phpunit_roots(configs, unreadable)

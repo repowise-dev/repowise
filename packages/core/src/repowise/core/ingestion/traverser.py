@@ -1220,6 +1220,8 @@ def _collect_console_scripts(
                 options = parse_phpunit_options(text)
                 if options is not None:
                     phpunit_configs.append((rel, options))
+                else:
+                    phpunit_unreadable.append(rel)
             except (OSError, UnicodeDecodeError, PhpunitConfigUnreadableError):
                 phpunit_unreadable.append(rel)
         if name in PYTEST_CONFIG_NAMES:
