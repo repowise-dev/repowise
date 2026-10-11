@@ -259,6 +259,41 @@ def test_pascal_data_sets_and_counted_loops(line, expected):
     assert _loops("Shapes.pas", "pascal", _PASCAL_SHAPES)[line] == expected
 
 
+_PASCAL_CASE = """unit Names;
+interface
+uses FireDAC.Comp.Client;
+implementation
+procedure F(Q: TFDQuery; n: Integer; items: TStringList);
+var I: Integer; E: TColor; S: string; total, tmp: Integer;
+begin
+  for I := 1 to N do Q.ExecSQL;
+  for I := 0 to Items.Count - 1 do Q.ExecSQL;
+  for S in ITEMS do Q.ExecSQL;
+  for E in tcolor do Q.ExecSQL;
+  for I := 1 to High(tmp) do Q.ExecSQL;
+  for I := 1 to total do Q.ExecSQL;
+end;
+end.
+"""
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (8, ("unknown", "parameter")),  # N is the parameter n
+        (9, ("unknown", "parameter")),
+        (10, ("unknown", "parameter")),
+        # A type is told from a variable by its spelling alone, so a lower-cased
+        # one reads like ``tmp`` and ``total`` and bounds nothing.
+        (11, ("unknown", "unknown")),
+        (12, ("unknown", "unknown")),
+        (13, ("unknown", "unknown")),
+    ],
+)
+def test_pascal_names_match_without_case_but_a_type_needs_its_spelling(line, expected):
+    assert _loops("Names.pas", "pascal", _PASCAL_CASE)[line] == expected
+
+
 _RUBY = """require "active_record"
 def f(ids)
   users = User.where(active: true)
