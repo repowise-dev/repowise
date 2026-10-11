@@ -149,3 +149,32 @@ public class CommentedController : ApiController
 """
     contracts = _extract(content)
     assert "http::GET::/api/v2/items" in contracts
+
+
+def test_verb_in_comment_and_string_ignored():
+    """HttpGet inside comments or string literals must not anchor to array indices."""
+    content = """\
+[RoutePrefix("api/v3")]
+public class NonAttributeController : ApiController
+{
+    // HttpGet should not be treated as an action attribute
+    // [HttpGet] commented-out attribute
+    public IHttpActionResult ReadItems()
+    {
+        var items = new int[] { 10, 20, 30 };
+        string desc = "Performs HttpGet request";
+        string tag = "[HttpGet]";
+        return Ok(items[0]);
+    }
+
+    [HttpGet]
+    [Route("real")]
+    public IHttpActionResult RealAction()
+    {
+        return Ok();
+    }
+}
+"""
+    contracts = _extract(content)
+    assert "http::GET::/api/v3/real" in contracts
+    assert len(contracts) == 1

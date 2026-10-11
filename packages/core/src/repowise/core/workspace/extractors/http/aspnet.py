@@ -39,8 +39,9 @@ _ASPNET_CLASS_ROUTE_RE = re.compile(
 )
 
 # Action-level HTTP verb: [HttpGet], [HttpPost("path")], [HttpGet, Route("path")], etc.
+# Anchored to attribute context: must immediately follow an opening bracket '[' or comma ','
 _ASPNET_VERB_ATTR_RE = re.compile(
-    r"""\bHttp(Get|Post|Put|Delete|Patch)\b(?:\s*\(\s*(?:template\s*=\s*)?['"]([^'"]+)['"]\s*\))?""",
+    r"""(?<=[\[,])\s*Http(Get|Post|Put|Delete|Patch)\b(?:\s*\(\s*(?:template\s*=\s*)?['"]([^'"]+)['"]\s*\))?""",
     re.IGNORECASE,
 )
 
@@ -98,6 +99,20 @@ def _find_attribute_block(content: str, pos: int) -> str | None:
     curr_start = content.rfind("[", 0, pos)
     curr_end = content.find("]", pos)
     if curr_start == -1 or curr_end == -1:
+        return None
+
+    # pos must be strictly enclosed by curr_start and curr_end without intervening brackets
+    if "]" in content[curr_start:pos] or "[" in content[pos:curr_end]:
+        return None
+
+    # The bracket must not sit on a comment line or inside quotes
+    line_start = content.rfind("\n", 0, curr_start)
+    line_start = 0 if line_start == -1 else line_start + 1
+    prefix_on_line = content[line_start:curr_start].lstrip()
+    if prefix_on_line.startswith(("//", "/*", "*")):
+        return None
+    quotes = content[line_start:curr_start].count('"') - content[line_start:curr_start].count(r'\"')
+    if quotes % 2 != 0:
         return None
 
     block_start = curr_start
