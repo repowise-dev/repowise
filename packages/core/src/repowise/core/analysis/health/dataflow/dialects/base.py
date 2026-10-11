@@ -340,7 +340,11 @@ class BaseDefUseDialect:
         loops, decls, outer = self._closure_parts(node, lmap)
         head_writes = self._loop_binder_scopes(loops, lmap, scopes)
         for decl in decls:
-            _add_declaration_scope(decl, writes, lmap, scopes)
+            if decl.type in lmap.catch_kinds:  # a handler's name is its own
+                for d in self.handler_def_use(decl).defs:
+                    scopes.setdefault(d.name, []).append((decl.start_point, decl.end_point))
+            else:
+                _add_declaration_scope(decl, writes, lmap, scopes)
         if not self.closure_writes_outer:
             for w in (*writes, *head_writes):
                 if w.name not in outer:
@@ -353,8 +357,9 @@ class BaseDefUseDialect:
     def _closure_parts(
         self, node: Node, lmap: LanguageNodeMap
     ) -> tuple[list[Node], list[Node], set[str]]:
-        """The loops and declaration statements of nested scope *node* (deeper
-        scopes not entered), and the names it declares outer."""
+        """The loops and declaration statements (exception handlers too) of
+        nested scope *node* (deeper scopes not entered), and the names it
+        declares outer."""
         loops: list[Node] = []
         decls: list[Node] = []
         outer: set[str] = set()
@@ -367,7 +372,7 @@ class BaseDefUseDialect:
                 outer |= {occ.name for occ in _leaf_names(cur, self.identifier_kinds)}
             elif cur.type in lmap.loop_kinds:
                 loops.append(cur)
-            elif cur.type in lmap.local_decl_kinds:
+            elif cur.type in lmap.local_decl_kinds or cur.type in lmap.catch_kinds:
                 decls.append(cur)
             stack.extend(cur.named_children)
         return loops, decls, outer
@@ -452,6 +457,14 @@ class BaseDefUseDialect:
         """Parameter names bound by *fn_node*'s signature, as entry defs.
         Default: none (a language with no override seeds no parameters)."""
         return ()
+
+    def outer_declared(self, node: Node) -> list[Occurrence]:
+        """The names statement *node* declares as the module's or an
+        enclosing function's (Python ``global`` / ``nonlocal``); none in a
+        language without such statements."""
+        if node.type not in self.outer_decl_kinds:
+            return []
+        return _leaf_names(node, self.identifier_kinds)
 
     def handler_def_use(self, handler: Node) -> StatementDefUse:
         """What an exception handler's head reads and binds (the CFG records

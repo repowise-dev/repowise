@@ -209,7 +209,7 @@ class ExtractMethodDetector(RefactoringDetector):
             prefixes: dict[int, Any] = {}
             candidates = find_extractions(analysis, lmap, receiver, prefixes)
             best = _choose(analysis, candidates, markers)
-            staged = _staged(analysis, best, lmap, receiver, ctx.language, markers, prefixes)
+            staged = _staged(analysis, best, lmap, receiver, ctx.language, matched, prefixes)
             scope = _scope(fn_node, files) if staged is not None or best is not None else None
             if staged is not None:
                 split = self._staged_suggestion(ctx, analysis, staged, matched, names, receiver)
@@ -363,6 +363,20 @@ class ExtractMethodDetector(RefactoringDetector):
 REFUSED_DETAIL = "extract_method_refused"
 
 
+#: The finding detail naming why a stage that cleared every other check was
+#: not offered (``StagePlan.refused``), sorted.
+STAGE_REFUSED_DETAIL = "extract_method_stage_refused"
+
+
+def _mark_stage_refused(findings: list[Any], reasons: frozenset[str]) -> None:
+    if not reasons:
+        return
+    for f in findings:
+        details = getattr(f, "details", None)
+        if isinstance(details, dict):
+            details[STAGE_REFUSED_DETAIL] = sorted(reasons)
+
+
 def _mark_refused(findings: list[Any], reason: str) -> None:
     for f in findings:
         details = getattr(f, "details", None)
@@ -417,18 +431,22 @@ def _staged(
     lmap: LanguageNodeMap,
     receiver: Receiver | None,
     language: str | None,
-    markers: set[str],
+    findings: list[Any],
     prefixes: dict[int, Any] | None = None,
 ) -> StagePlan | None:
     """The staged split, when the function is too complex for one helper and
     the split lifts at least twice what the best single span does (several
     edits for a point or two more is not the better plan); each stage must
-    clear the floor a single span does."""
+    clear the floor a single span does. Why a stage was not offered is kept
+    on *findings* (:data:`STAGE_REFUSED_DETAIL`), so refusals are counted
+    from the index."""
+    markers = {getattr(f, "biomarker_type", "") for f in findings}
     # Only languages with a staged renderer, each with the outputs one call binds.
     max_returns = render.staged_outputs(language)
     if max_returns is None or analysis.ccn < _STAGE_MIN_CCN:
         return None
     plan = find_stages(analysis, lmap, receiver, max_returns=max_returns, prefixes=prefixes)
+    _mark_stage_refused(findings, plan.refused)
     if not plan.stages or (best is not None and plan.ccn_removed < 2 * best.ccn_removed):
         return None
     if not all(_worth_extracting(analysis, x, markers) for x in plan.stages):

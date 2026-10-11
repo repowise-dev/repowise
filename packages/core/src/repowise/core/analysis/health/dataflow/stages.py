@@ -49,7 +49,7 @@ from __future__ import annotations
 import re
 from bisect import bisect_right
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from ..complexity.nloc import is_string_stmt
@@ -69,7 +69,6 @@ from .slice import (
     _hoisted_bindings,
     _identifiers,
     _infer_in_out,
-    _outer_bindings,
     _outer_write_escapes,
     _Prefix,
     _reads_observing,
@@ -96,6 +95,9 @@ STAGE_MAX_NLOC = 60
 _STAGE_MIN_DECISIONS = 2
 # More shared values than a signature carries well (the slicer's own cap).
 _CONTEXT_OVER = 5
+# Why a stage that cleared every other check was not offered (``StagePlan.refused``).
+OUTER_WRITE = "outer_write"
+SWITCH_ARM_WRITE = "switch_arm_write"
 # A wrapper holding this share of a block's decision points is unwrapped.
 _WRAPPER_SHARE = 0.6
 # Loop bodies and ``if`` arms looked into below the outermost cut.
@@ -121,13 +123,16 @@ class StagePlan:
     object (empty: plain parameters), and per stage the names it reads that
     the function imports outside it, which the helper must import itself;
     ``moved_imports`` are those nothing left in the function reads.
-    ``reason`` says why there are no stages; None when there are."""
+    ``reason`` says why there are no stages; None when there are.
+    ``refused`` names why a stage that cleared every other check was not
+    offered (:data:`OUTER_WRITE`, :data:`SWITCH_ARM_WRITE`)."""
 
     stages: tuple[Extraction, ...] = ()
     context: tuple[str, ...] = ()
     imports: tuple[tuple[str, ...], ...] = ()
     moved_imports: frozenset[str] = frozenset()
     reason: str | None = None
+    refused: frozenset[str] = frozenset()
 
     @property
     def ccn_removed(self) -> int:
@@ -170,7 +175,7 @@ def find_stages(
         # A deeper level wins only by lifting more: ties keep the outer cut.
         if plan.stages and (best is None or plan.ccn_removed > best.ccn_removed):
             best = plan
-    return best or first or StagePlan(reason="no_tree")
+    return replace(best or first or StagePlan(reason="no_tree"), refused=frozenset(facts.refused))
 
 
 def _plan_block(
@@ -314,8 +319,9 @@ class _FunctionFacts:
         self.hoisted = _hoisted_bindings(self.def_lines, self.use_lines)
         self.decl_lines = _declaration_lines(def_use)
         self.shared = _closure_state(def_use, self.def_lines, self.use_lines)
-        self.outer = _outer_bindings(analysis.fn_node, lmap)
+        self.outer = def_use.outer
         self.arm_writes = _arm_writes(analysis, lmap)
+        self.refused: set[str] = set()
         self.reads = _reads_observing(analysis, self.def_lines)
         self.assigned = DefiniteAssignment(analysis)
         self.inner_bindings = _inner_bindings(def_use)
@@ -346,7 +352,10 @@ class _Cutter:
         self.declared_first = facts.declared_first
         self.hoisted = facts.hoisted
         self.decl_lines = facts.decl_lines
-        self.shared, self.outer, self.arm_writes = facts.shared, facts.outer, facts.arm_writes
+        self.shared = facts.shared
+        self.outer = facts.outer
+        self.arm_writes = facts.arm_writes
+        self.refused = facts.refused
         self.reads = facts.reads
         self.pre = pre
         self._assigns: dict[tuple[int, str], bool] = {}
@@ -430,9 +439,9 @@ class _Cutter:
         bound = self.assigned.before(s, e)
         if bound is None or not set(params) <= bound:
             return None
-        if not self._signature_holds(span, s, e, returns) or self._guard_needed_after(i, j, e):
-            return None
-        if self.arm_writes and self._arm_write_crosses(s, e, params):
+        if self._guard_needed_after(i, j, e) or not self._signature_holds(
+            span, s, e, params, returns
+        ):
             return None
         pre = self.pre
         uses, assigns = _receiver_facts(self.receiver, pre, i, j, 0)
@@ -490,38 +499,70 @@ class _Cutter:
             if names
         )
 
-    def _signature_holds(self, span: list[Node], s: int, e: int, returns: tuple[str, ...]) -> bool:
+    def _signature_holds(
+        self,
+        span: list[Node],
+        s: int,
+        e: int,
+        params: tuple[str, ...],
+        returns: tuple[str, ...],
+    ) -> bool:
         """The single-span slicer's own refusals: a hoisted binding, a
-        declaration the code after the stage still needs, a ``global`` write
-        that cannot take its declaration along, a local a closure shares
-        across the stage's edge."""
+        declaration the code after the stage still needs, a local a closure
+        shares across the stage's edge. Then the two a stage names in
+        ``refused``: a ``global`` write that cannot take its declaration
+        along, a ``switch`` / ``match`` arm write the interface depends on."""
         if any(s <= first_def <= e and first_use < s for first_def, first_use in self.hoisted):
-            return False
-        if self.outer and _outer_write_escapes(s, e, self.outer, self.def_lines):
             return False
         if _declaration_escapes(
             s, e, returns, self.decl_lines, self.def_lines, self.use_lines, self.declared_first
         ):
             return False
-        return self.shared is None or not _closure_state_crosses(
+        if self.shared is not None and _closure_state_crosses(
             self.shared, span, s, e, self.block, self.lmap
-        )
+        ):
+            return False
+        reason = self._interface_refusal(s, e, params, returns)
+        if reason is not None:
+            self.refused.add(reason)
+        return reason is None
 
-    def _arm_write_crosses(self, s: int, e: int, params: tuple[str, ...]) -> bool:
-        """Whether a ``switch`` / ``match`` arm's write can decide the
-        stage's interface. The CFG does not split arms, so liveness takes the
-        write as certain: a read after it would miss the value from before
-        it. Refused when the arm sits in the stage and the stage reads the
-        name after it, or sits outside and the stage takes or writes it."""
+    def _interface_refusal(
+        self, s: int, e: int, params: tuple[str, ...], returns: tuple[str, ...]
+    ) -> str | None:
+        if _outer_write_escapes(s, e, self.outer, self.def_lines):
+            return OUTER_WRITE
+        if self._arm_write_crosses(s, e, params, returns):
+            return SWITCH_ARM_WRITE
+        return None
+
+    def _arm_write_crosses(
+        self, s: int, e: int, params: tuple[str, ...], returns: tuple[str, ...]
+    ) -> bool:
+        """Whether a ``switch`` / ``match`` arm's write of a name live across
+        the stage's edge can decide its interface. The CFG keeps the
+        statement whole, so liveness takes the write as certain and hides
+        the value from before it: a read after the arm in the stage misses an
+        input, a stage before the arm misses an output, an input bound only
+        by the arm looks bound. Temporary: remove once the CFG splits arms
+        (#3451)."""
+        taken = set(params)
         for lo, hi, names in self.arm_writes:
-            if s <= lo and hi <= e:
-                reads = (ln for v in names for ln in self.use_lines.get(v, ()))
-                if any(hi < ln <= e for ln in reads):
+            for var in names:
+                defs = self.def_lines.get(var, ())
+                uses = self.use_lines.get(var, ())
+                if s <= lo and hi <= e:
+                    hazard = var not in taken and any(d < s for d in defs) and any(
+                        hi < u <= e for u in uses
+                    )
+                elif hi < s:
+                    hazard = var in taken and not any(d < lo for d in defs)
+                else:
+                    hazard = var not in returns and any(s <= d <= e for d in defs) and any(
+                        u > hi for u in uses
+                    )
+                if hazard:
                     return True
-            elif names & set(params) or any(
-                s <= ln <= e for v in names for ln in self.def_lines.get(v, ())
-            ):
-                return True
         return False
 
     def _with_inouts(
@@ -591,27 +632,21 @@ def _rereads(analysis: FunctionAnalysis) -> frozenset[str]:
 def _arm_writes(
     analysis: FunctionAnalysis, lmap: LanguageNodeMap
 ) -> tuple[tuple[int, int, frozenset[str]], ...]:
-    """Per ``switch`` / ``match`` statement in the function's own scope, its
-    lines and the names an arm writes without declaring them. A text test
-    first: most functions hold none."""
-    fn = analysis.fn_node
-    text = (fn.text if fn is not None else None) or b""
-    if not lmap.switch_kinds or (b"switch" not in text and b"match" not in text):
+    """Per ``switch`` / ``match`` statement the flow graph keeps whole, its
+    lines and the names an arm writes without declaring them."""
+    if not lmap.switch_kinds:
         return ()
-    nested = lmap.function_kinds | lmap.lambda_kinds | lmap.class_kinds
-    found: list[tuple[int, int]] = []
-    stack = [fn.child_by_field_name("body")]
-    while stack:
-        node = stack.pop()
-        if node is None or node.type in nested:
-            continue
-        if node.type in lmap.switch_kinds:
-            found.append((node.start_point[0] + 1, node.end_point[0] + 1))
-        stack.extend(node.named_children)
-    defs = analysis.def_use.definitions
+    found = [
+        (st.start_line, st.end_line)
+        for block in analysis.cfg.blocks
+        for st in block.statements
+        if st.kind in lmap.switch_kinds
+    ]
     out = []
     for lo, hi in found:
-        names = frozenset(d.var for d in defs if lo <= d.line <= hi and not d.declares)
+        names = frozenset(
+            d.var for d in analysis.def_use.definitions if lo <= d.line <= hi and not d.declares
+        )
         if names:
             out.append((lo, hi, names))
     return tuple(out)
@@ -747,4 +782,11 @@ def _composes(
     return tuple(tuple(sorted(names)) for names in imported), moved
 
 
-__all__ = ["STAGE_MAX_CCN", "STAGE_MAX_NLOC", "StagePlan", "find_stages"]
+__all__ = [
+    "OUTER_WRITE",
+    "STAGE_MAX_CCN",
+    "STAGE_MAX_NLOC",
+    "SWITCH_ARM_WRITE",
+    "StagePlan",
+    "find_stages",
+]

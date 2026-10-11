@@ -65,9 +65,6 @@ _MAX_CANDIDATES = 4000
 # nearly all of those at 0.8 or more left only such a shell. The span offered
 # instead may be the same block minus a statement, just under the cut.
 _MAX_BODY_SHARE = 0.75
-# Python's declarations that a name in the function is the module's or an
-# enclosing function's, not a local.
-_OUTER_DECL_KINDS = frozenset({"global_statement", "nonlocal_statement"})
 
 
 @dataclass(frozen=True)
@@ -193,7 +190,8 @@ def find_extractions(
     hoisted = _hoisted_bindings(def_lines, use_lines)
     decl_lines = _declaration_lines(analysis.def_use)
     shared = _closure_state(analysis.def_use, def_lines, use_lines)
-    outer = _outer_bindings(fn_node, lmap)
+    outer = analysis.def_use.outer
+    carry_defs = _rebinding_defs_dropped(analysis, def_lines, lmap)
     scan = _scan_for(lmap, receiver, fn_node)
     scope_kinds = scan.scopes
     free_writes = _free_write_lines(analysis.def_use) if receiver and receiver.implicit else []
@@ -256,18 +254,16 @@ def find_extractions(
                     continue
                 if any(s <= first_def <= e and first_use < s for first_def, first_use in hoisted):
                     continue
-                if _declaration_escapes(
-                    s, e, returns, decl_lines, def_lines, use_lines, declared_first
+                if _bindings_escape(
+                    s, e, returns, decl_lines, def_lines, use_lines, declared_first, outer
                 ):
                     continue
                 if pre.nested[j + 1] > pre.nested[i]:
                     continue
-                if outer and _outer_write_escapes(s, e, outer, def_lines):
-                    continue
                 if shared is not None and _closure_state_crosses(shared, span, s, e, block, lmap):
                     continue
                 if loop is not None and not _loop_carry_free(
-                    span, loop, s, e, def_lines, use_lines, lmap
+                    span, loop, s, e, carry_defs, use_lines, lmap
                 ):
                     continue
                 uses, assigns = _receiver_facts(receiver, pre, i, j, _count_in(free_writes, s, e))
@@ -971,24 +967,22 @@ def _declaration_escapes(
     )
 
 
-def _outer_bindings(fn_node: Node, lmap: LanguageNodeMap) -> dict[str, frozenset[int]]:
-    """Per name the function declares ``global`` / ``nonlocal`` in its own
-    scope, the declaring lines. A text test first: most functions have none."""
-    text = fn_node.text or b""
-    if b"global" not in text and b"nonlocal" not in text:
-        return {}
-    body = fn_node.child_by_field_name("body")
-    nested = lmap.function_kinds | lmap.lambda_kinds | lmap.class_kinds
-    lines: dict[str, set[int]] = defaultdict(set)
-    stack = [body] if body is not None else []
-    while stack:
-        node = stack.pop()
-        if node.type in _OUTER_DECL_KINDS:
-            for name in node.named_children:
-                lines[(name.text or b"").decode("utf-8", "replace")].add(node.start_point[0] + 1)
-        elif node.type not in nested:
-            stack.extend(node.named_children)
-    return {var: frozenset(found) for var, found in lines.items()}
+def _bindings_escape(
+    s: int,
+    e: int,
+    returns: tuple[str, ...],
+    decl_lines: dict[str, frozenset[int]],
+    def_lines: dict[str, list[int]],
+    use_lines: dict[str, list[int]],
+    declared_first: dict[str, frozenset[int]],
+    outer: dict[str, frozenset[int]],
+) -> bool:
+    """A binding the span cannot take along: a declaration the code after it
+    still needs (:func:`_declaration_escapes`), or a ``global`` / ``nonlocal``
+    write whose declaration stays behind (:func:`_outer_write_escapes`)."""
+    return _declaration_escapes(
+        s, e, returns, decl_lines, def_lines, use_lines, declared_first
+    ) or _outer_write_escapes(s, e, outer, def_lines)
 
 
 def _outer_write_escapes(
@@ -1156,6 +1150,36 @@ def _branch_assigns(node: Node, var: str, defs: list[int], lmap: LanguageNodeMap
         container = _unwrap_container(node, lmap.block_kinds)
         return _stmts_assign(container.named_children, var, defs, lmap)
     return _stmts_assign(list(node.named_children), var, defs, lmap)
+
+
+def _rebinding_defs_dropped(
+    analysis: FunctionAnalysis, def_lines: dict[str, list[int]], lmap: LanguageNodeMap
+) -> dict[str, list[int]]:
+    """*def_lines* without the names exception handlers bind on their head
+    line (``except E as e:``, ``catch (err)``). Such a binding never reaches
+    the next iteration: Python unbinds it at the handler's end and a catch
+    parameter is scoped to its block, so a read of the name elsewhere in the
+    loop is another handler's own."""
+    heads = [
+        st.node
+        for block in analysis.cfg.blocks
+        for st in block.statements
+        if st.is_head and st.kind in lmap.catch_kinds and st.node is not None
+    ]
+    if not heads:
+        return def_lines
+    bound: set[tuple[str, int]] = set()
+    for head in heads:
+        # Only the clause's own binder: before its body, so a one-line body's
+        # write on the same line still counts.
+        body = next((c for c in head.named_children if c.type in lmap.block_kinds), None)
+        end = body.start_point if body is not None else head.end_point
+        bound |= {
+            (d.var, d.line)
+            for d in analysis.def_use.definitions
+            if head.start_point <= (d.line - 1, d.column) < end
+        }
+    return {var: [ln for ln in lines if (var, ln) not in bound] for var, lines in def_lines.items()}
 
 
 def _loop_carry_free(

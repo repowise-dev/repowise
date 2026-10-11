@@ -11,8 +11,15 @@ from __future__ import annotations
 
 import textwrap
 
+import pytest
+
 from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import find_extractions
+from repowise.core.analysis.health.refactoring.extract_method import (
+    STAGE_REFUSED_DETAIL,
+    ExtractMethodDetector,
+)
+from repowise.core.analysis.health.refactoring.models import RefactoringContext
 from tests.unit.health.test_extract_method_stages import (
     _functions,
     _item_section,
@@ -20,6 +27,28 @@ from tests.unit.health.test_extract_method_stages import (
     _plans,
     _ts_section,
 )
+
+
+class _Finding:
+    def __init__(self, fn):
+        self.biomarker_type, self.function_name = "complex_method", fn.name
+        self.line_start, self.health_impact, self.details = fn.start_line, 2.0, {}
+
+
+def _refused(src: str, language: str = "python", ext: str = "py") -> dict[str, list[str]]:
+    """Per function, the stage refusal reasons the detector records."""
+    fns = _functions(src, language, ext)
+    findings = [_Finding(f) for f in fns]
+    ctx = RefactoringContext(
+        file_path=f"m.{ext}", language=language, nloc=300, findings=findings, function_analyses=fns
+    )
+    ExtractMethodDetector().detect(ctx)
+    return {f.function_name: f.details.get(STAGE_REFUSED_DETAIL, []) for f in findings}
+
+
+def _spans(src: str, name: str, language: str = "python", ext: str = "py"):
+    fn = next(f for f in _functions(src, language, ext) if f.name == name)
+    return find_extractions(fn, get_language_map(language))
 
 
 def _stage_holding(plan, src: str, text: str) -> dict:
@@ -233,3 +262,223 @@ def test_a_stage_never_reads_past_a_switch_arm_write_it_did_not_take():
         for stage in stages:
             if stage["span"]["start"] <= arm and read <= stage["span"]["end"]:
                 assert "last" in stage["params"], stmt
+
+
+def test_a_global_refusal_is_counted_under_its_reason():
+    body = "".join(
+        _item_section(n, extra="\n            _CACHE = item" if n == 3 else "") for n in range(8)
+    )
+    src = _GLOBAL_FN.format(
+        opts=", ".join(f"opt_{n}" for n in range(8)),
+        body=textwrap.indent(textwrap.dedent(body), " " * 8),
+    )
+    assert _refused(src)["resolve"] == ["outer_write"]
+
+
+def test_a_switch_arm_refusal_is_counted_and_a_dead_arm_name_is_not_refused():
+    hazard = _ts_loop("switch (mode) { case 1: last = item; break; }")
+    assert _refused(hazard, "typescript", "ts")["run"] == ["switch_arm_write"]
+    # An arm writing a name nothing reads past the edge decides nothing.
+    quiet = _ts_loop("switch (mode) { case 1: tally = item; break; }").replace(
+        "mode, last,", "mode, last, tally,"
+    )
+    assert _refused(quiet, "typescript", "ts")["run"] == []
+    stages = _plans(quiet, "typescript", "ts")["run"].plan["stages"]
+    arm = next(i for i, ln in enumerate(quiet.splitlines(), 1) if "switch (mode)" in ln)
+    assert any(s["span"]["start"] <= arm <= s["span"]["end"] for s in stages)
+
+
+# -- closures and outer scopes ----------------------------------------------------
+
+_NONLOCAL = """
+def outer(items, flag):
+    count = 0
+
+    def bump():
+        BODY
+
+    for it in items:
+        if it and flag:
+            bump()
+            if it.big:
+                bump()
+                log(it)
+        print(count)
+    return count
+"""
+
+
+def test_a_span_calling_a_closure_that_writes_nonlocal_is_not_offered():
+    # The closure rebinds the function's ``count`` with no declaration in the
+    # function itself: a helper taking ``count`` would print a stale copy.
+    plain = _spans(_NONLOCAL.replace("BODY", "log(1)"), "outer")
+    assert any(x.start_line == 9 for x in plain)
+    assert _spans(_NONLOCAL.replace("BODY", "nonlocal count\n        count += 1"), "outer") == []
+
+
+def test_only_the_function_s_own_global_statements_count():
+    # A nested function's ``global`` is its own: the enclosing function's
+    # write of that name stays a local of the enclosing function.
+    src = """
+    def outer(items, flag):
+        _D = 0
+
+        def inner():
+            global _D
+            _D = 1
+
+        for it in items:
+            if it and flag:
+                _D = it
+                if it.big:
+                    log(it)
+                    _D += 1
+        return _D, inner
+    """
+    fn = _functions(src)[0]
+    assert fn.def_use.outer == {}
+    own = _functions("def f():\n    global _C\n    _C = 1\n")[0]
+    assert own.def_use.outer == {"_C": frozenset({2})}
+
+
+# -- exception handler heads ---------------------------------------------------------
+
+
+def test_a_read_of_the_exception_name_after_its_handler_takes_it_in():
+    # Python unbinds ``e`` at the handler's end, which is not modelled: the
+    # read after it is an error in the original, and the span is offered with
+    # ``e`` as an input (documented over-supply, never a lost value).
+    src = """
+    def f(items, flag):
+        total = len(items)
+        try:
+            run(items)
+        except ValueError as e:
+            log(e)
+        print(total)
+        if flag and items:
+            note(e)
+            if items[0] or flag:
+                warn(e)
+                count(items)
+            done(items)
+        return items
+    """
+    spans = [x for x in _spans(src, "f") if x.start_line >= 8]
+    assert spans and all("e" in x.params for x in spans)
+
+
+_TS_CATCH = """function f(items, flag) {
+  for (const it of items) {
+    try {
+      run(it);
+    } catch ({ message }) {
+      if (flag && it.big) {
+        log(message);
+        if (it.small || flag) {
+          warn(message, it);
+        }
+      }
+      report(message);
+    }
+  }
+  return items;
+}
+"""
+
+
+def test_typescript_catch_binds_its_parameter_pattern():
+    fn = _functions(_TS_CATCH, "typescript", "ts")[0]
+    # The handler entry turns ``branch`` when an ``if`` opens it: find it by its head.
+    handler = next(b for b in fn.cfg.blocks if b.statements and b.statements[0].kind == "catch_clause")
+    head = fn.def_use.block(handler.id)
+    assert [(d.var, d.declares) for d in head.defs] == [("message", True)]
+    spans = _spans(_TS_CATCH, "f", "typescript", "ts")
+    assert spans and all("message" in x.params for x in spans)
+
+
+def test_a_closure_catch_parameter_is_its_own():
+    fn = _functions(
+        """function f(xs) {
+  try { run(xs); } catch (err) { log(err); }
+  const g = () => {
+    try {
+      run();
+    } catch (err) {
+      log(err);
+    }
+  };
+  return g;
+}
+""",
+        "typescript",
+        "ts",
+    )[0]
+    captured = fn.def_use.captured
+    assert "err" not in {o.name for o in (*captured.reads, *captured.shared, *captured.writes)}
+
+
+def test_except_star_and_nested_handlers_get_heads():
+    fn = _functions(
+        """
+        def f(x):
+            try:
+                g(x)
+            except* ValueError as group:
+                try:
+                    h(group)
+                except KeyError as inner:
+                    log(inner, group)
+        """
+    )[0]
+    heads = {
+        (b.statements[0].start_line, b.statements[0].is_head)
+        for b in fn.cfg.blocks
+        if b.kind == "handler"
+    }
+    assert heads == {(5, True), (8, True)}
+    defs = {(d.var, d.line) for d in fn.def_use.definitions}
+    assert {("group", 5), ("inner", 8)} <= defs
+
+
+@pytest.mark.parametrize(
+    ("language", "ext", "src"),
+    [
+        ("java", "java", "class A { int f(int x) { try { g(x); } catch (Exception e) { h(e); } return x; } }"),
+        ("csharp", "cs", "class A { int F(int x) { try { G(x); } catch (Exception e) { H(e); } return x; } }"),
+    ],
+)
+def test_other_languages_read_nothing_new_at_a_handler_head(language, ext, src):
+    fn = _functions(src, language, ext)[0]
+    handler = next(b for b in fn.cfg.blocks if b.kind == "handler")
+    head = handler.statements[0]
+    assert head.is_head
+    bdu = fn.def_use.block(handler.id)
+    assert [d for d in bdu.defs if d.line == head.start_line] == []
+    assert [u for u in bdu.uses if u.line == head.start_line and u.name == "Exception"] == []
+
+
+def test_a_handler_rebinding_a_name_in_a_loop_carries_nothing():
+    # hermes ``_install_memory_provider_external_dependencies``: each handler
+    # binds its own ``exc``; the span holding the second one is not loop-carried.
+    src = """
+    def install(deps, results):
+        for dep in deps:
+            try:
+                setup(dep)
+            except Exception as exc:
+                results.append(str(exc))
+            if dep.check and dep.name:
+                try:
+                    verify(dep)
+                    if dep.slow or dep.big:
+                        wait(dep)
+                except Exception as exc:
+                    results.append(str(exc))
+            log(dep)
+            record(dep, results)
+            notify(dep)
+            flush(results)
+        return results
+    """
+    assert any(x.start_line == 8 for x in _spans(src, "install"))

@@ -100,7 +100,9 @@ class PythonDefUseDialect(BaseDefUseDialect):
 
     def handler_def_use(self, handler: Node) -> StatementDefUse:
         """``except E as e:`` reads ``E`` and binds ``e``: the same ``value``
-        field shape as a ``with`` item."""
+        field shape as a ``with`` item. Python unbinds ``e`` when the handler
+        ends; that is not modelled, so a later read of ``e`` (an error in the
+        original too) sees this binding and a span holding it takes ``e`` in."""
         defs: list[Occurrence] = []
         uses: list[Occurrence] = []
         self._with_item(handler, defs, uses)
