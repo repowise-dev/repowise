@@ -187,6 +187,8 @@ def test_an_unresolved_or_rebound_call_is_not_a_guard(prefix, condition):
 def test_a_namespace_read_is_a_guard_and_a_java_method_call_is_not():
     ts = _QUERY_TS.replace("opts.labels === true", "Number.isFinite(opts.limit)")
     assert _flat(ts, "typescript", "ts")
+    # A file's own ``Number`` is not the global one.
+    assert not _flat('import { Number } from "./num";\n' + ts, "typescript", "ts")
     java = _JAVA.replace("cfg.name != null", "cfg.name.isEmpty()")
     assert not _flat(java, "java", "java")
 

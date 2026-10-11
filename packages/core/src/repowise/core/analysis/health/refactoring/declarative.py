@@ -293,9 +293,8 @@ def _rebound(name: str, census: _Census) -> bool:
         return True
     if census.file_names is None:
         root = _file_root(census.fn_node)
-        # ``imported_names`` counts the global namespaces too; only a file's own
-        # definition can rebind those.
-        imports = imported_names(root) - {ns for ns, _ in _NAMESPACE_CALLS}
+        # The file's own imports only: an imported ``Number`` is not the global.
+        imports = imported_names(root, namespaces=False)
         census.file_names = imports | defined_names(root, census.lmap)
     return name in census.file_names
 
