@@ -10,7 +10,6 @@ from dataclasses import dataclass
 
 import pytest
 
-from repowise.core.ingestion.parser import _get_language
 from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import analyze_file, find_extractions
 from repowise.core.analysis.health.refactoring import detect_refactorings
@@ -21,6 +20,7 @@ from repowise.core.analysis.health.refactoring.extract_method import (
     recovered_share,
 )
 from repowise.core.analysis.health.refactoring.models import RefactoringContext
+from repowise.core.ingestion.parser import _get_language
 
 # A long function whose tail (compute-average loop) is a clean extraction.
 _PROCESS = """
