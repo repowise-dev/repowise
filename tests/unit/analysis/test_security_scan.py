@@ -284,6 +284,8 @@ class TestScanFile:
             'api_key = "your-api-key-here"\n',
             'api_key = "<YOUR_API_KEY>"\n',
             'password = "fixture-value"\n',
+            'api_key = "«redacted:sk-repo»"\n',
+            'OPENAI_API_KEY = "[REDACTED]-k3y-0f-mine"\n',
         ],
     )
     def test_credential_placeholder_filtering(self, source: str) -> None:
@@ -291,6 +293,25 @@ class TestScanFile:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
         assert not any(f["kind"] in {"hardcoded_password", "hardcoded_secret"} for f in findings)
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("auth", True),
+            ("Password", True),
+            ("jwt", True),
+            ("crypto", True),
+            # A database session, a pytest fixture, a lexer token.
+            ("session", False),
+            ("SESSION", False),
+            ("Token", False),
+            ("get_token", False),
+        ],
+    )
+    def test_security_sensitive_symbol_names(self, name: str, expected: bool) -> None:
+        sym = SimpleNamespace(name=name, start_line=3)
+        kinds = {f["kind"] for f in scan_source("m.py", "", [sym])}
+        assert ("security_sensitive_symbol" in kinds) is expected
 
     @pytest.mark.parametrize(
         "file_path",

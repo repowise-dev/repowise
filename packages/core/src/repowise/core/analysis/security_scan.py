@@ -82,6 +82,7 @@ _CREDENTIAL_SUBSTRING_PLACEHOLDERS: tuple[str, ...] = (
     "...",
     "\u2026",  # a typographic ellipsis
     "fixture",
+    "redacted",
 )
 
 # Broader than ``is_test_related_path`` on purpose. That one asks whether a file
@@ -402,8 +403,10 @@ _SPANNING_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     ),
 ]
 
-# Symbol names that are informational security hotspots
-_SYMBOL_KEYWORDS = re.compile(r"\b(auth|token|password|jwt|session|crypto)\b", re.IGNORECASE)
+# Symbol names that are informational security hotspots. Not ``session`` or
+# ``token``: a symbol named only that is a database session, a pytest fixture or
+# a lexer token far more often than auth code.
+_SYMBOL_KEYWORDS = re.compile(r"\b(auth|password|jwt|crypto)\b", re.IGNORECASE)
 
 # Kinds that name a dangerous call. They are matched against source with
 # comments and string literals blanked, so a docstring, a comment or a regex

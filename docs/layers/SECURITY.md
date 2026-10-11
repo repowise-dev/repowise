@@ -73,7 +73,7 @@ material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 | `reject_unauthorized_false` | med | `rejectUnauthorized: false` |
 | `unsafe_inner_html` | med | `__html:` (React's `dangerouslySetInnerHTML`) assigned a non-literal |
 | `weak_hash` | low | MD5 or SHA-1 in use in code: a call (`hashlib.md5(`), a type (`MD5.Create()`) or the algorithm named to a hashing call (`createHash("sha1")`). A call passing `usedforsecurity=False` does not fire |
-| `security_sensitive_symbol` | low | a symbol named with `auth`, `token`, `password`, `jwt`, `session` or `crypto` |
+| `security_sensitive_symbol` | low | a symbol named `auth`, `password`, `jwt` or `crypto`. A bare `session` or `token` is usually a database session or a lexer token and does not fire |
 
 `security_sensitive_symbol` is informational: it marks where security code
 lives, not a problem.
@@ -100,7 +100,7 @@ and the in-change commit scan report only these by default.
   `public_env_secret` do not fire in Python files, where such a line can only be
   quoted text.
 - **Placeholders are skipped**: a keyword value that is elided or templated
-  (`...`, `<your key>`, `xxx`, `example`, `placeholder`, `dummy`, `fake`,
+  (`...`, `<your key>`, `xxx`, `example`, `placeholder`, `dummy`, `fake`, `redacted`,
   `changeme`, `{{ }}`, `${}`), shorter than eight characters, a short
   single-case word, or a snake_case key name. A value a vendor kind already
   reports is not reported twice.
