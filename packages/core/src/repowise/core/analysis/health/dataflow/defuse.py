@@ -49,6 +49,8 @@ class Definition:
     declares: bool = False
     #: An import binds the name (``Occurrence.imports``).
     imports: bool = False
+    #: The write may not happen (``Occurrence.may``).
+    may: bool = False
 
 
 @dataclass
@@ -110,6 +112,7 @@ def compute_def_use(
             declared_at=occ.declared_at,
             declares=occ.declares,
             imports=occ.imports,
+            may=occ.may,
         )
         counter += 1
         bdu.defs.append(definition)

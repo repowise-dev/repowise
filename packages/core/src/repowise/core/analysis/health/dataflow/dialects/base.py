@@ -77,6 +77,11 @@ class Occurrence:
     #: A name an import statement binds (Python ``import a.b`` binds ``a``).
     #: A lifted span re-imports it rather than pass or return it.
     imports: bool = False
+    #: A write to an existing name that may not happen, inside a statement the
+    #: CFG keeps whole (a ``switch`` / ``match`` arm). The value from before it
+    #: can still be the one a later read sees, so reaching definitions lets it
+    #: add to what reaches and hide nothing.
+    may: bool = False
 
 
 @dataclass(frozen=True)
@@ -541,12 +546,13 @@ class BaseDefUseDialect:
         Each def found within is recorded as a def AND a use: the may-def keeps
         the variable in every "written in this region" set while its paired use
         stays upward-exposed, so a downstream must-def proof can only get more
-        conservative, never less. The paired use is marked :attr:`Occurrence.echo`.
+        conservative, never less. The paired use is marked :attr:`Occurrence.echo`
+        and the def :attr:`Occurrence.may` (:func:`may_defs`).
         """
         inner_defs: list[Occurrence] = []
         for child in node.named_children:  # not the node itself: no re-dispatch
             self._process(child, inner_defs, uses)
-        defs.extend(inner_defs)
+        defs.extend(may_defs(inner_defs))
         uses.extend(echoes(inner_defs))
 
 
@@ -617,6 +623,16 @@ def _leaf_names(node: Node, kinds: frozenset[str]) -> list[Occurrence]:
 def echoes(defs: list[Occurrence]) -> list[Occurrence]:
     """The may-def uses paired with *defs* (see :attr:`Occurrence.echo`)."""
     return [replace(occ, echo=True) for occ in defs]
+
+
+def may_defs(defs: list[Occurrence]) -> list[Occurrence]:
+    """*defs* as writes that may not happen (see :attr:`Occurrence.may`).
+
+    A name the arm declares itself (``declares``) is left as it is: it is a
+    new binding for the rest of the arm, not a write to the variable the code
+    before it set, and arms reuse such names freely.
+    """
+    return [occ if occ.declares else replace(occ, may=True) for occ in defs]
 
 
 def _written_before_read(writes: list[Occurrence], reads: list[Occurrence]) -> set[str]:
