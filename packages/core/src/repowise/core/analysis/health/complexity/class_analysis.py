@@ -130,6 +130,12 @@ def _collect_class_body(
                 body.methods.append(node)
         elif node.type in lmap.field_decl_kinds:
             body.field_decls.append(node)
+            # A Swift property holds its own function units: a computed
+            # property's body, a ``willSet`` / ``didSet`` block. They are
+            # members like any method. The unit carries the property's name, so
+            # a reference to it is a reference to a method, not to a field.
+            units = [child for child in node.children if is_function_node(child, lmap)]
+            body.methods.extend(u for u in units if _is_own_method(u, lmap, language, source))
         elif node.type not in lmap.nested_type_kinds:
             stack.extend(node.children)
     return body

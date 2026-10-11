@@ -341,7 +341,7 @@ def test_a_local_type_s_members_are_units():
     walked = _walk(source)
 
     assert {f.name: f.ccn for f in walked.functions} == {"make": 1, "doubled": 2, "get": 2}
-    assert [(c.name, c.method_count) for c in walked.classes] == [("Local", 1)]
+    assert [(c.name, c.method_count) for c in walked.classes] == [("Local", 2)]
 
 
 def test_a_closure_at_file_level_is_a_unit_of_its_own():
@@ -425,4 +425,46 @@ def test_self_dot_member_and_a_bare_member_both_reach_the_field():
     (cls,) = _walk(source).classes
 
     assert (cls.method_count, cls.field_count, cls.tcc) == (2, 1, 1.0)
+
+
+def test_a_property_s_units_are_members_of_its_class():
+    """Every function row inside the class is one of its methods: a computed
+    property, a ``get`` / ``set`` pair, a ``willSet`` / ``didSet`` block and a
+    subscript beside ``init`` and the ``func``."""
+    source = (
+        "class C {\n"
+        "    var items: [Int] = []\n"
+        "    var watched: Int = 0 { willSet { if newValue > 0 { log() } } didSet { log() } }\n"
+        "    var total: Int { return items.count > 0 ? items[0] : 0 }\n"
+        "    var first: Int { get { return items[0] } set { items = [newValue] } }\n"
+        "    init(x: Int) { self.items = [x] }\n"
+        "    subscript(i: Int) -> Int { return items[i] }\n"
+        "    func a() -> Int { return total + watched }\n"
+        "}\n"
+    )
+
+    walked = _walk(source)
+    (cls,) = walked.classes
+
+    rows = sorted(f.name for f in walked.functions)
+    assert rows == ["a", "first", "init", "subscript", "total", "watched"]
+    assert sorted(m.name for m in cls.methods) == rows
+    assert cls.method_count == 6
+    assert cls.max_method_ccn == 2
+
+
+def test_a_computed_property_is_not_counted_as_a_field():
+    """It stores nothing. ``doubled`` reads the one stored property and ``m``
+    calls ``doubled``: one field, and the two members are one component."""
+    source = (
+        "struct S {\n"
+        "    var n = 0\n"
+        "    var doubled: Int { return n * 2 }\n"
+        "    func m() -> Int { return doubled + 1 }\n"
+        "}\n"
+    )
+
+    (cls,) = _walk(source).classes
+
+    assert (cls.method_count, cls.field_count, cls.lcom4) == (2, 1, 1)
 
