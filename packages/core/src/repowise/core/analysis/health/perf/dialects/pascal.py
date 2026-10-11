@@ -441,8 +441,8 @@ class PascalPerfDialect(IterableSources):
             return "constant", "bounded"
         return found
 
-    def _counted(self, stop: Node, loop: Node, probe: SinkProbe) -> Source:
-        return super()._counted(self._size_of_last_index(stop), loop, probe)
+    def _counted(self, stop: Node, loop: Node, probe: SinkProbe, *, hop: bool = True) -> Source:
+        return super()._counted(self._size_of_last_index(stop), loop, probe, hop=hop)
 
     def _size_of_last_index(self, node: Node) -> Node:
         """``Length(xs)`` of ``Length(xs) - 1`` / ``Pred(Length(xs))``: an inclusive

@@ -150,19 +150,31 @@ _PARENT_KEY = re.compile(
 )
 
 
+_RECURSIVE = re.compile(rb"\bRECURSIVE\b", re.IGNORECASE)
+_UNION = re.compile(rb"\bUNION\b", re.IGNORECASE)
+
+
 def is_parent_key_filter(text: bytes) -> bool:
-    """The read filters on equality with one foreign key."""
+    """The read filters on equality with one foreign key, or walks the tree
+    below one row: a ``WITH RECURSIVE`` whose seed (the part before the first
+    ``UNION``) keys on one id. A key only in the recursive member says nothing
+    about how many roots the seed starts from."""
+    recursive = _RECURSIVE.search(text)
+    if recursive is not None:
+        seed = _UNION.split(text[recursive.end() :], maxsplit=1)[0]
+        if _KEY_EQUALITY.search(seed):
+            return True
     return bool(_PARENT_KEY.search(text))
 
 
 _SQL_LIMIT = re.compile(
-    rb"\bselect\b.*?(?:\blimit\s+\d+\b|\btop\s*\(?\s*\d+|\bfetch\s+first\s+\d+)",
+    rb"\bselect\b.*?(?:\blimit\s+(?:\d+\b|\?|\$\d|:\w)|\btop\s*\(?\s*\d+|\bfetch\s+first\s+\d+)",
     re.IGNORECASE | re.DOTALL,
 )
 
 
 def has_sql_limit(text: bytes) -> bool:
-    """A SELECT capped at a literal row count (``LIMIT 10``, ``TOP 5``)."""
+    """A SELECT capped at a row count (``LIMIT 10``, ``LIMIT ?``, ``TOP 5``)."""
     return bool(_SQL_LIMIT.search(text))
 
 

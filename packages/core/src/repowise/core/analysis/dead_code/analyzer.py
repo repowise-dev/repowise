@@ -55,6 +55,7 @@ from .constants import (
 )
 from .contract_methods import is_com_method_implementation, is_contract_method
 from .csharp_reachability import build_csharp_named_files, build_csharp_named_types
+from .deletion_gate import apply_deletion_gate
 from .dynamic_markers import (
     find_dynamic_edge_files,
     find_dynamic_import_files,
@@ -1034,6 +1035,8 @@ class DeadCodeAnalyzer:
             self._published_api_languages(findings, type_names),
             BuildFacts(repo_root=self._repo_root, dotnet_index=self._dotnet_index),
         )
+
+        findings = apply_deletion_gate(findings, self.graph, self._repo_root)
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
