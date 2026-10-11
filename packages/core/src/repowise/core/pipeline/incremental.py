@@ -59,12 +59,17 @@ def build_repo_graph(
     include_nested_repos: bool = False,
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
+    read_only: bool = False,
 ) -> tuple[list, dict[str, bytes], Any, Any, int]:
     """Traverse + parse the repo and build the graph (+ framework-aware edges).
 
-    Shared by the incremental rebuild path (:func:`rebuild_graph_and_git`) and
-    the config-triggered re-score path so both build the same graph from the
-    same parser and the same synthetic edge step.
+    Shared by the incremental rebuild path (:func:`rebuild_graph_and_git`),
+    the config-triggered re-score path and the commands that analyze the
+    working tree live, so all of them build the same graph from the same
+    parser and the same synthetic edge steps.
+
+    ``read_only`` is for those live commands: the parse cache is read but
+    never written, and no structural episodes or centrality cache are kept.
 
     Files that fail to read/parse are skipped and reported as a count rather than
     swallowed silently. ``source_map`` is populated only when ``collect_sources``
@@ -105,12 +110,13 @@ pass reads the sources.
     # Structural episodes, minus the formatter check: this path is the hot one
     # (every update, plus the config-triggered re-score), so it derives only
     # what the walk has already paid for and never spawns a subprocess.
-    try:
-        from repowise.core.precedent.structural import record_structural_episodes
+    if not read_only:
+        try:
+            from repowise.core.precedent.structural import record_structural_episodes
 
-        record_structural_episodes(repo_path, traverser, allow_formatter_check=False)
-    except Exception:
-        pass
+            record_structural_episodes(repo_path, traverser, allow_formatter_check=False)
+        except Exception:
+            pass
 
     # Thread-pool source reads + content-hash parse cache split, shared with
     # the init parse phase: only changed files need a tree-sitter parse.
@@ -125,6 +131,8 @@ pass reads the sources.
     with timed(timings, "rebuild.read"):
         fi_and_bytes = _read_sources(file_infos, None)
         parse_cache, cached_hits, to_parse = _split_cached(Path(repo_path), fi_and_bytes, None)
+    if read_only:
+        parse_cache = None  # hits above still count; misses are not stored
 
     parser: Any = None  # constructed lazily — every-file-cached updates skip query compilation
     parsed_files: list = []
@@ -132,7 +140,7 @@ pass reads the sources.
     graph_builder = GraphBuilder(
         repo_path,
         exclude_patterns=exclude_patterns,
-        centrality_cache_dir=Path(repo_path) / ".repowise",
+        centrality_cache_dir=None if read_only else Path(repo_path) / ".repowise",
         head_commit=get_head_commit(Path(repo_path)),
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,

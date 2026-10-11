@@ -12,6 +12,7 @@ from rich.table import Table
 from repowise.cli.helpers import (
     console,
     get_head_commit,
+    load_config,
     load_state,
     repo_index_session,
     resolve_command_target,
@@ -102,84 +103,39 @@ def _finding_order(f: DeadCodeFindingData) -> tuple:
 
 
 def _analyze_live(repo_path: Path, config: dict, notices: Any) -> DeadCodeReport:
-    """Parse the working tree and run the analyzer over it."""
+    """Parse the working tree and run the analyzer over it.
+
+    The graph is the one ``update`` builds (same file set, framework and
+    dynamic-hint edges), so a live answer differs from the stored one only by
+    the code that changed. ``read_only`` keeps this command from writing into
+    the index.
+    """
     from repowise.core.analysis.dead_code import DeadCodeAnalyzer
-    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+    from repowise.core.ingestion.git_indexer import GitIndexer
+    from repowise.core.pipeline.incremental import build_repo_graph
 
-    # Ingest — honor the persisted submodule flags so the analyzed file set
-    # matches what `init` indexed (a flagless traverser on a submodule-indexed
-    # repo would drop submodule files and skew reachability).
     state = load_state(repo_path)
-    include_submodules = bool(state.get("include_submodules", False))
-    include_nested_repos = bool(state.get("include_nested_repos", False))
-
-    traverser = FileTraverser(
+    _parsed, source_map, graph_builder, _structure, _count = build_repo_graph(
         repo_path,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
+        list(load_config(repo_path).get("exclude_patterns") or []),
+        collect_sources=True,
+        include_submodules=bool(state.get("include_submodules", False)),
+        include_nested_repos=bool(state.get("include_nested_repos", False)),
+        log=notices.print,
+        read_only=True,
     )
-    file_infos = list(traverser.traverse())
-    parser = ASTParser()
-    graph_builder = GraphBuilder(
-        repo_path,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-    )
-
-    # Kept alongside the parse so the analyzer's marker prepasses reuse these
-    # bytes instead of re-reading the repo four more times.
-    source_map: dict[str, bytes] = {}
-    for fi in file_infos:
-        try:
-            source = Path(fi.abs_path).read_bytes()
-            parsed = parser.parse_file(fi, source)
-            graph_builder.add_file(parsed)
-            source_map[fi.path] = source
-        except Exception:
-            pass
-
-    from repowise.core.ingestion import wire_tsconfig_resolver
-
-    wire_tsconfig_resolver(
-        graph_builder,
-        repo_path,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-    )
-    graph_builder.set_source_map(source_map)
-    graph_builder.build()
-
-    # Framework-aware synthetic edges (Django, Laravel, TYPO3, ...). Without
-    # this, convention-loaded files appear as in_degree=0 unreachable — false
-    # positives in the dead-code report.
-    try:
-        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
-
-        tech_items = detect_tech_stack(repo_path)
-        graph_builder.add_framework_edges([item.name for item in tech_items])
-    except Exception as fw_exc:
-        # Silence here is the worst of the three sites: the comment above says
-        # these edges exist to stop false positives, so a swallowed failure
-        # hands the user a longer report and calls it the answer.
-        notices.print(
-            f"[yellow]Framework edge detection skipped: {fw_exc}; "
-            "convention-loaded files may report as unreachable.[/yellow]"
-        )
 
     # Git metadata (best effort)
     git_meta_map: dict = {}
     try:
-        from repowise.core.ingestion.git_indexer import GitIndexer
-
-        git_indexer = GitIndexer(repo_path)
-        _, metadata_list = run_async(git_indexer.index_repo(""))
+        _, metadata_list = run_async(GitIndexer(repo_path, read_only=True).index_repo(""))
         git_meta_map = {m["file_path"]: m for m in metadata_list}
     except Exception:
         pass
 
     # parsed_files powers the source-scan rescues (dynamic-import markers,
-    # bundler resolve.alias targets, export-alias maps) — without it those
-    # classes false-positive on the CLI path while init stays clean.
+    # bundler resolve.alias targets, export-alias maps).
+    stats = graph_builder.traversal_stats
     analyzer = DeadCodeAnalyzer(
         graph_builder.graph(),
         git_meta_map,
@@ -188,10 +144,7 @@ def _analyze_live(repo_path: Path, config: dict, notices: Any) -> DeadCodeReport
         repo_root=repo_path,
         unindexed_source_files=[
             (skipped.path, skipped.reason)
-            for skipped in (
-                *traverser.stats.skipped_source_files,
-                *traverser.stats.unknown_language_files,
-            )
+            for skipped in (*stats.skipped_source_files, *stats.unknown_language_files)
         ],
         dotnet_index=getattr(graph_builder, "dotnet_index", None),
     )

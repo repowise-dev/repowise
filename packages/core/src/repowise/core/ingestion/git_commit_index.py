@@ -112,7 +112,9 @@ def _record_ts(record: str) -> int:
         return 0
 
 
-def _window_records(repo: object, depth: int, cache_dir: Path | None) -> list[str]:
+def _window_records(
+    repo: object, depth: int, cache_dir: Path | None, *, cache_writable: bool = True
+) -> list[str]:
     """The raw log records of the newest ``depth`` non-merge commits.
 
     Git computes ``--numstat`` for every commit in the window, and on a
@@ -122,6 +124,8 @@ def _window_records(repo: object, depth: int, cache_dir: Path | None) -> list[st
     only for ``cached_head..HEAD``. The merged list is ordered the way the
     full walk orders it (committer time, newest first) and cut to ``depth``,
     so the parse below sees the same records a fresh walk would produce.
+    ``cache_writable=False`` reads the cache but leaves it as it was, for the
+    commands that only read the repo.
 
     A cached HEAD that is not an ancestor of the current one (a rebase, a
     reset) or a cache of another depth or version is discarded and the full
@@ -143,7 +147,8 @@ def _window_records(repo: object, depth: int, cache_dir: Path | None) -> list[st
         records = None
     if records is None:
         records = _log_records(repo, f"-{depth}")
-    _write_window_cache(cache_path, head, depth, records)
+    if cache_writable:
+        _write_window_cache(cache_path, head, depth, records)
     return records
 
 
@@ -434,6 +439,7 @@ def load_commit_index(
     provenance_classifier: object | None = None,
     trace_index: object | None = None,
     cache_dir: Path | None = None,
+    cache_writable: bool = True,
     stats_sink: dict[str, int | bool] | None = None,
     renames: RenameTrail | None = None,
 ) -> dict[str, list[_CommitRec]]:
@@ -506,7 +512,12 @@ def load_commit_index(
             return {}
 
     try:
-        records = _window_records(repo, depth, cache_dir if since_ts is None else None)
+        records = _window_records(
+            repo,
+            depth,
+            cache_dir if since_ts is None else None,
+            cache_writable=cache_writable,
+        )
     except Exception as exc:
         logger.warning("repo_commit_index_failed", error=str(exc))
         return {}
@@ -731,6 +742,7 @@ def load_sampled_commit_index(
     provenance_classifier: object | None = None,
     trace_index: object | None = None,
     cache_dir: Path | None = None,
+    cache_writable: bool = True,
 ) -> HistorySample:
     """Resolve the recent, deep, and fallback sampling lanes once.
 
@@ -753,6 +765,7 @@ def load_sampled_commit_index(
         provenance_classifier=provenance_classifier,
         trace_index=trace_index,
         cache_dir=cache_dir,
+        cache_writable=cache_writable,
         stats_sink=recent_stats,
         renames=renames,
     )

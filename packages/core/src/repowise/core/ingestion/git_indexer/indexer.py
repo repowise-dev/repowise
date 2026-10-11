@@ -194,6 +194,7 @@ class GitIndexer:
         exclude_patterns: list[str] | None = None,
         record_episodes: bool = False,
         max_workers: int | None = None,
+        read_only: bool = False,
     ) -> None:
         self.repo_path = Path(repo_path)
         self.commit_limit = commit_limit or _DEFAULT_COMMIT_LIMIT
@@ -205,6 +206,9 @@ class GitIndexer:
         # episodes would make two nominally read-only commands persist rows
         # naming files the repo excludes, and those rows outlive every prune.
         self.record_episodes = record_episodes
+        # Same reason: a read-only command reads the commit-window cache but
+        # never rewrites it.
+        self.read_only = read_only
         self.max_workers = max_workers
         # Read once: which forge's merge messages name a commit's PR or MR.
         self.forge = detect_forge(self.repo_path)
@@ -310,6 +314,7 @@ class GitIndexer:
                     provenance_classifier=prov_clf,
                     trace_index=trace_index,
                     cache_dir=self._window_cache_dir(),
+                    cache_writable=not self.read_only,
                 )
             commit_index = sample.commits
             fallback_files = sample.fallback_files
@@ -673,6 +678,7 @@ class GitIndexer:
                     provenance_classifier=prov_clf,
                     trace_index=trace_index,
                     cache_dir=self._window_cache_dir(),
+                    cache_writable=not self.read_only,
                 )
                 commit_index = sample.commits
                 fallback_files = sample.fallback_files
