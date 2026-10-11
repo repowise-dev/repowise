@@ -518,10 +518,13 @@ def _tls_verify_off_lines(source: str) -> set[int] | None:
             and isinstance(node.value, ast.Constant)
             and node.value.value is False
         ):
+            # ``session.verify = False``, or a ``verify = False`` setting handed
+            # to a client later.
             found.update(
                 target.lineno
                 for target in node.targets
-                if isinstance(target, ast.Attribute) and target.attr == "verify"
+                if (isinstance(target, ast.Attribute) and target.attr == "verify")
+                or (isinstance(target, ast.Name) and target.id == "verify")
             )
     return found
 

@@ -584,6 +584,9 @@ class TestScanFile:
         [
             ("httpx.Client(\n    base_url=url,\n    verify=False,\n)\n", True),
             ('boto3.client("s3", verify=False)\n', True),
+            ("class Backend:\n    verify = False\n", True),
+            ('GitRepo(io, git_commit_verify=False)\n', False),
+            ("mock_get.assert_called_with(url, verify=False)\n", False),
             ("session.verify = False\n", True),
             ("urlopen(req, verify=False)\n", True),
             # A function of the project's own whose keyword means something else.
