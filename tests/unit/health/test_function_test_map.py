@@ -215,16 +215,31 @@ def _evidence(tests: tuple[MappedTest, ...]) -> ValidationEvidence:
     )
 
 
-def test_a_plan_quotes_the_test_functions_nearest_its_function() -> None:
-    near = (MappedTest(f"{T}::test_parse", 1), MappedTest(f"{T}::test_load", 2))
+def test_a_plan_quotes_the_test_functions_that_call_its_function() -> None:
+    near = (
+        MappedTest(f"{T}::test_parse", 1),
+        MappedTest("tests/test_io.py::test_read", 1),
+        MappedTest(f"{T}::test_load", 2),
+    )
     plan = build_validation_plan(_extract(), {}, _FILE_REACH, evidence=_evidence(near))
-    assert plan.tests == [f"{T}::test_parse", f"{T}::test_load"]
+    # A test that only reaches a caller is not quoted: it may never take the call.
+    assert plan.tests == [f"{T}::test_parse", "tests/test_io.py::test_read"]
     # The quoted tests' files, whole: at least the tests quoted, in a short command.
-    assert plan.commands == [f"pytest {T}"]
-    assert plan.reasons == {f"{T}::test_parse": "calls parse", f"{T}::test_load": "reaches parse in 2 calls"}
+    assert plan.commands == [f"pytest {T} tests/test_io.py"]
+    assert plan.reasons == {
+        f"{T}::test_parse": "calls parse",
+        "tests/test_io.py::test_read": "calls parse",
+    }
     assert (plan.basis, plan.via, plan.total, plan.prerequisite) == ("inferred", "call-graph", 2, None)
     # The file's own reach stays on the target row.
     assert plan.targets[0].tests == ["tests/test_core.py", "tests/test_misc.py"]
+
+
+def test_a_function_reached_only_through_callers_keeps_the_file_answer() -> None:
+    near = (MappedTest(f"{T}::test_load", 2),)
+    plan = build_validation_plan(_extract(), {}, _FILE_REACH, evidence=_evidence(near))
+    assert plan.tests == ["tests/test_core.py", "tests/test_misc.py"]
+    assert plan.prerequisite is None
 
 
 def test_a_function_no_test_reaches_asks_for_a_characterization_test_in_a_tested_file() -> None:
