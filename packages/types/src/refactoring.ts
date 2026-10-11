@@ -232,6 +232,9 @@ export interface RecipeStep {
     notes: string[];
   };
   call_site?: ExtractCallSite;
+  /** Extract Method: the exact text the span starts and ends with, each
+   *  unique in the function, so the step is found by text, not line. */
+  anchors?: { first: string; last: string };
   symbols?: string[];
   to_file?: string | null;
   /** Extract Helper: the directory the shared helper belongs in. */

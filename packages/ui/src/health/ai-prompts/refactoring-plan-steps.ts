@@ -62,24 +62,54 @@ function extractHelperSteps(plan: RefactoringPlan): string {
   ].join("\n");
 }
 
+/** The span's first and last lines as core serves them (`plan.anchors`), or
+ *  null on a plan stored before them. Never computed here. */
+function spanAnchors(plan: RefactoringPlan): { first: string; last: string } | null {
+  const raw = ((plan.plan ?? {}) as Record<string, unknown>).anchors as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  return raw && typeof raw.first === "string" && typeof raw.last === "string"
+    ? { first: raw.first, last: raw.last }
+    : null;
+}
+
+/** *text* fenced at column 0, so its indentation reads exactly as the file has it. */
+function fenced(text: string): string[] {
+  const ticks = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(Math.max(3, ticks + 1));
+  return [fence, text, fence];
+}
+
 function extractMethodSteps(plan: RefactoringPlan): string {
   const em = extractMethodPlan(plan);
   if (!em.span) return "Extract the indicated slice into a helper method.";
   const params = em.params.length ? em.params.join(", ") : "(none)";
   const returns = em.returns.length ? em.returns.join(", ") : "(nothing)";
   const name = em.suggested_name ?? HELPER_NAME_PLACEHOLDER;
+  const anchors = spanAnchors(plan);
+  const lines = `${em.span.start}–${em.span.end}`;
   const rendered = [
+    ...(anchors
+      ? [
+          "- **The span starts with:**",
+          ...fenced(anchors.first),
+          "- **The span ends with:**",
+          ...fenced(anchors.last),
+        ]
+      : []),
     ...(em.signature_text ? [`- **New helper:** \`${em.signature_text}\``] : []),
     ...(em.return_text ? [`- **End the helper with:** \`${em.return_text}\``] : []),
     ...(em.call_site
-      ? [`- **Replace lines ${em.span.start}–${em.span.end} with:** \`${em.call_site.new_text}\``]
+      ? [`- **Replace ${anchors ? "the span" : `lines ${lines}`} with:** \`${em.call_site.new_text}\``]
       : []),
     ...em.notes.map((note) => `- **Note:** ${note}`),
   ];
+  const what = anchors
+    ? `the span of \`${plan.target_symbol}\` that starts and ends with the lines shown (lines ${lines} when planned)`
+    : `lines ${lines} of \`${plan.target_symbol}\``;
   return [
-    `Extract lines ${em.span.start}–${em.span.end} of \`${plan.target_symbol}\` into \`${name}\`${
-      em.suggested_name ? "" : " (name it for what the lines do)"
-    }:`,
+    `Extract ${what} into \`${name}\`${em.suggested_name ? "" : " (name it for what the lines do)"}:`,
     "",
     ...rendered,
     `- **Parameters (in):** ${params}`,
@@ -92,6 +122,9 @@ function extractMethodSteps(plan: RefactoringPlan): string {
       : []),
     "",
     "Move exactly those lines into the new helper in the same scope, pass the parameters above, return the value(s) above, and replace the original lines with a single call to it. Preserve behavior exactly: change nothing outside the span and that one call site.",
+    anchors
+      ? "Make the edit directly in the file and re-read the span after it; do not generate a script that rewrites the file. Find the span by its first and last lines, not its line numbers, which move with every edit."
+      : "Make the edit directly in the file and re-read the span after it; do not generate a script that rewrites the file.",
   ].join("\n");
 }
 

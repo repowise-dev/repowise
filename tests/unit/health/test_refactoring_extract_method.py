@@ -677,6 +677,7 @@ def test_detector_emits_suggestion_for_flagged_function():
         "needs_async",
         "new_symbol",
         "call_site",
+        "anchors",
     }
     assert s.plan["needs_async"] is False
     # A module-level function: the helper is a plain function too.
@@ -1040,6 +1041,8 @@ def test_a_best_span_below_the_floor_yields_to_the_next_one(monkeypatch):
     trivial = Extraction(10, 17, ("a",), (), slice_nloc=8, ccn_removed=1)
     worth = Extraction(20, 27, ("b",), (), slice_nloc=8, ccn_removed=3)
     monkeypatch.setattr(extract_method, "find_extractions", lambda _a, _l, _r=None, _p=None: [trivial, worth])
+    # No parsed source to anchor against: this pins span choice, not anchoring.
+    monkeypatch.setattr(extract_method, "anchor_plan", lambda _plan, _fn: True)
     fn = _Shape(12, 40)
     analysis = type(
         "A", (), {"name": "f", "start_line": 1, "end_line": 50, "ccn": 12, "nloc": 40,
@@ -1254,6 +1257,7 @@ def test_a_refused_span_yields_only_to_a_disjoint_one(monkeypatch):
     monkeypatch.setattr(
         extract_method, "find_extractions", lambda _a, _l, _r=None, _p=None: [whole, shrunk, disjoint]
     )
+    monkeypatch.setattr(extract_method, "anchor_plan", lambda _plan, _fn: True)
     analysis = type(
         "A", (), {"name": "f", "start_line": 1, "end_line": 100, "ccn": 30, "nloc": 90,
                   "fn_node": None}

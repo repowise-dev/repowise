@@ -76,6 +76,11 @@ Plan shape (open dict, no migration):
   ``kind`` is; ``call_site`` also when an awaiting span sits in a host that
   is not async. A missing name reads ``<name>`` in them,
   and ``suggested_name`` is in the language's private form (Python ``_x``).
+- ``plan.anchors`` = ``{"first": str, "last": str}`` -- the exact text the
+  span starts and ends with, each unique in the function (``anchors``), so an
+  agent finds it by text once earlier edits have moved its lines; every stage
+  carries its own. A plan with a span that cannot be anchored is refused
+  (``span_unanchored``).
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` -- the size and
   complexity (code lines, decision points) the residual method sheds.
 - ``plan.stages`` -- only on a staged plan (``dataflow.stages``): a function
@@ -115,6 +120,7 @@ from ..effort import effort_bucket
 from ..perf.dialects import PERF_DIALECTS
 from ..scoring import severity_deduction
 from . import render
+from .anchors import anchor_plan
 from .declarative import declarative_flat
 from .helper_naming import ScopeNames, helper_names, out_value_name
 from .models import RefactoringContext, RefactoringSuggestion
@@ -202,8 +208,11 @@ class ExtractMethodDetector(RefactoringDetector):
             best = _choose(analysis, candidates, markers)
             staged = _staged(analysis, best, lmap, receiver, ctx.language, markers, prefixes)
             if staged is not None:
-                out.append(
-                    self._staged_suggestion(ctx, analysis, staged, matched, names, receiver)
+                _serve_anchored(
+                    out,
+                    self._staged_suggestion(ctx, analysis, staged, matched, names, receiver),
+                    matched,
+                    fn_node,
                 )
                 continue
             if best is None:
@@ -226,7 +235,8 @@ class ExtractMethodDetector(RefactoringDetector):
                 _symbol_fields(best, receiver),
                 async_host=async_fields.get("async_host", True),
             )
-            out.append(
+            _serve_anchored(
+                out,
                 RefactoringSuggestion(
                     refactoring_type=self.name,
                     file_path=ctx.file_path,
@@ -250,7 +260,9 @@ class ExtractMethodDetector(RefactoringDetector):
                     blast_radius={"scope": "local"},
                     confidence=self._confidence(best, share),
                     source_biomarker=source,
-                )
+                ),
+                matched,
+                fn_node,
             )
 
         # Stable order: biggest recovery first, then symbol, then span start.
@@ -352,6 +364,20 @@ def _mark_refused(findings: list[Any], reason: str) -> None:
         details = getattr(f, "details", None)
         if isinstance(details, dict):
             details[REFUSED_DETAIL] = reason
+
+
+def _serve_anchored(
+    out: list[RefactoringSuggestion],
+    suggestion: RefactoringSuggestion,
+    findings: list[Any],
+    fn_node: Any,
+) -> None:
+    """Serve *suggestion* only when every span in it is anchored by its text
+    (``anchors``); one that is not is refused, never served by line alone."""
+    if anchor_plan(suggestion.plan, fn_node):
+        out.append(suggestion)
+    else:
+        _mark_refused(findings, "span_unanchored")
 
 
 def recovered_share(

@@ -7,6 +7,7 @@ read. Takes the wire dicts the REST and MCP detail calls already serve.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -46,8 +47,8 @@ def _symbol_lines(step: Mapping[str, Any]) -> list[str]:
     if symbol.get("return_text"):
         out.append(f"End the helper with: `{symbol['return_text']}`")
     if call.get("new_text"):
-        lines = f"{span.get('start')}-{span.get('end')}"
-        out.append(f"Replace lines {lines} with: `{call['new_text']}`")
+        lines = "the span" if step.get("anchors") else f"lines {span.get('start')}-{span.get('end')}"
+        out.append(f"Replace {lines} with: `{call['new_text']}`")
     if symbol:
         out.append(f"Parameters (in): {', '.join(symbol.get('params') or []) or '(none)'}")
         out.append(f"Returns (out): {', '.join(symbol.get('returns') or []) or '(nothing)'}")
@@ -66,10 +67,26 @@ def _step_lines(step: Mapping[str, Any]) -> list[str]:
     return out
 
 
+def _anchor_lines(step: Mapping[str, Any], pad: str) -> list[str]:
+    """The span's first and last lines, each fenced at column 0 so its
+    indentation reads exactly as the file has it."""
+    anchors = step.get("anchors")
+    if not anchors:
+        return []
+    out = []
+    for edge, text in (("starts", anchors["first"]), ("ends", anchors["last"])):
+        ticks = max((len(run) for run in re.findall(r"`+", text)), default=0)
+        fence = "`" * max(3, ticks + 1)
+        out += [f"{pad}   - The span {edge} with:", fence, text, fence]
+    return out
+
+
 def _step_entry(step: Mapping[str, Any], marker: str, pad: str) -> str:
     where = f" ({_loc(step['file'], step.get('span'))})" if step.get("file") else ""
     head = f"{pad}{marker} {step['text']}{where}"
-    return "\n".join([head, *(f"{pad}   - {line}" for line in _step_lines(step))])
+    return "\n".join(
+        [head, *_anchor_lines(step, pad), *(f"{pad}   - {line}" for line in _step_lines(step))]
+    )
 
 
 def _verify_lines(check: Mapping[str, Any], *, runnable: bool = True) -> list[str]:
@@ -384,6 +401,9 @@ def _opportunity_handoff(o: Mapping[str, Any], flavor: str) -> str:
 _OPPORTUNITY_CONSTRAINTS = (
     "**Apply the steps in the order given.** It is dependency-safe; reordering it is not.",
     "**Read a judgment step's code before applying it.** Its obligation is unproven.",
+    "**Make each step a direct edit to the file, one at a time.** Re-read what it changed "
+    "before the next; do not generate a script that rewrites the file. Where a step shows "
+    "its span's first and last lines, find the span by them, not by its line numbers.",
     "**Keep behaviour.** Run the tests (and type-checker / linter) before and after.",
     *_CONSTRAINTS,
 )

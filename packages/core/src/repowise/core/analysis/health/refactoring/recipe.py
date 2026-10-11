@@ -177,15 +177,23 @@ def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
         if plan.get("suggested_name")
         else " (name it for what the lines do)"
     )
+    anchors = _anchors(plan.get("anchors"))
+    lines = (
+        f"the span of `{host}` that starts and ends with the lines shown "
+        f"(lines {where['start']}-{where['end']} when planned)"
+        if anchors
+        else f"lines {where['start']}-{where['end']} of `{host}`"
+    )
     text = (
-        f"Move lines {where['start']}-{where['end']} of `{host}` into a new helper "
-        f"`{name}`{named} in the same scope, and replace them with one call to it."
+        f"Move {lines} into a new helper `{name}`{named} in the same scope, and replace "
+        f"{'it' if anchors else 'them'} with one call to it."
     )
     return _step(
         "extract",
         d.get("file_path"),
         where,
         text,
+        **({"anchors": anchors} if anchors else {}),
         new_symbol={
             "name": name,
             "kind": symbol.get("kind"),
@@ -198,6 +206,13 @@ def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
         },
         **({"call_site": plan["call_site"]} if _dict(plan.get("call_site")) else {}),
     )
+
+
+def _anchors(value: Any) -> dict[str, str] | None:
+    """A span's text anchors (``refactoring.anchors``), None on an older row."""
+    anchors = _dict(value)
+    first, last = anchors.get("first"), anchors.get("last")
+    return {"first": first, "last": last} if isinstance(first, str) and isinstance(last, str) else None
 
 
 def _extract_notes(
@@ -582,15 +597,7 @@ def _does_not(d: Mapping[str, Any], steps: list[Step]) -> list[dict[str, str | N
     spans = [s["span"] for s in steps if s.get("action") == "extract" and s.get("span")]
     span = {"start": spans[0]["start"], "end": spans[-1]["end"]} if spans else None
     if kind == "extract_method" and span:
-        lines = f"{span['start']}-{span['end']}"
-        added = (
-            "the calls that replace them (and the object the stages share, if any)"
-            if len(spans) > 1
-            else "the call that replaces them"
-        )
-        out.append(
-            {"constraint": f"touch anything outside lines {lines} and {added}", "reason": None}
-        )
+        out.extend(_extract_does_not(steps, span, len(spans) > 1))
     elif kind == "extract_helper" and (name := _reused(d)):
         out.append({"constraint": f"change `{name}` to fit a site", "reason": "its callers rely on it"})
     elif kind in _DOES_NOT:
@@ -600,6 +607,41 @@ def _does_not(d: Mapping[str, Any], steps: list[Step]) -> list[dict[str, str | N
         out.append(
             {"constraint": "apply a judgment step without reading the code it names first",
              "reason": None}
+        )
+    return out
+
+
+def _extract_does_not(
+    steps: list[Step], span: dict[str, int], staged: bool
+) -> list[dict[str, str | None]]:
+    """Extract Method's limits, and how its edits are made: by hand, each found
+    by its text when the steps carry anchors (a stage applied by line number
+    moves every later one)."""
+    lines = f"{span['start']}-{span['end']}"
+    added = (
+        "the calls that replace them (and the object the stages share, if any)"
+        if staged
+        else "the call that replaces them"
+    )
+    anchored = any(s.get("anchors") for s in steps)
+    where = f"the lines the steps move (lines {lines} when planned)" if anchored else f"lines {lines}"
+    edit = (
+        "make each stage as a direct edit to the file, one stage at a time, and re-read the "
+        "span after each stage"
+        if staged
+        else "make the edit directly in the file and re-read the span after it"
+    )
+    out: list[dict[str, str | None]] = [
+        {"constraint": f"touch anything outside {where} and {added}", "reason": None},
+        {"constraint": "generate a script that rewrites the file", "reason": edit},
+    ]
+    if anchored:
+        out.append(
+            {
+                "constraint": "find a span by its line numbers",
+                "reason": "they are where it was when planned and move with every edit; match "
+                "its first and last lines",
+            }
         )
     return out
 
