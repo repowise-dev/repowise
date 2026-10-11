@@ -604,13 +604,21 @@ class TestScanFile:
         [
             ("rows = con.execute(f\"SELECT id FROM users WHERE name = '{name}'\")\n", True),
             ('sql = (\n    f"SELECT {cols}, name "\n    f"FROM users WHERE id = {uid}"\n)\n', True),
+            ("q = f\"SELECT * FROM docs WHERE title LIKE '%{term}%'\"\n", True),
+            ('q = f"SELECT * FROM t WHERE age >= {age} ORDER BY 1"\n', True),
+            # Identifiers, fragments and placeholder lists, which cannot be bound.
+            ('found = con.execute(f"SELECT MAX(at) FROM {table}").fetchone()\n', False),
+            ('q = f"SELECT ref FROM omissions WHERE ref IN ({placeholders})"\n', False),
+            ('q = f"SELECT {column}, COUNT(*) FROM episodes{where} GROUP BY {column}"\n', False),
+            ('q = f"SELECT id FROM t WHERE id = :id", params={"id": 1}\n', False),
+            ('q = f"SELECT a FROM t WHERE b = {{literal}}"\n', False),
             # A message about SQL, with no query in it.
             ('reason = f"SELECT * inside a {kind}: the shape changes"\n', False),
             # Python source quoted inside a string, as a test fixture holds it.
-            ("src = 'q = f\"SELECT * FROM {table} WHERE id = 1\"'\n", False),
+            ("src = 'q = f\"SELECT * FROM t WHERE id = {uid}\"'\n", False),
         ],
     )
-    def test_fstring_sql_needs_a_query_written_in_code(self, source: str, expected: bool) -> None:
+    def test_fstring_sql_needs_a_value_written_into_a_query(self, source: str, expected: bool) -> None:
         findings = scan_source("db.py", source)
         assert bool([f for f in findings if f["kind"] == "fstring_sql"]) is expected
 

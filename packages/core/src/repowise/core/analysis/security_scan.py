@@ -462,9 +462,30 @@ _HTTP_CALLS = frozenset(
     }
 )
 
-# ``fstring_sql`` asks for a query: ``SELECT`` with its ``FROM``, on the line or
-# the next one (a query split over implicitly joined f-strings).
+# ``fstring_sql`` asks for a query (``SELECT`` with its ``FROM``) that
+# interpolates a value where a bound parameter belongs: after a comparison or
+# ``LIKE``. A table, a column, a fragment or a placeholder list cannot be bound,
+# so building those into the text is the only way to write them, and a value
+# interpolated there has no parameter fix to offer. Ceiling: ``IN ({ids})`` of
+# joined values, and an identifier taken from a request, are not seen.
 _SQL_FROM = re.compile(r"\bFROM\b")
+_SQL_VALUE = re.compile(r"""(?:[=<>]|\b(?i:LIKE|ILIKE))\s*['"%]*\{(?!\{)""")
+# A string literal continuing the one before it (implicit concatenation).
+_STRING_CONTINUATION = re.compile(r"""\A\s*[rRbBfFuU]{0,2}['"]""")
+
+
+def _interpolates_sql_value(line: str, start: int, lines: list[str], lineno: int) -> bool:
+    """Whether the f-string query opening at *start* on *line* puts a value in its text.
+
+    Only the literal is read, and the one opening the next line when the query
+    runs on into it.
+    """
+    body = start + 2  # past ``f`` and the opening quote
+    query = line[line.find("SELECT", start) : _string_end(line, body)]
+    following = lines[lineno] if lineno < len(lines) else ""
+    if (cont := _STRING_CONTINUATION.match(following)) is not None:
+        query += "\n" + following[cont.end() : _string_end(following, cont.end())]
+    return bool(_SQL_FROM.search(query) and _SQL_VALUE.search(query))
 
 
 def _tls_verify_off_lines(source: str) -> set[int] | None:
@@ -1045,12 +1066,9 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                         match = None
             elif kind == "fstring_sql":
                 # The ``f`` must open a literal in code, not sit inside another
-                # string, and the ``SELECT`` must have its ``FROM``.
+                # string, and the query must interpolate a value.
                 match = _match_starting_in(pattern, line, masked_line(lineno, line))
-                if match and not (
-                    _SQL_FROM.search(line, line.find("SELECT", match.start()))
-                    or (lineno < len(lines) and _SQL_FROM.search(lines[lineno]))
-                ):
+                if match and not _interpolates_sql_value(line, match.start(), lines, lineno):
                     match = None
             elif kind == "weak_hash":
                 # Written in code, and not declared a non-security use.

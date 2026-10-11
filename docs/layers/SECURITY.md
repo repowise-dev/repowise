@@ -66,7 +66,7 @@ material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 | `private_key_pem` | high | a `-----BEGIN ... PRIVATE KEY-----` header followed by a base64 body line (an escaped `\n` counts) |
 | `public_env_secret` | high | `API_KEY`/`SECRET`/`TOKEN`/`PASSWORD` behind `NEXT_PUBLIC_` or `VITE_`, excluding `..._ANON_...` |
 | `new_function_call` | high | `new Function(...)` |
-| `fstring_sql` | med | a Python f-string with `SELECT`, an interpolation, and `FROM` on the same or the next line |
+| `fstring_sql` | med | a Python f-string query (`SELECT` with `FROM`) that interpolates a value after a comparison or `LIKE` (`WHERE id = {uid}`). A table, column, fragment or placeholder list cannot be bound, so interpolating one does not fire |
 | `concat_sql` | med | `.execute("SELECT ... +` |
 | `template_literal_sql` | med | a JS/TS template literal with `SELECT`+`FROM` or `UPDATE`+`SET` and an interpolation |
 | `tls_verify_false` | med | `verify=False` passed to an HTTP client call (`requests`, `httpx`, boto3 `client`) or set on a session's `verify` |
