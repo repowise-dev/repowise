@@ -70,6 +70,23 @@ _SCOPE_BOUNDARIES = frozenset(
 _CALLEE_NAME_KINDS = frozenset({"generic_name", "qualified_name"})
 
 
+def _callee(invocation: Node) -> Node | None:
+    return invocation.child_by_field_name("function") or (
+        invocation.named_children[0] if invocation.named_children else None
+    )
+
+
+def _call_arguments(invocation: Node) -> list[Node]:
+    args = invocation.child_by_field_name("arguments") or (
+        invocation.named_children[1] if len(invocation.named_children) > 1 else None
+    )
+    return args.named_children if args is not None else []
+
+
+def _has_token(arg: Node, token: str) -> bool:
+    return any(c.type == token for c in arg.children)
+
+
 class CSharpDefUseDialect(BaseDefUseDialect):
     language = "csharp"
     member_access_kinds = frozenset({_MEMBER_ACCESS, _CONDITIONAL_ACCESS})
@@ -101,26 +118,7 @@ class CSharpDefUseDialect(BaseDefUseDialect):
             return
         t = node.type
         if t == _INVOCATION:
-            fn = node.child_by_field_name("function") or (
-                node.named_children[0] if node.named_children else None
-            )
-            if fn is not None and (
-                fn.type in self.member_access_kinds or fn.type not in _CALLEE_NAME_KINDS
-            ):
-                self.collect_reads(fn, out)
-            args = node.child_by_field_name("arguments") or (
-                node.named_children[1] if len(node.named_children) > 1 else None
-            )
-            if args is not None:
-                for arg in args.named_children:
-                    if arg.type == _ARGUMENT:
-                        # 'out' argument writes the target rather than reading it.
-                        has_out = any(c.type == "out" for c in arg.children)
-                        if not has_out:
-                            for c in arg.named_children:
-                                self.collect_reads(c, out)
-                    else:
-                        self.collect_reads(arg, out)
+            self._invocation_reads(node, out)
             return
         if t in self.member_access_kinds:
             receiver = node.child_by_field_name("expression") or (
@@ -144,6 +142,19 @@ class CSharpDefUseDialect(BaseDefUseDialect):
             return
         for child in node.named_children:
             self.collect_reads(child, out)
+
+    def _invocation_reads(self, node: Node, out: list[Occurrence]) -> None:
+        fn = _callee(node)
+        if fn is not None and (
+            fn.type in self.member_access_kinds or fn.type not in _CALLEE_NAME_KINDS
+        ):
+            self.collect_reads(fn, out)
+        for arg in _call_arguments(node):
+            if arg.type != _ARGUMENT:
+                self.collect_reads(arg, out)
+            elif not _has_token(arg, "out"):  # 'out' writes the target rather than reading it
+                for c in arg.named_children:
+                    self.collect_reads(c, out)
 
     # -- public contract ------------------------------------------------------
 
@@ -202,79 +213,19 @@ class CSharpDefUseDialect(BaseDefUseDialect):
             return
         t = node.type
         if t in _ASSIGN_KINDS:
-            left = node.child_by_field_name("left")
-            self._targets(left, defs, uses)
-            op = node.child_by_field_name("operator")
-            if op is not None and op.text not in (b"=", None):  # compound: read too
-                self.collect_reads(left, uses)
-            self._process(node.child_by_field_name("right"), defs, uses)
+            self._assignment(node, defs, uses)
             return
         if t in _UPDATE_KINDS:  # ``x++`` / ``--x`` -- read-modify-write
-            has_update = any(
-                c.type in ("++", "--") or c.text in (b"++", b"--") for c in node.children
-            )
-            if has_update:
-                arg = node.child_by_field_name("argument") or (
-                    node.named_children[0] if node.named_children else None
-                )
-                self._targets(arg, defs, uses)
-                self.collect_reads(arg, uses)
-                return
-            for child in node.named_children:
-                self._process(child, defs, uses)
+            self._update(node, defs, uses)
             return
         if t in _DECL_KINDS:
-            for child in node.named_children:
-                if child.type == _DECLARATOR:
-                    start = len(defs)
-                    name_node = child.child_by_field_name("name")
-                    self._targets(name_node, defs, uses)
-                    self._declare(defs, start, child)
-                    for sub in child.named_children:
-                        if sub != name_node:
-                            self._process(sub, defs, uses)
-                else:
-                    self._process(child, defs, uses)
+            self._declaration(node, defs, uses)
             return
         if t == _INVOCATION:
-            fn = node.child_by_field_name("function") or (
-                node.named_children[0] if node.named_children else None
-            )
-            if fn is not None:
-                if fn.type in self.member_access_kinds:
-                    self.collect_reads(fn, uses)
-                elif fn.type not in _CALLEE_NAME_KINDS:
-                    self._process(fn, defs, uses)
-            args = node.child_by_field_name("arguments") or (
-                node.named_children[1] if len(node.named_children) > 1 else None
-            )
-            if args is not None:
-                for arg in args.named_children:
-                    if arg.type == _ARGUMENT:
-                        has_out = any(c.type == "out" for c in arg.children)
-                        has_ref = any(c.type == "ref" for c in arg.children)
-                        if has_out:
-                            # 'out' argument is a write (def)
-                            for c in arg.named_children:
-                                self._targets(c, defs, uses)
-                        elif has_ref:
-                            # 'ref' argument is both a write (def) and a read (use)
-                            for c in arg.named_children:
-                                self._targets(c, defs, uses)
-                                self.collect_reads(c, uses)
-                        else:
-                            for c in arg.named_children:
-                                self._process(c, defs, uses)
-                    else:
-                        self._process(arg, defs, uses)
+            self._invocation(node, defs, uses)
             return
         if t == _IS_PATTERN:
-            self._process(
-                node.child_by_field_name("expression") or node.child_by_field_name("left"),
-                defs,
-                uses,
-            )
-            self._targets(node.child_by_field_name("pattern"), defs, uses)
+            self._is_pattern(node, defs, uses)
             return
         if t in (_DECLARATION_PATTERN, "var_pattern", "recursive_pattern", _DECLARATION_EXPR):
             self._targets(node, defs, uses)
@@ -293,6 +244,74 @@ class CSharpDefUseDialect(BaseDefUseDialect):
             return
         for child in node.named_children:
             self._process(child, defs, uses)
+
+    def _assignment(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
+        left = node.child_by_field_name("left")
+        self._targets(left, defs, uses)
+        op = node.child_by_field_name("operator")
+        if op is not None and op.text not in (b"=", None):  # compound: read too
+            self.collect_reads(left, uses)
+        self._process(node.child_by_field_name("right"), defs, uses)
+
+    def _update(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
+        has_update = any(c.type in ("++", "--") or c.text in (b"++", b"--") for c in node.children)
+        if has_update:
+            arg = node.child_by_field_name("argument") or (
+                node.named_children[0] if node.named_children else None
+            )
+            self._targets(arg, defs, uses)
+            self.collect_reads(arg, uses)
+            return
+        for child in node.named_children:
+            self._process(child, defs, uses)
+
+    def _declaration(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
+        for child in node.named_children:
+            if child.type != _DECLARATOR:
+                self._process(child, defs, uses)
+                continue
+            start = len(defs)
+            name_node = child.child_by_field_name("name")
+            self._targets(name_node, defs, uses)
+            self._declare(defs, start, child)
+            for sub in child.named_children:
+                if sub != name_node:
+                    self._process(sub, defs, uses)
+
+    def _invocation(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
+        fn = _callee(node)
+        if fn is not None:
+            if fn.type in self.member_access_kinds:
+                self.collect_reads(fn, uses)
+            elif fn.type not in _CALLEE_NAME_KINDS:
+                self._process(fn, defs, uses)
+        for arg in _call_arguments(node):
+            if arg.type == _ARGUMENT:
+                self._argument(arg, defs, uses)
+            else:
+                self._process(arg, defs, uses)
+
+    def _argument(self, arg: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
+        """An ``out`` argument is a write (def); a ``ref`` one is both a write
+        and a read (use)."""
+        if _has_token(arg, "out"):
+            for c in arg.named_children:
+                self._targets(c, defs, uses)
+        elif _has_token(arg, "ref"):
+            for c in arg.named_children:
+                self._targets(c, defs, uses)
+                self.collect_reads(c, uses)
+        else:
+            for c in arg.named_children:
+                self._process(c, defs, uses)
+
+    def _is_pattern(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
+        self._process(
+            node.child_by_field_name("expression") or node.child_by_field_name("left"),
+            defs,
+            uses,
+        )
+        self._targets(node.child_by_field_name("pattern"), defs, uses)
 
     # -- write-target extraction ----------------------------------------------
 
