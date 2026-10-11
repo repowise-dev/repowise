@@ -437,10 +437,14 @@ _JS_ONLY_KINDS = frozenset(
     }
 )
 
-# ``verify=False`` turns TLS off only when an HTTP client receives it: the
-# requests and httpx calls, a boto3 ``client``/``resource``, or a session's
-# ``verify`` attribute. Any other function is free to name a keyword ``verify``.
-# Ceiling: a project's own wrapper that forwards ``verify`` is not seen.
+# ``verify=False`` turns TLS off only when an HTTP client receives it, so the
+# file must import an HTTP client library, and a call through a plain name must
+# go through that import or a value built from it (``s = requests.Session()``).
+# Any other function is free to name a keyword ``verify``. Ceiling: a project's
+# own wrapper that forwards ``verify``, imported from another module, is not seen.
+_HTTP_LIBS = frozenset(
+    {"requests", "httpx", "aiohttp", "urllib3", "boto3", "botocore", "aiobotocore", "aioboto3"}
+)
 _HTTP_CALLS = frozenset(
     {
         "get",
@@ -497,24 +501,83 @@ def _interpolates_sql_value(line: str, start: int, lines: list[str], lineno: int
     return bool(_SQL_FROM.search(query) and _SQL_VALUE.search(query))
 
 
+def _dotted(node: ast.AST) -> str:
+    """``a.b.c`` for a name or attribute chain, else ``""``."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute) and (base := _dotted(node.value)):
+        return f"{base}.{node.attr}"
+    return ""
+
+
+def _root(node: ast.AST) -> ast.AST:
+    """The expression a chain of calls and attributes starts from."""
+    while isinstance(node, (ast.Call, ast.Attribute, ast.Await)):
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return node
+
+
+def _http_bindings(tree: ast.AST) -> set[str]:
+    """Names and ``self.x`` targets bound to an HTTP client library or a value built from it."""
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in _HTTP_LIBS:
+                    bound.add(alias.asname or alias.name.split(".")[0])
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and (node.module or "").split(".")[0] in _HTTP_LIBS
+        ):
+            bound.update(alias.asname or alias.name for alias in node.names)
+    if not bound:
+        return bound
+    # Twice, so a value built from a bound value (``c = s.client()``) is bound too.
+    for _ in range(2):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                pairs = [(t, node.value) for t in node.targets]
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+                pairs = [(node.target, node.value)]
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                pairs = [(i.optional_vars, i.context_expr) for i in node.items if i.optional_vars]
+            else:
+                continue
+            for target, value in pairs:
+                if _dotted(_root(value)) in bound and (name := _dotted(target)):
+                    bound.add(name)
+    return bound
+
+
 def _tls_verify_off_lines(source: str) -> set[int] | None:
     """Lines where ``verify=False`` reaches an HTTP client; None when *source* does not parse."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return None
+    bound = _http_bindings(tree)
+    if not bound:
+        return set()
     found: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             func = node.func
-            name = (
-                func.attr
-                if isinstance(func, ast.Attribute)
-                else func.id
-                if isinstance(func, ast.Name)
-                else ""
-            )
-            if name in _HTTP_CALLS:
+            if isinstance(func, ast.Attribute):
+                name, receiver = func.attr, _root(func.value)
+                # A plain name must be bound; ``self.x`` and call results are
+                # taken on trust once the file uses an HTTP client library.
+                reaches = (
+                    _dotted(receiver) in bound
+                    or _dotted(func.value) in bound
+                    or not isinstance(receiver, ast.Name)
+                    or receiver.id in ("self", "cls")
+                )
+            elif isinstance(func, ast.Name):
+                name, reaches = func.id, func.id in bound
+            else:
+                continue
+            if name in _HTTP_CALLS and reaches:
                 found.update(
                     kw.lineno
                     for kw in node.keywords

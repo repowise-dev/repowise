@@ -69,7 +69,7 @@ material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 | `fstring_sql` | med | a Python f-string query (`SELECT` with `FROM`) that interpolates a value after a comparison or `LIKE` (`WHERE id = {uid}`). A table, column, fragment or placeholder list cannot be bound, so interpolating one does not fire |
 | `concat_sql` | med | `.execute("SELECT ... +` |
 | `template_literal_sql` | med | a JS/TS template literal with `SELECT`+`FROM` or `UPDATE`+`SET` and an interpolation |
-| `tls_verify_false` | med | `verify=False` passed to an HTTP client call (`requests`, `httpx`, boto3 `client`) or set on a session's `verify` |
+| `tls_verify_false` | med | `verify=False` passed to an HTTP client call or set as `verify`, in a file that imports an HTTP client library (`requests`, `httpx`, `aiohttp`, `urllib3`, boto3). A call through a plain name must go through that import or a value built from it |
 | `reject_unauthorized_false` | med | `rejectUnauthorized: false` |
 | `unsafe_inner_html` | med | `__html:` (React's `dangerouslySetInnerHTML`) assigned a non-literal |
 | `weak_hash` | low | MD5 or SHA-1 in use in code: a call (`hashlib.md5(`), a type (`MD5.Create()`) or the algorithm named to a hashing call (`createHash("sha1")`). A call passing `usedforsecurity=False` does not fire |

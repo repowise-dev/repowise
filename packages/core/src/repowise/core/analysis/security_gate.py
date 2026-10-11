@@ -93,7 +93,7 @@ _BINARY_SNIFF = 8000
 #: is absent on purpose: it needs parsed symbols and never gates.
 _RULE_TEXT: dict[str, str] = {
     "eval_call": "A call to eval.",
-    "exec_call": "A call to exec (outside Python, in a file that names child_process).",
+    "exec_call": "A call to exec (outside Python, child_process exec or execSync).",
     "pickle_loads": "pickle.loads, which runs code from the data it loads.",
     "subprocess_shell_true": "A subprocess call with shell=True.",
     "os_system": "os.system, which runs its argument through a shell.",
@@ -108,10 +108,13 @@ _RULE_TEXT: dict[str, str] = {
     "azure_devops_pat": "An Azure DevOps personal access token.",
     "git_url_credentials": "A password or token embedded in a git remote URL.",
     "private_key_pem": "A PEM private key with its body.",
-    "fstring_sql": "An f-string holding SQL and an interpolation.",
+    "fstring_sql": "An f-string query that interpolates a value where a bound parameter belongs.",
     "concat_sql": "SQL built by string concatenation.",
-    "tls_verify_false": "TLS certificate verification turned off (verify=False).",
-    "weak_hash": "The words md5 or sha1.",
+    "tls_verify_false": "TLS certificate verification turned off (verify=False on an HTTP client).",
+    "weak_hash": (
+        "MD5 or SHA-1 used in code: a call, a type, or the algorithm named to a hashing "
+        "call. A call passing usedforsecurity=False is exempt."
+    ),
     "unsafe_inner_html": "__html set from a non-literal value.",
     "template_literal_sql": "A template literal holding SQL and an interpolation.",
     "public_env_secret": "A secret-shaped name behind a NEXT_PUBLIC_ or VITE_ prefix.",

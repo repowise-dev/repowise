@@ -581,7 +581,7 @@ class TestScanFile:
     @pytest.mark.parametrize(
         ("source", "expected"),
         [
-            ("requests.get(url, verify=False)\n", True),
+            ("import requests\nrequests.get(url, verify=False)\n", True),
             ('"tls_verify_false": "TLS verification turned off (verify=False).",\n', False),
             ("# verify=False disables certificate checks\n", False),
         ],
@@ -594,16 +594,26 @@ class TestScanFile:
     @pytest.mark.parametrize(
         ("source", "expected"),
         [
-            ("httpx.Client(\n    base_url=url,\n    verify=False,\n)\n", True),
-            ('boto3.client("s3", verify=False)\n', True),
-            ("class Backend:\n    verify = False\n", True),
-            ('GitRepo(io, git_commit_verify=False)\n', False),
-            ("mock_get.assert_called_with(url, verify=False)\n", False),
-            ("session.verify = False\n", True),
-            ("urlopen(req, verify=False)\n", True),
+            ("import httpx\nhttpx.Client(\n    base_url=url,\n    verify=False,\n)\n", True),
+            ('import boto3\nboto3.client("s3", verify=False)\n', True),
+            ('import boto3\nc = boto3.session.Session().client("s3", verify=False)\n', True),
+            ("from requests import get\nget(url, verify=False)\n", True),
+            ("import requests\ns = requests.Session()\ns.get(url, verify=False)\n", True),
+            ("import requests as r\nwith r.Session() as s:\n    s.post(url, verify=False)\n", True),
+            ("import requests\nclass C:\n    def go(self):\n        self.http.get(u, verify=False)\n", True),
+            ("import requests\ns = requests.Session()\ns.verify = False\n", True),
+            ("import requests\nclass Backend:\n    verify = False\n", True),
+            # A file with no HTTP client library: whatever ``get`` or ``client`` is, not TLS.
+            ("rows = db.get(key, verify=False)\n", False),
+            ('c = client("s3", verify=False)\n', False),
+            ("session.verify = False\n", False),
+            ("class Backend:\n    verify = False\n", False),
+            # An HTTP library imported, but the receiver is some other object.
+            ("import requests\nrows = db.get(key, verify=False)\n", False),
+            ("import requests\nGitRepo(io, git_commit_verify=False)\n", False),
+            ("import requests\nmock_get.assert_called_with(url, verify=False)\n", False),
             # A function of the project's own whose keyword means something else.
-            ("rows = load_fix_first(session, repo_id, verify=False)\n", False),
-            ("check(path, verify=False)\n", False),
+            ("import httpx\nrows = load_fix_first(session, repo_id, verify=False)\n", False),
         ],
     )
     def test_tls_verify_false_needs_an_http_client(self, source: str, expected: bool) -> None:
