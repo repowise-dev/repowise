@@ -37,6 +37,7 @@ from repowise.core.analysis.health.models import split_by_origin
 from repowise.core.analysis.health.rows import detail_map, split_unscored
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
 from repowise.core.analysis.health.scoring import compute_kpis
+from repowise.core.persistence.crud.analysis.health import open_finding_count
 
 from .codegen import _generate_refactoring_code
 from .persist import (
@@ -469,7 +470,8 @@ def health_command(
     console.print(table)
 
     if findings:
-        console.print(f"\n[bold]{len(findings)}[/bold] marker findings:")
+        # The total get_overview prints; advisory rows are listed, not counted.
+        console.print(f"\n[bold]{open_finding_count(findings)}[/bold] open findings:")
         f_table = Table()
         f_table.add_column("Severity", style="magenta")
         f_table.add_column("Marker", style="cyan")
