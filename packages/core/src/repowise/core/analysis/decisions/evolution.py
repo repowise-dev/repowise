@@ -704,7 +704,7 @@ Quote only text that appears verbatim in the change evidence."""
 # The answer is ~150 tokens of JSON, but reasoning models count their thinking
 # against the same budget (OpenAI's max_completion_tokens). At 400, 17 of 121
 # real calls hit the cap and returned truncated JSON, which the parser drops.
-_JUDGE_MAX_TOKENS = 1000
+_JUDGE_MAX_TOKENS = 2000
 
 
 class _JudgeCandidate:
