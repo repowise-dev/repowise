@@ -67,7 +67,7 @@ async def hydrate_recommendations(
     test_limit: int = DEFAULT_TEST_LIMIT,
     step_verify: bool = False,
     findings: Sequence[Any] | None = None,
-    checkout: Checkout | None = None,
+    checkout: str | None = None,
 ) -> list[Recommendation]:
     """Hydrate, enrich, validate, rank, and serialize-ready all *rows*.
 
@@ -121,7 +121,7 @@ async def _validation_plans(
     test_limit: int,
     in_degree: Mapping[str, float] | None = None,
     step_verify: bool = False,
-    checkout: Checkout | None = None,
+    checkout: str | None = None,
 ) -> list[ValidationPlan]:
     """One validation plan per suggestion, every read batched across the set."""
     target_files = sorted(
@@ -165,7 +165,7 @@ async def validation_inputs(
     target_files: Sequence[str],
     *,
     in_degree: Mapping[str, float] | None = None,
-    checkout: Checkout | None = None,
+    checkout: str | None = None,
 ) -> ValidationInputs:
     """Measured coverage and the tiered reachability walk for every plan's files.
 
@@ -262,40 +262,18 @@ async def _validation_evidence(
     )
 
 
-#: A checkout as finalize sees it: its path and the commit it was indexed at.
-Checkout = tuple[str | None, str | None]
-
-#: The last package scan per checkout path and the commit it was taken at: the
-#: refactoring and performance finalizers and Fix first all ask in one update.
-#: Ceiling: a manifest edited without a new commit keeps the cached scan.
-_SCANS: dict[str, tuple[str, dict[str, frozenset[str]]]] = {}
+async def repository_checkout(session: AsyncSession, repository_id: str) -> str | None:
+    """The repository's checkout path, in one read."""
+    return await session.scalar(select(Repository.local_path).where(Repository.id == repository_id))
 
 
-async def repository_checkout(session: AsyncSession, repository_id: str) -> Checkout:
-    """The repository's checkout path and indexed commit, in one read."""
-    row = (
-        await session.execute(
-            select(Repository.local_path, Repository.head_commit).where(
-                Repository.id == repository_id
-            )
-        )
-    ).first()
-    return (row[0], row[1]) if row is not None else (None, None)
-
-
-async def _js_packages(checkout: Checkout | None, test_files: set[str]) -> JsPackages | None:
-    root, commit = checkout or (None, None)
-    path = Path(root) if root else None
-    if root is None or path is None or not path.is_dir():
+async def _js_packages(checkout: str | None, test_files: set[str]) -> JsPackages | None:
+    root = Path(checkout) if checkout else None
+    if root is None or not root.is_dir():
         return None
-    cached = _SCANS.get(root)
-    if cached is None or commit is None or cached[0] != commit:
-        manifests = await asyncio.to_thread(scan_package_manifests, path)
-        if commit is not None:
-            _SCANS[root] = (commit, manifests)
-    else:
-        manifests = cached[1]
-    return await asyncio.to_thread(js_test_packages, path, manifests, test_files)
+    # The health pass already scanned this commit's package roots; this reuses it.
+    manifests = await asyncio.to_thread(scan_package_manifests, root)
+    return await asyncio.to_thread(js_test_packages, root, manifests, test_files)
 
 
 async def _symbol_spans(

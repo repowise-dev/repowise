@@ -26,6 +26,7 @@ Closing that needs glob support in the manifest list, which is its own change.
 from __future__ import annotations
 
 import os
+import subprocess
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -97,6 +98,49 @@ def scan_package_manifests(
     checkouts, for a traverser opted into indexing them.
     """
     root = Path(repo_root)
+    if is_pruned is not None or not prune_nested_git:
+        return _walk_manifests(root, is_pruned, prune_nested_git)
+    key = (str(root.resolve()), _head_commit(root))
+    if key[1] is None:
+        return _walk_manifests(root, None, True)
+    cached = _SCANS.pop(key, None)
+    if cached is None:
+        cached = _walk_manifests(root, None, True)
+    _SCANS[key] = cached
+    while len(_SCANS) > _SCAN_CACHE_SIZE:
+        del _SCANS[next(iter(_SCANS))]
+    return dict(cached)
+
+
+#: Stock-settings scans by (checkout, HEAD commit), most recent last: health,
+#: the plan finalizers and Fix first share one walk per update, and another
+#: checkout or commit scans again. Ceiling: a manifest added or removed without
+#: a new commit keeps the cached roots until the next commit; upgrade by
+#: keying on the manifests' mtimes if working-tree updates need it.
+_SCANS: dict[tuple[str, str | None], dict[str, frozenset[str]]] = {}
+_SCAN_CACHE_SIZE = 4
+
+
+def _head_commit(root: Path) -> str | None:
+    """The commit *root* is checked out at, or None outside git."""
+    try:
+        done = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    sha = done.stdout.strip()
+    return sha if done.returncode == 0 and sha else None
+
+
+def _walk_manifests(
+    root: Path, is_pruned: Callable[[Path], bool] | None, prune_nested_git: bool
+) -> dict[str, frozenset[str]]:
     names = package_manifest_names()
     prune = is_pruned if is_pruned is not None else _default_prune(root)
     roots: dict[str, frozenset[str]] = {}

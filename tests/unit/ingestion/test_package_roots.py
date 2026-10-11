@@ -167,3 +167,29 @@ def test_a_nested_gitignore_prunes_the_scan(tmp_path):
     traverser = FileTraverser(tmp_path)
     assert traverser.dir_chain_skipped(Path("packages/tool/.test-fixtures"))
     assert traverser.package_root_dirs() == {"packages/tool"}
+
+
+def test_one_commit_is_walked_once_and_a_new_commit_again(tmp_path: Path, monkeypatch) -> None:
+    import subprocess
+
+    import repowise.core.ingestion.package_roots as package_roots
+
+    _write(tmp_path, "web/package.json", '{"name":"web"}')
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run([*git, "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run([*git, "commit", "-qm", "a"], cwd=tmp_path, check=True)
+    walks: list[Path] = []
+    walk = package_roots._walk_manifests
+    monkeypatch.setattr(package_roots, "_SCANS", {})
+    monkeypatch.setattr(
+        package_roots, "_walk_manifests", lambda root, *a: walks.append(root) or walk(root, *a)
+    )
+    assert package_roots.scan_package_roots(tmp_path) == {"web"}
+    assert package_roots.scan_package_manifests(tmp_path) == {"web": frozenset({"package.json"})}
+    assert len(walks) == 1
+    _write(tmp_path, "api/package.json", '{"name":"api"}')
+    subprocess.run([*git, "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run([*git, "commit", "-qm", "b"], cwd=tmp_path, check=True)
+    assert package_roots.scan_package_roots(tmp_path) == {"web", "api"}
+    assert len(walks) == 2

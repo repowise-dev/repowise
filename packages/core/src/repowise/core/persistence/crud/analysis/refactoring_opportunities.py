@@ -318,7 +318,7 @@ async def _rank_live_plans(
             if item.suggestion.refactoring_type == "extract_method"
             for test in item.validation.tests
         ],
-        root=checkout[0],
+        root=checkout,
     )
     ranked = [
         dataclasses.replace(
