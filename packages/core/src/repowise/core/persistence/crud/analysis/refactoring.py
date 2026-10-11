@@ -580,19 +580,17 @@ async def store_plan_ranks(
 def _sync_loaded_ranks(
     session: AsyncSession, repository_id: str, values: list[dict[str, Any]]
 ) -> None:
-    """Give every plan this session holds the rank just written.
-
-    The Core writes bypass the identity map, and a later select in the same
-    session returns a held instance as loaded, so a reader would see the old
-    rank whenever garbage collection had not yet dropped the instance.
-    """
+    """Give every plan this session holds the rank just written: the Core writes
+    bypass the identity map, and a later select returns a held instance as loaded."""
+    # Not an ORM bulk update by id instead: that fires ``updated_at``'s onupdate.
     written = {item["plan_id"]: item for item in values}
-    for instance in list(session.identity_map.values()):
+    for instance in list(session.sync_session.identity_map.values()):
         if not isinstance(instance, RefactoringSuggestion):
             continue
         loaded = inspect(instance).dict
         if loaded.get("repository_id") != repository_id:
             continue
+        # A plan this finalize did not rank was cleared above, so it reads None.
         item = written.get(loaded.get("id"), {})
         set_committed_value(instance, "rank_position", item.get("position"))
         set_committed_value(instance, "blast_size", item.get("surface"))
