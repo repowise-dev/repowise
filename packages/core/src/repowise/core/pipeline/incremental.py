@@ -1169,8 +1169,9 @@ async def refresh_unchanged_history(
     # re-inserts them, which means new ids and a reset ``created_at`` — so that
     # only happens for a file whose history findings actually changed, not for
     # every file whose stored split was merely never recorded.
+    commit = await _analyzed_commit(session, repo_id)
     metric_writes = [
-        _refreshed_metric(r, stored[r.file_path])
+        _refreshed_metric(r, stored[r.file_path], commit)
         for r in refreshed
         if _numbers_moved(r, stored[r.file_path])
     ]
@@ -1192,16 +1193,6 @@ async def refresh_unchanged_history(
                 file_paths=[r.file_path for r in finding_writes],
             )
         if metric_writes:
-            # A rescored row is scored against this commit: its history is
-            # read from it, and the file is unchanged since its last parse.
-            # Keeping the old stamp made the newest row name a commit 100
-            # behind, and the health basis reads the newest row. Set on each
-            # row, not passed as the writer's default: when HEAD cannot be read
-            # the stamp is cleared, since "not recorded" is honest and the old
-            # commit is not.
-            commit = await _analyzed_commit(session, repo_id)
-            for row in metric_writes:
-                row["analyzed_commit"] = commit
             await upsert_health_metrics(session, repo_id, metric_writes)
     logger.debug(
         "health_history_refreshed",
@@ -1255,18 +1246,25 @@ def _history_findings_moved(refreshed: Any, stored_findings: list[Any]) -> bool:
     return key(refreshed.findings) != key(stored_findings)
 
 
-def _refreshed_metric(refreshed: Any, stored: Any) -> dict:
+def _refreshed_metric(refreshed: Any, stored: Any, commit: str | None) -> dict:
     """The stored metric row with the rescored numbers written over it.
 
     A dict rather than a dataclass so the fields this pass cannot know — the
     complexity and coverage columns, which need a parse — keep their stored
     values instead of being reset to a default.
+
+    ``commit`` is the one the row was rescored against: its history is read at
+    it, and the file is unchanged since its last parse. Keeping the old stamp
+    made the newest row name a commit 100 behind, which the health basis
+    reads. Set here, not as the writer's default, so an unreadable HEAD
+    clears the stamp: "not recorded" is honest and the old commit is not.
     """
     # A file health never walked carries no complexity figures either, which
     # also clears the ones a store written before that rule kept.
     walked = refreshed.score is not None
     return {
         "file_path": refreshed.file_path,
+        "analyzed_commit": commit,
         "score": refreshed.score,
         "max_ccn": stored.max_ccn if walked else None,
         "max_nesting": stored.max_nesting if walked else None,
