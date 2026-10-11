@@ -37,12 +37,16 @@ def test_only_collected_tests_are_selectors() -> None:
     assert runnable_selector(f"{T}::test_parse") == f"{T}::test_parse"
     assert runnable_selector(f"{T}::TestParse::test_empty") == f"{T}::TestParse::test_empty"
     assert runnable_selector(f"{T}::_helper") is None
-    # pytest collects a method only inside a ``Test`` class.
-    assert runnable_selector(f"{T}::Helper::test_like") is None
     assert runnable_selector(f"{T}::__module__") is None
     # A JS suite's ``it`` callbacks sit on the module: the file runs them.
     assert runnable_selector("src/a.test.ts::__module__") == "src/a.test.ts"
+    # Go's own rule: ``TestXxx``, not the ``TestMain`` entry or a ``testHelper``.
     assert runnable_selector("pkg/a_test.go::TestParse") == "pkg/a_test.go::TestParse"
+    assert runnable_selector("pkg/a_test.go::TestMain") is None
+    assert runnable_selector("pkg/a_test.go::testHelper") is None
+    # A case marked by an annotation cannot be read off a name: never guessed.
+    assert runnable_selector("src/FooTest.java::FooTest::testParse") is None
+    assert runnable_selector("src/lib_test.rs::test_parse") is None
 
 
 def test_nearest_tests_walk_through_test_helpers_and_stop_at_three_hops() -> None:
@@ -54,13 +58,22 @@ def test_nearest_tests_walk_through_test_helpers_and_stop_at_three_hops() -> Non
             "core.py::deep": ["core.py::deeper"],
             "core.py::deeper": ["core.py::deepest"],
             "src/a.test.ts::__module__": ["src/a.ts::load"],
+            "core.py::orphan": ["core.py::called_by_orphan"],
+            "src/Foo.java::Foo::run": ["src/Foo.java::Foo::step"],
         }
     )
     found = function_test_map(index, {T, "src/a.test.ts"})
     assert found["core.py::parse"] == (MappedTest(f"{T}::test_parse", 1),)
     assert found["core.py::deep"] == (MappedTest(f"{T}::test_via_helper", 2),)
     assert found["core.py::deeper"] == (MappedTest(f"{T}::test_via_helper", 3),)
-    assert "core.py::deepest" not in found
+    # Called by resolved edges, and no test within three hops: mapped, untested.
+    assert found["core.py::deepest"] == ()
+    assert found["core.py::called_by_orphan"] == ()
+    # No resolved caller at all (a framework hook, dispatch by name): unknown,
+    # never untested.
+    assert "core.py::orphan" not in found
+    # A language whose tests cannot be seeded from names: unknown, never untested.
+    assert "src/Foo.java::Foo::step" not in found
     assert found["src/a.ts::load"] == (MappedTest("src/a.test.ts", 1),)
     # Test-file symbols are walked through, never mapped.
     assert not any(node.startswith(T) for node in found)
@@ -140,8 +153,9 @@ async def test_tests_are_stamped_on_every_row_and_read_back_nearest_first(store)
     rows = [{"symbol_id": "a.py::f"}, {"symbol_id": "a.py::g"}, {"symbol_id": "b.py::h"}]
     await write_function_facts(session, repo, rows)
     assert await tests_for_functions(session, repo, ["a.py::f"]) == {}
-    await write_function_facts(session, repo, rows, tests={"a.py::f": near})
-    assert await tests_for_functions(session, repo, ["a.py::f", "a.py::g", "x.py::y"]) == {
+    await write_function_facts(session, repo, rows, tests={"a.py::f": near, "a.py::g": ()})
+    # b.py::h is not in the map: stored NULL, never mapped, so absent here.
+    assert await tests_for_functions(session, repo, ["a.py::f", "a.py::g", "b.py::h"]) == {
         "a.py::f": near,
         "a.py::g": (),
     }
@@ -272,3 +286,36 @@ def test_a_capped_list_quotes_the_nearest_and_counts_the_rest() -> None:
     assert plan.tests == [f"{T}::test_parse"]
     assert plan.truncated is True
     assert plan.commands == [f"pytest {T}"]
+
+
+async def test_validation_inputs_carry_spans_and_tests_for_files_that_are_no_hub(store) -> None:
+    """The planless-finding path reads only these inputs, so a non-hub file needs
+    its spans and nearest tests here, not only in the plan path's second read."""
+    from repowise.core.persistence.crud import write_function_facts
+    from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
+        validation_inputs,
+    )
+    from repowise.core.persistence.models import GraphNode
+
+    session, repo = store
+    session.add(
+        GraphNode(
+            repository_id=repo,
+            node_id="core.py::parse",
+            node_type="symbol",
+            file_path="core.py",
+            start_line=5,
+            end_line=30,
+        )
+    )
+    near = (MappedTest(f"{T}::test_parse", 1),)
+    await write_function_facts(
+        session, repo, [{"symbol_id": "core.py::parse"}], tests={"core.py::parse": near}
+    )
+    inputs = await validation_inputs(session, repo, [_extract()], ["core.py"], in_degree={})
+    assert inputs.evidence.symbols["core.py"] == [("core.py::parse", 5, 30)]
+    assert inputs.evidence.function_tests == {"core.py::parse": near}
+    plan = build_validation_plan(
+        _extract(), inputs.measured, inputs.inferred, evidence=inputs.evidence, order_tests=False
+    )
+    assert plan.tests == [f"{T}::test_parse"]

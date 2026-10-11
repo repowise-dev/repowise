@@ -625,11 +625,7 @@ def _rank_target_tests(
     return out
 
 
-# Only a test that calls the function itself is quoted. Against per-test
-# coverage on this repository the first quoted test ran the function 99% of
-# the time at one hop, 82% at two and 59% at three: a test that only reaches
-# a caller often takes a branch or an early return that skips the call. A
-# farther test still counts as reach, so the plan keeps the file's tests.
+# Quoted only at one hop: per-test coverage confirmed 99% there, 82% at two, 59% at three.
 QUOTED_HOPS = 1
 
 
@@ -647,12 +643,19 @@ def _nearest_function_tests(
         if not ids or any(symbol not in evidence.function_tests for symbol in ids):
             return None
         for symbol in ids:
-            for test in evidence.function_tests[symbol]:
-                held = picked.get(test.selector)
-                if held is None or test.hops < held[0].hops:
-                    picked[test.selector] = (test, symbol)
+            _merge_nearest(picked, evidence.function_tests[symbol], symbol)
     # Stable, so each function's own order holds among tests the same hops away.
     return sorted(picked.values(), key=lambda pair: pair[0].hops)
+
+
+def _merge_nearest(
+    picked: dict[str, tuple[MappedTest, str]], tests: Sequence[MappedTest], symbol: str
+) -> None:
+    """Add *symbol*'s tests to *picked*, a test shared by two functions keeping its nearer."""
+    for test in tests:
+        held = picked.get(test.selector)
+        if held is None or test.hops < held[0].hops:
+            picked[test.selector] = (test, symbol)
 
 
 def _runs_reason(test: MappedTest, symbol: str) -> str:
@@ -873,9 +876,6 @@ def build_validation_plan(
         if len(target_rows) == 1
         else sum(target.total for target in target_rows)
     )
-    shown = ordered_tests[:cap]
-    reasons = {test: best[test][1] for test in shown}
-    commands = commands_for_tests(shown, total=aggregate_total)
     # Measured coverage outranks the graph; otherwise the plan quotes the test
     # functions that call the functions it changes, as runnable selectors.
     nearest = (
@@ -889,6 +889,10 @@ def build_validation_plan(
         # Each quoted test's file, whole: shorter than naming every function,
         # and it runs at least the tests the plan quotes.
         commands = commands_for_tests(sorted({test.split("::", 1)[0] for test in shown}))
+    else:
+        shown = ordered_tests[:cap]
+        reasons = {test: best[test][1] for test in shown}
+        commands = commands_for_tests(shown, total=aggregate_total)
     files = affected_files(suggestion)
     return ValidationPlan(
         basis=aggregate_basis,

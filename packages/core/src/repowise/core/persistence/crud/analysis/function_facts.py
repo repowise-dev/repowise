@@ -10,7 +10,7 @@ are restamped with it, and only the rows whose answer changed are written.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, delete, insert, or_, select, update
@@ -21,7 +21,7 @@ from ....analysis.function_test_map import (
     FunctionTests,
     MappedTest,
     decode_tests,
-    stamped_tests,
+    encoded_map,
 )
 from ...models import FunctionFact, GraphNode
 
@@ -34,9 +34,7 @@ _CHUNK = 500
 _RANGES_PER_DELETE = 200
 
 
-def _row(
-    repository_id: str, row: Mapping[str, Any], tests: FunctionTests | None
-) -> dict[str, Any]:
+def _row(repository_id: str, row: Mapping[str, Any], tests: Mapping[str, str]) -> dict[str, Any]:
     assigns = row.get("receiver_assigns")
     return {
         "repository_id": repository_id,
@@ -51,7 +49,7 @@ def _row(
         "nloc": row.get("nloc"),
         "params": row.get("params"),
         "max_nesting": row.get("max_nesting"),
-        "tests_json": None if tests is None else stamped_tests(tests, row["symbol_id"]),
+        "tests_json": tests.get(row["symbol_id"]),
     }
 
 
@@ -116,14 +114,15 @@ async def write_function_facts(
         await delete_file_rows(session, repository_id, file_paths)
     # Two walked functions can resolve to one symbol; the first keeps it. Key
     # order fills the clustered pages instead of splitting them half empty.
-    by_symbol = {row["symbol_id"]: _row(repository_id, row, tests) for row in reversed(list(rows))}
+    encoded = encoded_map(tests) if tests is not None else {}
+    by_symbol = {row["symbol_id"]: _row(repository_id, row, encoded) for row in reversed(list(rows))}
     fresh = [by_symbol[symbol] for symbol in sorted(by_symbol)]
     # On the table, not the mapper: the ORM bulk path splits a batch wherever a
     # column flips between NULL and a value, which doubled this write.
     for i in range(0, len(fresh), _CHUNK):
         await session.execute(insert(FunctionFact.__table__), fresh[i : i + _CHUNK])
     if roles is not None or tests is not None:
-        await _restamp(session, repository_id, roles, tests)
+        await _restamp(session, repository_id, roles, None if tests is None else encoded)
     return len(fresh)
 
 
@@ -131,30 +130,46 @@ async def _restamp(
     session: AsyncSession,
     repository_id: str,
     roles: ExecutionRoles | None,
-    tests: FunctionTests | None,
+    tests: Mapping[str, str] | None,
 ) -> None:
-    """Write each row's role and tests where they moved, one column per batch:
-    the ORM bulk path splits a batch whose rows set different columns."""
-    stored = await session.execute(
-        select(FunctionFact.symbol_id, FunctionFact.execution_role, FunctionFact.tests_json).where(
-            FunctionFact.repository_id == repository_id
+    """Write each row's role and tests where they moved. *tests* is the run's
+    encoded map; a symbol it leaves out stores NULL (never mapped)."""
+    stored = (
+        await session.execute(
+            select(
+                FunctionFact.symbol_id, FunctionFact.execution_role, FunctionFact.tests_json
+            ).where(FunctionFact.repository_id == repository_id)
         )
-    )
-    moved_roles: list[dict[str, Any]] = []
-    moved_tests: list[dict[str, Any]] = []
-    key = {"repository_id": repository_id}
-    for symbol, role_now, tests_now in stored.all():
-        if roles is not None:
-            role = roles.role_of(symbol, file_of_symbol(symbol))
-            if role != role_now:
-                moved_roles.append({**key, "symbol_id": symbol, "execution_role": role})
-        if tests is not None:
-            mapped = stamped_tests(tests, symbol)
-            if mapped != tests_now:
-                moved_tests.append({**key, "symbol_id": symbol, "tests_json": mapped})
-    for changed in (moved_roles, moved_tests):
-        for i in range(0, len(changed), _CHUNK):
-            await session.execute(update(FunctionFact), changed[i : i + _CHUNK])
+    ).all()
+    if roles is not None:
+        await _write_moved(
+            session,
+            repository_id,
+            _moved(stored, 1, "execution_role", lambda s: roles.role_of(s, file_of_symbol(s))),
+        )
+    if tests is not None:
+        await _write_moved(session, repository_id, _moved(stored, 2, "tests_json", tests.get))
+
+
+def _moved(
+    stored: Iterable[Any], at: int, column: str, now: Callable[[str], Any]
+) -> list[dict[str, Any]]:
+    """``{symbol_id, column}`` for each stored row whose *column* (row index
+    *at*) differs from *now*'s answer."""
+    return [
+        {"symbol_id": row[0], column: value}
+        for row in stored
+        if (value := now(row[0])) != row[at]
+    ]
+
+
+async def _write_moved(
+    session: AsyncSession, repository_id: str, changed: list[dict[str, Any]]
+) -> None:
+    """One column per batch: the ORM bulk path splits a batch whose rows set different columns."""
+    for i in range(0, len(changed), _CHUNK):
+        batch = [{"repository_id": repository_id, **row} for row in changed[i : i + _CHUNK]]
+        await session.execute(update(FunctionFact), batch)
 
 
 async def get_function_facts(

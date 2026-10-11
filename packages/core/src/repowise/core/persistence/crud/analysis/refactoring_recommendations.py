@@ -199,7 +199,14 @@ async def validation_inputs(
         [item for item in suggestions if hubs.intersection(affected_files(item))],
         hub_targets,
         test_files,
-        ValidationEvidence(hubs=hubs, siblings=_siblings(in_degree)),
+        # Spans and nearest tests for every target file, hub or not, and for
+        # every function there: a step of a multi-step plan narrows to its own.
+        ValidationEvidence(
+            hubs=hubs,
+            siblings=_siblings(in_degree),
+            symbols=await _symbol_spans(session, repository_id, target_files),
+            function_tests=await tests_in_files(session, repository_id, target_files),
+        ),
     )
     return ValidationInputs(
         measured=measured, inferred=inferred, test_files=test_files, evidence=evidence
@@ -214,23 +221,15 @@ async def _validation_evidence(
     test_files: set[str],
     base: ValidationEvidence,
 ) -> ValidationEvidence:
-    """Symbol spans, symbol-level reach, test imports and each function's nearest
-    tests for every plan at once.
+    """Symbol spans, symbol-level reach and test imports for every plan at once.
 
     Bounded reads over the whole plan set (the symbol walk is one ``IN`` query
     per hop), so adding plans adds no statements.
     """
     if not target_files:
         return base
-    rows = await session.execute(
-        select(GraphNode.file_path, GraphNode.node_id, GraphNode.start_line, GraphNode.end_line)
-        .where(GraphNode.repository_id == repository_id)
-        .where(GraphNode.node_type == "symbol")
-        .where(GraphNode.file_path.in_(list(target_files)))
-    )
-    spans: dict[str, list[SymbolSpan]] = {}
-    for file_path, node_id, start, end in rows:
-        spans.setdefault(file_path, []).append((node_id, int(start or 0), int(end or 0)))
+    unread = [path for path in target_files if path not in base.symbols]
+    spans = {**base.symbols, **await _symbol_spans(session, repository_id, unread)}
     symbol_ids = {
         symbol
         for suggestion in suggestions
@@ -244,10 +243,25 @@ async def _validation_evidence(
             session, repository_id, symbol_ids, test_files, avoid=base.hubs
         ),
         imports=await imported_names_by_test(session, repository_id, target_files, test_files),
-        # Every function in the files, not only the plans' targets: a step of
-        # a multi-step plan narrows to its own function.
-        function_tests=await tests_in_files(session, repository_id, target_files),
     )
+
+
+async def _symbol_spans(
+    session: AsyncSession, repository_id: str, files: Sequence[str]
+) -> dict[str, list[SymbolSpan]]:
+    """Each file's symbol ids with their line spans, in one statement."""
+    if not files:
+        return {}
+    rows = await session.execute(
+        select(GraphNode.file_path, GraphNode.node_id, GraphNode.start_line, GraphNode.end_line)
+        .where(GraphNode.repository_id == repository_id)
+        .where(GraphNode.node_type == "symbol")
+        .where(GraphNode.file_path.in_(list(files)))
+    )
+    spans: dict[str, list[SymbolSpan]] = {}
+    for file_path, node_id, start, end in rows:
+        spans.setdefault(file_path, []).append((node_id, int(start or 0), int(end or 0)))
+    return spans
 
 
 async def plan_rank_inputs(

@@ -14,6 +14,16 @@ it just gained, so the cost is O(edges x k x depth) however large the suite.
 That is exact by hops: if a test is among a function's k nearest through some
 caller, either it is among that caller's k nearest one hop closer, or the
 caller already holds k tests at least as close.
+
+Which tests run is the per-language rule the health walk already uses
+(``complexity.test_case``), read off the symbol's name. A language whose cases
+that rule cannot tell from a name (JUnit's ``@Test``, Rust's ``#[test]``, a
+language with no rule) seeds nothing, so its functions are left unmapped rather
+than called untested. A mapped function with no test is one the graph saw
+called, by resolved edges, and no test reached within the depth; a function
+with no resolved caller at all (dispatch by name, a framework hook) is left
+unmapped too. Rows two and three hops out are stored for readers that want
+reach; plans quote only the tests one hop away.
 """
 
 from __future__ import annotations
@@ -25,6 +35,11 @@ from functools import lru_cache
 from pathlib import PurePosixPath
 
 from repowise.core.analysis.execution_graph import ExecutionGraphIndex, file_of_symbol
+from repowise.core.analysis.health.complexity.test_case import (
+    runs_module_callbacks,
+    test_case_by_name,
+)
+from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
 from repowise.core.test_paths import paired_test_names
 
 # How many tests each function keeps. Measured on this repository and hermes:
@@ -39,7 +54,12 @@ _MIN_NAME_MATCH = 3
 
 @dataclass(frozen=True, slots=True)
 class MappedTest:
-    """A test that runs a function: its runnable selector and the call hops to it."""
+    """A test that runs a function: its runnable selector and the call hops to it.
+
+    A selector is a symbol id, which is a pytest node id without parameters
+    (pytest runs every parametrization of it), or a JS/TS test file, whose
+    ``it`` cases have no symbols of their own.
+    """
 
     selector: str
     hops: int
@@ -48,26 +68,27 @@ class MappedTest:
 FunctionTests = dict[str, tuple[MappedTest, ...]]
 
 
-def runnable_selector(symbol_id: str) -> str | None:
-    """The selector that runs test-file symbol *symbol_id*, or ``None`` for a helper.
+@lru_cache(maxsize=4096)
+def _language(path: str) -> str | None:
+    return EXTENSION_TO_LANGUAGE.get(PurePosixPath(path).suffix)
 
-    A ``test``-named function or method is collected by pytest, Go and JUnit 3
-    naming; a Python method only inside a ``Test`` class. A JS/TS suite's ``it``
-    callbacks have no symbol of their own, so its calls sit on the module, and
-    the file is the selector. Ceiling: an annotation-only test (JUnit 5
-    ``@Test void parses()``) is not seen; reading the annotation is the upgrade.
-    """
+
+@lru_cache(maxsize=64)
+def _seeds_tests(language: str | None) -> bool:
+    """Whether the language's test cases can be found from the graph alone."""
+    return test_case_by_name("", language) is not None or runs_module_callbacks(language)
+
+
+def runnable_selector(symbol_id: str) -> str | None:
+    """The selector that runs test-file symbol *symbol_id*, or ``None`` for a helper."""
     path, _, rest = symbol_id.partition("::")
     if not rest:
         return None
-    parts = rest.split("::")
-    if parts[-1] == _MODULE:
-        return None if path.endswith(".py") else path
-    if not parts[-1].lower().startswith("test"):
-        return None
-    if path.endswith(".py") and len(parts) > 1 and not parts[-2].startswith("Test"):
-        return None
-    return symbol_id
+    language = _language(path)
+    name = rest.rsplit("::", 1)[-1]
+    if name == _MODULE:
+        return path if runs_module_callbacks(language) else None
+    return symbol_id if test_case_by_name(name, language) else None
 
 
 @lru_cache(maxsize=65536)
@@ -100,13 +121,32 @@ def _seeds(index: ExecutionGraphIndex, test_files: Iterable[str]) -> dict[str, s
     return seeds
 
 
+def _offer(
+    best: dict[str, dict[str, int]], callee: str, selectors: set[str], hops: int, k: int
+) -> tuple[str, ...]:
+    """Add to *callee*'s nearest the closest of *selectors* it has room for; the gain."""
+    known = best.setdefault(callee, {})
+    room = k - len(known)
+    fresh = [selector for selector in selectors if selector not in known]
+    if room <= 0 or not fresh:
+        return ()
+    fresh.sort(key=lambda selector: _affinity(callee, selector))
+    gained = tuple(fresh[:room])
+    known.update(dict.fromkeys(gained, hops))
+    return gained
+
+
 def function_test_map(
     index: ExecutionGraphIndex,
     test_files: Collection[str],
     *,
     k: int = FUNCTION_TEST_K,
 ) -> FunctionTests:
-    """Each non-test symbol some test reaches, with its *k* nearest tests, nearest first."""
+    """Each mapped non-test symbol's *k* nearest tests, nearest first.
+
+    A symbol is mapped when a test reaches it, or when it has a resolved caller
+    and its language seeds tests: then an empty tuple means no test reaches it.
+    """
     # Here, not at the top: the store imports this module, and the reach module
     # imports the store's models.
     from repowise.core.analysis.test_reachability import DEFAULT_CALL_DEPTH
@@ -121,16 +161,9 @@ def function_test_map(
                 offers.setdefault(callee, set()).update(selectors)
         frontier = {}
         for callee, selectors in offers.items():
-            known = best.setdefault(callee, {})
-            fresh = [selector for selector in selectors if selector not in known]
-            room = k - len(known)
-            if room <= 0 or not fresh:
-                continue
-            fresh.sort(key=lambda selector, c=callee: _affinity(c, selector))
-            gained = fresh[:room]
-            known.update(dict.fromkeys(gained, hops))
-            frontier[callee] = tuple(gained)
-    return {
+            if gained := _offer(best, callee, selectors, hops, k):
+                frontier[callee] = gained
+    out: FunctionTests = {
         node: tuple(
             MappedTest(selector, hops)
             for selector, hops in sorted(
@@ -140,6 +173,11 @@ def function_test_map(
         for node, known in best.items()
         if file_of_symbol(node) not in tests
     }
+    for node in index.reverse:
+        path = file_of_symbol(node)
+        if node not in out and path not in tests and _seeds_tests(_language(path)):
+            out[node] = ()
+    return out
 
 
 def encode_tests(tests: Iterable[MappedTest]) -> str:
@@ -167,9 +205,10 @@ def decode_tests(value: str | None) -> tuple[MappedTest, ...] | None:
     )
 
 
-def stamped_tests(tests: Mapping[str, tuple[MappedTest, ...]], symbol_id: str) -> str:
-    """What a mapped run stores for *symbol_id*: its tests, ``[]`` when none reach it."""
-    return encode_tests(tests.get(symbol_id, ()))
+def encoded_map(tests: Mapping[str, tuple[MappedTest, ...]]) -> dict[str, str]:
+    """Each mapped symbol's stored form, encoded once per run; an absent symbol
+    stores NULL (never mapped)."""
+    return {symbol: encode_tests(mapped) for symbol, mapped in tests.items()}
 
 
 __all__ = [
@@ -178,7 +217,7 @@ __all__ = [
     "MappedTest",
     "decode_tests",
     "encode_tests",
+    "encoded_map",
     "function_test_map",
     "runnable_selector",
-    "stamped_tests",
 ]
