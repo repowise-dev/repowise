@@ -1790,12 +1790,27 @@ def health_analyzer_changed(state: dict) -> bool:
 def security_scanner_changed(state: dict) -> bool:
     """Whether the stored security findings were written by a different scanner.
 
-    Mirrors :func:`health_analyzer_changed`: a legacy state file with no stamp
-    is not a change, it picks the stamp up on its first full security rescan
-    (#3072).
+    Unlike :func:`health_analyzer_changed`, a state file with no stamp **is** a
+    change: the stamp arrived after 0.55.0 (#3086), so an unstamped store was
+    written by an older scanner. Reading absence as current would also keep it
+    unstamped forever, since only the rescan this gates writes the stamp.
+    ``init`` stamps every fresh index, so a new install never reads as stale.
     """
-    stored = state.get("security_scanner_version")
-    return stored is not None and stored != SECURITY_SCANNER_VERSION
+    return state.get("security_scanner_version") != SECURITY_SCANNER_VERSION
+
+
+def rescan_security_if_changed(repo_path: Any, state: dict, exclude_patterns: list[str]) -> bool:
+    """Full security rescan when the scanner changed, stamping ``state`` on success.
+
+    Returns True only when it rescanned and stamped, so the caller knows
+    ``state`` needs saving. A failed rescan leaves the stamp for a retry.
+    """
+    if not security_scanner_changed(state):
+        return False
+    if not run_full_security_rescan(repo_path, exclude_patterns):
+        return False
+    state["security_scanner_version"] = SECURITY_SCANNER_VERSION
+    return True
 
 
 def full_rescore_due(state: dict, head_ts: float | None) -> bool:

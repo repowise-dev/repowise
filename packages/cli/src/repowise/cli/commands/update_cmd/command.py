@@ -68,6 +68,8 @@ from .persistence import (
     health_analyzer_changed,
     parser_changed,
     refresh_read_snapshots,
+    rescan_security_if_changed,
+    security_scanner_changed,
     stamp_head_commit,
 )
 from .reporting import (
@@ -1049,6 +1051,15 @@ def run_update(
             "[yellow]Git history rules changed since this index was built; "
             "re-reading the full history once.[/yellow]"
         )
+    # Deliberately not in ``git_is_current``: the rescan does its own full parse,
+    # so falling through to the re-parse below would parse the repo twice. Every
+    # exit that skips that path runs the rescan itself instead.
+    scanner_changed = security_scanner_changed(state)
+    if scanner_changed:
+        console.print(
+            "[yellow]Security scanner changed since this index was scanned; "
+            "rescanning.[/yellow]"
+        )
     # A page can be stale for a reason no commit explains: a cascade that ran
     # out of budget, an interrupted run, an expiry. Git says nothing changed,
     # so the shortcut below is the only place such a page could be skipped
@@ -1098,7 +1109,10 @@ def run_update(
                 log.debug("self_heal_skipped", reason="another update holds the lock")
             else:
                 try:
-                    if needs_backfill:
+                    rescanned = scanner_changed and rescan_security_if_changed(
+                        repo_path, state, list(cfg.get("exclude_patterns") or [])
+                    )
+                    if needs_backfill or rescanned:
                         timings.stop("run")
                         save_state(
                             repo_path,
@@ -1328,6 +1342,8 @@ def run_update(
         and not stale_deterministic_ids
     ):
         console.print("[green]No changed files detected.[/green]")
+        if scanner_changed and not dry_run:
+            rescan_security_if_changed(repo_path, state, list(cfg.get("exclude_patterns") or []))
         # Always advance the sync pointer so the on-disk freshness marker stays
         # current on no-op syncs. In docs mode, no changed files means no docs
         # work is pending, so the docs pointer can advance to head too, which
@@ -2528,14 +2544,9 @@ def run_update(
     # be stale (#3072): the normal persist above only rescanned the changed
     # files. Does its own full parse, since unlike health there is no stored
     # structural fact to replay from the DB for a security finding.
-    from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
-
-    from .persistence import run_full_security_rescan, security_scanner_changed
-
-    if security_scanner_changed(state):
+    if scanner_changed:
         with timed(timings, "security_rescan"):
-            if run_full_security_rescan(repo_path, exclude_patterns):
-                state["security_scanner_version"] = SECURITY_SCANNER_VERSION
+            rescan_security_if_changed(repo_path, state, exclude_patterns)
 
     # ---- Stored read views, then the editor files that quote them ----
     _finish_outcome(repo_path, agents_md, degraded, timings=timings)
