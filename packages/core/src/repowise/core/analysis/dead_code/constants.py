@@ -616,6 +616,9 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*vitest.workspace.*",
     "*vitest.shims.*",
     "*vitest.root.*",
+    # @vscode/test-cli reads its config by this name from the working directory.
+    *(f".vscode-test{ext}" for ext in _JS_TOOL_EXTS),
+    *(f"*/.vscode-test{ext}" for ext in _JS_TOOL_EXTS),
     # Codegen / generated artifacts.
     "*.gen.ts",
     "*.gen.tsx",

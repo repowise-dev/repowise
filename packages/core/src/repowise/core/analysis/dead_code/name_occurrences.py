@@ -52,7 +52,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import PurePosixPath
 
-from ...ingestion.languages.js_config_values import value_spans
+from ...ingestion.languages.js_config_values import call_argument_literals, value_spans
 from ...ingestion.languages.registry import REGISTRY
 from .constants import (
     _BARE_NAME_USE_LANGUAGES,
@@ -646,8 +646,11 @@ def _loaded(
 
 
 def _config_loads(config: str, target: str, source_map: dict[str, bytes]) -> bool:
-    """Whether *config* names *target* under one of its load keys."""
-    values = b"\n".join(value_spans(source_map.get(config, b""), _TOOL_CONFIG_LOAD_KEYS))
+    """Whether *config* names *target* under one of its load keys or as a path argument."""
+    text = source_map.get(config, b"")
+    # A bare word argument is a name, not a file, so a call argument needs a "/".
+    paths = [f'"{s}"'.encode() for s in call_argument_literals(text) if "/" in s]
+    values = b"\n".join([*value_spans(text, _TOOL_CONFIG_LOAD_KEYS), *paths])
     wanted = {key: {target} for key in _path_keys(target)}
     tails = {key.rpartition("/")[2] for key in wanted}
     return target in _targets_in(values, wanted, tails, config.rpartition("/")[0])

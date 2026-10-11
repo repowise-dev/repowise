@@ -61,6 +61,53 @@ def string_literals(span: bytes) -> list[str]:
     return out
 
 
+_CALL_RE = re.compile(rb"(?<![\w$.])[A-Za-z_$][\w$.]*\s*\(")
+
+
+def call_argument_literals(text: bytes) -> list[str]:
+    """String literals passed whole to a call outside any object or array literal.
+
+    ``createNextIntlPlugin("./src/i18n/request.ts")`` hands a plugin a file to
+    load. A literal inside ``{...}`` or ``[...]`` sits under some key, and only
+    :func:`value_spans` of a load key reads those, so an ignore list is not
+    read here. Ceiling: a call inside a function body is skipped too.
+    """
+    text = strip_comments(text)
+    out: list[str] = []
+    depth = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch in _QUOTES:
+            i = _string_end(text, i) + 1
+            continue
+        if depth == 0 and (call := _CALL_RE.match(text, i)):
+            out.extend(_whole_literal_args(text, call.end()))
+            i = call.end()
+            continue
+        if ch in b"{[":
+            depth += 1
+        elif ch in b"}]":
+            depth = max(depth - 1, 0)
+        i += 1
+    return out
+
+
+def _whole_literal_args(text: bytes, start: int) -> list[str]:
+    """The arguments of the call opened just before *start* that are one string literal."""
+    out: list[str] = []
+    i = start
+    while i < len(text):
+        end = _value_end(text, i)
+        arg = text[i:end].strip()
+        if arg[:1] in _QUOTES and _string_end(arg, 0) == len(arg) - 1:
+            out.extend(string_literals(arg))
+        if end >= len(text) or text[end] != ord(","):
+            return out
+        i = end + 1
+    return out
+
+
 def _value_end(text: bytes, start: int) -> int:
     """Where the value expression starting at *start* ends.
 

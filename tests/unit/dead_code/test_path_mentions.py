@@ -213,3 +213,19 @@ def test_a_bundler_config_that_is_also_a_runner_still_needs_a_load_key(monkeypat
     config = "// removed ./src/gone.ts last release\nexport default { entry: ['src/index.ts'] }\n"
     assert not _dropped("src/gone.ts", {"tsup.config.ts": config})
     assert _dropped("src/index.ts", {"tsup.config.ts": config})
+
+
+def test_a_config_passing_a_file_path_to_a_plugin_loads_it():
+    # repowise: packages/web/next.config.ts hands next-intl its request config.
+    config = 'const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");\n'
+    assert _dropped("packages/web/src/i18n/request.ts", {"packages/web/next.config.ts": config})
+
+
+def test_a_config_call_argument_needs_a_path_not_a_bare_word():
+    config = 'const plugin = makePlugin("request.ts");\n'
+    assert not _dropped("request.ts", {"next.config.ts": config})
+
+
+def test_a_call_argument_inside_an_ignore_list_does_not_load_a_file():
+    config = "export default defineConfig({ ignores: [resolve('./src/old.ts')] });\n"
+    assert not _dropped("src/old.ts", {"eslint.config.js": config})

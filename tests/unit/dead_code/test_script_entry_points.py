@@ -37,6 +37,19 @@ def test_a_python_main_guard_is_not_unreachable():
     assert files == set()
 
 
+def test_a_script_whose_docstring_runs_it_is_not_unreachable():
+    # repowise: scripts/gen_readme_hero.py, run by hand per its usage line.
+    body = b'"""Draw the hero.\n\n    python scripts/hero.py light\n"""\nimport sys\nprint(sys.argv)\n'
+    files = _unreachable({"scripts/hero.py": {"symbols": []}}, {"scripts/hero.py": body})
+    assert files == set()
+
+
+def test_a_usage_line_for_another_script_is_not_a_program():
+    body = b'"""Helpers for python scripts/run_hero.py."""\nX = 1\n'
+    files = _unreachable({"scripts/hero.py": {"symbols": []}}, {"scripts/hero.py": body})
+    assert files == {"scripts/hero.py"}
+
+
 def test_a_script_a_ci_workflow_runs_is_not_unreachable():
     workflow = b"jobs:\n  check:\n    steps:\n      - run: python scripts/emit_sample_dsl.py\n"
     files = _unreachable(
