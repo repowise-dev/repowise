@@ -2272,13 +2272,12 @@ async def persist_incremental_index(
         if timings is not None:
             timings.stop("persist.commit")
 
-        if git_meta_map or git_decay_map or full_git_summary is not None:
-            from repowise.core.pipeline.commit_health import (
-                refresh_commit_health_after_update,
-            )
+        # Every update, not only those with git changes: a backlog an earlier
+        # budget left drains here, and an empty window costs one query.
+        from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
 
-            with timed(timings, "persist.commit_health"):
-                await refresh_commit_health_after_update(sf, repo_id, str(repo_path))
+        with timed(timings, "persist.commit_health"):
+            await refresh_commit_health_after_update(sf, repo_id, str(repo_path))
 
         # After the session closes: on SQLite the full-text index shares the
         # database file, so writing to it while the session holds a write lock

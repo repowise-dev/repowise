@@ -156,6 +156,23 @@ async def test_a_failed_scan_leaves_the_persist_committed(repo, monkeypatch) -> 
     assert await _stored_shas(repo) == set()
 
 
+async def test_an_update_with_no_git_changes_still_drains_the_backlog(
+    repo, monkeypatch
+) -> None:
+    """Empty git maps capture nothing new, but earlier skipped commits get scanned."""
+    _capture_commits(monkeypatch)
+    monkeypatch.setattr(scan_mod, "scan_commits", _scanner(str(repo), 0))
+    await _persist(repo)
+    assert await _stored_shas(repo) == set()
+
+    monkeypatch.setattr(scan_mod, "scan_commits", _scanner(str(repo)))
+    await persist_incremental_index(
+        repo, object(), {}, None, None, [], log=lambda _msg: None, degraded=[]
+    )
+
+    assert await _stored_shas(repo) == set(_SHAS)
+
+
 async def test_commits_a_budget_skipped_are_scanned_by_the_next_update(
     repo, monkeypatch
 ) -> None:

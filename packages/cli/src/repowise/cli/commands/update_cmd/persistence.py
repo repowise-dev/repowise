@@ -1438,14 +1438,12 @@ async def _persist_full_update_async(
                 if require_config_rebuild_success:
                     raise
 
-        # After the transaction, so the scan never holds the write lock.
-        if git_meta_map or git_decay_map or full_git_summary is not None:
-            from repowise.core.pipeline.commit_health import (
-                refresh_commit_health_after_update,
-            )
+        # After the transaction, so the scan never holds the write lock, and on
+        # every update, so a backlog an earlier budget left drains.
+        from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
 
-            with timed(timings, "persist.commit_health"):
-                await refresh_commit_health_after_update(sf, repo_id, str(repo_path))
+        with timed(timings, "persist.commit_health"):
+            await refresh_commit_health_after_update(sf, repo_id, str(repo_path))
         return total_pages
     finally:
         await engine.dispose()
