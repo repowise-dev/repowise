@@ -125,6 +125,29 @@ def _names(module: tuple[str, ...], entry: tuple[str, ...], *, package: bool) ->
     )
 
 
+def _first_named(
+    module: tuple[str, ...], entries: list[tuple[str, ...]], *, package: bool
+) -> tuple[str, ...] | None:
+    """The first of *entries* that *module* names (see :func:`_names`)."""
+    return next((e for e in entries if _names(module, e, package=package)), None)
+
+
+def _imported_entry(
+    parts: tuple[str, ...], entries: list[tuple[str, ...]]
+) -> tuple[str, ...] | None:
+    """The entry ``import a.b.c`` reaches: in or under the module, or a package above it."""
+    prefixes = [parts[:i] for i in range(1, len(parts))]
+    return _first_named(parts, entries, package=True) or next(
+        (h for p in prefixes if (h := _first_named(p, entries, package=False))), None
+    )
+
+
+def _from_module(node: ast.ImportFrom, here: tuple[str, ...]) -> tuple[str, ...]:
+    """The module a ``from`` import reads, its relative dots resolved against *here*."""
+    base = here[: len(here) - (node.level - 1)] if node.level else ()
+    return base + tuple((node.module or "").split(".")) if node.module else base
+
+
 def _bindings(
     node: ast.Import | ast.ImportFrom, here: tuple[str, ...], entries: list[tuple[str, ...]]
 ) -> tuple[dict[str, tuple[str, ...]], set[tuple[str, ...]], bool]:
@@ -132,30 +155,23 @@ def _bindings(
     bound: dict[str, tuple[str, ...]] = {}
     matched: set[tuple[str, ...]] = set()
     star = False
-
-    def hit(module: tuple[str, ...], *, package: bool) -> tuple[str, ...] | None:
-        return next((e for e in entries if _names(module, e, package=package)), None)
-
     if isinstance(node, ast.Import):
         for alias in node.names:
             parts = tuple(alias.name.split("."))
-            prefixes = [parts[:i] for i in range(1, len(parts))]
-            e = hit(parts, package=True) or next(
-                (h for p in prefixes if (h := hit(p, package=False))), None
-            )
-            if e:
+            if e := _imported_entry(parts, entries):
                 bound[alias.asname or parts[0]] = e
                 matched.add(e)
         return bound, matched, star
 
-    base = here[: len(here) - (node.level - 1)] if node.level else ()
-    module = base + tuple((node.module or "").split(".")) if node.module else base
+    module = _from_module(node, here)
     for alias in node.names:
         if alias.name == "*":
-            e = hit(module, package=True)
+            e = _first_named(module, entries, package=True)
             star = star or e is not None
             continue
-        e = hit((*module, alias.name), package=True) or hit(module, package=False)
+        e = _first_named((*module, alias.name), entries, package=True) or _first_named(
+            module, entries, package=False
+        )
         if e:
             bound[alias.asname or alias.name] = e
             matched.add(e)
@@ -298,29 +314,38 @@ class ConftestFacts:
             unit.fixture, unit.autouse = _fixture_info(node)
             facts.units[node.name] = unit
         for name, unit in facts.units.items():
-            for sub in _body_nodes(unit.node):
-                if isinstance(sub, (ast.Import, ast.ImportFrom)):
-                    unit.imports.append(sub)
-                elif isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
-                    unit.loads.append(sub)
-                    if sub.id in facts.units and sub.id != name:
-                        unit.refs.add(sub.id)
+            facts._read_unit_body(name, unit)
         for node in code:
             for sub in ast.walk(node):
-                if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
-                    facts.code_loads.append(sub)
-                if isinstance(sub, ast.Name) and sub.id == "pytest_plugins":
-                    facts.error = f"{path} loads pytest plugins"
-                if isinstance(sub, ast.Name) and sub.id == "__all__":
-                    # Re-exported for the tests that import the conftest, which
-                    # the selection adds as its importers.
-                    value = getattr(facts.parents.get(id(sub)), "value", None)
-                    facts.exported |= {
-                        e.value
-                        for e in getattr(value, "elts", ())
-                        if isinstance(e, ast.Constant) and isinstance(e.value, str)
-                    }
+                if isinstance(sub, ast.Name):
+                    facts._read_module_name(sub)
         return facts
+
+    def _read_unit_body(self, name: str, unit: _Unit) -> None:
+        """Record the imports in *unit*'s body, the names it reads, and the units it names."""
+        for sub in _body_nodes(unit.node):
+            if isinstance(sub, (ast.Import, ast.ImportFrom)):
+                unit.imports.append(sub)
+            elif isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                unit.loads.append(sub)
+                if sub.id in self.units and sub.id != name:
+                    unit.refs.add(sub.id)
+
+    def _read_module_name(self, sub: ast.Name) -> None:
+        """Record what one name in module-level code tells: a read, plugin loading, ``__all__``."""
+        if isinstance(sub.ctx, ast.Load):
+            self.code_loads.append(sub)
+        if sub.id == "pytest_plugins":
+            self.error = f"{self.path} loads pytest plugins"
+        if sub.id == "__all__":
+            # Re-exported for the tests that import the conftest, which
+            # the selection adds as its importers.
+            value = getattr(self.parents.get(id(sub)), "value", None)
+            self.exported |= {
+                e.value
+                for e in getattr(value, "elts", ())
+                if isinstance(e, ast.Constant) and isinstance(e.value, str)
+            }
 
     def use(self, entries: Collection[str]) -> ConftestUse:
         """What the conftest does with *entries*, the files it imports on a route."""
@@ -328,39 +353,20 @@ class ConftestFacts:
             return ConftestUse(run_all=self.error)
         # Sorted: an import binds the first entry it names, so order must not vary.
         targets = [module_parts(e) for e in sorted(entries)]
-        hot: dict[str, tuple[str, ...]] = {}
-        matched: set[tuple[str, ...]] = set()
-        for node in self.imports:
-            bound, hits, star = _bindings(node, self.here, targets)
-            if star:
-                return ConftestUse(run_all=f"{self.path} star-imports a module on the route")
-            hot.update(bound)
-            matched |= hits
+        star_import = ConftestUse(run_all=f"{self.path} star-imports a module on the route")
+        hot, matched, star = self._bind(self.imports, targets)
+        if star:
+            return star_import
 
         reach: dict[str, _Reach] = {}
         loaded = set(self.exported)
         for name, unit in self.units.items():
-            r = reach[name] = _Reach()
-            local: dict[str, tuple[str, ...]] = {}
-            for node in unit.imports:
-                bound, hits, star = _bindings(node, self.here, targets)
-                if star:
-                    return ConftestUse(run_all=f"{self.path} star-imports a module on the route")
-                local.update(bound)
-                matched |= hits
-            r.imports = next(iter(local), None)
-            seen = {n.id for n in unit.loads}
-            loaded |= seen
-            for load in unit.loads:
-                if load.id not in local and load.id not in hot:
-                    continue
-                if _patch_target(load, self.parents):
-                    r.patch = r.patch or load.id
-                else:
-                    r.run = r.run or load.id
-            # A local import nothing reads is there for its side effects.
-            if r.run is None and (unread := sorted(set(local) - seen)):
-                r.run = unread[0]
+            local, hits, star = self._bind(unit.imports, targets)
+            if star:
+                return star_import
+            matched |= hits
+            reach[name] = self._unit_reach(unit, local, hot)
+            loaded |= {n.id for n in unit.loads}
 
         if missed := [e for e in targets if e not in matched]:
             return ConftestUse(
@@ -381,6 +387,40 @@ class ConftestFacts:
             )
         self._propagate(reach)
         return self._decide(reach, module_refs)
+
+    def _bind(
+        self, nodes: list[Any], targets: list[tuple[str, ...]]
+    ) -> tuple[dict[str, tuple[str, ...]], set[tuple[str, ...]], bool]:
+        """``({bound name: entry}, entries matched, star-imports an entry)`` over *nodes*.
+
+        Stops at the first star import, which the caller answers on its own.
+        """
+        bound: dict[str, tuple[str, ...]] = {}
+        matched: set[tuple[str, ...]] = set()
+        for node in nodes:
+            names, hits, star = _bindings(node, self.here, targets)
+            if star:
+                return bound, matched, True
+            bound.update(names)
+            matched |= hits
+        return bound, matched, False
+
+    def _unit_reach(
+        self, unit: _Unit, local: Mapping[str, tuple[str, ...]], hot: Mapping[str, tuple[str, ...]]
+    ) -> _Reach:
+        """How *unit* uses the route, given its own (*local*) and module (*hot*) bindings."""
+        r = _Reach(imports=next(iter(local), None))
+        for load in unit.loads:
+            if load.id not in local and load.id not in hot:
+                continue
+            if _patch_target(load, self.parents):
+                r.patch = r.patch or load.id
+            else:
+                r.run = r.run or load.id
+        # A local import nothing reads is there for its side effects.
+        if r.run is None and (unread := sorted(set(local) - {n.id for n in unit.loads})):
+            r.run = unread[0]
+        return r
 
     def _propagate(self, reach: dict[str, _Reach]) -> None:
         """A unit uses what the units it names and the fixtures it requests use."""
@@ -679,16 +719,7 @@ def _narrow(
     narrowed: list[str] = []
     hidden_importer = scope.unresolved_conftest_import()
     for conf, route in routes.items():
-        reason = route.reason
-        if reason is None and route.use is not None and hidden_importer:
-            reason = (
-                f"{hidden_importer} imports a conftest by a name the index could not "
-                "resolve, so that importer is not known"
-            )
-        users: set[str] = set()
-        if reason is None and route.use is not None:
-            found = _fixture_users(conf, route.use, scope)
-            reason, users = (found, set()) if isinstance(found, str) else (None, found)
+        reason, users = _route_users(conf, route, scope, hidden_importer)
         if reason is not None:
             _add_note(notes, (f"{conf} keeps every test under it for ", f": {reason}"), target)
             continue
@@ -698,30 +729,55 @@ def _narrow(
             continue
         blocked.add(conf)
         narrowed.append(conf)
-        framework = {
-            e.source
-            for e in scope.edges
-            if e.target == conf
-            and e.edge_type == "framework"
-            and e.hint in (CONFTEST_HINT, UNRECORDED_HINT)
-        }
-        importers = set(scope.parents.get(conf, ())) - framework - {conf}
-        for test in sorted(users | importers):
+        for test in sorted(users | _test_importers(conf, scope)):
             added.setdefault(test, "conftest-fixture")
     kept = {t: v for t, v in picks.items() if t not in blocked}
     for test, via in added.items():
         kept.setdefault(test, via)
     result = dict(with_importers(kept, scope.parents, blocked))
     for conf in narrowed:
-        prefix = _dir_prefix(conf)
-        if any(t.startswith(prefix) and is_runnable_test(t) for t in result):
-            check = None
-        else:
-            check = scope.first_test_under(prefix)
-            if check:
-                result.setdefault(check, "conftest-import-check")
+        check = _add_import_check(conf, result, scope)
         _add_note(notes, _narrow_note(conf, routes[conf], check), target)
     return list(result.items())
+
+
+def _route_users(
+    conf: str, route: _Route, scope: _Scope, hidden_importer: str | None
+) -> tuple[str | None, set[str]]:
+    """``(why the route cannot narrow, or None; the fixture users)`` for one conftest."""
+    reason = route.reason
+    if reason is None and route.use is not None and hidden_importer:
+        reason = (
+            f"{hidden_importer} imports a conftest by a name the index could not "
+            "resolve, so that importer is not known"
+        )
+    if reason is None and route.use is not None:
+        found = _fixture_users(conf, route.use, scope)
+        return (found, set()) if isinstance(found, str) else (None, found)
+    return reason, set()
+
+
+def _test_importers(conf: str, scope: _Scope) -> set[str]:
+    """The files importing *conf* itself, not the ones pytest links to it as their conftest."""
+    framework = {
+        e.source
+        for e in scope.edges
+        if e.target == conf
+        and e.edge_type == "framework"
+        and e.hint in (CONFTEST_HINT, UNRECORDED_HINT)
+    }
+    return set(scope.parents.get(conf, ())) - framework - {conf}
+
+
+def _add_import_check(conf: str, result: dict[str, str], scope: _Scope) -> str | None:
+    """Add a test under *conf* to import it when the selection holds none; the test added."""
+    prefix = _dir_prefix(conf)
+    if any(t.startswith(prefix) and is_runnable_test(t) for t in result):
+        return None
+    check = scope.first_test_under(prefix)
+    if check:
+        result.setdefault(check, "conftest-import-check")
+    return check
 
 
 def _add_note(notes: dict[tuple[str, str], list[str]], key: tuple[str, str], target: str) -> None:

@@ -291,21 +291,23 @@ def _add_conftest_edges(
         conf_dir = Path(conf).parent.as_posix()
         prefix = f"{conf_dir}/" if conf_dir != "." else ""
         for p in path_set:
-            if p == conf:
+            if p == conf or not _sees_conftest(graph, p, prefix, roots):
                 continue
-            if roots is not None and not (
-                Path(p).name == "conftest.py" or (p.endswith(".py") and roots.may_collect_name(p))
-            ):
-                continue
-            node = graph.nodes.get(p, {})
-            if not node.get("is_test", False):
-                continue
-            if (p.startswith(prefix) or (prefix == "" and "/" not in p)) and _add_edge_if_new(
-                graph, p, conf
-            ):
+            if _add_edge_if_new(graph, p, conf):
                 graph[p][conf]["hint_source"] = CONFTEST_HINT
                 count += 1
     return count
+
+
+def _sees_conftest(graph: nx.DiGraph, p: str, prefix: str, roots: PytestRoots | None) -> bool:
+    """Whether *p* is a collected test file or conftest under the conftest directory *prefix*."""
+    if roots is not None and not (
+        Path(p).name == "conftest.py" or (p.endswith(".py") and roots.may_collect_name(p))
+    ):
+        return False
+    if not graph.nodes.get(p, {}).get("is_test", False):
+        return False
+    return p.startswith(prefix) or (prefix == "" and "/" not in p)
 
 
 def fixture_declaration(name: str, decorators: Iterable[str]) -> tuple[str, bool] | None:
