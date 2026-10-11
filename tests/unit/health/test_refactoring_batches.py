@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -10,7 +11,9 @@ from repowise.core.analysis.health.refactoring.batches import (
     BATCH_MAX_STAGES,
     stage_batches,
 )
-from repowise.core.analysis.health.refactoring.recipe import recipe_steps
+from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
+from repowise.core.analysis.health.refactoring.recipe import build_recipe, recipe_steps
+from repowise.core.analysis.health.refactoring.recommendations import build_validation_plan
 
 from .test_extract_method_stages import _persist, _plans
 
@@ -20,7 +23,9 @@ _TOOL_NAMES = re.compile(
 )
 
 
-def _staged_detail(stages: int, *, obj: bool = False, tests: list[str] | None = None) -> dict:
+def _staged_detail(
+    stages: int, *, obj: bool = False, tests: list[str] | None = None, **validation
+) -> dict:
     plan = {
         "stages": [
             {"span": {"start": 10 * k, "end": 10 * k + 5}, "params": [], "returns": []}
@@ -35,7 +40,7 @@ def _staged_detail(stages: int, *, obj: bool = False, tests: list[str] | None = 
         "file_path": "pkg/mod.py",
         "target_symbol": "pkg/mod.py::run",
         "plan": plan,
-        "validation": {"tests": tests or [], "commands": []},
+        "validation": {"tests": tests or [], "commands": [], **validation},
     }
 
 
@@ -75,19 +80,65 @@ def test_each_batch_names_its_tests_and_stops_the_plan_on_failure():
     batches = _batches(_staged_detail(7, tests=tests))
     for batch in batches:
         assert batch["tests"] == tests[:3]
-        assert batch["commands"] == [
-            "pytest tests/test_a.py::test_one tests/test_b.py tests/test_c.py"
-        ]
+        # A capped list widens to its files, as the plan's own command does.
+        assert batch["commands"] == ["pytest tests/test_a.py tests/test_b.py tests/test_c.py"]
         assert "If any fails, stop here" in batch["text"]
         assert not _TOOL_NAMES.search(batch["text"])
     assert "do not start batch 2" in batches[0]["text"]
     assert "the plan is not done" in batches[-1]["text"]
 
 
-def test_a_batch_with_no_reaching_test_runs_the_one_added_first():
-    batch = _batches(_staged_detail(6))[0]
+def test_an_uncapped_list_runs_exactly_its_tests():
+    tests = ["tests/test_a.py::test_one", "tests/test_b.py::test_two"]
+    batch = _batches(_staged_detail(6, tests=tests, total=2))[0]
+    assert batch["commands"] == ["pytest tests/test_a.py::test_one tests/test_b.py::test_two"]
+
+
+def _no_reach_detail() -> dict:
+    """A staged plan no test reaches, with the validation the ranker builds for it."""
+    detail = _staged_detail(6)
+    suggestion = RefactoringSuggestion(
+        refactoring_type="extract_method",
+        file_path=detail["file_path"],
+        target_symbol="run",
+        line_start=1,
+        line_end=80,
+        plan=detail["plan"],
+        evidence={},
+        impact_delta=1.0,
+        effort_bucket="M",
+        blast_radius={},
+        confidence="medium",
+        source_biomarker="complex_method",
+    )
+    detail["validation"] = build_validation_plan(suggestion, {}, {}).as_dict()
+    return detail
+
+
+def test_a_batch_with_no_reaching_test_runs_the_characterization_test():
+    detail = _no_reach_detail()
+    recipe = build_recipe(detail)
+    # The batch's wording leans on this precondition being in the recipe.
+    assert [p for p in recipe["preconditions"] if p["kind"] == "characterization"]
+    batch = stage_batches(detail, recipe["steps"])[0]
     assert batch["tests"] == [] and batch["commands"] == []
     assert "the test you added before the edit" in batch["text"]
+
+
+def test_unlisted_reaching_tests_point_at_verify():
+    batch = _batches(_staged_detail(6, total=12))[0]
+    assert batch["tests"] == [] and "run the tests under Verify" in batch["text"]
+
+
+def test_the_typescript_batch_shape_matches_the_engine():
+    types = Path(__file__).resolve().parents[3] / "packages" / "types" / "src" / "refactoring.ts"
+    match = re.search(r"interface RecipeBatch \{(.*?)\n\}", types.read_text(encoding="utf-8"), re.S)
+    assert match, "RecipeBatch is not declared in refactoring.ts"
+    fields = set(re.findall(r"^  (\w+)\??:", match.group(1), re.M))
+    batch = _batches(_staged_detail(6))[0]
+    assert fields == set(batch)
+    assert set(batch["stages"]) == {"first", "last"}
+    assert re.search(r"^  batches\?: RecipeBatch\[\];", types.read_text(encoding="utf-8"), re.M)
 
 
 def test_a_shared_local_import_is_dropped_only_with_its_last_reader():

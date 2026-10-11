@@ -281,16 +281,19 @@ export interface RefactoringRecipe {
   does_not: Array<{ constraint: string; reason: string | null }>;
   /** A staged plan over five stages only: its steps in ordered batches of at
    *  most five, each with the tests to run before the next; a failing batch
-   *  stops the plan. Built by ``refactoring.batches.stage_batches``. */
-  batches?: Array<{
-    n: number;
-    /** Recipe step numbers, in order. */
-    steps: number[];
-    stages: { first: number; last: number };
-    tests: string[];
-    commands: string[];
-    text: string;
-  }>;
+   *  stops the plan. */
+  batches?: RecipeBatch[];
+}
+
+/** One batch of a long staged plan. Mirrors `stage_batches`. */
+export interface RecipeBatch {
+  n: number;
+  /** Recipe step numbers, in order. */
+  steps: number[];
+  stages: { first: number; last: number };
+  tests: string[];
+  commands: string[];
+  text: string;
 }
 
 export interface RefactoringTypeCount {

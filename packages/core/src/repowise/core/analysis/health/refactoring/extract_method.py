@@ -453,7 +453,9 @@ def _staged_fields(
     imports = names.imports(analysis.fn_node)
     # The function's import goes with the last stage reading it, so the code
     # still runs when the stages before it are applied and tested alone.
-    last = {n: i for i, names_in in enumerate(staged.imports) for n in names_in}
+    last = {
+        imported: i for i, stage_imports in enumerate(staged.imports) for imported in stage_imports
+    }
     stages = []
     for i, (x, reimports) in enumerate(zip(staged.stages, staged.imports, strict=True)):
         name = render.private_name(
@@ -476,7 +478,7 @@ def _staged_fields(
             async_host=async_fields.get("async_host", True),
             leading=lead,
         )
-        moved = frozenset(n for n in staged.moved_imports if last.get(n) == i)
+        moved = frozenset(m for m in staged.moved_imports if last.get(m) == i)
         _add_stage_notes(symbol["new_symbol"], lead, carried, reimports, moved)
         stages.append(
             {

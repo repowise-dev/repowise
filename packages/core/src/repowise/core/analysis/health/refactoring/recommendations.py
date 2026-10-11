@@ -32,6 +32,7 @@ from repowise.core.code_origin import ship_rank
 from repowise.core.test_paths import is_test_support_path, names_test_for, paired_test_names
 
 from .annotations import PlanAnnotations, partner_rows
+from .commands import commands_for_tests
 from .models import RefactoringSuggestion
 from .render import list_plan
 
@@ -620,34 +621,6 @@ def _rank_target_tests(
     return out
 
 
-def _commands(tests: list[str], *, total: int | None = None) -> list[str]:
-    """A command that runs at least everything the plan says validates it.
-
-    When the displayed list is capped, enumerating only the shown tests would
-    read as a complete validation run while silently skipping the rest, so the
-    selection widens to the files those tests live in: bounded by file count
-    rather than test count, and never narrower than the evidence.
-
-    An empty list means the plan has no command to suggest. Every command names
-    its tests: with none found, a bare ``pytest`` or ``npm test`` would run a
-    whole suite as if it guarded the change. Nothing here looks at the
-    repository's tooling, so a language other than Python or JS/TS gets none in
-    place of a guess that would fail when run.
-    """
-    if total is not None and total > len(tests):
-        tests = sorted({test.split("::", 1)[0] for test in tests})
-    python_tests = sorted(test for test in tests if ".py" in test)
-    js_tests = sorted(
-        test for test in tests if any(ext in test for ext in (".ts", ".tsx", ".js", ".jsx"))
-    )
-    commands: list[str] = []
-    if python_tests:
-        commands.append("pytest " + " ".join(python_tests))
-    if js_tests:
-        commands.append("npm test -- " + " ".join(js_tests))
-    return commands
-
-
 def _characterization_step(suggestion: RefactoringSuggestion) -> str:
     """The step before an edit no test reaches: pin today's behaviour first."""
     symbol = suggestion.target_symbol
@@ -870,7 +843,7 @@ def build_validation_plan(
         truncated=aggregate_total > len(ordered_tests[:cap]),
         affected_files=files,
         affected_symbols=affected_symbols(suggestion),
-        commands=_commands(ordered_tests[:cap], total=aggregate_total),
+        commands=commands_for_tests(ordered_tests[:cap], total=aggregate_total),
         targets=target_rows,
         reasons={test: best[test][1] for test in ordered_tests[:cap]} if order_tests else {},
         prerequisite=(
