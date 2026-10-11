@@ -568,7 +568,6 @@ async def _reconcile_opportunities(
             RefactoringOpportunity.status.not_in(tuple(_DECIDED_STATUSES)),
         )
         .values(status="resolved", updated_at=now)
-        .execution_options(synchronize_session=False)
     )
     await session.flush()
 

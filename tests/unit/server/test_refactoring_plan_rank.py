@@ -251,6 +251,38 @@ async def test_finalize_ranks_only_live_plans(client: AsyncClient, app) -> None:
     assert sorted(live) == list(range(len(live)))
 
 
+async def test_finalize_refreshes_the_ranks_of_plans_the_session_holds(
+    client: AsyncClient, app
+) -> None:
+    repo_id = await _seed_ranked(client, app)
+    async with app.state.session_factory() as session:
+        resolved_id = (await _ids(session, repo_id))[0]
+        # Held across finalize, so the identity map keeps every instance.
+        held = (
+            (
+                await session.execute(
+                    select(RefactoringSuggestion).where(
+                        RefactoringSuggestion.repository_id == repo_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        await crud.update_refactoring_suggestion_status(session, repo_id, resolved_id, "resolved")
+        await crud.finalize_refactoring_opportunities(session, repo_id)
+        table = RefactoringSuggestion.__table__
+        stored = dict(
+            (
+                await session.execute(
+                    select(table.c.id, table.c.rank_json).where(table.c.repository_id == repo_id)
+                )
+            ).all()
+        )
+        assert {row.id: row.rank_json for row in held} == stored
+        assert stored[resolved_id] is None
+
+
 async def _ids(session, repo_id: str) -> list[str]:
     return list(
         (

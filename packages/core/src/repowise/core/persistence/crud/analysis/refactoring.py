@@ -20,11 +20,13 @@ from sqlalchemy import (
     bindparam,
     case,
     func,
+    inspect,
     or_,
     select,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from ....analysis.finding_registry import excluded_types
 from ...models import RefactoringSuggestion, _new_uuid, _now_utc
@@ -572,6 +574,29 @@ async def store_plan_ranks(
     )
     for index in range(0, len(values), _BATCH_SIZE):
         await session.execute(statement, values[index : index + _BATCH_SIZE])
+    _sync_loaded_ranks(session, repository_id, values)
+
+
+def _sync_loaded_ranks(
+    session: AsyncSession, repository_id: str, values: list[dict[str, Any]]
+) -> None:
+    """Give every plan this session holds the rank just written.
+
+    The Core writes bypass the identity map, and a later select in the same
+    session returns a held instance as loaded, so a reader would see the old
+    rank whenever garbage collection had not yet dropped the instance.
+    """
+    written = {item["plan_id"]: item for item in values}
+    for instance in list(session.identity_map.values()):
+        if not isinstance(instance, RefactoringSuggestion):
+            continue
+        loaded = inspect(instance).dict
+        if loaded.get("repository_id") != repository_id:
+            continue
+        item = written.get(loaded.get("id"), {})
+        set_committed_value(instance, "rank_position", item.get("position"))
+        set_committed_value(instance, "blast_size", item.get("surface"))
+        set_committed_value(instance, "rank_json", item.get("facts"))
 
 
 def _base_order(view: str, predicates: list[Any]) -> tuple[Select[Any], tuple[Any, ...]]:
