@@ -412,3 +412,26 @@ def test_a_bound_limit_or_a_read_below_one_row_only_moves_a_loop_to_unknown(sql)
     for found, line in ((go, 5), (java, 4)):
         assert found[line] == ("grows_with_data" if grows else "unknown", "query")
     assert py[5][0] == "grows_with_data"
+
+
+_ALL_ROOTS = (
+    "WITH RECURSIVE tree(id) AS (SELECT id FROM s WHERE parent_id IS NULL "
+    "UNION SELECT s.id FROM s JOIN tree ON s.parent_id = tree.id WHERE s.id = ?) SELECT * FROM tree"
+)
+
+
+@pytest.mark.parametrize(("sql", "parent"), [(_RECURSIVE, True), (_ALL_ROOTS, False)])
+def test_a_recursive_read_is_one_row_s_tree_only_when_its_seed_keys_on_one_id(sql, parent):
+    from repowise.core.analysis.health.perf import loop_lexicon as lex
+
+    assert lex.is_parent_key_filter(sql.encode()) is parent
+    go = _loops(
+        "f.go",
+        "go",
+        'package m\nimport "database/sql"\n'
+        "func f(db *sql.DB, n int) {\n"
+        f'    rows, _ := db.Query("{sql}", n)\n'
+        '    for rows.Next() { db.Exec("x") }\n'
+        "}\n",
+    )
+    assert go[5] == ("unknown" if parent else "grows_with_data", "query")

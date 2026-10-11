@@ -468,7 +468,8 @@ class IterableSources(BasePerfDialect):
     def reaching_value(self, loop: Node, name: bytes) -> Node | None:
         """The value *name* surely holds at *loop*: its one binding before the
         loop, made where the loop also runs. A second binding, or one under a
-        branch or loop the target loop is not in, leaves it unknown."""
+        branch or loop the target loop is not in, leaves it unknown. With no
+        binding before the loop, a file-level value (:meth:`file_binding`)."""
         before = self.bindings_before(loop, name)
         if not before:
             return self.file_binding(loop, name)
@@ -478,7 +479,8 @@ class IterableSources(BasePerfDialect):
 
     def file_binding(self, loop: Node, name: bytes) -> Node | None:
         """The file-level value of *name* (:meth:`file_bindings_of`), unless a
-        function or class around *loop* declares the name in any form."""
+        function or class around *loop* binds or declares the name anywhere,
+        before or after the loop: that name may be the one the loop reads."""
         if type(self).file_bindings_of is IterableSources.file_bindings_of:
             return None
         node, root = loop.parent, loop

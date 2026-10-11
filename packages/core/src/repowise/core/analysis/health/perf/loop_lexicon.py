@@ -150,11 +150,20 @@ _PARENT_KEY = re.compile(
 )
 
 
+_RECURSIVE = re.compile(rb"\bRECURSIVE\b", re.IGNORECASE)
+_UNION = re.compile(rb"\bUNION\b", re.IGNORECASE)
+
+
 def is_parent_key_filter(text: bytes) -> bool:
     """The read filters on equality with one foreign key, or walks the tree
-    below one row (``WITH RECURSIVE .. WHERE id = ?``)."""
-    if re.search(rb"\bRECURSIVE\b", text, re.IGNORECASE) and _KEY_EQUALITY.search(text):
-        return True
+    below one row: a ``WITH RECURSIVE`` whose seed (the part before the first
+    ``UNION``) keys on one id. A key only in the recursive member says nothing
+    about how many roots the seed starts from."""
+    recursive = _RECURSIVE.search(text)
+    if recursive is not None:
+        seed = _UNION.split(text[recursive.end() :], maxsplit=1)[0]
+        if _KEY_EQUALITY.search(seed):
+            return True
     return bool(_PARENT_KEY.search(text))
 
 
