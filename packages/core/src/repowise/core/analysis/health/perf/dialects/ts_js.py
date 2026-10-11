@@ -240,6 +240,18 @@ def _param_names(fn: Node) -> set[bytes]:
     return {n.text for n in _ts_walk(params) if n.type in kinds and n.text}
 
 
+def _counted_stop(loop: Node) -> Node | None:
+    """``n`` of a counted loop's ``i < n`` / ``i <= n``."""
+    cond = loop.child_by_field_name("condition")
+    if cond is not None and cond.type == "expression_statement":
+        cond = first_named_child(cond)
+    if cond is None or cond.type != "binary_expression":
+        return None
+    if not any(c.type in ("<", "<=") for c in cond.children):
+        return None
+    return cond.child_by_field_name("right")
+
+
 def _slice_is_bounded(call: Node) -> bool:
     """``.slice(a, N)`` where N is an integer literal or an ALL_CAPS constant
     its own file binds to one: a constant-width read, not the whole collection.
@@ -496,14 +508,7 @@ class TsJsPerfDialect(TsJsMarkerHooks):
     def _counted_source(self, loop: Node, probe: SinkProbe) -> Source:
         """``i < 3`` / ``i < MAX`` (a literal its file binds once) is a constant;
         ``i < rows.length`` walks ``rows``."""
-        cond = loop.child_by_field_name("condition")
-        if cond is not None and cond.type == "expression_statement":
-            cond = first_named_child(cond)
-        if cond is None or cond.type != "binary_expression":
-            return "unknown", None
-        if not any(c.type in ("<", "<=") for c in cond.children):
-            return "unknown", None
-        stop = cond.child_by_field_name("right")
+        stop = _counted_stop(loop)
         if stop is None:
             return "unknown", None
         name = identifier_name(stop)
@@ -527,7 +532,8 @@ class TsJsPerfDialect(TsJsMarkerHooks):
         if node.type == "binary_expression" and any(c.type in ("||", "??") for c in node.children):
             return self._source(node.child_by_field_name("left"), loop, probe, hop=hop)
         if node.type in ("identifier", "member_expression") and lex.is_config_name(_text(node)):
-            return "config_table", "bounded"
+            # A registry grows with what users register: the name alone bounds nothing.
+            return "config_table", None
         if node.type == "identifier":
             value = self._reaching_assignment(loop, node.text or b"") if hop else None
             if value is not None:
@@ -542,27 +548,46 @@ class TsJsPerfDialect(TsJsMarkerHooks):
         return "unknown", None
 
     def _call_source(self, call: Node, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
-        method = self.callee_method_name(call) or ""
-        fn = call.child_by_field_name("function")
-        is_member = fn is not None and fn.type == "member_expression"
-        receiver = _callee_object(call) if is_member else None
-        args = call.child_by_field_name("arguments")
-        first = next((c for c in args.children if c.is_named), None) if args is not None else None
+        method, fn, receiver, first = self._call_bits(call)
         if lex.is_config_name(self._dotted_path(fn) or "", callee=True):
-            return "config_table", "bounded"
+            return "config_table", None
         if method == "slice" and _slice_is_bounded(call):
-            return "constant", "bounded"
-        if receiver is not None and receiver.text in (b"Object", b"Array"):
-            if method not in _TS_ARG_WALKERS:
-                return "unknown", None
-            return self._source(first, loop, probe, hop=hop)
-        if receiver is not None and method in _TS_PASS_THROUGH:
-            return self._source(receiver, loop, probe, hop=hop)
+            # A fixed-width slice bounds the trip count, not what is walked.
+            return self._source(receiver, loop, probe, hop=hop)[0], "bounded"
+        if receiver is not None and (
+            receiver.text in (b"Object", b"Array") or method in _TS_PASS_THROUGH
+        ):
+            return self._walked_source(method, receiver, first, loop, probe, hop=hop)
         if method in _TS_LISTINGS:
             return "listing", "grows_with_data" if self._walks_repo(call, method, loop) else None
         if probe(call) in ("db", "network"):
             return self._query_source(call)
         return "unknown", None
+
+    def _call_bits(self, call: Node) -> tuple[str, Node | None, Node | None, Node | None]:
+        """``(method, callee, receiver, first argument)`` of a call."""
+        fn = call.child_by_field_name("function")
+        is_member = fn is not None and fn.type == "member_expression"
+        args = call.child_by_field_name("arguments")
+        first = next((c for c in args.children if c.is_named), None) if args is not None else None
+        return self.callee_method_name(call) or "", fn, _callee_object(call) if is_member else None, first
+
+    def _walked_source(
+        self,
+        method: str,
+        receiver: Node,
+        first: Node | None,
+        loop: Node,
+        probe: SinkProbe,
+        *,
+        hop: bool,
+    ) -> Source:
+        """``Object.entries(x)`` / ``Array.from(x)`` walk ``x``; ``xs.filter(f)`` walks ``xs``."""
+        if receiver.text in (b"Object", b"Array"):
+            if method not in _TS_ARG_WALKERS:
+                return "unknown", None
+            return self._source(first, loop, probe, hop=hop)
+        return self._source(receiver, loop, probe, hop=hop)
 
     def _walks_repo(self, call: Node, method: str, loop: Node) -> bool:
         """A recursive listing whose path names a repository root
@@ -584,20 +609,23 @@ class TsJsPerfDialect(TsJsMarkerHooks):
     def _query_source(self, call: Node) -> Source:
         """A read of a registry or configuration table (``prisma.repository``, ``FROM
         repos``), of one key, of a rare state, or of rows that grow."""
-        nodes = list(self._walk(call))
-        sql = [n.text or b"" for n in nodes if n.type in ("string", "template_string")]
-        sql = [text for text in sql if lex.sql_tables(text)]
-        # ``prisma.repository.findMany()``: the delegate names the model.
-        model = _callee_object(call)
-        prop = model.child_by_field_name("property") if model is not None else None
-        delegate = _text(prop) if prop is not None and model.type == "member_expression" else ""
-        if (sql and all(lex.is_config_sql(text) for text in sql)) or (
-            not sql and delegate and lex.is_config_model(delegate[:1].upper() + delegate[1:])
-        ):
-            return "config_table", "bounded"
+        if self._reads_config_table(call):
+            return "config_table", None
         if lex.is_key_lookup(call.text or b""):
             return "caller_key", "bounded"
         return ("rare_subset" if lex.is_rare_filter(call.text or b"") else "query"), None
+
+    def _reads_config_table(self, call: Node) -> bool:
+        """Every table the read names is a registry (``FROM repos``), or with no SQL,
+        the delegate does (``prisma.repository.findMany()``)."""
+        sql = [n.text or b"" for n in self._walk(call) if n.type in ("string", "template_string")]
+        sql = [text for text in sql if lex.sql_tables(text)]
+        if sql:
+            return all(lex.is_config_sql(text) for text in sql)
+        model = _callee_object(call)
+        prop = model.child_by_field_name("property") if model is not None else None
+        delegate = _text(prop) if prop is not None and model.type == "member_expression" else ""
+        return bool(delegate) and lex.is_config_model(delegate[:1].upper() + delegate[1:])
 
     def _awaited_wrapper_call(self, closure: Node) -> Node | None:
         """The awaited call *closure* is passed to (``await limit(() => f(x))``).

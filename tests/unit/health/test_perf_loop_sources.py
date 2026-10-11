@@ -43,10 +43,11 @@ _REGISTERED_ROWS = _REGISTERED_REPOS.replace("repos = ", "rows = ").replace("in 
 # -- registry and configuration tables ------------------------------------------
 
 
-def test_a_loop_over_the_registered_repos_table_is_bounded():
+def test_a_loop_over_the_registered_repos_table_still_grows():
+    # Registered repos grow with use: the table's name says what is walked, not how many.
     facts = _py(_REGISTERED_ROWS)
     assert facts.iterates == "config_table"
-    assert facts.magnitude == "bounded"
+    assert facts.magnitude == "grows_with_data"
 
 
 def test_with_the_switch_off_the_table_annotates_and_the_query_still_grows(monkeypatch):
@@ -70,7 +71,7 @@ def test_a_workspace_config_repos_list_is_a_config_table():
         "    for entry in ws_config.repos:\n"
         "        await session.execute(select(Repo).where(Repo.path == entry.path))\n"
     )
-    assert (facts.iterates, facts.magnitude) == ("config_table", "bounded")
+    assert (facts.iterates, facts.magnitude) == ("config_table", "unknown")
 
 
 def test_a_control_flow_graph_named_cfg_is_not_configuration():
@@ -159,6 +160,38 @@ def test_a_class_constant_bound_to_a_literal_is_a_constant():
     assert _py(computed) is None or _py(computed).magnitude == "unknown"
 
 
+def test_a_class_constant_listing_computed_entries_is_no_constant():
+    src = (
+        "class Store:\n"
+        "    _ROOTS = [BASE / 'a', repo.path]\n"
+        "    def wipe(self, conn):\n"
+        "        for t in self._ROOTS:\n"
+        "            conn.execute('DELETE FROM x WHERE t = ?', (t,)).fetchone()\n"
+    )
+    assert _py(src) is None or _py(src).iterates != "constant"
+
+
+def test_a_fixed_width_slice_keeps_what_the_loop_walks():
+    facts = _py(
+        "from sqlalchemy import select\n"
+        "async def f(session, ids):\n"
+        "    for key in ids[:5]:\n"
+        "        await session.execute(select(M).where(M.id == key))\n"
+    )
+    assert (facts.iterates, facts.magnitude) == ("parameter", "bounded")
+
+
+def test_ts_a_fixed_width_slice_keeps_what_the_loop_walks():
+    facts = _ts(
+        "async function f(ids: string[]) {\n"
+        "  for (const id of ids.slice(0, 5)) {\n"
+        "    await prisma.page.findMany({ where: { id } });\n"
+        "  }\n"
+        "}\n"
+    )
+    assert (facts.iterates, facts.magnitude) == ("parameter", "bounded")
+
+
 def test_a_recursive_listing_of_the_repository_root_grows():
     facts = _py(
         "import os\n"
@@ -207,6 +240,34 @@ def test_a_fallback_that_returns_the_first_call_that_works_is_not_batchable():
         "            continue\n"
     )
     assert facts.not_batchable == "first_match"
+
+
+def test_an_exit_on_a_local_derived_from_the_result_is_no_first_match():
+    # ``ok`` may test anything about the row; only a test of the result itself
+    # says the call answered.
+    facts = _py(
+        "from sqlalchemy import select\n"
+        "async def find(session, keys):\n"
+        "    for key in keys:\n"
+        "        row = await session.get(Model, key)\n"
+        "        ok = check(row)\n"
+        "        if ok:\n"
+        "            break\n"
+    )
+    assert facts.not_batchable is None
+
+
+def test_an_exit_under_an_outer_test_of_the_result_is_no_first_match():
+    facts = _py(
+        "from sqlalchemy import select\n"
+        "async def find(session, keys):\n"
+        "    for key in keys:\n"
+        "        row = await session.get(Model, key)\n"
+        "        if row is not None:\n"
+        "            if key.last:\n"
+        "                break\n"
+    )
+    assert facts.not_batchable is None
 
 
 def test_a_cap_on_what_the_loop_collected_is_no_first_match():
@@ -307,7 +368,7 @@ def test_ts_a_counted_loop_over_a_read_grows():
     assert (facts.iterates, facts.magnitude) == ("query", "grows_with_data")
 
 
-def test_ts_a_registry_table_read_is_bounded():
+def test_ts_a_registry_table_read_still_grows():
     facts = _ts(
         "async function f() {\n"
         "  const rows = await prisma.repository.findMany();\n"
@@ -316,7 +377,7 @@ def test_ts_a_registry_table_read_is_bounded():
         "  }\n"
         "}\n"
     )
-    assert (facts.iterates, facts.magnitude) == ("config_table", "bounded")
+    assert (facts.iterates, facts.magnitude) == ("config_table", "grows_with_data")
 
 
 def test_ts_walking_the_repository_tree_grows():

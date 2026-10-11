@@ -1,10 +1,11 @@
 """Names and query text that say what a loop walks, shared by every dialect.
 
 A dialect finds the iterable; these answer whether its name, ORM model or SQL
-text names a registry or configuration table (bounded by what a user
-registers or configures), the rows of one primary key, a filter that keeps
-only a rare state of a growing table, or a repository root a listing walks.
-Each answers ``False`` when the text does not settle it.
+text names a registry or configuration table (what is walked, not how many:
+such tables grow with use), the rows of one primary key, a filter that keeps
+only a rare state of a growing table, a read capped in its SQL, or a
+repository root a listing walks. Each answers ``False`` when the text does
+not settle it.
 """
 
 from __future__ import annotations
@@ -140,6 +141,31 @@ def is_rare_filter(text: bytes) -> bool:
     return bool(_RARE_FILTER.search(text))
 
 
+# ``authority_id = ?`` / ``where(user_id: u.id)`` / ``findAllByOwnerId(id)``: the
+# rows that belong to one parent row.
+_PARENT_KEY = re.compile(
+    rb"\b[a-z]\w*_id\b(?:\s*=\s*(?:\?|:\w+|@\w+|\$\d+)|:\s*[^\s:])"
+    rb"|\b(?:find|get|query|read|stream|count)\w*By\w+Id\s*\(",
+    re.IGNORECASE,
+)
+
+
+def is_parent_key_filter(text: bytes) -> bool:
+    """The read filters on equality with one foreign key."""
+    return bool(_PARENT_KEY.search(text))
+
+
+_SQL_LIMIT = re.compile(
+    rb"\bselect\b.*?(?:\blimit\s+\d+\b|\btop\s*\(?\s*\d+|\bfetch\s+first\s+\d+)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def has_sql_limit(text: bytes) -> bool:
+    """A SELECT capped at a literal row count (``LIMIT 10``, ``TOP 5``)."""
+    return bool(_SQL_LIMIT.search(text))
+
+
 def names_repo_root(name: str) -> bool:
     """``repo_root`` / ``self._repo_path`` / ``projectDir``: the tree a repository is."""
     ws = words(name)
@@ -147,10 +173,12 @@ def names_repo_root(name: str) -> bool:
 
 
 __all__ = [
+    "has_sql_limit",
     "is_config_model",
     "is_config_name",
     "is_config_sql",
     "is_key_lookup",
+    "is_parent_key_filter",
     "is_rare_filter",
     "names_repo_root",
     "sql_tables",

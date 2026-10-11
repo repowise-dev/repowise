@@ -400,9 +400,11 @@ class BasePerfDialect:
         if not self.binding_fields:
             return None
         body = self.loop_body(loop) or loop
-        results = self._result_names(call, body)
-        if self._stops_at_hit(call, loop, body, results, loop_kinds):
+        # Only the call's own result says it answered; a local derived from it
+        # (``ok = check(r)``) may test something else.
+        if self._stops_at_hit(call, loop, body, self._result_names(call, body), loop_kinds):
             return "first_match"
+        results = self._result_names(call, body, hops=2)
         # A sequence the results are appended to carries them into the next turn
         # (``messages.append(reply)``); capping it (``len(out) >= n``) is no hit.
         results |= self._appended_to(call, body, results)
@@ -437,9 +439,9 @@ class BasePerfDialect:
             if n.type == "identifier" or n.type in self.key_hops
         )
 
-    def _result_names(self, call: Node, body: Node) -> set[bytes]:
-        """Names the body binds from *call*'s result, and one hop through a local
-        that reads them."""
+    def _result_names(self, call: Node, body: Node, hops: int = 0) -> set[bytes]:
+        """Names the body binds from *call*'s result, then *hops* steps through
+        locals that read them (``cursor = page.next`` carries a page to the next turn)."""
         bindings = [
             (target, value)
             for node in self._walk(body, prune=self.scope_kinds)
@@ -449,7 +451,7 @@ class BasePerfDialect:
         names = {
             t for target, value in bindings if self._within(value, call) for t in self._texts(target)
         }
-        for _ in range(2):
+        for _ in range(hops):
             names |= {
                 t
                 for target, value in bindings
@@ -477,8 +479,8 @@ class BasePerfDialect:
     def _stops_at_hit(
         self, call: Node, loop: Node, body: Node, results: set[bytes], loop_kinds: frozenset[str]
     ) -> bool:
-        """An exit that ends *loop* returns the call's result or sits under a
-        branch whose condition reads it."""
+        """An exit that ends *loop* returns the call's result, or the branch it
+        sits in directly tests it; a test further out guards more than the exit."""
         for exit_node in self._walk(body, prune=self.scope_kinds):
             if exit_node.type not in self._STOPPING_EXITS:
                 continue
@@ -488,17 +490,22 @@ class BasePerfDialect:
                 continue
             if self._within(exit_node, call) or self._reads(exit_node, results):
                 return True
-            cur = exit_node.parent
-            while cur is not None and cur != body:
-                condition = (
-                    cur.child_by_field_name("condition") if cur.type in self.branch_kinds else None
-                )
-                if condition is not None and (
-                    self._within(condition, call) or self._reads(condition, results)
-                ):
-                    return True
-                cur = cur.parent
+            condition = self._exit_condition(exit_node, body)
+            if condition is not None and (
+                self._within(condition, call) or self._reads(condition, results)
+            ):
+                return True
         return False
+
+    def _exit_condition(self, exit_node: Node, body: Node) -> Node | None:
+        """The condition of the nearest branch around *exit_node* inside *body*."""
+        cur = exit_node.parent
+        while cur is not None and cur != body:
+            # Python's ``elif`` tests its own condition, not the ``if``'s.
+            if cur.type in self.branch_kinds or cur.type == "elif_clause":
+                return cur.child_by_field_name("condition")
+            cur = cur.parent
+        return None
 
     def _breaks(self, exit_node: Node, loop: Node, loop_kinds: frozenset[str]) -> bool:
         """A ``break`` that leaves *loop* itself, not a nested loop or ``switch``."""

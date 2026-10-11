@@ -255,15 +255,25 @@ def _is_lock_acquire_spin(
 
 
 def _enclosing_loops(
-    node: Node, dialect: BasePerfDialect, loop_kinds: frozenset[str], fn_kinds: frozenset[str]
+    node: Node,
+    dialect: BasePerfDialect,
+    loop_kinds: frozenset[str],
+    fn_kinds: frozenset[str],
+    block_loops: bool = False,
 ) -> list[Node]:
     """The data-dependent loops around *node* in its function, innermost first;
-    walked up only for hits. A loop whose iterable holds *node* is not one."""
+    walked up only for hits. A loop whose iterable holds *node* is not one. With
+    *block_loops*, a block-iteration call (Ruby ``items.each do``) whose block
+    holds *node* is one."""
     loops: list[Node] = []
     cur = node.parent
     for _ in range(64):
         if cur is None or cur.type in fn_kinds:
             break
+        if block_loops and not dialect.is_constant_loop(cur):
+            block = dialect.block_loop_body(cur)
+            if block is not None and block.start_byte <= node.start_byte < block.end_byte:
+                loops.append(cur)
         if cur.type in loop_kinds and cur.is_named and not dialect.is_constant_loop(cur):
             iterable = dialect.iterable_node(cur)
             # ``for row in result.all():`` runs ``.all()`` once per pass of the loop
@@ -555,7 +565,7 @@ def _collect_perf_hits(
         """
         if not (do_loop_facts or per_call):
             return None
-        loops = _enclosing_loops(node, dialect, loop_kinds, fn_kinds)
+        loops = _enclosing_loops(node, dialect, loop_kinds, fn_kinds, do_block_loop)
         if not loops:
             return None
         loop = loops[0]
@@ -566,7 +576,9 @@ def _collect_perf_hits(
             ),
             batch=dialect.batch_form(node, loop, probe) if sink and do_batch else None,
             concurrency_bound=dialect.concurrency_bound(node, loop) if sink and do_bound else None,
-            key_unused=per_call and not _loop_key_feeds(node, loop),
+            # Only a native loop header names its key; a block loop (Ruby
+            # ``each do |row|``) claims nothing, as before it carried loop facts.
+            key_unused=per_call and loop.type in loop_kinds and not _loop_key_feeds(node, loop),
             iterates=source(loop).iterates if do_magnitude else "unknown",
             not_batchable=dialect.not_batchable(node, loop, loop_kinds) if per_call else None,
         )

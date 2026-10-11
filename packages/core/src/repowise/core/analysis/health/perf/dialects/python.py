@@ -299,6 +299,21 @@ def _text(node: Node) -> str:
     return (node.text or b"").decode("utf-8", "replace")
 
 
+_PY_SCALARS = frozenset({"string", "concatenated_string", "integer", "float", "true", "false", "none"})
+
+
+def _scalar_literal(item: Node) -> bool:
+    """``"a"`` / ``3`` / ``("a", 1)`` / ``"k": v`` by its key: an entry the source
+    spells out. A name or call in the literal (``[ROOT / "a", repo.path]``) may
+    stand for anything, so the table is not shown to be a fixed set."""
+    if item.type == "pair":
+        key = item.child_by_field_name("key")
+        return key is not None and key.type in _PY_SCALARS
+    if item.type == "tuple":
+        return all(child.type in _PY_SCALARS for child in item.named_children)
+    return item.type in _PY_SCALARS
+
+
 def _walk_tree(node: Node) -> Iterator[Node]:
     stack = [node]
     while stack:
@@ -984,21 +999,28 @@ class PythonPerfDialect(BasePerfDialect):
         if expr.type == "boolean_operator" and any(c.type == "or" for c in expr.children):
             return self._source(expr.child_by_field_name("left"), loop, probe, hop=hop)
         if expr.type in ("identifier", "attribute") and lex.is_config_name(_text(expr)):
-            return "config_table", "bounded"
+            # A registry grows with what users register: the name alone bounds nothing.
+            return "config_table", None
         if expr.type == "identifier":
             return self._name_source(expr, loop, probe, hop=hop)
         if expr.type == "attribute":
-            attr = expr.child_by_field_name("attribute")
-            name = (attr.text if attr is not None else b"") or b""
-            if name.decode("utf-8", "replace") in _PY_RESULT_PROJECTIONS:
-                return self._source(expr.child_by_field_name("object"), loop, probe, hop=hop)
-            if self._literal_constant(expr, name):
-                return "constant", "bounded"
-            return "unknown", None
+            return self._attribute_source(expr, loop, probe, hop=hop)
         if expr.type == "subscript" and self._slice_magnitude(expr) == "bounded":
-            return "constant", "bounded"
+            # A fixed-width slice bounds the trip count, not what is walked.
+            walked = self._source(expr.child_by_field_name("value"), loop, probe, hop=hop)
+            return walked[0], "bounded"
         if expr.type == "call":
             return self._call_source(expr, loop, probe, hop=hop)
+        return "unknown", None
+
+    def _attribute_source(self, expr: Node, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
+        """``result.rows`` walks ``result``; ``self._TABLES`` bound to a literal is a constant."""
+        attr = expr.child_by_field_name("attribute")
+        name = (attr.text if attr is not None else b"") or b""
+        if name.decode("utf-8", "replace") in _PY_RESULT_PROJECTIONS:
+            return self._source(expr.child_by_field_name("object"), loop, probe, hop=hop)
+        if self._literal_constant(expr, name):
+            return "constant", "bounded"
         return "unknown", None
 
     def _name_source(self, name: Node, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
@@ -1014,29 +1036,46 @@ class PythonPerfDialect(BasePerfDialect):
         return "unknown", None
 
     def _call_source(self, call: Node, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
-        method = self.callee_method_name(call) or ""
-        fn = call.child_by_field_name("function")
-        is_member = fn is not None and fn.type == "attribute"
-        receiver = fn.child_by_field_name("object") if is_member else None
-        arg_list = call.child_by_field_name("arguments")
-        args = [c for c in arg_list.children if c.is_named] if arg_list is not None else []
+        method, fn, receiver, args = self._call_bits(call)
         if lex.is_config_name(self._dotted_path(fn) or "", callee=True):
-            return "config_table", "bounded"
+            return "config_table", None
         if method == "range" and receiver is None:
             return self._range_source(call, args, loop, probe, hop=hop)
-        if method in _PY_PASS_THROUGH and args and args[0].type != "keyword_argument":
-            return self._source(args[0], loop, probe, hop=hop)
-        if receiver is not None and method in ("items", "values", "keys"):
-            return self._source(receiver, loop, probe, hop=hop)
-        if method in _PY_LISTINGS:
-            return "listing", "grows_with_data" if self._walks_repo(call, method, loop) else None
-        if method in _PY_STREAMS or (method == "open" and receiver is None):
-            return "stream", None
+        walked = self._walked_arg_or_receiver(method, receiver, args)
+        if walked is not None:
+            return self._source(walked, loop, probe, hop=hop)
+        if method in _PY_LISTINGS or method in _PY_STREAMS or (method == "open" and not receiver):
+            return self._file_source(call, method, loop)
         if probe(call) in ("db", "network"):
             return self._query_source(call, loop)
         if receiver is not None and method in _PY_RESULT_PROJECTIONS:
             return self._source(receiver, loop, probe, hop=hop)
         return "unknown", None
+
+    def _call_bits(self, call: Node) -> tuple[str, Node | None, Node | None, list[Node]]:
+        """``(method, callee, receiver, positional args)`` of a call."""
+        fn = call.child_by_field_name("function")
+        receiver = fn.child_by_field_name("object") if fn is not None and fn.type == "attribute" else None
+        arg_list = call.child_by_field_name("arguments")
+        args = [c for c in arg_list.children if c.is_named] if arg_list is not None else []
+        return self.callee_method_name(call) or "", fn, receiver, args
+
+    @staticmethod
+    def _walked_arg_or_receiver(
+        method: str, receiver: Node | None, args: list[Node]
+    ) -> Node | None:
+        """``sorted(xs)`` / ``enumerate(xs)`` walk ``xs``; ``d.items()`` walks ``d``."""
+        if method in _PY_PASS_THROUGH and args and args[0].type != "keyword_argument":
+            return args[0]
+        if receiver is not None and method in ("items", "values", "keys"):
+            return receiver
+        return None
+
+    def _file_source(self, call: Node, method: str, loop: Node) -> Source:
+        """A directory listing (grows when it walks the repository tree) or a stream."""
+        if method in _PY_LISTINGS:
+            return "listing", "grows_with_data" if self._walks_repo(call, method, loop) else None
+        return "stream", None
 
     def _range_source(
         self, call: Node, args: list[Node], loop: Node, probe: SinkProbe, *, hop: bool
@@ -1087,7 +1126,7 @@ class PythonPerfDialect(BasePerfDialect):
             and all(lex.is_config_sql(text) for text in sql)
             and all(lex.is_config_model(model) for model in models)
         ):
-            return "config_table", "bounded"
+            return "config_table", None
         text = b" ".join(part.text or b"" for part in parts)
         if lex.is_key_lookup(text):
             return "caller_key", "bounded"
@@ -1121,7 +1160,12 @@ class PythonPerfDialect(BasePerfDialect):
             and left.type == "identifier"
             and left.text == name
         ]
-        return len(rights) == 1 and rights[0] is not None and rights[0].type in _PY_CONSTANT_RHS
+        return (
+            len(rights) == 1
+            and rights[0] is not None
+            and rights[0].type in _PY_CONSTANT_RHS
+            and all(_scalar_literal(item) for item in rights[0].named_children)
+        )
 
     def _magnitude(
         self, expr: Node | None, loop: Node, probe: SinkProbe, *, hop: bool
