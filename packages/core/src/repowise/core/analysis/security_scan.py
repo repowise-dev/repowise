@@ -67,6 +67,27 @@ def _detect_secrets_allowlisted(
     )
 
 
+IGNORE_TOKEN = "repowise-security-ignore"
+_IGNORE_RE = re.compile(
+    rf"{IGNORE_TOKEN}(?![\w-])"
+    r"(?:[ \t]*:[ \t]*([\w:-]+(?:[ \t]*,[ \t]*[\w:-]+)*))?"
+    # A colon no kind list follows is a malformed scope, which silences nothing.
+    r"(?P<stray>[ \t]*:)?"
+)
+
+
+def marker_silences(line: str, kind: str) -> bool:
+    """Whether a marker on *line* silences *kind*: the bare token all kinds, ``: a, b`` those."""
+    if IGNORE_TOKEN not in line:
+        return False
+    match = _IGNORE_RE.search(line)
+    if match is None or match.group("stray"):
+        return False
+    if not match.group(1):
+        return True
+    return kind in {k.strip() for k in match.group(1).split(",")}
+
+
 _CREDENTIAL_EXACT_PLACEHOLDERS: frozenset[str] = frozenset({"password", "changeit"})
 
 _CREDENTIAL_SUBSTRING_PLACEHOLDERS: tuple[str, ...] = (
@@ -1055,6 +1076,15 @@ def scan_source_map(
             source_text = raw or ""
         scanned_paths.append(path)
         findings = scan_source(path, source_text, pf.symbols)
+        if findings and IGNORE_TOKEN in source_text:
+            # The gate keeps a silenced finding to report it as suppressed; the
+            # stored scan is what the dashboard and agents read, so it drops it.
+            lines = source_lines(source_text)
+            findings = [
+                f
+                for f in findings
+                if not (0 < f["line"] <= len(lines) and marker_silences(lines[f["line"] - 1], f["kind"]))
+            ]
         if findings:
             findings_by_file[path] = findings
     return findings_by_file, scanned_paths

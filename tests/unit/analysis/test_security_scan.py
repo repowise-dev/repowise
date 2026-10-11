@@ -877,6 +877,28 @@ class TestScanSource:
         assert set(findings_by_file) == {"a.py"}
         assert findings_by_file["a.py"] == scan_source("a.py", SNIPPY.decode())
 
+    def test_ignore_marker_silences_the_stored_scan(self) -> None:
+        source = (
+            "data = pickle.loads(blob)  # repowise-security-ignore: pickle_loads\n"
+            "other = pickle.loads(raw)  # repowise-security-ignore: eval_call\n"
+            "os.system(cmd)  # repowise-security-ignore\n"
+            "os.system(cmd2)\n"
+        )
+        # The gate reads scan_source and reports silenced findings as suppressed.
+        assert len(scan_source("a.py", source)) == 4
+        result = _fake_result({"a.py": source})
+        findings_by_file, _ = scan_source_map(result.parsed_files, result.source_map)
+        assert sorted((f["kind"], f["line"]) for f in findings_by_file["a.py"]) == [
+            ("os_system", 4),
+            ("pickle_loads", 2),
+        ]
+
+    def test_a_fully_silenced_file_stores_nothing(self) -> None:
+        source = "data = pickle.loads(blob)  # repowise-security-ignore\n"
+        result = _fake_result({"a.py": source})
+        findings_by_file, scanned = scan_source_map(result.parsed_files, result.source_map)
+        assert scanned == ["a.py"] and findings_by_file == {}
+
 
 def _assert_no_raw(snippet: str, raw: str) -> None:
     leaked = [raw[i : i + 5] for i in range(len(raw) - 4) if raw[i : i + 5] in snippet]

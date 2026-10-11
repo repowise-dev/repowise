@@ -190,7 +190,9 @@ upload are in [Repowise in CI](../start/CI.md).
 Put `repowise-security-ignore` on the finding's own line in any comment
 syntax; `repowise-security-ignore: aws_access_key` silences only the kinds it
 lists. There is no next-line or whole-file form. A silenced finding never fails
-the gate and is still reported as suppressed. Exact rules are in the
+the gate and is still reported there as suppressed. The scan that indexing
+stores leaves it out, so it does not reach the dashboard, `get_risk` or REST.
+Exact rules are in the
 [CLI reference](../reference/CLI_REFERENCE.md#repowise-security-check-revspec).
 
 The scanner also honours detect-secrets comments: `# pragma: allowlist secret`

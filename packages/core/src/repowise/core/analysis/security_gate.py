@@ -45,6 +45,7 @@ from .security_scan import (
     SECRET_KINDS,
     _detect_secrets_allowlisted,
     _mask_comments_and_strings,
+    marker_silences,
     masked_snippet,
     scan_source,
     source_lines,
@@ -138,14 +139,6 @@ _CUSTOM_PREFIX = "custom:"
 #: lookaround such as ``(?=z)``) matches somewhere in it.
 _ZERO_WIDTH_PROBE = string.printable
 _QUANTIFIERS = ("*", "+", "{")
-
-_IGNORE_TOKEN = "repowise-security-ignore"
-_IGNORE_RE = re.compile(
-    rf"{_IGNORE_TOKEN}(?![\w-])"
-    r"(?:[ \t]*:[ \t]*([\w:-]+(?:[ \t]*,[ \t]*[\w:-]+)*))?"
-    # A colon no kind list follows is a malformed scope, which silences nothing.
-    r"(?P<stray>[ \t]*:)?"
-)
 
 
 @dataclass(frozen=True)
@@ -309,18 +302,6 @@ def _class_end(regex: str, start: int) -> int:
     while i < len(regex) and regex[i] != "]":
         i += 2 if regex[i] == "\\" else 1
     return i + 1
-
-
-def _silenced(line: str, kind: str) -> bool:
-    """Whether a marker on *line* silences *kind*: the bare token all kinds, ``: a, b`` those."""
-    if _IGNORE_TOKEN not in line:
-        return False
-    match = _IGNORE_RE.search(line)
-    if match is None or match.group("stray"):
-        return False
-    if not match.group(1):
-        return True
-    return kind in {k.strip() for k in match.group(1).split(",")}
 
 
 # ---------------------------------------------------------------------------
@@ -541,7 +522,7 @@ def _row(text: _Text, entry: _Entry) -> dict:
         "fingerprint": fingerprint,
         "commit": None,
     }
-    if _silenced(text.line(lineno), kind):
+    if marker_silences(text.line(lineno), kind):
         row[_SUPPRESSED] = True
     return row
 
