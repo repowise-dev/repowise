@@ -45,33 +45,11 @@ from typing import Any
 from repowise.core.entry_candidacy import is_reachability_root
 from repowise.core.ids import SYMBOL_SEP, file_path_of, is_external
 
+from ...ingestion.barrels import BARREL_FILENAMES
 from .constants import never_flag_path
 from .cpp_reachability import build_cpp_package_files, is_cpp_file_reachable, is_cpp_path
 from .go_reachability import build_go_package_files, is_go_file_reachable
 from .jvm_reachability import build_jvm_package_files, is_jvm_file_reachable
-
-#: Re-export barrel filenames. A barrel aggregates other modules' symbols and
-#: is reached by importing those names (or, for a package's public entry, via
-#: package.json ``exports``/``main``), so a barrel with no inbound graph edge
-#: is not unreachable.
-#:
-#: Scope note for the analyzer: this rescues a file in the *unreachable-file*
-#: pass only. It is NOT applied in the unused-export pass — a genuine symbol
-#: defined in a barrel that nobody imports should still be flagged.
-BARREL_FILENAMES: frozenset[str] = frozenset(
-    {
-        "__init__.py",
-        "index.ts",
-        "index.tsx",
-        "index.js",
-        "index.jsx",
-        "index.mts",
-        "index.cts",
-        "index.mjs",
-        "index.cjs",
-        "mod.rs",
-    }
-)
 
 #: Edge types that record association rather than dependency. A co-change edge
 #: says two files were committed together, which is not a path any code can

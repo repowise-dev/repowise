@@ -263,3 +263,26 @@ def test_changing_an_exported_symbol_warns_about_outside_callers() -> None:
     # Only the exported symbol, never a neighbour in the same file.
     assert not annotate_any(plan(target_symbol="_helper"), facts)
     assert not annotate_any(plan(file_path="svc/other.py", target_symbol="handle"), facts)
+
+
+def test_a_moved_exported_method_carries_one_public_api_risk() -> None:
+    exported = {
+        "svc/orders.py": {
+            "svc/orders.py::Order::total": "svc/__init__.py",
+            "svc/orders.py::Order": "svc/__init__.py",
+            "svc/orders.py::Pricing": "svc/__init__.py",
+        }
+    }
+    moved = plan(
+        "move_method",
+        target_symbol="Order.total",
+        plan={"from_class": "Order", "to_class": "Pricing"},
+        blast_radius={"callers": 2},
+    )
+    notes = annotate(moved, AnnotationFacts(exported=exported))
+    assert kinds(notes) == ["public_api"]
+    text = notes.risks[0].text
+    # Callers inside the repo first, then every exported symbol the plan changes.
+    assert text.startswith("`Order.total` has 2 callers")
+    assert "`Order` (from `svc/__init__.py`)" in text and "`Pricing`" in text
+    assert text.endswith("are exported; changing their signatures breaks consumers outside the repo.")

@@ -14,6 +14,7 @@ from typing import Any
 import networkx as nx
 import structlog
 
+from ...analysis.public_api import stamp_public_api
 from ..cohesion import (
     MODULE_DECLARATION_HINT,
     SAME_PACKAGE_HINT,
@@ -650,8 +651,6 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._resolve_override_dispatch(progress=progress)
 
         # Which symbols a package exports, read off the imports just resolved.
-        from ...analysis.public_api import stamp_public_api
-
         try:
             stamp_public_api(self._graph, self._parsed_files)
         except Exception as exc:  # a reader bug must not fail the index

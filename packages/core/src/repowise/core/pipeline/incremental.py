@@ -2145,7 +2145,8 @@ async def persist_incremental_index(
             # leaves stale per-symbol metrics from the original init
             # and the UI shows "Not indexed in graph" for every
             # symbol on existing repos. Before health, whose plan
-            # annotations read each symbol's ``public_api`` from here.
+            # annotations read each symbol's ``public_api`` from here; a
+            # failed write leaves them reading the last run's flags.
             try:
                 from repowise.core.pipeline.persist import persist_graph_nodes
 

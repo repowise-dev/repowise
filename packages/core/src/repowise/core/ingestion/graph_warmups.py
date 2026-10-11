@@ -411,6 +411,12 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
     if graph is None:
         return
     parsed = getattr(ctx, "parsed_files", None) or {}
+    # Every file a ``package.json`` publishes, subpaths included, for the
+    # per-symbol public API flag (``analysis.public_api``).
+    for path in index.exports_entry_paths | index.manifest_entry_paths:
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["package_export"] = True
     for path in index.manifest_entry_paths:
         _stamp_entry(graph, parsed, path)
         pf = parsed.get(path)

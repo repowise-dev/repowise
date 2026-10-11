@@ -1217,6 +1217,18 @@ async def _persist_full_update_async(
                 except Exception as exc:
                     _skip("Doc-drift persist", exc)
 
+            # Re-persist graph_nodes so symbol-level PageRank / betweenness /
+            # community ids reflect the current build. Before health, whose
+            # plan annotations read each symbol's ``public_api`` from here; a
+            # failed write leaves them reading the last run's flags.
+            try:
+                from repowise.core.pipeline.persist import persist_graph_nodes
+
+                with timed(timings, "persist.graph_nodes"):
+                    await persist_graph_nodes(session, repo_id, graph_builder)
+            except Exception as exc:
+                _skip("Graph nodes persist", exc)
+
             # Code-health findings + metrics (partial — upsert only).
             if partial_health_report is not None:
                 try:
@@ -1247,16 +1259,6 @@ async def _persist_full_update_async(
                         )
                 except Exception as exc:
                     _skip("Dead-code persist", exc)
-
-            # Re-persist graph_nodes so symbol-level PageRank / betweenness /
-            # community ids reflect the current build.
-            try:
-                from repowise.core.pipeline.persist import persist_graph_nodes
-
-                with timed(timings, "persist.graph_nodes"):
-                    await persist_graph_nodes(session, repo_id, graph_builder)
-            except Exception as exc:
-                _skip("Graph nodes persist", exc)
 
             # Refresh wiki_symbols for the changed files (upsert + within-file
             # prune). Without this, symbol bounds fossilize at the last full
@@ -1578,6 +1580,10 @@ async def _rescore_health_from_db(
                 f"[yellow]{len(report.findings)} findings[/yellow]"
             )
 
+            # Graph nodes first: the plan annotations the writer below stores
+            # read each symbol's ``public_api`` from them.
+            await persist_graph_nodes(session, repo_id, graph_builder)
+
             # Same writer the index's analysis phase uses, so a re-score leaves
             # the derived queues agreeing with the findings it just replaced
             # rather than describing the set it deleted. Read HEAD off disk:
@@ -1615,7 +1621,6 @@ async def _rescore_health_from_db(
                     ingested_commit_sha=live_head,
                     provenance=coverage.provenance,
                 )
-            await persist_graph_nodes(session, repo_id, graph_builder)
 
     await _rescore()
 
