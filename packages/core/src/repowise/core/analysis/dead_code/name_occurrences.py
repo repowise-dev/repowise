@@ -54,7 +54,7 @@ from pathlib import PurePosixPath
 
 from ...ingestion.languages.js_config_values import plugin_path_arguments, value_spans
 from ...ingestion.languages.registry import REGISTRY
-from ...workspace.extractors.http.wrappers import can_mask, mask_source
+from ...ingestion.source_mask import can_mask, mask_source
 from .constants import (
     _BARE_NAME_USE_LANGUAGES,
     _NON_CODE_LANGUAGES,
