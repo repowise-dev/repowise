@@ -152,6 +152,26 @@ def test_logic_beside_the_writes_is_not_declarative(change):
     assert not _flat(_SUMMARY.replace(old, new, 1))
 
 
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "prepare_record(result)",  # a call made for what it does
+        "logger.enabled()",  # a call on an imported name
+        '(cap := result.get("x"))',  # a write in the condition
+    ],
+)
+def test_a_guard_that_calls_or_writes_is_not_flat(condition):
+    old = "    if allow_fast:\n"
+    assert old in _SUMMARY
+    assert not _flat(_SUMMARY.replace(old, f"    if {condition}:\n", 1))
+
+
+def test_a_guard_reading_keys_lengths_and_types_stays_flat():
+    # ``result.get``, ``len`` and ``isinstance`` only read.
+    new = "    if isinstance(result, dict) and len(patterns) > 1:\n"
+    assert _flat(_SUMMARY.replace("    if allow_fast:\n", new, 1))
+
+
 # Statement-level calls on module or imported names are steps, not fields:
 # a function that logs or responds as it goes decomposes.
 _LOGGING = """

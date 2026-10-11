@@ -9,12 +9,13 @@ of the list without making either half simpler to read.
 The shape, read off the tree in any language the slicer serves: every
 statement writes the same one name (``x.f = v`` / ``x[k] = v``, ``delete x.f``,
 or a call on a parameter or local, ``rows.append(...)``) or binds a local once,
-and the only control flow is a guard around such statements (an ``if`` chain,
-a ``try``, a loop over rows) or a guard that returns. A second written name, a
-call on a module or imported name (``print``, ``logger.info``, ``res.send``
-on no local), a loop in a loop, a callback (whose body is logic the statement
-only registers), a ``break`` / ``continue`` or a ``switch`` is logic, and the
-function is not flat.
+and the only control flow is a guard around such statements (an ``if`` chain
+whose conditions only read, a ``try``, a loop over rows) or a guard that
+returns. A second written name, a call on a module or imported name
+(``print``, ``logger.info``, ``res.send`` on no local), a condition that calls
+or writes (``if prepare():``), a loop in a loop, a callback (whose body is
+logic the statement only registers), a ``break`` / ``continue`` or a
+``switch`` is logic, and the function is not flat.
 """
 
 from __future__ import annotations
@@ -43,6 +44,17 @@ _ACCESS_FIELDS = ("object", "value", "operand", "argument", "array", "function")
 _CALLEE_FIELDS = ("function", "object")
 _CALL_KINDS = frozenset({"call", "call_expression", "method_invocation"})
 _NAME_TARGETS = frozenset({"identifier", "pattern_list", "tuple_pattern"})
+# Calls a guard may make: reads with no effect on what they are called on.
+_PURE_CALLS = frozenset(
+    {"get", "len", "isinstance", "hasattr", "bool", "str", "int", "trim", "strip", "lower"}
+    | {"isFinite", "isArray", "isInteger", "includes", "has", "startswith", "endswith"}
+    | {"startsWith", "endsWith", "hasOwnProperty", "Boolean", "Number", "String"}
+)
+# A write or a wait inside a condition: ``if (x := f())``, ``if (n++)``.
+_WRITE_KINDS = frozenset(
+    {"named_expression", "assignment_expression", "augmented_assignment_expression"}
+    | {"update_expression", "await", "await_expression", "assignment"}
+)
 # Fewer writes than this is a short function with a few guards, not a builder.
 _MIN_WRITES = 3
 
@@ -142,10 +154,41 @@ def _flat_decl(stmt: Node, census: _Census) -> bool:
 
 
 def _flat_branches(stmt: Node, census: _Census) -> bool:
-    """Every arm of an ``if`` chain is flat, or only returns."""
+    """Every arm of an ``if`` chain is flat, or only returns, behind a pure guard."""
     condition = stmt.child_by_field_name("condition")
+    if condition is not None and not _pure_guard(condition, census.lmap):
+        return False
     arms = [c for c in stmt.named_children if c != condition and not is_comment(c)]
     return all(_guard_exit(arm, census.lmap) or _flat(arm, census) for arm in arms)
+
+
+def _pure_guard(condition: Node, lmap: LanguageNodeMap) -> bool:
+    """Whether *condition* only reads: comparisons and truthiness of names,
+    fields and keys, with no call but a read (``_PURE_CALLS``) and no write.
+    ``if prepare_record():`` or ``if logger.enabled():`` is a step, not a guard."""
+    stack = [condition]
+    while stack:
+        node = stack.pop()
+        if node.type in _WRITE_KINDS or node.type in lmap.lambda_kinds:
+            return False
+        if node.type in lmap.call_kinds and _callee_name(node) not in _PURE_CALLS:
+            return False
+        stack.extend(node.named_children)
+    return True
+
+
+def _callee_name(call: Node) -> str:
+    """The called name: ``get`` in ``result.get(...)``, ``len`` in ``len(x)``."""
+    callee = _field(call, _CALLEE_FIELDS)
+    name = callee.child_by_field_name("name") if call.type == "method_invocation" else None
+    for _ in range(8):
+        if callee is None or name is not None:
+            break
+        member = _field(callee, ("attribute", "property", "field"))
+        if member is None:
+            name = callee
+        callee = member
+    return (name.text or b"").decode("utf-8", "replace") if name is not None else ""
 
 
 def _guard_exit(arm: Node, lmap: LanguageNodeMap) -> bool:
