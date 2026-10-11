@@ -272,9 +272,9 @@ def find_extractions(
                 ):
                     continue
                 reason = exception_flow_refusal(analysis.cfg, s, e, reads, def_lines)
+                if reason is not None and refused is not None:
+                    refused.add(reason)
                 if reason is not None:
-                    if refused is not None:
-                        refused.add(reason)
                     continue
                 uses, assigns = _receiver_facts(receiver, pre, i, j, _count_in(free_writes, s, e))
                 out.append(
