@@ -378,7 +378,8 @@ export function stepExcerptRange(
   plan: RefactoringPlan | undefined,
 ): { start: number; end: number; extraction: ExtractMethodPlan | null; stages: ExtractStage[] } | null {
   const isExtract = plan?.refactoring_type === "extract_method";
-  // A staged plan's top-level span is only its first stage: cover them all.
+  // A staged plan's top-level span is only its first stage. start..end spans
+  // every stage for callers that need one range; excerpts read `stages`.
   const stages = isExtract ? extractMethodStages(plan!) : [];
   if (stages.length >= 2) {
     return { start: stages[0]!.span.start, end: stages[stages.length - 1]!.span.end, extraction: null, stages };

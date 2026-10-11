@@ -223,6 +223,46 @@ describe("OpportunityDrawer reach, verification and code", () => {
     expect(screen.queryByText("return c", { exact: false })).toBeNull();
   });
 
+  it("shows each stage of a staged plan as its own excerpt, not the lines between", async () => {
+    // 120 lines; stages 10-12 and 90-92, a gap far over the 40-line excerpt cap.
+    const source = Array.from({ length: 120 }, (_, i) => `line_${i + 1}`).join("\n");
+    const readSource = vi.fn().mockResolvedValue(source);
+    const stage = (start: number, end: number) => ({
+      span: { start, end },
+      params: [],
+      returns: [],
+      suggested_name: null,
+      ccn: 3,
+      new_symbol: { signature_text: "def <name>():" },
+      call_site: { replace_span: { start, end }, new_text: "<name>()" },
+    });
+    const plan = {
+      ...PLAN,
+      line_start: 1,
+      line_end: 120,
+      plan: { ...stage(10, 12), stages: [stage(10, 12), stage(90, 92)] },
+    } as unknown as RefactoringPlan;
+    render(
+      <OpportunityDrawer
+        detail={detail({
+          steps: [{ ...STEP, line_start: 1, line_end: 120 }],
+          steps_emitted: 1,
+          plans: [plan],
+        })}
+        open
+        onOpenChange={() => {}}
+        readSource={readSource}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show the code" }));
+    expect(await screen.findByText("line_10", { exact: false })).toBeTruthy();
+    expect(await screen.findByText("line_92", { exact: false })).toBeTruthy();
+    expect(screen.queryByText("line_50", { exact: false })).toBeNull();
+    expect(screen.getByText("Stage 2 · lines 90–92")).toBeTruthy();
+    // Both excerpts share one read of the file.
+    expect(readSource).toHaveBeenCalledTimes(1);
+  });
+
   it("offers the model-drafted diff preview when the host turned generation on", () => {
     render(
       <OpportunityDrawer

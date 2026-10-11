@@ -655,6 +655,15 @@ function StepCode({
   const slice = extraction?.span ?? null;
   const stages = range?.stages ?? [];
   const canRead = Boolean(readSource && range);
+  // One read per file however many stage excerpts ask for it.
+  const readOnce = React.useMemo(() => {
+    if (!readSource) return undefined;
+    const reads = new Map<string, Promise<string>>();
+    return (path: string) => {
+      if (!reads.has(path)) reads.set(path, readSource(path));
+      return reads.get(path)!;
+    };
+  }, [readSource]);
   if (!stored?.snippet && !canRead && !plan) return null;
   return (
     <div className="mt-2">
@@ -687,12 +696,28 @@ function StepCode({
           ) : null}
           {stored?.snippet ? (
             <CodeBlock code={stored.snippet} startLine={stored.snippetStartLine} />
+          ) : canRead && stages.length > 0 ? (
+            // Each stage on its own: one range from the first stage to the last
+            // would show the lines between them and could cut a later stage.
+            stages.map((st, i) => (
+              <div key={st.span.start} className="space-y-1">
+                <p className="font-mono text-[11px] text-[var(--color-text-tertiary)]">
+                  {`${st.name ?? `Stage ${i + 1}`} · lines ${formatSpans([st.span])}`}
+                </p>
+                <SourceExcerpt
+                  path={step.file_path}
+                  start={st.span.start}
+                  end={st.span.end}
+                  readSource={readOnce!}
+                />
+              </div>
+            ))
           ) : canRead ? (
             <SourceExcerpt
               path={step.file_path}
               start={range!.start}
               end={range!.end}
-              readSource={readSource!}
+              readSource={readOnce!}
             />
           ) : null}
           {plan && onGenerateCode ? (
