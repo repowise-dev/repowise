@@ -55,7 +55,14 @@ _QUOTED_RE = re.compile(r"""["']([^"']+)["']""")
 # Parts of a TS / JS import statement. The statement names the module, so a part
 # classified alone would read an imported local name (``{ request }``) as a library.
 _ES_IMPORT_PARTS: frozenset[str] = frozenset(
-    {"import_clause", "named_imports", "import_specifier", "namespace_import", "import_require_clause"}
+    {
+        "import_clause",
+        "named_imports",
+        "import_specifier",
+        "namespace_import",
+        "import_require_clause",
+        "import_attribute",
+    }
 )
 
 
@@ -137,10 +144,19 @@ def _classify_import(node: _NodeLike) -> tuple[str | None, list[str]]:
     one member's kind onto another (#2894).
     """
     text = _decode(node)
-    # A quoted module (TS / Go / Ruby / Dart) is classified whole: split on its
-    # hyphens it would name libraries it is not (``provider-http`` -> ``http``).
-    # Python / Java / ... dotted modules and bare identifiers otherwise.
-    tokens = _QUOTED_RE.findall(text) or re.findall(r"[A-Za-z0-9_.:@/]+", text)
+    source = _es_module_source(node)
+    if source is not None:
+        # A TS / JS import names its module once; an import attribute
+        # (``with { type: "json" }``) is not a module. Only the clause before
+        # the module binds: ``import { WebSocket } from "ws"`` leaves ``ws`` unbound.
+        module = _decode(source)
+        tokens = [module.strip("\"'`")]
+        text = text[: text.find(module)]
+    else:
+        # A quoted module (Go / Ruby / Dart) is classified whole: split on its
+        # hyphens it would name libraries it is not (``provider-http`` -> ``http``).
+        # Python / Java / ... dotted modules and bare identifiers otherwise.
+        tokens = _QUOTED_RE.findall(text) or re.findall(r"[A-Za-z0-9_.:@/]+", text)
 
     kind: str | None = None
     for tok in tokens:
@@ -153,11 +169,6 @@ def _classify_import(node: _NodeLike) -> tuple[str | None, list[str]]:
     if kind is None:
         return None, []
 
-    # A TS / JS import binds only its clause: ``import { WebSocket } from "ws"``
-    # leaves a local ``ws`` unbound. Go and Ruby bind through the quoted path.
-    source = _es_module_source(node)
-    if source is not None:
-        text = text.replace(_decode(source), " ")
     bound = [
         t for t in re.split(r"[^A-Za-z0-9_]+", text) if t.isidentifier() and t not in _IMPORT_KW
     ]

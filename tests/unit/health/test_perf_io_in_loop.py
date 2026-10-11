@@ -433,6 +433,9 @@ def test_a_hyphenated_ts_module_path_names_no_library():
         (b'import type { Pool } from "pg";\n', {"Pool": "db"}),
         (b'import ws from "ws";\n', {"ws": "network"}),
         (b'import "ws";\n', {}),
+        (b'import cfg from "./c.json" with { type: "http" };\n', {}),
+        (b'import cfg from "./c.json" assert { type: "pg" };\n', {}),
+        (b'import { Pool } from "pg" with { type: "json" };\n', {"Pool": "db"}),
     ],
 )
 def test_a_ts_import_binds_only_its_clause_names(source: bytes, expected: dict[str, str]):
