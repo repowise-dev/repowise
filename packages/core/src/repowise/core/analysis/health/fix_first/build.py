@@ -91,8 +91,7 @@ from repowise.core.analysis.health.queue.value import (
     tier,
     worth,
 )
-from repowise.core.analysis.health.refactoring.recipe import ELSEWHERE_NOTE
-from repowise.core.analysis.health.refactoring.recipe import _anchors as plan_anchors
+from repowise.core.analysis.health.refactoring.recipe import ELSEWHERE_NOTE, plan_anchors
 from repowise.core.analysis.health.refactoring.render import NAME_PLACEHOLDER
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.scoring import biomarker_dimension
@@ -628,70 +627,66 @@ def _refactor_step(
     kind = step.get("refactoring_type") or ""
     path = step.get("file_path") or ""
     sym = text.short_symbol(step.get("target_symbol")) or text.basename(path)
-    start, end = _span(plan)
     body = _plan_body(plan)
-    code: dict[str, str | None] = {}
-    if kind == "extract_method":
-        code = _helper_code(body)
-        line_text = _extract_text(sym, body, start, end)
-    elif kind == "extract_helper":
-        line_text = f"Replace the duplicate in {sym} with a call to one shared helper"
-    elif kind == "extract_class":
-        groups = [g for g in body.get("groups") or [] if g.get("methods")]
-        members = sorted(groups, key=lambda g: len(g["methods"]))[0]["methods"] if groups else []
-        line_text = (
-            f"Move {', '.join(members[:4])}"
-            + (f" and {len(members) - 4} more" if len(members) > 4 else "")
-            + f" out of {sym} into a new class"
-            if members
-            else f"Move a cohesive group of {sym}'s methods into a new class"
-        )
-    elif kind == "split_file":
-        names = [g.get("name") for g in body.get("groups") or [] if g.get("name")]
-        line_text = (
-            f"Split {text.basename(path)} into {', '.join(names[:4])}"
-            + (f" and {len(names) - 4} more" if len(names) > 4 else "")
-            if names
-            else f"Split {text.basename(path)} along its independent groups"
-        )
-    elif kind == "break_cycle":
-        edge = _cut_edge(plan)
-        line_text = (
-            f"Cut the import of {text.basename(edge['to'])} in "
-            f"{text.basename(edge['from'])} (line {edge['line']})"
-            if edge
-            else _uncut_cycle_text(path, plan)
-        )
-    elif kind == "move_method":
-        dest = body.get("to_class") or text.basename(body.get("to_file") or "")
-        line_text = (
-            f"Move {sym} to {dest}" if dest else f"Move {sym} to the class it uses most"
-        )
-    else:
-        line_text = f"Apply the {text.humanize(kind)} step to {sym}"
-    mechanical = (step.get("applicability") or {}).get("classification") == "mechanical"
-    return FixStep(
-        order, line_text, path, start or step.get("line_start"), mechanical, **code, command=command
+    phrase = _STEP_TEXT.get(kind)
+    line_text = (
+        phrase(sym, path, plan, body) if phrase else f"Apply the {text.humanize(kind)} step to {sym}"
     )
+    code = _helper_code(body) if kind == "extract_method" else {}
+    mechanical = (step.get("applicability") or {}).get("classification") == "mechanical"
+    line = _span(plan)[0] or step.get("line_start")
+    return FixStep(order, line_text, path, line, mechanical, **code, command=command)
+
+
+def _first_four(names: list[str]) -> str:
+    """Up to four names, then how many more."""
+    more = f" and {len(names) - 4} more" if len(names) > 4 else ""
+    return f"{', '.join(names[:4])}{more}"
+
+
+def _extract_class_text(sym: str, path: str, plan: Any, body: Mapping[str, Any]) -> str:
+    """The smallest named group of methods leaves for a new class."""
+    groups = [g for g in body.get("groups") or [] if g.get("methods")]
+    if not groups:
+        return f"Move a cohesive group of {sym}'s methods into a new class"
+    members = sorted(groups, key=lambda g: len(g["methods"]))[0]["methods"]
+    return f"Move {_first_four(members)} out of {sym} into a new class"
+
+
+def _split_file_text(sym: str, path: str, plan: Any, body: Mapping[str, Any]) -> str:
+    names = [g.get("name") for g in body.get("groups") or [] if g.get("name")]
+    if not names:
+        return f"Split {text.basename(path)} along its independent groups"
+    return f"Split {text.basename(path)} into {_first_four(names)}"
+
+
+def _break_cycle_text(sym: str, path: str, plan: Any, body: Mapping[str, Any]) -> str:
+    edge = _cut_edge(plan)
+    if edge is None:
+        return _uncut_cycle_text(path, plan)
+    return (
+        f"Cut the import of {text.basename(edge['to'])} in "
+        f"{text.basename(edge['from'])} (line {edge['line']})"
+    )
+
+
+def _move_method_text(sym: str, path: str, plan: Any, body: Mapping[str, Any]) -> str:
+    dest = body.get("to_class") or text.basename(body.get("to_file") or "")
+    return f"Move {sym} to {dest}" if dest else f"Move {sym} to the class it uses most"
 
 
 def _extract_text(sym: str, body: Mapping[str, Any], start: Any, end: Any) -> str:
-    """An Extract Method step: the span by the text it starts and ends with
+    """An Extract Method step: its span by the text it starts and ends with
     when the plan anchored it (line numbers move with every edit), else by
-    its lines, and its first stage when the plan is staged. A helper whose
-    header the plan wrote is named alone: the step carries the header."""
-    name = body.get("suggested_name")
-    into = (
-        name
-        if name and _helper_code(body)["signature"]
-        else text.signature(
-            name,
-            list(body.get("params") or []),
-            list(body.get("returns") or []),
-            is_async=bool(body.get("needs_async", False)),
-        )
+    its lines; a staged plan's step is its first stage."""
+    into = text.signature(
+        body.get("suggested_name"),
+        list(body.get("params") or []),
+        list(body.get("returns") or []),
+        is_async=bool(body.get("needs_async", False)),
     )
     anchors = plan_anchors(body.get("anchors"))
+    # Worded like the plan's own step (``recipe._extract_step``).
     if anchors is not None:
         where = f"{sym} from {md_code(anchors['first'])} to {md_code(anchors['last'])}"
     else:
@@ -700,6 +695,19 @@ def _extract_text(sym: str, body: Mapping[str, Any], start: Any, end: Any) -> st
     if anchors is not None and anchors["unique_in"] == "function":
         line_text = f"{line_text}. {ELSEWHERE_NOTE}"
     return line_text
+
+
+#: A refactoring step's sentence, by plan type, from (symbol, path, plan, plan body).
+_STEP_TEXT: dict[str, Callable[[str, str, Any, Mapping[str, Any]], str]] = {
+    "extract_method": lambda sym, path, plan, body: _extract_text(sym, body, *_span(plan)),
+    "extract_helper": lambda sym, *_: (
+        f"Replace the duplicate in {sym} with a call to one shared helper"
+    ),
+    "extract_class": _extract_class_text,
+    "split_file": _split_file_text,
+    "break_cycle": _break_cycle_text,
+    "move_method": _move_method_text,
+}
 
 
 def _stage_count(body: Mapping[str, Any]) -> int:
@@ -723,8 +731,8 @@ def _has_span(stage: Any) -> bool:
 
 
 def _stage_one(line_text: str, body: Mapping[str, Any]) -> str:
-    """A staged plan's step is its first stage (the plan's top-level span),
-    so it says so and what the whole plan does to the function's CCN."""
+    """A staged plan's step is its first stage (the plan's top-level span):
+    it says so, and the function's CCN once every stage is done."""
     count = _stage_count(body)
     if not count:
         return line_text

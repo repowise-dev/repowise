@@ -58,15 +58,15 @@ describe("Extract Method anchors", () => {
     expect(prompt).toContain("- **Replace the span with:** `total = _sum_rows(rows)`");
     expect(prompt).not.toContain("Replace lines");
     expect(prompt).toContain(`${SCRIPT_RULE_TEXT} ${LINE_RULE_TEXT}`);
-    expect(prompt).not.toContain("appears elsewhere in the file");
+    expect(prompt).not.toContain("Text repeats in the file");
   });
 
-  it("says when the anchor text also appears elsewhere in the file", () => {
+  it("says when the anchor text repeats elsewhere in the file", () => {
     const prompt = buildRefactoringPlanPrompt({
       plan: plan({ anchors: { first: "    a = 1", last: "    b = 2", unique_in: "function" } }),
     });
     expect(prompt).toContain(
-      "```\n    b = 2\n```\n- This text also appears elsewhere in the file: keep the edit inside the function this step names.",
+      "```\n    b = 2\n```\n- Text repeats in the file: edit only inside this function.",
     );
   });
 

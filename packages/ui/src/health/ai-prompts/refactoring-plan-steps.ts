@@ -68,8 +68,7 @@ export const SCRIPT_RULE_TEXT =
   "Do not generate a script that rewrites the file. Make each edit directly in the file, one at a time, re-reading the span after each.";
 export const LINE_RULE_TEXT =
   "Do not find a span by its line numbers. They are where it was when planned and move with every edit; match its first and last lines.";
-const ELSEWHERE_NOTE =
-  "This text also appears elsewhere in the file: keep the edit inside the function this step names.";
+const ELSEWHERE_NOTE = "Text repeats in the file: edit only inside this function.";
 
 interface SpanAnchors {
   first: string;

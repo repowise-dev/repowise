@@ -7,6 +7,7 @@ import copy
 import pytest
 
 from repowise.core.analysis.health.fix_first import FIX_EXCLUSIONS, build_fix_first
+from repowise.core.analysis.health.refactoring.recipe import ELSEWHERE_NOTE
 from tests.unit.health.fix_first_rows import (
     FINDINGS,
     METRICS,
@@ -467,15 +468,15 @@ def test_an_anchored_step_quotes_the_text_its_span_starts_and_ends_with() -> Non
     assert step.line == 20 and "lines 20-35" not in step.text
 
 
-def test_a_staged_anchored_step_quotes_its_first_stage_and_names_the_written_helper() -> None:
-    plans = _anchored_plans(
-        {"first": "a = 1", "last": "b = `x`", "unique_in": "file"}, staged=True
-    )
+def test_a_staged_anchored_step_quotes_its_first_stage_with_the_helper_brief() -> None:
+    plans = _anchored_plans({"first": "a = 1", "last": "b = `x`", "unique_in": "file"}, staged=True)
     plans[0]["plan"]["new_symbol"] = {"signature_text": "def sum_rows(rows, limit):"}
     core = next(i for i in _build(plans=plans).items if i.kind == "refactor")
-    # A backtick inside an anchor widens its fence; the written header is on the step.
+    # A backtick inside an anchor widens its fence; the text keeps the helper's brief
+    # because a surface that shows only the text has no header beside it.
     assert core.action.steps[0].text == (
-        "Stage 1 of 3: Extract run from `a = 1` to `` b = `x` `` into sum_rows (CCN 44 -> 9 after all 3)"
+        "Stage 1 of 3: Extract run from `a = 1` to `` b = `x` `` into "
+        "sum_rows(rows, limit) -> total (CCN 44 -> 9 after all 3)"
     )
     assert core.action.steps[0].signature == "def sum_rows(rows, limit):"
 
@@ -488,8 +489,16 @@ def test_an_anchor_unique_only_in_its_function_says_so() -> None:
     # A finding with no plan of its own borrows the span with its anchors.
     assert lone.action.steps[0].text == (
         "Extract run from `x = 1\n    y = 2` to `return y` into sum_rows(rows, limit) -> total. "
-        "This text also appears elsewhere in the file: keep the edit inside the function this "
-        "step names."
+        f"{ELSEWHERE_NOTE}"
+    )
+
+
+def test_a_staged_anchor_unique_only_in_its_function_says_so_after_the_stage() -> None:
+    plans = _anchored_plans({"first": "a = 1", "last": "b = 2", "unique_in": "function"}, staged=True)
+    core = next(i for i in _build(plans=plans).items if i.kind == "refactor")
+    assert core.action.steps[0].text == (
+        "Stage 1 of 3: Extract run from `a = 1` to `b = 2` into sum_rows(rows, limit) -> total "
+        f"(CCN 44 -> 9 after all 3). {ELSEWHERE_NOTE}"
     )
 
 

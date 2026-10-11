@@ -146,9 +146,10 @@ def _fix_first_block(data: HealthData, req: HealthRequest, pager: Pager) -> dict
         if not req.pages_fix_first or item["id"] == lead_id or at >= FIX_FIRST_CAP:
             item.pop("first_step", None)
             item.pop("verify", None)
-    # Zero reasons say nothing an agent reads; ``counts.excluded`` omits them too.
-    totals = block["totals"]
-    totals["excluded"] = {reason: n for reason, n in totals["excluded"].items() if n}
+    # ``counts.excluded`` carries the same reasons without the zeros, and
+    # ``_meta.health_analysis`` the analysed commit and time; the model
+    # version is for reading a stored queue back, not for the agent.
+    del block["totals"]["excluded"], block["basis"], block["model_version"]
     block["counts"] = full.counts(shown=len(page.items)).as_dict()
     block["items_total"] = full.totals.eligible
     block["cursor"] = req.fix_first_cursor

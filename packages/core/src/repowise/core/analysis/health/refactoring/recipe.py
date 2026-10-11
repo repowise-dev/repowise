@@ -178,7 +178,7 @@ def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
         if plan.get("suggested_name")
         else " (name it for what the lines do)"
     )
-    anchors = _anchors(plan.get("anchors"))
+    anchors = plan_anchors(plan.get("anchors"))
     lines = (
         f"the span of `{host}` that starts and ends with the lines shown "
         f"(lines {where['start']}-{where['end']} when planned)"
@@ -209,7 +209,7 @@ def _extract_step(d: Mapping[str, Any], plan: Mapping[str, Any]) -> Step:
     )
 
 
-def _anchors(value: Any) -> dict[str, str] | None:
+def plan_anchors(value: Any) -> dict[str, str] | None:
     """A span's text anchors (``refactoring.anchors``), None on an older row.
     ``unique_in`` is ``"function"`` when the text also occurs elsewhere in the
     file, so a text match must stay inside the host."""
@@ -588,10 +588,7 @@ SCRIPT_RULE: dict[str, str | None] = {
     "reason": "make each edit directly in the file, one at a time, re-reading the span after each",
 }
 #: Said under a step whose anchors are unique only inside its function.
-ELSEWHERE_NOTE = (
-    "This text also appears elsewhere in the file: keep the edit inside the function this "
-    "step names."
-)
+ELSEWHERE_NOTE = "Text repeats in the file: edit only inside this function."
 LINE_RULE: dict[str, str | None] = {
     "constraint": "find a span by its line numbers",
     "reason": "they are where it was when planned and move with every edit; match its first "
@@ -694,6 +691,7 @@ __all__ = [
     "RecipeAction",
     "build_recipe",
     "label",
+    "plan_anchors",
     "recipe_steps",
     "verify_check",
 ]
