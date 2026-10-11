@@ -146,14 +146,47 @@ def _rs_bindings(node: Node) -> list[tuple[bytes, Node]]:
     return [(target.text, value)] if ok else []
 
 
-def _rs_item(node: Node, name: bytes) -> Node | None:
-    """The value of a file-level ``const`` / ``static`` (never ``static mut``)."""
-    if node.type not in ("const_item", "static_item"):
-        return None
-    if any(child.type == "mutable_specifier" for child in node.children):
-        return None
-    target = node.child_by_field_name("name")
-    return node.child_by_field_name("value") if target is not None and target.text == name else None
+def _rs_file_bindings(item: Node) -> list[tuple[bytes, Node]]:
+    """A file-level ``const`` / ``static`` (never ``static mut``)."""
+    if item.type not in ("const_item", "static_item"):
+        return []
+    if any(child.type == "mutable_specifier" for child in item.children):
+        return []
+    name, value = item.child_by_field_name("name"), item.child_by_field_name("value")
+    return [(name.text, value)] if name is not None and name.text and value is not None else []
+
+
+# Statements and the field holding the pattern they declare names in.
+_RS_PATTERN_FIELDS: dict[str, str] = {
+    "let_declaration": "pattern",
+    "for_expression": "pattern",
+    "parameter": "pattern",
+    "let_condition": "pattern",
+    "match_arm": "pattern",
+}
+
+
+def _rs_declared(node: Node) -> list[bytes]:
+    """Names a ``let`` / ``for`` / parameter / ``if let`` / match / closure pattern declares."""
+    if node.type == "closure_parameters":
+        pattern: Node | None = node
+    else:
+        field = _RS_PATTERN_FIELDS.get(node.type)
+        pattern = node.child_by_field_name(field) if field else None
+    if pattern is None:
+        return []
+    return [n.text for n in IterableSources._walk(pattern) if n.type == "identifier" and n.text]
+
+
+def _rs_escaped(args: list[Node]) -> list[bytes]:
+    """``xs`` of ``f(&mut xs)`` / ``f(xs)``: a callee that may grow it."""
+    names: list[bytes] = []
+    for arg in args:
+        if arg.type == "reference_expression" and any(c.type == "mutable_specifier" for c in arg.children):
+            arg = arg.child_by_field_name("value") or arg
+        if arg.type == "identifier" and arg.text:
+            names.append(arg.text)
+    return names
 
 
 def _range_end(node: Node) -> Node | None:
@@ -316,7 +349,8 @@ class RustPerfDialect(IterableSources):
     function_kinds = _RS_FN_KINDS
 
     int_kinds = frozenset({"integer_literal"})
-    # ``&mut xs`` reads as unknown here; a loop header drops the borrow first.
+    # ``&xs`` / ``&mut xs`` walk ``xs``; a call handed ``&mut xs`` before the
+    # loop may grow it (:meth:`escaped_names`).
     wrapper_kinds = frozenset(
         {"parenthesized_expression", "try_expression", "await_expression", "reference_expression"}
     )
@@ -408,7 +442,7 @@ class RustPerfDialect(IterableSources):
         loop: Node,
         probe: SinkProbe,
     ) -> Source | None:
-        root = self.call_parts(self._chain_root(call))
+        root = self.call_parts(self.chain_root(call))
         if root is not None and root[0].startswith("build") and root[1] is not None:
             # ``builder.build().fetch_all(..)``: the SQL, its filter and its LIMIT
             # were pushed onto the builder piece by piece, out of sight here.
@@ -431,37 +465,32 @@ class RustPerfDialect(IterableSources):
             return False
         method, receiver, args = parts
         if method in ("fetch", "fetch_many"):
-            root = self._chain_root(node)
-            if root.type == "macro_invocation":
-                return text_of(root.child_by_field_name("macro")).startswith("query")
-            root_parts = self.call_parts(root)
-            return root_parts is not None and root_parts[0] in _SQLX_QUERIES
+            root_parts = self.call_parts(self.chain_root(node))
+            if root_parts is None:
+                return False
+            base = self._unwrap(root_parts[1]) if root_parts[1] is not None else None
+            if base is not None and base.type == "macro_invocation":
+                # ``sqlx::query!(..).fetch(..)``
+                return text_of(base.child_by_field_name("macro")).startswith("query")
+            return root_parts[0] in _SQLX_QUERIES
         if method in ("query_map", "query_and_then", "get_results"):
             return True
         if method == "query":
             return text_of(receiver).lower().endswith(("stmt", "statement"))
         return method == "load" and bool(args) and "conn" in text_of(args[0])
 
-    def _chain_root(self, node: Node) -> Node:
-        """The innermost call (or macro) of a method chain ``a(..).b(..).c(..)``."""
-        while True:
-            parts = self.call_parts(node)
-            receiver = self._unwrap(parts[1]) if parts is not None and parts[1] is not None else None
-            if receiver is None or receiver.type not in ("call_expression", "macro_invocation"):
-                return node
-            node = receiver
-
     def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
         return _rs_bindings(node)
 
-    def reaching_value(self, loop: Node, name: bytes) -> Node | None:
-        """A local binding, else a file-level ``const`` / ``static`` of that name."""
-        if self.bindings_before(loop, name):
-            return super().reaching_value(loop, name)
-        top = loop
-        while top.parent is not None:
-            top = top.parent
-        return next((v for item in top.named_children if (v := _rs_item(item, name))), None)
+    def declared_names(self, node: Node) -> list[bytes]:
+        return _rs_declared(node)
+
+    def escaped_names(self, node: Node) -> list[bytes]:
+        parts = self.call_parts(node)
+        return _rs_escaped(parts[2]) if parts is not None else []
+
+    def file_bindings_of(self, item: Node) -> list[tuple[bytes, Node]]:
+        return _rs_file_bindings(item)
 
     def param_names(self, loop: Node) -> set[bytes]:
         scope = self._scope(loop)

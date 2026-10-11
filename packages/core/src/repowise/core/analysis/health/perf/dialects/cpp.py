@@ -449,12 +449,27 @@ _DECLARATORS: frozenset[str] = frozenset(
 
 
 def _declared_name(node: Node | None) -> bytes | None:
-    """``x`` of ``x`` / ``x[4]`` / ``&x`` / ``*x`` / ``x = v``."""
+    """``x`` of ``x`` / ``x[4]`` / ``&x`` / ``*x`` / ``x = v`` (a member's ``x`` too)."""
     while node is not None and node.type in _DECLARATORS:
         node = node.child_by_field_name("declarator") or next(
             (c for c in node.named_children if c.type == "identifier"), None
         )
-    return node.text if node is not None and node.type == "identifier" else None
+    named = node is not None and node.type in ("identifier", "field_identifier")
+    return node.text if named else None
+
+
+def _std_array(node: Node | None) -> bool:
+    """``std::array<T, 4>`` / ``array<T, 4>``: a size fixed in the type."""
+    if node is not None and node.type == "qualified_identifier":
+        if text_of(node.child_by_field_name("scope")) != "std":
+            return False
+        node = node.child_by_field_name("name")
+    if node is None or node.type != "template_type":
+        return False
+    args = node.child_by_field_name("arguments")
+    if args is None or text_of(node.child_by_field_name("name")) != "array":
+        return False
+    return any(arg.type == "number_literal" for arg in args.named_children)
 
 
 def _cpp_bindings(node: Node) -> list[tuple[bytes, Node]]:
@@ -494,7 +509,7 @@ def _declared_values(node: Node) -> list[tuple[bytes, Node]]:
                 found.append((name, value))
         elif decl.type == "array_declarator":
             found.append((name, decl))
-        elif ty is not None and b"array<" in (ty.text or b""):
+        elif _std_array(ty):
             found.append((name, ty))
     return found
 
@@ -725,6 +740,8 @@ class CppPerfDialect(IterableSources):
     # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
 
     function_kinds = _CPP_FN_KINDS
+    file_container_kinds = frozenset({"namespace_definition"})
+    member_scope_kinds = frozenset({"class_specifier", "struct_specifier", "union_specifier"})
 
     int_kinds = frozenset({"number_literal"})
     wrapper_kinds = frozenset({"parenthesized_expression", "pointer_expression"})
@@ -779,15 +796,7 @@ class CppPerfDialect(IterableSources):
         if node.type == "array_declarator":
             size = node.child_by_field_name("size")
             return size is not None and size.type in self.int_kinds
-        while node.type == "qualified_identifier":
-            inner = node.child_by_field_name("name")
-            if inner is None:
-                return False
-            node = inner
-        args = node.child_by_field_name("arguments") if node.type == "template_type" else None
-        if args is None or text_of(node.child_by_field_name("name")) != "array":
-            return False
-        return any(arg.type in self.int_kinds for arg in args.named_children)
+        return _std_array(node)
 
     def call_parts(self, node: Node) -> tuple[str, Node | None, list[Node]] | None:
         if node.type != "call_expression":
@@ -810,24 +819,42 @@ class CppPerfDialect(IterableSources):
     def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
         return _cpp_bindings(node)
 
-    def reaching_value(self, loop: Node, name: bytes) -> Node | None:
-        """A local binding, else a namespace-level ``const`` or array of that name."""
-        if self.bindings_before(loop, name):
-            return super().reaching_value(loop, name)
-        top = loop
-        while top.parent is not None:
-            top = top.parent
-        scopes = [top]
-        while scopes:
-            for item in scopes.pop().named_children:
-                body = item.child_by_field_name("body")
-                if item.type == "namespace_definition" and body is not None:
-                    scopes.append(body)
-                elif item.type == "declaration" and _fixed_decl(item):
-                    value = next((v for bound, v in _declared_values(item) if bound == name), None)
-                    if value is not None:
-                        return value
-        return None
+    def declared_names(self, node: Node) -> list[bytes]:
+        """Every name a declaration, parameter or range-for declares, initialised or not."""
+        if node.type in ("declaration", "parameter_declaration", "optional_parameter_declaration"):
+            names = (_declared_name(d) for d in node.children_by_field_name("declarator"))
+            return [name for name in names if name]
+        if node.type == "for_range_loop":
+            decl = node.child_by_field_name("declarator")
+            return [n.text for n in self._walk(decl) if n.type == "identifier" and n.text] if decl else []
+        return []
+
+    def escaped_names(self, node: Node) -> list[bytes]:
+        """``v`` of ``fill(v)`` / ``fill(&v)``: the callee may take it by reference."""
+        parts = self.call_parts(node)
+        names: list[bytes] = []
+        for arg in parts[2] if parts is not None else []:
+            if arg.type == "pointer_expression":
+                arg = arg.child_by_field_name("argument") or arg
+            if arg.type == "identifier" and arg.text:
+                names.append(arg.text)
+        return names
+
+    def file_bindings_of(self, item: Node) -> list[tuple[bytes, Node]]:
+        """A namespace-level ``const`` / ``constexpr`` or array."""
+        return _declared_values(item) if item.type == "declaration" and _fixed_decl(item) else []
+
+    def member_names(self, owner: Node) -> set[bytes]:
+        """Fields a method defined in the class body reads bare. Ceiling: a method
+        defined out of line (``void A::f()``) is not inside its class here."""
+        body = owner.child_by_field_name("body")
+        fields = [c for c in body.named_children if c.type == "field_declaration"] if body else []
+        return {
+            name
+            for member in fields
+            for decl in member.children_by_field_name("declarator")
+            if (name := _declared_name(decl))
+        }
 
     def param_names(self, loop: Node) -> set[bytes]:
         scope = self._scope(loop)

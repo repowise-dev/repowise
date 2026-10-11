@@ -239,6 +239,22 @@ def _kt_bindings(node: Node) -> list[tuple[bytes, Node]]:
     return _kt_property_value(node) if node.type == "property_declaration" else []
 
 
+def _is_enum(node: Node) -> bool:
+    """``enum class Role { .. }``."""
+    if node.type != "class_declaration":
+        return False
+    mods = next((c for c in node.named_children if c.type == "modifiers"), None)
+    return mods is not None and any(c.text == b"enum" for c in mods.named_children)
+
+
+def _kt_member_name(member: Node) -> list[bytes]:
+    """The name a ``class_parameter`` or ``property_declaration`` declares."""
+    if member.type == "property_declaration":
+        member = next((c for c in member.named_children if c.type == "variable_declaration"), member)
+    ident = next((c for c in member.named_children if c.type == "identifier"), None)
+    return [ident.text] if ident is not None and ident.text else []
+
+
 def _kt_property_value(node: Node) -> list[tuple[bytes, Node]]:
     named = node.named_children
     binder = next((i for i, c in enumerate(named) if c.type == "variable_declaration"), None)
@@ -605,6 +621,7 @@ class KotlinPerfDialect(IterableSources):
     # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
 
     function_kinds = _KT_FN_KINDS
+    member_scope_kinds = frozenset({"class_declaration", "object_declaration"})
 
     int_kinds = frozenset({"number_literal"})
     wrapper_kinds = frozenset({"parenthesized_expression"})
@@ -651,13 +668,9 @@ class KotlinPerfDialect(IterableSources):
         return "each", None
 
     def is_literal(self, node: Node) -> bool:
-        """``Role.entries``: an enum's constants, spelled out in its declaration."""
-        member = self.member_parts(node)
-        return (
-            member is not None
-            and member[0] == "entries"
-            and bool(_JAVA_TYPE_NAME.match(text_of(member[1])))
-        )
+        """An enum class declared in the file: ``Role.entries`` / ``Role.values()``
+        walk its constants, spelled out in the declaration."""
+        return _is_enum(node)
 
     def call_parts(self, node: Node) -> tuple[str, Node | None, list[Node]] | None:
         if node.type != "call_expression":
@@ -692,9 +705,7 @@ class KotlinPerfDialect(IterableSources):
             spread = any(arg.type == "spread_expression" for arg in args)
             return ("constant", "bounded") if args and not spread else None
         if receiver is None and method in ("enumValues", "enumEntries") and not args:
-            return "constant", "bounded"
-        if method == "values" and not args and _JAVA_TYPE_NAME.match(text_of(receiver)):
-            return "constant", "bounded"  # ``Role.values()``
+            return "constant", "bounded"  # the type argument must be an enum
         return None
 
     def query_chain(self, node: Node) -> bool:
@@ -714,21 +725,46 @@ class KotlinPerfDialect(IterableSources):
     def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
         return _kt_bindings(node)
 
-    def reaching_value(self, loop: Node, name: bytes) -> Node | None:
-        """A local binding, else a file-level ``val`` of a read-only list."""
-        if self.bindings_before(loop, name):
-            return super().reaching_value(loop, name)
-        top = loop
-        while top.parent is not None:
-            top = top.parent
-        for item in top.named_children:
-            if item.type != "property_declaration" or not any(c.type == "val" for c in item.children):
+    def declared_names(self, node: Node) -> list[bytes]:
+        """``val x`` / ``for (x in ..)`` / ``(a, b) ->`` / ``catch (e: ..)`` / a parameter."""
+        if node.type not in ("variable_declaration", "parameter", "catch_block"):
+            return []
+        ident = next((c for c in node.named_children if c.type == "identifier"), None)
+        return [ident.text] if ident is not None and ident.text else []
+
+    def escaped_names(self, node: Node) -> list[bytes]:
+        """``xs`` of ``fill(xs)``: a callee that may add to a mutable list."""
+        parts = self.call_parts(node)
+        args = parts[2] if parts is not None else []
+        return [arg.text for arg in args if arg.type == "identifier" and arg.text]
+
+    def file_bindings_of(self, item: Node) -> list[tuple[bytes, Node]]:
+        """An enum class, or a ``val`` of a read-only list (``listOf(..)``)."""
+        if _is_enum(item):
+            name = item.child_by_field_name("name")
+            return [(name.text, item)] if name is not None and name.text else []
+        if item.type != "property_declaration" or not any(c.type == "val" for c in item.children):
+            return []
+        return [
+            (bound, value)
+            for bound, value in _kt_bindings(item)
+            if (parts := self.call_parts(value)) is not None and parts[0] in _KT_READ_ONLY
+        ]
+
+    def member_names(self, owner: Node) -> set[bytes]:
+        """Constructor parameters and properties, read bare in a method."""
+        names: set[bytes] = set()
+        for part in owner.named_children:
+            if part.type == "primary_constructor":
+                params = next((c for c in part.named_children if c.type == "class_parameters"), None)
+                members = params.named_children if params is not None else []
+            elif part.type == "class_body":
+                members = [c for c in part.named_children if c.type == "property_declaration"]
+            else:
                 continue
-            for bound, value in _kt_bindings(item):
-                parts = self.call_parts(value) if bound == name else None
-                if parts is not None and parts[0] in _KT_READ_ONLY:
-                    return value
-        return None
+            for member in members:
+                names.update(_kt_member_name(member))
+        return names
 
     def param_names(self, loop: Node) -> set[bytes]:
         scope = self._scope(loop)

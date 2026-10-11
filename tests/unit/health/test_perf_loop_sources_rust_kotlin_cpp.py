@@ -78,7 +78,9 @@ fun f(ids: List<Long>, n: Int, stmt: Statement, repoRoot: File) {
     grown.add(2)
     for (g in grown) { stmt.executeQuery("x") }
     for (x in arrayOf(*ids.toTypedArray())) { stmt.executeQuery("x") }
+    for (k in Kind.entries) { stmt.executeQuery("x") }
 }
+enum class Role { A, B }
 """
 
 
@@ -89,7 +91,7 @@ fun f(ids: List<Long>, n: Int, stmt: Statement, repoRoot: File) {
         (4, ("bounded", "parameter")),
         (5, ("bounded", "constant")),
         (6, ("bounded", "constant")),  # a file-level read-only list
-        (7, ("bounded", "constant")),  # an enum's entries
+        (7, ("bounded", "constant")),  # an enum declared in the file
         (8, ("bounded", "constant")),
         (10, ("grows_with_data", "query")),  # a JDBC cursor over a table
         (11, ("unknown", "parameter")),
@@ -99,6 +101,7 @@ fun f(ids: List<Long>, n: Int, stmt: Statement, repoRoot: File) {
         (15, ("grows_with_data", "listing")),
         (18, ("unknown", "unknown")),  # grown before the loop
         (19, ("unknown", "unknown")),  # a spread adds what ``ids`` holds
+        (20, ("unknown", "unknown")),  # ``Kind`` may be any class with ``entries``
     ],
 )
 def test_kotlin_loop_sources(line, expected):
@@ -197,3 +200,215 @@ def test_a_statement_prepared_into_a_null_pointer_is_its_read():
         "}\n",
     )
     assert cpp[4] == ("grows_with_data", "query")
+
+
+_SINK_KT = 'stmt.executeQuery("x")'
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "fun f(items: List<String>, stmt: Statement) {\n    for (i in items) { %s }\n}",
+        "fun f(groups: List<List<String>>, stmt: Statement) {\n    for (items in groups) { for (i in items) { %s } }\n}",
+        "fun f(p: Pair<List<String>, Int>, stmt: Statement) {\n    val (items, n) = p\n    for (i in items) { %s }\n}",
+        "class C(val items: List<String>) {\n    fun f(stmt: Statement) { for (i in items) { %s } }\n}",
+        "fun f(m: Map<String, List<String>>, stmt: Statement) {\n    m.forEach { (k, items) -> for (i in items) { %s } }\n}",
+    ],
+)
+def test_a_kotlin_file_level_list_does_not_reach_a_name_declared_around_the_loop(body):
+    src = 'val items = listOf("a", "b")\n' + body % _SINK_KT + "\n"
+    found = _loops("F.kt", "kotlin", src)
+    assert found and all(magnitude == "unknown" for magnitude, _ in found.values()), found
+
+
+def test_a_kotlin_file_level_var_or_a_list_handed_to_a_call_bounds_nothing():
+    kt = _loops(
+        "F.kt",
+        "kotlin",
+        "var KS = listOf(1, 2)\n"
+        "fun f(stmt: Statement) {\n"
+        f"    for (k in KS) {{ {_SINK_KT} }}\n"
+        "    val xs = mutableListOf(1)\n"
+        "    fill(xs)\n"
+        f"    for (x in xs) {{ {_SINK_KT} }}\n"
+        "    val ys = listOf(1, 2)\n"
+        f"    for (y in ys) {{ {_SINK_KT} }}\n"
+        "}\n",
+    )
+    assert kt[3] == ("unknown", "unknown")
+    assert kt[6] == ("unknown", "unknown")
+    assert kt[8] == ("bounded", "constant")
+
+
+def test_a_kotlin_negation_steps_nothing_and_an_increment_does():
+    kt = _loops(
+        "F.kt",
+        "kotlin",
+        "fun f(stmt: Statement, ready: Boolean) {\n"
+        "    val n = 3\n"
+        "    if (!ready) return\n"
+        f"    for (i in 0 until n) {{ {_SINK_KT} }}\n"
+        "    var m = 3\n"
+        "    m++\n"
+        f"    for (i in 0 until m) {{ {_SINK_KT} }}\n"
+        "}\n",
+    )
+    assert kt[4] == ("bounded", "constant")
+    assert kt[7] == ("unknown", "unknown")
+
+
+def test_a_kotlin_name_bound_to_itself_is_followed_once():
+    kt = _loops(
+        "F.kt",
+        "kotlin",
+        "class C(val length: Int) {\n"
+        "    fun f(stmt: Statement) {\n"
+        "        val length = length\n"
+        f"        for (i in 0 until length) {{ {_SINK_KT} }}\n"
+        "    }\n"
+        "}\n",
+    )
+    assert kt[4] == ("unknown", "unknown")
+
+
+_SINK_RS = 'sqlx::query("x").fetch_one(pool).await?;'
+
+
+def test_rust_shadowing_mutation_and_macros_bound_nothing():
+    rs = _loops(
+        "f.rs",
+        "rust",
+        "static mut XS: [i32; 2] = [1, 2];\n"
+        "const KS: [i32; 2] = [1, 2];\n"
+        "fn f(pool: &PgPool, KS: Vec<i32>, other: Vec<i32>) {\n"
+        f"    for x in XS {{ {_SINK_RS} }}\n"
+        f"    for k in KS {{ {_SINK_RS} }}\n"
+        "    let ys = vec![1, 2];\n"
+        "    let ys = other;\n"
+        f"    for y in ys {{ {_SINK_RS} }}\n"
+        "    let mut zs = vec![1, 2];\n"
+        "    fill(&mut zs);\n"
+        f"    for z in zs {{ {_SINK_RS} }}\n"
+        f"    for m in my_items!() {{ {_SINK_RS} }}\n"
+        "    let ws = vec![1, 2];\n"
+        "    show(&ws);\n"
+        f"    for w in &ws {{ {_SINK_RS} }}\n"
+        "}\n",
+    )
+    assert rs[4] == ("unknown", "unknown")  # static mut
+    assert rs[5] == ("unknown", "parameter")  # a parameter shadows the const
+    assert rs[8] == ("unknown", "unknown")  # bound twice
+    assert rs[11] == ("unknown", "unknown")  # handed out as ``&mut``
+    assert rs[12] == ("unknown", "unknown")  # a macro other than ``vec!``
+    assert rs[15] == ("bounded", "constant")  # a shared borrow cannot grow it
+
+
+_SINK_CPP = 'sqlite3_exec(db, "x", 0, 0, 0);'
+
+
+def test_cpp_a_namespace_const_does_not_reach_a_local_or_member_of_the_same_name():
+    cpp = _loops(
+        "f.cpp",
+        "cpp",
+        "namespace n { static const int kItems[] = {1, 2}; }\n"
+        "void f(sqlite3* db, const std::vector<int>& kItems) {\n"
+        f"  for (int x : kItems) {{ {_SINK_CPP} }}\n"
+        "}\n"
+        "void g(sqlite3* db) {\n"
+        "  std::vector<int> kItems;\n"
+        "  fill(kItems);\n"
+        f"  for (int x : kItems) {{ {_SINK_CPP} }}\n"
+        "}\n"
+        "void h(sqlite3* db) {\n"
+        "  const int* kItems = nullptr;\n"
+        f"  for (int i = 0; i < 2; ++i) {{ for (int x : kItems) {{ {_SINK_CPP} }} }}\n"
+        "}\n"
+        "struct S {\n"
+        "  std::vector<int> kItems;\n"
+        f"  void m(sqlite3* db) {{ for (int x : kItems) {{ {_SINK_CPP} }} }}\n"
+        "};\n"
+        "void k(sqlite3* db) {\n"
+        f"  for (int x : kItems) {{ {_SINK_CPP} }}\n"
+        "  std::vector<int> local = {1, 2};\n"
+        "  fill(local);\n"
+        f"  for (int x : local) {{ {_SINK_CPP} }}\n"
+        "  my::array<int, 4> fake;\n"
+        f"  for (int x : fake) {{ {_SINK_CPP} }}\n"
+        "}\n",
+    )
+    assert cpp[3] == ("unknown", "parameter")
+    assert cpp[8] == ("unknown", "unknown")  # declared without a value
+    assert cpp[12] == ("unknown", "unknown")  # a null pointer, not the const
+    assert cpp[16] == ("unknown", "unknown")  # a member
+    assert cpp[19] == ("bounded", "constant")  # the namespace const itself
+    assert cpp[22] == ("unknown", "unknown")  # handed to a call by reference
+    assert cpp[24] == ("unknown", "unknown")  # not ``std::array``
+
+
+@pytest.mark.parametrize(
+    ("language", "src"),
+    [
+        ("rust", "fn f(xs: &[i64]) {{ for x in xs{} {{ }} }}", ),
+        ("kotlin", "fun f(xs: List<Int>) {{ for (x in xs{}) {{ }} }}"),
+    ],
+)
+def test_a_header_chain_hundreds_of_links_long_stays_unknown(language, src):
+    from tree_sitter import Parser
+
+    from repowise.core.analysis.health.perf.dialects import PERF_DIALECTS
+    from repowise.core.ingestion.parser import _get_language
+
+    link = ".iter().map(|x| x)" if language == "rust" else ".filter { it > 0 }"
+    tree = Parser(_get_language(language)).parse(src.format(link * 2000).encode())
+    loop = next(n for n in _nodes(tree.root_node) if n.type in ("for_expression", "for_statement"))
+    assert PERF_DIALECTS[language].loop_source(loop, lambda call: None) is None
+
+
+def _nodes(root):
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        yield node
+        stack.extend(node.children)
+
+
+_RECURSIVE = (
+    "WITH RECURSIVE tree(id) AS (SELECT id FROM s WHERE id = ? "
+    "UNION SELECT s.id FROM s JOIN tree ON s.parent_id = tree.id) SELECT * FROM tree"
+)
+
+
+@pytest.mark.parametrize("sql", ["SELECT id FROM t", "SELECT id FROM t LIMIT ?", _RECURSIVE])
+def test_a_bound_limit_or_a_read_below_one_row_only_moves_a_loop_to_unknown(sql):
+    """In every dialect on the shared reader, not only the three above. Python
+    sizes a read with its own rules, which these do not change."""
+    grows = sql == "SELECT id FROM t"
+    go = _loops(
+        "f.go",
+        "go",
+        'package m\nimport "database/sql"\n'
+        "func f(db *sql.DB, n int) {\n"
+        f'    rows, _ := db.Query("{sql}", n)\n'
+        '    for rows.Next() { db.Exec("x") }\n'
+        "}\n",
+    )
+    java = _loops(
+        "A.java",
+        "java",
+        "import java.sql.*;\n"
+        "class A { void f(Statement stmt, UserRepository userRepository) {\n"
+        f'  ResultSet rs = stmt.executeQuery("{sql}");\n'
+        "  while (rs.next()) { userRepository.findById(rs.getLong(1)); } } }\n",
+    )
+    py = _loops(
+        "a.py",
+        "python",
+        "import sqlite3\n"
+        "def f(conn):\n"
+        f'    rows = conn.execute("{sql}").fetchall()\n'
+        "    for r in rows:\n"
+        '        conn.execute("UPDATE t SET x = 1 WHERE id = ?", (r[0],))\n',
+    )
+    for found, line in ((go, 5), (java, 4)):
+        assert found[line] == ("grows_with_data" if grows else "unknown", "query")
+    assert py[5][0] == "grows_with_data"
