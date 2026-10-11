@@ -46,16 +46,34 @@ def _loc(file: Any, span: Mapping[str, int] | None) -> str:
 def _symbol_lines(step: Mapping[str, Any]) -> list[str]:
     """What an Extract Method step adds: the texts to copy and the slots."""
     symbol = step.get("new_symbol") or {}
-    call = step.get("call_site") or {}
-    span = call.get("replace_span") or step.get("span") or {}
+    out = _helper_text_lines(symbol)
+    replace = _replace_line(step)
+    if replace:
+        out.append(replace)
+    out.extend(_helper_io_lines(symbol))
+    return out
+
+
+def _helper_text_lines(symbol: Mapping[str, Any]) -> list[str]:
     out = []
     if symbol.get("signature_text"):
         out.append(f"New helper: `{symbol['signature_text']}`")
     if symbol.get("return_text"):
         out.append(f"End the helper with: `{symbol['return_text']}`")
-    if call.get("new_text"):
-        lines = "the span" if step.get("anchors") else f"lines {span.get('start')}-{span.get('end')}"
-        out.append(f"Replace {lines} with: `{call['new_text']}`")
+    return out
+
+
+def _replace_line(step: Mapping[str, Any]) -> str | None:
+    call = step.get("call_site") or {}
+    if not call.get("new_text"):
+        return None
+    span = call.get("replace_span") or step.get("span") or {}
+    lines = "the span" if step.get("anchors") else f"lines {span.get('start')}-{span.get('end')}"
+    return f"Replace {lines} with: `{call['new_text']}`"
+
+
+def _helper_io_lines(symbol: Mapping[str, Any]) -> list[str]:
+    out = []
     if symbol:
         out.append(f"Parameters (in): {', '.join(symbol.get('params') or []) or '(none)'}")
         out.append(f"Returns (out): {', '.join(symbol.get('returns') or []) or '(nothing)'}")

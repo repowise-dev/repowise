@@ -207,20 +207,24 @@ def _scan(graph: Any) -> _Scan:
             path = attrs.get("file_path") or file_of_symbol(node)
             scan.symbols.setdefault(path, []).append((node, attrs))
     for source, target, data in graph.edges(data=True):
-        edge_type = (data or {}).get("edge_type")
-        if edge_type == "imports":
-            root = _import_root(target)
-            if root is not None:
-                scan.imports.setdefault(source, set()).add(root)
-        elif edge_type == "framework" and source.endswith("urls.py"):
-            scan.url_targets.add(target)
-        elif edge_type == "framework_binds":
-            scan.binds.append((source, target))
-        # A registry holding the function says nothing about how it runs.
-        elif edge_type == "references" and (data or {}).get("hint_source") != REGISTRATION_HINT:
-            scan.references.append((source, target))
-            scan.referenced.add(target)
+        _scan_edge(scan, source, target, data or {})
     return scan
+
+
+def _scan_edge(scan: _Scan, source: str, target: str, data: Mapping[str, Any]) -> None:
+    edge_type = data.get("edge_type")
+    if edge_type == "imports":
+        root = _import_root(target)
+        if root is not None:
+            scan.imports.setdefault(source, set()).add(root)
+    elif edge_type == "framework" and source.endswith("urls.py"):
+        scan.url_targets.add(target)
+    elif edge_type == "framework_binds":
+        scan.binds.append((source, target))
+    # A registry holding the function says nothing about how it runs.
+    elif edge_type == "references" and data.get("hint_source") != REGISTRATION_HINT:
+        scan.references.append((source, target))
+        scan.referenced.add(target)
 
 
 def _decorator_role(decorators: Iterable[str], language: str) -> ExecutionRole | None:

@@ -757,6 +757,26 @@ def _drop_hub_only(file_path: str, labels: set[str], keep: set[str]) -> set[str]
     }
 
 
+def _inferred_target(
+    file_path: str, reached: ReachedBy | None, keep: set[str] | None
+) -> tuple[set[str], ValidationBasis, ValidationVia | None, int, bool]:
+    """Labels, basis, via, total and identity completeness from the inferred map."""
+    if reached is None:
+        return set(), "unknown", None, 0, True
+    labels = set(reached.all_tests or reached.tests)
+    basis: ValidationBasis = "inferred" if reached.total else "unknown"
+    via = reached.via if reached.total else None
+    total = reached.total
+    identities_complete = reached.all_tests is not None or total == len(labels)
+    if keep is not None:
+        labels = _drop_hub_only(file_path, labels, keep)
+        if identities_complete:
+            # The whole list was filtered, so what is left is the answer.
+            basis, via = ("inferred", via) if labels else ("unknown", None)
+            total = len(labels)
+    return labels, basis, via, total, identities_complete
+
+
 def _validation_target(
     file_path: str,
     lines: set[int] | None,
@@ -776,19 +796,9 @@ def _validation_target(
         identities_complete = True
     else:
         reached = inferred.get(file_path)
-        labels = set(reached.all_tests or reached.tests) if reached is not None else set()
-        basis = "inferred" if reached is not None and reached.total else "unknown"
-        via = reached.via if reached is not None and reached.total else None
-        total = reached.total if reached is not None else 0
-        identities_complete = (
-            reached is None or reached.all_tests is not None or total == len(labels)
+        labels, basis, via, total, identities_complete = _inferred_target(
+            file_path, reached, keep
         )
-        if keep is not None and reached is not None:
-            labels = _drop_hub_only(file_path, labels, keep)
-            if identities_complete:
-                # The whole list was filtered, so what is left is the answer.
-                basis, via = ("inferred", via) if labels else ("unknown", None)
-                total = len(labels)
     ranked = rank(labels, covered, reached)
     ordered = sorted(labels, key=lambda label: (ranked[label][0], label))
     return (

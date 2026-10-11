@@ -34,6 +34,8 @@ from ...sql import rule_predicate
 from .._shared import _BATCH_SIZE, _finding_file_path
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from .refactoring_payoff import PayoffContext
 
 # The finding-triage vocabulary, shared with health findings so Code Health has
@@ -167,6 +169,88 @@ def _scope_suggestions(
     ]
 
 
+async def _reusable_rows(
+    session: AsyncSession,
+    repository_id: str,
+    stored_rows: list[RefactoringSuggestion],
+    public_ids: list[str],
+    model_version: int,
+) -> dict[str, RefactoringSuggestion]:
+    """Stored current-model rows by public id, the scoped ones and any named elsewhere."""
+    reusable: dict[str, RefactoringSuggestion] = {}
+    for row in stored_rows:
+        if row.public_id and row.model_version == model_version:
+            reusable[row.public_id] = row
+
+    # A clone group and an import cycle are named by their members rather than
+    # by the file the row happens to be anchored at, so a scoped run can hold a
+    # plan whose stored row sits outside the scope. Look those up by id before
+    # deciding anything is new: inserting instead would duplicate the plan, and
+    # the identity is unique per repository and model.
+    outside = sorted({pid for pid in public_ids if pid not in reusable})
+    for index in range(0, len(outside), _BATCH_SIZE):
+        found = await session.execute(
+            select(RefactoringSuggestion).where(
+                RefactoringSuggestion.repository_id == repository_id,
+                RefactoringSuggestion.model_version == model_version,
+                RefactoringSuggestion.public_id.in_(outside[index : index + _BATCH_SIZE]),
+            )
+        )
+        for row in found.scalars().all():
+            reusable.setdefault(row.public_id, row)
+    return reusable
+
+
+def _refresh_detected_row(
+    row: RefactoringSuggestion,
+    suggestion: Any,
+    repository_id: str,
+    public_id: str,
+    now: datetime,
+) -> bool:
+    """Refresh a detected-again row in place. True when it reopened."""
+    values = _refactoring_row_kwargs(suggestion, repository_id, public_id=public_id)
+    for name in _REFRESHED_COLUMNS:
+        if name in values:
+            setattr(row, name, values[name])
+    # Unranked until the finalizer ranks the refreshed content; a finalize
+    # that fails then leaves no stale rank beside fresh fields.
+    row.rank_position = row.blast_size = row.rank_json = None
+    reopened = row.status == "resolved" and row.status_reason == "no_longer_detected"
+    if reopened:
+        row.status = "open"
+        row.status_reason = None
+        row.status_changed_at = now
+    row.updated_at = now
+    return reopened
+
+
+def _resolve_undetected_rows(
+    stored_rows: list[RefactoringSuggestion],
+    seen: set[str],
+    now: datetime,
+    model_version: int,
+) -> list[RefactoringSuggestion]:
+    """Resolve every open stored row this run did not detect.
+
+    Returns the current-model ones, the rows a payoff is settled for.
+    """
+    resolved: list[RefactoringSuggestion] = []
+    for row in stored_rows:
+        if row.public_id in seen and row.model_version == model_version:
+            continue
+        if row.status in ("resolved", "false_positive"):
+            continue
+        # An older model's row resolves because its id changed, not its code.
+        if row.public_id and row.model_version == model_version:
+            resolved.append(row)
+        row.status = "resolved"
+        row.status_reason = "no_longer_detected"
+        row.status_changed_at = now
+        row.updated_at = now
+    return resolved
+
+
 async def finalize_refactoring_suggestions(
     session: AsyncSession,
     repository_id: str,
@@ -229,33 +313,14 @@ async def finalize_refactoring_suggestions(
         .scalars()
         .all()
     )
-    reusable: dict[str, RefactoringSuggestion] = {}
-    for row in stored_rows:
-        if row.public_id and row.model_version == REFACTORING_MODEL_VERSION:
-            reusable[row.public_id] = row
-
-    # A clone group and an import cycle are named by their members rather than
-    # by the file the row happens to be anchored at, so a scoped run can hold a
-    # plan whose stored row sits outside the scope. Look those up by id before
-    # deciding anything is new: inserting instead would duplicate the plan, and
-    # the identity is unique per repository and model.
-    outside = sorted({pid for pid in public_ids if pid not in reusable})
-    for index in range(0, len(outside), _BATCH_SIZE):
-        found = await session.execute(
-            select(RefactoringSuggestion).where(
-                RefactoringSuggestion.repository_id == repository_id,
-                RefactoringSuggestion.model_version == REFACTORING_MODEL_VERSION,
-                RefactoringSuggestion.public_id.in_(outside[index : index + _BATCH_SIZE]),
-            )
-        )
-        for row in found.scalars().all():
-            reusable.setdefault(row.public_id, row)
+    reusable = await _reusable_rows(
+        session, repository_id, stored_rows, public_ids, REFACTORING_MODEL_VERSION
+    )
 
     now = _now_utc()
     seen: set[str] = set()
     pending: list[RefactoringSuggestion] = []
     reopened: list[str] = []
-    resolved: list[RefactoringSuggestion] = []
     for suggestion, public_id in zip(scoped, public_ids, strict=True):
         if public_id in seen:
             # Two plans reaching one id would violate the uniqueness readers rely
@@ -273,32 +338,10 @@ async def finalize_refactoring_suggestions(
             continue
         if row.status == "false_positive":
             continue
-        values = _refactoring_row_kwargs(suggestion, repository_id, public_id=public_id)
-        for name in _REFRESHED_COLUMNS:
-            if name in values:
-                setattr(row, name, values[name])
-        # Unranked until the finalizer ranks the refreshed content; a finalize
-        # that fails then leaves no stale rank beside fresh fields.
-        row.rank_position = row.blast_size = row.rank_json = None
-        if row.status == "resolved" and row.status_reason == "no_longer_detected":
-            row.status = "open"
-            row.status_reason = None
-            row.status_changed_at = now
+        if _refresh_detected_row(row, suggestion, repository_id, public_id, now):
             reopened.append(row.id)
-        row.updated_at = now
 
-    for row in stored_rows:
-        if row.public_id in seen and row.model_version == REFACTORING_MODEL_VERSION:
-            continue
-        if row.status in ("resolved", "false_positive"):
-            continue
-        # An older model's row resolves because its id changed, not its code.
-        if row.public_id and row.model_version == REFACTORING_MODEL_VERSION:
-            resolved.append(row)
-        row.status = "resolved"
-        row.status_reason = "no_longer_detected"
-        row.status_changed_at = now
-        row.updated_at = now
+    resolved = _resolve_undetected_rows(stored_rows, seen, now, REFACTORING_MODEL_VERSION)
 
     for index in range(0, len(pending), _BATCH_SIZE):
         for row in pending[index : index + _BATCH_SIZE]:
