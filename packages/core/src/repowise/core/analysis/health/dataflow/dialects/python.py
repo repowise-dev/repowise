@@ -55,6 +55,8 @@ _SCOPE_BOUNDARIES = frozenset({"lambda", "function_definition", "async_function_
 _COMPREHENSIONS = frozenset(
     {"list_comprehension", "set_comprehension", "dictionary_comprehension", "generator_expression"}
 )
+# A ``match`` is one CFG statement; writes inside its arms are may-defs.
+_CONDITIONAL_KINDS = frozenset({"match_statement"})
 # A module path is not a read; an import writes only the names it binds.
 _IMPORT_KINDS = frozenset({"import_statement", "import_from_statement"})
 
@@ -211,6 +213,9 @@ class PythonDefUseDialect(BaseDefUseDialect):
             for child in node.named_children:
                 if value is None or child.id != value.id:
                     self._process(child, defs, uses)
+            return
+        if t in _CONDITIONAL_KINDS:
+            self._process_may_def(node, defs, uses)
             return
         if t in self.member_access_kinds:
             self.collect_reads(node, uses)  # receiver is a read; member is not

@@ -18,6 +18,7 @@ unwraps that, so this dialect only ever sees individual statements.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from .base import (
@@ -44,6 +45,13 @@ _INC_DEC_KINDS = frozenset({"inc_statement", "dec_statement"})
 _EXPRESSION_LIST = "expression_list"
 _RANGE_CLAUSE = "range_clause"
 _FOR_CLAUSE = "for_clause"
+# A ``switch`` / ``select`` is one CFG statement; writes inside its arms are
+# may-defs.
+_CONDITIONAL_KINDS = frozenset(
+    {"expression_switch_statement", "type_switch_statement", "select_statement"}
+)
+# ``case v := <-ch:`` / ``case x = <-ch:`` in a ``select``.
+_RECEIVE = "receive_statement"
 # Selector (``obj.field``) and index (``arr[i]``) targets bind no local.
 _SELECTOR = "selector_expression"
 _INDEX = "index_expression"
@@ -167,6 +175,21 @@ class GoDefUseDialect(BaseDefUseDialect):
             for child in node.named_children:
                 self._targets(child, defs, uses)
                 self.collect_reads(child, uses)
+            return
+        if t in _CONDITIONAL_KINDS:
+            self._process_may_def(node, defs, uses)
+            return
+        if t == _RECEIVE:
+            start = len(defs)
+            self._targets(node.child_by_field_name("left"), defs, uses)
+            if any(tok.type == ":=" for tok in node.children):
+                self._declare(defs, start, node)
+            # Bound only if this case is the one taken, and a ``:=`` name lives
+            # only in its case: neither hides the value from before the
+            # ``select``. ``may_defs`` leaves a declared name certain, so the
+            # flag is set here for both.
+            defs[start:] = [replace(occ, may=True) for occ in defs[start:]]
+            self._process(node.child_by_field_name("right"), defs, uses)
             return
         if t in self.member_access_kinds:
             self.collect_reads(node, uses)  # receiver is a read; field name is not

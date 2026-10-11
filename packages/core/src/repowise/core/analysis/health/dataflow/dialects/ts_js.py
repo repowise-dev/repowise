@@ -52,6 +52,8 @@ _REST_PATTERN = "rest_pattern"
 _ASSIGN_PATTERN = "assignment_pattern"  # default value ``a = 1`` in a pattern
 _CATCH = "catch_clause"
 _PARAM_PATTERNS = frozenset({_ARRAY_PATTERN, _OBJECT_PATTERN, _REST_PATTERN, _ASSIGN_PATTERN})
+# A ``switch`` is one CFG statement; writes inside its arms are may-defs.
+_CONDITIONAL_KINDS = frozenset({"switch_statement"})
 # Member / subscript targets bind no local.
 _MEMBER = "member_expression"
 _SUBSCRIPT = "subscript_expression"
@@ -248,6 +250,9 @@ class TsJsDefUseDialect(BaseDefUseDialect):
             sdu = self.handler_def_use(node)
             defs.extend(sdu.defs)
             self._process(node.child_by_field_name("body"), defs, uses)
+            return
+        if t in _CONDITIONAL_KINDS:
+            self._process_may_def(node, defs, uses)
             return
         if t in self.member_access_kinds:
             self.collect_reads(node, uses)  # receiver is a read; property is not

@@ -23,10 +23,22 @@ from repowise.core.analysis.health.dataflow.reaching import _observe, observed_d
 from repowise.core.analysis.health.refactoring.extract_method import ExtractMethodDetector
 from repowise.core.analysis.health.refactoring.models import RefactoringContext
 
-# One function per language whose dialect marks an arm's write: a loop that raises ``best`` and counts ``seen``,
+# One function per language with a dialect: a loop that raises ``best`` and counts ``seen``,
 # then ``{COND}`` which may overwrite ``best``, then a read of both. The span
 # from ``seen = 0`` through the loop writes two values the code reads after
 # it, so no helper with one return can replace it.
+_PYTHON = '''def f(v, xs):
+    best = -1
+    seen = 0
+    for a in xs:
+        seen += 1
+        if a > best:
+            best = a
+        else:
+            print(a)
+    {COND}
+    return best + seen
+'''
 _JAVA = '''class A {
   int f(int v, int[] xs) {
     int best = -1;
@@ -42,6 +54,38 @@ _JAVA = '''class A {
     {COND}
     return best + seen;
   }
+}
+'''
+_TYPESCRIPT = '''function f(v: number, xs: number[]): number {
+  let best = -1;
+  let seen = 0;
+  for (const a of xs) {
+    seen++;
+    if (a > best) {
+      best = a;
+    } else {
+      console.log(a);
+    }
+  }
+  {COND}
+  return best + seen;
+}
+'''
+_GO = '''package p
+
+func f(v int, xs []int) int {
+	best := -1
+	seen := 0
+	for _, a := range xs {
+		seen++
+		if a > best {
+			best = a
+		} else {
+			println(a)
+		}
+	}
+	{COND}
+	return best + seen
 }
 '''
 _RUST = '''fn f(v: i32, xs: &[i32]) -> i32 {
@@ -94,11 +138,29 @@ _CSHARP = '''class A {
 
 # language -> (file name, source, the arm form, its ``if`` twin)
 _SHAPES: dict[str, tuple[str, str, str, str]] = {
+    "python": (
+        "m.py",
+        _PYTHON,
+        "match v:\n        case 1:\n            best = 0",
+        "if v == 1:\n        best = 0",
+    ),
     "java": (
         "A.java",
         _JAVA,
         "switch (v) {\n      case 1:\n        best = 0;\n        break;\n    }",
         "if (v == 1) {\n      best = 0;\n    }",
+    ),
+    "typescript": (
+        "a.ts",
+        _TYPESCRIPT,
+        "switch (v) {\n    case 1:\n      best = 0;\n      break;\n  }",
+        "if (v === 1) {\n    best = 0;\n  }",
+    ),
+    "go": (
+        "a.go",
+        _GO,
+        "switch v {\n\tcase 1:\n\t\tbest = 0\n\t}",
+        "if v == 1 {\n\t\tbest = 0\n\t}",
     ),
     "rust": (
         "a.rs",
@@ -153,8 +215,9 @@ def _line_of(source: str, text: str) -> int:
 def _best_writes(language: str, source: str) -> tuple[int, int, int]:
     """The lines of the three writes of ``best``: the first, the loop's and
     the arm's."""
+    first = "best := -1" if language == "go" else "best = -1"
     loop = "best = *a" if language == "rust" else "best = a"
-    return _line_of(source, "best = -1"), _line_of(source, loop), _line_of(source, "best = 0")
+    return _line_of(source, first), _line_of(source, loop), _line_of(source, "best = 0")
 
 
 def _observed_lines(analysis, name: str, line: int) -> set[int]:
@@ -242,6 +305,29 @@ def test_a_write_in_an_if_branch_is_a_certain_def_of_its_own_block(language):
     assert writes == {first: False, loop: False, arm: False}
 
 
+def test_go_type_switch_and_select_arms_are_may_defs():
+    source = '''package p
+
+func f(v interface{}, ch chan int) int {
+	n := 0
+	switch v.(type) {
+	case int:
+		n = 1
+	}
+	select {
+	case m := <-ch:
+		n = m
+	default:
+	}
+	return n
+}
+'''
+    analysis = _analyses("go", "a.go", source)[0]
+    writes = {d.line: d.may for d in analysis.def_use.definitions if d.var == "n"}
+    assert writes == {4: False, 7: True, 11: True}
+    assert _observed_lines(analysis, "n", 14) == {4, 7, 11}
+
+
 # A name an arm declares is a new binding for the rest of that arm, not a
 # write to the variable the code before the ``switch`` set. Arms reuse such
 # names, so these stay certain: the read in an arm sees its own declaration.
@@ -265,6 +351,46 @@ _DECLARED_IN_AN_ARM: dict[str, tuple[str, str, str]] = {
     }
     return out;
   }
+}
+""",
+        "out = n + 1",
+    ),
+    "go": (
+        "a.go",
+        """package p
+
+func f(v int) int {
+	out := 0
+	switch v {
+	case 1:
+		n := 1
+		out = n
+	case 2:
+		n := 2
+		out = n + 1
+	}
+	return out
+}
+""",
+        "out = n + 1",
+    ),
+    "typescript": (
+        "a.ts",
+        """function f(v: number): number {
+  let out = 0;
+  switch (v) {
+    case 1: {
+      const n = 1;
+      out = n;
+      break;
+    }
+    case 2: {
+      const n = 2;
+      out = n + 1;
+      break;
+    }
+  }
+  return out;
 }
 """,
         "out = n + 1",
@@ -305,6 +431,27 @@ def test_a_name_an_arm_declares_is_not_a_may_def(language):
     assert _observed_lines(analysis, "n", read) == {declared[1].line}
     # ``out`` is assigned, not declared, in both arms.
     assert [d.may for d in analysis.def_use.definitions if d.var == "out"] == [False, True, True]
+
+
+def test_a_var_in_an_arm_is_a_may_def_since_it_binds_nothing_new():
+    """A TS / JS ``var`` hoists to the function: in an arm it is a write to
+    the one variable the code before the ``switch`` set."""
+    source = """function f(v) {
+  var out = 0;
+  switch (v) {
+    case 1:
+      var out = 1;
+      break;
+  }
+  return out;
+}
+"""
+    analysis = _analyses("javascript", "a.js", source)[0]
+    assert {d.line: d.may for d in analysis.def_use.definitions if d.var == "out"} == {
+        2: False,
+        5: True,
+    }
+    assert _observed_lines(analysis, "out", 8) == {2, 5}
 
 
 def test_rust_if_let_binder_is_left_as_it_was():
@@ -462,8 +609,10 @@ def test_the_if_twin_has_no_such_span_either(language):
     assert _spans_dropping_best(language, arm=False) == []
 
 
-@pytest.mark.parametrize("language", _LANGUAGES)
+@pytest.mark.parametrize("language", [lang for lang in _LANGUAGES if lang != "python"])
 def test_the_detector_offers_no_plan_for_the_arm_form(language):
+    """Python is left out: its detector gives this function no plan in either
+    form, so it would pass before and after."""
     path, source, analysis = _shape(language, arm=True)
     ctx = RefactoringContext(
         file_path=path,
