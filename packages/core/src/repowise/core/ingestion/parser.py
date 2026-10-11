@@ -873,10 +873,16 @@ def _rust_outer_attributes(def_node: Node, src: str) -> list[str]:
 def _leading_child_attributes(
     def_node: Node, node_type: str, opener: str, closer: str, src: str
 ) -> list[str]:
-    """Inner text of the attribute children leading *def_node*, until the first other child."""
+    """Inner text of the attribute children leading *def_node*, until the first other child.
+
+    A comment between attribute lists does not end the run, so an attribute
+    placed after one is still recorded.
+    """
     attrs: list[str] = []
     for child in def_node.children:
         if child.type != node_type:
+            if child.type == "comment":
+                continue
             break
         attr_text = _node_text(child, src).strip()
         if attr_text.startswith(opener) and attr_text.endswith(closer):
