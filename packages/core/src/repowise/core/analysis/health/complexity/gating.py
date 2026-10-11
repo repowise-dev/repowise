@@ -48,24 +48,27 @@ def _falsy_literal(node: Node | None) -> str | None:
     return "false" if node.type in _FALSE else "falsy"
 
 
+def _declared_pairs(stmt: Node, language: str) -> list[tuple[Node | None, Node | None]]:
+    """``(name, value)`` of a Python assignment or a TS/JS ``const``; empty otherwise."""
+    node = stmt.named_children[0] if stmt.named_children else None
+    if language == "python" and node is not None and node.type == "assignment":
+        return [(node.child_by_field_name("left"), node.child_by_field_name("right"))]
+    if stmt.type == "lexical_declaration" and stmt.children[0].type == "const":
+        return [
+            (d.child_by_field_name("name"), d.child_by_field_name("value"))
+            for d in stmt.named_children
+            if d.type == "variable_declarator"
+        ]
+    return []
+
+
 def _declared(root: Node, language: str) -> dict[str, str]:
     """Module-level ``NAME = <falsy literal>`` (Python) or ``const NAME = ...`` (TS/JS)."""
     out: dict[str, str] = {}
     for stmt in root.named_children:
         if stmt.type == "export_statement":
             stmt = stmt.child_by_field_name("declaration") or stmt
-        node = stmt.named_children[0] if stmt.named_children else None
-        if language == "python" and node is not None and node.type == "assignment":
-            pairs = [(node.child_by_field_name("left"), node.child_by_field_name("right"))]
-        elif stmt.type == "lexical_declaration" and stmt.children[0].type == "const":
-            pairs = [
-                (d.child_by_field_name("name"), d.child_by_field_name("value"))
-                for d in stmt.named_children
-                if d.type == "variable_declarator"
-            ]
-        else:
-            continue
-        for name, value in pairs:
+        for name, value in _declared_pairs(stmt, language):
             kind = _falsy_literal(value)
             if name is not None and name.type == "identifier" and kind:
                 out[_text(name)] = kind

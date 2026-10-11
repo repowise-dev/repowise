@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 from ..perf.dialects import PERF_DIALECTS
 from ..perf.dialects.base import BasePerfDialect as BasePerfDialectClass
-from ..perf.loop_facts import LoopFacts, LoopSource, combined_magnitude
+from ..perf.loop_facts import BatchForm, LoopFacts, LoopSource, combined_magnitude
 from .ast_utils import (
     _dart_signature_sibling,
     _find_function_entry_name,
@@ -557,6 +557,12 @@ def _collect_perf_hits(
             sources[key] = dialect.loop_source(loop, probe) or LoopSource()
         return sources[key]
 
+    def sink_facts(node: Node, loop: Node, sink: bool) -> tuple[BatchForm | None, str | None]:
+        """``(batch, concurrency_bound)`` of *node* in *loop*; both ``None`` off a sink."""
+        batch = dialect.batch_form(node, loop, probe) if sink and do_batch else None
+        bound = dialect.concurrency_bound(node, loop) if sink and do_bound else None
+        return batch, bound
+
     def loop_facts(node: Node, sink: bool, per_call: bool = False) -> LoopFacts | None:
         """Facts of *node*'s innermost loop; batch and bound only mean something at a sink.
 
@@ -569,13 +575,14 @@ def _collect_perf_hits(
         if not loops:
             return None
         loop = loops[0]
+        chunked = do_chunked and dialect.is_chunked_loop(loop)
+        magnitude = combined_magnitude([source(lp) for lp in loops]) if do_magnitude else "unknown"
+        batch, bound = sink_facts(node, loop, sink)
         facts = LoopFacts(
-            chunked=do_chunked and dialect.is_chunked_loop(loop),
-            magnitude=(
-                combined_magnitude([source(lp) for lp in loops]) if do_magnitude else "unknown"
-            ),
-            batch=dialect.batch_form(node, loop, probe) if sink and do_batch else None,
-            concurrency_bound=dialect.concurrency_bound(node, loop) if sink and do_bound else None,
+            chunked=chunked,
+            magnitude=magnitude,
+            batch=batch,
+            concurrency_bound=bound,
             # Only a native loop header names its key; a block loop (Ruby
             # ``each do |row|``) claims nothing, as before it carried loop facts.
             key_unused=per_call and loop.type in loop_kinds and not _loop_key_feeds(node, loop),

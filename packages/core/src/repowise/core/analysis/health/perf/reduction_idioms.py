@@ -122,6 +122,23 @@ def _adds_to(stmts: list[Node], container: str, keys: frozenset[str]) -> bool:
     )
 
 
+def _stores_value(node: Node, values: frozenset[str]) -> bool:
+    """``x.add/append/extend(v)`` or ``x[...] = v`` with *v* reading *values*."""
+    call = _method_call(node)
+    if call and call[1] in ("add", "append", "extend") and any(
+        references(arg, values) for arg in call[2]
+    ):
+        return True
+    left = node.child_by_field_name("left") if node.type == "assignment" else None
+    right = node.child_by_field_name("right") if left is not None else None
+    return (
+        left is not None
+        and right is not None
+        and left.type == "subscript"
+        and references(right, values)
+    )
+
+
 def _keeps_every_row(stmts: list[Node], values: frozenset[str]) -> bool:
     """Whether an unguarded statement stores each iterated row."""
     nested_loops = frozenset({"for_statement", "while_statement"})
@@ -132,19 +149,7 @@ def _keeps_every_row(stmts: list[Node], values: frozenset[str]) -> bool:
         if guarded:
             continue
         node = next((c for c in stmt.children if c.is_named), stmt)
-        call = _method_call(node)
-        if call and call[1] in ("add", "append", "extend") and any(
-            references(arg, values) for arg in call[2]
-        ):
-            return True
-        left = node.child_by_field_name("left") if node.type == "assignment" else None
-        right = node.child_by_field_name("right") if left is not None else None
-        if (
-            left is not None
-            and right is not None
-            and left.type == "subscript"
-            and references(right, values)
-        ):
+        if _stores_value(node, values):
             return True
     return False
 
